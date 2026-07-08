@@ -513,23 +513,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             throw new SandboxSessionUnavailableException(workspaceId, statusCode: null, ex.Message, ex);
         }
 
-        var (_, workspaceLeaf, workspaceFullPath) = _options.ResolveWorkspace(workspaceRef.DirectoryRelPath);
+        // Resolve only the workspace LEAF — the identifier sent to the gateway as the `workspace`
+        // field. The client deliberately does NOT touch the workspace filesystem here: the sandbox
+        // gateway may be on a remote machine, and it owns workspace directory creation
+        // (create-if-missing) and mounting. A local WorkspaceBasePath/WorkspacePath is used only by
+        // the spawn path to provision a LOCAL gateway (SandboxGatewayLifetime.EnsureWorkspaceDirectory)
+        // — it is neither required nor resolved to a local path when adopting a (possibly remote) gateway.
+        var (_, workspaceLeaf, _) = _options.ResolveWorkspace(workspaceRef.DirectoryRelPath);
         var workspaceRelPath = workspaceLeaf ?? string.Empty;
-
-        // Ensure the workspace directory exists before the gateway mounts it — the gateway rejects a
-        // leaf that doesn't exist under WORKSPACE_BASE_PATH. Idempotent with the spawn-time creation;
-        // this also covers the adopt-an-existing-gateway path (no spawn ran).
-        if (!string.IsNullOrWhiteSpace(workspaceFullPath))
-        {
-            try
-            {
-                _ = Directory.CreateDirectory(workspaceFullPath);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not create workspace directory '{WorkspacePath}'", workspaceFullPath);
-            }
-        }
 
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();

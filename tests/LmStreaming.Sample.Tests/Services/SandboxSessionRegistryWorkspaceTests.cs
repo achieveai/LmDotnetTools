@@ -58,6 +58,23 @@ public class SandboxSessionRegistryWorkspaceTests
         second.WorkspaceRelPath.Should().Be("projA");
     }
 
+    [Fact]
+    public async Task GetOrCreateSession_DoesNotCreateWorkspaceDirectoryOnDisk_GatewayOwnsIt()
+    {
+        // The client must NEVER touch the workspace filesystem — the gateway may be on a remote
+        // machine and owns workspace directory creation (create-if-missing) and mounting. Even with a
+        // local base configured, creating a session forwards the leaf WITHOUT the client mkdir-ing it.
+        using var baseDir = new TempWorkspaceBase();
+        await using var registry = CreateRegistry(baseDir.Path, out var captured);
+
+        var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-fs", "projFS"));
+
+        session.WorkspaceRelPath.Should().Be("projFS");
+        captured.LastWorkspace.Should().Be("projFS"); // leaf still forwarded to the gateway
+        Directory.Exists(System.IO.Path.Combine(baseDir.Path, "projFS"))
+            .Should().BeFalse("the client must not create the workspace directory — the gateway owns it");
+    }
+
     private static SandboxSessionRegistry CreateRegistry(string workspaceBasePath, out CapturedRequest captured)
     {
         var capturedRequest = new CapturedRequest();
@@ -115,8 +132,8 @@ public class SandboxSessionRegistryWorkspaceTests
     }
 
     /// <summary>Creates (and deletes) a real temp directory to serve as the workspace base, so the
-    /// <c>ResolveWorkspace</c> containment check passes and the registry's idempotent
-    /// <c>Directory.CreateDirectory</c> succeeds.</summary>
+    /// <c>ResolveWorkspace</c> containment check has a real parent to resolve leaves under. The
+    /// registry itself never creates the per-workspace leaf (the gateway owns that).</summary>
     private sealed class TempWorkspaceBase : IDisposable
     {
         public string Path { get; } =

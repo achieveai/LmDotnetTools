@@ -143,6 +143,36 @@ public class SandboxGatewayOptionsTests
     }
 
     [Fact]
+    public void ResolveWorkspace_WithOverride_ReturnsLeafWithoutBaseOrFullPath_WhenNoBaseConfigured()
+    {
+        // A remote gateway (or one that roots the workspace under its own per-app base, ADR 0029) has
+        // no local filesystem the client can resolve against or pre-create in. WorkspaceBasePath is
+        // therefore OPTIONAL: with no base configured, resolving an override must NOT throw — it yields
+        // just the leaf (the workspace identifier the gateway needs), with a null base and null full
+        // path so the registry skips local directory pre-creation and lets the gateway own creation.
+        var options = new SandboxGatewayOptions(); // no WorkspaceBasePath, no WorkspacePath
+
+        var (resolvedBase, leaf, full) = options.ResolveWorkspace("projA");
+
+        resolvedBase.Should().BeNull();
+        leaf.Should().Be("projA");
+        full.Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveWorkspace_WithRootedOverride_Throws_EvenWithNoBaseConfigured()
+    {
+        // The "override must be relative" invariant is independent of whether a base is configured —
+        // a rooted value is never a valid workspace leaf.
+        var options = new SandboxGatewayOptions();
+
+        var rooted = Path.Combine(Path.GetTempPath(), "elsewhere");
+        var act = () => options.ResolveWorkspace(rooted);
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
     public void ResolveWorkspace_WithEscapingOverride_Throws()
     {
         var basePath = Path.Combine(Path.GetTempPath(), "ws-base");
