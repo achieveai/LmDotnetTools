@@ -10,6 +10,35 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 public sealed class DaemonAgentFactoryTests
 {
     [Fact]
+    public void CreateReviewProfile_with_variables_renders_the_bot_name_into_the_identity_and_self_reference()
+    {
+        // The daemon prepends "[BotName]" to the POSTED comment; injecting bot_name here lets the review
+        // BODY self-identify with the SAME name instead of a label the model invents ad-hoc.
+        var vars = new Dictionary<string, object>
+        {
+            ["bot_name"] = "Revobot",
+            ["checkout_root"] = "/workspace/target",
+        };
+
+        var prompt = DaemonAgentFactory.CreateReviewProfile(vars).SystemPrompt;
+
+        prompt.Should().Contain("You are Revobot,"); // identity line
+        prompt.Should().Contain("use the name Revobot"); // self-reference directive
+        prompt.Should().NotContain("You are ,"); // never render an empty name
+    }
+
+    [Fact]
+    public void CreateReviewProfile_defaults_the_bot_name_when_no_variables_are_supplied()
+    {
+        // The variable-less overload (used by the declarative-profile tests) must still render a clean
+        // identity line rather than "You are , an …".
+        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+
+        prompt.Should().Contain("You are Revobot,");
+        prompt.Should().NotContain("You are ,");
+    }
+
+    [Fact]
     public void CreateReviewProfile_has_stable_identity_and_a_system_prompt()
     {
         var profile = DaemonAgentFactory.CreateReviewProfile();

@@ -849,6 +849,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </para>
     /// </summary>
     private static Dictionary<string, object> BuildPromptVariables(
+        string botName,
         string? checkoutRoot,
         string? storeRoot,
         ReviewToolContext? toolContext,
@@ -860,6 +861,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var notesDir = toolContext?.NotesDir;
         return new Dictionary<string, object>
         {
+            // The daemon prepends "[BotName]" to the POSTED comment; injecting it here too lets the review
+            // BODY self-identify with the same name instead of a name the model invents ad-hoc.
+            ["bot_name"] = botName,
             ["checkout_root"] = checkoutRoot ?? TargetRoot,
             ["has_store"] = !string.IsNullOrWhiteSpace(storeRoot),
             ["store_root"] = storeRoot ?? string.Empty,
@@ -976,7 +980,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
             run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
         var variables = BuildPromptVariables(
-            checkoutRoot, storeRoot, toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
+            _options.BotName, checkoutRoot, storeRoot, toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
         var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
@@ -1012,7 +1016,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var (prevHeadSha, reviewRound, _) = await ComputeRereviewContextAsync(run, notesDir: null, cancellationToken)
             .ConfigureAwait(false);
         var variables = BuildPromptVariables(
-            checkoutRoot, storeRoot, toolContext: null, run.HeadSha, prevHeadSha, reviewRound, []);
+            _options.BotName, checkoutRoot, storeRoot, toolContext: null, run.HeadSha, prevHeadSha, reviewRound, []);
         var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);

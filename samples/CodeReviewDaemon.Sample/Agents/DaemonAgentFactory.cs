@@ -38,7 +38,10 @@ internal static class DaemonAgentFactory
     /// "Workspace layout" section renders blank. Prefer <see cref="CreateReviewProfile(IReadOnlyDictionary{string,object})"/>
     /// so the agent is told this run's concrete checkout/store/notes paths.
     /// </summary>
-    public static AgentProfile CreateReviewProfile() => CreateReviewProfile(new Dictionary<string, object>());
+    public static AgentProfile CreateReviewProfile() =>
+        // Seed the display name so the "You are <bot_name>, …" opening renders cleanly even on this
+        // variable-less path; the daemon always overrides it with CodeReviewDaemonOptions.BotName.
+        CreateReviewProfile(new Dictionary<string, object> { ["bot_name"] = "Revobot" });
 
     /// <summary>
     /// Builds the review-agent profile, rendering the YAML template's <c>checkout_root</c>/<c>has_store</c>/
