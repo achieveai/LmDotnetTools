@@ -1057,60 +1057,79 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
 
-        // ReviewPoster requires a non-blank body even on the collect-only path (it still builds the
-        // idempotency key and records the outbox row), so fall back when the agent produced nothing.
+        // A review that produced NO content must post NOTHING. A "_No review content was produced._"
+        // placeholder would go through the full idempotency path and leave a marked comment on the provider;
+        // the backstop scan (ReviewPoster.FindPostedCommentAsync) later ADOPTS that placeholder and
+        // permanently suppresses a real review of the same head_sha — e.g. a re-run on a model that does
+        // produce content. So skip both the post and the retention when the review is empty. The run still
+        // reaches its terminal stage below (and its review_run row prevents re-review), and the slot/session
+        // are still freed, so nothing is leaked or looped.
         var reviewText = ReadReviewText(run.Id);
-        var body = string.IsNullOrWhiteSpace(reviewText) ? "_No review content was produced._" : reviewText;
-        // The POSTED comment is prefixed with "[BotName]" so a reader knows the content was authored by
-        // the bot on behalf of whichever OAuth app/person's credential actually posted it — the retained
-        // artifact (CommitPooledNotesAsync / PublishToReviewBotAsync below) keeps the raw, unprefixed body.
-        var postedBody = $"[{_options.BotName}]\n\n{body}";
+        var hasContent = !string.IsNullOrWhiteSpace(reviewText);
+        if (hasContent)
+        {
+            // The POSTED comment is prefixed with "[BotName]" so a reader knows the content was authored by
+            // the bot on behalf of whichever OAuth app/person's credential actually posted it — the retained
+            // artifact (CommitPooledNotesAsync / PublishToReviewBotAsync below) keeps the raw, unprefixed body.
+            var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
 
-        var key = new IdempotencyKeyComponents(
-            Provider: provider,
-            OrgOrOwner: repo.OrgOrOwner,
-            Project: repo.Project,
-            // RepoStableId must be non-blank and ':'-free; fall back to the colon-free normalized key.
-            RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
-            PrId: run.PrId,
-            Operation: ReviewPoster.PostReviewCommentOperation,
-            ArtifactKind: ReviewArtifactKind,
-            ArtifactSubject: "summary",
-            // Scope the key to the reviewed COMMIT. head_sha is stable across re-polls and — unlike the PR
-            // updated_at — is not mutated by posting the comment, so a re-poll of the same commit resolves
-            // to the same key and the backstop scan recognizes the already-posted comment (no duplicate).
-            HeadSha: run.HeadSha,
-            VariantId: run.VariantId);
+            var key = new IdempotencyKeyComponents(
+                Provider: provider,
+                OrgOrOwner: repo.OrgOrOwner,
+                Project: repo.Project,
+                // RepoStableId must be non-blank and ':'-free; fall back to the colon-free normalized key.
+                RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
+                PrId: run.PrId,
+                Operation: ReviewPoster.PostReviewCommentOperation,
+                ArtifactKind: ReviewArtifactKind,
+                ArtifactSubject: "summary",
+                // Scope the key to the reviewed COMMIT. head_sha is stable across re-polls and — unlike the PR
+                // updated_at — is not mutated by posting the comment, so a re-poll of the same commit resolves
+                // to the same key and the backstop scan recognizes the already-posted comment (no duplicate).
+                HeadSha: run.HeadSha,
+                VariantId: run.VariantId);
 
-        var request = new PostReviewRequest(
-            run.Id,
-            key,
-            new ReviewCommentTarget(repo, run.PrId),
-            postedBody,
-            LivePostingAuthorized: _options.EnableCommentPosting);
+            var request = new PostReviewRequest(
+                run.Id,
+                key,
+                new ReviewCommentTarget(repo, run.PrId),
+                postedBody,
+                LivePostingAuthorized: _options.EnableCommentPosting);
 
-        _ = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
+            _ = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Run {RunId}: review produced no content; not posting a comment or claiming the head's dedup "
+                    + "slot (a placeholder would block a later real review of the same commit).",
+                run.Id);
+        }
 
-        // Retention (design §4.4, the commit gate). A run that leased a pooled slot commits its notes onto
-        // the slot's store checkout scoped to ONLY the PR notes dir, then returns the slot; every other run
-        // uses the host ReviewBot retention checkout exactly as before. The slot is returned even if the
-        // commit throws, and the atomic TryRemove guards against a double-return.
+        // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
+        // pooled slot commits its notes onto the slot's store checkout scoped to ONLY the PR notes dir, then
+        // returns the slot; every other run uses the host ReviewBot retention checkout. The slot is ALWAYS
+        // returned (finally) and the session ALWAYS torn down (below), so an empty review still frees its
+        // resources; the atomic TryRemove guards against a double-return.
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(run.Id, out var lease))
         {
             try
             {
-                await CommitPooledNotesAsync(run, repo, provider, body, lease, cancellationToken).ConfigureAwait(false);
+                if (hasContent)
+                {
+                    await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken).ConfigureAwait(false);
+                }
             }
             finally
             {
                 await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
             }
         }
-        else
+        else if (hasContent)
         {
             // Durably persist the primary review's artifacts to the ReviewBot repo (AC#6, plan §2). This is
             // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
-            await PublishToReviewBotAsync(run, repo, provider, body, cancellationToken).ConfigureAwait(false);
+            await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
 
         // Terminal-stage cleanup (Task 18, design §7): tear down the run's per-run sandbox session (and
