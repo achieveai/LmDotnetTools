@@ -20,6 +20,21 @@ internal sealed class HostGitCommandRunner(
             throw new ArgumentException("Argv must be non-empty.", nameof(command));
         }
 
+        // Process.Start throws Win32Exception(267) if WorkingDirectory is set but doesn't exist yet — e.g.
+        // the sweeper's first-ever probe of a checkout dir that hasn't been cloned. Fail gracefully instead
+        // of crashing so callers like ReviewBotCheckout can fall through from "probe" to "clone" (which
+        // creates the directory) rather than aborting the whole sweep.
+        if (!string.IsNullOrWhiteSpace(command.WorkingDirectory) && !Directory.Exists(command.WorkingDirectory))
+        {
+            var missingDirResult = new SandboxCommandResult(
+                1,
+                string.Empty,
+                $"working directory '{command.WorkingDirectory}' does not exist");
+            logger.LogDebug("Host git '{Argv}' exited {Exit}: {Stderr}",
+                string.Join(' ', command.Argv), missingDirResult.ExitCode, missingDirResult.Stderr);
+            return missingDirResult;
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = command.Argv[0],
