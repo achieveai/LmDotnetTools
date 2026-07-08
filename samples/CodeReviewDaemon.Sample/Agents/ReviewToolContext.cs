@@ -22,7 +22,9 @@ internal sealed record ReviewToolContext(
     bool EnableReviewerWrites = false,
     IReadOnlyList<string>? WritableToolAllowList = null,
     string? NotesDir = null,
-    string? ScratchDir = null);
+    string? ScratchDir = null,
+    string? AppId = null,
+    string? AppKey = null);
 
 /// <summary>
 /// Copies ONLY the allow-listed tool contracts+handlers from a source registry into the loop's registry.

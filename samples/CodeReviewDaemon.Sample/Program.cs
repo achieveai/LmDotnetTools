@@ -111,11 +111,18 @@ builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 // Sandbox: all deterministic git/fs work runs in the gateway, driven as a direct MCP client. The
 // connection is lazy (opened on first command), so registering it does no work at boot and the daemon
 // stays inert until a repo is allow-listed. The gateway base URL / session come from the environment.
+// Per-app bearer identity for the sandbox gateway (ADR 0029): sent as X-Sbx-App-Id/X-Sbx-App-Key on every
+// gateway request when a key is configured, so an AUTH_ENFORCE gateway authenticates the daemon and scopes
+// its sessions to it. No key configured → no bearer headers (works unchanged against an unenforced gateway).
+var sandboxAppId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID") ?? "code-review-daemon";
+var sandboxAppKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY");
 builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrator(
     Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
     sp.GetRequiredService<ILogger<SandboxOrchestrator>>(),
-    daemonOptions.Limits));
+    daemonOptions.Limits,
+    appId: sandboxAppId,
+    appKey: sandboxAppKey));
 builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
     new SandboxFileSystem(sp.GetRequiredService<ISandboxCommandRunner>()));
 
@@ -130,6 +137,10 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     BaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
     AutoSpawn = false,
     Marketplaces = string.Join(",", daemonOptions.Marketplaces),
+    // Per-app bearer identity (ADR 0029) — distinct from LmStreaming.Sample so the daemon's sandbox
+    // sessions are scoped to their own app tree under an AUTH_ENFORCE gateway.
+    AppId = sandboxAppId,
+    AppKey = sandboxAppKey,
     // Host base directory the (already-running) gateway maps to its container WORKSPACE_BASE_PATH. The
     // per-run provisioner mounts a distinct leaf (review-run-{id}) under this base, so it MUST be set or
     // session-create fails with "no workspace base path is configured". Sourced from env/config so it
@@ -141,11 +152,15 @@ builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
         sandboxGatewayOptions,
         sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
-        new HttpClient()),
+        new HttpClient(new GatewayAuthHandler(sandboxAppId, sandboxAppKey) { InnerHandler = new HttpClientHandler() })),
     sandboxGatewayOptions,
     sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
-    // Bounds the gateway create/destroy calls (mirrors LmStreaming.Sample's registration).
-    new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+    // Bounds the gateway create/destroy calls (mirrors LmStreaming.Sample's registration); the handler
+    // attaches the per-app bearer headers to every gateway REST call.
+    new HttpClient(new GatewayAuthHandler(sandboxAppId, sandboxAppKey) { InnerHandler = new HttpClientHandler() })
+    {
+        Timeout = TimeSpan.FromSeconds(30),
+    },
     authOptions,
     sp.GetRequiredService<AuthSharedSecret>()));
 builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
