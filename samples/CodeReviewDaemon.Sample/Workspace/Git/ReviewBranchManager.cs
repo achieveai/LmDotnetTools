@@ -412,6 +412,49 @@ internal sealed class ReviewBranchManager
         return true;
     }
 
+    /// <summary>Slugs the target identity the LEGACY way — <c>owner[-project]-repo</c> — so the reconciler can
+    /// also match pre-<c>{repo}-{pr}</c> branches (<c>review/{provider}/{owner-repo}/{pr}</c>) left over from the
+    /// naming change and clean them up when their PR closes.</summary>
+    public static string LegacyRepoSlug(RepoIdentity repo)
+    {
+        var parts = new[] { repo.OrgOrOwner, repo.Project, repo.RepoName }
+            .Where(static p => !string.IsNullOrEmpty(p))
+            .Select(static p => Slug(p!));
+        return string.Join('-', parts);
+    }
+
+    /// <summary>
+    /// Parses a LEGACY <c>review/{provider}/{owner-repo}/{pr}</c> branch (the pre-<c>{repo}-{pr}</c> form) into
+    /// its <c>owner-repo</c> slug and PR number. Returns <c>false</c> for the new single-segment form or anything
+    /// malformed. Pairs with <see cref="LegacyRepoSlug"/> so the reconciler can still resolve these orphans.
+    /// </summary>
+    public static bool TryParseLegacyReviewBranch(string branch, out string repoSlug, out int prNumber)
+    {
+        repoSlug = string.Empty;
+        prNumber = 0;
+        if (string.IsNullOrEmpty(branch))
+        {
+            return false;
+        }
+
+        // review / {provider} / {owner-repo} / {pr} — exactly four '/'-separated segments.
+        var parts = branch.Split('/');
+        if (parts.Length != 4 || !string.Equals(parts[0], "review", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var prPart = parts[3];
+        if (parts[1].Length == 0 || parts[2].Length == 0 || prPart.Length == 0
+            || !prPart.All(char.IsAsciiDigit) || !int.TryParse(prPart, out prNumber))
+        {
+            return false;
+        }
+
+        repoSlug = parts[2];
+        return true;
+    }
+
     private static string Slug(string value)
     {
         var chars = value

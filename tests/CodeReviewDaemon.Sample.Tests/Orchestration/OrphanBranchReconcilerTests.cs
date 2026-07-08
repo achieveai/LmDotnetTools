@@ -68,11 +68,28 @@ public sealed class OrphanBranchReconcilerTests
     }
 
     [Fact]
-    public void Skips_a_legacy_nested_branch_name_it_cannot_resolve()
+    public void Resolves_a_legacy_nested_branch_via_the_owner_repo_slug()
     {
+        // Left over from before the {repo}-{pr} rename: review/{provider}/{owner-repo}/{pr}.
         var result = OrphanBranchReconciler.Reconcile(
             fromDb: [],
             remoteReviewBranches: ["review/github/acme-widgets/42"],
+            configuredTargets: [WidgetsTarget],
+            NullLogger.Instance);
+
+        var pr = result.Should().ContainSingle().Subject;
+        pr.Provider.Should().Be("github");
+        pr.PrId.Should().Be("42");
+        pr.Branch.Should().Be("review/github/acme-widgets/42", "the sweep must act on the actual legacy branch name");
+        pr.Repo.RepoName.Should().Be("widgets");
+    }
+
+    [Fact]
+    public void Skips_a_legacy_branch_whose_slug_matches_no_configured_repo()
+    {
+        var result = OrphanBranchReconciler.Reconcile(
+            fromDb: [],
+            remoteReviewBranches: ["review/github/other-owner-other-repo/9"],
             configuredTargets: [WidgetsTarget],
             NullLogger.Instance);
 

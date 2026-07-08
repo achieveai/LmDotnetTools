@@ -9,11 +9,13 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// still gets its notes branch merged-or-deleted when the PR closes. Without this, such a branch is orphaned:
 /// the merged PR's notes never reach the store default branch and the abandoned PR's branch is never deleted.
 /// <para>
-/// The DB-derived set is authoritative and always kept. This only <b>adds</b> orphaned branches whose
-/// <c>review/{repo}-{pr}</c> slug (see <see cref="ReviewBranchManager.TryParseReviewBranch"/>) matches a
-/// configured poll target — the daemon needs that target's <see cref="PrPollTarget.Repo"/> identity and
-/// <see cref="PrPollTarget.Provider"/> to look the PR's lifecycle up. A branch that matches no configured repo
-/// (or is in the legacy nested form) is logged and skipped: its identity cannot be recovered from the name.
+/// The DB-derived set is authoritative and always kept. This only <b>adds</b> orphaned branches whose slug
+/// matches a configured poll target — either the new <c>review/{repo}-{pr}</c> form (see
+/// <see cref="ReviewBranchManager.TryParseReviewBranch"/>) or the legacy <c>review/{provider}/{owner-repo}/{pr}</c>
+/// form (see <see cref="ReviewBranchManager.TryParseLegacyReviewBranch"/>), so orphans from either naming
+/// generation get cleaned up. The daemon needs that target's <see cref="PrPollTarget.Repo"/> identity and
+/// <see cref="PrPollTarget.Provider"/> to look the PR's lifecycle up. A branch that matches no configured repo,
+/// or is unparseable, is logged and skipped: its identity cannot be recovered from the name.
 /// </para>
 /// </summary>
 internal static class OrphanBranchReconciler
@@ -36,7 +38,10 @@ internal static class OrphanBranchReconciler
         var targetsBySlug = new Dictionary<string, PrPollTarget>(StringComparer.OrdinalIgnoreCase);
         foreach (var target in configuredTargets)
         {
+            // Index by both the new {repo} slug and the legacy {owner-repo} slug so orphans from either naming
+            // generation resolve back to the same configured repo.
             targetsBySlug[ReviewBranchManager.RepoSlug(target.Repo)] = target;
+            targetsBySlug[ReviewBranchManager.LegacyRepoSlug(target.Repo)] = target;
         }
 
         foreach (var branch in remoteReviewBranches)
@@ -46,7 +51,9 @@ internal static class OrphanBranchReconciler
                 continue;
             }
 
-            if (!ReviewBranchManager.TryParseReviewBranch(branch, out var slug, out var prNumber))
+            // New scheme first, then the legacy nested form, so both orphan generations get cleaned up.
+            if (!ReviewBranchManager.TryParseReviewBranch(branch, out var slug, out var prNumber)
+                && !ReviewBranchManager.TryParseLegacyReviewBranch(branch, out slug, out prNumber))
             {
                 continue;
             }
