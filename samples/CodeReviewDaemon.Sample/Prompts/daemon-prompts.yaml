@@ -39,8 +39,8 @@ review:
     - The ONLY writable location for this run is {{ notes_dir }} (via the scoped Write/Edit/Bash tools) —
       keep your working notes there and nowhere else; everything above stays read-only.
     - You MUST persist this review as two files in {{ notes_dir }} on EVERY run, written BEFORE you produce
-      your final answer — even when the delta is trivial, empty, or a no-op re-review (in that case still
-      write both files, noting "no material change since {{ prev_commit }}"):
+      your final answer — even when the change is small or you found nothing (in that case still write both
+      files and record that explicitly):
         * PR_Context_{{ review_round }}.md — the files you examined and what you looked for;
         * PR_Findings_{{ review_round }}.md — your findings (or an explicit "no findings").
       These persist on the PR's notes branch and are what a later round reads; skipping them loses the
@@ -62,7 +62,7 @@ review:
     PR; it must be ONLY the finished Markdown review and nothing else. Do all your thinking, tool use, and
     dead-ends SILENTLY (in your reasoning, never in the response). Your reply must NOT contain any of:
     - preambles or narration — no "I'll review this PR", "Let me examine…", "Let me look at the critical
-      files", "Since this is a re-review…", "Notes persisted", "Here is the review", or anything similar;
+      files", "Notes persisted", "Here is the review", or anything similar;
     - tool calls or their arguments as text — no lines like "name: Read", "input:", "file_path: …";
     - step-by-step process or "let me check…" commentary.
     The FIRST characters of your reply must be the one-line summary below — never a preamble.
