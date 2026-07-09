@@ -625,17 +625,19 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task Posted_substitutes_a_placeholder_body_when_the_review_is_empty()
+    public async Task Posted_does_not_post_a_comment_when_the_review_is_empty()
     {
         using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
-        // The agent produces no review prose → ReadReviewText is empty → the poster needs a non-blank body.
+        // The agent produces no review prose. Posting a "_No review content was produced._" placeholder would
+        // claim the head_sha's idempotency slot on the provider — the backstop scan would then adopt that
+        // placeholder and permanently suppress a later REAL review of the same commit (e.g. a re-run on a
+        // model that actually produces content). So an empty review must post NOTHING.
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = string.Empty;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
 
-        fixture.GitHubPublisher.PostedBodies.Should().ContainSingle()
-            .Which.Should().Be("[Revobot]\n\n_No review content was produced._");
+        fixture.GitHubPublisher.PostedBodies.Should().BeEmpty("an empty review must not claim the head's dedup slot");
     }
 
     [Fact]
