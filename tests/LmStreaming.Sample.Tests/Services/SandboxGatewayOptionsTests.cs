@@ -184,6 +184,7 @@ public class SandboxGatewayOptionsTests
 
         var act = () => options.ResolveWorkspace(Path.Combine("..", "evil"));
 
+
         act.Should().Throw<InvalidOperationException>();
     }
 

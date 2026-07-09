@@ -4,7 +4,6 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -13,6 +12,7 @@ using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using CodeReviewDaemon.Sample.Configuration;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using ModelContextProtocol.Client;
 
 namespace CodeReviewDaemon.Sample.Agents;
@@ -107,7 +107,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             {
                 Name = "sandbox",
                 Endpoint = new Uri($"{toolContext.GatewayBaseUrl}/mcp"),
-                AdditionalHeaders = GatewayAuthHeaders.ForMcp(toolContext.SessionId, toolContext.AppId, toolContext.AppKey),
+                AdditionalHeaders = SandboxOrchestrator.BuildTransportHeaders(toolContext.SessionId, toolContext.Credential),
             });
             var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
             ownedClients = [client];

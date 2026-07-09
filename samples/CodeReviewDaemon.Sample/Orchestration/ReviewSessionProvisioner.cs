@@ -70,6 +70,7 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     private readonly CodeReviewDaemonOptions _options;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<ReviewSessionProvisioner> _logger;
+    private readonly SandboxCredential _credential;
     private readonly ConcurrentDictionary<string, ReviewRunSession> _bySession = new(StringComparer.Ordinal);
 
     /// <summary>
@@ -87,12 +88,14 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         ISandboxSessionSource sessions,
         CodeReviewDaemonOptions options,
         ILoggerFactory loggerFactory,
+        SandboxCredential credential = default,
         string? workspaceBasePath = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<ReviewSessionProvisioner>();
+        _credential = credential;
         _workspaceBasePath = workspaceBasePath;
     }
 
@@ -167,6 +170,7 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
                 _gatewayBaseUrl,
                 id,
                 _loggerFactory.CreateLogger<SandboxOrchestrator>(),
+                _credential,
                 _options.Limits);
             return new ReviewRunSession(id, session.HostPath, runner, new SandboxFileSystem(runner));
         });

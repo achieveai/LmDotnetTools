@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// that workspace's own directory leaf (resolved via <see cref="SandboxGatewayOptions.ResolveWorkspace(string?)"/>),
 /// NOT the configured default leaf. Also covers the default-leaf fallback (null directory) and the
 /// first-creation-wins cache contract documented on
-/// <see cref="SandboxSessionRegistry.GetOrCreateSessionAsync(WorkspaceRef, System.Threading.CancellationToken)"/>.
+/// <see cref="SandboxSessionRegistry.GetOrCreateSessionAsync(WorkspaceRef, System.Threading.CancellationToken, SandboxCredential?)"/>.
 /// </summary>
 public class SandboxSessionRegistryWorkspaceTests
 {

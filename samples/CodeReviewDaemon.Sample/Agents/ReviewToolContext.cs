@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
@@ -19,12 +20,11 @@ internal sealed record ReviewToolContext(
     string SessionId,
     IReadOnlyList<string> ReadOnlyToolAllowList,
     SubAgentOptions? SubAgentOptions,
+    SandboxCredential Credential,
     bool EnableReviewerWrites = false,
     IReadOnlyList<string>? WritableToolAllowList = null,
     string? NotesDir = null,
-    string? ScratchDir = null,
-    string? AppId = null,
-    string? AppKey = null);
+    string? ScratchDir = null);
 
 /// <summary>
 /// Copies ONLY the allow-listed tool contracts+handlers from a source registry into the loop's registry.

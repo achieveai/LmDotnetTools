@@ -60,9 +60,11 @@ public sealed record WorkspaceRef(
 /// seam for future per-request workspace switching.
 /// </para>
 /// <para>
-/// Creation is single-flight: concurrent first-callers for the same workspace id share one
-/// in-flight POST via a cached <see cref="Lazy{T}"/>. A failed creation is evicted so a later
-/// call can retry.
+/// Creation is single-flight: concurrent first-callers for the same (workspace id, caller app id)
+/// pair share one in-flight POST via a cached <see cref="Lazy{T}"/>. A failed creation is evicted
+/// so a later call can retry. Partitioning the cache by caller app id (not just workspace id)
+/// ensures two different callers requesting the same logical workspace (e.g. two S2S identities,
+/// or a caller and the interactive UI default) never collide on one shared session.
 /// </para>
 /// </remarks>
 public sealed partial class SandboxSessionRegistry : IAsyncDisposable
@@ -85,7 +87,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly ConcurrentDictionary<string, Lazy<Task<SandboxSession>>> _sessions = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Sandbox sessions, partitioned by the (workspace id, caller app id) pair — see the class
+    /// remarks — so two different callers requesting the SAME logical workspace never collide on
+    /// one shared session. Keyed by the <c>AppId</c> only, NEVER the secret <c>AppKey</c>. The
+    /// default equality comparer for a <c>(string, string)</c> value tuple already compares each
+    /// element with ordinal string equality, so no explicit comparer is needed.
+    /// </summary>
+    private readonly ConcurrentDictionary<
+        (string WorkspaceId, string AppId),
+        Lazy<Task<SandboxSession>>
+    > _sessions = new();
 
     /// <summary>
     /// Sub-agent binding (template source + agent factory) the loop uses to populate the Agent
@@ -139,7 +151,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     private readonly HttpClient _httpClient;
     private readonly AuthOptions _authOptions;
     private readonly AuthSharedSecret _sharedSecret;
+    private readonly SandboxCredential _defaultCredential;
     private bool _disposed;
+
+    /// <summary>
+    /// Credential the session with a given gateway session id was CREATED with, so contextless
+    /// paths (liveness probe, destroy, discovery) resolve the same credential the session was
+    /// opened under instead of the process-wide default. Populated by <see cref="CreateSessionAsync"/>
+    /// and cleared wherever <see cref="_sessionsById"/> is cleared.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SandboxCredential> _sessionCredentials =
+        new(StringComparer.Ordinal);
 
     /// <summary>
     /// Initialises the registry.
@@ -167,6 +189,46 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _authOptions = authOptions ?? throw new ArgumentNullException(nameof(authOptions));
         _sharedSecret = sharedSecret ?? throw new ArgumentNullException(nameof(sharedSecret));
+        // Non-null default even when no key is configured: contextless paths (liveness/destroy on
+        // a session with no side-table entry) always resolve to a credential, never null. An empty
+        // AppKey is exactly the keyless AUTH_ENFORCE=off dev path.
+        _defaultCredential = new SandboxCredential(_options.AppId, _options.AppKey ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Resolves the credential a gateway request for <paramref name="sessionId"/> should use: the
+    /// credential the session was created with, when known, otherwise the process-wide default.
+    /// Background/contextless call sites (liveness probe, destroy, discovery) have no ambient
+    /// caller identity, so they always resolve through this lookup rather than reading
+    /// <see cref="_options"/> directly.
+    /// </summary>
+    private SandboxCredential CredentialFor(string sessionId) =>
+        _sessionCredentials.TryGetValue(sessionId, out var credential) ? credential : _defaultCredential;
+
+    /// <summary>
+    /// Sends <paramref name="request"/> to the gateway with the per-request <c>X-Sbx-App-Id</c> /
+    /// <c>X-Sbx-App-Key</c> headers stamped from <paramref name="credential"/> (plus
+    /// <c>X-Session-ID</c> when <paramref name="sessionId"/> is supplied). This is the ONLY place
+    /// gateway auth headers are attached — every gated call site routes through here so a single
+    /// seam stamps them consistently. Deliberately never touches
+    /// <see cref="HttpClient.DefaultRequestHeaders"/>: that is process-global and would leak one
+    /// caller's credential onto every other concurrent caller's request.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendGatewayAsync(
+        HttpRequestMessage request,
+        SandboxCredential credential,
+        CancellationToken ct,
+        string? sessionId = null,
+        HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead
+    )
+    {
+        credential.StampHeaders(request);
+        if (sessionId is not null)
+        {
+            request.Headers.TryAddWithoutValidation("X-Session-ID", sessionId);
+        }
+
+        return await _httpClient.SendAsync(request, completion, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -176,26 +238,39 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// </summary>
     /// <param name="workspaceId">Logical workspace key.</param>
     /// <param name="ct">Cancellation token observed by the creating call.</param>
+    /// <param name="credential">Caller credential to create the session under; <c>null</c>
+    /// (interactive/daemon callers) resolves to the process-wide default. See the
+    /// <see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken, SandboxCredential?)"/>
+    /// overload for how this drives the session-cache partition.</param>
     public Task<SandboxSession> GetOrCreateSessionAsync(
         string workspaceId = DefaultWorkspaceId,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        SandboxCredential? credential = null
     )
     {
-        return GetOrCreateSessionAsync(new WorkspaceRef(workspaceId), ct);
+        return GetOrCreateSessionAsync(new WorkspaceRef(workspaceId), ct, credential);
     }
 
     /// <summary>
     /// Returns the sandbox session for <paramref name="workspaceRef"/>, creating it on first use.
-    /// The cache is keyed by <see cref="WorkspaceRef.Id"/>; on first creation the mounted directory
-    /// is resolved from <see cref="WorkspaceRef.DirectoryRelPath"/> (null/blank → configured
-    /// default). Concurrent first-callers share a single creation; subsequent callers get the
-    /// cached session (subsequent directory values are ignored — the first creation wins).
+    /// The cache is keyed by (<see cref="WorkspaceRef.Id"/>, the effective caller app id); on first
+    /// creation the mounted directory is resolved from <see cref="WorkspaceRef.DirectoryRelPath"/>
+    /// (null/blank → configured default). Concurrent first-callers for the SAME (workspace id, app
+    /// id) pair share a single creation; subsequent callers for that pair get the cached session
+    /// (subsequent directory values are ignored — the first creation wins). A different
+    /// <paramref name="credential"/> for the same <see cref="WorkspaceRef.Id"/> is a DIFFERENT
+    /// cache entry — it creates (and owns) its own gateway session rather than sharing one.
     /// </summary>
     /// <param name="workspaceRef">The workspace identity + directory to mount.</param>
     /// <param name="ct">Cancellation token observed by the creating call.</param>
+    /// <param name="credential">Caller credential to create the session under, and the credential
+    /// whose <c>AppId</c> partitions the session cache. <c>null</c> resolves to the process-wide
+    /// default credential (unchanged behavior for interactive/daemon callers, which never pass
+    /// one).</param>
     public Task<SandboxSession> GetOrCreateSessionAsync(
         WorkspaceRef workspaceRef,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        SandboxCredential? credential = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -203,26 +278,31 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 
         var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
         var effectiveRef = workspaceRef with { Id = workspaceId };
+        var effectiveCredential = credential ?? _defaultCredential;
+        var key = (workspaceId, effectiveCredential.AppId);
 
         // Use CancellationToken.None inside the single-flight Lazy factory: the shared creation task
         // must not be poisoned by the first caller's request-scoped token being cancelled (e.g. that
         // caller disconnecting), which would otherwise fail it for all concurrent waiters.
         var lazy = _sessions.GetOrAdd(
-            workspaceId,
+            key,
             _ => new Lazy<Task<SandboxSession>>(
-                () => CreateSessionAsync(effectiveRef, CancellationToken.None),
+                () => CreateSessionAsync(effectiveRef, CancellationToken.None, effectiveCredential),
                 LazyThreadSafetyMode.ExecutionAndPublication
             )
         );
 
-        return AwaitAndEvictOnFailureAsync(workspaceId, lazy);
+        return AwaitAndEvictOnFailureAsync(key, lazy);
     }
 
     /// <summary>
     /// Awaits the cached creation task. On failure the cached <see cref="Lazy{T}"/> is evicted so a
     /// later call retries instead of replaying the cached fault.
     /// </summary>
-    private async Task<SandboxSession> AwaitAndEvictOnFailureAsync(string workspaceId, Lazy<Task<SandboxSession>> lazy)
+    private async Task<SandboxSession> AwaitAndEvictOnFailureAsync(
+        (string WorkspaceId, string AppId) key,
+        Lazy<Task<SandboxSession>> lazy
+    )
     {
         try
         {
@@ -231,29 +311,34 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         catch
         {
             // Only evict the entry we own, in case another creation has since replaced it.
-            _ = ((ICollection<KeyValuePair<string, Lazy<Task<SandboxSession>>>>)_sessions).Remove(
-                new KeyValuePair<string, Lazy<Task<SandboxSession>>>(workspaceId, lazy)
+            _ = ((ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions).Remove(
+                new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy)
             );
             throw;
         }
     }
 
     /// <summary>
-    /// Like <see cref="GetOrCreateSessionAsync(string, CancellationToken)"/>, but additionally
-    /// verifies the cached session still exists on the gateway and transparently recreates it when
-    /// it does not. See the <see cref="WorkspaceRef"/> overload for the full rationale.
+    /// Like <see cref="GetOrCreateSessionAsync(string, CancellationToken, SandboxCredential?)"/>,
+    /// but additionally verifies the cached session still exists on the gateway and transparently
+    /// recreates it when it does not. See the <see cref="WorkspaceRef"/> overload for the full
+    /// rationale.
     /// </summary>
+    /// <param name="workspaceId">Logical workspace key.</param>
+    /// <param name="ct">Cancellation token observed by the call.</param>
+    /// <param name="credential">Caller credential; see the <see cref="WorkspaceRef"/> overload.</param>
     public Task<SandboxSession> GetOrCreateLiveSessionAsync(
         string workspaceId = DefaultWorkspaceId,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        SandboxCredential? credential = null
     )
     {
-        return GetOrCreateLiveSessionAsync(new WorkspaceRef(workspaceId), ct);
+        return GetOrCreateLiveSessionAsync(new WorkspaceRef(workspaceId), ct, credential);
     }
 
     /// <summary>
     /// Returns a sandbox session for <paramref name="workspaceRef"/> that is guaranteed to still be
-    /// known to the gateway. The in-memory cache (<see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken)"/>)
+    /// known to the gateway. The in-memory cache (<see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken, SandboxCredential?)"/>)
     /// is reused as-is while the session is healthy, but the gateway evicts idle sessions on its own
     /// schedule — after which every call for that id returns <c>404 "Session not found"</c>. Reusing
     /// the dead handle silently strips the session's marketplace-provided tools (e.g.
@@ -262,9 +347,17 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// live session with the full tool set. Non-404 probe failures are treated as "still ours" to
     /// avoid churning a healthy session when the gateway is briefly unreachable.
     /// </summary>
+    /// <param name="workspaceRef">The workspace identity + directory to mount.</param>
+    /// <param name="ct">Cancellation token observed by the call.</param>
+    /// <param name="credential">Caller credential to (re)create the session under; <c>null</c>
+    /// resolves to the process-wide default. Passing the SAME credential on every call for a given
+    /// conversation (the caller's responsibility — see <c>MultiTurnAgentPool</c>'s frozen
+    /// <c>CallerCredential</c>) is what makes a background recreate after eviction reuse the
+    /// original creator's identity instead of silently falling back to the default.</param>
     public async Task<SandboxSession> GetOrCreateLiveSessionAsync(
         WorkspaceRef workspaceRef,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        SandboxCredential? credential = null
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -272,8 +365,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 
         var workspaceId = string.IsNullOrWhiteSpace(workspaceRef.Id) ? DefaultWorkspaceId : workspaceRef.Id;
         var effectiveRef = workspaceRef with { Id = workspaceId };
+        var effectiveCredential = credential ?? _defaultCredential;
 
-        var session = await GetOrCreateSessionAsync(effectiveRef, ct).ConfigureAwait(false);
+        var session = await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
         if (await IsSessionAliveAsync(session.SessionId, ct).ConfigureAwait(false))
         {
             return session;
@@ -286,8 +380,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             workspaceId
         );
 
-        InvalidateSession(workspaceId, session);
-        return await GetOrCreateSessionAsync(effectiveRef, ct).ConfigureAwait(false);
+        InvalidateSession((workspaceId, effectiveCredential.AppId), session);
+        return await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -311,10 +405,32 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         probeCts.CancelAfter(SessionLivenessProbeTimeout);
         try
         {
-            using var response = await _httpClient
-                .GetAsync(requestUri, HttpCompletionOption.ResponseHeadersRead, probeCts.Token)
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+            using var response = await SendGatewayAsync(
+                    request,
+                    CredentialFor(sessionId),
+                    probeCts.Token,
+                    completion: HttpCompletionOption.ResponseHeadersRead
+                )
                 .ConfigureAwait(false);
-            return response.StatusCode != HttpStatusCode.NotFound;
+
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                // Auth-scoping signal: a KNOWN session id (we hold a handle to it) 404ing while
+                // valid auth headers were sent may indicate the session belongs to a different
+                // app id rather than being genuinely evicted. Does not change control flow — the
+                // caller still treats this as "not alive" and recreates.
+                _logger.LogWarning(
+                    "Sandbox gateway returned 404 for known session {SessionId} with auth headers "
+                        + "present ({is_scoped_404}); may indicate app-id scoping/ownership drift "
+                        + "rather than a genuinely evicted session.",
+                    sessionId,
+                    true
+                );
+                return false;
+            }
+
+            return true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -335,24 +451,27 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 
     /// <summary>
     /// Drops a dead session from both caches so the next request recreates it. Removes the
-    /// per-workspace creation entry and the reverse id mapping (the latter only when it still points
-    /// at <paramref name="session"/>, so a concurrent recreation is never clobbered).
+    /// per-(workspace id, caller app id) creation entry and the reverse id mapping (the latter only
+    /// when it still points at <paramref name="session"/>, so a concurrent recreation is never
+    /// clobbered).
     /// </summary>
-    private void InvalidateSession(string workspaceId, SandboxSession session)
+    private void InvalidateSession((string WorkspaceId, string AppId) key, SandboxSession session)
     {
         // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
         // AwaitAndEvictOnFailureAsync's "only evict the entry we own" discipline. A plain key-removal
         // would clobber a fresh session a concurrent caller may have just installed, orphaning it on
         // the gateway and causing churn.
         if (
-            _sessions.TryGetValue(workspaceId, out var lazy)
+            _sessions.TryGetValue(key, out var lazy)
             && lazy.IsValueCreated
             && lazy.Value.IsCompletedSuccessfully
             && ReferenceEquals(lazy.Value.Result, session)
         )
         {
-            _ = ((ICollection<KeyValuePair<string, Lazy<Task<SandboxSession>>>>)_sessions).Remove(
-                new KeyValuePair<string, Lazy<Task<SandboxSession>>>(workspaceId, lazy)
+            _ = (
+                (ICollection<KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>>)_sessions
+            ).Remove(
+                new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy)
             );
         }
 
@@ -361,13 +480,23 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
             new KeyValuePair<string, SandboxSession>(session.SessionId, session)
         );
+        _ = _sessionCredentials.TryRemove(session.SessionId, out _);
     }
 
     /// <summary>
     /// POSTs a sandbox-create request to the gateway and maps the response to a
     /// <see cref="SandboxSession"/>.
     /// </summary>
-    private async Task<SandboxSession> CreateSessionAsync(WorkspaceRef workspaceRef, CancellationToken ct)
+    /// <param name="workspaceRef">The workspace identity + directory to mount.</param>
+    /// <param name="ct">Cancellation token observed by the call.</param>
+    /// <param name="credential">Caller credential to create the session under; <c>null</c> resolves
+    /// to the process-wide default (M1 behavior, still the only path for the daemon and every
+    /// contextless caller).</param>
+    private async Task<SandboxSession> CreateSessionAsync(
+        WorkspaceRef workspaceRef,
+        CancellationToken ct,
+        SandboxCredential? credential = null
+    )
     {
         var workspaceId = workspaceRef.Id;
 
@@ -401,8 +530,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         var marketplaces = workspaceRef.Marketplaces is { Count: > 0 }
             ? workspaceRef.Marketplaces
             : MarketplaceAliases.Parse(_options.Marketplaces);
+        // The effective credential for this creation: caller-supplied (M2 per-caller passthrough) or
+        // the process-wide default (M1 behavior, still the only path for the daemon and any other
+        // contextless caller).
+        var effectiveCredential = credential ?? _defaultCredential;
         var request = new CreateSandboxRequest(
-            new AppRef(_options.AppId),
+            new AppRef(effectiveCredential.AppId),
             workspaceRelPath,
             authProviders,
             network,
@@ -418,7 +551,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         _logger.LogInformation(
             "Creating sandbox session for workspace {WorkspaceId} (app {AppId}, path '{WorkspaceRelPath}')",
             workspaceId,
-            _options.AppId,
+            effectiveCredential.AppId,
             workspaceRelPath
         );
 
@@ -434,9 +567,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient
-                .PostAsJsonAsync(requestUri, request, JsonOptions, ct)
-                .ConfigureAwait(false);
+            using var createRequest = new HttpRequestMessage(HttpMethod.Post, requestUri)
+            {
+                Content = JsonContent.Create(request, options: JsonOptions),
+            };
+            response = await SendGatewayAsync(createRequest, effectiveCredential, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
         {
@@ -464,6 +599,36 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                // Distinct marker from the connectivity-failure path above: this is the gateway
+                // actively rejecting the presented credential (misconfigured/rotated/wrong app key),
+                // not an unreachable gateway. Deliberately does NOT log the raw gateway body: on the
+                // auth-rejection path the upstream response is the one most likely to echo submitted
+                // credential material or header values, so logging it would undercut the PR's
+                // never-log-the-key invariant. The app id + status code are the safe diagnostic
+                // signal; inspect the gateway's own logs for the rejection detail.
+                _logger.LogError(
+                    "Sandbox create failed for workspace {WorkspaceId}: sandbox_auth_failed "
+                        + "({StatusCode}) for app {AppId}",
+                    workspaceId,
+                    (int)response.StatusCode,
+                    effectiveCredential.AppId
+                );
+                throw new SandboxSessionUnavailableException(
+                    workspaceId,
+                    (int)response.StatusCode,
+                    // Client-safe: the raw gateway auth body is logged above but deliberately kept OUT
+                    // of the exception message, which controllers surface verbatim as the public
+                    // `detail` field. Naming only the app id + status code avoids echoing arbitrary
+                    // (potentially secret-bearing) upstream auth output through our API.
+                    $"sandbox_auth_failed: sandbox gateway rejected the credential for app "
+                        + $"'{effectiveCredential.AppId}' creating a session for workspace '{workspaceId}' "
+                        + $"({(int)response.StatusCode})."
+                );
+            }
+
             _logger.LogError(
                 "Sandbox create failed for workspace {WorkspaceId}: {StatusCode} {Body}",
                 workspaceId,
@@ -473,8 +638,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             throw new SandboxSessionUnavailableException(
                 workspaceId,
                 (int)response.StatusCode,
+                // Client-safe: body is logged above but kept out of the controller-surfaced message.
                 $"Sandbox gateway returned {(int)response.StatusCode} creating a session for "
-                    + $"workspace '{workspaceId}': {body}"
+                    + $"workspace '{workspaceId}'."
             );
         }
 
@@ -496,6 +662,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         // resolve back to the session. Last-write-wins is acceptable because session ids are
         // gateway-allocated and unique per creation.
         _sessionsById[session.SessionId] = session;
+        // Capture the credential this session was created with so contextless paths (liveness,
+        // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
+        // default (relevant once M2 lets callers create under a per-caller credential).
+        _sessionCredentials[session.SessionId] = effectiveCredential;
 
         _logger.LogInformation(
             "Created sandbox session {SessionId} for workspace {WorkspaceId} at host path {HostPath}",
@@ -508,31 +678,46 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Destroys the session cached for <paramref name="workspaceId"/> (per-run cleanup): evicts the
-    /// creation entry + reverse maps, then issues the gateway DELETE. Idempotent — a no-op when no
-    /// session is cached for the id. Best-effort: gateway failures are logged inside
-    /// <see cref="DestroySessionAsync"/> and swallowed so run teardown never throws.
+    /// Destroys every session cached for <paramref name="workspaceId"/> — across ALL caller app ids,
+    /// since the cache is now partitioned by (workspace id, app id) (M2): a workspace id alone no
+    /// longer identifies a single cache entry. Callers that only know the workspace id (e.g. the
+    /// review daemon's per-run cleanup) still get complete teardown this way, rather than leaking
+    /// every non-default-credential session forever. Evicts each entry's creation slot + reverse
+    /// maps, then issues the gateway DELETE. Idempotent — a no-op when nothing is cached for the id.
+    /// Best-effort: gateway failures are logged inside <see cref="DestroySessionAsync"/> and
+    /// swallowed so run teardown never throws.
     /// </summary>
     public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
 
-        if (!_sessions.TryRemove(workspaceId, out var lazy)
-            || !lazy.IsValueCreated
-            || !lazy.Value.IsCompletedSuccessfully)
+        var matchingKeys = _sessions.Keys.Where(key => key.WorkspaceId == workspaceId).ToList();
+
+        foreach (var key in matchingKeys)
         {
-            return;
+            if (
+                !_sessions.TryRemove(key, out var lazy)
+                || !lazy.IsValueCreated
+                || !lazy.Value.IsCompletedSuccessfully
+            )
+            {
+                continue;
+            }
+
+            var session = lazy.Value.Result;
+            _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
+                new KeyValuePair<string, SandboxSession>(session.SessionId, session));
+            _ = _subAgentBindings.TryRemove(session.SessionId, out _);
+            _ = _sessionThreads.TryRemove(session.SessionId, out _);
+            _ = _discoverySeen.TryRemove(session.SessionId, out _);
+
+            // Destroy BEFORE dropping the credential: DestroySessionAsync resolves the session's
+            // creating credential via CredentialFor(sessionId), so the DELETE must carry the owner's
+            // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session).
+            await DestroySessionAsync(session, ct).ConfigureAwait(false);
+            _ = _sessionCredentials.TryRemove(session.SessionId, out _);
         }
-
-        var session = lazy.Value.Result;
-        _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
-            new KeyValuePair<string, SandboxSession>(session.SessionId, session));
-        _ = _subAgentBindings.TryRemove(session.SessionId, out _);
-        _ = _sessionThreads.TryRemove(session.SessionId, out _);
-        _ = _discoverySeen.TryRemove(session.SessionId, out _);
-
-        await DestroySessionAsync(session).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -556,7 +741,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
                 continue;
             }
 
-            await DestroySessionAsync(entry.Value.Result).ConfigureAwait(false);
+            await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
         }
 
         _sessions.Clear();
@@ -564,6 +749,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         _sessionsById.Clear();
         _sessionThreads.Clear();
         _discoverySeen.Clear();
+        _sessionCredentials.Clear();
         _httpClient.Dispose();
     }
 
@@ -572,7 +758,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// background sweep of context files — sub-agents, skills, etc). Callers filter by
     /// <see cref="DiscoveredItem.Kind"/> for the kinds they care about.
     /// </summary>
-    /// <param name="sessionId">Gateway session id returned by <see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken)"/>.</param>
+    /// <param name="sessionId">Gateway session id returned by <see cref="GetOrCreateSessionAsync(WorkspaceRef, CancellationToken, SandboxCredential?)"/>.</param>
     /// <param name="ct">Cancellation token observed by the HTTP call.</param>
     /// <returns>The discovered items. Empty when the gateway reports no discoveries; never null.</returns>
     /// <exception cref="InvalidOperationException">
@@ -585,7 +771,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
 
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{sessionId}/discovered";
-        using var response = await _httpClient.GetAsync(requestUri, ct).ConfigureAwait(false);
+        using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+        using var response = await SendGatewayAsync(request, CredentialFor(sessionId), ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
@@ -647,9 +834,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         {
             Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
         };
-        request.Headers.TryAddWithoutValidation("X-Session-ID", sessionId);
 
-        using var response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendGatewayAsync(request, CredentialFor(sessionId), ct, sessionId: sessionId)
+            .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             // Best-effort: a non-2xx transport result is "no content", never a thrown error — the
@@ -958,12 +1145,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             ? body
             : body[..ErrorBodyMaxLength] + "...(truncated)";
 
-    private async Task DestroySessionAsync(SandboxSession session)
+    private async Task DestroySessionAsync(SandboxSession session, CancellationToken ct = default)
     {
         try
         {
-            using var response = await _httpClient
-                .DeleteAsync($"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{session.SessionId}")
+            using var request = new HttpRequestMessage(
+                HttpMethod.Delete,
+                $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{session.SessionId}"
+            );
+            using var response = await SendGatewayAsync(request, CredentialFor(session.SessionId), ct)
                 .ConfigureAwait(false);
 
             if (response.IsSuccessStatusCode)

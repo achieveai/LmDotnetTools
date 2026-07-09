@@ -118,6 +118,7 @@ public sealed class SandboxGatewayOptions
             );
         }
 
+
         var (basePath, _, _) = ResolveWorkspace();
         if (string.IsNullOrWhiteSpace(basePath))
         {
@@ -158,6 +159,14 @@ public sealed class SandboxGatewayOptions
     /// <para>SECRET — never log this value.</para>
     /// </summary>
     public string? AppKey { get; set; }
+
+    /// <summary>
+    /// When <c>true</c>, the app probes the gateway with the configured credential at startup
+    /// (create + immediately destroy a throwaway session) so a misconfigured/rejected key is
+    /// caught at boot rather than on the first real request. Defaults to <c>false</c> because boot
+    /// is best-effort and the gateway may not be up yet when this app starts.
+    /// </summary>
+    public bool ValidateCredentialOnStartup { get; set; } = false;
 
     /// <summary>
     /// When <c>true</c> and the gateway is not already healthy, spawn it.

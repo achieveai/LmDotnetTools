@@ -113,6 +113,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly DiscoveredSubAgentTemplateBuilder? _subAgentTemplateBuilder;
     private readonly Func<IStreamingAgent>? _providerAgentFactory;
     private readonly HostRetentionWorkspace? _hostRetention;
+    private readonly SandboxCredential _credential;
     private readonly ReviewSlotWorkspace? _slotWorkspace;
 
     /// <summary>
@@ -137,6 +138,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         DiscoveredSubAgentTemplateBuilder? subAgentTemplateBuilder = null,
         Func<IStreamingAgent>? providerAgentFactory = null,
         HostRetentionWorkspace? hostRetention = null,
+        SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -152,6 +154,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _subAgentTemplateBuilder = subAgentTemplateBuilder;
         _providerAgentFactory = providerAgentFactory;
         _hostRetention = hostRetention;
+        _credential = credential;
         _slotWorkspace = slotWorkspace;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
@@ -220,14 +223,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
                 SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false),
+                Credential: _credential,
                 EnableReviewerWrites: writeScope.Enabled,
                 WritableToolAllowList: writeScope.WritableAllow,
                 NotesDir: writeScope.NotesDir,
-                ScratchDir: writeScope.ScratchDir,
-                // Per-app bearer identity for the agent's MCP calls to the gateway (ADR 0029), read from the
-                // same env as GatewayBaseUrl so the tool-assisted session authenticates as the daemon.
-                AppId: Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID") ?? "code-review-daemon",
-                AppKey: Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY"));
+                ScratchDir: writeScope.ScratchDir);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

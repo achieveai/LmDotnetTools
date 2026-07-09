@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
@@ -50,10 +51,39 @@ internal static class ReviewBotInitCommand
         var branch = GetOption(args, "--branch") ?? DefaultBranch;
         var workdir = GetOption(args, "--workdir") ?? DefaultWorkdir;
 
+        // Sandbox gateway per-app identity (ADR 0029) — mirrors Program.cs's daemon identity so this
+        // one-time setup command authenticates to the gateway as the same app the long-running daemon
+        // does. A present-but-invalid key fails fast (redacted); an absent key is the keyless
+        // AUTH_ENFORCE=off dev path, logged once and never blocking the command.
+        var appId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID") ?? "codereview-daemon";
+        var appKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY");
+        if (string.IsNullOrWhiteSpace(appKey))
+        {
+            logger.LogWarning(
+                "CRD_SANDBOX_APP_KEY is not set; connecting to the sandbox gateway as app '{AppId}' with "
+                    + "no key (keyless AUTH_ENFORCE=off dev path).",
+                appId);
+        }
+        else
+        {
+            try
+            {
+                SandboxCredential.ValidateKeyOrThrow(appId, appKey);
+            }
+            catch (ArgumentException ex)
+            {
+                logger.LogError("{Message}", ex.Message);
+                return 64; // EX_USAGE
+            }
+        }
+
+        var credential = new SandboxCredential(appId, appKey ?? string.Empty);
+
         await using var sandbox = new SandboxOrchestrator(
             gateway,
             sessionId,
-            loggerFactory.CreateLogger<SandboxOrchestrator>());
+            loggerFactory.CreateLogger<SandboxOrchestrator>(),
+            credential);
         var git = new GitRunner(sandbox);
         var fileSystem = new SandboxFileSystem(sandbox);
 

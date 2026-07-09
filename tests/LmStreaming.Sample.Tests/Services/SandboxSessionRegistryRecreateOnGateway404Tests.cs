@@ -12,7 +12,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// until a process restart cleared the cache.
 ///
 /// <para>
-/// <see cref="SandboxSessionRegistry.GetOrCreateLiveSessionAsync(WorkspaceRef, CancellationToken)"/>
+/// <see cref="SandboxSessionRegistry.GetOrCreateLiveSessionAsync(WorkspaceRef, CancellationToken, SandboxCredential?)"/>
 /// closes the gap: it probes the gateway for the cached session and, on a definitive 404, evicts
 /// the cache and re-creates the session (re-mounting the workspace's marketplaces).
 /// </para>
