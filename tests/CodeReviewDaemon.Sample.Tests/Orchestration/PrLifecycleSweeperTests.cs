@@ -3,6 +3,7 @@ using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
@@ -224,5 +225,56 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
         commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));
+    }
+
+    [Fact]
+    public async Task Sweep_does_not_re_resolve_a_merged_PR_on_a_later_sweep()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("42", "review/widgets-42");
+        var lifecycleLookups = 0;
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) =>
+            {
+                lifecycleLookups++;
+                return Task.FromResult(PrLifecycle.Merged);
+            },
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true);
+
+        await sweeper.SweepAsync(CancellationToken.None);
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        lifecycleLookups.Should().Be(1, "a merged-and-swept branch is cached, so later sweeps skip it entirely");
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Count(a => a.Contains($"push origin {DefaultBranch}"))
+            .Should().Be(1, "the notes branch is merged exactly once, not re-merged every poll");
+    }
+
+    [Fact]
+    public async Task Sweep_retries_a_merged_PR_whose_merge_push_failed()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        // The push never succeeds, so MergeToDefaultAsync returns false and the branch is NOT cached as done.
+        runner.OnArgvContains(
+            $"push origin {DefaultBranch}",
+            new SandboxCommandResult(1, string.Empty, "rejected: non-fast-forward"));
+        var pr = Pr("48", "review/widgets-48");
+        var lifecycleLookups = 0;
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) =>
+            {
+                lifecycleLookups++;
+                return Task.FromResult(PrLifecycle.Merged);
+            },
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true);
+
+        await sweeper.SweepAsync(CancellationToken.None);
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        lifecycleLookups.Should().Be(2, "a failed merge is not cached, so the next sweep retries it");
     }
 }
