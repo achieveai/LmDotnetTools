@@ -95,6 +95,15 @@ internal sealed class PrLifecycleSweeper
     /// </summary>
     private readonly Func<ReviewedPr, CancellationToken, Task>? _extractKnowledgeAsync;
 
+    /// <summary>
+    /// Notes branches this daemon lifetime has already resolved to a terminal lifecycle (merged-and-swept, or
+    /// abandoned-and-deleted). The reviewed-PR list only grows, so without this the sweep would re-run a GitHub
+    /// lifecycle lookup plus a git no-op for every PR it has ever closed, on every poll. Not persisted — a
+    /// restart re-confirms each branch once and then caches it, so this can never wrongly skip a PR whose
+    /// resolution did not actually complete.
+    /// </summary>
+    private readonly HashSet<string> _terminallyResolved = new(StringComparer.Ordinal);
+
     public PrLifecycleSweeper(
         Func<CancellationToken, Task<IReadOnlyList<ReviewedPr>>> listReviewedPrsAsync,
         Func<ReviewedPr, CancellationToken, Task<PrLifecycle>> getPrLifecycleAsync,
@@ -145,6 +154,13 @@ internal sealed class PrLifecycleSweeper
 
     private async Task ResolveAsync(ReviewedPr pr, CancellationToken cancellationToken)
     {
+        // A branch already resolved to a terminal state this lifetime never needs re-resolving; skipping it
+        // avoids a per-poll GitHub lifecycle lookup + git no-op for every PR the daemon has ever closed.
+        if (_terminallyResolved.Contains(pr.Branch))
+        {
+            return;
+        }
+
         var lifecycle = await _getPrLifecycleAsync(pr, cancellationToken).ConfigureAwait(false);
         switch (lifecycle)
         {
@@ -153,7 +169,10 @@ internal sealed class PrLifecycleSweeper
                 break;
 
             case PrLifecycle.Merged:
-                await ResolveMergedAsync(pr, cancellationToken).ConfigureAwait(false);
+                if (await ResolveMergedAsync(pr, cancellationToken).ConfigureAwait(false))
+                {
+                    _terminallyResolved.Add(pr.Branch);
+                }
                 break;
 
             case PrLifecycle.Abandoned:
@@ -164,6 +183,7 @@ internal sealed class PrLifecycleSweeper
                     pr.Branch,
                     pr.Provider,
                     pr.PrId);
+                _terminallyResolved.Add(pr.Branch);
                 break;
 
             default:
@@ -171,7 +191,12 @@ internal sealed class PrLifecycleSweeper
         }
     }
 
-    private async Task ResolveMergedAsync(ReviewedPr pr, CancellationToken cancellationToken)
+    /// <summary>
+    /// Resolves a merged PR's notes branch (KB extraction, then merge-to-default). Returns <c>true</c> when the
+    /// branch reached a terminal state — merged, already gone, or intentionally left because merge-on-close is
+    /// disabled — and <c>false</c> only when the merge push failed and should be retried on the next sweep.
+    /// </summary>
+    private async Task<bool> ResolveMergedAsync(ReviewedPr pr, CancellationToken cancellationToken)
     {
         if (!_mergeNotesBranchOnClose)
         {
@@ -180,7 +205,7 @@ internal sealed class PrLifecycleSweeper
                 pr.Branch,
                 pr.Provider,
                 pr.PrId);
-            return;
+            return true;
         }
 
         // Layer-2 (design §1): distill durable knowledge from the PR's accumulated notes BEFORE the notes
@@ -213,5 +238,6 @@ internal sealed class PrLifecycleSweeper
             pr.PrId,
             _defaultBranch,
             merged);
+        return merged;
     }
 }
