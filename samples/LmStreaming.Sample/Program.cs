@@ -20,6 +20,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
@@ -388,6 +389,33 @@ try
     _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
     _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
 
+    // #145: durable notify-wait persistence. Register ONLY the (non-disposable) INotifyWaitStore and
+    // construct its SqliteConnectionFactory INLINE — deliberately NOT as a separately-tracked
+    // singleton. ISqliteConnectionFactory is IAsyncDisposable-only; a container-tracked
+    // IAsyncDisposable-only singleton makes ServiceProvider.Dispose() (synchronous) throw
+    // "only implements IAsyncDisposable". The sample host is torn down synchronously in tests
+    // (BrowserWebAppFactory calls IHost.Dispose()), so tracking the factory would regress every E2E
+    // test that creates an agent. The inline factory is instead reclaimed by GC at process end — a
+    // benign leak (it only holds SemaphoreSlims, which allocate no OS handle here), which is the right
+    // trade for a sample host that must stay sync-dispose-safe.
+    // Configurable path (default a sibling of the conversations/ folder) mirrors
+    // CodeReviewDaemon.Sample's CodeReviewDaemon:DatabasePath so a WebApplicationFactory test can
+    // UseSetting an isolated file.
+    // NOTE (intentional): SqliteNotifyWaitStore self-initializes via the shared SqliteSchemaInitializer,
+    // which also creates currently-unused sibling tables (messages/thread_metadata/run_ledger/
+    // accepted_inputs) in this db file — accepted to reuse shared infra rather than fork a
+    // notify-only initializer.
+    // KNOWN LIMITATION (#145, accepted): notify_waits rows for threads that are never reopened after a
+    // restart are never pruned (restore/cleanup only runs when that thread's loop is reconstructed).
+    // Acceptable for a sample app; no pruning logic added.
+    var notifyWaitDbPath = builder.Configuration["LmStreaming:NotifyWaitDbPath"];
+    if (string.IsNullOrWhiteSpace(notifyWaitDbPath))
+    {
+        notifyWaitDbPath = Path.Combine(AppContext.BaseDirectory, "notify-waits.db");
+    }
+    _ = builder.Services.AddSingleton<INotifyWaitStore>(_ =>
+        new SqliteNotifyWaitStore(new SqliteConnectionFactory(notifyWaitDbPath)));
+
     // The REST status resolver (ConversationsController dependency) reads the conversation store plus
     // its run ledger. Resolve the ledger from the registered IConversationStore so a test host that
     // swaps the store (see BrowserWebAppFactory) keeps both halves pointing at the same instance —
@@ -472,6 +500,10 @@ try
         var functionRegistry = sp.GetRequiredService<FunctionRegistry>();
         var agentFactory = sp.GetRequiredService<Func<string, IStreamingAgent>>();
         var conversationStore = sp.GetRequiredService<IConversationStore>();
+        // #145: the durable notify-wait store is a process singleton (like conversationStore); captured
+        // here so the inner per-thread agent factory can attach it to TriggerOptions (see the Build(...)
+        // call site below). ThreadId is per-thread via context.ThreadId inside that factory.
+        var notifyWaitStore = sp.GetRequiredService<INotifyWaitStore>();
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
@@ -1047,9 +1079,20 @@ try
                     // inside its own ctor, so a subagent-kind source can't be handed the manager
                     // directly — it resolves it lazily once the loop (and thus the manager) exists.
                     MultiTurnAgentLoop agent = null!;
+                    // #145: attach the durable notify-wait store + this thread's id so notify-mode waits
+                    // survive a process restart (TriggerRuntime restores/reconciles them on thread
+                    // recovery). Set via a record `with` on Build's result so SampleTriggerRegistrations.Build
+                    // keeps its trigger-source-only responsibility. Test-mode/mock-provider ONLY today — same
+                    // gate as the triggerOptions pass-through at the loop ctor below; real-provider rollout is
+                    // tracked in #161. (When !isTestMode the whole triggerOptions object is discarded there,
+                    // so leaving the store null keeps it from being attached to a thrown-away options value.)
                     var triggerOptions = SampleTriggerRegistrations.Build(
                         sandboxEnabled: sandboxSession is not null,
-                        subAgentManagerAccessor: () => agent?.SubAgentManager);
+                        subAgentManagerAccessor: () => agent?.SubAgentManager) with
+                    {
+                        NotifyWaitStore = isTestMode ? notifyWaitStore : null,
+                        ThreadId = isTestMode ? threadId : null,
+                    };
 
                     agent = new MultiTurnAgentLoop(
                         providerAgent,
