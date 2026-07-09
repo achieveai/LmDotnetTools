@@ -179,6 +179,15 @@ internal sealed class CodeReviewDaemonOptions
     public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
 
     /// <summary>
+    /// Marketplace aliases whose discovered sub-agents are exposed to the review agent as spawnable
+    /// <c>Agent</c> templates — INDEPENDENT of <see cref="Marketplaces"/> (which controls what the gateway
+    /// loads for skills + discovery): a marketplace can stay loaded for its skills yet be excluded here. The
+    /// default <c>gb-plugins</c> exposes EVERY plugin's agents in that marketplace (not just
+    /// <c>code-reviewer</c>). An empty list ⇒ expose ALL discovered sub-agents regardless of marketplace.
+    /// </summary>
+    public IReadOnlyList<string> SubAgentMarketplaces { get; init; } = ["gb-plugins"];
+
+    /// <summary>
     /// The read-only MCP tool names the review agent may call. The daemon owns all writes, so this must
     /// never include <c>Write</c>/<c>Edit</c>. Default <c>Read</c>/<c>Grep</c>/<c>Glob</c>/<c>Skill</c>.
     /// </summary>

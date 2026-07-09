@@ -302,14 +302,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 sessionId,
                 subagentCount,
                 string.Join(",", discovered.Select(d => d.Kind).Distinct()));
-            var templates = _subAgentTemplateBuilder.Build(discovered, "code-reviewer", _providerAgentFactory);
+            var templates = _subAgentTemplateBuilder.Build(discovered, _options.SubAgentMarketplaces, _providerAgentFactory);
             if (templates.Count > 0)
             {
                 return new SubAgentOptions { Templates = templates };
             }
 
             _logger.LogInformation(
-                "Run {RunId}: no code-reviewer sub-agents discovered; skill-only review.", run.Id);
+                "Run {RunId}: no sub-agents discovered from marketplace(s) [{Marketplaces}]; skill-only review.",
+                run.Id,
+                _options.SubAgentMarketplaces.Count > 0 ? string.Join(",", _options.SubAgentMarketplaces) : "(all)");
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
