@@ -250,9 +250,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 // correct at-resume delivery. A regular user input while deferred deliberately keeps the
                 // existing fail-fast guard (the caller must resolve the deferral first), so this is
                 // restricted to batches that are entirely notifications.
-                var allNotifications = realInputs.Count > 0
-                    && realInputs.All(i => i.Input.Messages.Count > 0 && i.Input.Messages.All(m => m is NotifyMessage));
-                if (allNotifications && resumeSentinels.Count == 0 && !_deferred.IsEmpty)
+                if (resumeSentinels.Count == 0 && !_deferred.IsEmpty && AllMessagesAreNotifications(realInputs))
                 {
                     await AppendParkedInputsAsync(realInputs, ct);
                     continue;
@@ -455,6 +453,37 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         {
             Logger.LogWarning("Max turns ({MaxTurns}) reached for run {RunId}", MaxTurnsPerRun, runId);
         }
+    }
+
+    /// <summary>
+    /// True when the batch is non-empty and every message in it is a <see cref="NotifyMessage"/>. A
+    /// zero-allocation foreach (vs. LINQ) since this runs on every input drain.
+    /// </summary>
+    private static bool AllMessagesAreNotifications(List<QueuedInput> inputs)
+    {
+        if (inputs.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var input in inputs)
+        {
+            var messages = input.Input.Messages;
+            if (messages.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (var message in messages)
+            {
+                if (message is not NotifyMessage)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

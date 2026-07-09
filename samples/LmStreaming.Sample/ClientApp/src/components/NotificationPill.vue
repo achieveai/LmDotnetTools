@@ -1,33 +1,18 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import type { NotificationDisplayData, NotifyMessage } from '@/types';
+import { computed, ref, toRef } from 'vue';
+import type { NotificationDisplayData } from '@/types';
 
 /**
  * Presentational pill for an out-of-band notification (async sub-agent completion, sandbox
- * context-discovery, monitors, timers). Distinct from a user bubble. Accepts either the normalized
- * {@link NotificationDisplayData} that `displayItems` produces, or a raw {@link NotifyMessage}
- * (normalized here) so callers/tests can pass whichever they hold.
+ * context-discovery, monitors, timers). Distinct from a user bubble. Takes the normalized
+ * {@link NotificationDisplayData} that `useChat`'s `displayItems` produces — the single normalization
+ * site for both new NotifyMessages and legacy context_discovery rows.
  */
 const props = defineProps<{
-  notification: NotificationDisplayData | NotifyMessage;
+  notification: NotificationDisplayData;
 }>();
 
-/** Normalize the prop to a single shape regardless of whether a raw NotifyMessage was passed. */
-const data = computed<NotificationDisplayData>(() => {
-  const n = props.notification;
-  // Only a raw NotifyMessage carries `$type`; NotificationDisplayData never does.
-  if ('$type' in n) {
-    return {
-      notifyKind: n.notify_kind,
-      label: n.label,
-      sourceToolName: n.source_tool_name,
-      sourceToolCallId: n.source_tool_call_id,
-      detail: n.detail,
-      text: n.text,
-    };
-  }
-  return n;
-});
+const data = toRef(props, 'notification');
 
 /** Icon per well-known kind; a bell is the generic fallback for future kinds. */
 const icon = computed<string>(() => {

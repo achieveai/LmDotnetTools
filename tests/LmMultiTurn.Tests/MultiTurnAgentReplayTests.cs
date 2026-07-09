@@ -44,6 +44,9 @@ public sealed class MultiTurnAgentReplayTests
     private static RunAssignmentMessage Assignment(string threadId, string runId, string genId) =>
         new() { Assignment = new RunAssignment(runId, genId), ThreadId = threadId };
 
+    private static RunAssignmentMessage InjectedAssignment(string threadId, string runId, string genId) =>
+        new() { Assignment = new RunAssignment(runId, genId, WasInjected: true), ThreadId = threadId };
+
     private static TextUpdateMessage TextDelta(string runId, string genId, string text) =>
         new() { Text = text, Role = Role.Assistant, RunId = runId, GenerationId = genId, MessageOrderIdx = 0 };
 
@@ -371,5 +374,66 @@ public sealed class MultiTurnAgentReplayTests
         await agent.PublishForTest(TextDelta(runId, genId, "SENTINEL"));
         (await e.MoveNextAsync()).Should().BeTrue();
         e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("SENTINEL");
+    }
+
+    [Fact]
+    public async Task Same_run_injection_assignment_does_not_clear_the_replay_buffer()
+    {
+        // #171: an out-of-band notification folded into the ACTIVE run publishes a WasInjected
+        // RunAssignmentMessage with the SAME runId. That must NOT reset the replay buffer, or a client
+        // reconnecting after the notification loses the run's earlier streamed deltas. The reset keys on
+        // a NEW runId, not on every RunAssignmentMessage (see MultiTurnAgentBase.PublishToAllAsync).
+        await using var agent = new ReplayTestAgent("thread-1");
+        const string runId = "run-1";
+        const string genId = "gen-1";
+
+        await agent.PublishForTest(Assignment("thread-1", runId, genId));
+        await agent.PublishForTest(TextDelta(runId, genId, "Hel"));
+        await agent.PublishForTest(TextDelta(runId, genId, "lo"));
+        // The notification's injection assignment — same run.
+        await agent.PublishForTest(InjectedAssignment("thread-1", runId, genId));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        // A reconnecting subscriber still replays the run's earlier assignment + deltas (not cleared).
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>()
+            .Which.Assignment.WasInjected.Should().BeFalse("the original run assignment is replayed first");
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("Hel");
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("lo");
+        // Followed by the injection assignment itself (also buffered within the same run).
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>()
+            .Which.Assignment.WasInjected.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task New_run_assignment_clears_the_previous_runs_replay_buffer()
+    {
+        // The other side of the runId-keyed reset: a genuinely new run (different runId) MUST clear the
+        // prior run's buffer, so a subscriber joining during run-2 never replays run-1's stale deltas.
+        await using var agent = new ReplayTestAgent("thread-1");
+
+        await agent.PublishForTest(Assignment("thread-1", "run-1", "gen-1"));
+        await agent.PublishForTest(TextDelta("run-1", "gen-1", "old"));
+        await agent.PublishForTest(Assignment("thread-1", "run-2", "gen-2"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var e = agent.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+
+        // Only run-2's assignment is replayed — run-1's assignment + "old" delta were cleared.
+        (await e.MoveNextAsync()).Should().BeTrue();
+        e.Current.Should().BeOfType<RunAssignmentMessage>()
+            .Which.Assignment.RunId.Should().Be("run-2");
+
+        // Nothing else is buffered: the next read blocks until a genuinely live message arrives.
+        var next = e.MoveNextAsync();
+        next.IsCompleted.Should().BeFalse("run-1's buffered messages were cleared by the new-run assignment");
+        await agent.PublishForTest(TextDelta("run-2", "gen-2", "new"));
+        (await next).Should().BeTrue();
+        e.Current.Should().BeOfType<TextUpdateMessage>().Which.Text.Should().Be("new");
     }
 }

@@ -74,12 +74,16 @@ public record NotifyMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Detail { get; init; }
 
+    private string? _cachedText;
+
     /// <summary>
-    ///     The self-describing envelope the LLM reads. Computed from the structured fields — never set
-    ///     directly, so it cannot drift from them.
+    ///     The self-describing envelope the LLM reads. Computed once from the structured fields (all
+    ///     <c>init</c>-only, so the value is immutable) and cached — a <see cref="NotifyMessage" /> lives in
+    ///     history and is re-mapped by the active provider on every subsequent turn, so this avoids
+    ///     rebuilding the envelope each access. Never set directly, so it cannot drift from the fields.
     /// </summary>
     [JsonPropertyName("text")]
-    public string Text => BuildEnvelope(NotifyKind, SourceToolName, SourceToolCallId, Label, Detail);
+    public string Text => _cachedText ??= BuildEnvelope(NotifyKind, SourceToolName, SourceToolCallId, Label, Detail);
 
     /// <inheritdoc />
     public string? GetText()
@@ -214,6 +218,12 @@ public class NotifyMessageJsonConverter : ShadowPropertiesJsonConverter<NotifyMe
 {
     protected override NotifyMessage CreateInstance()
     {
+        // NotifyKind is required (see Create), but the converter fills it from the wire's notify_kind.
+        // A hand-crafted/corrupt $type:"notify" payload with the field missing would deserialize to an
+        // empty kind rather than throwing. We deliberately do NOT throw here: this converter also runs on
+        // the unguarded history-rehydration path, so a hard failure would brick recovery of an entire
+        // conversation over one bad row. The gap is unreachable via our own serializer (Create always sets
+        // the field, and structural inference requires notify_kind to route here at all).
         return new NotifyMessage { NotifyKind = string.Empty };
     }
 }
