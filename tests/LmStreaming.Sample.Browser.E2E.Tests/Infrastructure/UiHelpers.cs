@@ -115,6 +115,15 @@ public static class UiHelpers
         return page.GetByTestId("tool-call-pill");
     }
 
+    /// <summary>
+    /// Out-of-band notification pills (async sub-agent completion, context discovery, ...). Distinct
+    /// from a user bubble; use <c>data-notify-kind</c> to identify the specific kind.
+    /// </summary>
+    public static ILocator NotificationPills(this IPage page)
+    {
+        return page.GetByTestId("notification-pill");
+    }
+
     /// <summary>Returns rendered tool-call names from metadata pills.</summary>
     public static Task<string[]> ToolCallNamesAsync(this IPage page)
     {

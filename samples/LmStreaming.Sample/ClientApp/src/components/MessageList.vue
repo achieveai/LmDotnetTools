@@ -274,6 +274,12 @@ watch(
                 <!-- Assistant message with pill -->
                 <MetadataPill v-else-if="item.type === 'pill'" :items="item.items" />
 
+                <!-- Out-of-band notification (sub-agent completion, context discovery, ...) -->
+                <NotificationPill
+                  v-else-if="item.type === 'notification'"
+                  :notification="item.notification"
+                />
+
                 <!-- Assistant text message -->
                 <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
                   <TextMessage :message="item.content" :is-streaming="false" />
