@@ -22,6 +22,8 @@ export const MessageType = {
   ServerToolUse: 'server_tool_use',
   ServerToolResult: 'server_tool_result',
   TextWithCitations: 'text_with_citations',
+  // Out-of-band notification (async sub-agent completion, context discovery, monitors, timers)
+  Notify: 'notify',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -338,6 +340,50 @@ export interface TextWithCitationsMessage extends IMessage {
 }
 
 /**
+ * NotifyMessage matching C# NotifyMessage.cs.
+ *
+ * An out-of-band notification pushed into a running conversation from an asynchronous source
+ * (async sub-agent completion, context discovery, monitors, timers/cron). It maps to a user-role
+ * message for the LLM whose {@link text} is a self-describing envelope naming the originating tool
+ * call, but renders as a distinct notification pill in the UI (never a user bubble). The structured
+ * fields carry snake_case wire names (matching the C# `[JsonPropertyName]` attributes) so the client
+ * can render the pill without parsing the envelope text.
+ */
+export interface NotifyMessage extends IMessage {
+  $type: typeof MessageType.Notify;
+  /** The rendered envelope the LLM reads (computed on the backend from the structured fields). */
+  text: string;
+  /** Discriminating kind of notification, e.g. 'subagent-completion' | 'context-discovery'. */
+  notify_kind: string;
+  /** Id of the tool call this notification responds to, if any (omitted for timer/cron/context). */
+  source_tool_call_id?: string | null;
+  /** Name of the tool call this notification responds to, if any. */
+  source_tool_name?: string | null;
+  /** Short human/UI label (e.g. sub-agent template name, discovered file path). */
+  label?: string | null;
+  /** Pre-rendered payload body dropped verbatim into the envelope. Opaque — do not parse. */
+  detail?: string | null;
+}
+
+/**
+ * Normalized data driving the notification pill. `displayItems` produces this from either a
+ * {@link NotifyMessage} or a legacy `context_discovery` {@link TextMessage} so both render through the
+ * one unified pill.
+ */
+export interface NotificationDisplayData {
+  notifyKind: string;
+  label?: string | null;
+  sourceToolName?: string | null;
+  sourceToolCallId?: string | null;
+  detail?: string | null;
+  text?: string | null;
+  /** Legacy sandbox context-discovery file path (mirrors TextMessage.context_discovery.path). */
+  contextPath?: string | null;
+  /** Legacy sandbox context-discovery truncation flag. */
+  contextTruncated?: boolean;
+}
+
+/**
  * Union type for all message types
  */
 export type Message =
@@ -357,7 +403,8 @@ export type Message =
   | RunCompletedMessage
   | ServerToolUseMessage
   | ServerToolResultMessage
-  | TextWithCitationsMessage;
+  | TextWithCitationsMessage
+  | NotifyMessage;
 
 // Type guard functions
 
@@ -433,6 +480,10 @@ export function isTextWithCitationsMessage(msg: IMessage): msg is TextWithCitati
   return msg.$type === MessageType.TextWithCitations;
 }
 
+export function isNotifyMessage(msg: IMessage): msg is NotifyMessage {
+  return msg.$type === MessageType.Notify;
+}
+
 /**
  * Check if a message is a streaming update (not final)
  */
@@ -458,7 +509,8 @@ export function isLifecycleMessage(msg: IMessage): boolean {
 export type DisplayItem =
   | { type: 'user-message'; id: string; content: TextMessage; status: 'pending' | 'active' | 'completed'; timestamp: number }
   | { type: 'assistant-message'; id: string; content: TextMessage; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null }
-  | { type: 'pill'; id: string; items: Array<ReasoningMessage | ToolsCallMessage>; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null };
+  | { type: 'pill'; id: string; items: Array<ReasoningMessage | ToolsCallMessage>; runId?: string | null; parentRunId?: string | null; messageOrderIdx?: number | null }
+  | { type: 'notification'; id: string; notification: NotificationDisplayData; runId?: string | null };
 
 /**
  * Status for tracking message lifecycle
