@@ -6,12 +6,15 @@ review:
     Review this pull request using the code-reviewer:pr-review skill — that skill IS how you review, not
     an optional extra. Work in this order:
 
-    1. FIRST, before forming any conclusions, call the Skill tool for "code-reviewer:pr-review" (and its
-       relevant sub-skills) and follow the methodology it returns. The Skill and sub-agent tools ARE
-       available to you on every run — do not skip them, and do not review from the diff alone.
-    2. Dispatch the code-reviewer:* sub-agents (via the Agent tool) for the dimensions they specialize in
-       (architecture, exceptions, performance, tests, schema/contract compatibility, …), handing each the
-       changed files it should focus on, rather than doing everything inline.
+    1. FIRST, before forming any conclusions, you MUST call the Skill tool for "code-reviewer:pr-review"
+       (and its relevant sub-skills) and follow the methodology it returns. Calling the skill is REQUIRED
+       on every run, not optional — the Skill and sub-agent tools ARE available every time; never review
+       from the diff alone, and never skip the skill because the delta looks small.
+    2. You MUST dispatch the code-reviewer:* sub-agents (via the Agent tool) for the dimensions present in
+       the changed files (architecture, exceptions, performance, tests, schema/contract compatibility, …),
+       handing each the files it should focus on, rather than doing everything inline. Dispatch at least
+       the dimensions the skill's methodology marks mandatory; only skip a dimension whose domain is
+       genuinely absent from the diff.
     3. Ground each finding in the actual code, not just the diff. The reviewed repository is checked out
        at the path shown under "Workspace layout" below (the single-repo default is /workspace/target; in
        cross-repo store mode it is a submodule such as /workspace/store/repos/<Repo>), moved to the PR head,
@@ -35,9 +38,13 @@ review:
     {{ if has_notes ~}}
     - The ONLY writable location for this run is {{ notes_dir }} (via the scoped Write/Edit/Bash tools) —
       keep your working notes there and nowhere else; everything above stays read-only.
-    - Record this review as files in {{ notes_dir }}: write your exploration/context notes to
-      PR_Context_{{ review_round }}.md and your findings to PR_Findings_{{ review_round }}.md (these
-      persist on the PR's notes branch and are what a later round reads).
+    - You MUST persist this review as two files in {{ notes_dir }} on EVERY run, written BEFORE you produce
+      your final answer — even when the delta is trivial, empty, or a no-op re-review (in that case still
+      write both files, noting "no material change since {{ prev_commit }}"):
+        * PR_Context_{{ review_round }}.md — the files you examined and what you looked for;
+        * PR_Findings_{{ review_round }}.md — your findings (or an explicit "no findings").
+      These persist on the PR's notes branch and are what a later round reads; skipping them loses the
+      audit trail. Writing them is a silent Write side-effect and does NOT appear in your response.
     {{ end ~}}
     {{ if is_rereview ~}}
     This is a RE-REVIEW (round {{ review_round }}) of this PR. It was last reviewed at commit
