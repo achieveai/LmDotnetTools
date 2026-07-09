@@ -188,6 +188,29 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         // fire-and-forget start SubAgentManager and the README use). The executor await-usings the loop,
         // whose DisposeAsync → StopAsync cancels this task, so it is not leaked.
         var logger = _loggerFactory.CreateLogger<LiveReviewAgentLoopFactory>();
+
+        // DIAGNOSTIC: prove exactly which tool surface the model receives — specifically whether the
+        // sub-agent orchestration tools (Agent/SendMessage/CheckAgent) are exposed. The "kept=[...]" log
+        // above is captured BEFORE the loop's ctor adds the sub-agent provider, so it never shows them;
+        // re-building the (same) registry after loop construction reflects what the model actually gets.
+        if (subAgentOptions is not null)
+        {
+            var (finalContracts, _) = registry.Build();
+            logger.LogInformation(
+                "Loop {ThreadId}: sub-agent orchestration ENABLED — tool surface exposed to the model = "
+                    + "[{Tools}]; {TemplateCount} sub-agent template(s): [{Templates}]",
+                threadId,
+                string.Join(",", finalContracts.Select(c => c.Name)),
+                subAgentOptions.Templates.Count,
+                string.Join(",", subAgentOptions.Templates.Keys));
+        }
+        else
+        {
+            logger.LogWarning(
+                "Loop {ThreadId}: sub-agent orchestration DISABLED (subAgentOptions is null) — no Agent tool exposed.",
+                threadId);
+        }
+
         _ = loop.RunAsync().ContinueWith(
             t => logger.LogError(t.Exception, "Review agent loop '{ThreadId}' faulted.", threadId),
             CancellationToken.None,
