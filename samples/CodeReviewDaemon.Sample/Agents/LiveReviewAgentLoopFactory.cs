@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
@@ -50,16 +51,21 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
 {
     private readonly ILoggerFactory _loggerFactory;
     private readonly CodeReviewDaemonOptions _options;
+    private readonly IConversationStore? _conversationStore;
     private readonly ICopilotTokenProvider _tokenProvider = new CliCredentialCopilotTokenProvider();
     private readonly CopilotSessionContext _session = new();
     private readonly object _agentGate = new();
     private IStreamingAgent? _anthropicAgent;
     private IStreamingAgent? _openAiAgent;
 
-    public LiveReviewAgentLoopFactory(ILoggerFactory loggerFactory, CodeReviewDaemonOptions options)
+    public LiveReviewAgentLoopFactory(
+        ILoggerFactory loggerFactory,
+        CodeReviewDaemonOptions options,
+        IConversationStore? conversationStore = null)
     {
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _conversationStore = conversationStore;
     }
 
     /// <summary>
@@ -150,6 +156,15 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
                 string.Join(",", keptContracts.Select(c => c.Name)));
         }
 
+        // Persist the conversation (primary + sub-agents) when a store is configured, so every review's tool
+        // calls — Skill loads and sub-agent Task dispatches — are auditable after the run. Sub-agents share the
+        // same store (keyed per thread) via DefaultConversationStoreFactory unless one is already supplied.
+        var subAgentOptions = toolContext?.SubAgentOptions;
+        if (_conversationStore is not null && subAgentOptions is { DefaultConversationStoreFactory: null })
+        {
+            subAgentOptions = subAgentOptions with { DefaultConversationStoreFactory = _ => _conversationStore };
+        }
+
         var loop = new MultiTurnAgentLoop(
             providerAgent,
             registry,
@@ -161,9 +176,11 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
                 MaxToken = _options.ReviewMaxTokens,
                 ExtraProperties = extraProperties,
             },
+            store: _conversationStore,
             logger: _loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
-            subAgentOptions: toolContext?.SubAgentOptions,
-            loggerFactory: _loggerFactory);
+            subAgentOptions: subAgentOptions,
+            loggerFactory: _loggerFactory,
+            persistRunLedger: _conversationStore is not null);
 
         // Start the loop's background processing task before returning: ExecuteRunAsync only enqueues input
         // and reads the output channel — it does NOT start RunLoopAsync — so without this the caller's

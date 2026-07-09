@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
 using CodeReviewDaemon.Sample.Configuration;
@@ -33,6 +34,13 @@ var daemonOptions =
     builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
     ?? new CodeReviewDaemonOptions();
 builder.Services.AddSingleton(daemonOptions);
+
+// Opt-in structured JSONL logging: when CodeReviewDaemon:LogFilePath is set, add a Serilog file sink
+// alongside the console logger so the daemon's own logs are DuckDB-queryable. Unset ⇒ console-only.
+if (!string.IsNullOrWhiteSpace(daemonOptions.LogFilePath))
+{
+    DaemonLogging.AddJsonlFileSink(builder.Logging, daemonOptions.LogFilePath);
+}
 
 // ── Sandbox gateway per-app identity (ADR 0029) ─────────────────────────────────────────────────
 // The daemon authenticates to the sandbox gateway under its OWN app identity — distinct from
@@ -199,11 +207,22 @@ builder.Services.AddSingleton<IDiscoveredItemsSource>(sp =>
     new RegistryDiscoverySource(sp.GetRequiredService<SandboxSessionRegistry>()));
 builder.Services.AddSingleton<DiscoveredSubAgentTemplateBuilder>();
 
+// Optional conversation persistence: when ConversationStorePath is set, every review agent's
+// MultiTurnAgentLoop (primary + sub-agents) persists its full message history — Skill loads, sub-agent Task
+// dispatches, tool results — to <path>/<threadId>/messages.json for after-the-fact audit (DuckDB-queryable).
+// Unset ⇒ conversations are streamed and discarded, exactly as before.
+IConversationStore? conversationStore = string.IsNullOrWhiteSpace(daemonOptions.ConversationStorePath)
+    ? null
+    : new FileConversationStore(daemonOptions.ConversationStorePath);
+
 // The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run. Registered
 // by its concrete type too (rather than only the IReviewAgentLoopFactory interface) so the executor can
 // also resolve its SharedAgentFactory (Task 12) — the same Copilot-backed agent every review loop and any
 // discovered sub-agent are driven by — without standing up a second provider agent.
-builder.Services.AddSingleton<LiveReviewAgentLoopFactory>();
+builder.Services.AddSingleton<LiveReviewAgentLoopFactory>(sp => new LiveReviewAgentLoopFactory(
+    sp.GetRequiredService<ILoggerFactory>(),
+    daemonOptions,
+    conversationStore));
 builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => sp.GetRequiredService<LiveReviewAgentLoopFactory>());
 builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
     sp.GetRequiredService<LiveReviewAgentLoopFactory>().SharedAgentFactory);

@@ -53,6 +53,24 @@ internal sealed class CodeReviewDaemonOptions
     public string? DatabasePath { get; init; }
 
     /// <summary>
+    /// Directory the review agents persist their full <c>MultiTurnAgentLoop</c> conversation to (one
+    /// <c>&lt;threadId&gt;/messages.json</c> per primary and sub-agent thread, via
+    /// <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.FileConversationStore"/>) so every review's
+    /// tool calls — Skill loads and sub-agent Task dispatches — are auditable after the fact (the JSON is
+    /// DuckDB-queryable). When unset (default) conversations are NOT persisted: the loop streams and discards
+    /// them, exactly as before.
+    /// </summary>
+    public string? ConversationStorePath { get; init; }
+
+    /// <summary>
+    /// When set, the daemon ALSO writes its own logs as structured JSONL (Serilog
+    /// <see cref="Serilog.Formatting.Compact.CompactJsonFormatter"/>, daily-rolled) to this path — canonical
+    /// <c>@t</c>/<c>@l</c>/<c>@m</c>/<c>SourceContext</c> fields, DuckDB-queryable — in addition to the console
+    /// output. Unset (default) leaves only the console logger, exactly as before.
+    /// </summary>
+    public string? LogFilePath { get; init; }
+
+    /// <summary>
     /// Model id the primary review agent runs with (the id sent to the Copilot-backed Anthropic Messages
     /// backend, e.g. <c>claude-sonnet-5</c>). The poller stamps it onto each review run so the primary
     /// review has a concrete model — an empty id would be rejected by the provider. The A/B comparison
