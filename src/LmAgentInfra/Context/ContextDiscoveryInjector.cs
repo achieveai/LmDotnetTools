@@ -7,8 +7,9 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 /// <summary>
 /// Routes a <c>context_file</c> discovery from the gateway webhook into every live agent thread
 /// bound to the same sandbox session: looks up the thread set, dedups gateway retries, and
-/// enqueues a user-role <see cref="TextMessage"/> carrying the formatted file body plus a
-/// <c>context_discovery</c> metadata key the chat UI uses to render a pill.
+/// enqueues a <see cref="NotifyMessage"/> (kind <c>context-discovery</c>) carrying the formatted
+/// file body — delivered to the model via <c>ICanGetText</c> and rendered as a distinct pill by the
+/// chat UI.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,9 +27,10 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Context;
 public sealed class ContextDiscoveryInjector
 {
     /// <summary>
-    /// Metadata key set on the injected <see cref="TextMessage"/>. The chat UI looks this key up
-    /// under <see cref="TextMessage.Metadata"/> to render a "Context loaded" pill — the value is
-    /// the metadata object the renderer reads (path, host_path, truncated).
+    /// Legacy metadata key. New discoveries are emitted as a <see cref="NotifyMessage"/> and no longer
+    /// set this key; it is retained because pre-migration conversations persisted it on a
+    /// <see cref="TextMessage"/>, and the chat UI still reads it to render those historical rows as a
+    /// context pill.
     /// </summary>
     public const string MetadataKey = "context_discovery";
 
