@@ -125,6 +125,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private readonly ConcurrentDictionary<long, LeasedReview> _leasedReviews = new();
 
+    /// <summary>Host lifetime, used to stop the daemon when a session lacks code-reviewer skill/agent
+    /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
+    private readonly Microsoft.Extensions.Hosting.IHostApplicationLifetime? _appLifetime;
+
     public DaemonReviewStageExecutor(
         ReviewStore store,
         IReviewAgentLoopFactory loopFactory,
@@ -139,7 +143,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         Func<IStreamingAgent>? providerAgentFactory = null,
         HostRetentionWorkspace? hostRetention = null,
         SandboxCredential credential = default,
-        ReviewSlotWorkspace? slotWorkspace = null)
+        ReviewSlotWorkspace? slotWorkspace = null,
+        Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -156,12 +161,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _hostRetention = hostRetention;
         _credential = credential;
         _slotWorkspace = slotWorkspace;
+        _appLifetime = appLifetime;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
             SystemPrompt: ComparisonVariantPrompt,
             CanWrite: false);
     }
+
+    /// <summary>Thrown by <see cref="BuildToolContextAsync"/> when a session lacks code-reviewer skill/agent
+    /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set — aborts the review
+    /// (rather than degrading) and is deliberately let through the degrade-catch.</summary>
+    private sealed class SkillSupportUnavailableException(string sessionId)
+        : InvalidOperationException(
+            $"Sandbox session '{sessionId}' has no code-reviewer skill/agent support; review aborted (RequireSkillSupport).");
 
     /// <summary>
     /// Resolves the runner/filesystem pair this run's checkout git and the review agent's MCP tools
@@ -218,18 +231,35 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // are bounded to. Absent a pooled lease the reviewer stays hard read-only exactly as before.
             var writeScope = ResolvePooledWriteScope(run);
 
+            var subAgentOptions = await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Fail-fast (RequireSkillSupport): a session with NO code-reviewer sub-agents can't support a
+            // proper review, so abort rather than posting a degraded skill-only one — and stop the daemon so
+            // the operator fixes the sandbox/plugin setup instead of it silently churning out weak reviews.
+            if (_options.RequireSkillSupport && subAgentOptions is null)
+            {
+                _logger.LogCritical(
+                    "Run {RunId}: sandbox session {SessionId} has no code-reviewer sub-agent support; Revobot "
+                        + "will not review without proper skills/agents. Aborting this review and stopping the "
+                        + "daemon (RequireSkillSupport=true).",
+                    run.Id, session.SessionId);
+                _appLifetime?.StopApplication();
+                throw new SkillSupportUnavailableException(session.SessionId);
+            }
+
             return new ReviewToolContext(
                 GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
-                SubAgentOptions: await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken).ConfigureAwait(false),
+                SubAgentOptions: subAgentOptions,
                 Credential: _credential,
                 EnableReviewerWrites: writeScope.Enabled,
                 WritableToolAllowList: writeScope.WritableAllow,
                 NotesDir: writeScope.NotesDir,
                 ScratchDir: writeScope.ScratchDir);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not SkillSupportUnavailableException)
         {
             _logger.LogWarning(
                 ex, "Run {RunId}: tool-assisted review unavailable; degrading to diff-only.", run.Id);
