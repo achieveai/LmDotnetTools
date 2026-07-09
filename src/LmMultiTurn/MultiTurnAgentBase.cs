@@ -41,6 +41,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private bool _replayRunActive;
     private bool _replayBufferTruncated;
     private long _replayBufferBytes;
+    private string? _replayRunId;
     // Replay is bounded by BOTH a message count and an estimated byte budget: a long tool/reasoning
     // turn can stay under the count cap while still retaining large per-message payloads (text, tool
     // args/results), and multiple live conversations multiply that. Whichever cap trips first stops
@@ -269,6 +270,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="message">The message to add</param>
     protected void AddToHistory(IMessage message)
     {
+        AddToHistory(message, runIdOverride: null);
+    }
+
+    /// <summary>
+    /// Adds a message to the conversation history, persisting it under an explicit run id when the
+    /// current run id is unavailable (e.g. an out-of-band notification folded into history while the
+    /// conversation is parked on an unresolved deferral, between runs). Falls back to
+    /// <c>_currentRunId</c> when <paramref name="runIdOverride"/> is null.
+    /// </summary>
+    protected void AddToHistory(IMessage message, string? runIdOverride)
+    {
         lock (_historyLock)
         {
             ConversationHistory.Add(message);
@@ -277,10 +289,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         // Fire-and-forget persistence
         if (Store != null)
         {
-            string? runId;
-            lock (_stateLock)
+            var runId = runIdOverride;
+            if (runId == null)
             {
-                runId = _currentRunId;
+                lock (_stateLock)
+                {
+                    runId = _currentRunId;
+                }
             }
 
             if (runId != null)
@@ -344,7 +359,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// the message. If persistence fails, the exception propagates and no in-memory state is
     /// mutated — callers (e.g., <c>MultiTurnAgentLoop.ExecuteAndPublishToolCallAsync</c>) are
     /// responsible for unwinding any pre-registered deferred entries on failure. The
-    /// non-deferred <see cref="AddToHistory"/> path remains fire-and-forget; synchronous
+    /// non-deferred <see cref="AddToHistory(IMessage)"/> path remains fire-and-forget; synchronous
     /// persistence is only required where in-place replacement is on the table.
     /// </remarks>
     protected async Task AddDeferredToHistoryAsync(IMessage message, CancellationToken ct)
@@ -988,18 +1003,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         List<KeyValuePair<string, Channel<IMessage>>> targets;
         lock (_replayLock)
         {
-            // Maintain the in-flight run's replay buffer. RunAssignmentMessage opens a fresh run;
-            // RunCompletedMessage closes it (after which a joining subscriber must NOT replay it —
-            // the client already has completed messages via persisted REST history, so replaying
-            // would duplicate). Snapshotting subscribers under the SAME lock SubscribeAsync uses to
-            // register + snapshot the buffer guarantees this message reaches each subscriber exactly
-            // once (replay XOR live).
-            if (message is RunAssignmentMessage)
+            // Maintain the in-flight run's replay buffer. A RunAssignmentMessage for a NEW run opens a
+            // fresh buffer; RunCompletedMessage closes it (after which a joining subscriber must NOT
+            // replay it — the client already has completed messages via persisted REST history, so
+            // replaying would duplicate). A same-run injection assignment (WasInjected, same RunId — e.g.
+            // an out-of-band NotifyMessage folded into the active run) must NOT clear the buffer, or a
+            // client reconnecting after the injection would lose the run's earlier deltas. Snapshotting
+            // subscribers under the SAME lock SubscribeAsync uses to register + snapshot the buffer
+            // guarantees this message reaches each subscriber exactly once (replay XOR live).
+            if (message is RunAssignmentMessage ram)
             {
-                _replayBuffer.Clear();
-                _replayBufferBytes = 0;
-                _replayRunActive = true;
-                _replayBufferTruncated = false;
+                var incomingRunId = ram.Assignment?.RunId;
+                if (!_replayRunActive || !string.Equals(incomingRunId, _replayRunId, StringComparison.Ordinal))
+                {
+                    _replayBuffer.Clear();
+                    _replayBufferBytes = 0;
+                    _replayRunActive = true;
+                    _replayBufferTruncated = false;
+                    _replayRunId = incomingRunId;
+                }
             }
 
             if (_replayRunActive)

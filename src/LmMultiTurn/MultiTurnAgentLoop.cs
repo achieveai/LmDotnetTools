@@ -240,6 +240,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     }
                 }
 
+                // Parked-on-deferral safety, scoped to notifications. When the conversation is parked on
+                // an unresolved deferral and there is no resume in flight, a fresh model turn cannot run
+                // (the provider would reject the pending tool_result — see the ExecuteTurnAsync
+                // precondition). For an out-of-band NotifyMessage (e.g. a background sub-agent completing
+                // while the parent is parked on a Wait) we fold it into history now — persisted under the
+                // deferring run and published live as a pill — and let the resume-sentinel path deliver it
+                // to the model once the deferral resolves, turning what was an unconditional RunFailed into
+                // correct at-resume delivery. A regular user input while deferred deliberately keeps the
+                // existing fail-fast guard (the caller must resolve the deferral first), so this is
+                // restricted to batches that are entirely notifications.
+                if (resumeSentinels.Count == 0 && !_deferred.IsEmpty && AllMessagesAreNotifications(realInputs))
+                {
+                    await AppendParkedInputsAsync(realInputs, ct);
+                    continue;
+                }
+
                 // Start run with the available inputs (use real if any, otherwise sentinels
                 // — StartRun records receipt IDs for telemetry but doesn't otherwise care).
                 // Fork signal sourced from caller input only — resume sentinels never carry
@@ -262,6 +278,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     foreach (var msg in input.Input.Messages)
                     {
                         AddToHistory(msg);
+                        await PublishIfNotifyAsync(msg, ct);
                     }
                 }
 
@@ -372,6 +389,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                         foreach (var msg in input.Input.Messages)
                         {
                             AddToHistory(msg);
+                            await PublishIfNotifyAsync(msg, ct);
                         }
                     }
 
@@ -435,6 +453,81 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         {
             Logger.LogWarning("Max turns ({MaxTurns}) reached for run {RunId}", MaxTurnsPerRun, runId);
         }
+    }
+
+    /// <summary>
+    /// True when the batch is non-empty and every message in it is a <see cref="NotifyMessage"/>. A
+    /// zero-allocation foreach (vs. LINQ) since this runs on every input drain.
+    /// </summary>
+    private static bool AllMessagesAreNotifications(List<QueuedInput> inputs)
+    {
+        if (inputs.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var input in inputs)
+        {
+            var messages = input.Input.Messages;
+            if (messages.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (var message in messages)
+            {
+                if (message is not NotifyMessage)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Publishes an out-of-band <see cref="NotifyMessage"/> to subscribers so its pill renders live and
+    /// lands in the in-flight replay buffer. Injected inputs are otherwise only appended to history
+    /// (persisted), never published, so without this a notification would appear only on a REST reload.
+    /// No-op for any other message type (regular user turns render from the client's optimistic echo).
+    /// </summary>
+    private async Task PublishIfNotifyAsync(IMessage message, CancellationToken ct)
+    {
+        if (message is NotifyMessage)
+        {
+            await PublishToAllAsync(message, ct);
+        }
+    }
+
+    /// <summary>
+    /// Folds inputs that arrived while the conversation is parked on an unresolved deferral into history
+    /// (persisted under the deferring run so they survive a restart) and publishes any notification pills
+    /// live — without starting a model turn. The resume-sentinel path delivers them to the model once the
+    /// deferral resolves. See the call site in <see cref="RunLoopAsync"/> for why a turn cannot run here.
+    /// </summary>
+    private async Task AppendParkedInputsAsync(List<QueuedInput> realInputs, CancellationToken ct)
+    {
+        string? parkRunId;
+        lock (_resumeLock)
+        {
+            parkRunId = _lastDeferringRunId;
+        }
+
+        var count = 0;
+        foreach (var input in realInputs)
+        {
+            foreach (var msg in input.Input.Messages)
+            {
+                AddToHistory(msg, parkRunId);
+                await PublishIfNotifyAsync(msg, ct);
+                count++;
+            }
+        }
+
+        Logger.LogInformation(
+            "Parked on unresolved deferral(s); folded {Count} input message(s) into history for delivery on resume.",
+            count);
     }
 
     private async Task<bool> ExecuteTurnAsync(

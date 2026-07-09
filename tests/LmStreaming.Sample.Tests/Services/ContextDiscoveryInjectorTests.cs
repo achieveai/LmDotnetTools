@@ -28,12 +28,13 @@ public class ContextDiscoveryInjectorTests
 
         sent.Should().Be(1);
         agent.SentMessages.Should().ContainSingle();
-        var message = agent.SentMessages[0].Should().BeOfType<TextMessage>().Subject;
+        var message = agent.SentMessages[0].Should().BeOfType<NotifyMessage>().Subject;
         message.Role.Should().Be(Role.User);
+        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
+        message.Label.Should().Be(Path);
+        // The formatted file body stays reachable to the LLM inside the notification envelope.
         message.Text.Should().Contain("<context-discovery path=\"CLAUDE.md\">");
         message.Text.Should().Contain(Content);
-        message.Metadata.Should().NotBeNull();
-        message.Metadata!.Should().ContainKey(ContextDiscoveryInjector.MetadataKey);
     }
 
     [Fact]
@@ -132,7 +133,7 @@ public class ContextDiscoveryInjectorTests
     }
 
     [Fact]
-    public async Task InjectAsync_TruncatedFlag_PropagatesToMetadata()
+    public async Task InjectAsync_TruncatedFlag_PropagatesToEnvelope()
     {
         using var harness = new Harness();
         var agent = harness.RegisterThread(SessionId, "thread-1");
@@ -141,13 +142,9 @@ public class ContextDiscoveryInjectorTests
             BuildPayload(sessionId: SessionId, content: Content, truncated: true),
             CancellationToken.None);
 
-        var message = agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<TextMessage>().Subject;
+        var message = agent.SentMessages.Should().ContainSingle().Which.Should().BeOfType<NotifyMessage>().Subject;
+        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
         message.Text.Should().Contain("truncated=\"true\"");
-
-        var metadata = message.Metadata.Should().NotBeNull().And.Subject;
-        metadata!.Should().ContainKey(ContextDiscoveryInjector.MetadataKey);
-        var contextDiscovery = metadata[ContextDiscoveryInjector.MetadataKey];
-        contextDiscovery.Should().BeAssignableTo<System.Collections.Immutable.ImmutableDictionary<string, object>>();
     }
 
     [Fact]

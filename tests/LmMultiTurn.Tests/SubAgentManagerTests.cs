@@ -600,7 +600,7 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Checks if a message is a TextMessage containing sub-agent completion markers.
+    /// Checks if a message is a sub-agent-completion NotifyMessage containing the completion markers.
     /// Extracted as a static method to avoid pattern matching in Moq expression trees.
     /// </summary>
     private static bool ContainsSubAgentResult(
@@ -608,32 +608,34 @@ public class SubAgentManagerTests : IAsyncLifetime
         string templateName,
         string expectedResultText)
     {
-        if (message is not TextMessage tm)
+        if (message is not NotifyMessage { NotifyKind: NotifyKinds.SubAgentCompletion } nm)
         {
             return false;
         }
 
-        return tm.Text.Contains($"<sub-agent name=\"{templateName}\"")
-            && tm.Text.Contains("</sub-agent>")
-            && tm.Text.Contains(expectedResultText);
+        var text = nm.GetText() ?? string.Empty;
+        return text.Contains($"<sub-agent name=\"{templateName}\"")
+            && text.Contains("</sub-agent>")
+            && text.Contains(expectedResultText);
     }
 
     /// <summary>
-    /// Checks if a message is a TextMessage containing sub-agent error markers.
+    /// Checks if a message is a sub-agent-completion NotifyMessage containing the error markers.
     /// Verifies the [Error] tag specifically to distinguish from [Completed].
     /// </summary>
     private static bool ContainsSubAgentError(
         IMessage message,
         string templateName)
     {
-        if (message is not TextMessage tm)
+        if (message is not NotifyMessage { NotifyKind: NotifyKinds.SubAgentCompletion } nm)
         {
             return false;
         }
 
-        return tm.Text.Contains($"<sub-agent name=\"{templateName}\"")
-            && tm.Text.Contains("</sub-agent>")
-            && tm.Text.Contains("[Error]");
+        var text = nm.GetText() ?? string.Empty;
+        return text.Contains($"<sub-agent name=\"{templateName}\"")
+            && text.Contains("</sub-agent>")
+            && text.Contains("[Error]");
     }
 
     /// <summary>

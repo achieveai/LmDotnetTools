@@ -990,8 +990,16 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         try
         {
+            // Deliver the completion as a typed notification, not a plain user turn: the parent LLM
+            // reads it as an async response to the sub-agent spawn, and the UI renders a pill. The raw
+            // <sub-agent …> block stays in Detail so downstream parsers (e.g. LmWorkflow) still find it.
             _ = await _parentAgent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = text }]);
+                [NotifyMessage.Create(
+                    NotifyKinds.SubAgentCompletion,
+                    detail: text,
+                    sourceToolName: "Agent",
+                    sourceToolCallId: state.AgentId,
+                    label: state.TemplateName)]);
         }
         catch (Exception ex)
         {

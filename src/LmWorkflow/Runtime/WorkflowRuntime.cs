@@ -464,14 +464,16 @@ public sealed class WorkflowRuntime
 
                 break;
 
-            // Injected <sub-agent> completion (DORMANT / forward-built in V1): MultiTurnAgentLoop does not
-            // publish injected sub-agent completions to its subscribers, so this case does not fire in V1.
-            // Even if it did, the background receipt path now fails fast (ObserveSpawnResult) and never records
-            // an agent_id correlation, so ObserveInjectedResult would find no mapping and surface the result as
-            // harmless "unmatched". Re-enabled in the follow-up that makes injected completions observable.
-            case TextMessage { Role: Role.User, Text: { } text }
-                when text.TrimStart().StartsWith("<sub-agent", StringComparison.Ordinal):
-                if (SubAgentResultParser.TryParse(text, out var agentId, out var payload, out var isError))
+            // Injected sub-agent completion. As of #171, MultiTurnAgentLoop DOES publish injected
+            // NotifyMessages (including sub-agent completions) to its subscribers, so — unlike before —
+            // this case is reachable if a host wires the loop's message stream into ObserveMessage. It
+            // stays safe in V1 because the background receipt path fails fast (ObserveSpawnResult) and
+            // never records an agent_id correlation, so ObserveInjectedResult finds no mapping and surfaces
+            // the result as a harmless "unmatched"; full correlation is re-enabled in the follow-up.
+            // The completion arrives as a NotifyMessage whose Detail carries the raw <sub-agent …> block
+            // (its envelope Text wraps that block), so parse Detail rather than GetText().
+            case NotifyMessage { NotifyKind: NotifyKinds.SubAgentCompletion, Detail: { } detail }:
+                if (SubAgentResultParser.TryParse(detail, out var agentId, out var payload, out var isError))
                 {
                     ObserveInjectedResult(agentId, payload, isError);
                 }

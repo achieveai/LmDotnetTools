@@ -3,6 +3,7 @@ import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { DisplayItem } from '@/types';
 import TextMessage from './TextMessage.vue';
 import MetadataPill from './MetadataPill.vue';
+import NotificationPill from './NotificationPill.vue';
 import PendingMessage from './PendingMessage.vue';
 import AssistantTypingIndicator from './AssistantTypingIndicator.vue';
 import { logger } from '@/utils/logger';
@@ -222,6 +223,12 @@ watch(
               <!-- Assistant message with pill -->
               <MetadataPill v-else-if="item.type === 'pill'" :items="item.items" />
 
+              <!-- Out-of-band notification (sub-agent completion, context discovery, ...) -->
+              <NotificationPill
+                v-else-if="item.type === 'notification'"
+                :notification="item.notification"
+              />
+
               <!-- Assistant text message -->
               <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">
                 <TextMessage :message="item.content" :is-streaming="false" />
@@ -266,6 +273,12 @@ watch(
                 
                 <!-- Assistant message with pill -->
                 <MetadataPill v-else-if="item.type === 'pill'" :items="item.items" />
+
+                <!-- Out-of-band notification (sub-agent completion, context discovery, ...) -->
+                <NotificationPill
+                  v-else-if="item.type === 'notification'"
+                  :notification="item.notification"
+                />
 
                 <!-- Assistant text message -->
                 <div v-else-if="item.type === 'assistant-message'" class="text-bubble" data-testid="assistant-text">

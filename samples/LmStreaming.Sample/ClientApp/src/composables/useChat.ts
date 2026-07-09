@@ -5,10 +5,12 @@ import type {
   UsageMessage,
   ToolCallResultMessage,
   DisplayItem,
+  NotificationDisplayData,
   MessageStatus,
   ReasoningMessage,
   ToolsCallMessage,
   ToolCallMessage,
+  NotifyMessage,
   AuthEvent,
   AuthRequiredEvent,
 } from '@/types';
@@ -29,6 +31,7 @@ import {
   isServerToolUseMessage,
   isServerToolResultMessage,
   isTextWithCitationsMessage,
+  isNotifyMessage,
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
@@ -97,6 +100,15 @@ function getMergeKey(msg: Message, turnSeq = 0): string {
   const messageOrderIdx = msg.messageOrderIdx ?? 0;
   const mergeKind = getMergeKind(msg);
 
+  // A notification carries a distinct generationId ('notify:<guid>' stamped by the backend on the
+  // ONE message object), so two notifications in one run never collide on the shared
+  // runId/messageOrderIdx (both 0), and the live-published copy merges with its reload-parsed twin
+  // (same generationId). Keyed explicitly so a null/missing messageOrderIdx can't fold two distinct
+  // notifications onto one pill.
+  if (isNotifyMessage(msg)) {
+    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
+  }
+
   // Individual tool calls — streaming OR finalized — are keyed by tool_call_id. Several concurrent
   // tool calls in one turn share runId/generationId/messageOrderIdx and differ only by tool_call_id
   // (e.g. GPT-5.5 via the OpenAI Responses API); without it they collapse into a single pill.
@@ -131,12 +143,29 @@ function getMergeKey(msg: Message, turnSeq = 0): string {
   return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
 }
 
-function getMergeKind(msg: Message): 'text' | 'reasoning' | 'tools' | 'tool' | 'other' {
+function getMergeKind(msg: Message): 'text' | 'reasoning' | 'tools' | 'tool' | 'notify' | 'other' {
+  if (isNotifyMessage(msg)) return 'notify';
   if (isTextMessage(msg) || isTextUpdateMessage(msg)) return 'text';
   if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) return 'reasoning';
   if (isToolsCallMessage(msg) || isToolsCallUpdateMessage(msg)) return 'tools';
   if (isToolCallMessage(msg) || isToolCallUpdateMessage(msg)) return 'tool';
   return 'other';
+}
+
+/**
+ * Normalize a NotifyMessage into the shape the notification pill renders. Producing the pill data
+ * here (rather than passing the raw message) lets the legacy `context_discovery` TextMessage path
+ * feed the SAME pill via a hand-built {@link NotificationDisplayData}.
+ */
+function notifyToDisplayData(msg: NotifyMessage): NotificationDisplayData {
+  return {
+    notifyKind: msg.notify_kind,
+    label: msg.label,
+    sourceToolName: msg.source_tool_name,
+    sourceToolCallId: msg.source_tool_call_id,
+    detail: msg.detail,
+    text: msg.text,
+  };
 }
 
 /**
@@ -329,7 +358,34 @@ export function useChat(options: UseChatOptions = {}) {
     }
 
     for (const msg of sortedMessages) {
-      if (msg.role === 'user') {
+      const content = msg.content;
+      // Out-of-band notifications render as a distinct pill, NEVER a user bubble — so this branch
+      // must precede the `role === 'user'` catch-all (a NotifyMessage maps to Role.User, and a
+      // reload-parsed one is tagged role 'user'). The legacy pre-migration path — a context_discovery
+      // marker flattened onto a Role.User TextMessage — is folded into the SAME branch so already
+      // persisted rows render one unified context pill (no duplicate, no user bubble) too.
+      if (isNotifyMessage(content)) {
+        flushPill();
+        items.push({
+          type: 'notification',
+          id: msg.id,
+          notification: notifyToDisplayData(content),
+          runId: msg.runId,
+        });
+      } else if (isTextMessage(content) && content.context_discovery != null) {
+        flushPill();
+        items.push({
+          type: 'notification',
+          id: msg.id,
+          notification: {
+            notifyKind: 'context-discovery',
+            contextPath: content.context_discovery.path,
+            contextTruncated: content.context_discovery.truncated,
+            text: content.text,
+          },
+          runId: msg.runId,
+        });
+      } else if (msg.role === 'user') {
         flushPill();
         items.push({
           type: 'user-message',
@@ -772,8 +828,10 @@ export function useChat(options: UseChatOptions = {}) {
     const isUpdate = isTextUpdateMessage(msg) || isReasoningUpdateMessage(msg) ||
                      isToolsCallUpdateMessage(msg) || isToolCallUpdateMessage(msg);
 
-    // Determine if this is a complete (non-update) content message
-    const isCompleteMessage = isTextMessage(msg) || isReasoningMessage(msg) || isToolsCallMessage(msg) || isToolCallMessage(msg);
+    // Determine if this is a complete (non-update) content message. A NotifyMessage is a terminal,
+    // non-streamed message (out-of-band notification) — routed here so it is NOT dropped as an
+    // "unknown message type"; the displayItems notification branch renders it as a pill.
+    const isCompleteMessage = isTextMessage(msg) || isReasoningMessage(msg) || isToolsCallMessage(msg) || isToolCallMessage(msg) || isNotifyMessage(msg);
 
     if (!isUpdate && !isCompleteMessage) {
       // Unknown message type - skip
