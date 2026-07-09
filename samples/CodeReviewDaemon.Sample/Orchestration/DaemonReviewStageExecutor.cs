@@ -248,6 +248,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         if (_discoveredItemsSource is null || _subAgentTemplateBuilder is null || _providerAgentFactory is null)
         {
+            _logger.LogInformation(
+                "Run {RunId}: sub-agent discovery deps not wired (itemsSource={ItemsSource}, builder={Builder}, "
+                    + "agentFactory={AgentFactory}); skill-only review.",
+                run.Id,
+                _discoveredItemsSource is not null,
+                _subAgentTemplateBuilder is not null,
+                _providerAgentFactory is not null);
             return null;
         }
 
@@ -256,6 +263,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var discovered = await _discoveredItemsSource
                 .ListDiscoveredAsync(sessionId, cancellationToken)
                 .ConfigureAwait(false);
+            var subagentCount = discovered.Count(d => string.Equals(d.Kind, "subagent", StringComparison.Ordinal));
+            _logger.LogInformation(
+                "Run {RunId}: gateway /discovered returned {Total} item(s) for session {SessionId} ({Subagents} subagent(s)); "
+                    + "kinds=[{Kinds}].",
+                run.Id,
+                discovered.Count,
+                sessionId,
+                subagentCount,
+                string.Join(",", discovered.Select(d => d.Kind).Distinct()));
             var templates = _subAgentTemplateBuilder.Build(discovered, "code-reviewer", _providerAgentFactory);
             if (templates.Count > 0)
             {
