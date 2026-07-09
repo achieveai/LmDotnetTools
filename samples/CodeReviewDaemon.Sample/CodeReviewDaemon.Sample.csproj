@@ -18,6 +18,12 @@
          McpClient over HttpClientTransport (X-Session-ID header) and calls the gateway's Bash tool
          to run all deterministic git/fs work. Pinned to the version used across the MCP projects. -->
     <PackageReference Include="ModelContextProtocol" Version="1.3.0" />
+    <!-- Optional structured JSONL logging for the daemon's own logs (CodeReviewDaemon:LogFilePath) —
+         Serilog CompactJsonFormatter, DuckDB-queryable. Same versions LmTestUtils pins for test logging. -->
+    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Serilog.Extensions.Logging" Version="9.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- All reusable agent/sandbox/OAuth/webhook machinery lives in LmAgentInfra (shared with
