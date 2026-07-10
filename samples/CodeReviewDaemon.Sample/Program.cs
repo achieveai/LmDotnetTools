@@ -25,7 +25,19 @@ if (args is ["reviewbot", "init", ..])
     return await ReviewBotInitCommand.RunAsync(args);
 }
 
-var builder = WebApplication.CreateBuilder(args);
+// ── Config profile selection ─────────────────────────────────────────────────────────────────────
+// `--review <name>` selects the hosting environment so ASP.NET layers `appsettings.<name>.json` over
+// the base config — e.g. `--review mcqdb` loads appsettings.mcqdb.json (ADO daemon), `--review
+// achieveai` loads appsettings.achieveai.json (GitHub daemon). This is the single operator knob:
+// every setting (repo/store/paths/ports/gateway) lives in that one profile file, so no launch env
+// vars are required. Absent the flag, the environment resolves as usual (DOTNET_ENVIRONMENT/default).
+var (reviewProfile, hostArgs) = ReviewProfileArgs.Extract(args);
+
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = hostArgs,
+    EnvironmentName = reviewProfile, // null ⇒ default environment resolution (base appsettings only)
+});
 
 // ── Feature flags ────────────────────────────────────────────────────────────────────────────────
 // Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit
@@ -50,14 +62,22 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.LogFilePath))
 // X-Sbx-App-Id/X-Sbx-App-Key headers. A present-but-invalid key fails fast at boot (redacted); an
 // absent key is the keyless AUTH_ENFORCE=off dev path, logged once as a warning after the host is
 // built (never blocking startup, and never logging the key itself).
-var daemonAppId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID") ?? "codereview-daemon";
-var daemonAppKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY");
+var daemonAppId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID")
+    ?? builder.Configuration["SandboxGateway:AppId"] ?? "codereview-daemon";
+var daemonAppKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY")
+    ?? builder.Configuration["SandboxGateway:AppKey"];
 var daemonKeyMissing = string.IsNullOrWhiteSpace(daemonAppKey);
 if (!daemonKeyMissing)
 {
     SandboxCredential.ValidateKeyOrThrow(daemonAppId, daemonAppKey!);
 }
 var daemonCredential = new SandboxCredential(daemonAppId, daemonAppKey ?? string.Empty);
+
+// The already-running sandbox gateway's base URL, resolved once (env overrides config, then the
+// 3000 default). Threaded into every gateway consumer so a profile can set SandboxGateway:BaseUrl
+// and nothing needs CRD_SANDBOX_GATEWAY in env.
+var gatewayBaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+    ?? builder.Configuration["SandboxGateway:BaseUrl"] ?? "http://127.0.0.1:3000";
 
 // ── OAuth auth-provider services ───────────────────────────────────────────────────────────────
 // Shared with LmStreaming.Sample (see its Program.cs): the sandbox gateway calls back into the
@@ -140,7 +160,7 @@ builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 // gateway request when a key is configured, so an AUTH_ENFORCE gateway authenticates the daemon and scopes
 // its sessions to it. No key configured → no bearer headers (works unchanged against an unenforced gateway).
 builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrator(
-    Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
+    gatewayBaseUrl,
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
     sp.GetRequiredService<ILogger<SandboxOrchestrator>>(),
     daemonCredential,
@@ -156,7 +176,7 @@ builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
 // registration above: the daemon assumes an already-running gateway and never spawns one itself).
 var sandboxGatewayOptions = new SandboxGatewayOptions
 {
-    BaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
+    BaseUrl = gatewayBaseUrl,
     AutoSpawn = false,
     Marketplaces = string.Join(",", daemonOptions.Marketplaces),
     // Host base directory the (already-running) gateway maps to its container WORKSPACE_BASE_PATH. The
@@ -197,7 +217,8 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
     // The gateway's host workspace base: a pooled run mounts its leased slot at /workspace by expressing
     // the slot's host path relative to this base (ReviewSessionProvisioner.GetOrCreateForSlotAsync). The
     // pool root is defaulted under it below so the slot always resolves to a path inside the base.
-    sandboxGatewayOptions.WorkspaceBasePath));
+    sandboxGatewayOptions.WorkspaceBasePath,
+    gatewayBaseUrl));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
@@ -518,7 +539,8 @@ if (daemonOptions.EnableToolAssistedReview
 // SandboxCredential is a value type, so it cannot be a DI singleton; pass the daemon identity explicitly
 // via ActivatorUtilities (its ctor param is the trailing, type-matched arg) while the rest resolves from DI.
 builder.Services.AddSingleton<IReviewStageExecutor>(sp =>
-    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential));
+    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential, gatewayBaseUrl));
+builder.Services.AddSingleton<ReviewProgressReporter>();
 builder.Services.AddSingleton<PrOrchestrator>();
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.

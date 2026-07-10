@@ -116,6 +116,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly SandboxCredential _credential;
     private readonly ReviewSlotWorkspace? _slotWorkspace;
 
+    /// <summary>The already-running gateway's base URL, threaded from Program.cs (config/env-resolved) so the
+    /// tool-assisted review agent's MCP transport addresses the same gateway the pool/provisioner use. Null ⇒
+    /// falls back to CRD_SANDBOX_GATEWAY then the 3000 default.</summary>
+    private readonly string? _gatewayBaseUrl;
     /// <summary>
     /// The per-run pooled lease, populated by <see cref="FetchContextAsync"/> when the pooled
     /// scoped-writable path handled a run and consumed by <see cref="ReviewAsync"/> (scoped tool context)
@@ -144,7 +148,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         HostRetentionWorkspace? hostRetention = null,
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
-        Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null)
+        Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
+        string? gatewayBaseUrl = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -162,6 +167,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _credential = credential;
         _slotWorkspace = slotWorkspace;
         _appLifetime = appLifetime;
+        _gatewayBaseUrl = gatewayBaseUrl;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -249,7 +255,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
 
             return new ReviewToolContext(
-                GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
+                GatewayBaseUrl: _gatewayBaseUrl
+                    ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+                    ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
                 SubAgentOptions: subAgentOptions,

@@ -14,12 +14,18 @@ internal sealed class PrOrchestrator
     private readonly ReviewStore _store;
     private readonly IReviewStageExecutor _executor;
     private readonly ILogger<PrOrchestrator> _logger;
+    private readonly ReviewProgressReporter? _progress;
 
-    public PrOrchestrator(ReviewStore store, IReviewStageExecutor executor, ILogger<PrOrchestrator> logger)
+    public PrOrchestrator(
+        ReviewStore store,
+        IReviewStageExecutor executor,
+        ILogger<PrOrchestrator> logger,
+        ReviewProgressReporter? progress = null)
     {
         _store = store;
         _executor = executor;
         _logger = logger;
+        _progress = progress;
     }
 
     /// <summary>
@@ -46,12 +52,19 @@ internal sealed class PrOrchestrator
                 return run;
             }
 
+            // Everything below is real work for this run — announce it once. The steady-state no-op poll
+            // (a completed run) returns above, so finished PRs don't re-announce every cycle.
+            var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            _progress?.Picked(run, DescribePickReason(run));
+
             if (run.PrLifecycleState != PrLifecycleState.Open)
             {
                 // PR merged/closed/abandoned — stop working it without marking the run as failed.
                 _logger.LogInformation(
                     "Review run {RunId} halted: PR {PrId} is {State}.", run.Id, run.PrId, run.PrLifecycleState);
                 _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.Completed, run.PrLifecycleState);
+                _progress?.Finished(
+                    run, $"halted (PR {run.PrLifecycleState})", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
                 return run with { WorkflowStatus = WorkflowStatus.Completed };
             }
 
@@ -59,6 +72,7 @@ internal sealed class PrOrchestrator
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                _progress?.StageStarting(run, stage);
                 try
                 {
                     await _executor.ExecuteStageAsync(stage, run, cancellationToken);
@@ -67,6 +81,8 @@ internal sealed class PrOrchestrator
                 {
                     _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.RetryPending, run.PrLifecycleState);
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
+                    _progress?.Finished(
+                        run, $"failed at {stage}", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
                     throw;
                 }
 
@@ -75,6 +91,10 @@ internal sealed class PrOrchestrator
                 run = run with { Stage = stage, WorkflowStatus = workflowStatus };
             }
 
+            _progress?.Finished(
+                run,
+                $"complete ({(string.Equals(run.Mode, "post", StringComparison.Ordinal) ? "posted" : "collect-only")})",
+                System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
             return run;
         }
         finally
@@ -85,5 +105,30 @@ internal sealed class PrOrchestrator
             // never leak pool capacity. Uses CancellationToken.None so a cancelled run still returns its slot.
             await _executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
         }
+    }
+
+    /// <summary>Human-readable reason a PR was picked this cycle: a brand-new run is "new PR" (no prior
+    /// review of this PR) or "new commit {sha}" (its head advanced past the last reviewed commit); an
+    /// incomplete run being resumed after a restart/retry reports the stage it left off at.</summary>
+    private string DescribePickReason(ReviewRun run)
+    {
+        if (run.Stage != ReviewStage.Discovered)
+        {
+            return $"resuming at {run.Stage}";
+        }
+
+        var prior = _store.GetPriorReviewSummary(run.RepoId, run.PrId, run.Id);
+        if (prior.PrevHeadSha is null)
+        {
+            return "new PR";
+        }
+
+        if (!string.Equals(prior.PrevHeadSha, run.HeadSha, StringComparison.Ordinal))
+        {
+            var shortSha = run.HeadSha.Length >= 7 ? run.HeadSha[..7] : run.HeadSha;
+            return $"new commit {shortSha}";
+        }
+
+        return "re-review";
     }
 }

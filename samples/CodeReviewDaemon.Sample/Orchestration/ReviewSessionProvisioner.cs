@@ -81,15 +81,15 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     /// </summary>
     private readonly string? _workspaceBasePath;
 
-    private readonly string _gatewayBaseUrl =
-        Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000";
+    private readonly string _gatewayBaseUrl;
 
     public ReviewSessionProvisioner(
         ISandboxSessionSource sessions,
         CodeReviewDaemonOptions options,
         ILoggerFactory loggerFactory,
         SandboxCredential credential = default,
-        string? workspaceBasePath = null)
+        string? workspaceBasePath = null,
+        string? gatewayBaseUrl = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -97,6 +97,9 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         _logger = loggerFactory.CreateLogger<ReviewSessionProvisioner>();
         _credential = credential;
         _workspaceBasePath = workspaceBasePath;
+        _gatewayBaseUrl = gatewayBaseUrl
+            ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+            ?? "http://127.0.0.1:3000";
     }
 
     public static string WorkspaceId(ReviewRun run) => $"review-run-{run.Id}";
