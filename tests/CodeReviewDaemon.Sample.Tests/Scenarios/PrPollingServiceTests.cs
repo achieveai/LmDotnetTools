@@ -154,6 +154,66 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             throw new InvalidOperationException("simulated provider failure");
     }
 
+    [Fact]
+    public async Task Prs_outside_the_recency_window_are_skipped_and_do_not_become_runs()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var now = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        // updated_at: within / outside a 7-day window, plus one the provider gives no date for.
+        var recent = DatedDescriptor("200", updatedAt: now.AddDays(-1));
+        var stale = DatedDescriptor("201", updatedAt: now.AddDays(-30));
+        var undated = DatedDescriptor("202", updatedAt: null);
+        var provider = new MockPrProvider(Provider, [recent, stale, undated], NextCursor());
+        var orchestrator = new PrOrchestrator(
+            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope, MaxPrAgeDays = 7 };
+        var poller = new PrPollingService(
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: new FixedTimeProvider(now));
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var repoId = store.EnsureRepo(SampleRepo());
+        store.CreateOrGetReviewRun(SeedFor(repoId, "200")).Stage.Should()
+            .Be(ReviewStage.Posted, "the recent PR is inside the window and was reviewed");
+        store.CreateOrGetReviewRun(SeedFor(repoId, "202")).Stage.Should()
+            .Be(ReviewStage.Posted, "an undated PR is kept — the filter never silently drops a PR it can't date");
+        store.CreateOrGetReviewRun(SeedFor(repoId, "201")).Stage.Should()
+            .Be(ReviewStage.Discovered, "the stale PR was filtered out before orchestration, so this call just created it fresh");
+    }
+
+    [Fact]
+    public async Task A_zero_recency_window_reviews_every_pr()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var now = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var ancient = DatedDescriptor("201", updatedAt: now.AddDays(-365));
+        var provider = new MockPrProvider(Provider, [ancient], NextCursor());
+        var orchestrator = new PrOrchestrator(
+            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope, MaxPrAgeDays = 0 };
+        var poller = new PrPollingService(
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: new FixedTimeProvider(now));
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        var repoId = store.EnsureRepo(SampleRepo());
+        store.CreateOrGetReviewRun(SeedFor(repoId, "201")).Stage.Should()
+            .Be(ReviewStage.Posted, "with the filter off (0), even a year-old PR is reviewed");
+    }
+
+    /// <summary>A <see cref="TimeProvider"/> pinned to a fixed instant so the recency-window cutoff is
+    /// deterministic across the age-filter tests.</summary>
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────────────────────────────
 
     private PrPollingService BuildPoller(ReviewStore store, IPrProvider provider)
@@ -181,6 +241,18 @@ public sealed class PrPollingServiceTests : LoggingTestBase
         TriggerWatermark = "wm-1",
         LifecycleState = PrLifecycleState.Open,
     };
+
+    private static PullRequestDescriptor DatedDescriptor(
+        string prId, DateTimeOffset? updatedAt, DateTimeOffset? createdAt = null) => new()
+        {
+            PrId = prId,
+            HeadSha = $"head-{prId}",
+            BaseSha = "base-sha",
+            TriggerWatermark = "wm-1",
+            LifecycleState = PrLifecycleState.Open,
+            CreatedAt = createdAt,
+            UpdatedAt = updatedAt,
+        };
 
     private static RepoIdentity SampleRepo() => new()
     {

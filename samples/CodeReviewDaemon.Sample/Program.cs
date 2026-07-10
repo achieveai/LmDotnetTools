@@ -31,13 +31,25 @@ if (args is ["reviewbot", "init", ..])
 // achieveai` loads appsettings.achieveai.json (GitHub daemon). This is the single operator knob:
 // every setting (repo/store/paths/ports/gateway) lives in that one profile file, so no launch env
 // vars are required. Absent the flag, the environment resolves as usual (DOTNET_ENVIRONMENT/default).
-var (reviewProfile, hostArgs) = ReviewProfileArgs.Extract(args);
+var (reviewProfile, maxPrAgeDaysOverride, hostArgs) = ReviewProfileArgs.Extract(args);
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
     Args = hostArgs,
     EnvironmentName = reviewProfile, // null ⇒ default environment resolution (base appsettings only)
 });
+
+// A `--days N` / `--max-pr-age-days N` flag overrides the profile's CodeReviewDaemon:MaxPrAgeDays recency
+// bound for this run. Injected as the last (highest-precedence) config source so it wins over appsettings,
+// and BEFORE the section is bound below.
+if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
+{
+    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        [$"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.MaxPrAgeDays)}"] =
+            maxPrAgeDaysFlag.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    });
+}
 
 // ── Feature flags ────────────────────────────────────────────────────────────────────────────────
 // Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit

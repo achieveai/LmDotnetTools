@@ -29,8 +29,8 @@ internal static class PrPollTargetBuilder
 
             var target = segments.Length switch
             {
-                2 => GitHubTarget(segments, mode, options.ReviewModelId),
-                3 => AdoTarget(segments, mode, options.ReviewModelId, options.EnableAdoProvider, logger),
+                2 => GitHubTarget(segments, mode, options.ReviewModelId, options.MaxPrAgeDays),
+                3 => AdoTarget(segments, mode, options.ReviewModelId, options.MaxPrAgeDays, options.EnableAdoProvider, logger),
                 _ => null,
             };
 
@@ -49,7 +49,7 @@ internal static class PrPollTargetBuilder
         return targets;
     }
 
-    private static PrPollTarget GitHubTarget(string[] segments, string mode, string? modelId) =>
+    private static PrPollTarget GitHubTarget(string[] segments, string mode, string? modelId, int maxPrAgeDays) =>
         new()
         {
             Provider = "github",
@@ -62,9 +62,10 @@ internal static class PrPollTargetBuilder
             Scope = $"{segments[0]}/{segments[1]}:open-prs",
             Mode = mode,
             ModelId = modelId,
+            MaxPrAgeDays = maxPrAgeDays,
         };
 
-    private static PrPollTarget? AdoTarget(string[] segments, string mode, string? modelId, bool enableAdoProvider, ILogger logger)
+    private static PrPollTarget? AdoTarget(string[] segments, string mode, string? modelId, int maxPrAgeDays, bool enableAdoProvider, ILogger logger)
     {
         if (!enableAdoProvider)
         {
@@ -87,6 +88,7 @@ internal static class PrPollTargetBuilder
             Scope = $"{segments[0]}/{segments[1]}/{segments[2]}:active-prs",
             Mode = mode,
             ModelId = modelId,
+            MaxPrAgeDays = maxPrAgeDays,
         };
     }
 }

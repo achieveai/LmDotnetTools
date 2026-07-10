@@ -22,6 +22,7 @@ internal sealed class PrPollingService : BackgroundService
     private readonly ILogger<PrPollingService> _logger;
     private readonly TimeSpan _pollInterval;
     private readonly Func<CancellationToken, Task>? _sweepAsync;
+    private readonly TimeProvider _timeProvider;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -30,7 +31,8 @@ internal sealed class PrPollingService : BackgroundService
         PrOrchestrator orchestrator,
         ILogger<PrPollingService> logger,
         TimeSpan? pollInterval = null,
-        Func<CancellationToken, Task>? sweepAsync = null)
+        Func<CancellationToken, Task>? sweepAsync = null,
+        TimeProvider? timeProvider = null)
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -39,6 +41,7 @@ internal sealed class PrPollingService : BackgroundService
         _logger = logger;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(30);
         _sweepAsync = sweepAsync;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -137,7 +140,7 @@ internal sealed class PrPollingService : BackgroundService
             cancellationToken);
 
         var repoId = _store.EnsureRepo(target.Repo);
-        foreach (var pr in page.PullRequests)
+        foreach (var pr in ApplyRecencyFilter(target, page.PullRequests))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -179,5 +182,45 @@ internal sealed class PrPollingService : BackgroundService
         }
 
         _store.SaveCursor(page.NextCursor);
+    }
+
+    /// <summary>
+    /// Applies the operator recency bound (<see cref="PrPollTarget.MaxPrAgeDays"/>): drops PRs whose last
+    /// activity (GitHub <c>updated_at</c>) or, as a fallback, opened date (ADO <c>creationDate</c>) is older
+    /// than the window. A PR the provider gave no date for is kept — the filter never silently drops a PR it
+    /// can't date. When the bound is off (≤ 0) the full list passes through unchanged. The cursor still
+    /// advances off the full page, so filtering here never strands the poll's high-water mark.
+    /// </summary>
+    private IReadOnlyList<PullRequestDescriptor> ApplyRecencyFilter(
+        PrPollTarget target, IReadOnlyList<PullRequestDescriptor> pullRequests)
+    {
+        if (target.MaxPrAgeDays <= 0 || pullRequests.Count == 0)
+        {
+            return pullRequests;
+        }
+
+        var cutoff = _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays);
+        var kept = new List<PullRequestDescriptor>(pullRequests.Count);
+        foreach (var pr in pullRequests)
+        {
+            var activity = pr.UpdatedAt ?? pr.CreatedAt;
+            if (activity is null || activity.Value >= cutoff)
+            {
+                kept.Add(pr);
+            }
+        }
+
+        if (kept.Count < pullRequests.Count)
+        {
+            _logger.LogInformation(
+                "Recency filter ({Days}d) on {Scope}: reviewing {Kept} of {Total} open PR(s); {Skipped} outside the window.",
+                target.MaxPrAgeDays,
+                target.Scope,
+                kept.Count,
+                pullRequests.Count,
+                pullRequests.Count - kept.Count);
+        }
+
+        return kept;
     }
 }

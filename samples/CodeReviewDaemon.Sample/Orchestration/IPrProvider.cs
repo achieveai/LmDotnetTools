@@ -78,4 +78,18 @@ internal sealed record PullRequestDescriptor
     public required string TriggerWatermark { get; init; }
 
     public required PrLifecycleState LifecycleState { get; init; }
+
+    /// <summary>
+    /// When the PR was opened, if the provider's list exposes it (GitHub <c>created_at</c>, ADO
+    /// <c>creationDate</c>). The recency filter (<see cref="Configuration.CodeReviewDaemonOptions.MaxPrAgeDays"/>)
+    /// falls back to this when <see cref="UpdatedAt"/> is null. Null when the provider gives no date.
+    /// </summary>
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    /// <summary>
+    /// The PR's last-activity time, if the provider exposes it (GitHub <c>updated_at</c>). ADO's PR list
+    /// has no last-activity field, so it is left null there and the recency filter falls back to
+    /// <see cref="CreatedAt"/>. Null when the provider gives no date.
+    /// </summary>
+    public DateTimeOffset? UpdatedAt { get; init; }
 }

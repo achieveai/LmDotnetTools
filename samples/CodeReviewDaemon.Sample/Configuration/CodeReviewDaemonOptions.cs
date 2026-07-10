@@ -162,6 +162,15 @@ internal sealed class CodeReviewDaemonOptions
     public int MaxPagesPerPoll { get; init; } = 10;
 
     /// <summary>
+    /// When &gt; 0, the poller only reviews PRs whose recency signal falls within this many days: GitHub
+    /// uses the PR's <c>updated_at</c> (true last activity); ADO's PR list has no last-activity field, so it
+    /// uses <c>creationDate</c> (the opened date). A PR the provider gives no date for is always kept (never
+    /// silently skipped). 0 (default) disables the filter — every open PR is reviewed. Overridable per run
+    /// with the <c>--days N</c> / <c>--max-pr-age-days N</c> command-line flag, which wins over this value.
+    /// </summary>
+    public int MaxPrAgeDays { get; init; }
+
+    /// <summary>
     /// When <c>false</c> (default) the daemon runs the diff-only review (empty tool registry, no
     /// sub-agents, boot-lifetime sandbox session) exactly as before. Enabling it provisions a per-run
     /// sandbox session, exposes the read-only MCP tools + <c>Skill</c>, and dispatches the

@@ -90,6 +90,9 @@ internal sealed class AdoPrProvider : IPrProvider
                         // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
                         TriggerWatermark = CommitId(pr, "lastMergeSourceCommit"),
                         LifecycleState = MapLifecycle(pr.GetProperty("status").GetString()),
+                        // Recency filter: ADO's list has only creationDate (no last-activity), so UpdatedAt is
+                        // left null and the filter falls back to the opened date.
+                        CreatedAt = ParseTimestamp(pr, "creationDate"),
                     });
 
                     if (prId > highWaterMark)
@@ -130,6 +133,20 @@ internal sealed class AdoPrProvider : IPrProvider
         && commit.TryGetProperty("commitId", out var id)
             ? id.GetString() ?? string.Empty
             : string.Empty;
+
+    /// <summary>Parses an ISO-8601 timestamp property (e.g. ADO's <c>creationDate</c>) to a
+    /// <see cref="DateTimeOffset"/>, or null when absent/unparseable — a missing date leaves the PR
+    /// unfiltered by the recency window rather than silently dropping it.</summary>
+    private static DateTimeOffset? ParseTimestamp(JsonElement pr, string property) =>
+        pr.TryGetProperty(property, out var value)
+        && value.ValueKind is JsonValueKind.String
+        && DateTimeOffset.TryParse(
+            value.GetString(),
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind,
+            out var parsed)
+            ? parsed
+            : null;
 
     /// <summary>
     /// Classifies a single PR's lifecycle via
