@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -113,6 +114,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly int _maxConcurrentWorkflows;
     private readonly int _controllerMaxTurnsPerRun;
     private readonly TimeSpan _gateWaitTimeout;
+    private readonly GenerateReplyOptions? _controllerDefaultOptions;
     private readonly ILogger _logger;
     private readonly IJsonSchemaValidator? _schemaValidator;
 
@@ -139,6 +141,10 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// <param name="maxConcurrentWorkflows">The concurrent-workflow cap (default 8). Must be >= 1.</param>
     /// <param name="controllerMaxTurnsPerRun">The controller loop's per-run turn budget (default 150). Must be >= 1.</param>
     /// <param name="gateWaitTimeout">How long <see cref="StartAsync"/> waits for a slot before backpressure. Null = 5s.</param>
+    /// <param name="controllerDefaultOptions">
+    ///     Optional request defaults (notably <c>ModelId</c>) for the controller loop, so it runs on the fixed,
+    ///     pre-configured controller model rather than the provider agent's hardcoded default.
+    /// </param>
     /// <param name="logger">Optional logger.</param>
     /// <param name="schemaValidator">Optional JSON-Schema validator forwarded to the runtime.</param>
     public WorkflowManager(
@@ -148,6 +154,7 @@ public sealed class WorkflowManager : IAsyncDisposable
         int maxConcurrentWorkflows = 8,
         int controllerMaxTurnsPerRun = 150,
         TimeSpan? gateWaitTimeout = null,
+        GenerateReplyOptions? controllerDefaultOptions = null,
         ILogger? logger = null,
         IJsonSchemaValidator? schemaValidator = null
     )
@@ -165,6 +172,7 @@ public sealed class WorkflowManager : IAsyncDisposable
         _maxConcurrentWorkflows = maxConcurrentWorkflows;
         _controllerMaxTurnsPerRun = controllerMaxTurnsPerRun;
         _gateWaitTimeout = gateWaitTimeout ?? DefaultGateWaitTimeout;
+        _controllerDefaultOptions = controllerDefaultOptions;
         _logger = logger ?? NullLogger.Instance;
         _schemaValidator = schemaValidator;
         _concurrencyGate = new SemaphoreSlim(maxConcurrentWorkflows, maxConcurrentWorkflows);
@@ -227,6 +235,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                     schemaValidator: _schemaValidator,
                     includeAuthoringTool: false,
                     controllerMaxTurnsPerRun: _controllerMaxTurnsPerRun,
+                    controllerDefaultOptions: _controllerDefaultOptions,
                     ct: CancellationToken.None
                 )
                 .ConfigureAwait(false);

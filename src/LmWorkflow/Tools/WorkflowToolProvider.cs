@@ -46,7 +46,11 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     ///     receives a pre-authored definition (e.g. via <c>StartWorkflow</c>) and so never needs to author or
     ///     replace one.
     /// </param>
-    public WorkflowToolProvider(WorkflowRuntime runtime, bool includeSetWorkflow = true)
+    /// <remarks>
+    ///     Internal: this provider is only wired inside the library (via <see cref="WorkflowSession"/>) so the
+    ///     workflow-state tools stay confined to a controller loop and never reach a normal agent's registry.
+    /// </remarks>
+    internal WorkflowToolProvider(WorkflowRuntime runtime, bool includeSetWorkflow = true)
     {
         ArgumentNullException.ThrowIfNull(runtime);
         _runtime = runtime;

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -60,6 +61,10 @@ public static class WorkflowSession
     /// <param name="controllerMaxTurnsPerRun">
     ///     An optional bound on the controller loop's turns per run; <c>null</c> keeps the loop's default (50).
     /// </param>
+    /// <param name="controllerDefaultOptions">
+    ///     Optional request defaults (notably <c>ModelId</c>) for the controller loop, so the controller runs
+    ///     on a fixed, pre-configured model rather than the provider agent's hardcoded default.
+    /// </param>
     /// <param name="ct">A cancellation token bound to the run.</param>
     public static Task<WorkflowRunHandle> StartAsync(
         string objective,
@@ -75,6 +80,7 @@ public static class WorkflowSession
         IJsonSchemaValidator? schemaValidator = null,
         bool includeAuthoringTool = true,
         int? controllerMaxTurnsPerRun = null,
+        GenerateReplyOptions? controllerDefaultOptions = null,
         CancellationToken ct = default
     )
     {
@@ -108,7 +114,8 @@ public static class WorkflowSession
             subAgentOptions,
             conversationStore,
             includeAuthoringTool,
-            controllerMaxTurnsPerRun
+            controllerMaxTurnsPerRun,
+            controllerDefaultOptions
         );
         return Task.FromResult(BeginRun(loop, runtime, objective, ct));
     }
@@ -180,7 +187,8 @@ public static class WorkflowSession
         SubAgentOptions subAgentOptions,
         IConversationStore? conversationStore,
         bool includeAuthoringTool = true,
-        int? maxTurnsPerRun = null
+        int? maxTurnsPerRun = null,
+        GenerateReplyOptions? controllerDefaultOptions = null
     )
     {
         var registry = new FunctionRegistry();
@@ -191,6 +199,9 @@ public static class WorkflowSession
             registry,
             threadId,
             systemPrompt: ControllerSystemPrompt.Default,
+            // Pin the controller's model (and any other request defaults) so it never falls back to the
+            // provider agent's hardcoded default model.
+            defaultOptions: controllerDefaultOptions,
             // Fall back to MultiTurnAgentLoop's own default (50) when the caller does not bound it.
             maxTurnsPerRun: maxTurnsPerRun ?? 50,
             store: conversationStore,
