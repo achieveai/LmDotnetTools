@@ -785,17 +785,29 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return [];
         }
 
+        // The reviewed repo's own submodule + the shared Contracts layer are always allow-listed. The host
+        // and repo-path shape are provider-specific — GitHub is /{owner}/{repo} on github.com, Azure DevOps
+        // is /{org}/{project}/_git/{repo} on dev.azure.com — mirroring TargetRemoteUrl so the rule matches the
+        // exact URL SubmoduleTargetsRepo resolves.
+        var isAdo = string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(repo.Provider, "ado", StringComparison.OrdinalIgnoreCase);
+        var host = isAdo ? "dev.azure.com" : "github.com";
+        string RepoPath(string name) =>
+            isAdo ? $"/{repo.OrgOrOwner}/{repo.Project}/_git/{name}" : $"/{repo.OrgOrOwner}/{name}";
+
         var rules = new List<SubmoduleAllowRule>
         {
-            new("github.com", $"/{repo.OrgOrOwner}/{repo.RepoName}"),
-            new("github.com", $"/{repo.OrgOrOwner}/Contracts"),
+            new(host, RepoPath(repo.RepoName)),
+            new(host, RepoPath("Contracts")),
         };
 
         if (AllowsCrossRepoCoLocation(run, repo))
         {
             foreach (var sibling in _options.CrossRepoSiblings)
             {
-                rules.Add(new SubmoduleAllowRule("github.com", $"/{sibling}"));
+                // GitHub siblings are configured as owner/repo (absolute path); ADO siblings resolve under
+                // the same org/project as the reviewed repo.
+                rules.Add(new SubmoduleAllowRule(host, isAdo ? RepoPath(sibling) : $"/{sibling}"));
             }
         }
 
