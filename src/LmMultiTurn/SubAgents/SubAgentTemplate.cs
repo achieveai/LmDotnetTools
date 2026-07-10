@@ -39,9 +39,25 @@ public record SubAgentTemplate
     public required Func<IStreamingAgent> AgentFactory { get; init; }
 
     /// <summary>
+    /// Optional factory that creates the provider agent from the resolved spawn characteristics.
+    /// When null, <see cref="AgentFactory"/> is used.
+    /// </summary>
+    public Func<SubAgentCharacteristics, SubAgentProviderAgent>? CharacteristicsAgentFactory { get; init; }
+
+    /// <summary>
     /// Default options for model, temperature, etc.
     /// </summary>
     public GenerateReplyOptions? DefaultOptions { get; init; }
+
+    /// <summary>
+    /// Whether <see cref="GenerateReplyOptions.ModelId"/> was explicitly selected by this template.
+    /// </summary>
+    public bool IsModelExplicitlySelected { get; init; }
+
+    /// <summary>
+    /// Optional reasoning effort requested for this sub-agent.
+    /// </summary>
+    public ReasoningEffort? Effort { get; init; }
 
     /// <summary>
     /// Tool filter: null = inherit ALL parent tools.

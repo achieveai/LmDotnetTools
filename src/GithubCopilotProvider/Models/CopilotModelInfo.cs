@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 
 /// <summary>
@@ -37,7 +39,46 @@ public sealed record CopilotModelInfo(
     string DisplayName,
     CopilotModelVendor Vendor,
     CopilotModelTransport Transport,
-    bool SupportsAdaptiveThinking = false);
+    bool SupportsAdaptiveThinking = false
+)
+{
+    private ImmutableArray<string> _reasoningEfforts = [];
+
+    /// <summary>
+    ///     Reasoning effort values advertised by <c>capabilities.supports.reasoning_effort</c>.
+    /// </summary>
+    public IReadOnlyList<string> ReasoningEfforts
+    {
+        get => _reasoningEfforts;
+        init => _reasoningEfforts = [.. value];
+    }
+
+    /// <inheritdoc />
+    public bool Equals(CopilotModelInfo? other)
+    {
+        return ReferenceEquals(this, other)
+            || (
+                other is not null
+                && Id == other.Id
+                && DisplayName == other.DisplayName
+                && Vendor == other.Vendor
+                && Transport == other.Transport
+                && SupportsAdaptiveThinking == other.SupportsAdaptiveThinking
+            );
+    }
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Id);
+        hash.Add(DisplayName);
+        hash.Add(Vendor);
+        hash.Add(Transport);
+        hash.Add(SupportsAdaptiveThinking);
+        return hash.ToHashCode();
+    }
+}
 
 /// <summary>
 ///     The normalized publisher partition a Copilot model belongs to. The sample only surfaces these

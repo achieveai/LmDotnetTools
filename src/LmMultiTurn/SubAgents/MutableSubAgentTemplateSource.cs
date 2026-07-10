@@ -1,4 +1,5 @@
-using System.Collections.Concurrent;
+using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
@@ -15,22 +16,24 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// the source first, and discovered (untrusted) entries cannot shadow them.
 /// </para>
 /// <para>
-/// <see cref="Templates"/> returns the live <see cref="ConcurrentDictionary{TKey,TValue}"/>
-/// view. Enumerating it during a concurrent <see cref="TryRegister"/> is safe — the
-/// snapshot may include or exclude the new entry depending on timing, but never throws
-/// and never tears.
+/// <see cref="Templates"/> returns the immutable snapshot current at the time of the read.
+/// A previously returned snapshot remains unchanged when templates are registered or rebound.
 /// </para>
 /// </remarks>
 public sealed class MutableSubAgentTemplateSource
 {
-    private readonly ConcurrentDictionary<string, SubAgentTemplate> _templates;
+    private readonly object _updateGate = new();
+    private ImmutableDictionary<string, SubAgentTemplate> _templates;
+    private Func<IStreamingAgent>? _agentFactory;
+    private Func<SubAgentCharacteristics, SubAgentProviderAgent>? _characteristicsAgentFactory;
+    private bool _rebindRegistrations;
 
     /// <summary>
     /// Creates an empty source.
     /// </summary>
     public MutableSubAgentTemplateSource()
     {
-        _templates = new ConcurrentDictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
+        _templates = ImmutableDictionary.Create<string, SubAgentTemplate>(StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -40,14 +43,13 @@ public sealed class MutableSubAgentTemplateSource
     public MutableSubAgentTemplateSource(IReadOnlyDictionary<string, SubAgentTemplate> initial)
     {
         ArgumentNullException.ThrowIfNull(initial);
-        _templates = new ConcurrentDictionary<string, SubAgentTemplate>(initial, StringComparer.Ordinal);
+        _templates = ImmutableDictionary.CreateRange(StringComparer.Ordinal, initial);
     }
 
     /// <summary>
-    /// Live snapshot of the current templates. Reads are lock-free; consumers should treat
-    /// the returned view as read-only.
+    /// Immutable snapshot of the current templates. Reads are lock-free.
     /// </summary>
-    public IReadOnlyDictionary<string, SubAgentTemplate> Templates => _templates;
+    public IReadOnlyDictionary<string, SubAgentTemplate> Templates => Volatile.Read(ref _templates);
 
     /// <summary>
     /// Atomically registers <paramref name="template"/> under <paramref name="name"/>. Returns
@@ -57,6 +59,55 @@ public sealed class MutableSubAgentTemplateSource
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(template);
-        return _templates.TryAdd(name, template);
+
+        lock (_updateGate)
+        {
+            var current = Volatile.Read(ref _templates);
+            if (current.ContainsKey(name))
+            {
+                return false;
+            }
+
+            Volatile.Write(ref _templates, current.Add(name, RebindTemplate(template)));
+            return true;
+        }
     }
+
+    /// <summary>
+    /// Atomically replaces each retained template with a copy using the latest provider factories.
+    /// Templates registered after this operation are rebound to the same factories before they are
+    /// published.
+    /// </summary>
+    public void RebindFactories(
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory
+    )
+    {
+        ArgumentNullException.ThrowIfNull(agentFactory);
+
+        lock (_updateGate)
+        {
+            _agentFactory = agentFactory;
+            _characteristicsAgentFactory = characteristicsAgentFactory;
+            _rebindRegistrations = true;
+
+            var current = Volatile.Read(ref _templates);
+            var rebound = current.ToBuilder();
+            foreach (var entry in current)
+            {
+                rebound[entry.Key] = RebindTemplate(entry.Value);
+            }
+
+            Volatile.Write(ref _templates, rebound.ToImmutable());
+        }
+    }
+
+    private SubAgentTemplate RebindTemplate(SubAgentTemplate template) =>
+        _rebindRegistrations
+            ? template with
+            {
+                AgentFactory = _agentFactory!,
+                CharacteristicsAgentFactory = _characteristicsAgentFactory,
+            }
+            : template;
 }

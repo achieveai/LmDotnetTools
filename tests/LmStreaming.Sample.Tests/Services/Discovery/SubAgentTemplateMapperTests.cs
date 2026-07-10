@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmSampleShared.Discovery;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
@@ -31,6 +32,7 @@ public class SubAgentTemplateMapperTests
 
         template.DefaultOptions.Should().BeNull(
             "'inherit'/blank means inherit the parent model, not send a literal unsupported model id");
+        template.IsModelExplicitlySelected.Should().BeFalse();
     }
 
     [Fact]
@@ -40,5 +42,16 @@ public class SubAgentTemplateMapperTests
 
         template.DefaultOptions.Should().NotBeNull();
         template.DefaultOptions!.ModelId.Should().Be("claude-sonnet-5");
+        template.IsModelExplicitlySelected.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Map_Effort_CarriesTypedValue()
+    {
+        var parsed = Parsed("claude-sonnet-5") with { Effort = ReasoningEffort.Xhigh };
+
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, maxTurnsPerRun: 25);
+
+        template.Effort.Should().Be(ReasoningEffort.Xhigh);
     }
 }

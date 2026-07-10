@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -87,6 +88,47 @@ public class SandboxSessionRegistrySubAgentIsolationTests
             Template("AlphaDiscovered", "Discovered by conversation A.")).Should().BeTrue();
 
         bindingA.Source.Templates.Keys.Should().Contain("alpha_discovered");
+    }
+
+    [Fact]
+    public async Task GetOrAddSubAgentBinding_BothOverloadsPreserveExpectedFactories()
+    {
+        await using var registry = CreateRegistry();
+        var providerAgent = new Mock<IStreamingAgent>().Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory =
+            _ => new SubAgentProviderAgent(
+                providerAgent,
+                ImmutableDictionary<string, object?>.Empty);
+        var seed = new Dictionary<string, SubAgentTemplate>();
+
+        var fourParameterOverload = typeof(SandboxSessionRegistry).GetMethod(
+            nameof(SandboxSessionRegistry.GetOrAddSubAgentBinding),
+            [
+                typeof(string),
+                typeof(string),
+                typeof(IReadOnlyDictionary<string, SubAgentTemplate>),
+                typeof(Func<IStreamingAgent>),
+            ]);
+        var legacyBinding = registry.GetOrAddSubAgentBinding(
+            SessionId,
+            "legacy-conversation",
+            seed,
+            AgentFactory);
+        var characteristicsBinding = registry.GetOrAddSubAgentBinding(
+            SessionId,
+            "characteristics-conversation",
+            seed,
+            AgentFactory,
+            characteristicsFactory);
+        var (source, agentFactory) = legacyBinding;
+
+        fourParameterOverload.Should().NotBeNull("existing compiled callers require the original CLR signature");
+        source.Should().BeSameAs(legacyBinding.Source);
+        agentFactory.Should().BeSameAs(AgentFactory);
+        legacyBinding.AgentFactory.Should().BeSameAs(AgentFactory);
+        legacyBinding.CharacteristicsAgentFactory.Should().BeNull();
+        characteristicsBinding.AgentFactory.Should().BeSameAs(AgentFactory);
+        characteristicsBinding.CharacteristicsAgentFactory.Should().BeSameAs(characteristicsFactory);
     }
 
     /// <summary>

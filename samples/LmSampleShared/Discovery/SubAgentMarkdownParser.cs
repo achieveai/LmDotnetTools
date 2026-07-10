@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -16,7 +18,53 @@ public sealed record ParsedSubAgent(
     string? Model,
     IReadOnlyList<string>? Tools,
     string SystemPrompt
-);
+)
+{
+    private readonly ImmutableArray<string> _diagnostics = [];
+
+    /// <summary>
+    /// Optional model capability tier requested by the author.
+    /// </summary>
+    public int? ModelIntelligence { get; init; }
+
+    /// <summary>
+    /// Optional reasoning effort requested by the author.
+    /// </summary>
+    public ReasoningEffort? Effort { get; init; }
+
+    /// <summary>
+    /// Non-fatal frontmatter validation messages.
+    /// </summary>
+    public IReadOnlyList<string> Diagnostics
+    {
+        get => _diagnostics;
+        init => _diagnostics = value.ToImmutableArray();
+    }
+
+    /// <inheritdoc />
+    public bool Equals(ParsedSubAgent? other) =>
+        ReferenceEquals(this, other)
+        || (
+            other is not null
+            && Name == other.Name
+            && Description == other.Description
+            && Model == other.Model
+            && EqualityComparer<IReadOnlyList<string>?>.Default.Equals(Tools, other.Tools)
+            && SystemPrompt == other.SystemPrompt
+        );
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Name);
+        hash.Add(Description);
+        hash.Add(Model);
+        hash.Add(Tools);
+        hash.Add(SystemPrompt);
+        return hash.ToHashCode();
+    }
+}
 
 /// <summary>
 /// Pure parser for a single sub-agent markdown document. Failures (missing fences,
@@ -42,6 +90,7 @@ public static class SubAgentMarkdownParser
 
     private static readonly IDeserializer YamlDeserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
+        .WithAttemptingUnquotedStringTypeDeserialization()
         .IgnoreUnmatchedProperties()
         .Build();
 
@@ -92,11 +141,25 @@ public static class SubAgentMarkdownParser
             return null;
         }
 
-        var description = string.IsNullOrWhiteSpace(dto?.Description) ? null : dto.Description.Trim();
+        var description = string.IsNullOrWhiteSpace(dto?.Description)
+            ? null
+            : dto.Description.Trim();
         var model = string.IsNullOrWhiteSpace(dto?.Model) ? null : dto.Model.Trim();
         var tools = NormalizeTools(dto?.Tools);
+        var diagnostics = new List<string>();
+        var modelIntelligence = ParseModelIntelligence(
+            dto?.ModelIntelligence,
+            dto?.HasModelIntelligence == true,
+            diagnostics
+        );
+        var effort = ParseEffort(dto?.Effort, dto?.HasEffort == true, diagnostics);
 
-        return new ParsedSubAgent(name, description, model, tools, trimmedBody);
+        return new ParsedSubAgent(name, description, model, tools, trimmedBody)
+        {
+            ModelIntelligence = modelIntelligence,
+            Effort = effort,
+            Diagnostics = diagnostics,
+        };
     }
 
     private static bool TrySplitFrontmatter(string markdown, out string yaml, out string body)
@@ -135,7 +198,11 @@ public static class SubAgentMarkdownParser
         return true;
     }
 
-    private static bool StartsWithLine(ReadOnlySpan<char> input, string marker, out ReadOnlySpan<char> rest)
+    private static bool StartsWithLine(
+        ReadOnlySpan<char> input,
+        string marker,
+        out ReadOnlySpan<char> rest
+    )
     {
         rest = input;
         if (input.Length < marker.Length || !input[..marker.Length].SequenceEqual(marker))
@@ -183,12 +250,84 @@ public static class SubAgentMarkdownParser
         return normalized;
     }
 
+    private static int? ParseModelIntelligence(
+        object? raw,
+        bool isPresent,
+        List<string> diagnostics
+    )
+    {
+        if (!isPresent)
+        {
+            return null;
+        }
+
+        int? value = raw switch
+        {
+            sbyte number => number,
+            byte number => number,
+            short number => number,
+            ushort number => number,
+            int number => number,
+            uint number when number <= int.MaxValue => (int)number,
+            long number when number is >= int.MinValue and <= int.MaxValue => (int)number,
+            ulong number when number <= int.MaxValue => (int)number,
+            _ => null,
+        };
+
+        if (value is >= 0 and <= 6)
+        {
+            return value;
+        }
+
+        diagnostics.Add(
+            "modelintelligence must be an integer from 0 through 6; the field was ignored."
+        );
+        return null;
+    }
+
+    private static ReasoningEffort? ParseEffort(
+        object? raw,
+        bool isPresent,
+        List<string> diagnostics
+    )
+    {
+        if (!isPresent)
+        {
+            return null;
+        }
+
+        if (raw is string scalar)
+        {
+            var effort = scalar.Trim().ToLowerInvariant() switch
+            {
+                "low" => ReasoningEffort.Low,
+                "medium" => ReasoningEffort.Medium,
+                "high" => ReasoningEffort.High,
+                "extra-high" => ReasoningEffort.Xhigh,
+                _ => (ReasoningEffort?)null,
+            };
+
+            if (effort is not null)
+            {
+                return effort;
+            }
+        }
+
+        diagnostics.Add(
+            "effort must be one of low, medium, high, or extra-high; the field was ignored."
+        );
+        return null;
+    }
+
     /// <summary>
     /// Mutable DTO used only as the YAML deserialisation target. Public so YamlDotNet's
     /// reflection can populate it; never exposed beyond <see cref="Parse"/>.
     /// </summary>
     public sealed class FrontmatterDto
     {
+        private object? _modelIntelligence;
+        private object? _effort;
+
         public string? Name { get; set; }
 
         public string? Description { get; set; }
@@ -196,5 +335,32 @@ public static class SubAgentMarkdownParser
         public string? Model { get; set; }
 
         public List<string>? Tools { get; set; }
+
+        [YamlMember(Alias = "modelintelligence")]
+        public object? ModelIntelligence
+        {
+            get => _modelIntelligence;
+            set
+            {
+                _modelIntelligence = value;
+                HasModelIntelligence = true;
+            }
+        }
+
+        [YamlIgnore]
+        public bool HasModelIntelligence { get; private set; }
+
+        public object? Effort
+        {
+            get => _effort;
+            set
+            {
+                _effort = value;
+                HasEffort = true;
+            }
+        }
+
+        [YamlIgnore]
+        public bool HasEffort { get; private set; }
     }
 }

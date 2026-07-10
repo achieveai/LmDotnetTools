@@ -63,8 +63,32 @@ public static class CopilotModelCatalogParser
         var displayName = CopilotModelsResponse.GetString(item, "name");
         displayName = string.IsNullOrWhiteSpace(displayName) ? id! : displayName!;
 
-        model = new CopilotModelInfo(id!, displayName, vendor, transport, SupportsAdaptiveThinking(item));
+        model = new CopilotModelInfo(id!, displayName, vendor, transport, SupportsAdaptiveThinking(item))
+        {
+            ReasoningEfforts = GetReasoningEfforts(item),
+        };
         return true;
+    }
+
+    private static IReadOnlyList<string> GetReasoningEfforts(JsonElement item)
+    {
+        if (!item.TryGetProperty("capabilities", out var capabilities)
+            || capabilities.ValueKind != JsonValueKind.Object
+            || !capabilities.TryGetProperty("supports", out var supports)
+            || supports.ValueKind != JsonValueKind.Object
+            || !supports.TryGetProperty("reasoning_effort", out var reasoningEffort)
+            || reasoningEffort.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return
+        [
+            .. reasoningEffort
+                .EnumerateArray()
+                .Where(value => value.ValueKind == JsonValueKind.String)
+                .Select(value => value.GetString()!),
+        ];
     }
 
     /// <summary>

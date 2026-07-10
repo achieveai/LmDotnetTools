@@ -51,6 +51,8 @@ public static class SubAgentTemplateMapper
             SystemPrompt = parsed.SystemPrompt,
             AgentFactory = agentFactory,
             DefaultOptions = defaults,
+            IsModelExplicitlySelected = hasExplicitModel,
+            Effort = parsed.Effort,
             EnabledTools = parsed.Tools,
             MaxTurnsPerRun = maxTurnsPerRun,
         };

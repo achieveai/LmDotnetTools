@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -636,10 +638,39 @@ public sealed class SubAgentManager : IAsyncDisposable
             return TestAgentFactoryOverride(agentId, template);
         }
 
-        var providerAgent = template.AgentFactory();
-
         // Resolve the sub-agent's options with model inheritance (override > template > parent).
         var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId);
+        IStreamingAgent providerAgent;
+
+        if (template.CharacteristicsAgentFactory is { } characteristicsFactory)
+        {
+            var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
+                ? null
+                : defaultOptions.ModelId;
+            var provider = characteristicsFactory(
+                new SubAgentCharacteristics(modelId, template.Effort)
+                {
+                    IsModelExplicitlySelected =
+                        !string.IsNullOrWhiteSpace(modelOverride)
+                        || template.IsModelExplicitlySelected,
+                });
+            providerAgent = provider.Agent;
+
+            if (provider.ExtraProperties.Count > 0)
+            {
+                var requestExtraProperties =
+                    defaultOptions?.ExtraProperties
+                    ?? ImmutableDictionary<string, object?>.Empty;
+                defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                {
+                    ExtraProperties = provider.ExtraProperties.SetItems(requestExtraProperties),
+                };
+            }
+        }
+        else
+        {
+            providerAgent = template.AgentFactory();
+        }
 
         // Determine conversation store
         var storeFactory =

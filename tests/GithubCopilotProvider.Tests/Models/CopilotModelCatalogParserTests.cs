@@ -15,10 +15,14 @@ public sealed class CopilotModelCatalogParserTests
 
         // 34 models upstream → 13 routable Anthropic/OpenAI (7 Claude + 5 OpenAI + 1 Azure-OpenAI).
         models.Should().HaveCount(13);
-        models.Should().OnlyContain(m =>
-            m.Vendor == CopilotModelVendor.Anthropic || m.Vendor == CopilotModelVendor.OpenAI);
-        models.Should().OnlyContain(m =>
-            m.Transport == CopilotModelTransport.Anthropic || m.Transport == CopilotModelTransport.Responses);
+        models
+            .Should()
+            .OnlyContain(m => m.Vendor == CopilotModelVendor.Anthropic || m.Vendor == CopilotModelVendor.OpenAI);
+        models
+            .Should()
+            .OnlyContain(m =>
+                m.Transport == CopilotModelTransport.Anthropic || m.Transport == CopilotModelTransport.Responses
+            );
     }
 
     [Fact]
@@ -30,8 +34,7 @@ public sealed class CopilotModelCatalogParserTests
 
         anthropic.Should().HaveCount(7);
         anthropic.Should().OnlyContain(m => m.Transport == CopilotModelTransport.Anthropic);
-        anthropic.Select(m => m.Id).Should().Contain(
-            ["claude-opus-4.8", "claude-sonnet-5", "claude-haiku-4.5"]);
+        anthropic.Select(m => m.Id).Should().Contain(["claude-opus-4.8", "claude-sonnet-5", "claude-haiku-4.5"]);
     }
 
     [Fact]
@@ -63,8 +66,7 @@ public sealed class CopilotModelCatalogParserTests
     {
         var models = CopilotModelCatalogParser.Parse(RealResponseJson);
 
-        models.Select(m => m.Id).Should().NotContain(
-            ["gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-2.5-pro"]);
+        models.Select(m => m.Id).Should().NotContain(["gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-2.5-pro"]);
     }
 
     [Fact]
@@ -100,6 +102,109 @@ public sealed class CopilotModelCatalogParserTests
         models.Single(m => m.Id == "claude-haiku-4.5").SupportsAdaptiveThinking.Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(
+        """["none", "minimal", "low", "medium", "high", "xhigh", "max"]""",
+        new[] { "none", "minimal", "low", "medium", "high", "xhigh", "max" }
+    )]
+    [InlineData("""["low", 42, null, "high"]""", new[] { "low", "high" })]
+    [InlineData("null", new string[0])]
+    public void Parse_projects_reasoning_effort_values(string reasoningEffortJson, string[] expected)
+    {
+        var json = $$"""
+            { "data": [{
+              "id": "claude-test",
+              "vendor": "Anthropic",
+              "supported_endpoints": ["/v1/messages"],
+              "capabilities": {
+                "supports": {
+                  "reasoning_effort": {{reasoningEffortJson}}
+                }
+              }
+            }] }
+            """;
+
+        var model = CopilotModelCatalogParser.Parse(json).Should().ContainSingle().Subject;
+
+        model.ReasoningEfforts.Should().Equal(expected);
+    }
+
+    [Fact]
+    public void Parse_equivalent_models_have_value_equality()
+    {
+        const string json = """
+            { "data": [{
+              "id": "gpt-test",
+              "name": "GPT Test",
+              "vendor": "OpenAI",
+              "supported_endpoints": ["/responses"],
+              "capabilities": {
+                "supports": {
+                  "reasoning_effort": ["low", "medium", "high"]
+                }
+              }
+            }] }
+            """;
+
+        var first = CopilotModelCatalogParser.Parse(json).Should().ContainSingle().Subject;
+        var second = CopilotModelCatalogParser.Parse(json).Should().ContainSingle().Subject;
+
+        first.Should().Be(second);
+        first.GetHashCode().Should().Be(second.GetHashCode());
+    }
+
+    [Fact]
+    public void CopilotModelInfo_does_not_expose_mutable_reasoning_efforts()
+    {
+        string[] source = ["low", "medium"];
+        var model = new CopilotModelInfo(
+            "gpt-test",
+            "GPT Test",
+            CopilotModelVendor.OpenAI,
+            CopilotModelTransport.Responses
+        )
+        {
+            ReasoningEfforts = source,
+        };
+        var efforts = model.ReasoningEfforts.Should().BeAssignableTo<IList<string>>().Subject;
+
+        var mutate = () => efforts[0] = "high";
+
+        mutate.Should().Throw<NotSupportedException>();
+        source[1] = "xhigh";
+        model.ReasoningEfforts.Should().Equal("low", "medium");
+    }
+
+    [Fact]
+    public void CopilotModelInfo_reasoning_efforts_do_not_change_legacy_equality_or_hash_code()
+    {
+        var legacy = new CopilotModelInfo(
+            "gpt-test",
+            "GPT Test",
+            CopilotModelVendor.OpenAI,
+            CopilotModelTransport.Responses
+        );
+        var enriched = legacy with { ReasoningEfforts = ["low", "medium", "high"] };
+
+        enriched.Should().Be(legacy);
+        enriched.GetHashCode().Should().Be(legacy.GetHashCode());
+    }
+
+    [Fact]
+    public void CopilotModelInfo_preserves_positional_constructor_compatibility()
+    {
+        var model = new CopilotModelInfo(
+            "gpt-test",
+            "GPT Test",
+            CopilotModelVendor.OpenAI,
+            CopilotModelTransport.Responses,
+            SupportsAdaptiveThinking: true
+        );
+
+        model.SupportsAdaptiveThinking.Should().BeTrue();
+        model.ReasoningEfforts.Should().BeEmpty();
+    }
+
     [Fact]
     public void Parse_accepts_bare_array_shape()
     {
@@ -126,8 +231,7 @@ public sealed class CopilotModelCatalogParserTests
 
         var models = CopilotModelCatalogParser.Parse(json);
 
-        models.Should().ContainSingle()
-            .Which.Transport.Should().Be(CopilotModelTransport.Responses);
+        models.Should().ContainSingle().Which.Transport.Should().Be(CopilotModelTransport.Responses);
     }
 
     [Fact]
