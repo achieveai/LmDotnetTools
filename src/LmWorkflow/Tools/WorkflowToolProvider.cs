@@ -24,13 +24,33 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 /// </remarks>
 public sealed class WorkflowToolProvider : IFunctionProvider
 {
+    /// <summary>The tool name the controller authors/replaces the definition with.</summary>
+    public const string SetWorkflowToolName = "SetWorkflow";
+
+    /// <summary>
+    ///     Every workflow-state tool name this provider can expose. These are the authoring/mutation tools
+    ///     that must stay confined to a workflow controller loop and never reach a normal agent — a host
+    ///     asserting that invariant (or restricting a controller's sub-agent templates) keys on this list.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AllToolNames =
+        [SetWorkflowToolName, "GetWorkflow", "SetCurrentNode", "SetState", "SetNotes"];
+
     private readonly WorkflowRuntime _runtime;
+    private readonly bool _includeSetWorkflow;
 
     /// <summary>Creates the provider over <paramref name="runtime"/>.</summary>
-    public WorkflowToolProvider(WorkflowRuntime runtime)
+    /// <param name="runtime">The runtime the tools drive.</param>
+    /// <param name="includeSetWorkflow">
+    ///     When <c>true</c> (default) the provider exposes all five tools including <c>SetWorkflow</c>. When
+    ///     <c>false</c> the <c>SetWorkflow</c> authoring tool is omitted — used for a controller that always
+    ///     receives a pre-authored definition (e.g. via <c>StartWorkflow</c>) and so never needs to author or
+    ///     replace one.
+    /// </param>
+    public WorkflowToolProvider(WorkflowRuntime runtime, bool includeSetWorkflow = true)
     {
         ArgumentNullException.ThrowIfNull(runtime);
         _runtime = runtime;
+        _includeSetWorkflow = includeSetWorkflow;
     }
 
     /// <inheritdoc />
@@ -42,12 +62,15 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     /// <inheritdoc />
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
-        yield return Descriptor(
-            "SetWorkflow",
-            "Author (or replace) the workflow definition and position the controller at the start node.",
-            [Param("definition", "The full workflow definition object.", DefinitionSchema(), required: true)],
-            HandleSetWorkflowAsync
-        );
+        if (_includeSetWorkflow)
+        {
+            yield return Descriptor(
+                SetWorkflowToolName,
+                "Author (or replace) the workflow definition and position the controller at the start node.",
+                [Param("definition", "The full workflow definition object.", DefinitionSchema(), required: true)],
+                HandleSetWorkflowAsync
+            );
+        }
 
         yield return Descriptor(
             "GetWorkflow",

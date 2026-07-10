@@ -52,6 +52,14 @@ public static class WorkflowSession
     /// <param name="conversationStore">An optional conversation store; when supplied the controller's history is persisted under <paramref name="threadId"/> (and recoverable on resume).</param>
     /// <param name="logger">An optional logger; forwarded to the runtime so swallowed best-effort persistence faults are surfaced at Warning.</param>
     /// <param name="schemaValidator">An optional JSON-Schema validator the runtime validates task/terminal outputs with.</param>
+    /// <param name="includeAuthoringTool">
+    ///     When <c>true</c> (default) the controller loop exposes the <c>SetWorkflow</c> authoring tool.
+    ///     Pass <c>false</c> when the controller always receives a pre-authored <paramref name="definition"/>
+    ///     and must not be able to author/replace it (e.g. a <c>StartWorkflow</c>-launched controller).
+    /// </param>
+    /// <param name="controllerMaxTurnsPerRun">
+    ///     An optional bound on the controller loop's turns per run; <c>null</c> keeps the loop's default (50).
+    /// </param>
     /// <param name="ct">A cancellation token bound to the run.</param>
     public static Task<WorkflowRunHandle> StartAsync(
         string objective,
@@ -65,6 +73,8 @@ public static class WorkflowSession
         IConversationStore? conversationStore = null,
         ILogger? logger = null,
         IJsonSchemaValidator? schemaValidator = null,
+        bool includeAuthoringTool = true,
+        int? controllerMaxTurnsPerRun = null,
         CancellationToken ct = default
     )
     {
@@ -91,7 +101,15 @@ public static class WorkflowSession
             runtime.AttachStore(store, instanceId);
         }
 
-        var loop = BuildLoop(controllerAgent, runtime, threadId, subAgentOptions, conversationStore);
+        var loop = BuildLoop(
+            controllerAgent,
+            runtime,
+            threadId,
+            subAgentOptions,
+            conversationStore,
+            includeAuthoringTool,
+            controllerMaxTurnsPerRun
+        );
         return Task.FromResult(BeginRun(loop, runtime, objective, ct));
     }
 
@@ -160,17 +178,21 @@ public static class WorkflowSession
         WorkflowRuntime runtime,
         string threadId,
         SubAgentOptions subAgentOptions,
-        IConversationStore? conversationStore
+        IConversationStore? conversationStore,
+        bool includeAuthoringTool = true,
+        int? maxTurnsPerRun = null
     )
     {
         var registry = new FunctionRegistry();
-        _ = registry.AddProvider(new WorkflowToolProvider(runtime));
+        _ = registry.AddProvider(new WorkflowToolProvider(runtime, includeSetWorkflow: includeAuthoringTool));
 
         return new MultiTurnAgentLoop(
             controllerAgent,
             registry,
             threadId,
             systemPrompt: ControllerSystemPrompt.Default,
+            // Fall back to MultiTurnAgentLoop's own default (50) when the caller does not bound it.
+            maxTurnsPerRun: maxTurnsPerRun ?? 50,
             store: conversationStore,
             subAgentOptions: subAgentOptions
         );
