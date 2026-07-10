@@ -19,22 +19,46 @@ public class DiscoveredSubAgentTemplateBuilderTests
         """;
 
     [Fact]
-    public void Build_KeepsCodeReviewerSubAgents_KeyedByQualifiedName()
+    public void Build_KeepsEveryPluginInAllowedMarketplace_KeyedByQualifiedName()
+    {
+        var items = new List<SandboxSessionRegistry.DiscoveredItem>
+        {
+            // code-reviewer plugin in gb-plugins
+            new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/code-reviewer/agents/a.md",
+                Content: Body, QualifiedName: "code-reviewer:architecture-review"),
+            // a DIFFERENT plugin in the SAME gb-plugins marketplace — must also be kept (all plugins, not just code-reviewer)
+            new("subagent", "blind-spot-detector", "bsd", "/marketplaces/gb-plugins/development/agents/b.md",
+                Content: Body, QualifiedName: "development:blind-spot-detector"),
+            // an agent from a marketplace NOT in the allow-list — must be dropped
+            new("subagent", "other", "x", "/marketplaces/superpowers/agents/o.md",
+                Content: Body, QualifiedName: "superpowers:thing"),
+            new("skill", "review", null, ".claude/skills/review.md"),
+        };
+        var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
+
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory);
+
+        templates.Should().ContainKey("code-reviewer:architecture-review");
+        templates.Should().ContainKey("development:blind-spot-detector");
+        templates.Should().NotContainKey("superpowers:thing");
+        templates["code-reviewer:architecture-review"].SystemPrompt.Should().Contain("review architecture");
+    }
+
+    [Fact]
+    public void Build_EmptyFilter_KeepsEverySubAgentRegardlessOfMarketplace()
     {
         var items = new List<SandboxSessionRegistry.DiscoveredItem>
         {
             new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/agents/a.md",
                 Content: Body, QualifiedName: "code-reviewer:architecture-review"),
-            new("subagent", "other", "x", "/marketplaces/other/agents/o.md",
-                Content: Body, QualifiedName: "other-plugin:thing"),
-            new("skill", "review", null, ".claude/skills/review.md"),
+            new("subagent", "thing", "x", "/marketplaces/superpowers/agents/o.md",
+                Content: Body, QualifiedName: "superpowers:thing"),
         };
         var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
 
-        var templates = builder.Build(items, "code-reviewer", AgentFactory);
+        var templates = builder.Build(items, [], AgentFactory);
 
         templates.Should().ContainKey("code-reviewer:architecture-review");
-        templates.Should().NotContainKey("other-plugin:thing");
-        templates["code-reviewer:architecture-review"].SystemPrompt.Should().Contain("review architecture");
+        templates.Should().ContainKey("superpowers:thing");
     }
 }
