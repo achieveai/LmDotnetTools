@@ -243,7 +243,9 @@ public sealed class WorkflowManager : IAsyncDisposable
             entry.Handle = handle;
 
             // Past this point the completion handler owns the concurrency slot and the handle's disposal.
-            _ = ObserveCompletionAsync(workflowId, entry, mode);
+            // Track the observer task so DisposeAsync can await it before disposing the gate (otherwise its
+            // fire-and-forget Release could land on an already-disposed semaphore).
+            entry.Observer = ObserveCompletionAsync(workflowId, entry, mode);
         }
         catch
         {
@@ -264,7 +266,9 @@ public sealed class WorkflowManager : IAsyncDisposable
         }
 
         // Sync: block until terminal, then return the outcome inline. Gate release + disposal are handled by
-        // the completion handler; this path only reads the terminal state.
+        // the completion handler; this path only reads the terminal state. Note: cancelling the caller here
+        // rethrows OperationCanceledException but deliberately does NOT cancel the run (it stays queryable via
+        // Check/Wait and finishes on its own); the run is bounded instead by controllerMaxTurnsPerRun.
         try
         {
             await handle.Completion.WaitAsync(ct).ConfigureAwait(false);
@@ -372,7 +376,18 @@ public sealed class WorkflowManager : IAsyncDisposable
             }
         }
 
-        return BuildResult(workflowId, handle);
+        // Only report a terminal outcome once Completion has actually resolved. If the wait returned while
+        // the run is still going (a timeout, or any swallowed non-fatal wait error), report it as still
+        // waiting rather than letting BuildResult misread a running workflow as "failed".
+        return handle.Completion.IsCompleted
+            ? BuildResult(workflowId, handle)
+            : new WorkflowRunResult
+            {
+                WorkflowId = workflowId,
+                Status = "timeout",
+                CurrentNodeId = handle.CurrentNodeId,
+                IsComplete = false,
+            };
     }
 
     /// <inheritdoc />
@@ -381,6 +396,21 @@ public sealed class WorkflowManager : IAsyncDisposable
         foreach (var (id, entry) in _workflows)
         {
             await DisposeHandleOnceAsync(id, entry).ConfigureAwait(false);
+
+            // Await the completion observer (its Completion is now resolved by the disposal above) so its
+            // one-shot gate Release runs BEFORE the gate is disposed below — otherwise a still-in-flight
+            // observer could Release an already-disposed semaphore and fault as unobserved background work.
+            if (entry.Observer is { } observer)
+            {
+                try
+                {
+                    await observer.ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Workflow {WorkflowId} completion observer faulted during dispose", id);
+                }
+            }
         }
 
         _workflows.Clear();
@@ -451,8 +481,17 @@ public sealed class WorkflowManager : IAsyncDisposable
             }
 
             // Release the slot as soon as the run ends — BEFORE the possibly-slow notify — so a blocked
-            // notification never holds up a fresh StartWorkflow waiting on the gate.
-            _ = _concurrencyGate.Release();
+            // notification never holds up a fresh StartWorkflow waiting on the gate. Guarded against a
+            // concurrent DisposeAsync having already disposed the gate (belt-and-suspenders: DisposeAsync
+            // now awaits this observer before disposing, so this is normally unreachable).
+            try
+            {
+                _ = _concurrencyGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The manager was disposed; the slot no longer matters.
+            }
 
             if (mode == WorkflowStartMode.Async
                 && _completionNotifier is not null
@@ -594,6 +633,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     private sealed class WorkflowEntry
     {
         public WorkflowRunHandle? Handle;
+        public Task? Observer;
         public int NotifySent;
         public int Disposed;
     }

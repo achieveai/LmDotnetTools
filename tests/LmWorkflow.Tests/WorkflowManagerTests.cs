@@ -225,6 +225,44 @@ public class WorkflowManagerTests
     }
 
     [Fact]
+    public async Task WaitAsync_HugeTimeout_OnRunningWorkflow_ReportsTimeout_NotFailed()
+    {
+        // Regression: a very large timeout must not throw out of Task.WaitAsync and get swallowed into a
+        // phantom "failed" for a still-running workflow.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controller = GatedController(gate);
+        await using var manager = NewManager(() => controller.Object);
+
+        _ = await manager.StartAsync("wf-hugewait", MinimalDefinition(), WorkflowStartMode.Async);
+
+        // ~57 days in seconds — beyond Task.WaitAsync's accepted range if unclamped.
+        var result = await manager.WaitAsync("wf-hugewait", TimeSpan.FromSeconds(5_000_000));
+        result.Status.Should().Be("timeout");
+
+        gate.SetResult();
+        (await manager.WaitAsync("wf-hugewait", Timeout)).Status.Should().Be("completed");
+    }
+
+    [Fact]
+    public async Task DisposeAsync_WithInFlightWorkflow_DoesNotFault_NorLeakUnobservedException()
+    {
+        // Regression: disposing the manager while an async workflow is still running must not leave the
+        // completion observer releasing an already-disposed gate (unobserved ObjectDisposedException).
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controller = GatedController(gate);
+        var manager = NewManager(() => controller.Object);
+
+        _ = await manager.StartAsync("wf-dispose", MinimalDefinition(), WorkflowStartMode.Async);
+        manager.Check("wf-dispose").Status.Should().Be("running");
+
+        // Dispose mid-run — this drives the handle to completion and must await the observer cleanly.
+        var dispose = async () => await manager.DisposeAsync();
+        await dispose.Should().NotThrowAsync();
+
+        gate.TrySetResult();
+    }
+
+    [Fact]
     public async Task Check_AfterTerminalAndDisposal_StillReturnsCompleted()
     {
         var controller = ScriptedController(DriveMinimalToTerminal);

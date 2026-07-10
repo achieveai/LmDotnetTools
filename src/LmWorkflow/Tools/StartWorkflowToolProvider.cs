@@ -323,14 +323,22 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             return null;
         }
 
-        return prop.ValueKind switch
+        var seconds = prop.ValueKind switch
         {
-            JsonValueKind.Number when prop.TryGetDouble(out var seconds) && seconds >= 0 =>
-                TimeSpan.FromSeconds(seconds),
+            JsonValueKind.Number when prop.TryGetDouble(out var value) && value >= 0 => value,
             // Some models emit numbers as strings.
-            JsonValueKind.String when double.TryParse(prop.GetString(), out var seconds) && seconds >= 0 =>
-                TimeSpan.FromSeconds(seconds),
-            _ => null,
+            JsonValueKind.String when double.TryParse(prop.GetString(), out var value) && value >= 0 => value,
+            _ => (double?)null,
         };
+
+        if (seconds is not { } s)
+        {
+            return null;
+        }
+
+        // Clamp to a range Task.WaitAsync accepts (it throws for a timeout beyond ~49.7 days). ~24.8 days is
+        // effectively "wait indefinitely" for a tool call while staying safely in range.
+        var ms = Math.Min(s * 1000d, int.MaxValue);
+        return TimeSpan.FromMilliseconds(ms);
     }
 }
