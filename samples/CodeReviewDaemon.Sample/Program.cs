@@ -256,6 +256,37 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
 }
 
+// Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com
+// clones, Azure DevOps for dev.azure.com clones — so a private ADO store/submodule checkout gets a
+// credential just like GitHub. HostGitCommandRunner asks this source per git command; a provider that is
+// not signed in throws and is skipped, so the GitHub-only daemon and the dedicated ADO daemon each inject
+// exactly the credentials their store/target needs. Tokens never touch argv or on-disk git config.
+static Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> BuildHostGitCredentialsSource(IServiceProvider sp)
+{
+    var providers = sp.GetServices<IOAuthTokenProvider>().ToList();
+    return async ct =>
+    {
+        var tokens = new List<GitProviderToken>(providers.Count);
+        foreach (var provider in providers)
+        {
+            try
+            {
+                var token = await provider.GetAccessTokenAsync(ct: ct).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(token.Value))
+                {
+                    tokens.Add(new GitProviderToken(provider.ProviderId, token.Value));
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Provider not signed in / not configured — skip; its host's clones stay unauthenticated.
+            }
+        }
+
+        return tokens;
+    };
+}
+
 // HOST-side retention workspace (Task 15, design §6 Risk A): the ReviewBot retention push and the KB
 // entry it carries must run OUTSIDE the sandbox the untrusted review agent shares, with the write
 // credential injected only into this host-process git runner. Registered only when a ReviewBot repo is
@@ -269,9 +300,8 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
         var hostRoot = string.IsNullOrWhiteSpace(daemonOptions.WorkspaceHostRoot)
             ? Path.Combine(AppContext.BaseDirectory, "workspaces")
             : daemonOptions.WorkspaceHostRoot;
-        var github = sp.GetRequiredService<GitHubOAuthProvider>();
         var runner = new HostGitCommandRunner(
-            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
+            BuildHostGitCredentialsSource(sp),
             sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
         return new HostRetentionWorkspace(runner, new HostFileSystem(), Path.Combine(hostRoot, "reviewbot"));
     });
@@ -300,9 +330,8 @@ if (daemonOptions.EnableToolAssistedReview
 
     builder.Services.AddSingleton(sp =>
     {
-        var github = sp.GetRequiredService<GitHubOAuthProvider>();
         var hostRunner = new HostGitCommandRunner(
-            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
+            BuildHostGitCredentialsSource(sp),
             sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
         var hostFileSystem = new HostFileSystem();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
