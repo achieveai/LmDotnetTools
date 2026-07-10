@@ -27,13 +27,26 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     /// <summary>The tool name the controller authors/replaces the definition with.</summary>
     public const string SetWorkflowToolName = "SetWorkflow";
 
+    /// <summary>The tool name that reads the runtime + ready-to-spawn next action.</summary>
+    public const string GetWorkflowToolName = "GetWorkflow";
+
+    /// <summary>The tool name that routes between nodes / finalizes a terminal.</summary>
+    public const string SetCurrentNodeToolName = "SetCurrentNode";
+
+    /// <summary>The tool name that writes the mutable state channel.</summary>
+    public const string SetStateToolName = "SetState";
+
+    /// <summary>The tool name that records a scoped note.</summary>
+    public const string SetNotesToolName = "SetNotes";
+
     /// <summary>
     ///     Every workflow-state tool name this provider can expose. These are the authoring/mutation tools
     ///     that must stay confined to a workflow controller loop and never reach a normal agent — a host
     ///     asserting that invariant (or restricting a controller's sub-agent templates) keys on this list.
+    ///     Derived from the same name constants <see cref="GetFunctions"/> uses so the two cannot drift.
     /// </summary>
     public static readonly IReadOnlyList<string> AllToolNames =
-        [SetWorkflowToolName, "GetWorkflow", "SetCurrentNode", "SetState", "SetNotes"];
+        [SetWorkflowToolName, GetWorkflowToolName, SetCurrentNodeToolName, SetStateToolName, SetNotesToolName];
 
     private readonly WorkflowRuntime _runtime;
     private readonly bool _includeSetWorkflow;
@@ -77,7 +90,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         }
 
         yield return Descriptor(
-            "GetWorkflow",
+            GetWorkflowToolName,
             "Read the current workflow state. The result always includes the ready-to-spawn "
                 + "nextExpectedAction unit(s) for the active node.",
             [
@@ -93,7 +106,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         );
 
         yield return Descriptor(
-            "SetCurrentNode",
+            SetCurrentNodeToolName,
             "Advance the controller from the completed node to the next node along a declared edge. "
                 + "Supply a result object when advancing into a terminal to finalize the workflow.",
             [
@@ -110,7 +123,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         );
 
         yield return Descriptor(
-            "SetState",
+            SetStateToolName,
             "Write a value into the mutable state channel at a 'state.' path.",
             [
                 Param("path", "The destination path, e.g. state.analysis.", JsonSchemaObject.String(), required: true),
@@ -121,7 +134,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         );
 
         yield return Descriptor(
-            "SetNotes",
+            SetNotesToolName,
             "Record a scoped note for later reference.",
             [
                 Param("scope", "The note scope.", JsonSchemaObject.String(), required: true),

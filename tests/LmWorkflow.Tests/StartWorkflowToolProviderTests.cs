@@ -134,4 +134,75 @@ public class StartWorkflowToolProviderTests
         doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
         doc.RootElement.GetProperty("workflowId").GetString().Should().Be("ok");
     }
+
+    [Fact]
+    public async Task CheckWorkflow_RunningWorkflow_ReturnsRunningJson()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new StartWorkflowToolProvider(NewManager(() => GatedController(gate).Object));
+        var start = Tool(provider, "StartWorkflow");
+        var check = Tool(provider, "CheckWorkflow");
+
+        _ = await Invoke(start, StartArgs("chk", WorkflowFixtures.MinimalValid, "async"));
+
+        var result = await Invoke(check, new JsonObject { ["workflowId"] = "chk" }.ToJsonString());
+        result.Payload.IsError.Should().BeFalse();
+        using (var doc = JsonDocument.Parse(result.Payload.Text))
+        {
+            doc.RootElement.GetProperty("status").GetString().Should().Be("running");
+        }
+
+        gate.SetResult();
+    }
+
+    [Fact]
+    public async Task WaitWorkflow_UnknownId_MapsToUnknownWorkflow()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var result = await Invoke(
+            Tool(provider, "WaitWorkflow"),
+            new JsonObject { ["workflowId"] = "nope", ["timeout"] = 1 }.ToJsonString()
+        );
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("unknown_workflow");
+    }
+
+    [Fact]
+    public async Task WaitWorkflow_MissingWorkflowId_ReturnsInvalidArgs()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var result = await Invoke(Tool(provider, "WaitWorkflow"), "{}");
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_args");
+    }
+
+    [Theory]
+    [InlineData("5")] // number-as-string (some models emit this)
+    [InlineData(-1)] // negative → treated as no timeout
+    [InlineData(5000000)] // ~57 days → clamped, must not throw
+    public async Task WaitWorkflow_ParsesAndClampsTimeout_OnCompletedWorkflow(object timeout)
+    {
+        // The workflow is already terminal, so WaitWorkflow returns immediately regardless of the timeout —
+        // this exercises GetOptionalTimeout's string/negative/clamp paths through the actual handler.
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var start = Tool(provider, "StartWorkflow");
+        var wait = Tool(provider, "WaitWorkflow");
+
+        _ = await Invoke(start, StartArgs("done", WorkflowFixtures.MinimalValid, "sync"));
+
+        var args = new JsonObject
+        {
+            ["workflowId"] = "done",
+            ["timeout"] = timeout is string s ? JsonValue.Create(s) : JsonValue.Create((int)timeout),
+        };
+        var result = await Invoke(wait, args.ToJsonString());
+
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+    }
 }

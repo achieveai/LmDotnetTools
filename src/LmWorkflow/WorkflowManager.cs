@@ -25,6 +25,29 @@ public enum WorkflowStartMode
 }
 
 /// <summary>
+///     The well-known <see cref="WorkflowRunResult.Status"/> values a workflow run reports. Kept as named
+///     constants (like <c>NotifyKinds</c>) so producers and the <c>BuildNotifyDetail</c> dispatch never drift
+///     on a raw string literal.
+/// </summary>
+public static class WorkflowStatuses
+{
+    /// <summary>An async run was accepted and is now running on a background task.</summary>
+    public const string Started = "started";
+
+    /// <summary>The run has not yet reached a terminal state.</summary>
+    public const string Running = "running";
+
+    /// <summary>The run reached a terminal node; <see cref="WorkflowRunResult.Result"/> carries the outcome.</summary>
+    public const string Completed = "completed";
+
+    /// <summary>The run ended without a terminal node (fault, cancellation, or turn-budget exhaustion).</summary>
+    public const string Failed = "failed";
+
+    /// <summary>A <c>WaitWorkflow</c> call returned before the run finished; the run is still going.</summary>
+    public const string Timeout = "timeout";
+}
+
+/// <summary>
 ///     The status/result of a workflow run, returned by <see cref="WorkflowManager.StartAsync"/> (sync mode
 ///     terminal, or an async <c>started</c> receipt), <see cref="WorkflowManager.Check"/>, and
 ///     <see cref="WorkflowManager.WaitAsync"/>. Not every field is populated in every status — e.g. a
@@ -35,7 +58,7 @@ public sealed record WorkflowRunResult
     /// <summary>The caller-supplied opaque workflow handle.</summary>
     public required string WorkflowId { get; init; }
 
-    /// <summary>One of <c>started</c>, <c>running</c>, <c>completed</c>, <c>failed</c>, <c>timeout</c>.</summary>
+    /// <summary>One of the <see cref="WorkflowStatuses"/> values (started/running/completed/failed/timeout).</summary>
     public required string Status { get; init; }
 
     /// <summary>The validated final result when <see cref="Status"/> is <c>completed</c>; otherwise <c>null</c>.</summary>
@@ -102,6 +125,9 @@ public sealed class WorkflowManager : IAsyncDisposable
 {
     /// <summary>The default bounded wait for a concurrency slot before signalling backpressure.</summary>
     private static readonly TimeSpan DefaultGateWaitTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>The largest wait <see cref="Task.WaitAsync(TimeSpan, CancellationToken)"/> accepts (~24.8 days).</summary>
+    private static readonly TimeSpan MaxWaitTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
 
     /// <summary>The initial message handed to a controller whose definition is already loaded.</summary>
     internal const string StartObjective =
@@ -262,7 +288,7 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         if (mode == WorkflowStartMode.Async)
         {
-            return new WorkflowRunResult { WorkflowId = workflowId, Status = "started" };
+            return new WorkflowRunResult { WorkflowId = workflowId, Status = WorkflowStatuses.Started };
         }
 
         // Sync: block until terminal, then return the outcome inline. Gate release + disposal are handled by
@@ -288,20 +314,28 @@ public sealed class WorkflowManager : IAsyncDisposable
 
     /// <summary>
     ///     Returns the current status and a state snapshot for <paramref name="workflowId"/> WITHOUT blocking.
-    ///     Works for a running, completed, or failed workflow — including after its handle was disposed on
-    ///     completion (the runtime state stays readable).
+    ///     Works for a running, completed, or failed workflow — after completion it answers from a retained
+    ///     lightweight snapshot (the heavy run graph is released).
     /// </summary>
     /// <exception cref="UnknownWorkflowException">No such workflow.</exception>
     public WorkflowRunResult Check(string workflowId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
 
-        if (!_workflows.TryGetValue(workflowId, out var entry) || entry.Handle is null)
+        if (!_workflows.TryGetValue(workflowId, out var entry))
         {
             throw new UnknownWorkflowException(workflowId);
         }
 
-        var handle = entry.Handle;
+        // A captured terminal snapshot is authoritative once present (the handle may already be released).
+        if (Volatile.Read(ref entry.TerminalSnapshot) is { } terminal)
+        {
+            return terminal;
+        }
+
+        // Reserved but not yet started (a sub-millisecond, synchronous window inside StartAsync) → unknown.
+        var handle = Volatile.Read(ref entry.Handle) ?? throw new UnknownWorkflowException(workflowId);
+
         return handle.Completion.IsCompleted
             ? BuildResult(workflowId, handle)
             : Running(workflowId, handle);
@@ -323,32 +357,36 @@ public sealed class WorkflowManager : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
 
-        if (!_workflows.TryGetValue(workflowId, out var entry) || entry.Handle is null)
+        if (!_workflows.TryGetValue(workflowId, out var entry))
         {
             throw new UnknownWorkflowException(workflowId);
         }
 
-        var handle = entry.Handle;
+        // Already terminal → return the retained snapshot without blocking.
+        if (Volatile.Read(ref entry.TerminalSnapshot) is { } cached)
+        {
+            return cached;
+        }
+
+        var handle = Volatile.Read(ref entry.Handle) ?? throw new UnknownWorkflowException(workflowId);
 
         if (!handle.Completion.IsCompleted)
         {
             if (timeout is { } wait)
             {
+                // Clamp to a range Task.WaitAsync accepts (it throws for a timeout beyond ~49.7 days); ~24.8
+                // days is effectively "wait until completion" while staying in range. A direct library caller
+                // passing an out-of-range TimeSpan is handled here, not just the tool's own clamp.
+                var bounded = wait > MaxWaitTimeout ? MaxWaitTimeout : wait;
                 try
                 {
                     // WaitAsync(timeout, ct) is non-destructive: it stops waiting without cancelling the
                     // underlying run, and observes the source task internally.
-                    await handle.Completion.WaitAsync(wait, ct).ConfigureAwait(false);
+                    await handle.Completion.WaitAsync(bounded, ct).ConfigureAwait(false);
                 }
                 catch (TimeoutException)
                 {
-                    return new WorkflowRunResult
-                    {
-                        WorkflowId = workflowId,
-                        Status = "timeout",
-                        CurrentNodeId = handle.CurrentNodeId,
-                        IsComplete = false,
-                    };
+                    return Timeout(workflowId, handle);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -356,7 +394,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                 }
                 catch
                 {
-                    // Faulted run → surfaced as Failed by BuildResult below.
+                    // Faulted run → surfaced as Failed by the terminal read below.
                 }
             }
             else
@@ -371,23 +409,20 @@ public sealed class WorkflowManager : IAsyncDisposable
                 }
                 catch
                 {
-                    // Faulted run → surfaced as Failed by BuildResult below.
+                    // Faulted run → surfaced as Failed by the terminal read below.
                 }
             }
         }
 
-        // Only report a terminal outcome once Completion has actually resolved. If the wait returned while
-        // the run is still going (a timeout, or any swallowed non-fatal wait error), report it as still
-        // waiting rather than letting BuildResult misread a running workflow as "failed".
-        return handle.Completion.IsCompleted
-            ? BuildResult(workflowId, handle)
-            : new WorkflowRunResult
-            {
-                WorkflowId = workflowId,
-                Status = "timeout",
-                CurrentNodeId = handle.CurrentNodeId,
-                IsComplete = false,
-            };
+        // Prefer a snapshot the observer may have captured while we waited; otherwise only report a terminal
+        // outcome once Completion has actually resolved — a still-running workflow is reported as waiting, not
+        // misread as "failed".
+        if (Volatile.Read(ref entry.TerminalSnapshot) is { } terminal)
+        {
+            return terminal;
+        }
+
+        return handle.Completion.IsCompleted ? BuildResult(workflowId, handle) : Timeout(workflowId, handle);
     }
 
     /// <inheritdoc />
@@ -462,9 +497,10 @@ public sealed class WorkflowManager : IAsyncDisposable
     }
 
     /// <summary>
-    ///     Awaits the run's completion, then (once, in order): releases the concurrency slot, sends the
-    ///     proactive completion notification for an async run (exception-isolated, so a delivery failure never
-    ///     masks the result), and disposes the handle. Fully guarded so it never faults as background work.
+    ///     Awaits the run's completion, then (once, in order): captures the lightweight terminal snapshot,
+    ///     releases the concurrency slot, sends the proactive completion notification for an async run
+    ///     (exception-isolated, so a delivery failure never masks the result), disposes the handle, and
+    ///     releases the heavy run graph. Fully guarded so it never faults as background work.
     /// </summary>
     private async Task ObserveCompletionAsync(string workflowId, WorkflowEntry entry, WorkflowStartMode mode)
     {
@@ -475,10 +511,17 @@ public sealed class WorkflowManager : IAsyncDisposable
             {
                 await handle.Completion.ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
-                // The terminal fault is read back from the handle by BuildResult; nothing to do here.
+                // The terminal fault is also read back from the handle by BuildResult (→ a Failed result);
+                // surface it here at Warning so a controller run fault is never entirely silent.
+                _logger.LogWarning(ex, "Workflow {WorkflowId} controller run faulted", workflowId);
             }
+
+            // Capture the lightweight terminal snapshot BEFORE releasing/notifying/disposing so Check/Wait can
+            // answer from it and the heavy WorkflowRunHandle → WorkflowRuntime graph can be released below.
+            var result = BuildResult(workflowId, handle);
+            Volatile.Write(ref entry.TerminalSnapshot, result);
 
             // Release the slot as soon as the run ends — BEFORE the possibly-slow notify — so a blocked
             // notification never holds up a fresh StartWorkflow waiting on the gate. Guarded against a
@@ -497,9 +540,8 @@ public sealed class WorkflowManager : IAsyncDisposable
                 && _completionNotifier is not null
                 && Interlocked.Exchange(ref entry.NotifySent, 1) == 0)
             {
-                // Revision #4: the terminal outcome is fully determined from the handle BEFORE the notify,
-                // and the notify is isolated so a failure never loses the result (still queryable via Check).
-                var result = BuildResult(workflowId, handle);
+                // Revision #4: the terminal outcome is fully determined BEFORE the notify, and the notify is
+                // isolated so a failure never loses the result (still queryable via Check).
                 var notify = NotifyMessage.Create(
                     NotifyKinds.WorkflowCompletion,
                     detail: BuildNotifyDetail(result),
@@ -526,6 +568,11 @@ public sealed class WorkflowManager : IAsyncDisposable
         finally
         {
             await DisposeHandleOnceAsync(workflowId, entry).ConfigureAwait(false);
+
+            // Release the heavy run graph now that a lightweight terminal snapshot answers Check/Wait. The
+            // entry itself is retained (see the class remarks on the accepted v1 no-eviction limitation), but
+            // it now holds only the small result, not the disposed loop + runtime + definition.
+            Volatile.Write(ref entry.Handle, null);
         }
     }
 
@@ -568,7 +615,7 @@ public sealed class WorkflowManager : IAsyncDisposable
             ? new WorkflowRunResult
             {
                 WorkflowId = workflowId,
-                Status = "completed",
+                Status = WorkflowStatuses.Completed,
                 Result = handle.Result,
                 CurrentNodeId = handle.CurrentNodeId,
                 IsComplete = true,
@@ -587,7 +634,7 @@ public sealed class WorkflowManager : IAsyncDisposable
         new()
         {
             WorkflowId = workflowId,
-            Status = "failed",
+            Status = WorkflowStatuses.Failed,
             Error = error,
             CurrentNodeId = handle.CurrentNodeId,
             IsComplete = handle.IsComplete,
@@ -599,24 +646,36 @@ public sealed class WorkflowManager : IAsyncDisposable
         new()
         {
             WorkflowId = workflowId,
-            Status = "running",
+            Status = WorkflowStatuses.Running,
             CurrentNodeId = handle.CurrentNodeId,
             IsComplete = false,
             Outputs = handle.Outputs,
             Notes = handle.Notes,
         };
 
+    private static WorkflowRunResult Timeout(string workflowId, WorkflowRunHandle handle) =>
+        new()
+        {
+            WorkflowId = workflowId,
+            Status = WorkflowStatuses.Timeout,
+            CurrentNodeId = handle.CurrentNodeId,
+            IsComplete = false,
+        };
+
     /// <summary>Renders the notification payload body dropped into the completion envelope.</summary>
     private static string BuildNotifyDetail(WorkflowRunResult result)
     {
+        // XML-escape the model-supplied id/status into the inner markup. The OUTER envelope
+        // (NotifyMessage.BuildEnvelope) already escapes + sanitizes, so this is robustness against malformed
+        // inner markup (a workflowId containing " or <) the model would otherwise read, not a security fix.
         var sb = new StringBuilder();
         _ = sb.Append("<workflow id=\"")
-            .Append(result.WorkflowId)
+            .Append(EscapeXml(result.WorkflowId))
             .Append("\" status=\"")
-            .Append(result.Status)
+            .Append(EscapeXml(result.Status))
             .Append("\">\n");
 
-        if (result.Status == "completed")
+        if (result.Status == WorkflowStatuses.Completed)
         {
             _ = sb.Append("Result: ").Append(result.Result?.ToJsonString() ?? "(no result)").Append('\n');
         }
@@ -629,10 +688,23 @@ public sealed class WorkflowManager : IAsyncDisposable
         return sb.ToString();
     }
 
-    /// <summary>A tracked workflow: its run handle plus one-shot notify/dispose guards. Deliberately thin.</summary>
+    private static string EscapeXml(string value) =>
+        value
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;")
+            .Replace("\"", "&quot;");
+
+    /// <summary>A tracked workflow: a lightweight terminal snapshot plus the live run handle (released once
+    /// terminal) and one-shot notify/dispose guards. Fields are published/read via <see cref="Volatile"/>.</summary>
     private sealed class WorkflowEntry
     {
+        /// <summary>The live run handle while running; nulled once terminal so its heavy graph can be collected.</summary>
         public WorkflowRunHandle? Handle;
+
+        /// <summary>The lightweight terminal result, captured at completion. Authoritative once non-null.</summary>
+        public WorkflowRunResult? TerminalSnapshot;
+
         public Task? Observer;
         public int NotifySent;
         public int Disposed;

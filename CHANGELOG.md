@@ -5,6 +5,19 @@ All notable changes to the LmDotnetTools project will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **LmWorkflow**: `StartWorkflow`/`CheckWorkflow`/`WaitWorkflow` agent-facing tools (`StartWorkflowToolProvider`) that launch a pre-authored `WorkflowDefinition` on an isolated controller loop via the new `WorkflowManager`, with bounded concurrency and proactive completion notifications (`NotifyKinds.WorkflowCompletion`). (#179)
+- **LmMultiTurn**: `SubAgentOptions.NonInheritedToolNames` to exclude specific tools from sub-agent inheritance, and a public `MultiTurnAgentLoop.RegisteredToolNames` accessor.
+
+### Changed
+
+- **LmWorkflow (breaking, internal API narrowing)**: `WorkflowRuntime` and `WorkflowToolProvider` constructors are now `internal` (were `public`) so the workflow-authoring/mutation tools stay confined to a controller loop. No in-repo callers construct them directly; external consumers of the `AchieveAi.LmDotnetTools.LmWorkflow` package that instantiated these types must go through `WorkflowSession`/`WorkflowManager`. (#179)
+
+---
+
 ## [1.0.33] - 2026-05-23
 
 ### Added

@@ -1069,6 +1069,11 @@ try
                             controllerSubAgentOptions: controllerSubAgentOptions,
                             completionNotifier: async (notify, notifyCt) =>
                             {
+                                // Late-bound to `agent` (assigned just below). Re-injects the async workflow's
+                                // completion as a NotifyMessage into the conversation. WorkflowManager wraps
+                                // this call in its own try/catch, so a SendAsync on an already-disposed loop
+                                // (conversation torn down before the workflow finished) is tolerated — logged,
+                                // never fatal.
                                 var conversation = agent;
                                 if (conversation is not null)
                                 {

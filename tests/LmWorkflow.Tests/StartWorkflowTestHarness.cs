@@ -94,6 +94,26 @@ internal static class StartWorkflowTestHarness
         return controller;
     }
 
+    /// <summary>
+    ///     A controller whose pump faults: it throws an <see cref="OperationCanceledException"/> while nothing
+    ///     is cancelled, which faults the run's Completion (see WorkflowSession's pump-fault handling) — the
+    ///     "controller run threw" path, distinct from turn-budget exhaustion.
+    /// </summary>
+    public static Mock<IStreamingAgent> FaultingController()
+    {
+        var controller = new Mock<IStreamingAgent>();
+        controller
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Throws(new OperationCanceledException("controller pump fault"));
+        return controller;
+    }
+
     public static ToolCallMessage ToolCall(string functionName, JsonObject args, string toolCallId) =>
         new()
         {

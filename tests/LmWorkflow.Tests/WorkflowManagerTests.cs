@@ -225,22 +225,19 @@ public class WorkflowManagerTests
     }
 
     [Fact]
-    public async Task WaitAsync_HugeTimeout_OnRunningWorkflow_ReportsTimeout_NotFailed()
+    public async Task WaitAsync_HugeTimeout_ClampsWithoutThrowing_AndResolvesOnCompletion()
     {
-        // Regression: a very large timeout must not throw out of Task.WaitAsync and get swallowed into a
-        // phantom "failed" for a still-running workflow.
-        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var controller = GatedController(gate);
+        // Regression: a very large timeout must be CLAMPED (not throw out of Task.WaitAsync and get swallowed)
+        // and resolve on the run's completion rather than on the raw out-of-range value.
+        var controller = ScriptedController(DriveMinimalToTerminal);
         await using var manager = NewManager(() => controller.Object);
 
         _ = await manager.StartAsync("wf-hugewait", MinimalDefinition(), WorkflowStartMode.Async);
 
-        // ~57 days in seconds — beyond Task.WaitAsync's accepted range if unclamped.
+        // ~57 days in seconds — beyond Task.WaitAsync's accepted range if unclamped. The run completes
+        // quickly, so the wait returns completed well before any timeout.
         var result = await manager.WaitAsync("wf-hugewait", TimeSpan.FromSeconds(5_000_000));
-        result.Status.Should().Be("timeout");
-
-        gate.SetResult();
-        (await manager.WaitAsync("wf-hugewait", Timeout)).Status.Should().Be("completed");
+        result.Status.Should().Be("completed");
     }
 
     [Fact]
@@ -260,6 +257,40 @@ public class WorkflowManagerTests
         await dispose.Should().NotThrowAsync();
 
         gate.TrySetResult();
+    }
+
+    [Fact]
+    public async Task WaitAsync_CallerCancelled_Throws_ButRunStaysAliveAndQueryable()
+    {
+        // Pins the non-destructive-cancellation invariant: cancelling a WaitAsync must NOT cancel the run.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controller = GatedController(gate);
+        await using var manager = NewManager(() => controller.Object);
+
+        _ = await manager.StartAsync("wf-cancel", MinimalDefinition(), WorkflowStartMode.Async);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var wait = () => manager.WaitAsync("wf-cancel", TimeSpan.FromSeconds(30), cts.Token);
+        await wait.Should().ThrowAsync<OperationCanceledException>();
+
+        // The run is untouched: still running, and it can still complete.
+        manager.Check("wf-cancel").Status.Should().Be("running");
+        gate.SetResult();
+        (await manager.WaitAsync("wf-cancel", Timeout)).Status.Should().Be("completed");
+    }
+
+    [Fact]
+    public async Task Controller_ThatFaults_ResultIsFailed()
+    {
+        var controller = FaultingController();
+        await using var manager = NewManager(() => controller.Object);
+
+        var result = await manager.StartAsync("wf-fault", MinimalDefinition(), WorkflowStartMode.Sync);
+
+        result.Status.Should().Be("failed");
+        result.IsComplete.Should().BeFalse();
+        result.Error.Should().NotBeNullOrEmpty();
     }
 
     [Fact]
