@@ -1947,7 +1947,8 @@ public partial class Program
     }
 
     /// <summary>
-    /// Attaches one conversation-scoped characteristics factory to every template.
+    /// Attaches one conversation-scoped characteristics factory to every template while preserving
+    /// template-specific agents for inherited model routing.
     /// </summary>
     internal static SubAgentOptions ApplyCharacteristicsAgentFactory(
         SubAgentOptions options,
@@ -1962,7 +1963,13 @@ public partial class Program
                 entry => entry.Key,
                 entry => entry.Value with
                 {
-                    CharacteristicsAgentFactory = characteristicsAgentFactory,
+                    CharacteristicsAgentFactory = characteristics =>
+                    {
+                        var provider = characteristicsAgentFactory(characteristics);
+                        return characteristics.IsModelExplicitlySelected
+                            ? provider
+                            : provider with { Agent = entry.Value.AgentFactory() };
+                    },
                 },
                 StringComparer.Ordinal),
         };

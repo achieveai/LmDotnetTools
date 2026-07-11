@@ -10,32 +10,62 @@ namespace LmStreaming.Sample.Tests;
 public sealed class ProgramSubAgentCompositionTests
 {
     [Fact]
-    public void ApplyCharacteristicsAgentFactory_AttachesSameFactoryToEveryTemplate()
+    public void ApplyCharacteristicsAgentFactory_InheritedModelPreservesTemplateAgentAndRequestProperties()
     {
-        var legacyFactory = new Func<IStreamingAgent>(() => new Mock<IStreamingAgent>().Object);
+        var templateAgent = new Mock<IStreamingAgent>().Object;
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        var requestProperties = ImmutableDictionary<string, object?>.Empty.Add("effort", "high");
+        var legacyFactory = new Func<IStreamingAgent>(() => templateAgent);
         var characteristicsFactory =
             new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
-                new SubAgentProviderAgent(
-                    new Mock<IStreamingAgent>().Object,
-                    ImmutableDictionary<string, object?>.Empty));
-        var first = Template("first", legacyFactory);
-        var second = Template("second", legacyFactory);
+                new SubAgentProviderAgent(routedAgent, requestProperties));
 
         var result = global::Program.ApplyCharacteristicsAgentFactory(
             new SubAgentOptions
             {
                 Templates = new Dictionary<string, SubAgentTemplate>
                 {
-                    ["first"] = first,
-                    ["second"] = second,
+                    ["custom"] = Template("custom", legacyFactory),
                 },
             },
             characteristicsFactory);
 
-        result.Templates.Values.Should().OnlyContain(template =>
-            ReferenceEquals(template.CharacteristicsAgentFactory, characteristicsFactory));
-        result.Templates["first"].AgentFactory.Should().BeSameAs(legacyFactory);
-        result.Templates["second"].AgentFactory.Should().BeSameAs(legacyFactory);
+        var provider = result.Templates["custom"].CharacteristicsAgentFactory!(
+            new SubAgentCharacteristics(null, ReasoningEffort.High));
+
+        provider.Agent.Should().BeSameAs(templateAgent);
+        provider.ExtraProperties.Should().BeSameAs(requestProperties);
+    }
+
+    [Fact]
+    public void ApplyCharacteristicsAgentFactory_ExplicitModelUsesRoutedAgent()
+    {
+        var templateAgent = new Mock<IStreamingAgent>().Object;
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        var legacyFactory = new Func<IStreamingAgent>(() => templateAgent);
+        var characteristicsFactory =
+            new Func<SubAgentCharacteristics, SubAgentProviderAgent>(_ =>
+                new SubAgentProviderAgent(
+                    routedAgent,
+                    ImmutableDictionary<string, object?>.Empty));
+
+        var result = global::Program.ApplyCharacteristicsAgentFactory(
+            new SubAgentOptions
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>
+                {
+                    ["custom"] = Template("custom", legacyFactory),
+                },
+            },
+            characteristicsFactory);
+
+        var provider = result.Templates["custom"].CharacteristicsAgentFactory!(
+            new SubAgentCharacteristics("explicit-model", null)
+            {
+                IsModelExplicitlySelected = true,
+            });
+
+        provider.Agent.Should().BeSameAs(routedAgent);
     }
 
     [Fact]
