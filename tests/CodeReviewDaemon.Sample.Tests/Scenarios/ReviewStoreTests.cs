@@ -88,6 +88,24 @@ public sealed class ReviewStoreTests
     }
 
     [Fact]
+    public void Toggling_posting_mode_reuses_the_same_review_run()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        // A PR first seen while collect-only, then re-observed after posting is enabled (the poller seeds
+        // mode="post"). Must resolve to the SAME run — otherwise enabling posting re-reviews every open PR.
+        var collectOnly = store.CreateOrGetReviewRun(SampleRun(repoId) with { Mode = "collect-only" });
+        var afterPostingEnabled = store.CreateOrGetReviewRun(SampleRun(repoId) with { Mode = "post" });
+
+        afterPostingEnabled.Id.Should().Be(collectOnly.Id,
+            "mode (post vs collect-only) is an authorization decision, NOT part of a review's identity — "
+                + "keying on it would re-review every open PR the moment posting is toggled");
+        afterPostingEnabled.Mode.Should().Be("collect-only", "the existing run is returned as-is, not re-seeded");
+    }
+
+    [Fact]
     public void A_new_head_sha_produces_a_distinct_review_run()
     {
         using var db = new TempSqliteDatabase();
