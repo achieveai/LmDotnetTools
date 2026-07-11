@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -150,7 +151,9 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 + "non-destructive — the workflow keeps running and can be waited on again. NOTE: unlike the "
                 + "Agent tool's turn-bounded wait, this timeout is open-ended, so a long wait suspends this "
                 + "turn's tool dispatch for its full duration; prefer a bounded timeout, or async + "
-                + "CheckWorkflow, for long-running workflows.",
+                + "CheckWorkflow, for long-running workflows. A returned status of \"timeout\" or \"running\" "
+                + "means the workflow has NOT finished yet — call WaitWorkflow or CheckWorkflow again to "
+                + "observe completion.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -188,7 +191,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     {
         if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return argsError!;
+            return argsError;
         }
 
         using (doc)
@@ -262,7 +265,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     {
         if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Task.FromResult<ToolHandlerResult>(argsError!);
+            return Task.FromResult<ToolHandlerResult>(argsError);
         }
 
         using (doc)
@@ -298,7 +301,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     {
         if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return argsError!;
+            return argsError;
         }
 
         using (doc)
@@ -349,7 +352,11 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     ///     Parses the handler args, returning a structured <c>invalid_args</c> error instead of letting a
     ///     malformed-JSON <see cref="JsonException"/> escape to the executor as a generic tool failure.
     /// </summary>
-    private static bool TryParseArgs(string argsJson, out JsonDocument doc, out ToolHandlerResult? error)
+    private static bool TryParseArgs(
+        string argsJson,
+        [NotNullWhen(true)] out JsonDocument? doc,
+        [NotNullWhen(false)] out ToolHandlerResult? error
+    )
     {
         try
         {
@@ -359,7 +366,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         }
         catch (JsonException ex)
         {
-            doc = null!;
+            doc = null;
             error = ToolHandlerResult.FromError(
                 $"Tool arguments are not valid JSON: {ex.Message}",
                 "invalid_args"
