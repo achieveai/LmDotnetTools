@@ -182,12 +182,11 @@ public class StartWorkflowToolProviderTests
 
     [Theory]
     [InlineData("5")] // number-as-string (some models emit this)
-    [InlineData(-1)] // negative → treated as no timeout
     [InlineData(5000000)] // ~57 days → clamped, must not throw
     public async Task WaitWorkflow_ParsesAndClampsTimeout_OnCompletedWorkflow(object timeout)
     {
         // The workflow is already terminal, so WaitWorkflow returns immediately regardless of the timeout —
-        // this exercises GetOptionalTimeout's string/negative/clamp paths through the actual handler.
+        // this exercises TryReadTimeout's string/clamp paths through the actual handler.
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
         var start = Tool(provider, "StartWorkflow");
         var wait = Tool(provider, "WaitWorkflow");
@@ -204,5 +203,43 @@ public class StartWorkflowToolProviderTests
         result.Payload.IsError.Should().BeFalse();
         using var doc = JsonDocument.Parse(result.Payload.Text);
         doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+    }
+
+    [Theory]
+    [InlineData("-5")] // negative number-as-string
+    [InlineData(-5)] // negative number
+    [InlineData("abc")] // non-numeric string
+    public async Task WaitWorkflow_PresentButInvalidTimeout_ReturnsInvalidArgs(object timeout)
+    {
+        // A present-but-invalid timeout must be rejected, not silently collapsed to an unbounded wait.
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        var start = Tool(provider, "StartWorkflow");
+        var wait = Tool(provider, "WaitWorkflow");
+
+        _ = await Invoke(start, StartArgs("inv", WorkflowFixtures.MinimalValid, "sync"));
+
+        var args = new JsonObject
+        {
+            ["workflowId"] = "inv",
+            ["timeout"] = timeout is string s ? JsonValue.Create(s) : JsonValue.Create((int)timeout),
+        };
+        var result = await Invoke(wait, args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_args");
+    }
+
+    [Theory]
+    [InlineData("StartWorkflow")]
+    [InlineData("CheckWorkflow")]
+    [InlineData("WaitWorkflow")]
+    public async Task Handlers_MalformedJson_ReturnInvalidArgs(string toolName)
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var result = await Invoke(Tool(provider, toolName), "{not valid json");
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_args");
     }
 }

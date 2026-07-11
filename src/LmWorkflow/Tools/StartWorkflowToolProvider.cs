@@ -186,64 +186,71 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        var root = doc.RootElement;
-
-        var workflowId = GetOptionalString(root, "workflowId");
-        if (string.IsNullOrWhiteSpace(workflowId))
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return ToolHandlerResult.FromError("The 'workflowId' parameter is required.", "invalid_args");
+            return argsError!;
         }
 
-        if (
-            !root.TryGetProperty("workflow", out var workflowElement)
-            || workflowElement.ValueKind != JsonValueKind.Object
-        )
+        using (doc)
         {
-            return ToolHandlerResult.FromError(
-                "The 'workflow' object parameter is required.",
-                "invalid_args"
-            );
-        }
+            var root = doc.RootElement;
 
-        WorkflowDefinition definition;
-        try
-        {
-            // Strict deserialize so a misspelled/invented field is rejected by name rather than silently
-            // dropped — matching SetWorkflow's authoring path.
-            definition = WorkflowJson.DeserializeStrict(workflowElement.GetRawText());
-        }
-        catch (JsonException ex)
-        {
-            return ToolHandlerResult.FromError(
-                $"The workflow definition is not valid JSON: {ex.Message}",
-                "invalid_workflow"
-            );
-        }
+            var workflowId = GetOptionalString(root, "workflowId");
+            if (string.IsNullOrWhiteSpace(workflowId))
+            {
+                return ToolHandlerResult.FromError("The 'workflowId' parameter is required.", "invalid_args");
+            }
 
-        var mode = ParseMode(GetOptionalString(root, "mode"));
+            if (
+                !root.TryGetProperty("workflow", out var workflowElement)
+                || workflowElement.ValueKind != JsonValueKind.Object
+            )
+            {
+                return ToolHandlerResult.FromError(
+                    "The 'workflow' object parameter is required.",
+                    "invalid_args"
+                );
+            }
 
-        try
-        {
-            var result = await _manager
-                .StartAsync(workflowId, definition, mode, cancellationToken)
-                .ConfigureAwait(false);
-            return ToolHandlerResult.FromText(Serialize(result));
-        }
-        catch (WorkflowValidationException ex)
-        {
-            return ToolHandlerResult.FromError(
-                "The workflow definition is invalid: " + string.Join("; ", ex.Errors),
-                "invalid_workflow"
-            );
-        }
-        catch (DuplicateWorkflowException ex)
-        {
-            return ToolHandlerResult.FromError(ex.Message, "duplicate_workflow");
-        }
-        catch (WorkflowCapacityException ex)
-        {
-            return ToolHandlerResult.FromError(ex.Message, "workflow_capacity");
+            WorkflowDefinition definition;
+            try
+            {
+                // Strict deserialize so a misspelled/invented field is rejected by name rather than silently
+                // dropped — matching SetWorkflow's authoring path.
+                definition = WorkflowJson.DeserializeStrict(workflowElement.GetRawText());
+            }
+            catch (JsonException ex)
+            {
+                return ToolHandlerResult.FromError(
+                    $"The workflow definition is not valid JSON: {ex.Message}",
+                    "invalid_workflow"
+                );
+            }
+
+            var mode = ParseMode(GetOptionalString(root, "mode"));
+
+            try
+            {
+                var result = await _manager
+                    .StartAsync(workflowId, definition, mode, cancellationToken, context.ToolCallId)
+                    .ConfigureAwait(false);
+                return ToolHandlerResult.FromText(Serialize(result));
+            }
+            catch (WorkflowValidationException ex)
+            {
+                return ToolHandlerResult.FromError(
+                    "The workflow definition is invalid: " + string.Join("; ", ex.Errors),
+                    "invalid_workflow"
+                );
+            }
+            catch (DuplicateWorkflowException ex)
+            {
+                return ToolHandlerResult.FromError(ex.Message, "duplicate_workflow");
+            }
+            catch (WorkflowCapacityException ex)
+            {
+                return ToolHandlerResult.FromError(ex.Message, "workflow_capacity");
+            }
         }
     }
 
@@ -253,24 +260,33 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        var workflowId = GetOptionalString(doc.RootElement, "workflowId");
-        if (string.IsNullOrWhiteSpace(workflowId))
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromError("The 'workflowId' parameter is required.", "invalid_args")
-            );
+            return Task.FromResult<ToolHandlerResult>(argsError!);
         }
 
-        try
+        using (doc)
         {
-            return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(Serialize(_manager.Check(workflowId))));
-        }
-        catch (UnknownWorkflowException ex)
-        {
-            return Task.FromResult<ToolHandlerResult>(
-                ToolHandlerResult.FromError(ex.Message, "unknown_workflow")
-            );
+            var workflowId = GetOptionalString(doc.RootElement, "workflowId");
+            if (string.IsNullOrWhiteSpace(workflowId))
+            {
+                return Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromError("The 'workflowId' parameter is required.", "invalid_args")
+                );
+            }
+
+            try
+            {
+                return Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromText(Serialize(_manager.Check(workflowId)))
+                );
+            }
+            catch (UnknownWorkflowException ex)
+            {
+                return Task.FromResult<ToolHandlerResult>(
+                    ToolHandlerResult.FromError(ex.Message, "unknown_workflow")
+                );
+            }
         }
     }
 
@@ -280,27 +296,40 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         CancellationToken cancellationToken
     )
     {
-        using var doc = JsonDocument.Parse(argsJson);
-        var root = doc.RootElement;
-
-        var workflowId = GetOptionalString(root, "workflowId");
-        if (string.IsNullOrWhiteSpace(workflowId))
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return ToolHandlerResult.FromError("The 'workflowId' parameter is required.", "invalid_args");
+            return argsError!;
         }
 
-        var timeout = GetOptionalTimeout(root, "timeout");
+        using (doc)
+        {
+            var root = doc.RootElement;
 
-        try
-        {
-            var result = await _manager
-                .WaitAsync(workflowId, timeout, cancellationToken)
-                .ConfigureAwait(false);
-            return ToolHandlerResult.FromText(Serialize(result));
-        }
-        catch (UnknownWorkflowException ex)
-        {
-            return ToolHandlerResult.FromError(ex.Message, "unknown_workflow");
+            var workflowId = GetOptionalString(root, "workflowId");
+            if (string.IsNullOrWhiteSpace(workflowId))
+            {
+                return ToolHandlerResult.FromError("The 'workflowId' parameter is required.", "invalid_args");
+            }
+
+            // Distinguish an omitted timeout (→ wait until completion) from a present-but-invalid one
+            // (negative / non-numeric / NaN / infinity), which must be rejected rather than silently
+            // collapsing to an unbounded wait.
+            if (!TryReadTimeout(root, "timeout", out var timeout, out var timeoutError))
+            {
+                return ToolHandlerResult.FromError(timeoutError!, "invalid_args");
+            }
+
+            try
+            {
+                var result = await _manager
+                    .WaitAsync(workflowId, timeout, cancellationToken)
+                    .ConfigureAwait(false);
+                return ToolHandlerResult.FromText(Serialize(result));
+            }
+            catch (UnknownWorkflowException ex)
+            {
+                return ToolHandlerResult.FromError(ex.Message, "unknown_workflow");
+            }
         }
     }
 
@@ -316,29 +345,73 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             ? prop.GetString()
             : null;
 
-    private static TimeSpan? GetOptionalTimeout(JsonElement root, string propertyName)
+    /// <summary>
+    ///     Parses the handler args, returning a structured <c>invalid_args</c> error instead of letting a
+    ///     malformed-JSON <see cref="JsonException"/> escape to the executor as a generic tool failure.
+    /// </summary>
+    private static bool TryParseArgs(string argsJson, out JsonDocument doc, out ToolHandlerResult? error)
     {
+        try
+        {
+            doc = JsonDocument.Parse(argsJson);
+            error = null;
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            doc = null!;
+            error = ToolHandlerResult.FromError(
+                $"Tool arguments are not valid JSON: {ex.Message}",
+                "invalid_args"
+            );
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     Reads an optional <c>timeout</c> (seconds). An OMITTED property yields <c>null</c> (wait until
+    ///     completion) and returns <c>true</c>. A PRESENT-but-invalid value (negative, NaN/infinity, or a
+    ///     non-numeric string) returns <c>false</c> with an error, so an invalid input is rejected rather than
+    ///     silently collapsing to an unbounded wait. Valid values are clamped to <c>Task.WaitAsync</c>'s range.
+    /// </summary>
+    private static bool TryReadTimeout(
+        JsonElement root,
+        string propertyName,
+        out TimeSpan? timeout,
+        out string? error
+    )
+    {
+        timeout = null;
+        error = null;
+
         if (!root.TryGetProperty(propertyName, out var prop))
         {
-            return null;
+            return true; // omitted → no timeout
         }
 
-        var seconds = prop.ValueKind switch
+        double? seconds = prop.ValueKind switch
         {
-            JsonValueKind.Number when prop.TryGetDouble(out var value) && value >= 0 => value,
+            JsonValueKind.Null => null,
+            JsonValueKind.Number when prop.TryGetDouble(out var value) => value,
             // Some models emit numbers as strings.
-            JsonValueKind.String when double.TryParse(prop.GetString(), out var value) && value >= 0 => value,
-            _ => (double?)null,
+            JsonValueKind.String when double.TryParse(prop.GetString(), out var value) => value,
+            _ => double.NaN, // present but not a usable number
         };
 
-        if (seconds is not { } s)
+        if (seconds is null)
         {
-            return null;
+            return true; // explicit null → no timeout
         }
 
-        // Clamp to a range Task.WaitAsync accepts (it throws for a timeout beyond ~49.7 days). ~24.8 days is
-        // effectively "wait indefinitely" for a tool call while staying safely in range.
-        var ms = Math.Min(s * 1000d, int.MaxValue);
-        return TimeSpan.FromMilliseconds(ms);
+        if (double.IsNaN(seconds.Value) || double.IsInfinity(seconds.Value) || seconds.Value < 0)
+        {
+            error = "The 'timeout' parameter must be a non-negative number of seconds.";
+            return false;
+        }
+
+        // Clamp to the range Task.WaitAsync accepts (~24.8 days), which is effectively "wait until completion".
+        var ms = Math.Min(seconds.Value * 1000d, int.MaxValue);
+        timeout = TimeSpan.FromMilliseconds(ms);
+        return true;
     }
 }

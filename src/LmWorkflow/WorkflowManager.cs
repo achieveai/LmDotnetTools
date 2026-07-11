@@ -147,6 +147,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly WorkflowValidator _validator = new();
     private readonly ConcurrentDictionary<string, WorkflowEntry> _workflows = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _concurrencyGate;
+    private bool _disposed;
 
     /// <summary>Creates the manager.</summary>
     /// <param name="controllerAgentFactory">
@@ -210,18 +211,29 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     Sync mode blocks until the workflow reaches a terminal state and returns the terminal result;
     ///     async mode returns a <c>started</c> receipt immediately.
     /// </summary>
+    /// <param name="workflowId">The opaque, caller-supplied workflow handle.</param>
+    /// <param name="definition">The pre-authored workflow definition to run.</param>
+    /// <param name="mode">Whether to block for the terminal result (sync) or return a started receipt (async).</param>
+    /// <param name="ct">Cancels the caller's wait (sync mode); the run itself is not cancelled by this token.</param>
+    /// <param name="originatingToolCallId">
+    ///     The <c>StartWorkflow</c> tool-call id, so an async run's completion notification can be correlated
+    ///     back to the initiating call. Null falls back to <paramref name="workflowId"/>.
+    /// </param>
     /// <exception cref="WorkflowValidationException">The definition is invalid.</exception>
     /// <exception cref="DuplicateWorkflowException"><paramref name="workflowId"/> is already reserved.</exception>
     /// <exception cref="WorkflowCapacityException">No concurrency slot freed up within the wait window.</exception>
+    /// <exception cref="ObjectDisposedException">The manager is disposing/disposed.</exception>
     public async Task<WorkflowRunResult> StartAsync(
         string workflowId,
         WorkflowDefinition definition,
         WorkflowStartMode mode,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        string? originatingToolCallId = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
         ArgumentNullException.ThrowIfNull(definition);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 
         // Validate BEFORE reserving a slot or starting anything, so an invalid definition never consumes a
         // workflowId or a concurrency slot and surfaces synchronously in both modes.
@@ -229,10 +241,18 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         // Reserve the id slot atomically BEFORE the (effectively synchronous) start, closing the duplicate
         // TOCTOU: two concurrent starts for the same id cannot both pass the check.
-        var entry = new WorkflowEntry();
+        var entry = new WorkflowEntry { OriginatingToolCallId = originatingToolCallId };
         if (!_workflows.TryAdd(workflowId, entry))
         {
             throw new DuplicateWorkflowException(workflowId);
+        }
+
+        // Reject a start that races DisposeAsync: if disposal began after our TryAdd, roll the reservation
+        // back so we never return "started" backed by a run the disposing manager won't observe.
+        if (Volatile.Read(ref _disposed))
+        {
+            _ = _workflows.TryRemove(workflowId, out _);
+            throw new ObjectDisposedException(nameof(WorkflowManager));
         }
 
         var gateAcquired = false;
@@ -333,8 +353,14 @@ public sealed class WorkflowManager : IAsyncDisposable
             return terminal;
         }
 
-        // Reserved but not yet started (a sub-millisecond, synchronous window inside StartAsync) → unknown.
-        var handle = Volatile.Read(ref entry.Handle) ?? throw new UnknownWorkflowException(workflowId);
+        var handle = Volatile.Read(ref entry.Handle);
+        if (handle is null)
+        {
+            // The completion observer captures the snapshot BEFORE nulling the handle, so a null handle here
+            // means either that handoff is mid-flight (re-read the snapshot) or the entry is still in its
+            // admitted-but-starting window (a coherent "running", never "unknown" for a known id).
+            return Volatile.Read(ref entry.TerminalSnapshot) ?? Pending(workflowId);
+        }
 
         return handle.Completion.IsCompleted
             ? BuildResult(workflowId, handle)
@@ -357,6 +383,22 @@ public sealed class WorkflowManager : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
 
+        // Reject an invalid negative timeout at the public API (the tool handler already rejects it earlier);
+        // Timeout.InfiniteTimeSpan (-1ms) is the one allowed negative — it means "no timeout".
+        if (timeout is { } requested && requested < TimeSpan.Zero && requested != System.Threading.Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeout),
+                "Timeout must be non-negative (or Timeout.InfiniteTimeSpan)."
+            );
+        }
+
+        // Treat the infinite sentinel as "no timeout" so the wait blocks on ct only.
+        if (timeout == System.Threading.Timeout.InfiniteTimeSpan)
+        {
+            timeout = null;
+        }
+
         if (!_workflows.TryGetValue(workflowId, out var entry))
         {
             throw new UnknownWorkflowException(workflowId);
@@ -368,7 +410,12 @@ public sealed class WorkflowManager : IAsyncDisposable
             return cached;
         }
 
-        var handle = Volatile.Read(ref entry.Handle) ?? throw new UnknownWorkflowException(workflowId);
+        var handle = Volatile.Read(ref entry.Handle);
+        if (handle is null)
+        {
+            // Mid-completion-handoff (re-read snapshot) or admitted-but-starting (coherent "running").
+            return Volatile.Read(ref entry.TerminalSnapshot) ?? Pending(workflowId);
+        }
 
         if (!handle.Completion.IsCompleted)
         {
@@ -428,6 +475,9 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        // Reject any new starts that race this disposal (StartAsync re-checks the flag after reserving).
+        Volatile.Write(ref _disposed, true);
+
         foreach (var (id, entry) in _workflows)
         {
             await DisposeHandleOnceAsync(id, entry).ConfigureAwait(false);
@@ -546,7 +596,9 @@ public sealed class WorkflowManager : IAsyncDisposable
                     NotifyKinds.WorkflowCompletion,
                     detail: BuildNotifyDetail(result),
                     sourceToolName: StartWorkflowToolProvider.StartWorkflowToolName,
-                    sourceToolCallId: workflowId,
+                    // Correlate to the originating StartWorkflow tool call when known; the workflowId is still
+                    // carried in the label + detail body.
+                    sourceToolCallId: entry.OriginatingToolCallId ?? workflowId,
                     label: workflowId
                 );
 
@@ -653,6 +705,12 @@ public sealed class WorkflowManager : IAsyncDisposable
             Notes = handle.Notes,
         };
 
+    /// <summary>A known workflow that has been admitted but whose controller handle is not yet published
+    /// (queued at the concurrency gate, or the completion handoff is mid-flight) — reported as running, not
+    /// unknown, since the id is genuinely known.</summary>
+    private static WorkflowRunResult Pending(string workflowId) =>
+        new() { WorkflowId = workflowId, Status = WorkflowStatuses.Running, IsComplete = false };
+
     private static WorkflowRunResult Timeout(string workflowId, WorkflowRunHandle handle) =>
         new()
         {
@@ -704,6 +762,9 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         /// <summary>The lightweight terminal result, captured at completion. Authoritative once non-null.</summary>
         public WorkflowRunResult? TerminalSnapshot;
+
+        /// <summary>The originating StartWorkflow tool-call id for completion-notify correlation, or null.</summary>
+        public string? OriginatingToolCallId;
 
         public Task? Observer;
         public int NotifySent;

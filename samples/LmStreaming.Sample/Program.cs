@@ -1089,12 +1089,17 @@ try
                         ownedResources = [.. ownedResources ?? [], workflowManager];
 
                         // Keep the launch tools out of sub-agent inheritance so a spawned sub-agent can't
-                        // launch a nested workflow (out of scope for v1).
+                        // launch a nested workflow (out of scope for v1). Union with any exclusions the host
+                        // already set rather than replacing them.
                         if (subAgentOptions is not null)
                         {
                             subAgentOptions = subAgentOptions with
                             {
-                                NonInheritedToolNames = StartWorkflowToolProvider.ToolNames,
+                                NonInheritedToolNames =
+                                [
+                                    .. subAgentOptions.NonInheritedToolNames ?? [],
+                                    .. StartWorkflowToolProvider.ToolNames,
+                                ],
                             };
                         }
                     }

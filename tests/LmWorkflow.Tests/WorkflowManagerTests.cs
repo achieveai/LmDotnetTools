@@ -294,6 +294,51 @@ public class WorkflowManagerTests
     }
 
     [Fact]
+    public async Task StartAsync_Async_Notify_UsesOriginatingToolCallId_WhenSupplied()
+    {
+        var notified = new TaskCompletionSource<NotifyMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var controller = ScriptedController(DriveMinimalToTerminal);
+        await using var manager = NewManager(
+            () => controller.Object,
+            notifier: (n, _) =>
+            {
+                notified.TrySetResult(n);
+                return Task.CompletedTask;
+            }
+        );
+
+        _ = await manager.StartAsync("wf-corr", MinimalDefinition(), WorkflowStartMode.Async, default, "toolcall-123");
+
+        var notify = await notified.Task.WaitAsync(Timeout);
+        // Correlated to the originating StartWorkflow tool call, not the workflowId.
+        notify.SourceToolCallId.Should().Be("toolcall-123");
+        notify.Label.Should().Be("wf-corr");
+    }
+
+    [Fact]
+    public async Task StartAsync_AfterDispose_ThrowsObjectDisposed()
+    {
+        var manager = NewManager(() => ScriptedController(DriveMinimalToTerminal).Object);
+        await manager.DisposeAsync();
+
+        var act = () => manager.StartAsync("after-dispose", MinimalDefinition(), WorkflowStartMode.Sync);
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public async Task WaitAsync_NegativeTimeout_ThrowsArgumentOutOfRange()
+    {
+        var controller = ScriptedController(DriveMinimalToTerminal);
+        await using var manager = NewManager(() => controller.Object);
+        _ = await manager.StartAsync("neg", MinimalDefinition(), WorkflowStartMode.Sync);
+
+        var act = () => manager.WaitAsync("neg", TimeSpan.FromSeconds(-5));
+        await act.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
     public async Task Check_AfterTerminalAndDisposal_StillReturnsCompleted()
     {
         var controller = ScriptedController(DriveMinimalToTerminal);

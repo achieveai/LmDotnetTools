@@ -45,10 +45,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// <summary>
     /// The names of every tool registered on this loop after the middleware stack was built —
     /// the parent's own tools plus any Agent/Wait tools the loop self-registered. Read-only; the
-    /// order is unspecified. Used to assert a loop's effective tool surface (e.g. the workflow
-    /// controller's restricted set).
+    /// order is unspecified. Internal diagnostic/test accessor used to assert a loop's effective
+    /// tool surface (e.g. the workflow controller's restricted set).
     /// </summary>
-    public IReadOnlyCollection<string> RegisteredToolNames => [.. _toolHandlers.Keys];
+    internal IReadOnlyCollection<string> RegisteredToolNames => [.. _toolHandlers.Keys];
 
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
