@@ -118,6 +118,11 @@ builder.Services.AddSingleton(sp => new GitHubOAuthProvider(
     sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()));
 builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<GitHubOAuthProvider>());
 
+// Startup diagnostics: log the GitHub Copilot model catalog the daemon's credential can see (raw catalog
+// + the routable subset usable as ReviewModelId) so an operator can discover valid model ids on boot.
+// Best-effort and bounded — a discovery failure is logged and never blocks startup.
+builder.Services.AddHostedService<CodeReviewDaemon.Sample.Diagnostics.CopilotModelCatalogLogger>();
+
 // Azure DevOps is opt-in: when EnableAdoProvider is off (default) the provider is never registered,
 // so an "ado" webhook call resolves no provider and is denied as unknown — the daemon stays GitHub-only.
 if (daemonOptions.EnableAdoProvider)
