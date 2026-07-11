@@ -130,17 +130,25 @@ internal sealed class PrPollingService : BackgroundService
         }
 
         var cursorResult = _store.ReadCursor(target.Provider, target.Scope, CursorVersion);
+
+        // The recency-window cutoff, computed once so the provider (which may fetch a per-PR activity
+        // signal for borderline PRs) and the filter below agree on the same instant.
+        var cutoff = target.MaxPrAgeDays > 0
+            ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
+            : (DateTimeOffset?)null;
+
         var page = await provider.ListOpenPullRequestsAsync(
             new PrPollRequest
             {
                 Repo = target.Repo,
                 Scope = target.Scope,
                 Cursor = cursorResult.ShouldResync ? null : cursorResult.Cursor,
+                RecencyCutoff = cutoff,
             },
             cancellationToken);
 
         var repoId = _store.EnsureRepo(target.Repo);
-        foreach (var pr in ApplyRecencyFilter(target, page.PullRequests))
+        foreach (var pr in ApplyRecencyFilter(target, cutoff, page.PullRequests))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -186,25 +194,27 @@ internal sealed class PrPollingService : BackgroundService
 
     /// <summary>
     /// Applies the operator recency bound (<see cref="PrPollTarget.MaxPrAgeDays"/>): drops PRs whose last
-    /// activity (GitHub <c>updated_at</c>) or, as a fallback, opened date (ADO <c>creationDate</c>) is older
-    /// than the window. A PR the provider gave no date for is kept — the filter never silently drops a PR it
-    /// can't date. When the bound is off (≤ 0) the full list passes through unchanged. The cursor still
-    /// advances off the full page, so filtering here never strands the poll's high-water mark.
+    /// activity (GitHub <c>updated_at</c>; ADO the source branch's last push, resolved by the provider) or,
+    /// as a fallback, opened date is older than the window. A PR the provider gave no date for is kept — the
+    /// filter never silently drops a PR it can't date. When the bound is off (<paramref name="cutoff"/> is
+    /// null) the full list passes through unchanged. The cursor still advances off the full page, so
+    /// filtering here never strands the poll's high-water mark.
     /// </summary>
     private IReadOnlyList<PullRequestDescriptor> ApplyRecencyFilter(
-        PrPollTarget target, IReadOnlyList<PullRequestDescriptor> pullRequests)
+        PrPollTarget target,
+        DateTimeOffset? cutoff,
+        IReadOnlyList<PullRequestDescriptor> pullRequests)
     {
-        if (target.MaxPrAgeDays <= 0 || pullRequests.Count == 0)
+        if (cutoff is null || pullRequests.Count == 0)
         {
             return pullRequests;
         }
 
-        var cutoff = _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays);
         var kept = new List<PullRequestDescriptor>(pullRequests.Count);
         foreach (var pr in pullRequests)
         {
             var activity = pr.UpdatedAt ?? pr.CreatedAt;
-            if (activity is null || activity.Value >= cutoff)
+            if (activity is null || activity.Value >= cutoff.Value)
             {
                 kept.Add(pr);
             }

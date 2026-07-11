@@ -52,6 +52,14 @@ internal sealed record PrPollRequest
 
     /// <summary>Previously persisted cursor, or <c>null</c> to resync from scratch (plan §12).</summary>
     public OpaqueCursor? Cursor { get; init; }
+
+    /// <summary>
+    /// The recency-window cutoff (UTC) for this poll, or <c>null</c> when no recency filter is configured.
+    /// A provider whose PR list carries a real last-activity timestamp ignores this. A provider whose list
+    /// does not (Azure DevOps) may use it to fetch a per-PR activity signal — bounded to only the PRs that
+    /// would otherwise be excluded — so "updated since" works there too. Providers must not throw if unset.
+    /// </summary>
+    public DateTimeOffset? RecencyCutoff { get; init; }
 }
 
 /// <summary>The result of one poll: the open PRs plus the cursor to persist.</summary>

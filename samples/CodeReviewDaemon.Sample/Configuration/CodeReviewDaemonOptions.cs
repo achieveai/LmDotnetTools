@@ -164,9 +164,11 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>
     /// When &gt; 0, the poller only reviews PRs whose recency signal falls within this many days: GitHub
     /// uses the PR's <c>updated_at</c> (true last activity); ADO's PR list has no last-activity field, so it
-    /// uses <c>creationDate</c> (the opened date). A PR the provider gives no date for is always kept (never
-    /// silently skipped). 0 (default) disables the filter — every open PR is reviewed. Overridable per run
-    /// with the <c>--days N</c> / <c>--max-pr-age-days N</c> command-line flag, which wins over this value.
+    /// uses <c>creationDate</c> and — for PRs opened before the window — the source branch's last-push time
+    /// (the tip commit's date), fetched per-PR so an old-but-recently-pushed PR is still reviewed. A PR the
+    /// provider gives no date for is always kept (never silently skipped). 0 (default) disables the filter —
+    /// every open PR is reviewed. Overridable per run with the <c>--days N</c> / <c>--max-pr-age-days N</c>
+    /// command-line flag, which wins over this value.
     /// </summary>
     public int MaxPrAgeDays { get; init; }
 

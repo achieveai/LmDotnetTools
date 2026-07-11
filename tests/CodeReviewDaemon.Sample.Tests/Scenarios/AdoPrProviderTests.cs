@@ -52,12 +52,30 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         }
         """;
 
-    private static PrPollRequest Request(OpaqueCursor? cursor = null) => new()
+    private static PrPollRequest Request(OpaqueCursor? cursor = null, DateTimeOffset? recencyCutoff = null) => new()
     {
         Repo = Repo,
         Scope = "contoso/Platform/widgets:active-prs",
         Cursor = cursor,
+        RecencyCutoff = recencyCutoff,
     };
+
+    // One PR opened before a recency window (needs a last-push lookup) and one opened inside it (does not).
+    private const string DatedPrs = """
+        {
+          "value": [
+            { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+              "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } },
+            { "pullRequestId": 50, "status": "active", "creationDate": "2026-07-09T00:00:00Z",
+              "lastMergeSourceCommit": { "commitId": "head-50" }, "lastMergeTargetCommit": { "commitId": "base-50" } }
+          ]
+        }
+        """;
+
+    private const string OneOldPr = """
+        { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+            "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+        """;
 
     private AdoPrProvider Provider(FakeHttpMessageHandler handler) =>
         new(
@@ -247,5 +265,53 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullrequests/42");
         request.Uri.Query.Should().Contain("api-version=7.1");
         request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
+    }
+
+    [Fact]
+    public async Task RecencyCutoff_resolves_ado_updated_from_the_last_push_for_old_prs_only()
+    {
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/commits/head-42", """{ "committer": { "date": "2026-07-10T12:00:00Z" } }""")
+            .OnJson(HttpMethod.Get, "/pullrequests", DatedPrs);
+
+        var page = await Provider(handler)
+            .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        // PR 42 (opened 2026-06-01, before the window) → its last push (2026-07-10) becomes UpdatedAt.
+        page.PullRequests[0].PrId.Should().Be("42");
+        page.PullRequests[0].UpdatedAt.Should().Be(new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
+        // PR 50 (opened 2026-07-09, inside the window) → no extra call, UpdatedAt stays null.
+        page.PullRequests[1].PrId.Should().Be("50");
+        page.PullRequests[1].UpdatedAt.Should().BeNull();
+
+        handler.CountRequests("/commits/head-42").Should().Be(1, "the old PR's last-push date is fetched");
+        handler.CountRequests("/commits/head-50").Should().Be(0, "the recent PR skips the extra call");
+    }
+
+    [Fact]
+    public async Task RecencyCutoff_keeps_an_old_pr_whose_push_date_cannot_be_fetched()
+    {
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/commits/head-42", """{"message":"nope"}""", HttpStatusCode.NotFound)
+            .OnJson(HttpMethod.Get, "/pullrequests", OneOldPr);
+
+        var page = await Provider(handler)
+            .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        // Keep-on-uncertainty: an unfetchable push date resolves to the cutoff so the filter keeps the PR.
+        page.PullRequests[0].UpdatedAt.Should().Be(cutoff);
+    }
+
+    [Fact]
+    public async Task No_recency_cutoff_means_no_extra_commit_calls()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests", DatedPrs);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().OnlyContain(p => p.UpdatedAt == null, "with no window ADO never fetches push dates");
+        handler.CountRequests("/commits/").Should().Be(0);
     }
 }

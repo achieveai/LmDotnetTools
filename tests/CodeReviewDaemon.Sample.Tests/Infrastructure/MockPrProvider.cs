@@ -28,6 +28,9 @@ internal sealed class MockPrProvider : IPrProvider
     /// <summary>The cursor passed on the most recent <see cref="ListOpenPullRequestsAsync"/> call.</summary>
     public OpaqueCursor? LastRequestedCursor { get; private set; }
 
+    /// <summary>The recency cutoff passed on the most recent <see cref="ListOpenPullRequestsAsync"/> call.</summary>
+    public DateTimeOffset? LastRecencyCutoff { get; private set; }
+
     /// <summary>Number of times the provider was polled.</summary>
     public int CallCount { get; private set; }
 
@@ -38,6 +41,7 @@ internal sealed class MockPrProvider : IPrProvider
     {
         CallCount++;
         LastRequestedCursor = request.Cursor;
+        LastRecencyCutoff = request.RecencyCutoff;
         return Task.FromResult(new PullRequestPage
         {
             PullRequests = _pullRequests,

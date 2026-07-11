@@ -207,6 +207,45 @@ public sealed class PrPollingServiceTests : LoggingTestBase
             .Be(ReviewStage.Posted, "with the filter off (0), even a year-old PR is reviewed");
     }
 
+    [Fact]
+    public async Task A_recency_window_hands_the_cutoff_to_the_provider()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var now = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
+        var orchestrator = new PrOrchestrator(
+            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope, MaxPrAgeDays = 7 };
+        var poller = new PrPollingService(
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>(),
+            timeProvider: new FixedTimeProvider(now));
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        provider.LastRecencyCutoff.Should()
+            .Be(now - TimeSpan.FromDays(7), "the poller hands the provider the window cutoff to resolve a last-activity signal");
+    }
+
+    [Fact]
+    public async Task No_recency_window_hands_a_null_cutoff_to_the_provider()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var provider = new MockPrProvider(Provider, [PrDescriptor("118")], NextCursor());
+        var orchestrator = new PrOrchestrator(
+            store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+        var target = new PrPollTarget { Provider = Provider, Repo = SampleRepo(), Scope = Scope };
+        var poller = new PrPollingService(
+            [target], [provider], store, orchestrator, LoggerFactory.CreateLogger<PrPollingService>());
+
+        await poller.PollOnceAsync(CancellationToken.None);
+
+        provider.LastRecencyCutoff.Should().BeNull("no window means no cutoff and no extra provider work");
+    }
+
     /// <summary>A <see cref="TimeProvider"/> pinned to a fixed instant so the recency-window cutoff is
     /// deterministic across the age-filter tests.</summary>
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
