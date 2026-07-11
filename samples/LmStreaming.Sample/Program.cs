@@ -23,8 +23,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
-using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
-using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
+using AchieveAi.LmDotnetTools.LmWorkflow;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
@@ -817,7 +816,7 @@ try
                 // Add LlmQuery book search MCP tools — only for medical knowledge mode
                 // Track MCP clients for proper disposal alongside the agent
                 List<IAsyncDisposable>? ownedResources = null;
-                WorkflowRuntime? workflowRuntime = null;
+                var workspaceWorkflowEnabled = false;
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
@@ -846,22 +845,20 @@ try
                     // observes the loop's own message stream (see ownedResources wiring below) to
                     // correlate Agent tool-call spawns back into workflow state.
                     //
+                    // Let the Workspace Agent launch LmWorkflow workflows via the StartWorkflow tool
+                    // family. Each StartWorkflow spins up an ISOLATED controller loop (its own model +
+                    // restricted tool surface); the chat agent never gets direct
+                    // SetWorkflow/GetWorkflow access (that #130 wiring is retired here). The tools
+                    // themselves are wired below, once the conversation loop exists so an async
+                    // workflow's completion notification can reach it.
+                    //
                     // On by default, but disable-able per deployment WITHOUT a redeploy via
-                    // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false. This one flag gates all three behaviors as a
-                    // unit — the workflow tool surface (here), the appended controller prompt (below), and the
-                    // correlation observer (further below, which is already gated on `workflowRuntime`).
-                    var workflowEnabled = !string.Equals(
+                    // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false.
+                    workspaceWorkflowEnabled = !string.Equals(
                         Environment.GetEnvironmentVariable("WORKSPACE_AGENT_LMWORKFLOW_ENABLED"),
                         "false",
                         StringComparison.OrdinalIgnoreCase
                     );
-                    if (workflowEnabled)
-                    {
-                        workflowRuntime = new WorkflowRuntime(
-                            logger: loggerFactory.CreateLogger<WorkflowRuntime>()
-                        );
-                        _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
-                    }
 
                     // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
                     // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header
@@ -913,19 +910,6 @@ try
                                     + "the system prompt now reports degraded mode instead of claiming tools",
                                 threadId
                             );
-                    }
-
-                    // Append last, off whatever effectiveMode currently is (default or the
-                    // degraded-sandbox notice above) so the controller prompt survives either path. Gated on
-                    // the workflow runtime (i.e. WORKSPACE_AGENT_LMWORKFLOW_ENABLED) so disabling the feature
-                    // also drops the extra controller instructions from the prompt.
-                    if (workflowRuntime is not null)
-                    {
-                        effectiveMode = effectiveMode with
-                        {
-                            SystemPrompt =
-                                effectiveMode.SystemPrompt + "\n\n" + ControllerSystemPrompt.Default,
-                        };
                     }
                 }
 
@@ -1051,6 +1035,75 @@ try
                         sandboxEnabled: sandboxSession is not null,
                         subAgentManagerAccessor: () => agent?.SubAgentManager);
 
+                    // Wire the StartWorkflow tool family onto the conversation registry (Workspace Agent
+                    // mode). Declared before the loop ctor so the launch tools are registered before the
+                    // sub-agent snapshot is taken; the completion notifier is late-bound to `agent` (assigned
+                    // just below). This replaces #130's direct SetWorkflow/GetWorkflow wiring.
+                    if (workspaceWorkflowEnabled)
+                    {
+                        // Q2: the controller runs on a single, FIXED, pre-configured model — a configured
+                        // value if present, else the conversation's own default model. Never the caller's.
+                        var configuredControllerModel =
+                            Environment.GetEnvironmentVariable("WORKFLOW_CONTROLLER_MODEL");
+                        var controllerModelId = string.IsNullOrWhiteSpace(configuredControllerModel)
+                            ? modelId
+                            : configuredControllerModel;
+
+                        // Q5: concurrent-workflow cap defaults to 8, overridable via config.
+                        var maxConcurrentWorkflows =
+                            int.TryParse(
+                                Environment.GetEnvironmentVariable("WORKFLOW_MAX_CONCURRENT"),
+                                out var configuredCap
+                            ) && configuredCap >= 1
+                                ? configuredCap
+                                : 8;
+
+                        var controllerSubAgentOptions = new SubAgentOptions
+                        {
+                            Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(subAgentFactory),
+                            MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+                        };
+
+                        var workflowManager = new WorkflowManager(
+                            controllerAgentFactory: subAgentFactory,
+                            controllerSubAgentOptions: controllerSubAgentOptions,
+                            completionNotifier: async (notify, notifyCt) =>
+                            {
+                                // Late-bound to `agent` (assigned just below). Re-injects the async workflow's
+                                // completion as a NotifyMessage into the conversation. WorkflowManager wraps
+                                // this call in its own try/catch, so a SendAsync on an already-disposed loop
+                                // (conversation torn down before the workflow finished) is tolerated — logged,
+                                // never fatal.
+                                var conversation = agent;
+                                if (conversation is not null)
+                                {
+                                    _ = await conversation.SendAsync([notify], ct: notifyCt);
+                                }
+                            },
+                            maxConcurrentWorkflows: maxConcurrentWorkflows,
+                            controllerDefaultOptions: new GenerateReplyOptions { ModelId = controllerModelId },
+                            logger: loggerFactory.CreateLogger<WorkflowManager>()
+                        );
+
+                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(workflowManager));
+                        ownedResources = [.. ownedResources ?? [], workflowManager];
+
+                        // Keep the launch tools out of sub-agent inheritance so a spawned sub-agent can't
+                        // launch a nested workflow (out of scope for v1). Union with any exclusions the host
+                        // already set rather than replacing them.
+                        if (subAgentOptions is not null)
+                        {
+                            subAgentOptions = subAgentOptions with
+                            {
+                                NonInheritedToolNames =
+                                [
+                                    .. subAgentOptions.NonInheritedToolNames ?? [],
+                                    .. StartWorkflowToolProvider.ToolNames,
+                                ],
+                            };
+                        }
+                    }
+
                     agent = new MultiTurnAgentLoop(
                         providerAgent,
                         filteredRegistry,
@@ -1089,62 +1142,6 @@ try
                         // flag) is tracked in #161.
                         triggerOptions: isTestMode ? triggerOptions : null
                     );
-
-                    if (workflowRuntime is not null)
-                    {
-                        // Correlate sub-agent spawn results back into the workflow runtime via a
-                        // second, independent subscriber to this loop's own message stream (tool
-                        // handlers above cover the synchronous SetWorkflow/SetCurrentNode/etc. path;
-                        // this covers the async Agent-tool-call/result correlation). The first
-                        // MoveNextAsync() is primed synchronously here — before this factory returns
-                        // "agent" to the caller — so the per-subscriber channel is registered before
-                        // any SendAsync can occur on this conversation.
-                        var observerCts = new CancellationTokenSource();
-                        var enumerator = agent.SubscribeAsync(observerCts.Token)
-                            .GetAsyncEnumerator(observerCts.Token);
-                        var pendingFirstMoveNext = enumerator.MoveNextAsync();
-                        var observerTask = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                if (await pendingFirstMoveNext)
-                                {
-                                    workflowRuntime.ObserveMessage(enumerator.Current);
-                                    while (await enumerator.MoveNextAsync())
-                                    {
-                                        workflowRuntime.ObserveMessage(enumerator.Current);
-                                    }
-                                }
-                            }
-                            catch (OperationCanceledException) when (observerCts.IsCancellationRequested)
-                            { /* expected on shutdown */
-                            }
-                            catch (Exception ex)
-                            {
-                                // This background task is the critical path that correlates Agent
-                                // tool-call spawns/results back into the workflow runtime. If it faults, the
-                                // agent keeps serving workflow tools but joins never settle — so surface the
-                                // first failure loudly (disposal below would otherwise swallow it).
-                                loggerFactory
-                                    .CreateLogger<WorkflowRuntime>()
-                                    .LogError(
-                                        ex,
-                                        "Workflow observer for thread {ThreadId} failed; Agent-result "
-                                            + "correlation is now disabled for this conversation",
-                                        threadId
-                                    );
-                            }
-                            finally
-                            {
-                                await enumerator.DisposeAsync();
-                            }
-                        });
-                        ownedResources =
-                        [
-                            .. ownedResources ?? [],
-                            new WorkflowObserverDisposable(observerCts, observerTask),
-                        ];
-                    }
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
                 }
@@ -1428,28 +1425,6 @@ public partial class Program
         }
 
         return extraProperties;
-    }
-
-    /// <summary>
-    ///     Cancels and awaits the background workflow-observer task on disposal, mirroring the same
-    ///     cancel→await/swallow→dispose idiom <c>MultiTurnAgentPool.AgentEntry.DisposeAsync</c>
-    ///     already uses for the agent's own run loop.
-    /// </summary>
-    private sealed class WorkflowObserverDisposable(CancellationTokenSource cts, Task observerTask)
-        : IAsyncDisposable
-    {
-        public async ValueTask DisposeAsync()
-        {
-            await cts.CancelAsync();
-            try
-            {
-                await observerTask;
-            }
-            catch
-            { /* best-effort shutdown */
-            }
-            cts.Dispose();
-        }
     }
 
     /// <summary>
