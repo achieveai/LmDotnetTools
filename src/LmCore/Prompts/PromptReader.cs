@@ -131,7 +131,14 @@ public class PromptReader : IPromptReader
         {
             var versions = result[promptName];
             var latestVersion = FindLatestVersion(versions.Keys);
-            versions["latest"] = versions[latestVersion];
+            // Some prompt groups (e.g. domain-context lookup tables keyed by exam
+            // name like "NeetUG" rather than "vX.Y") have no version-parseable key.
+            // Skip registering "latest" for those instead of crashing — they are
+            // looked up by their exact key, never via GetPrompt(name) / "latest".
+            if (!string.IsNullOrEmpty(latestVersion))
+            {
+                versions["latest"] = versions[latestVersion];
+            }
         }
 
         return result;
