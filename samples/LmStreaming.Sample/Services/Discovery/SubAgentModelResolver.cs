@@ -19,9 +19,13 @@ internal sealed class SubAgentModelResolver
         ILogger<SubAgentModelResolver> logger
     )
     {
-        _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
-        _options = options ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _catalog = catalog;
+        _options = options;
+        _logger = logger;
     }
 
     /// <summary>

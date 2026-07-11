@@ -42,6 +42,11 @@ public sealed record ParsedSubAgent(
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Equality intentionally covers the legacy positional contract only. Optional characteristics
+    /// and parse diagnostics are excluded so enriching a parsed value does not change equality or
+    /// hash behavior for existing callers.
+    /// </remarks>
     public bool Equals(ParsedSubAgent? other) =>
         ReferenceEquals(this, other)
         || (

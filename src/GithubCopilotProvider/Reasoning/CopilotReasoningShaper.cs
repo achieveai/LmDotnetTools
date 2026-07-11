@@ -48,6 +48,11 @@ public static class CopilotReasoningShaper
     /// The selected canonical effort, or <see langword="null"/> when no effort was requested or the
     /// model advertises no selectable effort.
     /// </returns>
+    /// <remarks>
+    /// Selection is intentionally driven by <see cref="CopilotModelInfo.ReasoningEfforts"/>, the
+    /// provider's request capability list. <see cref="CopilotModelInfo.SupportsAdaptiveThinking"/>
+    /// governs the separate classic-versus-adaptive thinking shape and is not an effort gate.
+    /// </remarks>
     public static string? SelectEffort(CopilotModelInfo model, ReasoningEffort? requestedEffort)
     {
         ArgumentNullException.ThrowIfNull(model);

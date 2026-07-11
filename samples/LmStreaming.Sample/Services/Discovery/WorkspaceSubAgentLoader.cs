@@ -49,8 +49,11 @@ public sealed class WorkspaceSubAgentLoader
         ILogger<WorkspaceSubAgentLoader> logger,
         SubAgentModelResolver? modelResolver)
     {
-        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _registry = registry;
+        _logger = logger;
         _modelResolver = modelResolver;
     }
 

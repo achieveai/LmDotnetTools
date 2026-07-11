@@ -31,10 +31,15 @@ internal sealed class CharacteristicsAgentFactory
         CopilotModelInfo? parentCopilotModel = null
     )
     {
-        _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
-        _parentAgent = parentAgent ?? throw new ArgumentNullException(nameof(parentAgent));
-        _modelAgentFactory = modelAgentFactory ?? throw new ArgumentNullException(nameof(modelAgentFactory));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(parentAgent);
+        ArgumentNullException.ThrowIfNull(modelAgentFactory);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _catalog = catalog;
+        _parentAgent = parentAgent;
+        _modelAgentFactory = modelAgentFactory;
+        _logger = logger;
         _parentCopilotModel = parentCopilotModel;
     }
 
@@ -73,7 +78,8 @@ internal sealed class CharacteristicsAgentFactory
         return new SubAgentProviderAgent(_modelAgentFactory(model), ShapeReasoning(model, characteristics.Effort));
     }
 
-    private SubAgentProviderAgent ParentFallback() => new(_parentAgent, ImmutableDictionary<string, object?>.Empty);
+    private SubAgentProviderAgent ParentFallback() =>
+        new(_parentAgent, ImmutableDictionary<string, object?>.Empty) { UseParentModel = true };
 
     private void WarnFallbackOnce(string condition, string message, params object?[] args)
     {

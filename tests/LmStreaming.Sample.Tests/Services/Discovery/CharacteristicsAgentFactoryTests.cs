@@ -1,7 +1,9 @@
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using LmStreaming.Sample.Services;
@@ -274,6 +276,51 @@ public sealed class CharacteristicsAgentFactoryTests
         modelFactory.Verify(factoryCall => factoryCall(It.IsAny<CopilotModelInfo>()), Times.Never);
     }
 
+    [Fact]
+    public async Task Create_UnknownExplicitModelRestoresParentModelBeforeParentProviderRequest()
+    {
+        GenerateReplyOptions? receivedOptions = null;
+        var parentAgent = new Mock<IStreamingAgent>();
+        parentAgent
+            .Setup(agent =>
+                agent.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, options, _) => receivedOptions = options
+            )
+            .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
+        var factory = CreateFactory([], parentAgent.Object, _ => throw new InvalidOperationException());
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            DefaultOptions = new GenerateReplyOptions { ModelId = "unknown-explicit-model" },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        await using var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates),
+            parentModelId: "parent-model"
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedOptions.Should().NotBeNull();
+        receivedOptions!.ModelId.Should().Be("parent-model");
+    }
+
     private static CharacteristicsAgentFactory CreateFactory(
         IReadOnlyList<CopilotModelInfo> models,
         IStreamingAgent parentAgent,
@@ -294,4 +341,17 @@ public sealed class CharacteristicsAgentFactoryTests
 
     private static CopilotModelInfo Model(string id, CopilotModelTransport transport, IReadOnlyList<string> efforts) =>
         new(id, id, CopilotModelVendor.OpenAI, transport) { ReasoningEfforts = efforts };
+
+    private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
+        IReadOnlyList<IMessage> messages,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
+    {
+        foreach (var message in messages)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return message;
+            await Task.Yield();
+        }
+    }
 }

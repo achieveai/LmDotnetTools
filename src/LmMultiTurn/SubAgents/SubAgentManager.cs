@@ -656,6 +656,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 });
             providerAgent = provider.Agent;
 
+            if (provider.UseParentModel && defaultOptions is not null)
+            {
+                defaultOptions = defaultOptions with { ModelId = _parentModelId ?? string.Empty };
+            }
+
             if (provider.ExtraProperties.Count > 0)
             {
                 var requestExtraProperties =

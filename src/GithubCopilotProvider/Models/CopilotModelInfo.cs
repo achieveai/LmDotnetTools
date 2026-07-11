@@ -54,6 +54,10 @@ public sealed record CopilotModelInfo(
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Equality intentionally covers the legacy positional contract only. The newly projected
+    /// reasoning-effort capability list is excluded to preserve existing equality and hash behavior.
+    /// </remarks>
     public bool Equals(CopilotModelInfo? other)
     {
         return ReferenceEquals(this, other)

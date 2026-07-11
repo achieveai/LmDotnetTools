@@ -116,6 +116,53 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
+    public void SubAgentProviderAgent_RejectsNullAgent()
+    {
+        var act = () =>
+            new SubAgentProviderAgent(null!, ImmutableDictionary<string, object?>.Empty);
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("Agent");
+    }
+
+    [Fact]
+    public void SubAgentProviderAgent_RejectsNullExtraProperties()
+    {
+        var act = () =>
+            new SubAgentProviderAgent(
+                Agent: Mock.Of<IStreamingAgent>(),
+                ExtraProperties: null!
+            );
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("ExtraProperties");
+    }
+
+    [Fact]
+    public void SubAgentProviderAgent_RejectsNullAgentFromWithExpression()
+    {
+        var provider = new SubAgentProviderAgent(
+            Mock.Of<IStreamingAgent>(),
+            ImmutableDictionary<string, object?>.Empty
+        );
+
+        var act = () => provider with { Agent = null! };
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("value");
+    }
+
+    [Fact]
+    public void SubAgentProviderAgent_RejectsNullExtraPropertiesFromWithExpression()
+    {
+        var provider = new SubAgentProviderAgent(
+            Mock.Of<IStreamingAgent>(),
+            ImmutableDictionary<string, object?>.Empty
+        );
+
+        var act = () => provider with { ExtraProperties = null! };
+
+        act.Should().Throw<ArgumentNullException>().WithParameterName("value");
+    }
+
+    [Fact]
     public async Task SpawnAsync_MergesProviderMetadataWithoutOverwritingTemplateKeys()
     {
         GenerateReplyOptions? receivedOptions = null;
