@@ -324,8 +324,13 @@ public sealed class SubAgentManager : IAsyncDisposable
         var agentId = ResolveAgentId(target);
         var state = _agents[agentId];
 
-        var wasRunning = state.Status == SubAgentStatus.Running;
-        state.NotifyParentOnCompletion = runInBackground;
+        // Read running-vs-finished AND record the relay preference atomically against a concurrent
+        // terminal completion. A completion flips the status out of Running (SubAgentState.MarkTerminal)
+        // BEFORE disposing the owned provider, so serializing this decision on the same lifecycle lock
+        // guarantees we never take the "inject into the running loop" branch in the instant the
+        // provider is being disposed — a finished agent falls through to RestartRunAsync, which
+        // recreates a fresh provider.
+        var wasRunning = state.TryBeginRunningContinuation(runInBackground);
 
         // A finished completion is replaced so this run can be awaited fresh; a pending
         // one (running agent) is kept so existing waiters observe the next resolution.
@@ -834,21 +839,50 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch
         {
+            // Roll back partial construction. Attempt each cleanup INDEPENDENTLY so a failure in one
+            // (e.g. store disposal throwing) does not skip the other (provider disposal), and let the
+            // ORIGINAL construction exception propagate — cleanup failures are logged, never rethrown,
+            // so they can't mask the real cause.
             if (store is IAsyncDisposable disposableStore)
             {
-                await disposableStore.DisposeAsync();
+                try { await disposableStore.DisposeAsync(); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Store dispose failed while rolling back sub-agent {AgentId} construction",
+                        agentId
+                    );
+                }
             }
 
-            if (ownedProviderAgent is IAsyncDisposable asyncDisposable)
+            try { await DisposeProviderAgentAsync(ownedProviderAgent); }
+            catch (Exception ex)
             {
-                await asyncDisposable.DisposeAsync();
-            }
-            else if (ownedProviderAgent is IDisposable disposable)
-            {
-                disposable.Dispose();
+                _logger.LogWarning(
+                    ex,
+                    "Provider dispose failed while rolling back sub-agent {AgentId} construction",
+                    agentId
+                );
             }
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Disposes a provider agent regardless of whether it exposes async or synchronous disposal.
+    /// No-op when <paramref name="provider"/> is null or implements neither disposal interface.
+    /// </summary>
+    private static async ValueTask DisposeProviderAgentAsync(IStreamingAgent? provider)
+    {
+        if (provider is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (provider is IDisposable disposable)
+        {
+            disposable.Dispose();
         }
     }
 
@@ -1071,6 +1105,20 @@ public sealed class SubAgentManager : IAsyncDisposable
         RunCompletedMessage rcm,
         string? lastTextContent)
     {
+        // A run that still has queued messages is NOT terminal: another run will follow and reuse the
+        // same loop/provider, so neither flip the sub-agent terminal nor dispose its owned provider
+        // here — the final completion (HasPendingMessages == false) resolves and, if owned, disposes.
+        if (rcm.HasPendingMessages)
+        {
+            return;
+        }
+
+        // Transition out of Running BEFORE disposing the owned provider, atomically against a
+        // concurrent SendMessageAsync (see SubAgentState.TryBeginRunningContinuation). Once terminal,
+        // a racing continuation observes the finished status and takes the restart path (which
+        // recreates a fresh provider) instead of injecting into the provider being disposed.
+        state.MarkTerminal(rcm.IsError);
+
         // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
         // once per gate-acquisition epoch — not here, because a single monitor may handle
         // several completions when a background sub-agent is continued in place via SendMessage.
@@ -1089,8 +1137,6 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         if (rcm.IsError)
         {
-            state.Status = SubAgentStatus.Error;
-
             var errorText =
                 $"<sub-agent name=\"{state.TemplateName}\" " +
                 $"id=\"{state.AgentId}\">\n" +
@@ -1111,8 +1157,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         else
         {
-            state.Status = SubAgentStatus.Completed;
-
             var result = lastTextContent ?? "(no text response)";
 
             var resultText =

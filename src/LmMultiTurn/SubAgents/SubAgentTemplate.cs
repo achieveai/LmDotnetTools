@@ -36,6 +36,13 @@ public record SubAgentTemplate
     /// <summary>
     /// Factory that creates the LLM provider agent for this template.
     /// </summary>
+    /// <remarks>
+    /// Each invocation MUST return a fresh, independently disposable agent — never a shared, cached, or
+    /// externally-owned instance. Callers that route an inherited-model sub-agent through this factory
+    /// take ownership of the returned agent (<see cref="SubAgentProviderAgent.OwnsAgent"/> = true) and
+    /// dispose it when the sub-agent's run completes, so returning a shared instance here would dispose
+    /// a provider still in use elsewhere.
+    /// </remarks>
     public required Func<IStreamingAgent> AgentFactory { get; init; }
 
     /// <summary>

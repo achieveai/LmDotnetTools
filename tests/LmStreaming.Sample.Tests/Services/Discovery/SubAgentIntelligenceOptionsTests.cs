@@ -47,6 +47,27 @@ public sealed class SubAgentIntelligenceOptionsTests
     }
 
     [Fact]
+    public void Load_LogsAndSkipsDuplicateNormalizedTierKeyWhileKeepingTheFirst()
+    {
+        // "3" and "03" both normalize to integer tier 3; the second is a duplicate and must be
+        // logged and skipped, leaving a single tier-3 mapping.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["SubAgentIntelligence:Tiers:3:0"] = "first-model",
+                ["SubAgentIntelligence:Tiers:03:0"] = "duplicate-model",
+            })
+            .Build();
+        var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
+
+        var options = SubAgentIntelligenceOptions.Load(configuration, logger);
+
+        options.Tiers.Should().ContainSingle().Which.Key.Should().Be(3);
+        options.Tiers[3].Should().NotBeEmpty();
+        logger.Entries.Count(entry => entry.Level == LogLevel.Error).Should().Be(1);
+    }
+
+    [Fact]
     public void Appsettings_TierStubUsesEmptyOrderedArraysForEverySupportedTier()
     {
         var appsettingsPath = Path.GetFullPath(

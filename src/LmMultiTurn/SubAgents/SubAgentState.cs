@@ -54,7 +54,22 @@ internal class SubAgentState
     /// </summary>
     public IStreamingAgent? OwnedProviderAgent { get; private set; }
 
-    private int _ownedProviderDisposed;
+    // Owned-provider disposal progress. A single caller transitions Idle -> InProgress and performs
+    // the disposal; concurrent callers back off. A successful disposal latches Disposed; a FAILED
+    // attempt resets the guard to Idle so a later cleanup path (completion, restart, manager dispose)
+    // can retry instead of leaking the provider — the guard is never permanently latched on failure.
+    private const int OwnedProviderDisposeIdle = 0;
+    private const int OwnedProviderDisposeInProgress = 1;
+    private const int OwnedProviderDisposeDisposed = 2;
+    private int _ownedProviderDisposeState;
+
+    /// <summary>
+    /// Serializes a genuine terminal completion's status flip + owned-provider disposal against a
+    /// concurrent <c>SubAgentManager.SendMessageAsync</c>. See <see cref="MarkTerminal"/> /
+    /// <see cref="TryBeginRunningContinuation"/>. Only synchronous work runs under this lock (no
+    /// awaits), so a blocking/backpressured send or a slow provider disposal can never deadlock it.
+    /// </summary>
+    private readonly object _lifecycleLock = new();
 
     /// <summary>
     /// Optional caller-supplied handle so SendMessage can address this agent by name.
@@ -76,6 +91,37 @@ internal class SubAgentState
 
     private volatile SubAgentStatus _status = SubAgentStatus.Running;
     public SubAgentStatus Status { get => _status; set => _status = value; }
+
+    /// <summary>
+    /// Atomically flips the sub-agent out of <see cref="SubAgentStatus.Running"/> at a genuine
+    /// terminal completion, under <see cref="_lifecycleLock"/> so it is serialized against
+    /// <see cref="TryBeginRunningContinuation"/>. The manager disposes the owned provider only AFTER
+    /// this returns, so a concurrent SendMessage can never observe <see cref="SubAgentStatus.Running"/>
+    /// — and route a message into the loop — in the window where the provider is being disposed.
+    /// </summary>
+    public void MarkTerminal(bool isError)
+    {
+        lock (_lifecycleLock)
+        {
+            _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
+        }
+    }
+
+    /// <summary>
+    /// Atomically reads whether the loop is currently running and records the continuation's relay
+    /// preference, under the same <see cref="_lifecycleLock"/> that guards <see cref="MarkTerminal"/>.
+    /// Returns true when the loop is running (the caller injects the message into it) and false when
+    /// it has finished (the caller restarts it, recreating a fresh provider), so the running-vs-finished
+    /// decision can never straddle a concurrent terminal completion that is about to dispose the provider.
+    /// </summary>
+    public bool TryBeginRunningContinuation(bool notifyParentOnCompletion)
+    {
+        lock (_lifecycleLock)
+        {
+            _notifyParentOnCompletion = notifyParentOnCompletion;
+            return _status == SubAgentStatus.Running;
+        }
+    }
 
     public IConversationStore? Store { get; set; }
 
@@ -105,21 +151,45 @@ internal class SubAgentState
 
     public async ValueTask DisposeOwnedProviderAgentAsync()
     {
+        if (OwnedProviderAgent is null)
+        {
+            return;
+        }
+
+        // Claim the disposal: only the caller that transitions Idle -> InProgress performs it; a
+        // caller that finds it already Disposed (or another disposal in progress) backs off. Crucially
+        // the guard is set to its terminal Disposed value only AFTER a successful DisposeAsync/Dispose;
+        // a failed attempt resets it to Idle in the catch below so a later cleanup can retry rather
+        // than leak the provider behind a guard that latched before the work actually succeeded.
         if (
-            OwnedProviderAgent is null
-            || Interlocked.Exchange(ref _ownedProviderDisposed, 1) != 0
+            Interlocked.CompareExchange(
+                ref _ownedProviderDisposeState,
+                OwnedProviderDisposeInProgress,
+                OwnedProviderDisposeIdle
+            ) != OwnedProviderDisposeIdle
         )
         {
             return;
         }
 
-        if (OwnedProviderAgent is IAsyncDisposable asyncDisposable)
+        try
         {
-            await asyncDisposable.DisposeAsync();
+            if (OwnedProviderAgent is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync();
+            }
+            else if (OwnedProviderAgent is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+
+            Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeDisposed);
         }
-        else if (OwnedProviderAgent is IDisposable disposable)
+        catch
         {
-            disposable.Dispose();
+            // Disposal failed: reset the guard so a subsequent cleanup path can retry the disposal.
+            Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeIdle);
+            throw;
         }
     }
 
@@ -128,7 +198,8 @@ internal class SubAgentState
     /// continuation must create a fresh provider pipeline.
     /// </summary>
     public bool HasDisposedOwnedProviderAgent =>
-        OwnedProviderAgent is not null && Volatile.Read(ref _ownedProviderDisposed) != 0;
+        OwnedProviderAgent is not null
+        && Volatile.Read(ref _ownedProviderDisposeState) == OwnedProviderDisposeDisposed;
 
     /// <summary>
     /// Assigns the provider created for the current run. This resets the per-run disposal guard
@@ -137,7 +208,7 @@ internal class SubAgentState
     public void SetOwnedProviderAgent(IStreamingAgent? ownedProviderAgent)
     {
         OwnedProviderAgent = ownedProviderAgent;
-        Volatile.Write(ref _ownedProviderDisposed, 0);
+        Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeIdle);
     }
 
     /// <summary>

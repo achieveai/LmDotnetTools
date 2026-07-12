@@ -520,6 +520,136 @@ public sealed class CharacteristicsAgentFactoryTests
         parentAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Never);
     }
 
+    [Fact]
+    public async Task Spawn_DisposesOwnedSynchronousProviderExactlyOnce()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var ownedAgent = CreateRespondingSyncDisposableAgent();
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => ownedAgent.Object);
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Once);
+        await manager.DisposeAsync();
+        await manager.DisposeAsync();
+
+        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Spawn_RetriesOwnedProviderDisposalAfterFirstAttemptThrows()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var disposeCalls = 0;
+        var ownedAgent = CreateRespondingDisposableAgent();
+        ownedAgent
+            .As<IAsyncDisposable>()
+            .Setup(agent => agent.DisposeAsync())
+            .Returns(() =>
+            {
+                disposeCalls++;
+                return disposeCalls == 1
+                    ? throw new InvalidOperationException("owned provider dispose boom")
+                    : ValueTask.CompletedTask;
+            });
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => ownedAgent.Object);
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        // The completion-time disposal throws, but must not permanently latch the guard: a later
+        // cleanup (manager dispose) retries and succeeds, so the provider is not leaked.
+        _ = await manager.SpawnAsync("test-agent", "test task");
+        await manager.DisposeAsync();
+
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Spawn_ConstructionRollbackDisposesProviderWhenStoreDisposeThrowsAndPreservesOriginalError()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var ownedAgent = CreateRespondingDisposableAgent();
+        var store = new Mock<IConversationStore>();
+        store
+            .As<IAsyncDisposable>()
+            .Setup(disposable => disposable.DisposeAsync())
+            .Throws(new InvalidOperationException("store dispose boom"));
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => ownedAgent.Object);
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+            ConversationStoreFactory = _ => store.Object,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        await using var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
+
+        // removeTools without a base set makes BuildEnabledToolSet throw AFTER both the owned provider
+        // and the store are constructed, exercising the construction rollback with a throwing store.
+        var act = () => manager.SpawnAsync("test-agent", "test task", removeTools: ["missing-tool"]);
+
+        // The ORIGINAL construction error surfaces, not the store-disposal failure that masks it.
+        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+        thrown.Which.Message.Should().Contain("removeTools");
+        // Provider disposal is attempted independently even though store disposal threw first.
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+        store.As<IAsyncDisposable>().Verify(disposable => disposable.DisposeAsync(), Times.Once);
+    }
+
     private static CharacteristicsAgentFactory CreateFactory(
         IReadOnlyList<CopilotModelInfo> models,
         IStreamingAgent parentAgent,
@@ -551,6 +681,24 @@ public sealed class CharacteristicsAgentFactoryTests
             )
             .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
         agent.As<IAsyncDisposable>().Setup(candidate => candidate.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        return agent;
+    }
+
+    private static Mock<IStreamingAgent> CreateRespondingSyncDisposableAgent()
+    {
+        // Deliberately implements ONLY IDisposable (not IAsyncDisposable) so the synchronous disposal
+        // branch in SubAgentState.DisposeOwnedProviderAgentAsync is exercised.
+        var agent = new Mock<IStreamingAgent>();
+        agent
+            .Setup(candidate =>
+                candidate.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
+        agent.As<IDisposable>().Setup(candidate => candidate.Dispose());
         return agent;
     }
 
