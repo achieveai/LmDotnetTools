@@ -46,12 +46,12 @@ public sealed class ContextDiscoveryEndToEndTests
 
         result.Should().BeOfType<OkResult>();
         var message = agent.SentMessages.Should().ContainSingle().Which
-            .Should().BeOfType<TextMessage>().Subject;
+            .Should().BeOfType<NotifyMessage>().Subject;
         message.Role.Should().Be(Role.User);
+        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
+        message.Label.Should().Be("CLAUDE.md");
         message.Text.Should().Contain("<context-discovery path=\"CLAUDE.md\">");
         message.Text.Should().Contain("Always be concise.");
-        message.Metadata.Should().NotBeNull();
-        message.Metadata!.Should().ContainKey(ContextDiscoveryInjector.MetadataKey);
     }
 
     [Fact]
@@ -78,8 +78,8 @@ public sealed class ContextDiscoveryEndToEndTests
 
         result.Should().BeOfType<OkResult>();
         agent.SentMessages.Should().SatisfyRespectively(
-            first => first.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
-            second => second.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
+            first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
+            second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
     }
 
     [Fact]
@@ -107,8 +107,8 @@ public sealed class ContextDiscoveryEndToEndTests
 
         result.Should().BeOfType<OkResult>();
         agent.SentMessages.Should().SatisfyRespectively(
-            first => first.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
-            second => second.Should().BeOfType<TextMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
+            first => first.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("ROOT_MARKER"),
+            second => second.Should().BeOfType<NotifyMessage>().Which.Text.Should().Contain("NESTED_MARKER"));
     }
 
     [Fact]
