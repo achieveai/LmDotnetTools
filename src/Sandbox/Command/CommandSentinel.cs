@@ -63,8 +63,11 @@ internal static class CommandSentinel
 
     /// <summary>
     /// Parses the stale-cleanup listing into <c>(directoryName, leaseUnixSeconds, createdUnixSeconds)</c>
-    /// tuples, skipping any line that is not a well-formed GC line. A malformed line is ignored rather
-    /// than fatal — cleanup is best-effort maintenance and must never fail a command.
+    /// tuples, skipping any line that is not a well-formed GC line whose name is a valid operation
+    /// directory. A malformed line is ignored rather than fatal — cleanup is best-effort maintenance and
+    /// must never fail a command — and a name that is not EXACTLY fixed-length lowercase hex is rejected
+    /// outright, so a foreign or hostile filesystem entry can never become a deletion target (defense in
+    /// depth beyond the shell listing, which already filters to hex names).
     /// </summary>
     public static IReadOnlyList<(string Name, long Lease, long Created)> ParseGcListing(string text)
     {
@@ -78,12 +81,41 @@ internal static class CommandSentinel
             }
 
             var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length == 4 && long.TryParse(parts[2], out var lease) && long.TryParse(parts[3], out var created))
+            if (
+                parts.Length == 4
+                && IsOperationDirectoryName(parts[1])
+                && long.TryParse(parts[2], out var lease)
+                && long.TryParse(parts[3], out var created)
+            )
             {
                 entries.Add((parts[1], lease, created));
             }
         }
 
         return entries;
+    }
+
+    /// <summary>
+    /// True only when <paramref name="name"/> is EXACTLY
+    /// <see cref="CommandArtifactLayout.OperationDirectoryNameLength"/> lowercase-hex characters — the
+    /// shape every SDK-derived operation directory has. Anything else (wrong length, uppercase, path
+    /// separators, shell metacharacters) is rejected before the name is embedded in any script.
+    /// </summary>
+    public static bool IsOperationDirectoryName(string? name)
+    {
+        if (name is null || name.Length != CommandArtifactLayout.OperationDirectoryNameLength)
+        {
+            return false;
+        }
+
+        foreach (var ch in name)
+        {
+            if (ch is (< '0' or > '9') and (< 'a' or > 'f'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

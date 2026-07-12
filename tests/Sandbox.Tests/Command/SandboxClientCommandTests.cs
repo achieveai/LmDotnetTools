@@ -119,7 +119,13 @@ public class SandboxClientCommandTests
     public async Task ExecuteAsync_TransportTimeoutWithoutSideEffect_ThrowsTransportTimeoutWithRecoverableOperationId()
     {
         var fake = new FakeSandboxGateway();
-        using var client = CommandTestSupport.CreateClient(fake, transportTimeout: TimeSpan.FromMilliseconds(200));
+        // A short execution timeout keeps the deadline-based recovery poll bounded and fast when the
+        // operation never materializes (the command may still be running up to the execution timeout).
+        using var client = CommandTestSupport.CreateClient(
+            fake,
+            transportTimeout: TimeSpan.FromMilliseconds(200),
+            executionTimeout: TimeSpan.FromMilliseconds(200)
+        );
         var command = new SandboxCommand(["deploy"], operationId: "op-1");
         var op = CommandTestSupport.OperationDirectory(Session, "op-1");
         fake.SetRunMode(op, FakeSandboxGateway.RunMode.HangNoSideEffect);

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.Sandbox.Command;
 using FluentAssertions;
@@ -9,6 +10,9 @@ public class CommandStaleCleanupTests
 {
     private const long Now = 2_000_000_000;
     private const long Day = CommandArtifactLayout.StaleAgeSeconds;
+
+    /// <summary>A valid, distinct 32-char lowercase-hex operation-directory name — the only shape the stale sweep (and its name validation) accepts.</summary>
+    private static string HexName(int seed) => seed.ToString("x8", CultureInfo.InvariantCulture).PadLeft(32, '0');
 
     [Fact]
     public void SelectStale_ExpiredButYoungerThan24h_IsKept()
@@ -82,15 +86,18 @@ public class CommandStaleCleanupTests
         var op = CommandTestSupport.OperationDirectory("sess-1", "op-1");
         fake.Program(op, exitCode: 0, stdout: Encoding.UTF8.GetBytes("ok"), stderr: []);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        fake.AddGcEntry("stale", now - 100, now - (Day * 2));
-        fake.AddGcEntry("active", now + 100_000, now - (Day * 2));
-        fake.AddGcEntry("young", now - 100, now - 100);
+        var stale = HexName(1);
+        var active = HexName(2);
+        var young = HexName(3);
+        fake.AddGcEntry(stale, now - 100, now - (Day * 2));
+        fake.AddGcEntry(active, now + 100_000, now - (Day * 2));
+        fake.AddGcEntry(young, now - 100, now - 100);
 
         _ = await client.ExecuteAsync("sess-1", new SandboxCommand(["work"], operationId: "op-1"));
 
-        fake.CleanedOperations.Should().Contain("stale");
-        fake.CleanedOperations.Should().NotContain("active");
-        fake.CleanedOperations.Should().NotContain("young");
+        fake.CleanedOperations.Should().Contain(stale);
+        fake.CleanedOperations.Should().NotContain(active);
+        fake.CleanedOperations.Should().NotContain(young);
     }
 
     [Fact]
@@ -102,18 +109,17 @@ public class CommandStaleCleanupTests
         fake.Program(op, exitCode: 0, stdout: Encoding.UTF8.GetBytes("ok"), stderr: []);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var overLimit = CommandArtifactLayout.StaleScanLimit + 5;
-        for (var i = 0; i < overLimit; i++)
+        var gcNames = Enumerable.Range(0, overLimit).Select(HexName).ToList();
+        foreach (var name in gcNames)
         {
-            fake.AddGcEntry($"stale-{i}", now - 100, now - (Day * 2));
+            fake.AddGcEntry(name, now - 100, now - (Day * 2));
         }
 
         _ = await client.ExecuteAsync("sess-1", new SandboxCommand(["work"], operationId: "op-1"));
 
-        fake.CleanedOperations.Count(name => name.StartsWith("stale-", StringComparison.Ordinal))
-            .Should()
-            .Be(CommandArtifactLayout.StaleScanLimit);
-        fake.CleanedOperations.Should().Contain("stale-0");
-        fake.CleanedOperations.Should().NotContain($"stale-{CommandArtifactLayout.StaleScanLimit + 4}");
+        fake.CleanedOperations.Count(gcNames.Contains).Should().Be(CommandArtifactLayout.StaleScanLimit);
+        fake.CleanedOperations.Should().Contain(gcNames[0]);
+        fake.CleanedOperations.Should().NotContain(gcNames[CommandArtifactLayout.StaleScanLimit + 4]);
     }
 
     [Fact]
@@ -125,13 +131,35 @@ public class CommandStaleCleanupTests
         var opA = CommandTestSupport.OperationDirectory("sess-A", "op-1");
         fakeA.Program(opA, exitCode: 0, stdout: Encoding.UTF8.GetBytes("ok"), stderr: []);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        fakeA.AddGcEntry("a-stale", now - 100, now - (Day * 2));
-        fakeB.AddGcEntry("b-stale", now - 100, now - (Day * 2));
+        var aStale = HexName(10);
+        var bStale = HexName(11);
+        fakeA.AddGcEntry(aStale, now - 100, now - (Day * 2));
+        fakeB.AddGcEntry(bStale, now - 100, now - (Day * 2));
 
         _ = await clientA.ExecuteAsync("sess-A", new SandboxCommand(["work"], operationId: "op-1"));
 
-        fakeA.CleanedOperations.Should().Contain("a-stale");
+        fakeA.CleanedOperations.Should().Contain(aStale);
         fakeB.Requests.Should().BeEmpty();
         fakeB.CleanedOperations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_StaleSweep_IgnoresNonHexDirectoryNames_NeverPurgingThem()
+    {
+        var fake = new FakeSandboxGateway();
+        using var client = CommandTestSupport.CreateClient(fake);
+        var op = CommandTestSupport.OperationDirectory("sess-1", "op-1");
+        fake.Program(op, exitCode: 0, stdout: Encoding.UTF8.GetBytes("ok"), stderr: []);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        // A stale-but-non-hex name (uppercase, wrong length, or shell metacharacters) must be rejected by
+        // the SDK's listing validation and never handed to a purge — defense in depth beyond the shell.
+        fake.AddGcEntry("$(touch pwned)", now - 100, now - (Day * 2));
+        fake.AddGcEntry("../escape", now - 100, now - (Day * 2));
+        fake.AddGcEntry(new string('A', 32), now - 100, now - (Day * 2));
+
+        _ = await client.ExecuteAsync("sess-1", new SandboxCommand(["work"], operationId: "op-1"));
+
+        fake.Requests.Should().NotContain(r => r.Kind == CommandScriptKind.GcPurge);
+        fake.CleanedOperations.Should().OnlyContain(name => name == op);
     }
 }

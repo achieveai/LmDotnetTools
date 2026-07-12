@@ -4,52 +4,91 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 
 /// <summary>
-/// F2: a deterministic, script-level state-machine model of the RUN claim in
+/// A deterministic, script-level state-machine model of the RUN claim in
 /// <see cref="AchieveAi.LmDotnetTools.Sandbox.Command.CommandScripts.BuildRun"/>, driven through the
-/// exact concurrent interleaving that used to double-run a command. Two callers using the same
-/// operation id are stepped explicitly — caller A wins the <c>mkdir</c> claim and is paused BEFORE it
-/// establishes its lease, then caller B runs to completion, then A resumes — and the number of
-/// side-effecting command runs is asserted.
+/// exact concurrent interleavings that must NOT double-run a command. The shipped wrapper elects a
+/// submitter with a single atomic <c>mkdir</c> and never deletes or takes over an existing claim, so no
+/// two callers can both run: a loser reports PENDING, and an abandoned (expired-but-uncommitted) claim
+/// is left for the guarded stale sweep rather than reclaimed by a racy takeover.
 /// </summary>
 /// <remarks>
-/// The model mirrors the shell wrapper step for step (see the mapped comments). The pre-fix variant is
-/// retained ONLY to prove this test genuinely reproduces the old hole: with the old lease-defaults-to-0
-/// takeover and created-before-lease ordering the interleaving yields TWO side effects, whereas the
-/// shipped logic (lease established first, takeover gated on an existing lease) yields exactly ONE.
-/// The real generated script is separately exercised by the capability-guarded <c>CommandRealShellTests</c>.
+/// The pre-fix takeover variant is retained ONLY to prove these tests genuinely reproduce the hole the
+/// removal closes: with an expired-lease takeover, two contenders both delete-and-recreate the claim and
+/// the command runs TWICE; with the shipped no-takeover logic the same interleaving runs it ZERO times
+/// (both PENDING) and a fresh-op race runs it exactly ONCE. The real generated script is separately
+/// exercised by the capability-guarded <c>CommandRealShellTests</c>.
 /// </remarks>
 public class CommandClaimInterleavingTests
 {
     [Fact]
-    public void PreFixLogic_ConcurrentEstablishmentWindow_RunsTheCommandTwice_ReproducingTheHole()
+    public void PreFixExpiredLeaseTakeover_TwoContenders_DoubleRunsTheCommand_ReproducingTheHole()
     {
-        var model = new ClaimModel(leaseFirst: false, leaseGuardedTakeover: false);
+        var model = new ClaimModel(takeoverEnabled: true);
+        SeedExpiredCrashedClaim(model);
 
-        var sideEffects = RunEstablishmentWindowInterleaving(model);
+        var a = model.Run("A").GetEnumerator();
+        var b = model.Run("B").GetEnumerator();
+        // Both contenders see the same expired lease and decide to take it over before either removes it.
+        AdvanceUntil(a, ClaimModel.DecidedTakeoverBeforeRemove);
+        AdvanceUntil(b, ClaimModel.DecidedTakeoverBeforeRemove);
+        RunToCompletion(a); // A rm -rf's, re-mkdirs, runs, commits.
+        RunToCompletion(b); // B rm -rf's A's fresh claim+manifest, re-mkdirs, and runs AGAIN.
 
-        // The old hole: B reads a missing lease as 0, deletes A's just-won claim, and re-runs — so the
-        // one operation's command executes for BOTH callers.
-        sideEffects.Should().HaveCount(2).And.Contain("A").And.Contain("B");
+        // The old hole: the one operation's command executes for BOTH callers.
+        model.Fs.SideEffects.Should().HaveCount(2).And.Contain("A").And.Contain("B");
     }
 
     [Fact]
-    public void ShippedLogic_ConcurrentEstablishmentWindow_RunsTheCommandExactlyOnce()
+    public void ShippedNoTakeover_TwoContendersOnExpiredLease_NeitherRuns_BothReportPending()
     {
-        var model = new ClaimModel(leaseFirst: true, leaseGuardedTakeover: true);
+        var model = new ClaimModel(takeoverEnabled: false);
+        SeedExpiredCrashedClaim(model);
 
-        var sideEffects = RunEstablishmentWindowInterleaving(model);
+        RunToCompletion(model.Run("A"));
+        RunToCompletion(model.Run("B"));
 
-        // The fix: B sees a claim with no lease yet, refuses to take it over, and reports PENDING; only
-        // the winner A runs the command.
-        sideEffects.Should().Equal("A");
+        // No Execute path deletes/takes over the claim, so neither contender can run — the double-run is
+        // impossible by construction. The abandoned claim is left for the guarded stale sweep.
+        model.Fs.SideEffects.Should().BeEmpty();
+        model.Fs.EmittedBy("A").Should().Be("PENDING");
+        model.Fs.EmittedBy("B").Should().Be("PENDING");
+        model.Fs.DirExists(ClaimModel.Op).Should().BeTrue("an abandoned claim is never taken over, only GC'd after inactivity");
+    }
+
+    [Fact]
+    public void ShippedNoTakeover_SimultaneousContendersOnFreshOp_RunTheCommandExactlyOnce()
+    {
+        var model = new ClaimModel(takeoverEnabled: false);
+        model.Fs.Now = 1_000_000;
+
+        var a = model.Run("A").GetEnumerator();
+        var b = model.Run("B").GetEnumerator();
+        AdvanceUntil(a, ClaimModel.WonClaimBeforeLease); // A wins the atomic mkdir, pauses before its lease.
+        RunToCompletion(b); // B loses the mkdir, cannot take over, reports PENDING.
+        RunToCompletion(a); // A runs and commits.
+
+        model.Fs.SideEffects.Should().Equal("A");
         model.Fs.EmittedBy("B").Should().Be("PENDING");
         model.Fs.FileExists(ClaimModel.Manifest).Should().BeTrue();
     }
 
     [Fact]
-    public void ShippedLogic_LeaselessClaim_IsReportedPending_AndNeverDeleted()
+    public void ShippedNoTakeover_ExpiredLeaseSingleCaller_IsReportedPending_ClaimRetainedForGc()
     {
-        var model = new ClaimModel(leaseFirst: true, leaseGuardedTakeover: true);
+        var model = new ClaimModel(takeoverEnabled: false);
+        SeedExpiredCrashedClaim(model);
+
+        RunToCompletion(model.Run("C"));
+
+        model.Fs.SideEffects.Should().BeEmpty();
+        model.Fs.EmittedBy("C").Should().Be("PENDING");
+        model.Fs.DirExists(ClaimModel.Op).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShippedNoTakeover_LeaselessClaim_IsReportedPending_AndNeverDeleted()
+    {
+        var model = new ClaimModel(takeoverEnabled: false);
         model.Fs.Now = 1_000_000;
         // A winner has won the mkdir claim but has not written its lease yet (establishment window).
         model.Fs.Mkdir(ClaimModel.Op).Should().BeTrue();
@@ -61,52 +100,13 @@ public class CommandClaimInterleavingTests
         model.Fs.DirExists(ClaimModel.Op).Should().BeTrue("a lease-less claim must never be taken over/deleted");
     }
 
-    [Fact]
-    public void ShippedLogic_ExpiredLeaseOfCrashedSubmitter_IsStillTakenOver()
+    /// <summary>Seeds a crashed submitter's leftovers: the claim exists with an established-but-expired lease and no manifest.</summary>
+    private static void SeedExpiredCrashedClaim(ClaimModel model)
     {
-        var model = new ClaimModel(leaseFirst: true, leaseGuardedTakeover: true);
         model.Fs.Now = 1_000_000;
-        // A crashed submitter established its lease (now expired) but never committed a manifest.
         model.Fs.Mkdir(ClaimModel.Op);
         model.Fs.Write(ClaimModel.Lease, (model.Fs.Now - 100).ToString());
         model.Fs.Write(ClaimModel.Created, (model.Fs.Now - 10_000).ToString());
-
-        RunToCompletion(model.Run("C"));
-
-        // The lease exists and is expired, so takeover proceeds and the operation is not blocked.
-        model.Fs.SideEffects.Should().Equal("C");
-        model.Fs.EmittedBy("C").Should().Be("MANIFEST");
-    }
-
-    [Fact]
-    public void ShippedLogic_LiveLeaseOfPeerSubmitter_IsNotTakenOver()
-    {
-        var model = new ClaimModel(leaseFirst: true, leaseGuardedTakeover: true);
-        model.Fs.Now = 1_000_000;
-        // A live peer holds the claim with an unexpired lease and has not committed yet.
-        model.Fs.Mkdir(ClaimModel.Op);
-        model.Fs.Write(ClaimModel.Lease, (model.Fs.Now + 10_000).ToString());
-        model.Fs.Write(ClaimModel.Created, model.Fs.Now.ToString());
-
-        RunToCompletion(model.Run("D"));
-
-        model.Fs.SideEffects.Should().BeEmpty();
-        model.Fs.EmittedBy("D").Should().Be("PENDING");
-        model.Fs.DirExists(ClaimModel.Op).Should().BeTrue();
-    }
-
-    /// <summary>Drives the "A wins the claim, pauses before its lease, B runs fully, A resumes" interleaving and returns the ordered side effects.</summary>
-    private static IReadOnlyList<string> RunEstablishmentWindowInterleaving(ClaimModel model)
-    {
-        model.Fs.Now = 1_000_000;
-        var a = model.Run("A").GetEnumerator();
-        var b = model.Run("B").GetEnumerator();
-
-        AdvanceUntil(a, ClaimModel.WonClaimBeforeLease);
-        RunToCompletion(b);
-        RunToCompletion(a);
-
-        return model.Fs.SideEffects;
     }
 
     private static void AdvanceUntil(IEnumerator<string> steps, string label)

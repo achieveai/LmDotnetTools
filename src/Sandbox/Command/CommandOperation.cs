@@ -39,7 +39,7 @@ internal static class CommandOperation
     private const string DigestDomainTag = "lmsbx-cmd-digest-v1";
 
     /// <summary>Hex characters produced for the operation-directory name (16 bytes of SHA-256).</summary>
-    private const int DirectoryNameHexLength = 32;
+    private const int DirectoryNameHexLength = CommandArtifactLayout.OperationDirectoryNameLength;
 
     /// <summary>
     /// Validates a caller-supplied operation id: non-empty, at most <see cref="MaxOperationIdLength"/>

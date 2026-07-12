@@ -96,11 +96,13 @@ sandbox. `SandboxCommand` is validated at construction:
 `SandboxCommandResult` exposes `ExitCode`, the exact `StandardOutput` and `StandardError` (reassembled
 beyond the gateway's 20&#160;KB/500-line `exec` truncation — the gateway's unstable `output_*.txt`
 file is never used), and `CombinedOutput` (stdout then stderr; a convenience concatenation, not a
-real-time interleaving). The completion signal the SDK reads back through that truncating `exec` is a
-single, deliberately small line: only a compact per-stream digest/length (plus a bounded inline copy of
-*small* streams) travels on it, and each larger stream is reassembled from integrity-checked chunk
-reads — so the signal itself stays provably under the truncation limit regardless of how large the
-command's output is.
+real-time interleaving). Output is decoded as **strict UTF-8**: because V1 exposes output as text, bytes
+that are not well-formed UTF-8 surface as `SandboxErrorKind.Integrity` (carrying the operation id) rather
+than being silently rewritten with replacement characters. The completion signal the SDK reads back
+through that truncating `exec` is a single, deliberately small line: only a compact per-stream
+digest/length (plus a bounded inline copy of *small* streams) travels on it, and each larger stream is
+reassembled from integrity-checked chunk reads — so the signal itself stays provably under the
+truncation limit regardless of how large the command's output is.
 
 ### Outcomes
 
@@ -116,12 +118,27 @@ command after the client stops waiting.
 ### Single submission, recovery, and at-least-once
 
 The SDK makes exactly **one** side-effecting Bash submission per operation and never resubmits it.
-State probes, chunked output reads, and cleanup are idempotent reads. An atomic persisted claim
-elects a single submitter; concurrent callers using the same operation id poll the persisted manifest
-instead of running again, and a later call with the same operation id recovers the retained result. A
-canonical, versioned digest (over the session id, argv, normalized working directory, and execution
-timeout) is bound to each operation: reusing an operation id with a *different* command fails with
-`SandboxErrorKind.Integrity` and never submits.
+State probes, chunked output reads, and cleanup are idempotent reads. An atomic persisted claim (a
+single `mkdir`) elects one submitter; concurrent callers using the same operation id observe the claim
+and poll the persisted manifest instead of running again. Recovery from a lost response polls that
+manifest with a bounded, deadline-based backoff derived from the execution timeout — never a
+resubmission. A canonical, versioned digest (over the session id, argv, normalized working directory,
+and execution timeout) is bound to each operation: reusing an operation id with a *different* command
+fails with `SandboxErrorKind.Integrity` and never submits.
+
+**Same-id reuse never re-runs.** On a verified success the SDK reclaims the (unbounded) captured output
+immediately but retains a bounded, credential-free **completion marker** (the manifest plus its
+lease/created timestamps). A later call with the same operation id is answered from that marker: the
+result is returned verbatim when the output was small enough to have been inlined, or — when a larger
+output had already been reclaimed — the duplicate is rejected as `SandboxErrorKind.Integrity` *without
+re-running the command*.
+
+**Abandoned claims are never taken over.** A submitter that crashes after claiming (leaving an expired
+lease and no manifest) is deliberately *not* reclaimed by a competing execution — the delete-and-recreate
+that would require is not atomic against a concurrent contender under the pinned shell primitives and
+could double-run a non-idempotent command. Such a claim is left non-runnable (same-id callers see it as
+PENDING) until the guarded stale sweep removes it after ~24h of inactivity, after which a same-id retry
+proceeds normally.
 
 Because the gateway may rematerialize a lost container and retry the underlying invocation once,
 command execution is **at-least-once**: a non-idempotent command can run more than once even though the
@@ -130,12 +147,20 @@ SDK submits once and returns a single result.
 ### Artifacts
 
 Command wrapper artifacts (a manifest plus captured output) are persisted under a reserved,
-per-session path inside the workspace with restrictive permissions and **no** credentials. A verified
-successful operation deletes its artifacts immediately; an interrupted, transport-timed-out, or
-integrity-failed operation retains them for recovery. Each successful command also runs a bounded,
-session-scoped stale sweep that deletes only artifacts whose lease has expired and that are at least
-24 hours old (active operations are protected), and sandbox deletion remains the final cleanup
-boundary.
+per-session path inside the workspace with **no** credentials. A restrictive `umask` applies only to
+the SDK's own artifacts — the caller's command runs under its normal inherited umask, so files the
+command itself creates are not force-hardened. The manifest is published atomically (written to a
+restrictive sibling temp file and renamed), so a concurrent probe never observes a partial manifest.
+
+A verified successful operation **reclaims its large output immediately** while retaining the bounded
+completion marker described above; an interrupted, transport-timed-out, or integrity-failed operation
+retains all of its artifacts for recovery. Each successful command also runs a bounded, session-scoped
+stale sweep that deletes only artifacts whose lease has expired and that are at least 24 hours old
+(active operations are protected). The sweep re-validates each directory's *current* lease/age in the
+sandbox immediately before deleting — never from the earlier listing snapshot, so a refreshed operation
+is never deleted — and every candidate directory name is validated as fixed-length lowercase hex before
+use. Sandbox deletion remains the final cleanup boundary.
+
 
 ## Errors
 

@@ -104,8 +104,9 @@ internal static class PosixShellHarness
             .ConfigureAwait(false);
 
         var raw = OperatingSystem.IsWindows()
-            ? await ExecAsync(capability.ShellExe!, ["-c", $"sh '{ToShellPath(scriptFile)}'"]).ConfigureAwait(false)
-            : await ExecAsync("/bin/sh", [scriptFile]).ConfigureAwait(false);
+            ? await ExecAsync(capability.ShellExe!, ["-c", $"sh '{ToShellPath(scriptFile)}'"], workspace.HostPath)
+                .ConfigureAwait(false)
+            : await ExecAsync("/bin/sh", [scriptFile], workspace.HostPath).ConfigureAwait(false);
 
         return new ShellResult(GatewayTruncation.Apply(raw.Stdout), raw.Stderr, raw.ExitCode);
     }
@@ -160,7 +161,7 @@ internal static class PosixShellHarness
         return $"/mnt/{drive}{rest}";
     }
 
-    private static async Task<ProcOutput> ExecAsync(string fileName, string[] arguments)
+    private static async Task<ProcOutput> ExecAsync(string fileName, string[] arguments, string? workingDirectory = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -170,6 +171,13 @@ internal static class PosixShellHarness
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        if (workingDirectory is not null)
+        {
+            // Anchor the shell's working directory to the test workspace, so any stray file a hostile
+            // path/name might create (were an injection to succeed) lands where a test can detect it.
+            startInfo.WorkingDirectory = workingDirectory;
+        }
+
         foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);

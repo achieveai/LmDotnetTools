@@ -10,8 +10,9 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 /// A deterministic, stateful <see cref="HttpMessageHandler"/> that simulates the gateway's Bash tool
 /// against an in-memory per-session sandbox. It classifies each submission by the LMSBX marker line
 /// (via <see cref="CommandScripts.ParseRequest"/>) and drives a real filesystem-like state machine —
-/// atomic claim/manifest, chunked base64 reads, cleanup, and a bounded GC listing — so command tests
-/// assert on genuine behavior (exact reassembled bytes, recovery, election) rather than merely on how
+/// atomic claim/manifest, chunked base64 reads, reclaim (drop the large output but keep the bounded
+/// completion marker), and a re-validated stale purge — so command tests assert on genuine behavior
+/// (exact reassembled bytes, recovery, election, idempotent same-id reuse) rather than merely on how
 /// many times a collaborator was called.
 /// </summary>
 internal sealed class FakeSandboxGateway : HttpMessageHandler
@@ -32,6 +33,15 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
 
         /// <summary>Commit the manifest (the side effect happens) but report PENDING — models a submitter that must poll before the manifest is visible to it.</summary>
         PendingThenReady,
+
+        /// <summary>Commit the manifest but keep every subsequent PROBE reporting PENDING until a deadline — models a command that stays PENDING for a sustained period before completing.</summary>
+        PendingUntilDeadline,
+
+        /// <summary>Claim (so PROBE reports PENDING) but never commit — models a peer/self that holds the claim indefinitely, driving the poll to its deadline.</summary>
+        PendingNeverReady,
+
+        /// <summary>Commit the manifest (the side effect happens) but return a body with NO sentinel line — models an ambiguous/malformed RUN response that must trigger manifest polling, not a resubmission.</summary>
+        GarbageTextAfterCommit,
     }
 
     private sealed class OpState
@@ -49,7 +59,16 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         StringComparer.Ordinal
     );
     private readonly Dictionary<string, RunMode> _modes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, TimeSpan> _pendingDurations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _pendingUntil = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _readFailuresRemaining = new(StringComparer.Ordinal);
     private readonly List<(string Name, long Lease, long Created)> _gcEntries = [];
+    private readonly Dictionary<string, (long Lease, long Created)> _gcState = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _rawManifestJson = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _rawStatusLine = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (HttpStatusCode Status, bool CommitFirst)> _runHttpError = new(
+        StringComparer.Ordinal
+    );
 
     /// <summary>Every parsed submission, in order — lets a test assert exactly which roles were played.</summary>
     public List<CommandScriptRequest> Requests { get; } = [];
@@ -57,13 +76,16 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
     /// <summary>Raw MCP request bodies, for asserting the credential never appears in a submitted script.</summary>
     public List<string> RequestBodies { get; } = [];
 
-    /// <summary>Operation directories a CLEAN deleted.</summary>
+    /// <summary>Operation directories whose artifacts a RECLAIM or a re-validated GCPURGE removed (streams reclaimed, or directory purged).</summary>
     public List<string> CleanedOperations { get; } = [];
+
+    /// <summary>Operation directories a RECLAIM processed (large output dropped, bounded completion marker retained).</summary>
+    public List<string> ReclaimedOperations { get; } = [];
 
     /// <summary>
     /// The largest response body, in UTF-8 bytes, this gateway ever returned AFTER applying the real
-    /// gateway's <c>exec</c> truncation — lets an F1 transport test assert the manifest sentinel line
-    /// (and every other wire line) genuinely stayed under the gateway limit rather than trusting it did.
+    /// gateway's <c>exec</c> truncation — lets a transport test assert the manifest sentinel line (and
+    /// every other wire line) genuinely stayed under the gateway limit rather than trusting it did.
     /// </summary>
     public int MaxObservedResponseBytes { get; private set; }
 
@@ -72,7 +94,7 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
     /// <summary>Number of times the command actually ran (a RUN that won the claim and committed a fresh manifest).</summary>
     public int SideEffectCount { get; private set; }
 
-    /// <summary>When set, a CLEAN is recorded but does not erase state — lets a concurrency test keep a committed manifest visible to a peer.</summary>
+    /// <summary>When set, a RECLAIM/GCPURGE is recorded but does not erase state — lets a concurrency test keep a committed manifest visible to a peer.</summary>
     public bool SuppressClean { get; set; }
 
     /// <summary>Programs the exit code and exact output bytes a RUN for <paramref name="operationDirectory"/> will produce.</summary>
@@ -80,6 +102,17 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         _programmed[operationDirectory] = (exitCode, stdout, stderr);
 
     public void SetRunMode(string operationDirectory, RunMode mode) => _modes[operationDirectory] = mode;
+
+    /// <summary>Programs a RUN that commits its manifest but keeps every subsequent PROBE reporting PENDING for <paramref name="duration"/> before revealing the manifest.</summary>
+    public void SetSustainedPending(string operationDirectory, TimeSpan duration)
+    {
+        _modes[operationDirectory] = RunMode.PendingUntilDeadline;
+        _pendingDurations[operationDirectory] = duration;
+    }
+
+    /// <summary>Makes the next <paramref name="count"/> READ submissions for <paramref name="operationDirectory"/> fail transiently (isError), so a test can prove idempotent read retry from the highest verified offset.</summary>
+    public void FailReadsBeforeSuccess(string operationDirectory, int count) =>
+        _readFailuresRemaining[operationDirectory] = count;
 
     /// <summary>Pre-populates a committed operation, as if a prior interrupted attempt left retained artifacts.</summary>
     public void SeedCompleted(
@@ -89,7 +122,7 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         byte[] stdout,
         byte[] stderr,
         long lease = long.MaxValue,
-        long created = 0
+        long created = 1
     )
     {
         lock (_lock)
@@ -105,9 +138,29 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         }
     }
 
-    /// <summary>Adds an artifact directory to the GC listing with the given lease/created timestamps.</summary>
-    public void AddGcEntry(string name, long leaseUnixSeconds, long createdUnixSeconds) =>
+    /// <summary>Adds an artifact directory to the GC listing with the given lease/created timestamps (also the state the re-validated purge re-checks).</summary>
+    public void AddGcEntry(string name, long leaseUnixSeconds, long createdUnixSeconds)
+    {
         _gcEntries.Add((name, leaseUnixSeconds, createdUnixSeconds));
+        _gcState[name] = (leaseUnixSeconds, createdUnixSeconds);
+    }
+
+    /// <summary>Makes every PROBE (and the pre-probe) for <paramref name="operationDirectory"/> return a raw, hand-crafted manifest JSON — used to prove a malformed manifest maps to Protocol, never a raw exception.</summary>
+    public void SeedRawManifestJson(string operationDirectory, string manifestJson) =>
+        _rawManifestJson[operationDirectory] = manifestJson;
+
+    /// <summary>Makes every PROBE (and the pre-probe) for <paramref name="operationDirectory"/> return a raw, unrecognized sentinel status line — used to prove the raw status is never echoed into an exception message.</summary>
+    public void SetRawStatusLine(string operationDirectory, string statusLine) =>
+        _rawStatusLine[operationDirectory] = statusLine;
+
+    /// <summary>
+    /// Makes the RUN submission for <paramref name="operationDirectory"/> fail at the transport layer with
+    /// <paramref name="status"/> (a lost/errored response), optionally AFTER the side effect committed —
+    /// models a 5xx returned once the gateway already ran the command, which must trigger manifest polling
+    /// (never a resubmission) and preserve the operation id.
+    /// </summary>
+    public void SetRunHttpError(string operationDirectory, HttpStatusCode status, bool commitFirst) =>
+        _runHttpError[operationDirectory] = (status, commitFirst);
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -138,6 +191,35 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
             Requests.Add(script);
         }
 
+        if (script.Kind == CommandScriptKind.Run)
+        {
+            HttpStatusCode? forcedStatus = null;
+            lock (_lock)
+            {
+                if (_runHttpError.TryGetValue(script.OperationDirectory, out var error))
+                {
+                    _runHttpError.Remove(script.OperationDirectory);
+                    RunSubmissionCount++;
+                    if (error.CommitFirst)
+                    {
+                        CommitIfNeeded(GetOrCreate(script.OperationDirectory), script, execSeconds);
+                    }
+
+                    forcedStatus = error.Status;
+                }
+            }
+
+            if (forcedStatus is not null)
+            {
+                // A transport-level failure the SDK maps to Protocol — the RUN response never reaches the
+                // sentinel parser, so this exercises the ambiguous-RUN recovery path.
+                return new HttpResponseMessage(forcedStatus.Value)
+                {
+                    Content = new StringContent(string.Empty),
+                };
+            }
+        }
+
         var (text, isError, hang) = Handle(script, execSeconds);
         if (hang)
         {
@@ -146,7 +228,7 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
 
         // Model the gateway's exec truncation on EVERY response, so a test can never rely on the fake
         // delivering an over-limit line whole. A manifest sentinel line that overflows would be cut
-        // here, breaking its base64 and failing the SDK's parse — which is exactly the F1 failure mode.
+        // here, breaking its base64 and failing the SDK's parse.
         var wire = GatewayTruncation.Apply(text);
         lock (_lock)
         {
@@ -163,10 +245,11 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
             return request.Kind switch
             {
                 CommandScriptKind.Run => HandleRun(request, executionSeconds),
-                CommandScriptKind.Probe => (ProbeText(GetOrCreate(request.OperationDirectory)), false, false),
-                CommandScriptKind.Read => (ReadChunk(request), false, false),
-                CommandScriptKind.Clean => HandleClean(request),
+                CommandScriptKind.Probe => (ProbeText(request.OperationDirectory, GetOrCreate(request.OperationDirectory)), false, false),
+                CommandScriptKind.Read => HandleRead(request),
+                CommandScriptKind.Reclaim => HandleReclaim(request),
                 CommandScriptKind.Gc => (GcListing(request.Max), false, false),
+                CommandScriptKind.GcPurge => HandleGcPurge(request),
                 _ => (CommandSentinel.None(), false, false),
             };
         }
@@ -178,6 +261,13 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         var mode = _modes.GetValueOrDefault(request.OperationDirectory, RunMode.Normal);
         var state = GetOrCreate(request.OperationDirectory);
 
+        // An already-committed operation short-circuits to its manifest regardless of mode — the RUN
+        // wrapper's fast path — so a reused operation id is answered from the retained marker, never re-run.
+        if (state.Committed && mode is not (RunMode.PendingThenReady or RunMode.PendingUntilDeadline))
+        {
+            return (ManifestText(state), false, false);
+        }
+
         switch (mode)
         {
             case RunMode.ExecutionTimeout:
@@ -185,6 +275,17 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
             case RunMode.PendingThenReady:
                 CommitIfNeeded(state, request, executionSeconds);
                 return (CommandSentinel.Pending(), false, false);
+            case RunMode.PendingUntilDeadline:
+                CommitIfNeeded(state, request, executionSeconds);
+                _pendingUntil[request.OperationDirectory] =
+                    DateTimeOffset.UtcNow + _pendingDurations.GetValueOrDefault(request.OperationDirectory, TimeSpan.Zero);
+                return (CommandSentinel.Pending(), false, false);
+            case RunMode.PendingNeverReady:
+                state.Claimed = true;
+                return (CommandSentinel.Pending(), false, false);
+            case RunMode.GarbageTextAfterCommit:
+                CommitIfNeeded(state, request, executionSeconds);
+                return ("gateway emitted unexpected noise with no sentinel line", false, false);
             case RunMode.HangNoSideEffect:
                 return (string.Empty, false, true);
             case RunMode.HangAfterCommit:
@@ -218,15 +319,58 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         SideEffectCount++;
     }
 
-    private (string Text, bool IsError, bool Hang) HandleClean(CommandScriptRequest request)
+    private (string Text, bool IsError, bool Hang) HandleRead(CommandScriptRequest request)
     {
-        if (!SuppressClean)
+        if (_readFailuresRemaining.TryGetValue(request.OperationDirectory, out var remaining) && remaining > 0)
         {
-            _ops.Remove(request.OperationDirectory);
+            _readFailuresRemaining[request.OperationDirectory] = remaining - 1;
+            return ("transient read failure", true, false);
         }
 
+        return (ReadChunk(request), false, false);
+    }
+
+    private (string Text, bool IsError, bool Hang) HandleReclaim(CommandScriptRequest request)
+    {
+        if (!SuppressClean && _ops.TryGetValue(request.OperationDirectory, out var state))
+        {
+            // Reclaim drops only the large stream bytes; the committed manifest (the bounded completion
+            // marker) is retained, so a later same-id call is still answered without re-running.
+            state.Stdout = [];
+            state.Stderr = [];
+        }
+
+        ReclaimedOperations.Add(request.OperationDirectory);
         CleanedOperations.Add(request.OperationDirectory);
         return (CommandSentinel.None(), false, false);
+    }
+
+    private (string Text, bool IsError, bool Hang) HandleGcPurge(CommandScriptRequest request)
+    {
+        // Faithfully re-validate at delete time (never trust the earlier listing snapshot): only a
+        // directory whose CURRENT lease/created is still expired AND old enough is deleted.
+        if (!SuppressClean && _gcState.TryGetValue(request.OperationDirectory, out var s))
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var expired = now > s.Lease;
+            var oldEnough = now - s.Created >= CommandArtifactLayout.StaleAgeSeconds;
+            if (s.Lease > 0 && s.Created > 0 && expired && oldEnough)
+            {
+                _ops.Remove(request.OperationDirectory);
+                CleanedOperations.Add(request.OperationDirectory);
+            }
+        }
+
+        return (CommandSentinel.None(), false, false);
+    }
+
+    /// <summary>Lets a test refresh a listed directory's lease/created AFTER it was listed, to prove the re-validated purge never deletes a refreshed (re-active) operation.</summary>
+    public void RefreshGcEntry(string name, long leaseUnixSeconds, long createdUnixSeconds)
+    {
+        lock (_lock)
+        {
+            _gcState[name] = (leaseUnixSeconds, createdUnixSeconds);
+        }
     }
 
     private string ReadChunk(CommandScriptRequest request)
@@ -260,10 +404,28 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         return state;
     }
 
-    private static string ProbeText(OpState state)
+    private string ProbeText(string operationDirectory, OpState state)
     {
+        if (_rawStatusLine.TryGetValue(operationDirectory, out var rawStatus))
+        {
+            return rawStatus;
+        }
+
+        if (_rawManifestJson.TryGetValue(operationDirectory, out var rawJson))
+        {
+            return CommandSentinel.Manifest(Convert.ToBase64String(Encoding.UTF8.GetBytes(rawJson)));
+        }
+
         if (state.Committed)
         {
+            if (
+                _pendingUntil.TryGetValue(operationDirectory, out var until)
+                && DateTimeOffset.UtcNow < until
+            )
+            {
+                return CommandSentinel.Pending();
+            }
+
             return ManifestText(state);
         }
 

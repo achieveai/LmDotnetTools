@@ -59,10 +59,10 @@ internal sealed class ClaimFs
 
 /// <summary>
 /// A step-resumable model of <see cref="AchieveAi.LmDotnetTools.Sandbox.Command.CommandScripts.BuildRun"/>'s
-/// claim/run/takeover algorithm over a <see cref="ClaimFs"/>. Each meaningful boundary is a
-/// <c>yield return</c>, so a test can pause one caller mid-establishment and interleave another. The two
-/// boolean knobs select the pre-fix vs shipped behavior for the two properties F2 changes: whether the
-/// lease is written first, and whether takeover requires an established lease.
+/// claim/run algorithm over a <see cref="ClaimFs"/>. Each meaningful boundary is a <c>yield return</c>,
+/// so a test can pause one caller mid-flight and interleave another. The single boolean knob selects the
+/// pre-fix expired-lease takeover (retained only to prove the double-run it caused) versus the shipped
+/// behavior, which never deletes or takes over an existing claim at all.
 /// </summary>
 internal sealed class ClaimModel
 {
@@ -76,16 +76,17 @@ internal sealed class ClaimModel
     /// <summary>Boundary: the caller has just won the <c>mkdir</c> claim but has NOT written its lease yet.</summary>
     public const string WonClaimBeforeLease = "won-claim-before-lease";
 
+    /// <summary>Boundary (pre-fix only): the caller decided to take over an expired lease but has NOT yet run its non-atomic <c>rm -rf</c>+<c>mkdir</c>.</summary>
+    public const string DecidedTakeoverBeforeRemove = "decided-takeover-before-remove";
+
     private const long Exec = 120;
     private const long Grace = 300;
 
-    private readonly bool _leaseFirst;
-    private readonly bool _leaseGuardedTakeover;
+    private readonly bool _takeoverEnabled;
 
-    public ClaimModel(bool leaseFirst, bool leaseGuardedTakeover)
+    public ClaimModel(bool takeoverEnabled)
     {
-        _leaseFirst = leaseFirst;
-        _leaseGuardedTakeover = leaseGuardedTakeover;
+        _takeoverEnabled = takeoverEnabled;
     }
 
     public ClaimFs Fs { get; } = new();
@@ -117,35 +118,35 @@ internal sealed class ClaimModel
             yield break;
         }
 
-        if (TryTakeover()) // if [ -f "$OP/lease" ] ... rm -rf + mkdir; then claim_run; exit 0
+        // Pre-fix ONLY: the expired-lease takeover. The shipped wrapper has no takeover block — an
+        // expired-but-uncommitted claim falls straight through to PENDING and is left for the guarded
+        // stale sweep, because rm -rf + mkdir is not atomic against a concurrent contender and can
+        // double-run the command.
+        if (_takeoverEnabled && Fs.FileExists(Lease) && IsExpired())
         {
-            foreach (var step in ClaimRun(caller))
+            yield return DecidedTakeoverBeforeRemove;
+            Fs.RmRf(Op);
+            if (Fs.Mkdir(Op))
             {
-                yield return step;
-            }
+                foreach (var step in ClaimRun(caller))
+                {
+                    yield return step;
+                }
 
-            yield break;
+                yield break;
+            }
         }
 
         Fs.Emit(caller, Fs.FileExists(Manifest) ? "MANIFEST" : "PENDING"); // else PENDING
     }
 
-    /// <summary>Mirrors <c>claim_run()</c>: establish lease/created/digest, run the command, commit the manifest.</summary>
+    /// <summary>Mirrors <c>claim_run()</c>: establish lease (first) / created / digest, run the command, commit the manifest.</summary>
     private IEnumerable<string> ClaimRun(string caller)
     {
         var created = Fs.Now;
         var lease = created + Exec + Grace;
-        if (_leaseFirst)
-        {
-            Fs.Write(Lease, lease.ToString());
-        }
-
+        Fs.Write(Lease, lease.ToString());
         Fs.Write(Created, created.ToString());
-        if (!_leaseFirst)
-        {
-            Fs.Write(Lease, lease.ToString());
-        }
-
         Fs.Write(DigestFile, "digest");
         yield return "lease-established";
         Fs.RunCommand(caller);
@@ -153,24 +154,10 @@ internal sealed class ClaimModel
         Fs.Emit(caller, "MANIFEST");
     }
 
-    /// <summary>Mirrors the takeover block; the shipped variant refuses to take over a claim with no established lease.</summary>
-    private bool TryTakeover()
+    private bool IsExpired()
     {
-        if (_leaseGuardedTakeover)
-        {
-            if (!Fs.FileExists(Lease))
-            {
-                return false;
-            }
-
-            var stale = ParseOrZero(Fs.Read(Lease));
-            return stale > 0 && Fs.Now > stale && Fs.RmRf(Op) && Fs.Mkdir(Op);
-        }
-
-        // Pre-fix: `STALE=$(cat "$OP/lease" 2>/dev/null || echo 0)` — a missing lease reads as 0, i.e.
-        // always "expired", which is exactly the hole.
-        var staleOld = ParseOrZero(Fs.Read(Lease) ?? "0");
-        return Fs.Now > staleOld && Fs.RmRf(Op) && Fs.Mkdir(Op);
+        var stale = ParseOrZero(Fs.Read(Lease));
+        return stale > 0 && Fs.Now > stale;
     }
 
     private static long ParseOrZero(string? value) => long.TryParse(value, out var parsed) ? parsed : 0;

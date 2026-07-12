@@ -10,7 +10,11 @@ internal static class CommandTestSupport
     /// <summary>The whole-second execution timeout the SDK derives from <see cref="ExecutionTimeout"/> (must match <c>GatewayExecutionTimeoutSeconds</c>).</summary>
     public const long ExecutionSeconds = 120;
 
-    public static SandboxClient CreateClient(FakeSandboxGateway fake, TimeSpan? transportTimeout = null)
+    public static SandboxClient CreateClient(
+        FakeSandboxGateway fake,
+        TimeSpan? transportTimeout = null,
+        TimeSpan? executionTimeout = null
+    )
     {
         var serverAddress = TestSupport.NewLoopbackAddress();
         var httpClient = new HttpClient(fake) { BaseAddress = serverAddress };
@@ -18,7 +22,7 @@ internal static class CommandTestSupport
             serverAddress,
             "app-1",
             TestSupport.ValidSecret,
-            ExecutionTimeout,
+            executionTimeout ?? ExecutionTimeout,
             transportTimeout ?? TimeSpan.FromSeconds(30)
         );
         return new SandboxClient(options, httpClient);

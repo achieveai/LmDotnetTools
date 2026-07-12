@@ -6,13 +6,16 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 
 public class CommandScriptsTests
 {
+    private const string Op = "abcdef0123456789abcdef0123456789";
+
     private static string[] AllScripts() =>
         [
-            CommandScripts.BuildRun("abcdef0123456789abcdef0123456789", "digesthex", "'ls' '-la'", "sub/dir", 120),
-            CommandScripts.BuildProbe("abcdef0123456789abcdef0123456789"),
-            CommandScripts.BuildRead("abcdef0123456789abcdef0123456789", "stdout", 12288, 12288),
-            CommandScripts.BuildClean("abcdef0123456789abcdef0123456789"),
+            CommandScripts.BuildRun(Op, "digesthex", "'ls' '-la'", "sub/dir", 120),
+            CommandScripts.BuildProbe(Op),
+            CommandScripts.BuildRead(Op, "stdout", 12288, 12288),
+            CommandScripts.BuildReclaim(Op),
             CommandScripts.BuildGc(256),
+            CommandScripts.BuildGcPurge(Op),
         ];
 
     [Fact]
@@ -32,6 +35,68 @@ public class CommandScriptsTests
 
         // The working directory is single-quoted, so a space can never split it into a second token.
         script.Should().Contain("'a b/c'");
+    }
+
+    [Fact]
+    public void BuildRun_HasNoExpiredLeaseTakeover_NeverDeletesAnExistingClaim()
+    {
+        var script = CommandScripts.BuildRun(Op, "digest", "'ls'", string.Empty, 120);
+
+        // Removing the operation directory is exactly the non-atomic takeover that could double-run a
+        // command; the RUN wrapper must only ever mkdir-elect and never rm-rf/takeover a claim.
+        script.Should().NotContain("rm -rf");
+    }
+
+    [Fact]
+    public void BuildRun_ScopesRestrictiveUmaskAroundTheCommand()
+    {
+        var script = CommandScripts.BuildRun(Op, "digest", "'ls'", string.Empty, 120);
+
+        // Capture the caller's umask, harden for SDK artifacts, restore for the command, harden again.
+        script.Should().Contain("OLDUMASK=$(umask)");
+        script.Should().Contain("umask 077");
+        script.Should().Contain("umask \"$OLDUMASK\"");
+    }
+
+    [Fact]
+    public void BuildRun_PublishesManifestAtomicallyViaSiblingTempAndRename()
+    {
+        var script = CommandScripts.BuildRun(Op, "digest", "'ls'", string.Empty, 120);
+
+        // The manifest is written to a restrictive sibling temp then renamed — never printed directly to
+        // manifest.json — so a concurrent PROBE can never observe a torn, partially-written manifest.
+        script.Should().Contain(".manifest.$$.tmp");
+        script.Should().Contain("mv \"$MTMP\" \"$MAN\"");
+    }
+
+    [Fact]
+    public void Sha256Function_IsPortable_TriesSha256sumThenShasumFallback_OverStdin()
+    {
+        CommandScripts.Sha256Function.Should().Contain("sha256sum");
+        CommandScripts.Sha256Function.Should().Contain("shasum -a 256");
+        // Hashing reads the file on stdin (< "$1"), so no coreutils variant appends a filename.
+        CommandScripts.Sha256Function.Should().Contain("< \"$1\"");
+    }
+
+    [Fact]
+    public void BuildGc_OnlyListsFixedLengthLowercaseHexNames()
+    {
+        var script = CommandScripts.BuildGc(256);
+
+        // A foreign/hostile directory name is filtered before it can become a cleanup candidate.
+        script.Should().Contain("*[!0-9a-f]*");
+        script.Should().Contain("${#name} -eq 32");
+    }
+
+    [Fact]
+    public void BuildGcPurge_ReValidatesLeaseAndAgeAtDeleteTimeBeforeRemoving()
+    {
+        var script = CommandScripts.BuildGcPurge(Op);
+
+        // The delete decision is re-made from the current state (date +%s + a fresh lease/created read),
+        // never trusted from the SDK's earlier listing snapshot.
+        script.Should().Contain("now=$(date +%s)");
+        script.Should().Contain("rm -rf \"$OP\"");
     }
 
     [Fact]
@@ -68,10 +133,11 @@ public class CommandScriptsTests
     }
 
     [Fact]
-    public void ParseRequest_RoundTripsProbeCleanAndGc()
+    public void ParseRequest_RoundTripsProbeReclaimGcAndGcPurge()
     {
         CommandScripts.ParseRequest(CommandScripts.BuildProbe("op-dir")).Kind.Should().Be(CommandScriptKind.Probe);
-        CommandScripts.ParseRequest(CommandScripts.BuildClean("op-dir")).Kind.Should().Be(CommandScriptKind.Clean);
+        CommandScripts.ParseRequest(CommandScripts.BuildReclaim("op-dir")).Kind.Should().Be(CommandScriptKind.Reclaim);
+        CommandScripts.ParseRequest(CommandScripts.BuildGcPurge("op-dir")).Kind.Should().Be(CommandScriptKind.GcPurge);
 
         var gc = CommandScripts.ParseRequest(CommandScripts.BuildGc(256));
         gc.Kind.Should().Be(CommandScriptKind.Gc);

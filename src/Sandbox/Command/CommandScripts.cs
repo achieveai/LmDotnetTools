@@ -2,7 +2,7 @@ using System.Globalization;
 
 namespace AchieveAi.LmDotnetTools.Sandbox.Command;
 
-/// <summary>The five idempotency-aware roles a command Bash submission can play.</summary>
+/// <summary>The idempotency-aware roles a command Bash submission can play.</summary>
 internal enum CommandScriptKind
 {
     /// <summary>The one side-effecting submission: atomically claim, run the command, persist the manifest.</summary>
@@ -14,11 +14,22 @@ internal enum CommandScriptKind
     /// <summary>Idempotent read of a byte range of a captured output stream.</summary>
     Read,
 
-    /// <summary>Delete a verified operation's artifacts.</summary>
-    Clean,
+    /// <summary>
+    /// Reclaim a verified operation's large stream files while retaining its bounded completion marker
+    /// (the manifest plus lease/created), so a later same-id call is answered from the marker and the
+    /// side effect is never re-run.
+    /// </summary>
+    Reclaim,
 
     /// <summary>Bounded listing of artifact directories for stale cleanup.</summary>
     Gc,
+
+    /// <summary>
+    /// Re-validated deletion of a single stale artifact directory. The delete decision is re-made in the
+    /// shell from the directory's CURRENT lease/created at delete time, never from a stale listing
+    /// snapshot, so a refreshed (re-active) operation is never deleted.
+    /// </summary>
+    GcPurge,
 }
 
 /// <summary>A parsed command-script marker line — the deterministic classification handle for a Bash submission.</summary>
@@ -41,14 +52,21 @@ internal readonly record struct CommandScriptRequest(
 /// Every script begins with a <c>#LMSBX 1 …</c> marker comment. It is inert to a real shell (a
 /// comment), but it deterministically classifies the submission — which is what lets a scripted test
 /// double (and a human reader) tell the single side-effecting RUN submission apart from the
-/// idempotent PROBE/READ/CLEAN/GC calls without parsing shell semantics.
+/// idempotent PROBE/READ/RECLAIM/GC/GCPURGE calls without parsing shell semantics.
 /// </para>
 /// <para>
-/// Only RUN mutates state (claim + run + manifest). PROBE/READ/CLEAN/GC are idempotent reads or
-/// best-effort maintenance, so re-issuing them during recovery never re-runs the command. Injected
-/// values are safe by construction: the operation directory and digest are hex, the stream name and
-/// integers are SDK-controlled, and the argv and working directory are POSIX-quoted
-/// (<see cref="PosixArgv"/>) before embedding.
+/// Only RUN mutates state (claim + run + manifest). PROBE/READ are idempotent reads; RECLAIM and
+/// GCPURGE only ever delete already-terminal artifacts, so re-issuing any of them during recovery
+/// never re-runs the command. Injected values are safe by construction: the operation directory,
+/// digest, and stream name are all POSIX single-quoted (<see cref="PosixArgv"/>) before embedding, and
+/// every stale-cleanup directory name is additionally validated to be exact fixed-length lowercase hex
+/// before it is used at all.
+/// </para>
+/// <para>
+/// Portable, self-contained primitives only: file hashing reads content on stdin and tries
+/// <c>sha256sum</c> then falls back to <c>shasum -a 256</c> (so the same script works on a pinned
+/// Windows Git Bash, a Linux gateway, and macOS), and base64 is always fed via stdin so no coreutils
+/// variant ever prints a filename alongside the digest/encoding.
 /// </para>
 /// </remarks>
 internal static class CommandScripts
@@ -58,20 +76,58 @@ internal static class CommandScripts
         "\"${SANDBOX_WORKSPACE:-/workspace}/" + CommandArtifactLayout.ArtifactRootRelative + "\"";
 
     /// <summary>
+    /// Portable file hash. Reads the file content on STDIN (never as an argument, so no coreutils
+    /// variant appends a filename to the output), tries <c>sha256sum</c> and falls back to
+    /// <c>shasum -a 256</c>, and normalizes the result to EXACTLY 64 lowercase hex characters — or the
+    /// empty string when neither tool is available or the output is not a well-formed digest, which the
+    /// SDK then rejects as a protocol/integrity failure rather than trusting a partial hash.
+    /// </summary>
+    internal const string Sha256Function =
+        "lmsbx_sha256() { _h=$( (sha256sum 2>/dev/null || shasum -a 256 2>/dev/null) < \"$1\" | cut -d' ' -f1 | tr 'A-F' 'a-f' ); "
+        + "case \"$_h\" in *[!0-9a-f]*) _h= ;; esac; [ ${#_h} -eq 64 ] || _h=; printf '%s' \"$_h\"; }";
+
+    /// <summary>Emits one stream's <c>len|sha256|inline</c> triple: exact byte length, portable SHA-256, and (only when small) a base64 inline copy.</summary>
+    private const string StreamJsonFunction =
+        "stream_json() { f=\"$1\"; l=$(wc -c < \"$f\" 2>/dev/null || echo 0); s=$(lmsbx_sha256 \"$f\"); "
+        + "if [ \"${l:-0}\" -le \"$THRESH\" ]; then i=\"\\\"$(base64 < \"$f\" 2>/dev/null | tr -d '\\n')\\\"\"; else i=null; fi; "
+        + "printf '%s|%s|%s' \"$l\" \"$s\" \"$i\"; }";
+
+    /// <summary>Emits the single MANIFEST sentinel line: the base64 of the persisted manifest, read via stdin so no filename leaks onto the line.</summary>
+    private const string EmitManifestFunction =
+        "emit_manifest() { b64=$(base64 < \"$MAN\" 2>/dev/null | tr -d '\\n'); printf '%s %s %s\\n' \"$SENT\" '"
+        + CommandSentinel.KindManifest
+        + "' \"$b64\"; }";
+
+    /// <summary>
     /// Builds the single side-effecting wrapper. In order: fast-path an already-persisted manifest;
-    /// atomically <c>mkdir</c>-claim and run (electing exactly one submitter); best-effort take over a
-    /// claim whose lease has expired (a crashed submitter, so the operation is not blocked until stale
-    /// cleanup); otherwise report PENDING so a caller behind a live peer claim polls instead of
-    /// re-running. The command's exact stdout/stderr are captured to files and the metadata manifest is
-    /// persisted, so nothing depends on the gateway's truncating <c>exec</c> output.
+    /// atomically <c>mkdir</c>-claim and run (electing exactly one submitter); otherwise report PENDING
+    /// so a caller behind an existing claim polls instead of re-running. The command's exact
+    /// stdout/stderr are captured to files and the metadata manifest is persisted atomically, so nothing
+    /// depends on the gateway's truncating <c>exec</c> output.
     /// </summary>
     /// <remarks>
-    /// The election is TOCTOU-safe. The winner of the <c>mkdir</c> claim writes its lease as the FIRST
-    /// action of <c>claim_run</c> (before it runs the command), and takeover is gated on a claim
-    /// directory that actually has an established, well-formed, EXPIRED lease. A claim directory with no
-    /// lease file yet is a winner still establishing itself, so a concurrent caller using the same
-    /// operation id treats it as PENDING and never deletes it — closing the window in which two callers
-    /// could otherwise both delete a winner mid-establishment and run the command twice.
+    /// <para>
+    /// <b>No claim is ever deleted or taken over here.</b> Electing a submitter is a single atomic
+    /// <c>mkdir</c>: the winner runs, every other concurrent caller sees the existing claim and reports
+    /// PENDING. There is deliberately no expired-lease takeover — reclaiming a claim would require a
+    /// delete+recreate that is not atomic against a concurrent contender under the pinned shell
+    /// primitives, and that race can double-run a non-idempotent command. An abandoned claim (a
+    /// submitter that crashed after claiming) is therefore left non-runnable and is reclaimed only by
+    /// the guarded, re-validated stale sweep after 24h of inactivity, after which a same-id retry
+    /// succeeds.
+    /// </para>
+    /// <para>
+    /// <b>Umask is scoped to SDK artifacts only.</b> A restrictive <c>umask 077</c> governs the
+    /// operation directory and every SDK artifact (lease/created/digest, the pre-created stdout/stderr
+    /// capture files, and the manifest), but the caller's original umask is restored around the command
+    /// itself so files the command creates inherit the caller's normal permissions, not the SDK's
+    /// hardened ones.
+    /// </para>
+    /// <para>
+    /// <b>The manifest is published atomically.</b> It is written to a restrictive sibling temp file and
+    /// <c>mv</c>-renamed into place, so a concurrent PROBE observes either no manifest or the complete
+    /// manifest — never a torn, partially-written one.
+    /// </para>
     /// </remarks>
     public static string BuildRun(
         string operationDirectory,
@@ -91,13 +147,15 @@ internal static class CommandScripts
             + quotedArgv
             + " ) > \"$OUT\" 2> \"$ERR\"; code=$?; else : > \"$OUT\"; printf 'sandbox: working directory not found\\n' > \"$ERR\"; code=125; fi";
 
+        // Order matters: umask 077 is set before the claim (so the operation directory and every SDK
+        // artifact is owner-only), restored to the caller's umask around the command (so files the
+        // command creates get normal permissions), then reapplied for the atomic manifest publish.
         return string.Join(
             '\n',
             MarkerPrefix + "RUN op=" + operationDirectory + " digest=" + digest,
             "set -u",
-            "umask 077",
             "ROOT=" + RootExpression,
-            "OP=\"$ROOT/" + operationDirectory + "\"",
+            "OP=" + OpAssignment(operationDirectory),
             "MAN=\"$OP/manifest.json\"",
             "OUT=\"$OP/stdout\"",
             "ERR=\"$OP/stderr\"",
@@ -106,33 +164,35 @@ internal static class CommandScripts
             "EXEC=" + executionTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
             "GRACE=" + CommandArtifactLayout.LeaseGraceSeconds.ToString(CultureInfo.InvariantCulture),
             "SENT='" + CommandSentinel.Marker + "'",
-            "emit_manifest() { b64=$(base64 \"$MAN\" 2>/dev/null | tr -d '\\n'); printf '%s %s %s\\n' \"$SENT\" '"
-                + CommandSentinel.KindManifest
-                + "' \"$b64\"; }",
-            "stream_json() { f=\"$1\"; l=$(wc -c < \"$f\" 2>/dev/null || echo 0); s=$(sha256sum \"$f\" 2>/dev/null | cut -d' ' -f1); if [ \"${l:-0}\" -le \"$THRESH\" ]; then i=\"\\\"$(base64 \"$f\" 2>/dev/null | tr -d '\\n')\\\"\"; else i=null; fi; printf '%s|%s|%s' \"$l\" \"$s\" \"$i\"; }",
+            Sha256Function,
+            StreamJsonFunction,
+            EmitManifestFunction,
             "claim_run() {",
             "  created=$(date +%s)",
             "  lease=$((created + EXEC + GRACE))",
             "  printf '%s' \"$lease\" > \"$OP/lease\"",
             "  printf '%s' \"$created\" > \"$OP/created\"",
             "  printf '%s' \"$DIGEST\" > \"$OP/digest\"",
+            "  : > \"$OUT\"",
+            "  : > \"$ERR\"",
+            "  umask \"$OLDUMASK\"",
             "  WD=\"${SANDBOX_WORKSPACE:-/workspace}\"",
             runCommandLine,
+            "  umask 077",
             "  so=$(stream_json \"$OUT\"); se=$(stream_json \"$ERR\")",
             "  ol=${so%%|*}; sor=${so#*|}; os=${sor%%|*}; oi=${sor#*|}",
             "  el=${se%%|*}; ser=${se#*|}; es=${ser%%|*}; ei=${ser#*|}",
-            "  printf '{\"v\":1,\"digest\":\"%s\",\"exit\":%d,\"stdout\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"stderr\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"lease\":%d,\"created\":%d}' \"$DIGEST\" \"$code\" \"$ol\" \"$os\" \"$oi\" \"$el\" \"$es\" \"$ei\" \"$lease\" \"$created\" > \"$MAN\"",
+            "  MTMP=\"$OP/.manifest.$$.tmp\"",
+            "  printf '{\"v\":1,\"digest\":\"%s\",\"exit\":%d,\"stdout\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"stderr\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"lease\":%d,\"created\":%d}' \"$DIGEST\" \"$code\" \"$ol\" \"$os\" \"$oi\" \"$el\" \"$es\" \"$ei\" \"$lease\" \"$created\" > \"$MTMP\"",
+            "  mv \"$MTMP\" \"$MAN\"",
+            "  umask \"$OLDUMASK\"",
             "  emit_manifest",
             "}",
+            "OLDUMASK=$(umask)",
+            "umask 077",
             "mkdir -p \"$ROOT\" 2>/dev/null",
             "if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
             "if mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
-            "if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
-            "if [ -f \"$OP/lease\" ]; then",
-            "  STALE=$(cat \"$OP/lease\" 2>/dev/null || echo 0)",
-            "  case \"$STALE\" in ''|*[!0-9]*) STALE=0 ;; esac",
-            "  if [ \"$STALE\" -gt 0 ] && [ \"$(date +%s)\" -gt \"$STALE\" ] && rm -rf \"$OP\" 2>/dev/null && mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
-            "fi",
             "if [ -f \"$MAN\" ]; then emit_manifest; else printf '%s %s\\n' \"$SENT\" '"
                 + CommandSentinel.KindPending
                 + "'; fi"
@@ -145,12 +205,11 @@ internal static class CommandScripts
             '\n',
             MarkerPrefix + "PROBE op=" + operationDirectory,
             "ROOT=" + RootExpression,
-            "OP=\"$ROOT/" + operationDirectory + "\"",
+            "OP=" + OpAssignment(operationDirectory),
             "MAN=\"$OP/manifest.json\"",
             "SENT='" + CommandSentinel.Marker + "'",
-            "if [ -f \"$MAN\" ]; then b64=$(base64 \"$MAN\" 2>/dev/null | tr -d '\\n'); printf '%s %s %s\\n' \"$SENT\" '"
-                + CommandSentinel.KindManifest
-                + "' \"$b64\"; elif [ -d \"$OP\" ]; then printf '%s %s\\n' \"$SENT\" '"
+            EmitManifestFunction,
+            "if [ -f \"$MAN\" ]; then emit_manifest; elif [ -d \"$OP\" ]; then printf '%s %s\\n' \"$SENT\" '"
                 + CommandSentinel.KindPending
                 + "'; else printf '%s %s\\n' \"$SENT\" '"
                 + CommandSentinel.KindNone
@@ -171,7 +230,7 @@ internal static class CommandScripts
                 + " len="
                 + length.ToString(CultureInfo.InvariantCulture),
             "ROOT=" + RootExpression,
-            "F=\"$ROOT/" + operationDirectory + "/" + stream + "\"",
+            "F=\"$ROOT/\"" + PosixArgv.Quote(operationDirectory) + "\"/\"" + PosixArgv.Quote(stream),
             "tail -c +"
                 + (offset + 1).ToString(CultureInfo.InvariantCulture)
                 + " \"$F\" 2>/dev/null | head -c "
@@ -179,22 +238,29 @@ internal static class CommandScripts
                 + " | base64 | tr -d '\\n'"
         );
 
-    /// <summary>Builds a best-effort delete of a verified operation's artifacts.</summary>
-    public static string BuildClean(string operationDirectory) =>
+    /// <summary>
+    /// Builds a best-effort reclaim of a verified operation's large stream files. It deletes only
+    /// <c>stdout</c>/<c>stderr</c> (the unbounded artifacts), retaining the bounded completion marker —
+    /// the manifest plus the lease/created files — so a later same-id call recovers the retained result
+    /// (or is safely rejected without re-running) and the stale sweep can still reclaim the marker once
+    /// it is old enough.
+    /// </summary>
+    public static string BuildReclaim(string operationDirectory) =>
         string.Join(
             '\n',
-            MarkerPrefix + "CLEAN op=" + operationDirectory,
+            MarkerPrefix + "RECLAIM op=" + operationDirectory,
             "ROOT=" + RootExpression,
-            "rm -rf \"$ROOT/" + operationDirectory + "\" 2>/dev/null",
+            "OP=" + OpAssignment(operationDirectory),
+            "rm -f \"$OP/stdout\" \"$OP/stderr\" 2>/dev/null",
             "printf '%s %s\\n' '" + CommandSentinel.Marker + "' '" + CommandSentinel.KindNone + "'"
         );
 
     /// <summary>Builds a bounded listing (at most <paramref name="max"/> entries) of artifact directories for stale cleanup.</summary>
     /// <remarks>
-    /// A directory is only listed once it has an established lease AND created timestamp. A claim still
-    /// establishing itself (or a rare crash-in-window artifact) has neither yet, and must never be
-    /// offered as a stale-cleanup candidate — deleting it would be the same establish-time race the RUN
-    /// takeover guards against, just via the GC path.
+    /// Only a directory whose name is EXACTLY fixed-length lowercase hex (an SDK-derived operation
+    /// directory) and that has an established lease AND created timestamp is listed. A foreign or hostile
+    /// filesystem entry — or a claim still establishing itself — is skipped, so it can neither be offered
+    /// as a cleanup candidate nor smuggle shell metacharacters onto the listing line.
     /// </remarks>
     public static string BuildGc(int max) =>
         string.Join(
@@ -207,13 +273,51 @@ internal static class CommandScripts
             "  [ -d \"$d\" ] || continue",
             "  n=$((n+1))",
             "  [ \"$n\" -gt " + max.ToString(CultureInfo.InvariantCulture) + " ] && break",
-            "  [ -f \"$d/lease\" ] && [ -f \"$d/created\" ] || continue",
             "  name=$(basename \"$d\")",
+            "  case \"$name\" in *[!0-9a-f]*) continue ;; esac",
+            "  [ ${#name} -eq "
+                + CommandArtifactLayout.OperationDirectoryNameLength.ToString(CultureInfo.InvariantCulture)
+                + " ] || continue",
+            "  [ -f \"$d/lease\" ] && [ -f \"$d/created\" ] || continue",
             "  lease=$(cat \"$d/lease\" 2>/dev/null || echo 0)",
             "  created=$(cat \"$d/created\" 2>/dev/null || echo 0)",
             "  printf '%s %s %s %s\\n' \"$GC\" \"$name\" \"$lease\" \"$created\"",
             "done"
         );
+
+    /// <summary>
+    /// Builds a re-validated deletion of a single stale artifact directory. The eligibility decision is
+    /// re-made HERE, from the directory's current lease/created read at delete time, rather than trusted
+    /// from the SDK's earlier listing snapshot — so an operation that was refreshed (a re-established or
+    /// extended lease) or recreated between the listing and this call is never deleted.
+    /// </summary>
+    public static string BuildGcPurge(string operationDirectory) =>
+        string.Join(
+            '\n',
+            MarkerPrefix + "GCPURGE op=" + operationDirectory,
+            "ROOT=" + RootExpression,
+            "OP=" + OpAssignment(operationDirectory),
+            "SENT='" + CommandSentinel.Marker + "'",
+            "STALE=" + CommandArtifactLayout.StaleAgeSeconds.ToString(CultureInfo.InvariantCulture),
+            "if [ -f \"$OP/lease\" ] && [ -f \"$OP/created\" ]; then",
+            "  lease=$(cat \"$OP/lease\" 2>/dev/null || echo 0)",
+            "  created=$(cat \"$OP/created\" 2>/dev/null || echo 0)",
+            "  now=$(date +%s)",
+            "  case \"$lease\" in ''|*[!0-9]*) lease=0 ;; esac",
+            "  case \"$created\" in ''|*[!0-9]*) created=0 ;; esac",
+            "  if [ \"$lease\" -gt 0 ] && [ \"$created\" -gt 0 ] && [ \"$now\" -gt \"$lease\" ] && [ \"$((now - created))\" -ge \"$STALE\" ]; then rm -rf \"$OP\" 2>/dev/null; fi",
+            "fi",
+            "printf '%s %s\\n' \"$SENT\" '" + CommandSentinel.KindNone + "'"
+        );
+
+    /// <summary>
+    /// The operation-directory assignment fragment <c>"$ROOT/"'&lt;dir&gt;'</c>: the workspace-rooted
+    /// prefix stays in double quotes so <c>$ROOT</c> expands, while the directory itself is POSIX
+    /// single-quoted so no byte in it is ever interpreted by the shell (defense in depth — the value is
+    /// already SDK-derived hex, but a stale-cleanup name read off the filesystem is untrusted).
+    /// </summary>
+    private static string OpAssignment(string operationDirectory) =>
+        "\"$ROOT/\"" + PosixArgv.Quote(operationDirectory);
 
     /// <summary>
     /// Parses the leading marker line of a submitted command into its role and parameters. Throws
@@ -234,8 +338,9 @@ internal static class CommandScripts
             "RUN" => CommandScriptKind.Run,
             "PROBE" => CommandScriptKind.Probe,
             "READ" => CommandScriptKind.Read,
-            "CLEAN" => CommandScriptKind.Clean,
+            "RECLAIM" => CommandScriptKind.Reclaim,
             "GC" => CommandScriptKind.Gc,
+            "GCPURGE" => CommandScriptKind.GcPurge,
             _ => throw new FormatException($"Unknown LMSBX command kind '{tokens[0]}'."),
         };
 

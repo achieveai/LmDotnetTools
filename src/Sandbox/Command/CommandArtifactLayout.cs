@@ -73,4 +73,12 @@ internal static class CommandArtifactLayout
     /// could dominate a command's latency in a workspace with many stale operations.
     /// </summary>
     public const int StaleScanLimit = 256;
+
+    /// <summary>
+    /// Exact character length of an operation-directory name (the lowercase-hex prefix of a SHA-256, see
+    /// <see cref="CommandOperation.OperationDirectoryName"/>). Every stale-cleanup directory name is
+    /// validated to be exactly this many lowercase-hex characters before it is used in any script, so a
+    /// non-conforming (potentially hostile) filesystem entry is rejected rather than embedded.
+    /// </summary>
+    public const int OperationDirectoryNameLength = 32;
 }

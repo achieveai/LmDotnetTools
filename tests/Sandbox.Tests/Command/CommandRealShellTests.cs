@@ -104,7 +104,7 @@ public class CommandRealShellTests
     }
 
     [SkippableFact]
-    public async Task RealShell_ExpiredLeaseOfCrashedSubmitter_IsTakenOver_AndTheCommandRuns()
+    public async Task RealShell_ExpiredLeaseOfCrashedSubmitter_IsReportedPending_AndNeverTakenOver()
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
@@ -112,14 +112,23 @@ public class CommandRealShellTests
         Directory.CreateDirectory(workspace.HostFile($".lmsbx-sdk/ops/{Op}"));
         File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}/lease"), "1");
         File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}/created"), "1");
-        SeedStreamFiles(workspace, Repeat((byte)'z', 10), []);
-        var script = CommandScripts.BuildRun(Op, S_digest, PosixArgv.Join(CatBothArgv(exitCode: 0)), string.Empty, 120);
+        var argv = new[] { "sh", "-c", "printf ran > \"$SANDBOX_WORKSPACE/RAN\"" };
+        var script = CommandScripts.BuildRun(Op, S_digest, PosixArgv.Join(argv), string.Empty, 120);
 
         var result = await PosixShellHarness.RunAsync(script, workspace);
 
-        var (kind, payload) = CommandSentinel.Parse(result.Stdout);
-        kind.Should().Be(CommandSentinel.KindManifest);
-        DecodeManifest(payload!).Stdout.Length.Should().Be(10);
+        // The shipped wrapper never deletes/takes over an existing claim (that rm -rf + mkdir is not
+        // atomic against a concurrent contender and could double-run). An expired, uncommitted claim is
+        // reported PENDING and left intact for the guarded stale sweep — the command must NOT run.
+        CommandSentinel.Parse(result.Stdout).Kind.Should().Be(CommandSentinel.KindPending);
+        workspace
+            .HostFileExists("RAN")
+            .Should()
+            .BeFalse("an expired claim is not takeover-eligible, so the command must not run");
+        Directory
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{Op}"))
+            .Should()
+            .BeTrue("the abandoned claim is retained for the stale sweep, never taken over");
     }
 
     [SkippableFact]
