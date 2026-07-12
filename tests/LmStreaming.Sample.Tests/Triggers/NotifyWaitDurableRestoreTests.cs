@@ -340,24 +340,28 @@ public sealed class NotifyWaitDurableRestoreTests
             var now = NowMs();
             await SeedAsync(conversationsPath, notifyDbPath, threadId,
             [
-                // Short interval + small cap: restore re-arms this schedule wait, its wall-clock timer
+                // Short interval + HIGH cap: restore re-arms this schedule wait, its wall-clock timer
                 // fires ~1s later, and because a CAPPED wait persists fires_so_far on EVERY fire (only
                 // uncapped waits debounce the count — see OnSourceFiredAsync), the durable row advances to
                 // fires_so_far >= 1 while still active. That advanced-count-while-active state is the
                 // strongest durable proof: it shows the restored wait actually re-armed AND fired AND
                 // persisted the new count, not merely that its row survived.
                 //
-                // Signal chosen: fires_so_far >= 1 while the row is still active. It is observable during
-                // the ~1s window between the first fire (fires_so_far -> 1, row stays active) and the
-                // second/final fire (which tears the row down), comfortably inside the ~10s poll budget.
-                // The alternative "row terminates at maxFires" would also work but proves strictly less.
+                // The cap is deliberately large (100 fires ~= 100s of lifetime) so the row does NOT tear
+                // down anywhere near the ~10s poll budget. This makes "fires_so_far >= 1 while active" a
+                // LATCHED, monotonic state rather than a transient ~1s window: once the first fire lands,
+                // every later poll still observes it, so a slow/loaded CI agent (host-boot + recovery + GC
+                // latency) can never overshoot it into a torn-down row. (A small cap like MaxFires:2 made
+                // this test flaky — the active-with-count state only existed briefly before the final fire
+                // deleted the row.) The sibling exhausted/timed-out tests already cover row teardown; this
+                // fact's distinct job is proving a live post-restore re-arm + fire, so it keeps that proof.
                 new NotifyWaitRecord(
                     WaitId: ScheduleWaitId,
                     ThreadId: threadId,
                     Kind: ScheduleTriggerSource.KindName,
                     Args: "{\"intervalSeconds\":1}",
                     Label: null,
-                    MaxFires: 2,
+                    MaxFires: 100,
                     FiresSoFar: 0,
                     TimeoutAtUnixMs: now + 3_600_000,
                     ArmedAtUnixMs: now,
