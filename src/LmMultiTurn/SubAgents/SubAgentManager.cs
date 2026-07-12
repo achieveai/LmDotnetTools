@@ -368,12 +368,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                         _ = await state.Agent.SendAsync(
                             [new TextMessage { Role = Role.User, Text = prompt }], ct: linkedCts.Token);
                     }
-                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
                     {
-                        // The send was cancelled by the run's LIFECYCLE token (terminal disposal began),
-                        // NOT by the caller: the loop we injected into is finishing. Re-evaluate the
-                        // continuation so the prompt is delivered to the restarted run instead of
-                        // surfacing a spurious cancellation to the user and dropping their message.
+                        // The send was cancelled specifically by the run's LIFECYCLE token (terminal
+                        // disposal began) — NOT by the caller, and NOT an internal SendAsync
+                        // timeout/cancellation unrelated to either supplied token (which must propagate
+                        // rather than be retried, to avoid duplicate delivery / an unbounded retry loop).
+                        // The loop we injected into is finishing, so re-evaluate the continuation to
+                        // deliver the prompt to the restarted run instead of dropping the user's message.
                         injectCancelledByLifecycle = true;
                     }
                 }

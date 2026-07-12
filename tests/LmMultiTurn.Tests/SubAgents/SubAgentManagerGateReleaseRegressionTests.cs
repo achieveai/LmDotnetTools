@@ -479,6 +479,47 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SendMessageAsync_InjectSendThrowsInternalCancellation_PropagatesWithoutRetry()
+    {
+        // Round-5 blocker: the inject catch must treat ONLY lifecycle-token cancellation as "retry via
+        // restart". An internal OperationCanceledException from Agent.SendAsync (e.g. its own timeout) with
+        // NEITHER the caller token NOR the linked lifecycle token cancelled must PROPAGATE, not be retried —
+        // otherwise the manager risks duplicate delivery or an unbounded retry loop.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        };
+
+        _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
+
+        var sendCount = 0;
+        _manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent
+        {
+            // Spawn send (call 1) succeeds; the inject (call 2) throws an INTERNAL cancellation unrelated
+            // to either supplied token.
+            SendImpl = _ =>
+            {
+                var n = Interlocked.Increment(ref sendCount);
+                return n == 1
+                    ? new ValueTask<SendReceipt>(new SendReceipt("r1", null, DateTimeOffset.UtcNow))
+                    : ValueTask.FromException<SendReceipt>(new OperationCanceledException("internal send timeout"));
+            },
+            SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitForeverStream(ct),
+        };
+
+        var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // The internal OCE must surface to the caller, not be swallowed-and-retried.
+        var act = () => _manager!.SendMessageAsync(agentId, "resumed-prompt", runInBackground: true);
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        // Exactly the spawn send + the single failed inject attempt — no restart / re-send.
+        Volatile.Read(ref sendCount).Should().Be(2, "an internal SendAsync cancellation must not be retried");
+    }
+
+    [Fact]
     public async Task MonitorSubAgentAsync_PendingMessageCompletion_HoldsConcurrencyPermitUntilTerminal()
     {
         // Blocker D: with limit 1, a nonterminal (HasPendingMessages) completion must NOT release the
