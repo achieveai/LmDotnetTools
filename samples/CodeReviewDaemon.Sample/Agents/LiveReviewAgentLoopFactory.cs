@@ -185,7 +185,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             systemPrompt: profile.SystemPrompt,
             defaultOptions: new GenerateReplyOptions
             {
-                ModelId = modelId ?? string.Empty,
+                ModelId = ResolveRequestModelId(modelId, _options.ReviewModelId),
                 MaxToken = _options.ReviewMaxTokens,
                 ExtraProperties = extraProperties,
             },
@@ -297,6 +297,18 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
 
         return (isOpenAi, extraProperties);
     }
+
+    /// <summary>
+    /// The model id actually sent on the request: the per-call <paramref name="modelId"/> override when
+    /// supplied, else the configured <paramref name="configuredModelId"/> (the daemon's
+    /// <see cref="CodeReviewDaemonOptions.ReviewModelId"/>). This mirrors the fallback
+    /// <see cref="ResolveReasoning"/> already applies for VENDOR routing, so the request model and the routed
+    /// backend can never diverge — a caller that passes no model (e.g. the knowledge-extraction loop, which
+    /// calls with <c>modelId: null</c> to mean "use the daemon default") is served the configured model
+    /// instead of an empty <c>model</c> the Copilot backend rejects with <c>model_not_supported</c>.
+    /// </summary>
+    internal static string ResolveRequestModelId(string? modelId, string? configuredModelId) =>
+        string.IsNullOrWhiteSpace(modelId) ? configuredModelId ?? string.Empty : modelId;
 
     /// <summary>
     /// Whether <paramref name="modelId"/> is served by the Copilot <b>OpenAI Responses</b> backend

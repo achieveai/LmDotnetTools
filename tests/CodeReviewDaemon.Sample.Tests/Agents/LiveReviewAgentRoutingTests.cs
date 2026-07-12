@@ -118,4 +118,32 @@ public class LiveReviewAgentRoutingTests
         reasoning.Effort.Should().BeNull();
         reasoning.Summary.Should().Be("auto");
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveRequestModelId_NoPerCallModel_FallsBackToConfiguredModel(string? modelId)
+    {
+        // The knowledge-extraction loop passes modelId: null ("use the daemon default"). The request model
+        // must then be the configured ReviewModelId — never an empty string, which the Copilot backend
+        // rejects with model_not_supported (the achieveai Knowledge Base never populated because of this).
+        LiveReviewAgentLoopFactory.ResolveRequestModelId(modelId, configuredModelId: "gpt-5.6-luna")
+            .Should().Be("gpt-5.6-luna");
+    }
+
+    [Fact]
+    public void ResolveRequestModelId_PerCallModel_WinsOverConfigured()
+    {
+        LiveReviewAgentLoopFactory.ResolveRequestModelId("claude-haiku-4.5", configuredModelId: "gpt-5.6-luna")
+            .Should().Be("claude-haiku-4.5");
+    }
+
+    [Fact]
+    public void ResolveRequestModelId_NoModelAndNoConfigured_IsEmptyNotNull()
+    {
+        // Degenerate (no model anywhere): return empty rather than null so GenerateReplyOptions.ModelId is
+        // never null — the daemon has bigger problems, but this must not NRE.
+        LiveReviewAgentLoopFactory.ResolveRequestModelId(null, configuredModelId: null).Should().BeEmpty();
+    }
 }
