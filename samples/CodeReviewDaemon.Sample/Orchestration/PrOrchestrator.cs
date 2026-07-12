@@ -14,12 +14,18 @@ internal sealed class PrOrchestrator
     private readonly ReviewStore _store;
     private readonly IReviewStageExecutor _executor;
     private readonly ILogger<PrOrchestrator> _logger;
+    private readonly RetryGovernor? _retryGovernor;
 
-    public PrOrchestrator(ReviewStore store, IReviewStageExecutor executor, ILogger<PrOrchestrator> logger)
+    public PrOrchestrator(
+        ReviewStore store,
+        IReviewStageExecutor executor,
+        ILogger<PrOrchestrator> logger,
+        RetryGovernor? retryGovernor = null)
     {
         _store = store;
         _executor = executor;
         _logger = logger;
+        _retryGovernor = retryGovernor;
     }
 
     /// <summary>
@@ -55,6 +61,14 @@ internal sealed class PrOrchestrator
                 return run with { WorkflowStatus = WorkflowStatus.Completed };
             }
 
+            // Retry governance: a run that failed a recent poll is backing off, and one that exhausted its
+            // attempts is parked — either way, skip this poll's attempt (leaving it RetryPending) instead of
+            // the old ~30s hot-loop. Restart clears the in-memory state, so a restart retries everything.
+            if (_retryGovernor is not null && !_retryGovernor.ShouldAttempt(run.Id))
+            {
+                return run;
+            }
+
             foreach (var stage in StageMachine.RemainingStages(run.Stage))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -66,6 +80,7 @@ internal sealed class PrOrchestrator
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.RetryPending, run.PrLifecycleState);
+                    _retryGovernor?.RecordFailure(run.Id, ex.Message);
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
                     throw;
                 }
@@ -75,6 +90,7 @@ internal sealed class PrOrchestrator
                 run = run with { Stage = stage, WorkflowStatus = workflowStatus };
             }
 
+            _retryGovernor?.RecordSuccess(run.Id);
             return run;
         }
         finally
