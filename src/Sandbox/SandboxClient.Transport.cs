@@ -314,7 +314,11 @@ public sealed partial class SandboxClient
     /// <item><c>jsonrpc</c> is the string <c>"2.0"</c>;</item>
     /// <item><c>id</c> is a number equal to the request's <see cref="McpRequestId"/>;</item>
     /// <item>exactly one of <c>result</c> or a non-null <c>error</c> is present (mutual exclusivity);</item>
-    /// <item>when <c>error</c> is present it is a JSON object — which is then surfaced as the failure.</item>
+    /// <item>
+    /// when <c>error</c> is present it is a JSON object — which is then surfaced as the failure via
+    /// <see cref="ProtocolErrorFromMcpEnvelope"/>, WITHOUT ever copying its gateway-controlled
+    /// <c>message</c> (or any other error field) into the resulting exception.
+    /// </item>
     /// </list>
     /// </summary>
     private static JsonElement ValidateMcpEnvelopeAndExtractResult(JsonDocument document, string toolName, int statusCode)
@@ -358,17 +362,31 @@ public sealed partial class SandboxClient
                 throw MalformedEnvelope(toolName, statusCode, "the 'error' member is not a JSON-RPC error object");
             }
 
-            var message = errorElement.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
-                ? messageElement.GetString()
-                : null;
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway MCP call '{toolName}' returned an error: {message ?? "(no message)"}.",
-                statusCode
-            );
+            throw ProtocolErrorFromMcpEnvelope(toolName, statusCode, errorElement);
         }
 
         return resultElement;
+    }
+
+    /// <summary>
+    /// Builds the <see cref="SandboxException"/> for a JSON-RPC <c>error</c> envelope member. NEVER
+    /// copies the gateway-controlled <c>error.message</c> — or any other field of the error object,
+    /// or the surrounding response body — into the returned exception's
+    /// <see cref="Exception.Message"/> or an inner exception: that text is arbitrary content the
+    /// upstream gateway/tool fully controls and may contain secrets (e.g. captured command output or
+    /// credential material an upstream tool echoed back), exactly like the response bodies
+    /// <see cref="MapErrorResponse"/> never reads for the same reason. The only value ever surfaced is
+    /// the JSON-RPC <c>code</c> — a small, gateway-defined integer, not caller-influenced free text —
+    /// and only when it genuinely deserializes as a JSON number.
+    /// </summary>
+    private static SandboxException ProtocolErrorFromMcpEnvelope(string toolName, int statusCode, JsonElement errorElement)
+    {
+        var codeSuffix =
+            errorElement.TryGetProperty("code", out var codeElement) && codeElement.ValueKind == JsonValueKind.Number && codeElement.TryGetInt32(out var code)
+                ? $" (code {code})"
+                : string.Empty;
+
+        return new SandboxException(SandboxErrorKind.Protocol, $"Sandbox gateway MCP call '{toolName}' returned a JSON-RPC error{codeSuffix}.", statusCode);
     }
 
     private static SandboxException MalformedEnvelope(string toolName, int statusCode, string detail) =>

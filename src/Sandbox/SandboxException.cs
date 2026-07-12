@@ -10,7 +10,8 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// The message is always built from information that is safe to surface to callers/logs: the
 /// gateway response status code and the local operation being attempted. It never echoes response
 /// bodies (which, on an auth-rejection path, are the upstream output most likely to include
-/// credential material) or any <see cref="SandboxClientOptions.ClientSecret"/>-derived value.
+/// credential material), a JSON-RPC error's <c>message</c> (or any other error field), or any
+/// <see cref="SandboxClientOptions.ClientSecret"/>-derived value.
 /// </remarks>
 public sealed class SandboxException : Exception
 {

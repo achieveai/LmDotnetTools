@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Xunit;
@@ -49,6 +50,80 @@ public class SandboxClientTransportTests
 
         exception.Should().BeOfType<SandboxException>();
         ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_JsonRpcErrorMessage_NeverLeaksIntoExceptionMessageToStringOrInnerException()
+    {
+        // error.message is gateway-controlled free text that can carry secrets (e.g. an upstream
+        // tool echoing back credential material in its failure output) — it must never be copied
+        // into the SandboxException, in either plain-decoded or base64-encoded form, and no inner
+        // exception should carry it either.
+        const string decodedSentinel = "sk-sandbox-super-secret-decoded-9f3a1c";
+        var encodedSentinel = Convert.ToBase64String(Encoding.UTF8.GetBytes("sk-sandbox-super-secret-encoded-7c214e"));
+
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Post,
+            "/mcp",
+            $$$"""{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"auth failed: token={{{decodedSentinel}}} blob={{{encodedSentinel}}}","data":"{{{encodedSentinel}}}"}}"""
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" }));
+
+        exception.Should().BeOfType<SandboxException>();
+        var sandboxException = (SandboxException)exception!;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
+        sandboxException.Message.Should().NotContain(decodedSentinel);
+        sandboxException.Message.Should().NotContain(encodedSentinel);
+        sandboxException.ToString().Should().NotContain(decodedSentinel);
+        sandboxException.ToString().Should().NotContain(encodedSentinel);
+        sandboxException.InnerException.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_JsonRpcError_SurfacesOnlyTheNumericCode()
+    {
+        // The redacted message may safely include the JSON-RPC "code" (a small gateway-defined
+        // integer, not caller-influenced free text) but must never include "message".
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/mcp", """{"jsonrpc":"2.0","id":1,"error":{"code":-32017,"message":"do not leak this text"}}""");
+
+        var exception = await Record.ExceptionAsync(() => client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" }));
+
+        var sandboxException = (SandboxException)exception!;
+        sandboxException.Message.Should().Contain("-32017");
+        sandboxException.Message.Should().NotContain("do not leak this text");
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_JsonRpcErrorWithNonNumericCode_OmitsCodeSuffix_NeverThrowsRaw()
+    {
+        // A "code" that is not a JSON number (malformed/gateway bug) must not be surfaced as-is and
+        // must not crash extraction — it is simply omitted from the redacted message.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/mcp", """{"jsonrpc":"2.0","id":1,"error":{"code":"not-a-number","message":"do not leak this either"}}""");
+
+        var exception = await Record.ExceptionAsync(() => client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" }));
+
+        exception.Should().BeOfType<SandboxException>();
+        var sandboxException = (SandboxException)exception!;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
+        sandboxException.Message.Should().NotContain("do not leak this either");
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_JsonRpcErrorMissingCode_ThrowsProtocol_WithoutCodeSuffix()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/mcp", """{"jsonrpc":"2.0","id":1,"error":{"message":"session unreachable"}}""");
+
+        var exception = await Record.ExceptionAsync(() => client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" }));
+
+        exception.Should().BeOfType<SandboxException>();
+        var sandboxException = (SandboxException)exception!;
+        sandboxException.Kind.Should().Be(SandboxErrorKind.Protocol);
+        sandboxException.Message.Should().NotContain("session unreachable");
     }
 
     [Theory]

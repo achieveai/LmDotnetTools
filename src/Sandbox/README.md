@@ -81,7 +81,9 @@ malformed-response case, and the SDK never lets one surface as a raw
   collection element in any lifecycle/catalog/discovery list.
 - A 2xx MCP reply that is not a complete JSON-RPC 2.0 envelope — a non-object root, a missing/wrong
   `jsonrpc`, an `id` that does not match the request, both or neither of `result`/`error`, or a
-  non-object `error`. A JSON-RPC `error` envelope is likewise `Protocol`.
+  non-object `error`. A JSON-RPC `error` envelope is likewise `Protocol` — and its gateway-controlled
+  `message` (and every other error field) is never copied into the exception; only the numeric `code`,
+  when present, is surfaced (see Security below).
 - An observed `3xx` redirect (which the SDK refuses rather than follows).
 
 ## Security
@@ -93,3 +95,8 @@ malformed-response case, and the SDK never lets one surface as a raw
 - The owned transport disables automatic redirects; a borrowed `HttpClient` must do the same
   (`AllowAutoRedirect = false`) — see the borrowed-client note above. The SDK never follows a
   redirect itself and rejects any `3xx` it observes.
+- Non-2xx REST/MCP response bodies are never read, and a JSON-RPC `error.message` (or any other
+  error field) is never copied into a `SandboxException`: both are gateway-controlled content the
+  SDK treats as untrusted and potentially secret-bearing (e.g. echoed credential material or upstream
+  tool output). Only a `SandboxException.StatusCode` and, for MCP errors, a plain numeric JSON-RPC
+  `code` are ever surfaced.
