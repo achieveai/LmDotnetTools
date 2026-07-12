@@ -65,6 +65,45 @@ public class HostGitCredentialEnvTests
         env["GIT_TERMINAL_PROMPT"].Should().Be("0");
     }
 
+    [Fact]
+    public void Build_SkippedMiddleProvider_KeepsIndicesContiguous()
+    {
+        // The case that actually exercises the GIT_CONFIG_COUNT <-> KEY_n contiguity invariant: an unmapped
+        // provider (m365) sandwiched BETWEEN two mapped ones — exactly the PR's target scenario (signed into
+        // GitHub + M365 + ADO at once). `index` must advance only on emit, so github -> _0, ado -> _1,
+        // COUNT=2, with no gap at _1 and no dangling _2. A regression that advanced index on skip would emit
+        // COUNT=3 with a hole at KEY_1, silently breaking auth for the later provider.
+        var env = HostGitCredentialEnv.Build(
+            [
+                new GitProviderToken("github", "gh"),
+                new GitProviderToken("m365", "x"),
+                new GitProviderToken("ado", "ado-tok"),
+            ]);
+
+        env["GIT_CONFIG_COUNT"].Should().Be("2");
+        env.Should().ContainKey("GIT_CONFIG_KEY_0").And.ContainKey("GIT_CONFIG_KEY_1");
+        env.ContainsKey("GIT_CONFIG_KEY_2").Should().BeFalse("index must not advance on the skipped m365 entry");
+
+        var headers = ExtraHeadersByHost(env);
+        headers.Should().ContainKey("http.https://github.com/.extraHeader");
+        headers.Should().ContainKey("http.https://dev.azure.com/.extraHeader");
+    }
+
+    [Fact]
+    public void Build_DuplicateProviderId_EmitsOneHeaderPerHost_FirstWins()
+    {
+        // Two github entries must NOT emit two GIT_CONFIG_KEY_n for the same host — git treats the repeated
+        // config key as multi-valued and would apply BOTH Authorization headers (undefined / security-adjacent
+        // for an auth path). First mapped token per host wins; later duplicates are ignored.
+        var env = HostGitCredentialEnv.Build(
+            [new GitProviderToken("github", "first"), new GitProviderToken("github", "second")]);
+
+        env["GIT_CONFIG_COUNT"].Should().Be("1");
+        env.ContainsKey("GIT_CONFIG_KEY_1").Should().BeFalse();
+        env["GIT_CONFIG_VALUE_0"].Should().Be(
+            "Authorization: Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("x-access-token:first")));
+    }
+
     private static Dictionary<string, string> ExtraHeadersByHost(IReadOnlyDictionary<string, string> env)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);

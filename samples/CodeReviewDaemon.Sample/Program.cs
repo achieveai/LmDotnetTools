@@ -263,28 +263,12 @@ if (daemonOptions.EnableAdoProvider)
 // exactly the credentials their store/target needs. Tokens never touch argv or on-disk git config.
 static Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> BuildHostGitCredentialsSource(IServiceProvider sp)
 {
+    // Snapshot the providers once; the per-provider isolation + differentiated logging lives in the
+    // testable HostGitCredentialsCollector so a transient fault on one provider can never deny the others
+    // their credentials (e.g. an ADO token-endpoint blip must not abort a github.com clone).
     var providers = sp.GetServices<IOAuthTokenProvider>().ToList();
-    return async ct =>
-    {
-        var tokens = new List<GitProviderToken>(providers.Count);
-        foreach (var provider in providers)
-        {
-            try
-            {
-                var token = await provider.GetAccessTokenAsync(ct: ct).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(token.Value))
-                {
-                    tokens.Add(new GitProviderToken(provider.ProviderId, token.Value));
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // Provider not signed in / not configured — skip; its host's clones stay unauthenticated.
-            }
-        }
-
-        return tokens;
-    };
+    var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(HostGitCredentialsCollector));
+    return ct => HostGitCredentialsCollector.CollectAsync(providers, logger, ct);
 }
 
 // HOST-side retention workspace (Task 15, design §6 Risk A): the ReviewBot retention push and the KB

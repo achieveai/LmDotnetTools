@@ -48,19 +48,27 @@ internal static class HostGitCredentialEnv
     /// Builds the git credential env for every provider in <paramref name="tokens"/> that has a known git
     /// host, one <c>GIT_CONFIG_KEY_n/VALUE_n</c> pair each (in list order). An empty or all-unmapped list
     /// emits no credential entries — only GIT_TERMINAL_PROMPT=0 — so an unauthenticated git command fails
-    /// fast instead of prompting.
+    /// fast instead of prompting. At most one header is emitted per git host: git treats a repeated config
+    /// key as multi-valued and would apply BOTH <c>Authorization</c> headers, so a duplicate provider id for
+    /// the same host is undefined for an auth path — the first mapped token per host wins and later
+    /// duplicates are ignored.
     /// </summary>
     public static IReadOnlyDictionary<string, string> Build(IReadOnlyList<GitProviderToken> tokens)
     {
         ArgumentNullException.ThrowIfNull(tokens);
 
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        var seenHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var index = 0;
         foreach (var token in tokens)
         {
             if (string.IsNullOrWhiteSpace(token.Token)
-                || !ProviderGitHosts.TryGetValue(token.ProviderId, out var mapping))
+                || !ProviderGitHosts.TryGetValue(token.ProviderId, out var mapping)
+                || !seenHosts.Add(mapping.Host))
             {
+                // Blank token, an unmapped provider (e.g. m365), or a host we already emitted a header for.
+                // `index` advances ONLY on emit, so GIT_CONFIG_COUNT stays consistent with a contiguous
+                // KEY_0..COUNT-1 even when an entry in the middle is skipped.
                 continue;
             }
 
