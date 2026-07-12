@@ -146,4 +146,22 @@ public class LiveReviewAgentRoutingTests
         // never null — the daemon has bigger problems, but this must not NRE.
         LiveReviewAgentLoopFactory.ResolveRequestModelId(null, configuredModelId: null).Should().BeEmpty();
     }
+
+    [Fact]
+    public void KnowledgeModel_ClaudeOpus_UnderGptDispatcher_RoutesToAnthropicAndSendsOpus()
+    {
+        // The at-close knowledge-extraction loop is created with KnowledgeModelId (claude-opus-4.8) while the
+        // primary dispatcher is gpt-5.6-luna. The EFFECTIVE per-call model must win: extraction routes through
+        // the Copilot Anthropic Messages shape and POSTs model=claude-opus-4.8 — NOT the gpt dispatcher's id,
+        // and NOT an empty model (which the backend rejects with model_not_supported, the bug this fixes).
+        var (isOpenAi, extra) = LiveReviewAgentLoopFactory.ResolveReasoning(
+            modelId: "claude-opus-4.8", configuredModelId: "gpt-5.6-luna", effort: "medium");
+
+        isOpenAi.Should().BeFalse("claude-* routes through Anthropic Messages, not OpenAI Responses");
+        extra.Should().NotContainKey("Reasoning");
+        extra.Should().ContainKey("OutputConfig");
+
+        LiveReviewAgentLoopFactory.ResolveRequestModelId("claude-opus-4.8", configuredModelId: "gpt-5.6-luna")
+            .Should().Be("claude-opus-4.8");
+    }
 }

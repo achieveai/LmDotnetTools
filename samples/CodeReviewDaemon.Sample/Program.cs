@@ -434,8 +434,13 @@ if (daemonOptions.EnableToolAssistedReview
                     var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
                         .ConfigureAwait(false);
                     var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
+                    // KnowledgeModelId (empty ⇒ null ⇒ inherit ReviewModelId) lets the extraction pass run on a
+                    // dedicated model, e.g. claude-opus-4.8, independent of the gpt-* dispatcher.
+                    var knowledgeModelId = string.IsNullOrWhiteSpace(daemonOptions.KnowledgeModelId)
+                        ? null
+                        : daemonOptions.KnowledgeModelId;
                     await using var loop = loopFactory.Create(
-                        profile, modelId: null, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
+                        profile, modelId: knowledgeModelId, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
                     var agent = new KnowledgeAgent(
                         loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
                     var todayUtc = DateTime.UtcNow.ToString(

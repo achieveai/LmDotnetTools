@@ -105,6 +105,17 @@ internal sealed class CodeReviewDaemonOptions
     public string SubAgentModelId { get; init; } = "";
 
     /// <summary>
+    /// Model id the at-close <b>knowledge-extraction agent</b> runs with (<see cref="EnableKnowledgeAgent"/>) —
+    /// the gated pass that distils a merged PR's review notes into the Knowledge Base. Empty (default) ⇒ the
+    /// extraction loop inherits the primary <see cref="ReviewModelId"/>, exactly as before. Set it to run the
+    /// extraction on a dedicated model — e.g. a stronger writer like <c>claude-opus-4.8</c> — independent of
+    /// the dispatcher. Like the other model knobs it must be served by the daemon's Copilot backend (a
+    /// <c>claude-*</c> id routes through Anthropic Messages, a <c>gpt-*</c>/<c>o*</c> id through OpenAI
+    /// Responses); an unsupported slug — or an empty request model — is rejected with <c>model_not_supported</c>.
+    /// </summary>
+    public string KnowledgeModelId { get; init; } = "";
+
+    /// <summary>
     /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a
     /// model the configured backend accepts — the Copilot backend rejects OpenRouter-style slugs
     /// (e.g. <c>anthropic/claude-haiku-4-5</c>) with <c>model_not_supported</c>; its haiku id is

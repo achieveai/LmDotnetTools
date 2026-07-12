@@ -52,4 +52,15 @@ public class CodeReviewDaemonOptionsTests
 
         o.BotName.Should().Be("Revobot", "an operator can override the display name, e.g. \"GB's Revobot\"");
     }
+
+    [Fact]
+    public void Model_role_knobs_default_to_empty_so_secondary_agents_inherit_the_primary()
+    {
+        var o = new CodeReviewDaemonOptions();
+
+        o.ReviewModelId.Should().Be("claude-sonnet-5", "the primary dispatcher always has a concrete model");
+        o.SubAgentModelId.Should().BeEmpty("empty ⇒ review sub-agents inherit ReviewModelId");
+        o.KnowledgeModelId.Should()
+            .BeEmpty("empty ⇒ the at-close knowledge-extraction loop inherits ReviewModelId; set it (e.g. claude-opus-4.8) to run extraction on a dedicated model");
+    }
 }
