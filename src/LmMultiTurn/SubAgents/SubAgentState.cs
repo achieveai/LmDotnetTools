@@ -263,7 +263,19 @@ internal class SubAgentState
             }
         }
 
-        toCancel?.Cancel();
+        // Cancel outside the lock to unblock a wedged in-flight inject send (see above). Cancel() runs
+        // linked-token callbacks synchronously and, with the default throwOnFirstException=false, still
+        // cancels the token and invokes EVERY callback before aggregating any that threw. So a throwing
+        // callback must NOT abort the drain/terminal/disposal transition below — swallow the aggregate;
+        // the cancellation itself has fully propagated.
+        try
+        {
+            toCancel?.Cancel();
+        }
+        catch (AggregateException)
+        {
+            // A linked-token callback threw; the lifecycle token is already cancelled, so proceed.
+        }
 
         if (drain is not null)
         {

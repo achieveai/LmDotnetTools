@@ -350,7 +350,9 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             };
         };
 
-        // Provider #1's terminal disposal throws (poison); provider #2 is the fresh rebuild.
+        // Provider #1's terminal disposal throws the FIRST time (poison), then SUCCEEDS on the restart
+        // retry; provider #2 is the fresh rebuild. Failing-once-then-succeeding lets us assert the retry
+        // disposal path actually runs (a second attempt) rather than just that a replacement was created.
         var providerCallCount = 0;
         var poisonedDisposeAttempts = 0;
         _manager.TestOwnedProviderOverride = (_, _) =>
@@ -363,8 +365,10 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
                     .Setup(d => d.DisposeAsync())
                     .Returns(() =>
                     {
-                        _ = Interlocked.Increment(ref poisonedDisposeAttempts);
-                        return ValueTask.FromException(new InvalidOperationException("dispose failed"));
+                        var attempt = Interlocked.Increment(ref poisonedDisposeAttempts);
+                        return attempt == 1
+                            ? ValueTask.FromException(new InvalidOperationException("dispose failed"))
+                            : ValueTask.CompletedTask;
                     });
                 return poisoned.Object;
             }
@@ -384,8 +388,8 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
                 catch { return false; }
             },
             TimeSpan.FromSeconds(10));
-        Volatile.Read(ref poisonedDisposeAttempts).Should().BeGreaterThanOrEqualTo(1,
-            "the terminal disposal must have attempted (and failed) to dispose provider #1");
+        Volatile.Read(ref poisonedDisposeAttempts).Should().Be(1,
+            "the terminal disposal must have attempted (and failed) to dispose provider #1 exactly once");
         providerCallCount.Should().Be(1, "only the initial provider exists before the continuation");
 
         // Act: a continuation restarts the finished run. Because provider #1's terminal disposal FAILED,
@@ -393,7 +397,85 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         _ = await _manager.SendMessageAsync(agentId, "continue", runInBackground: true);
 
         providerCallCount.Should().Be(2, "the poisoned provider must be replaced with a fresh one on restart");
+        Volatile.Read(ref poisonedDisposeAttempts).Should().Be(2,
+            "the restart must RETRY disposing the poisoned provider before swapping in the replacement");
         _manager.Peek(agentId).Should().Contain("\"running\"", "the resumed run is live on the fresh provider");
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_InjectCancelledByTerminalDisposal_RedeliversPromptToRestartedRun()
+    {
+        // Blocker (round 4): the inject send links the caller token with the run's lifecycle token, and
+        // terminal disposal cancels that token. This must NOT surface as a caller cancellation that drops
+        // the user's message — the continuation must re-enter the decision loop and deliver the prompt to
+        // the restarted run. Exercised through the REAL SubAgentManager.SendMessageAsync boundary (not the
+        // SubAgentState primitive directly), so it fails if the manager stops using the linked token.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        };
+
+        _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
+
+        var sentSink = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var injectStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agentCallCount = 0;
+
+        _manager.TestAgentFactoryOverride = (_, _) =>
+        {
+            var which = Interlocked.Increment(ref agentCallCount);
+            if (which != 1)
+            {
+                // Agent #2 (the restart) stays running and uses the default succeeding send.
+                return new FakeMultiTurnAgent
+                {
+                    SentSink = sentSink,
+                    SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitForeverStream(ct),
+                };
+            }
+
+            // Agent #1: spawn send (call 1) succeeds; the inject (call >= 2) signals it is in flight then
+            // BLOCKS on its token — the manager's linked lifecycle token — until terminal disposal cancels
+            // it. Its run completes terminally only AFTER the inject is in flight, so the lease is held when
+            // terminal disposal runs and the lifecycle-cancel path is exercised end to end.
+            return new FakeMultiTurnAgent
+            {
+                SentSink = sentSink,
+                SendWithTokenImpl = async (idx, sendCt) =>
+                {
+                    if (idx >= 2)
+                    {
+                        _ = injectStarted.TrySetResult(true);
+                        await Task.Delay(Timeout.InfiniteTimeSpan, sendCt);
+                    }
+
+                    return new SendReceipt(Guid.NewGuid().ToString("N"), null, DateTimeOffset.UtcNow);
+                },
+                SubscribeImpl = (_, ct) => FakeMultiTurnAgent.WaitThenCompleteStream(injectStarted.Task, "run-1", ct),
+            };
+        };
+
+        // Owned provider disposes cleanly at terminal completion, so HasDisposedOwnedProviderAgent drives
+        // the restart rebuild.
+        _manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+
+        var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Act: a continuation whose caller token is non-cancelable. Its inject send blocks, terminal
+        // completion lands and lifecycle-cancels it, and the manager must restart and deliver the prompt
+        // — returning normally rather than throwing OperationCanceledException.
+        var resultJson = await _manager
+            .SendMessageAsync(agentId, "resumed-prompt", runInBackground: true)
+            .WaitAsync(TimeSpan.FromSeconds(15));
+
+        using var resultDoc = JsonDocument.Parse(resultJson);
+        resultDoc.RootElement.GetProperty("status").GetString().Should().Be("resumed",
+            "the lifecycle-cancelled inject must be re-driven through the restart path, not surfaced as cancellation");
+        agentCallCount.Should().Be(2, "the finished run must be restarted on a fresh agent");
+        sentSink.Should().Contain("resumed-prompt",
+            "the user's prompt must reach the restarted run rather than being dropped on lifecycle cancellation");
     }
 
     [Fact]
@@ -531,6 +613,20 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     public Func<int, ValueTask<SendReceipt>>? SendImpl { get; set; }
 
     /// <summary>
+    /// Token-aware variant of <see cref="SendImpl"/> (takes precedence when set): receives the
+    /// send's <see cref="CancellationToken"/> so a test can block on it and prove terminal
+    /// disposal cancels a wedged inject send through the manager's linked lifecycle token.
+    /// </summary>
+    public Func<int, CancellationToken, ValueTask<SendReceipt>>? SendWithTokenImpl { get; set; }
+
+    /// <summary>
+    /// Optional sink recording the first user text of every <see cref="SendAsync"/> call — shared
+    /// across agent instances (e.g. a restart's replacement agent) so a test can assert a prompt
+    /// reached the restarted run.
+    /// </summary>
+    public System.Collections.Concurrent.ConcurrentQueue<string>? SentSink { get; init; }
+
+    /// <summary>
     /// Invoked for each <see cref="SubscribeAsync"/> call with a 1-based call index, so a test
     /// can give a later restart's monitor different behavior than the original epoch's. Null
     /// (default) =&gt; <see cref="WaitForeverStream"/>.
@@ -543,7 +639,13 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         string? parentRunId = null,
         CancellationToken ct = default)
     {
+        SentSink?.Enqueue(messages.OfType<TextMessage>().Select(m => m.Text).FirstOrDefault() ?? string.Empty);
         var callIndex = Interlocked.Increment(ref _sendCallCount);
+        if (SendWithTokenImpl != null)
+        {
+            return SendWithTokenImpl(callIndex, ct);
+        }
+
         return SendImpl != null
             ? SendImpl(callIndex)
             : new ValueTask<SendReceipt>(
@@ -608,6 +710,22 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;
+    }
+
+    /// <summary>
+    /// Stream that waits for <paramref name="gate"/> (e.g. "an inject send is now in flight"), then yields
+    /// a single TERMINAL <see cref="RunCompletedMessage"/> and keeps the subscription open. Lets a test
+    /// drive a terminal completion to land WHILE an admitted inject send is blocked, so the manager's
+    /// lifecycle-token cancellation + continuation-restart path is exercised end to end.
+    /// </summary>
+    internal static async IAsyncEnumerable<IMessage> WaitThenCompleteStream(
+        Task gate,
+        string completedRunId,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        await gate.WaitAsync(ct);
+        yield return new RunCompletedMessage { CompletedRunId = completedRunId };
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
     }
 
     /// <summary>

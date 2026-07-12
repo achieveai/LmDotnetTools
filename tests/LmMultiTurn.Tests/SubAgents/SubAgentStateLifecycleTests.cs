@@ -182,6 +182,44 @@ public class SubAgentStateLifecycleTests
         state.OwnedProviderTerminalDisposeFailed.Should().BeFalse("assigning a fresh provider clears the poison");
     }
 
+    [Fact]
+    public async Task BeginTerminalDisposal_ThrowingLifecycleCancellationCallback_StillCompletesTerminalTransition()
+    {
+        // Blocker (round 4): CancellationTokenSource.Cancel() runs callbacks synchronously and aggregates
+        // any that throw into an AggregateException. That must NOT abort BeginTerminalDisposalAsync's lease
+        // drain / terminal-status transition — otherwise the provider is left neither disposed nor poisoned
+        // and a later restart could reuse an interrupted provider.
+        var state = NewOwnedProviderState();
+
+        var decision = state.BeginContinuation(notifyParentOnCompletion: false);
+        decision.Mode.Should().Be(ContinuationMode.Inject);
+
+        // A linked token (as the inject send would hold) with a callback that throws when the lifecycle
+        // token is cancelled during terminal disposal.
+        using var linked = state.LinkLifecycleToken(CancellationToken.None);
+        var callbackFired = false;
+        _ = linked.Token.Register(() =>
+        {
+            callbackFired = true;
+            throw new InvalidOperationException("cancellation callback boom");
+        });
+
+        // The cancel (with its throwing callback) happens inside here; it must be swallowed and the
+        // disposal must park on the still-held lease rather than fault or skip the transition.
+        var disposal = state.BeginTerminalDisposalAsync(isError: false);
+
+        await Task.Delay(100);
+        callbackFired.Should().BeTrue("terminal disposal must have cancelled the lifecycle token");
+        disposal.IsCompleted.Should().BeFalse("the throwing callback must not skip the lease drain");
+        state.Status.Should().Be(SubAgentStatus.Running, "status stays Running until the lease drains");
+
+        // Releasing the lease lets the (un-aborted) transition finish and flip terminal.
+        state.EndInjectLease();
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+        state.Status.Should().Be(SubAgentStatus.Completed,
+            "a throwing cancellation callback must not abort the terminal transition");
+    }
+
     private static SubAgentState NewOwnedProviderState()
     {
         var state = new SubAgentState

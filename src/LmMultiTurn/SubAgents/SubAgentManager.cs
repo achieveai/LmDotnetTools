@@ -33,6 +33,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly SemaphoreSlim _concurrencyGate;
     private int _disposeStarted;
 
+    // Owned providers whose terminal disposal failed AND whose in-restart retry also failed: the state's
+    // OwnedProviderAgent slot is about to be overwritten by the replacement, so their handle is retained
+    // here for a best-effort final dispose at manager teardown rather than being silently abandoned.
+    private readonly ConcurrentBag<IStreamingAgent> _abandonedProviders = [];
+
     /// <summary>
     /// Test-only seam: when set, <see cref="CreateSubAgentAsync"/> returns this factory's
     /// <see cref="IMultiTurnAgent"/> instead of building a real <see cref="MultiTurnAgentLoop"/>,
@@ -350,6 +355,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // (running agent) is kept so existing waiters observe the next resolution.
                 state.ResetCompletionIfFinished();
 
+                var injectCancelledByLifecycle = false;
                 try
                 {
                     // Inject the message into the currently running agent while holding the send lease.
@@ -357,12 +363,30 @@ public sealed class SubAgentManager : IAsyncDisposable
                     // disposal can unblock this send if it wedges — otherwise the lease (which the
                     // disposal waits to drain) could be held forever on a caller token that never cancels.
                     using var linkedCts = state.LinkLifecycleToken(ct);
-                    _ = await state.Agent.SendAsync(
-                        [new TextMessage { Role = Role.User, Text = prompt }], ct: linkedCts.Token);
+                    try
+                    {
+                        _ = await state.Agent.SendAsync(
+                            [new TextMessage { Role = Role.User, Text = prompt }], ct: linkedCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // The send was cancelled by the run's LIFECYCLE token (terminal disposal began),
+                        // NOT by the caller: the loop we injected into is finishing. Re-evaluate the
+                        // continuation so the prompt is delivered to the restarted run instead of
+                        // surfacing a spurious cancellation to the user and dropping their message.
+                        injectCancelledByLifecycle = true;
+                    }
                 }
                 finally
                 {
                     state.EndInjectLease();
+                }
+
+                if (injectCancelledByLifecycle)
+                {
+                    // The lease is released; re-enter the decision loop. The run is now terminal, so
+                    // BeginContinuation routes this to a fresh-provider restart that delivers the prompt.
+                    continue;
                 }
 
                 _logger.LogInformation(
@@ -536,9 +560,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                     try { await state.DisposeOwnedProviderAgentAsync(); }
                     catch (Exception ex)
                     {
+                        // Retry failed a second time: we are about to overwrite the OwnedProviderAgent
+                        // slot, which would drop this handle forever. Retain it for a best-effort dispose
+                        // at manager teardown so a repeatedly-undisposable provider is accounted for
+                        // rather than silently abandoned.
+                        var undisposed = state.OwnedProviderAgent;
+                        if (undisposed is not null)
+                        {
+                            _abandonedProviders.Add(undisposed);
+                        }
+
                         _logger.LogWarning(
                             ex,
-                            "Retry dispose of poisoned owned provider failed before restart for sub-agent {AgentId}",
+                            "Retry dispose of poisoned owned provider failed before restart for sub-agent {AgentId}; retained for cleanup at manager disposal",
                             state.AgentId
                         );
                     }
@@ -806,6 +840,28 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         _agents.Clear();
         _namesToIds.Clear();
+
+        // Best-effort final dispose of providers whose in-restart retry disposal also failed; their state
+        // slots were overwritten by replacements, so this is their last cleanup opportunity.
+        foreach (var abandoned in _abandonedProviders)
+        {
+            try
+            {
+                if (abandoned is IAsyncDisposable asyncDisposable)
+                {
+                    await asyncDisposable.DisposeAsync();
+                }
+                else if (abandoned is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Abandoned owned-provider dispose failed at manager disposal");
+            }
+        }
+
         _concurrencyGate.Dispose();
     }
 
