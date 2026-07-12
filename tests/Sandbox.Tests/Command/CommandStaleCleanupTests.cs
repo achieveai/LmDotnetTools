@@ -43,6 +43,24 @@ public class CommandStaleCleanupTests
     }
 
     [Fact]
+    public void SelectStale_NeverEstablishedLease_IsProtected_NotDeleted()
+    {
+        // A directory still claiming has no established lease yet (0). It must never be selected, or
+        // cleanup would race a winner mid-establishment — the GC-path form of the F2 TOCTOU.
+        var entries = new[] { ("claiming", 0L, Now - (Day * 5)) };
+
+        CommandStaleCleanup.SelectStale(entries, Now).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SelectStale_NeverEstablishedCreated_IsProtected_NotDeleted()
+    {
+        var entries = new[] { ("claiming", Now - 100, 0L) };
+
+        CommandStaleCleanup.SelectStale(entries, Now).Should().BeEmpty();
+    }
+
+    [Fact]
     public void SelectStale_Mixed_SelectsOnlyExpiredAndOldEnough()
     {
         var entries = new[]

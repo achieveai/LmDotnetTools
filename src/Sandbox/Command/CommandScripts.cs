@@ -65,6 +65,14 @@ internal static class CommandScripts
     /// re-running. The command's exact stdout/stderr are captured to files and the metadata manifest is
     /// persisted, so nothing depends on the gateway's truncating <c>exec</c> output.
     /// </summary>
+    /// <remarks>
+    /// The election is TOCTOU-safe. The winner of the <c>mkdir</c> claim writes its lease as the FIRST
+    /// action of <c>claim_run</c> (before it runs the command), and takeover is gated on a claim
+    /// directory that actually has an established, well-formed, EXPIRED lease. A claim directory with no
+    /// lease file yet is a winner still establishing itself, so a concurrent caller using the same
+    /// operation id treats it as PENDING and never deletes it — closing the window in which two callers
+    /// could otherwise both delete a winner mid-establishment and run the command twice.
+    /// </remarks>
     public static string BuildRun(
         string operationDirectory,
         string digest,
@@ -105,8 +113,8 @@ internal static class CommandScripts
             "claim_run() {",
             "  created=$(date +%s)",
             "  lease=$((created + EXEC + GRACE))",
-            "  printf '%s' \"$created\" > \"$OP/created\"",
             "  printf '%s' \"$lease\" > \"$OP/lease\"",
+            "  printf '%s' \"$created\" > \"$OP/created\"",
             "  printf '%s' \"$DIGEST\" > \"$OP/digest\"",
             "  WD=\"${SANDBOX_WORKSPACE:-/workspace}\"",
             runCommandLine,
@@ -120,8 +128,11 @@ internal static class CommandScripts
             "if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
             "if mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
             "if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
-            "STALE=$(cat \"$OP/lease\" 2>/dev/null || echo 0)",
-            "if [ \"$(date +%s)\" -gt \"$STALE\" ] && rm -rf \"$OP\" 2>/dev/null && mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
+            "if [ -f \"$OP/lease\" ]; then",
+            "  STALE=$(cat \"$OP/lease\" 2>/dev/null || echo 0)",
+            "  case \"$STALE\" in ''|*[!0-9]*) STALE=0 ;; esac",
+            "  if [ \"$STALE\" -gt 0 ] && [ \"$(date +%s)\" -gt \"$STALE\" ] && rm -rf \"$OP\" 2>/dev/null && mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
+            "fi",
             "if [ -f \"$MAN\" ]; then emit_manifest; else printf '%s %s\\n' \"$SENT\" '"
                 + CommandSentinel.KindPending
                 + "'; fi"
@@ -179,6 +190,12 @@ internal static class CommandScripts
         );
 
     /// <summary>Builds a bounded listing (at most <paramref name="max"/> entries) of artifact directories for stale cleanup.</summary>
+    /// <remarks>
+    /// A directory is only listed once it has an established lease AND created timestamp. A claim still
+    /// establishing itself (or a rare crash-in-window artifact) has neither yet, and must never be
+    /// offered as a stale-cleanup candidate — deleting it would be the same establish-time race the RUN
+    /// takeover guards against, just via the GC path.
+    /// </remarks>
     public static string BuildGc(int max) =>
         string.Join(
             '\n',
@@ -188,12 +205,13 @@ internal static class CommandScripts
             "n=0",
             "for d in \"$ROOT\"/*/; do",
             "  [ -d \"$d\" ] || continue",
+            "  n=$((n+1))",
+            "  [ \"$n\" -gt " + max.ToString(CultureInfo.InvariantCulture) + " ] && break",
+            "  [ -f \"$d/lease\" ] && [ -f \"$d/created\" ] || continue",
             "  name=$(basename \"$d\")",
             "  lease=$(cat \"$d/lease\" 2>/dev/null || echo 0)",
             "  created=$(cat \"$d/created\" 2>/dev/null || echo 0)",
             "  printf '%s %s %s %s\\n' \"$GC\" \"$name\" \"$lease\" \"$created\"",
-            "  n=$((n+1))",
-            "  [ \"$n\" -ge " + max.ToString(CultureInfo.InvariantCulture) + " ] && break",
             "done"
         );
 
