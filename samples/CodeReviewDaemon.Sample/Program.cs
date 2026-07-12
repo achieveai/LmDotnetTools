@@ -478,6 +478,11 @@ if (daemonOptions.EnableToolAssistedReview
             return branches;
         }
 
+        // Persists across sweeps so a stray review/* branch that maps to no configured repo (e.g. a leftover
+        // pushed into this store by another daemon) is warned about ONCE, not on every sweep — one such branch
+        // otherwise floods the log (163x in a single mcqdb run).
+        var warnedOrphanBranches = new HashSet<string>(StringComparer.Ordinal);
+
         return new PrLifecycleSweeper(
             async ct =>
             {
@@ -502,7 +507,8 @@ if (daemonOptions.EnableToolAssistedReview
                 // from this daemon's DB (fresh DB / churn) still has its notes branch resolved when it closes.
                 var reviewBranches = await ListRemoteReviewBranchesAsync(hostGit, sweeperRepoRoot, sweepLogger, ct)
                     .ConfigureAwait(false);
-                return OrphanBranchReconciler.Reconcile(reviewed, reviewBranches, sweepPollTargets, sweepLogger);
+                return OrphanBranchReconciler.Reconcile(
+                    reviewed, reviewBranches, sweepPollTargets, sweepLogger, warnedOrphanBranches);
             },
             (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
             branchManager,
