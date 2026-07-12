@@ -113,7 +113,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             {
                 Name = "sandbox",
                 Endpoint = new Uri($"{toolContext.GatewayBaseUrl}/mcp"),
-                AdditionalHeaders = SandboxOrchestrator.BuildTransportHeaders(toolContext.SessionId, toolContext.Credential),
+                AdditionalHeaders = DaemonMcpTransportHeaders.BuildTransportHeaders(toolContext.SessionId, toolContext.Credential),
             });
             var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
             ownedClients = [client];
