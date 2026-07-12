@@ -49,6 +49,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     internal Func<string, SubAgentTemplate, IMultiTurnAgent>? TestAgentFactoryOverride { get; set; }
 
+    /// <summary>
+    /// Test-only companion to <see cref="TestAgentFactoryOverride"/>: when set, supplies the OWNED
+    /// provider agent returned alongside the fake loop, so a unit test can exercise the real
+    /// owned-provider disposal lifecycle (completion disposal, pending-message deferral, restart
+    /// recreation) that the plain <see cref="TestAgentFactoryOverride"/> path — which returns a null
+    /// owned provider — cannot. Null (the default) keeps the fake loop's owned provider null.
+    /// </summary>
+    internal Func<string, SubAgentTemplate, IStreamingAgent?>? TestOwnedProviderOverride { get; set; }
+
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
@@ -324,31 +333,62 @@ public sealed class SubAgentManager : IAsyncDisposable
         var agentId = ResolveAgentId(target);
         var state = _agents[agentId];
 
-        // Read running-vs-finished AND record the relay preference atomically against a concurrent
-        // terminal completion. A completion flips the status out of Running (SubAgentState.MarkTerminal)
-        // BEFORE disposing the owned provider, so serializing this decision on the same lifecycle lock
-        // guarantees we never take the "inject into the running loop" branch in the instant the
-        // provider is being disposed — a finished agent falls through to RestartRunAsync, which
-        // recreates a fresh provider.
-        var wasRunning = state.TryBeginRunningContinuation(runInBackground);
-
-        // A finished completion is replaced so this run can be awaited fresh; a pending
-        // one (running agent) is kept so existing waiters observe the next resolution.
-        state.ResetCompletionIfFinished();
-
-        if (wasRunning)
+        // Decide how to continue this sub-agent atomically against a concurrent terminal completion and
+        // any other concurrent continuation. An admitted "inject into the running loop" holds a send
+        // lease that a terminal owned-provider disposal awaits, so a send can never race the provider
+        // being disposed; a finished run is restarted with a fresh provider by exactly ONE caller (any
+        // others await that restart and then inject into the re-armed loop). See
+        // SubAgentState.BeginContinuation.
+        bool wasRunning;
+        while (true)
         {
-            // Inject the message into the currently running agent.
-            _ = await state.Agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
+            var decision = state.BeginContinuation(runInBackground);
 
-            _logger.LogInformation(
-                "Sent message to running sub-agent {AgentId}: {Message}",
-                agentId, Truncate(prompt, 100));
-        }
-        else
-        {
-            await RestartRunAsync(state, prompt, ct);
+            if (decision.Mode == ContinuationMode.Inject)
+            {
+                // A finished completion is replaced so this run can be awaited fresh; a pending one
+                // (running agent) is kept so existing waiters observe the next resolution.
+                state.ResetCompletionIfFinished();
+
+                try
+                {
+                    // Inject the message into the currently running agent while holding the send lease.
+                    _ = await state.Agent.SendAsync(
+                        [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
+                }
+                finally
+                {
+                    state.EndInjectLease();
+                }
+
+                _logger.LogInformation(
+                    "Sent message to running sub-agent {AgentId}: {Message}",
+                    agentId, Truncate(prompt, 100));
+
+                wasRunning = true;
+                break;
+            }
+
+            if (decision.Mode == ContinuationMode.Restart)
+            {
+                state.ResetCompletionIfFinished();
+
+                try
+                {
+                    await RestartRunAsync(state, prompt, ct);
+                }
+                finally
+                {
+                    state.EndRestart();
+                }
+
+                wasRunning = false;
+                break;
+            }
+
+            // AwaitRestart: another caller owns the in-flight restart. Wait for it to finish, then
+            // re-evaluate — the restart flips the loop back to Running, so the retry injects into it.
+            await decision.RestartCompleted!.WaitAsync(ct);
         }
 
         if (runInBackground)
@@ -747,7 +787,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         if (TestAgentFactoryOverride != null)
         {
-            return (TestAgentFactoryOverride(agentId, template), null, null);
+            return (
+                TestAgentFactoryOverride(agentId, template),
+                null,
+                TestOwnedProviderOverride?.Invoke(agentId, template));
         }
 
         // Resolve the sub-agent's options with model inheritance (override > template > parent).
@@ -1114,10 +1157,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         // Transition out of Running BEFORE disposing the owned provider, atomically against a
-        // concurrent SendMessageAsync (see SubAgentState.TryBeginRunningContinuation). Once terminal,
-        // a racing continuation observes the finished status and takes the restart path (which
-        // recreates a fresh provider) instead of injecting into the provider being disposed.
-        state.MarkTerminal(rcm.IsError);
+        // concurrent SendMessageAsync (see SubAgentState.BeginContinuation). This blocks new inject
+        // admissions and waits for any in-flight admitted send to finish, so the disposal below can
+        // never overlap a send through the provider; a racing continuation then observes the finished
+        // status and takes the restart path (which recreates a fresh provider).
+        await state.BeginTerminalDisposalAsync(rcm.IsError);
 
         // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
         // once per gate-acquisition epoch — not here, because a single monitor may handle
@@ -1125,14 +1169,22 @@ public sealed class SubAgentManager : IAsyncDisposable
         // An explicit/tier provider is scoped to a single completed run. Dispose it before any
         // completion relay can block; a later continuation recreates its loop and provider through
         // the same characteristics factory, while borrowed parent/template agents remain untouched.
-        try { await state.DisposeOwnedProviderAgentAsync(); }
-        catch (Exception ex)
+        // EndTerminalDisposal clears the terminating flag so a later restart's re-arm admits injects.
+        try
         {
-            _logger.LogWarning(
-                ex,
-                "Provider dispose failed at completion for sub-agent {AgentId}",
-                state.AgentId
-            );
+            try { await state.DisposeOwnedProviderAgentAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Provider dispose failed at completion for sub-agent {AgentId}",
+                    state.AgentId
+                );
+            }
+        }
+        finally
+        {
+            state.EndTerminalDisposal();
         }
 
         if (rcm.IsError)

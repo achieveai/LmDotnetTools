@@ -63,7 +63,7 @@ public sealed class SubAgentIntelligenceOptionsTests
         var options = SubAgentIntelligenceOptions.Load(configuration, logger);
 
         options.Tiers.Should().ContainSingle().Which.Key.Should().Be(3);
-        options.Tiers[3].Should().NotBeEmpty();
+        options.Tiers[3].Should().Equal("first-model");
         logger.Entries.Count(entry => entry.Level == LogLevel.Error).Should().Be(1);
     }
 

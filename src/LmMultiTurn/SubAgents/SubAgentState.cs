@@ -29,6 +29,29 @@ public record SubAgentTurnSummary
 }
 
 /// <summary>
+/// How a <c>SubAgentManager.SendMessageAsync</c> continuation must proceed, decided atomically by
+/// <see cref="SubAgentState.BeginContinuation"/> against a concurrent terminal completion and other
+/// concurrent continuations.
+/// </summary>
+internal enum ContinuationMode
+{
+    /// <summary>Inject into the still-running loop under a send lease that terminal disposal awaits.</summary>
+    Inject,
+
+    /// <summary>Restart the finished run with a fresh provider; this caller owns the restart.</summary>
+    Restart,
+
+    /// <summary>Another caller owns an in-flight restart; await it, then re-evaluate.</summary>
+    AwaitRestart,
+}
+
+/// <summary>
+/// Result of <see cref="SubAgentState.BeginContinuation"/>. For <see cref="ContinuationMode.AwaitRestart"/>,
+/// <see cref="RestartCompleted"/> completes when the owning restart finishes.
+/// </summary>
+internal readonly record struct ContinuationDecision(ContinuationMode Mode, Task? RestartCompleted);
+
+/// <summary>
 /// Mutable state tracker for a running sub-agent instance.
 /// Internal to the SubAgents module; not exposed to consumers.
 /// </summary>
@@ -64,12 +87,33 @@ internal class SubAgentState
     private int _ownedProviderDisposeState;
 
     /// <summary>
-    /// Serializes a genuine terminal completion's status flip + owned-provider disposal against a
-    /// concurrent <c>SubAgentManager.SendMessageAsync</c>. See <see cref="MarkTerminal"/> /
-    /// <see cref="TryBeginRunningContinuation"/>. Only synchronous work runs under this lock (no
-    /// awaits), so a blocking/backpressured send or a slow provider disposal can never deadlock it.
+    /// Guards the sub-agent lifecycle bookkeeping — the status transition, the outstanding inject-send
+    /// lease count, and the single-flight restart claim — so a continuation's admission decision, a
+    /// terminal owned-provider disposal, and a restart never interleave incorrectly. Only synchronous
+    /// work runs under this lock (no awaits), so a blocking/backpressured send or a slow provider
+    /// disposal can never deadlock it; the awaitable coordination is done via the drain/restart signals.
     /// </summary>
     private readonly object _lifecycleLock = new();
+
+    // Terminal owned-provider disposal is in progress. Once set (for an owned provider) no new
+    // inject-continuation is admitted — a concurrent SendMessage is routed to a fresh-provider restart
+    // instead of injecting into the provider being disposed.
+    private bool _terminating;
+
+    // Count of admitted inject-continuations whose SendAsync is still in flight. A terminal disposal
+    // waits for this to reach zero (via _sendLeasesDrained) so disposal can never overlap a send
+    // through the owned provider.
+    private int _activeSendLeases;
+    private TaskCompletionSource<bool>? _sendLeasesDrained;
+
+    // Single-flight restart claim. Exactly one caller restarts a finished run; concurrent continuations
+    // await _restartCompleted and then re-evaluate (the restart flips the loop back to Running, so they
+    // inject into it) — so two callers can never both enter RestartRunAsync.
+    private bool _restarting;
+    private TaskCompletionSource<bool>? _restartCompleted;
+
+    private static TaskCompletionSource<bool> NewLifecycleSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>
     /// Optional caller-supplied handle so SendMessage can address this agent by name.
@@ -93,14 +137,117 @@ internal class SubAgentState
     public SubAgentStatus Status { get => _status; set => _status = value; }
 
     /// <summary>
-    /// Atomically flips the sub-agent out of <see cref="SubAgentStatus.Running"/> at a genuine
-    /// terminal completion, under <see cref="_lifecycleLock"/> so it is serialized against
-    /// <see cref="TryBeginRunningContinuation"/>. The manager disposes the owned provider only AFTER
-    /// this returns, so a concurrent SendMessage can never observe <see cref="SubAgentStatus.Running"/>
-    /// — and route a message into the loop — in the window where the provider is being disposed.
+    /// Decides — atomically against a concurrent terminal completion and other concurrent
+    /// continuations — how <c>SubAgentManager.SendMessageAsync</c> must continue this sub-agent, and
+    /// records the continuation's relay preference.
+    /// <list type="bullet">
+    /// <item><description><see cref="ContinuationMode.Inject"/>: the loop is running and no owned-provider
+    /// disposal is under way. A send lease is taken; the caller injects, then calls
+    /// <see cref="EndInjectLease"/>. A terminal disposal awaits this lease, so a send can never race the
+    /// provider being disposed.</description></item>
+    /// <item><description><see cref="ContinuationMode.Restart"/>: the run finished (or its owned provider
+    /// is being disposed). This caller owns the restart; it runs <c>RestartRunAsync</c> then calls
+    /// <see cref="EndRestart"/>.</description></item>
+    /// <item><description><see cref="ContinuationMode.AwaitRestart"/>: another caller already owns the
+    /// restart. The caller awaits <see cref="ContinuationDecision.RestartCompleted"/> and re-evaluates —
+    /// the restart flips the loop back to Running, so the retry injects into it.</description></item>
+    /// </list>
     /// </summary>
-    public void MarkTerminal(bool isError)
+    public ContinuationDecision BeginContinuation(bool notifyParentOnCompletion)
     {
+        lock (_lifecycleLock)
+        {
+            _notifyParentOnCompletion = notifyParentOnCompletion;
+
+            // Inject into the live loop only when it is genuinely running AND an owned-provider terminal
+            // disposal is not under way. Once disposal has begun for an owned provider, route to restart
+            // so we never inject through a provider that is being torn down.
+            if (_status == SubAgentStatus.Running && !(_terminating && OwnedProviderAgent is not null))
+            {
+                _activeSendLeases++;
+                return new ContinuationDecision(ContinuationMode.Inject, null);
+            }
+
+            if (_restarting)
+            {
+                _restartCompleted ??= NewLifecycleSignal();
+                return new ContinuationDecision(ContinuationMode.AwaitRestart, _restartCompleted.Task);
+            }
+
+            _restarting = true;
+            _restartCompleted = NewLifecycleSignal();
+            return new ContinuationDecision(ContinuationMode.Restart, null);
+        }
+    }
+
+    /// <summary>
+    /// Releases an inject send lease taken by <see cref="BeginContinuation"/> (call in a finally after
+    /// the inject SendAsync). When the last lease drains during a terminal disposal, the waiting
+    /// disposal is signalled so it can proceed.
+    /// </summary>
+    public void EndInjectLease()
+    {
+        lock (_lifecycleLock)
+        {
+            _activeSendLeases--;
+            if (_activeSendLeases == 0 && _sendLeasesDrained is not null)
+            {
+                _ = _sendLeasesDrained.TrySetResult(true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Releases the restart claim taken by <see cref="BeginContinuation"/> (call in a finally after
+    /// <c>RestartRunAsync</c>, success or failure) and wakes any continuations awaiting the restart so
+    /// they re-evaluate against the re-armed (or still-finished, on failure) status.
+    /// </summary>
+    public void EndRestart()
+    {
+        TaskCompletionSource<bool>? toSignal;
+        lock (_lifecycleLock)
+        {
+            _restarting = false;
+            toSignal = _restartCompleted;
+            _restartCompleted = null;
+        }
+
+        _ = toSignal?.TrySetResult(true);
+    }
+
+    /// <summary>
+    /// Begins a genuine terminal completion. Blocks new inject admissions (for an owned provider), waits
+    /// for any in-flight admitted send to finish so the imminent owned-provider disposal cannot overlap a
+    /// send through it, then flips the status terminal. The manager disposes the owned provider only
+    /// AFTER this returns; a continuation that arrives now observes the finished status (or the
+    /// disposing owned provider) and takes the restart path — recreating a fresh provider — instead of
+    /// injecting into the one being disposed.
+    /// </summary>
+    public async Task BeginTerminalDisposalAsync(bool isError)
+    {
+        Task? drain = null;
+        lock (_lifecycleLock)
+        {
+            _terminating = true;
+
+            // Only an owned provider is disposed at completion, so only then is there anything a send
+            // could race; wait for outstanding inject leases to drain before flipping terminal.
+            if (OwnedProviderAgent is not null && _activeSendLeases > 0)
+            {
+                _sendLeasesDrained = NewLifecycleSignal();
+                drain = _sendLeasesDrained.Task;
+            }
+        }
+
+        if (drain is not null)
+        {
+            await drain;
+            lock (_lifecycleLock)
+            {
+                _sendLeasesDrained = null;
+            }
+        }
+
         lock (_lifecycleLock)
         {
             _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
@@ -108,18 +255,14 @@ internal class SubAgentState
     }
 
     /// <summary>
-    /// Atomically reads whether the loop is currently running and records the continuation's relay
-    /// preference, under the same <see cref="_lifecycleLock"/> that guards <see cref="MarkTerminal"/>.
-    /// Returns true when the loop is running (the caller injects the message into it) and false when
-    /// it has finished (the caller restarts it, recreating a fresh provider), so the running-vs-finished
-    /// decision can never straddle a concurrent terminal completion that is about to dispose the provider.
+    /// Clears the terminal-disposal flag after the owned provider has been disposed (call in a finally),
+    /// so a subsequent restart's re-arm to Running admits injects again.
     /// </summary>
-    public bool TryBeginRunningContinuation(bool notifyParentOnCompletion)
+    public void EndTerminalDisposal()
     {
         lock (_lifecycleLock)
         {
-            _notifyParentOnCompletion = notifyParentOnCompletion;
-            return _status == SubAgentStatus.Running;
+            _terminating = false;
         }
     }
 

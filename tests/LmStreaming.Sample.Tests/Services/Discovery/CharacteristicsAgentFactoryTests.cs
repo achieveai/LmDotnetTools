@@ -604,6 +604,55 @@ public sealed class CharacteristicsAgentFactoryTests
     }
 
     [Fact]
+    public async Task Spawn_RetriesOwnedSynchronousProviderDisposalAfterFirstAttemptThrows()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var disposeCalls = 0;
+        var ownedAgent = CreateRespondingSyncDisposableAgent();
+        ownedAgent
+            .As<IDisposable>()
+            .Setup(agent => agent.Dispose())
+            .Callback(() =>
+            {
+                disposeCalls++;
+                if (disposeCalls == 1)
+                {
+                    throw new InvalidOperationException("owned provider sync dispose boom");
+                }
+            });
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => ownedAgent.Object);
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        // The completion-time SYNCHRONOUS (IDisposable) disposal throws, but must not permanently latch
+        // the guard: a later cleanup (manager dispose) retries the IDisposable branch and succeeds, so
+        // the provider is not leaked.
+        _ = await manager.SpawnAsync("test-agent", "test task");
+        await manager.DisposeAsync();
+
+        ownedAgent.As<IDisposable>().Verify(agent => agent.Dispose(), Times.Exactly(2));
+    }
+
+    [Fact]
     public async Task Spawn_ConstructionRollbackDisposesProviderWhenStoreDisposeThrowsAndPreservesOriginalError()
     {
         var model = Model("owned-model", CopilotModelTransport.Responses, []);

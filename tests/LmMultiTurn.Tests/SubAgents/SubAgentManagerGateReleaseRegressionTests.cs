@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -268,6 +269,59 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("subscribe blew up");
     }
 
+    [Fact]
+    public async Task HandleRunCompletion_PendingMessageCompletion_DefersOwnedProviderDisposalUntilTerminalCompletion()
+    {
+        // The HasPendingMessages branch (SubAgentManager.HandleRunCompletionAsync) must NOT treat a
+        // pending (non-terminal) completion as terminal: it must leave the completion latch unresolved
+        // and the owned provider undisposed, and only the following terminal completion disposes the
+        // provider — exactly once. Without direct coverage this branch could regress while the rest of
+        // the suite stays green.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        };
+
+        _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
+
+        var disposeCount = 0;
+        var provider = new Mock<IStreamingAgent>();
+        provider.As<IAsyncDisposable>()
+            .Setup(d => d.DisposeAsync())
+            .Returns(() =>
+            {
+                _ = Interlocked.Increment(ref disposeCount);
+                return ValueTask.CompletedTask;
+            });
+
+        var pendingEmitted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseTerminal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _manager.TestAgentFactoryOverride = (_, _) => new FakeMultiTurnAgent
+        {
+            SubscribeImpl = (_, ct) => FakeMultiTurnAgent.PendingThenTerminalStream(
+                "run-1", pendingEmitted, releaseTerminal.Task, ct),
+        };
+        _manager.TestOwnedProviderOverride = (_, _) => provider.Object;
+
+        var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // After the pending (non-terminal) completion: the owned provider must remain undisposed and
+        // the sub-agent must still read as running.
+        (await pendingEmitted.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        await Task.Delay(150); // give HandleRunCompletionAsync time to (wrongly) dispose if it regressed
+        Volatile.Read(ref disposeCount).Should()
+            .Be(0, "a HasPendingMessages completion must not dispose the owned provider");
+        _manager.Peek(agentId).Should().Contain("\"running\"");
+
+        // The terminal completion disposes the owned provider exactly once.
+        releaseTerminal.SetResult(true);
+        await WaitForConditionAsync(() => Volatile.Read(ref disposeCount) == 1, TimeSpan.FromSeconds(10));
+        Volatile.Read(ref disposeCount).Should().Be(1, "the terminal completion disposes the owned provider once");
+    }
+
     #region Helpers
 
     private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
@@ -433,6 +487,26 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         string completedRunId,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        yield return new RunCompletedMessage { CompletedRunId = completedRunId };
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+    }
+
+    /// <summary>
+    /// Stream that yields a NON-terminal <see cref="RunCompletedMessage"/> (HasPendingMessages =
+    /// true), signals <paramref name="pendingEmitted"/>, waits for <paramref name="releaseTerminal"/>,
+    /// then yields the terminal completion and keeps the subscription open — lets a test verify that a
+    /// pending completion neither resolves the latch nor disposes the owned provider, and that the
+    /// following terminal completion disposes exactly once.
+    /// </summary>
+    internal static async IAsyncEnumerable<IMessage> PendingThenTerminalStream(
+        string completedRunId,
+        TaskCompletionSource<bool> pendingEmitted,
+        Task releaseTerminal,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new RunCompletedMessage { CompletedRunId = completedRunId, HasPendingMessages = true };
+        _ = pendingEmitted.TrySetResult(true);
+        await releaseTerminal.WaitAsync(ct);
         yield return new RunCompletedMessage { CompletedRunId = completedRunId };
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
     }
