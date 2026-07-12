@@ -174,6 +174,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_re_leases_a_slot_when_resuming_after_a_restart_dropped_the_in_memory_lease()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Process A: ContextReady leases slot 0 and persists the context artifact to the shared store.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        fixture.Pool.LeaseCount.Should().Be(1);
+
+        // A restart drops the in-memory _leasedReviews (the persisted context + Stage survive in the store),
+        // so the NEXT process resumes straight into Reviewed with NO recorded lease. Seed the gitmodules for
+        // the slot the resumed run will lease next (slot-1), mirroring slot-0.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-1/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The resumed review must RE-LEASE a slot and mount the agent session OVER it — never the per-run
+        // review-run-{id} mount, which does not exist under the gateway's read-only workspace base and 400s
+        // (the silent degrade-to-diff-only these resumed runs were stuck in).
+        fixture.Pool.LeaseCount.Should().Be(2, "the resumed review re-leases a slot because the prior lease was lost on restart");
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(1, "the resumed review mounts over the re-leased slot");
+        fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
+    }
+
+    [Fact]
     public async Task Posted_commits_only_the_pr_notes_dir_onto_the_notes_branch_and_never_merges()
     {
         using var fixture = Fixture.Create();
@@ -296,6 +324,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _db;
+        private readonly CodeReviewDaemonOptions _options;
+        private readonly ReviewSlotWorkspace _slotWorkspace;
 
         private Fixture()
         {
@@ -312,25 +342,33 @@ public sealed class DaemonReviewStageExecutorPooledTests
             Pool = new FakeReviewSlotPool("/pool");
             Preparer = new FakeReviewSlotPreparer();
 
-            var options = new CodeReviewDaemonOptions
+            _options = new CodeReviewDaemonOptions
             {
                 EnableToolAssistedReview = true,
                 EnableReviewerWrites = true,
                 CrossRepoStoreUrl = StoreUrl,
             };
-            var slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
+            _slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
 
-            Executor = new DaemonReviewStageExecutor(
+            Executor = BuildExecutor();
+        }
+
+        /// <summary>
+        /// Builds an executor over the fixture's SHARED store/pool/preparer/provisioner. Each executor has its
+        /// own in-memory <c>_leasedReviews</c>, so calling this a second time simulates a daemon RESTART: the
+        /// persisted context artifact survives (shared store) while the process-local pooled lease does not.
+        /// </summary>
+        public DaemonReviewStageExecutor BuildExecutor() =>
+            new(
                 Store,
                 Factory,
                 BootRunner,
                 BootFileSystem,
-                options,
+                _options,
                 [new FakeReviewCommentPublisher("github")],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
-                slotWorkspace: slotWorkspace);
-        }
+                slotWorkspace: _slotWorkspace);
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
@@ -444,12 +482,16 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class RecordingProvisioner : IReviewSessionProvisioner
     {
         public int GetOrCreateForSlotCalls { get; private set; }
+        public int GetOrCreateCalls { get; private set; }
         public ReviewSlot? LastSlot { get; private set; }
 
-        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
+        {
+            GetOrCreateCalls++;
+            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 $"session-{run.Id}", $"/workspace/review-run-{run.Id}",
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+        }
 
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
         {

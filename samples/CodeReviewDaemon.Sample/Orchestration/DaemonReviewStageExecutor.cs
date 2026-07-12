@@ -892,6 +892,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task ReviewAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
+
+        // Resume-safety for the pooled path: the slot lease recorded by ContextReady lives ONLY in the
+        // in-memory _leasedReviews, so a run that persisted Stage=ContextReady in an earlier process (a daemon
+        // restart, or a resume after a RetryPending) arrives here with no lease. Without one, BuildToolContextAsync
+        // would fall back to the per-run review-run-{id} mount — a directory that does not exist under the
+        // gateway's read-only workspace base, so the gateway 400s and the review silently degrades to diff-only
+        // with no sub-agents. Re-lease + re-prepare a slot here so the resumed review still runs tool-assisted;
+        // the persisted context's container paths (/workspace/...) are slot-index-independent, so a freshly
+        // leased slot is interchangeable. TryPooledFetchContextAsync returns false for a non-store-submodule
+        // repo, which leaves the existing per-run/diff-only path unchanged.
+        if (UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
+        {
+            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        }
+
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
         reviewInput = await PrependPriorKnowledgeAsync(reviewInput, context.StoreRoot, cancellationToken)
