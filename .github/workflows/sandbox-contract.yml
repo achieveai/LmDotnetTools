@@ -104,6 +104,13 @@ jobs:
           # sandbox create with "Read-only file system (os error 30)" -> HTTP 500.
           ws="${GITHUB_WORKSPACE}/gw-dws"
           mkdir -p "$ws"
+          # The gateway container runs as a non-root user (uid 1000 'gateway') and
+          # provisions per-sandbox subdirectories under WORKSPACE_BASE_PATH. On the
+          # native-Linux runner the bind mount preserves host ownership, so a dir
+          # created by the runner user is NOT writable by uid 1000 -> create fails
+          # with "Permission denied (os error 13)" -> HTTP 500. Make the base dir
+          # world-writable so the gateway user can create sandbox subdirectories.
+          chmod 0777 "$ws"
           # The gateway talks to the host Docker socket via bollard; it must be in
           # the socket's group to open it.
           docker_gid="$(stat -c '%g' /var/run/docker.sock)"
