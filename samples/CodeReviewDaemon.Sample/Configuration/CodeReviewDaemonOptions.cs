@@ -272,6 +272,20 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Ephemeral scratch dir name (sibling of the store clone), wiped per lease.</summary>
     public string ScratchDirName { get; init; } = "scratch";
 
+    /// <summary>
+    /// Maximum ContextReady attempts (including the re-clone escalation) before a run is parked with a
+    /// greppable alert instead of retried forever. Retry state is in-memory, so a daemon restart resets it —
+    /// a restart retries parked runs. Default 5.
+    /// </summary>
+    public int MaxContextRetries { get; init; } = 5;
+
+    /// <summary>First retry backoff after a failed run, doubling each attempt up to the cap. Default 30s —
+    /// replaces the old ~30s hot-loop that re-ran a stuck run every poll.</summary>
+    public int RetryBackoffBaseSeconds { get; init; } = 30;
+
+    /// <summary>Ceiling for the exponential retry backoff. Default 900s (15m).</summary>
+    public int RetryBackoffCapSeconds { get; init; } = 900;
+
     /// <summary>When true, the reviewer gets scoped Write/Edit/Bash to take PR notes + do
     /// file-level diffs (code stays read-only; writes scoped to the PR notes dir + scratch).</summary>
     public bool EnableReviewerWrites { get; init; }

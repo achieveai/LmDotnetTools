@@ -569,6 +569,15 @@ if (daemonOptions.EnableToolAssistedReview
 builder.Services.AddSingleton<IReviewStageExecutor>(sp =>
     ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential, gatewayBaseUrl));
 builder.Services.AddSingleton<ReviewProgressReporter>();
+// In-memory retry governance for the orchestrator: attempt-counting + exponential backoff + park-after-K,
+// so a stuck ContextReady backs off (not the old ~30s hot-loop) and a genuinely stuck commit is parked +
+// alerted. Not persisted — a restart resets it, so a restart retries parked runs.
+builder.Services.AddSingleton(sp => new RetryGovernor(
+    daemonOptions.MaxContextRetries,
+    TimeSpan.FromSeconds(daemonOptions.RetryBackoffBaseSeconds),
+    TimeSpan.FromSeconds(daemonOptions.RetryBackoffCapSeconds),
+    () => DateTimeOffset.UtcNow,
+    sp.GetRequiredService<ILogger<RetryGovernor>>()));
 builder.Services.AddSingleton<PrOrchestrator>();
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.

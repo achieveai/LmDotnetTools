@@ -15,17 +15,20 @@ internal sealed class PrOrchestrator
     private readonly IReviewStageExecutor _executor;
     private readonly ILogger<PrOrchestrator> _logger;
     private readonly ReviewProgressReporter? _progress;
+    private readonly RetryGovernor? _retryGovernor;
 
     public PrOrchestrator(
         ReviewStore store,
         IReviewStageExecutor executor,
         ILogger<PrOrchestrator> logger,
-        ReviewProgressReporter? progress = null)
+        ReviewProgressReporter? progress = null,
+        RetryGovernor? retryGovernor = null)
     {
         _store = store;
         _executor = executor;
         _logger = logger;
         _progress = progress;
+        _retryGovernor = retryGovernor;
     }
 
     /// <summary>
@@ -68,6 +71,14 @@ internal sealed class PrOrchestrator
                 return run with { WorkflowStatus = WorkflowStatus.Completed };
             }
 
+            // Retry governance: a run that failed a recent poll is backing off, and one that exhausted its
+            // attempts is parked — either way, skip this poll's attempt (leaving it RetryPending) instead of
+            // the old ~30s hot-loop. Restart clears the in-memory state, so a restart retries everything.
+            if (_retryGovernor is not null && !_retryGovernor.ShouldAttempt(run.Id))
+            {
+                return run;
+            }
+
             foreach (var stage in StageMachine.RemainingStages(run.Stage))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -80,6 +91,7 @@ internal sealed class PrOrchestrator
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.RetryPending, run.PrLifecycleState);
+                    _retryGovernor?.RecordFailure(run.Id, ex.Message);
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
                     _progress?.Finished(
                         run, $"failed at {stage}", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
@@ -95,6 +107,7 @@ internal sealed class PrOrchestrator
                 run,
                 $"complete ({(string.Equals(run.Mode, "post", StringComparison.Ordinal) ? "posted" : "collect-only")})",
                 System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
+            _retryGovernor?.RecordSuccess(run.Id);
             return run;
         }
         finally

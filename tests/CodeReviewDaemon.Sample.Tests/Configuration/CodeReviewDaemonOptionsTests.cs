@@ -48,11 +48,13 @@ public class CodeReviewDaemonOptionsTests
     }
 
     [Fact]
-    public void BotName_defaults_to_Revobot()
+    public void Retry_governance_defaults_bound_the_context_stage()
     {
         var o = new CodeReviewDaemonOptions();
 
-        o.BotName.Should().Be("Revobot", "an operator can override the display name, e.g. \"GB's Revobot\"");
+        o.MaxContextRetries.Should().Be(5, "a stuck ContextReady is parked after a bounded number of attempts");
+        o.RetryBackoffBaseSeconds.Should().Be(30, "the first backoff replaces the old ~30s hot-loop");
+        o.RetryBackoffCapSeconds.Should().Be(900, "the exponential backoff is capped at 15m");
     }
 
     [Fact]
