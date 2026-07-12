@@ -17,7 +17,13 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// </summary>
 internal sealed class DiscoveredSubAgentTemplateBuilder(ILogger<DiscoveredSubAgentTemplateBuilder> logger)
 {
-    private const int MaxTurnsPerRun = 25;
+    /// <summary>
+    /// Max agentic turns a discovered review sub-agent may take before it is force-stopped. A deep
+    /// code-reviewer pass (read across files, load a skill, cross-reference, then write findings) can need
+    /// many turns; at 25 sub-agents were hitting "Max turns reached" mid-investigation and returning
+    /// truncated work, so this is raised to give them room to finish.
+    /// </summary>
+    private const int MaxTurnsPerRun = 75;
 
     /// <summary>
     /// Maps the discovered <c>subagent</c> items to templates, keeping only those whose source marketplace is
