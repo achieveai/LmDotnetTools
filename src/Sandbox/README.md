@@ -138,12 +138,17 @@ window elapses the bounded stale sweep may reclaim the marker, after which reusi
 treated as a **new** operation and may re-execute. The SDK deliberately does **not** promise idempotency
 forever — retention is bounded so artifacts cannot accumulate without limit.
 
-**Abandoned claims are never taken over.** A submitter that crashes after claiming (leaving an expired
-lease and no manifest) is deliberately *not* reclaimed by a competing execution — the delete-and-recreate
-that would require is not atomic against a concurrent contender under the pinned shell primitives and
-could double-run a non-idempotent command. Such a claim is left non-runnable (same-id callers see it as
-PENDING) until the guarded stale sweep removes it after ~24h of inactivity, after which a same-id retry
-proceeds normally.
+**Abandoned claims self-recover on a same-id retry.** A submitter that crashes after claiming (leaving an
+expired lease and no manifest) is recovered in place by the next same-id call — it does **not** wait for
+the 24h sweep and does **not** depend on any unrelated command. The recovery deletes the abandoned claim
+and re-elects exactly one new claimant, but only under a sibling per-operation **GC lock** (created by an
+atomic `mkdir`) and only after re-validating, under that lock, that the claim is still expired and
+uncommitted. Claim creation and the stale-sweep purge both respect that lock — only the lock winner may
+revalidate and delete, losing purgers never delete — so a purge in progress can never be raced into a
+double-run and a second purger can never delete a replacement active claim. A still-active or
+still-establishing (lease-less) claim is never recovered: a same-id caller there reports PENDING and
+polls the manifest rather than resubmitting. A crashed holder's stale GC lock is reclaimed within a
+bounded time so it can never block recovery permanently.
 
 Because the gateway may rematerialize a lost container and retry the underlying invocation once,
 command execution is **at-least-once**: a non-idempotent command can run more than once even though the

@@ -100,6 +100,9 @@ internal sealed class ClaimModel
     /// <summary>Boundary (pre-fix only): the caller decided to take over an expired lease but has NOT yet run its non-atomic <c>rm -rf</c>+<c>mkdir</c>.</summary>
     public const string DecidedTakeoverBeforeRemove = "decided-takeover-before-remove";
 
+    /// <summary>Boundary: a self-recovery has deleted an abandoned expired claim under the GC lock and released it, but has NOT yet re-elected the new claimant.</summary>
+    public const string RecoveredBeforeReElect = "recovered-before-reelect";
+
     /// <summary>Boundary: a purger/self-recovery has won the per-operation GC lock but has NOT yet re-validated or deleted.</summary>
     public const string WonGcLock = "won-gclock";
 
@@ -162,14 +165,39 @@ internal sealed class ClaimModel
             yield break;
         }
 
-        // Pre-fix ONLY: the expired-lease takeover. The shipped wrapper has no such non-atomic
-        // rm -rf + mkdir takeover — abandoned-claim recovery is instead guarded by the GC lock (F2/F3).
+        // Pre-fix ONLY: the expired-lease takeover — a non-atomic rm -rf + mkdir that can double-run.
         if (_takeoverEnabled && Fs.FileExists(Lease) && IsExpired())
         {
             yield return DecidedTakeoverBeforeRemove;
             Fs.RmRf(Op);
             if (Fs.Mkdir(Op))
             {
+                foreach (var step in ClaimRun(caller))
+                {
+                    yield return step;
+                }
+
+                yield break;
+            }
+        }
+
+        // Shipped (F2): self-recover an abandoned claim — an ESTABLISHED, EXPIRED lease with no manifest.
+        // The delete + re-election happen under the per-operation GC lock, re-validating the CURRENT
+        // state under the lock, so exactly one new claimant runs and a still-active/replaced claim is
+        // never destroyed. A lease-less or unexpired (active) claim is never recovered.
+        if (!_takeoverEnabled && Fs.FileExists(Lease) && IsExpired() && GcLockTry())
+        {
+            yield return WonGcLock;
+            if (!Fs.FileExists(Manifest) && Fs.FileExists(Lease) && IsExpired())
+            {
+                Fs.DeleteOp(caller, Op);
+            }
+
+            GcLockRelease();
+            yield return RecoveredBeforeReElect;
+            if (Fs.Mkdir(Op)) // re-elect exactly one new claimant via the atomic mkdir
+            {
+                yield return WonClaimBeforeLease;
                 foreach (var step in ClaimRun(caller))
                 {
                     yield return step;

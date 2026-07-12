@@ -8,14 +8,15 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 
 /// <summary>
-/// F3: strengthens the deterministic proof by running the ACTUAL scripts <see cref="CommandScripts"/>
+/// Strengthens the deterministic proof by running the ACTUAL scripts <see cref="CommandScripts"/>
 /// generates under a real POSIX shell (see <see cref="PosixShellHarness"/>), rather than only a model.
-/// It proves, on the real wrapper: (F1) the manifest sentinel line for two threshold-sized streams
-/// survives the gateway's truncation and its inline copies decode exactly, and large streams reassemble
-/// byte-for-byte through chunked reads; and (F2) a claimed directory without a lease is reported PENDING
-/// and is neither deleted nor re-run, while a genuinely expired lease is still taken over. Each test
-/// skips visibly when no shell is available (or fails when <c>LMSBX_REQUIRE_POSIX_SHELL</c> is set) — it
-/// never passes without actually running a shell.
+/// It proves, on the real wrapper: the manifest sentinel line for two threshold-sized streams survives
+/// the gateway's truncation and its inline copies decode exactly, and large streams reassemble
+/// byte-for-byte through chunked reads; a lease-less (mid-establishment) claim is reported PENDING and
+/// is neither deleted nor re-run; an abandoned expired claim SELF-RECOVERS and runs exactly once
+/// (#189 F2); and two concurrent same-id callers run the command at most once. Each test skips visibly
+/// when no shell is available (or fails when <c>LMSBX_REQUIRE_POSIX_SHELL</c> is set) — it never passes
+/// without actually running a shell.
 /// </summary>
 public class CommandRealShellTests
 {
@@ -104,7 +105,7 @@ public class CommandRealShellTests
     }
 
     [SkippableFact]
-    public async Task RealShell_ExpiredLeaseOfCrashedSubmitter_IsReportedPending_AndNeverTakenOver()
+    public async Task RealShell_ExpiredLeaseOfCrashedSubmitter_SelfRecovers_RunsExactlyOnce()
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
@@ -112,23 +113,51 @@ public class CommandRealShellTests
         Directory.CreateDirectory(workspace.HostFile($".lmsbx-sdk/ops/{Op}"));
         File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}/lease"), "1");
         File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}/created"), "1");
-        var argv = new[] { "sh", "-c", "printf ran > \"$SANDBOX_WORKSPACE/RAN\"" };
+        var argv = new[] { "sh", "-c", "printf ran >> \"$SANDBOX_WORKSPACE/RUNS\"; printf out" };
         var script = CommandScripts.BuildRun(Op, S_digest, PosixArgv.Join(argv), string.Empty, 120);
 
         var result = await PosixShellHarness.RunAsync(script, workspace);
 
-        // The shipped wrapper never deletes/takes over an existing claim (that rm -rf + mkdir is not
-        // atomic against a concurrent contender and could double-run). An expired, uncommitted claim is
-        // reported PENDING and left intact for the guarded stale sweep — the command must NOT run.
-        CommandSentinel.Parse(result.Stdout).Kind.Should().Be(CommandSentinel.KindPending);
-        workspace
-            .HostFileExists("RAN")
-            .Should()
-            .BeFalse("an expired claim is not takeover-eligible, so the command must not run");
+        // The abandoned, expired claim is self-recovered under the per-operation GC lock: the command
+        // runs EXACTLY once and a fresh manifest is committed — no waiting for the 24h sweep.
+        CommandSentinel.Parse(result.Stdout).Kind.Should().Be(CommandSentinel.KindManifest);
+        var runs = workspace.HostFileExists("RUNS")
+            ? await File.ReadAllTextAsync(workspace.HostFile("RUNS"))
+            : string.Empty;
+        runs.Should().Be("ran", "the abandoned claim is recovered and the command runs exactly once");
         Directory
-            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{Op}"))
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{Op}.gc"))
             .Should()
-            .BeTrue("the abandoned claim is retained for the stale sweep, never taken over");
+            .BeFalse("the self-recovery releases the GC lock it took");
+    }
+
+    [SkippableFact]
+    public async Task RealShell_ConcurrentSameIdRecoveryOfAbandonedClaim_RunsTheCommandAtMostOnce()
+    {
+        await PosixShellHarness.RequireCapabilityAsync();
+        using var workspace = PosixShellHarness.NewWorkspace();
+        // An abandoned expired claim that two same-id callers race to recover.
+        Directory.CreateDirectory(workspace.HostFile($".lmsbx-sdk/ops/{Op}"));
+        File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}/lease"), "1");
+        File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}/created"), "1");
+        // The recovered command holds its fresh claim briefly so the two attempts genuinely overlap.
+        var argv = new[] { "sh", "-c", "sleep 0.3; printf r >> \"$SANDBOX_WORKSPACE/RUNS\"" };
+        var script = CommandScripts.BuildRun(Op, S_digest, PosixArgv.Join(argv), string.Empty, 120);
+
+        var first = PosixShellHarness.RunAsync(script, workspace);
+        var second = PosixShellHarness.RunAsync(script, workspace);
+        var results = await Task.WhenAll(first, second);
+
+        // Exactly one caller won the recovery election and ran; the other observed the live/committed
+        // claim — the abandoned-claim recovery yields at most one new side effect.
+        var runs = workspace.HostFileExists("RUNS")
+            ? await File.ReadAllTextAsync(workspace.HostFile("RUNS"))
+            : string.Empty;
+        runs.Should().Be("r", "the same-id expired recovery yields at most one new side effect");
+        results
+            .Select(r => CommandSentinel.Parse(r.Stdout).Kind)
+            .Should()
+            .OnlyContain(k => k == CommandSentinel.KindManifest || k == CommandSentinel.KindPending);
     }
 
     [SkippableFact]

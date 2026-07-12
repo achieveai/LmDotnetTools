@@ -150,15 +150,17 @@ internal static class CommandScripts
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Claim election respects an in-progress purge.</b> Electing a submitter is a single atomic
+    /// <b>Claim election and abandoned-claim self-recovery.</b> Electing a submitter is a single atomic
     /// <c>mkdir</c> of the operation directory: the winner runs, every other concurrent caller sees the
-    /// existing claim and reports PENDING. Before claiming, the wrapper also checks the per-operation GC
-    /// lock (the sibling <c>&lt;op&gt;.gc</c> directory): while a live purge holds it, the wrapper reports
-    /// PENDING instead of creating a claim that could race the purger's delete, and a later retry
-    /// proceeds once the lock is released. A crashed purger's stale lock (older than the bounded TTL) is
-    /// reclaimed so it can never block the operation permanently. An abandoned claim (a crashed submitter
-    /// leaving an expired lease and no manifest) is still left non-runnable here and reclaimed by the
-    /// guarded, GC-locked stale sweep.
+    /// existing claim and reports PENDING. A crashed submitter can leave an <i>abandoned</i> claim (an
+    /// established-but-expired lease and no manifest); rather than block a same-id retry until the 24h
+    /// sweep, the wrapper recovers it in place on that retry — but ONLY under the per-operation GC lock
+    /// (<c>gclock_try</c>) and ONLY after re-validating, under that lock, that the claim is still expired
+    /// and uncommitted, then it re-elects exactly one new claimant via the same atomic <c>mkdir</c>. A
+    /// still-active or still-establishing (lease-less) claim is never recovered — a same-id caller there
+    /// reports PENDING and polls rather than resubmitting — and claim creation itself respects a live GC
+    /// lock, so a purge in progress can never be raced into a double-run. The claim loop is bounded (one
+    /// recovery attempt), so it always terminates.
     /// </para>
     /// <para>
     /// <b>Umask is scoped to SDK artifacts only.</b> A restrictive <c>umask 077</c> governs the
@@ -238,21 +240,42 @@ internal static class CommandScripts
             "OLDUMASK=$(umask)",
             "umask 077",
             "mkdir -p \"$ROOT\" 2>/dev/null",
-            "if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
-            // Respect an in-progress purge of THIS operation: a live GC lock means a purger may be about
-            // to delete the directory, so never create a claim that races it — report PENDING (or a
-            // manifest if one just appeared) and let a later retry proceed once the lock is released. A
-            // stale lock (crashed purger, past the bounded TTL) is reclaimed so it cannot block forever.
-            "if [ -d \"$GCL\" ]; then",
-            "  if gclock_is_live; then",
-            "    if [ -f \"$MAN\" ]; then emit_manifest; else printf '%s %s\\n' \"$SENT\" '"
-                + CommandSentinel.KindPending
-                + "'; fi",
-            "    exit 0",
+            // Bounded claim loop: at most one abandoned-claim self-recovery, then a final claim/PENDING.
+            "attempt=0",
+            "while [ \"$attempt\" -lt 2 ]; do",
+            "  attempt=$((attempt+1))",
+            "  if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
+            // Respect an in-progress purge of THIS operation: while a live GC lock is held a purger may be
+            // deleting the directory, so never create/recover a claim that races it — fall through to
+            // PENDING and let a later retry proceed. A stale lock (crashed holder) is reclaimed here.
+            "  if [ -d \"$GCL\" ]; then",
+            "    if gclock_is_live; then break; fi",
+            "    rm -rf \"$GCL\" 2>/dev/null",
             "  fi",
-            "  rm -rf \"$GCL\" 2>/dev/null",
-            "fi",
-            "if mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
+            "  if mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
+            "  if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
+            // An existing, uncommitted claim. Recover ONLY an abandoned one: an ESTABLISHED lease that has
+            // EXPIRED (a lease-less mid-establishment claim, or an unexpired/active lease, is never
+            // touched). The recovery deletes and re-claims under the per-operation GC lock, re-validating
+            // the current state UNDER the lock, so exactly one new claimant is elected and a still-active
+            // or freshly-replaced claim is never destroyed.
+            "  if [ -f \"$OP/lease\" ]; then",
+            "    lease=$(lmsbx_num \"$OP/lease\")",
+            "    now=$(date +%s)",
+            "    if [ \"$lease\" -gt 0 ] && [ \"$now\" -gt \"$lease\" ]; then",
+            "      if gclock_try; then",
+            "        if [ ! -f \"$MAN\" ] && [ -f \"$OP/lease\" ]; then",
+            "          rlease=$(lmsbx_num \"$OP/lease\")",
+            "          rnow=$(date +%s)",
+            "          if [ \"$rlease\" -gt 0 ] && [ \"$rnow\" -gt \"$rlease\" ]; then rm -rf \"$OP\" 2>/dev/null; fi",
+            "        fi",
+            "        gclock_release",
+            "        continue",
+            "      fi",
+            "    fi",
+            "  fi",
+            "  break",
+            "done",
             "if [ -f \"$MAN\" ]; then emit_manifest; else printf '%s %s\\n' \"$SENT\" '"
                 + CommandSentinel.KindPending
                 + "'; fi"

@@ -138,6 +138,20 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         }
     }
 
+    /// <summary>
+    /// Pre-populates an ABANDONED claim: a directory that was claimed (so a PROBE reports PENDING) but
+    /// whose submitter crashed before committing a manifest. Models the state a same-id retry must
+    /// self-recover — the wrapper's guarded RUN re-elects one claimant and runs the (programmed) command
+    /// exactly once, rather than resubmitting or waiting for the 24h sweep.
+    /// </summary>
+    public void SeedAbandonedClaim(string operationDirectory)
+    {
+        lock (_lock)
+        {
+            _ops[operationDirectory] = new OpState { Claimed = true, Committed = false };
+        }
+    }
+
     /// <summary>Adds an artifact directory to the GC listing with the given lease/created timestamps (also the state the re-validated purge re-checks).</summary>
     public void AddGcEntry(string name, long leaseUnixSeconds, long createdUnixSeconds)
     {

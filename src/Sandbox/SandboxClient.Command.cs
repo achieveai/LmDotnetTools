@@ -97,7 +97,8 @@ public sealed partial class SandboxClient
         // mismatch, WITHOUT submitting. Only a completed manifest short-circuits here; a PENDING (a peer
         // holds the claim) or absent state — and any transport failure probing — falls through to the
         // single RUN, whose atomic claim elects one submitter. A live peer keeps the wrapper reporting
-        // PENDING so this caller polls instead of re-running.
+        // PENDING so this caller polls instead of re-running, whereas an ABANDONED (expired, uncommitted)
+        // claim is self-recovered by that RUN under the per-operation GC lock — one new claimant, one run.
         ProbeResult preProbe;
         try
         {

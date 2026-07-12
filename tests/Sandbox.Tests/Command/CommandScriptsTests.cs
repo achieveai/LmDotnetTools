@@ -38,15 +38,19 @@ public class CommandScriptsTests
     }
 
     [Fact]
-    public void BuildRun_NeverDeletesTheClaimDirectory_OnlyTheGcLock()
+    public void BuildRun_SelfRecoversAnAbandonedClaim_OnlyUnderTheGcLockAfterRevalidation()
     {
         var script = CommandScripts.BuildRun(Op, "digest", "'ls'", string.Empty, 120);
 
-        // Deleting the operation directory is exactly the non-atomic takeover that could double-run a
-        // command; the RUN wrapper must never rm-rf the CLAIM directory. It may only reclaim a stale
-        // per-operation GC LOCK ("$OP.gc"), which is a different path.
-        script.Should().NotContain("rm -rf \"$OP\"");
-        script.Should().Contain("rm -rf \"$GCL\"");
+        // The only claim-directory delete is the guarded abandoned-claim self-recovery: it is gated on
+        // winning the per-operation GC lock and on re-validating, UNDER the lock, that the lease is still
+        // expired — never an eager, unguarded takeover that could double-run a command.
+        script.Should().Contain("if gclock_try; then");
+        script.Should().Contain("rm -rf \"$OP\"");
+        script.Should().Contain("rnow=$(date +%s)");
+        var lockIndex = script.IndexOf("if gclock_try; then", StringComparison.Ordinal);
+        var deleteIndex = script.IndexOf("rm -rf \"$OP\"", StringComparison.Ordinal);
+        deleteIndex.Should().BeGreaterThan(lockIndex, "the abandoned-claim delete must sit inside the GC-lock-won branch");
     }
 
     [Fact]
