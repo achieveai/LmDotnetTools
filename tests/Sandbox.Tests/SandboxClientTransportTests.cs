@@ -157,4 +157,103 @@ public class SandboxClientTransportTests
 
         act.Should().NotThrow();
     }
+
+    [Fact]
+    public async Task CreateAsync_BorrowedClientWithNullBaseAddress_StillReachesConfiguredServerAddress()
+    {
+        // A borrowed HttpClient with no BaseAddress would make `new HttpRequestMessage(method,
+        // "relative/path")` throw InvalidOperationException when HttpClient tries (and fails) to
+        // combine it with a null BaseAddress. The SDK must never depend on the borrowed client's
+        // BaseAddress at all — every request is resolved against the validated
+        // SandboxClientOptions.ServerAddress regardless.
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(httpClientBaseAddress: null);
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", """{"session_id":"sess-1"}""");
+
+        var info = await client.CreateAsync(new SandboxCreateRequest("ws"));
+
+        info.SessionId.Should().Be("sess-1");
+        var sent = handler.Requests.Single();
+        sent.Uri.Host.Should().Be(serverAddress.Host);
+        sent.Uri.Port.Should().Be(serverAddress.Port);
+    }
+
+    [Fact]
+    public async Task CreateAsync_BorrowedClientWithMismatchedBaseAddress_RoutesToServerAddress_NotBorrowedBaseAddress()
+    {
+        // A borrowed client's BaseAddress could point at an entirely different (e.g. malicious or
+        // stale) host. The SDK must ignore it and always send to the configured ServerAddress — and
+        // therefore never hand X-Sbx-App-Id/X-Sbx-App-Key to the mismatched host.
+        var maliciousBaseAddress = new Uri("http://malicious.invalid:9999");
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(maliciousBaseAddress);
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", """{"session_id":"sess-1"}""");
+
+        var info = await client.CreateAsync(new SandboxCreateRequest("ws"));
+
+        info.SessionId.Should().Be("sess-1");
+        var sent = handler.Requests.Single();
+        sent.Uri.Host.Should().Be(serverAddress.Host);
+        sent.Uri.Host.Should().NotBe(maliciousBaseAddress.Host);
+        sent.SbxAppId.Should().Be("app-1");
+        sent.SbxAppKey.Should().Be(TestSupport.ValidSecret);
+    }
+
+    [Fact]
+    public async Task IsHealthyAsync_BorrowedClientWithNullBaseAddress_StillReachesConfiguredServerAddress()
+    {
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(httpClientBaseAddress: null);
+        handler.OnStatus(HttpMethod.Get, "/health", HttpStatusCode.OK);
+
+        var healthy = await client.IsHealthyAsync();
+
+        healthy.Should().BeTrue();
+        var sent = handler.Requests.Single();
+        sent.Uri.Host.Should().Be(serverAddress.Host);
+    }
+
+    [Fact]
+    public async Task IsHealthyAsync_BorrowedClientWithMismatchedBaseAddress_RoutesToServerAddress_WithoutCredentials()
+    {
+        var maliciousBaseAddress = new Uri("http://malicious.invalid:9999");
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(maliciousBaseAddress);
+        handler.OnStatus(HttpMethod.Get, "/health", HttpStatusCode.OK);
+
+        var healthy = await client.IsHealthyAsync();
+
+        healthy.Should().BeTrue();
+        var sent = handler.Requests.Single();
+        sent.Uri.Host.Should().Be(serverAddress.Host);
+        sent.Uri.Host.Should().NotBe(maliciousBaseAddress.Host);
+        sent.SbxAppId.Should().BeNull();
+        sent.SbxAppKey.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_BorrowedClientWithNullBaseAddress_StillReachesConfiguredServerAddress()
+    {
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(httpClientBaseAddress: null);
+        handler.OnJson(HttpMethod.Post, "/mcp", """{"jsonrpc":"2.0","id":1,"result":{"ok":true}}""");
+
+        var result = await client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/workspace/x" });
+
+        result.GetProperty("ok").GetBoolean().Should().BeTrue();
+        var sent = handler.Requests.Single();
+        sent.Uri.Host.Should().Be(serverAddress.Host);
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_BorrowedClientWithMismatchedBaseAddress_RoutesToServerAddress()
+    {
+        var maliciousBaseAddress = new Uri("http://malicious.invalid:9999");
+        var (client, handler, serverAddress) = TestSupport.CreateBorrowedClientWithBaseAddress(maliciousBaseAddress);
+        handler.OnJson(HttpMethod.Post, "/mcp", """{"jsonrpc":"2.0","id":1,"result":{"ok":true}}""");
+
+        var result = await client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/workspace/x" });
+
+        result.GetProperty("ok").GetBoolean().Should().BeTrue();
+        var sent = handler.Requests.Single();
+        sent.Uri.Host.Should().Be(serverAddress.Host);
+        sent.Uri.Host.Should().NotBe(maliciousBaseAddress.Host);
+        sent.SbxAppId.Should().Be("app-1");
+        sent.SbxAppKey.Should().Be(TestSupport.ValidSecret);
+    }
 }

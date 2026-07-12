@@ -46,4 +46,33 @@ internal static class TestSupport
         var client = new SandboxClient(options, httpClient);
         return (client, handler);
     }
+
+    /// <summary>
+    /// Same as <see cref="CreateBorrowedClient"/>, but lets a test set the BORROWED
+    /// <see cref="HttpClient"/>'s <see cref="HttpClient.BaseAddress"/> independently of the
+    /// <see cref="SandboxClientOptions.ServerAddress"/> the returned <see cref="SandboxClient"/> is
+    /// constructed with — e.g. <c>null</c> or a mismatched host — to prove request URIs are always
+    /// resolved from the validated <see cref="SandboxClientOptions.ServerAddress"/>, never from the
+    /// borrowed client's own (untrusted) <see cref="HttpClient.BaseAddress"/>.
+    /// </summary>
+    public static (SandboxClient Client, FakeGatewayHandler Handler, Uri ServerAddress) CreateBorrowedClientWithBaseAddress(
+        Uri? httpClientBaseAddress,
+        TimeSpan? transportTimeout = null,
+        string appId = "app-1",
+        string? clientSecret = null
+    )
+    {
+        var handler = new FakeGatewayHandler();
+        var serverAddress = NewLoopbackAddress();
+        var httpClient = new HttpClient(handler) { BaseAddress = httpClientBaseAddress };
+        var options = new SandboxClientOptions(
+            serverAddress,
+            appId,
+            clientSecret ?? ValidSecret,
+            TimeSpan.FromMinutes(5),
+            transportTimeout ?? TimeSpan.FromSeconds(30)
+        );
+        var client = new SandboxClient(options, httpClient);
+        return (client, handler, serverAddress);
+    }
 }

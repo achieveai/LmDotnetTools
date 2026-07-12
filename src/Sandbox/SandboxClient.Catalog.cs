@@ -56,7 +56,25 @@ public sealed partial class SandboxClient
             );
         }
 
-        return new SandboxMarketplaceCatalog(payload.Selected, payload.Marketplaces is null ? null : [.. payload.Marketplaces.Select(ToEntry)]);
+        // The wire DTOs (see SandboxWireDtos.cs) model required fields (alias/name/...) as
+        // non-nullable `string`, but System.Text.Json deserialization does not enforce that at
+        // runtime — a semantically-invalid 2xx body can still supply `null` for one. The
+        // SandboxMarketplace* model constructors validate those fields and throw ArgumentException,
+        // which must surface as a SandboxException(Protocol) like every other malformed-response
+        // case, never as a raw ArgumentException escaping this SDK's exception contract.
+        try
+        {
+            return new SandboxMarketplaceCatalog(payload.Selected, payload.Marketplaces is null ? null : [.. payload.Marketplaces.Select(ToEntry)]);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                "Sandbox gateway returned a marketplace catalog with a missing or invalid required field.",
+                (int)response.StatusCode,
+                ex
+            );
+        }
     }
 
     /// <summary>
@@ -101,17 +119,33 @@ public sealed partial class SandboxClient
             return [];
         }
 
-        return
-        [
-            .. payload.Items.Select(item => new SandboxDiscoveredItem(
-                item.Kind,
-                item.Name,
-                item.Description,
-                item.Path,
-                item.Content,
-                item.QualifiedName
-            )),
-        ];
+        // Same rationale as PreviewMarketplacesAsync above: DiscoveredItemDto's required fields
+        // (kind/name/path) are non-nullable `string` on the wire type but can still deserialize as
+        // `null` from a semantically-invalid 2xx body — SandboxDiscoveredItem's constructor
+        // validation must map to SandboxException(Protocol), not leak a raw ArgumentException.
+        try
+        {
+            return
+            [
+                .. payload.Items.Select(item => new SandboxDiscoveredItem(
+                    item.Kind,
+                    item.Name,
+                    item.Description,
+                    item.Path,
+                    item.Content,
+                    item.QualifiedName
+                )),
+            ];
+        }
+        catch (ArgumentException ex)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a discovered item with a missing or invalid required field for session '{sessionId}'.",
+                (int)response.StatusCode,
+                ex
+            );
+        }
     }
 
     private static SandboxMarketplaceEntry ToEntry(MarketplaceEntryDto dto) =>

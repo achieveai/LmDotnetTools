@@ -16,11 +16,22 @@ public sealed partial class SandboxClient
     /// credential onto every other concurrent caller sharing a borrowed client.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <see cref="SandboxClientOptions.TransportTimeout"/> is enforced via a token LINKED to
     /// <paramref name="ct"/> rather than <see cref="HttpClient.Timeout"/>, so it applies identically
     /// whether the underlying client is owned or borrowed (mutating a borrowed client's
     /// <see cref="HttpClient.Timeout"/> would affect every other concurrent caller of that shared
     /// client, exactly like <see cref="HttpClient.DefaultRequestHeaders"/>).
+    /// </para>
+    /// <para>
+    /// The request URI is always resolved as an ABSOLUTE URI against the validated
+    /// <see cref="SandboxClientOptions.ServerAddress"/> (see <see cref="ResolveRequestUri"/>) rather
+    /// than left relative for <see cref="Transport"/> to combine with its own
+    /// <see cref="HttpClient.BaseAddress"/>. A borrowed <see cref="HttpClient"/>'s
+    /// <see cref="HttpClient.BaseAddress"/> can be <c>null</c> (which would make a relative request
+    /// throw) or point at an unrelated/mismatched host (which would silently send this credential to
+    /// that host instead) — this call site never trusts it either way.
+    /// </para>
     /// </remarks>
     private async Task<HttpResponseMessage> SendRestAsync(
         HttpMethod method,
@@ -32,7 +43,7 @@ public sealed partial class SandboxClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        using var request = new HttpRequestMessage(method, relativeUri);
+        using var request = new HttpRequestMessage(method, ResolveRequestUri(relativeUri));
         if (body is not null)
         {
             request.Content = JsonContent.Create(body, options: SandboxJson.RestOptions);
@@ -85,6 +96,20 @@ public sealed partial class SandboxClient
     }
 
     /// <summary>
+    /// Resolves <paramref name="relativeUri"/> to an ABSOLUTE <see cref="Uri"/> against the
+    /// constructor-validated <see cref="SandboxClientOptions.ServerAddress"/> — never against
+    /// <see cref="Transport"/>'s own <see cref="HttpClient.BaseAddress"/>. Every call site in this
+    /// class (REST, MCP, and <c>/health</c>) routes through this so a borrowed <see cref="HttpClient"/>
+    /// can never redirect a request (and the <see cref="AppIdHeader"/>/<see cref="AppKeyHeader"/>
+    /// credentials stamped on it) to a host other than the one this client was constructed for, even
+    /// when that borrowed client's <see cref="HttpClient.BaseAddress"/> is <c>null</c> or points
+    /// somewhere else entirely. Passing an already-absolute <see cref="Uri"/> on the outgoing
+    /// <see cref="HttpRequestMessage"/> makes <see cref="HttpClient"/> ignore its own
+    /// <see cref="HttpClient.BaseAddress"/> for that request.
+    /// </summary>
+    private Uri ResolveRequestUri(string relativeUri) => new(_options.ServerAddress, relativeUri);
+
+    /// <summary>
     /// Classifies a non-success gateway response into a <see cref="SandboxException"/> WITHOUT ever
     /// reading <paramref name="response"/>'s body: an auth-rejection response is the upstream output
     /// most likely to echo submitted credential material, and an empty body (e.g. a bare <c>401</c>)
@@ -113,7 +138,7 @@ public sealed partial class SandboxClient
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "health");
+        using var request = new HttpRequestMessage(HttpMethod.Get, ResolveRequestUri("health"));
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_options.TransportTimeout);
         try
@@ -149,7 +174,10 @@ public sealed partial class SandboxClient
         var rpcRequest = new McpToolCallRequestDto("2.0", 1, "tools/call", new McpToolCallParamsDto(toolName, arguments));
         var json = JsonSerializer.Serialize(rpcRequest, SandboxJson.McpOptions);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "mcp") { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        using var request = new HttpRequestMessage(HttpMethod.Post, ResolveRequestUri("mcp"))
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
         StampAuthHeaders(request);
         _ = request.Headers.TryAddWithoutValidation(SessionIdHeader, sessionId);
 

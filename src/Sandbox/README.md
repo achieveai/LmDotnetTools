@@ -49,14 +49,22 @@ finally
 
 To share a caller-managed `HttpClient` (e.g. from `IHttpClientFactory`) instead of letting the
 client own its own transport, use the two-argument constructor: `new SandboxClient(options,
-httpClient)`. The SDK never mutates a borrowed client's `DefaultRequestHeaders` or `Timeout`.
+httpClient)`. The SDK never mutates a borrowed client's `DefaultRequestHeaders` or `Timeout`. Every
+request (REST, MCP, and the internal `/health` probe) is resolved as an absolute URI against the
+constructor-validated `SandboxClientOptions.ServerAddress` — the borrowed client's own
+`HttpClient.BaseAddress` is never consulted, so a `null` or mismatched `BaseAddress` on the borrowed
+client can neither break requests nor redirect credentials to the wrong host.
 
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which
 carries a stable `SandboxErrorKind` (`Authorization`, `NotFound`, `TransportTimeout`, `Protocol`,
 plus `ExecutionTimeout`/`Integrity` reserved for later command/file capabilities). Caller
-cancellation always surfaces as a plain `OperationCanceledException`.
+cancellation always surfaces as a plain `OperationCanceledException`. This includes a 2xx response
+whose body is well-formed JSON but semantically invalid (e.g. missing/`null` a required field such
+as a marketplace alias or discovered-item kind/name/path) — the SDK never lets that surface as a raw
+`ArgumentException`/`NullReferenceException`; it is always classified as `SandboxException` with
+`SandboxErrorKind.Protocol`.
 
 ## Security
 

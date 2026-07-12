@@ -117,4 +117,141 @@ public class SandboxClientCatalogTests
 
         handler.Requests.Single().SessionId.Should().BeNull();
     }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_MarketplaceWithNullAlias_ThrowsProtocol_NotArgumentException()
+    {
+        // "alias" is typed as non-nullable `string` on MarketplaceEntryDto, but System.Text.Json
+        // does not enforce that at runtime — a semantically-invalid 2xx body can still supply
+        // `null`. SandboxMarketplaceEntry's constructor then rejects it via
+        // ArgumentException.ThrowIfNullOrWhiteSpace, which must surface as SandboxException(Protocol)
+        // rather than a raw ArgumentException escaping this SDK's exception contract.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """{"selected":["official"],"marketplaces":[{"alias":null,"error":null,"plugins":[]}]}"""
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.PreviewMarketplacesAsync());
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_PluginWithMissingName_ThrowsProtocol_NotArgumentException()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """
+            {
+              "selected": ["official"],
+              "marketplaces": [
+                {"alias": "official", "error": null, "plugins": [{"version": "1.0.0", "skills": [], "agents": []}]}
+              ]
+            }
+            """
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.PreviewMarketplacesAsync());
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_SkillWithBlankName_ThrowsProtocol_NotArgumentException()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/marketplaces/preview",
+            """
+            {
+              "selected": ["official"],
+              "marketplaces": [
+                {
+                  "alias": "official",
+                  "error": null,
+                  "plugins": [
+                    {"name": "code-reviewer", "skills": [{"name": "   ", "path": "/skills/x"}], "agents": []}
+                  ]
+                }
+              ]
+            }
+            """
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.PreviewMarketplacesAsync());
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task PreviewMarketplacesAsync_CallerCancellation_PropagatesAsOperationCanceledException()
+    {
+        // A malformed-payload mapping failure must not swallow caller cancellation: cancelling
+        // before the call still surfaces as a plain OperationCanceledException, never wrapped as a
+        // SandboxException.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Get, "/api/v1/marketplaces/preview", """{"selected":[],"marketplaces":[]}""");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => client.PreviewMarketplacesAsync(ct: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_ItemWithMissingKind_ThrowsProtocol_NotArgumentException()
+    {
+        // "kind"/"name"/"path" are typed as non-nullable `string` on DiscoveredItemDto, but a
+        // semantically-invalid 2xx body can still omit or null one out — SandboxDiscoveredItem's
+        // constructor validation must map to SandboxException(Protocol), not a raw ArgumentException.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1/discovered",
+            """{"discovered":[{"name":"reviewer","path":"/workspace/x"}]}"""
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_ItemWithNullPath_ThrowsProtocol_NotArgumentException()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1/discovered",
+            """{"discovered":[{"kind":"subagent","name":"reviewer","path":null}]}"""
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_CallerCancellation_PropagatesAsOperationCanceledException()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/sess-1/discovered", "{}");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => client.ListDiscoveredAsync("sess-1", cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
 }
