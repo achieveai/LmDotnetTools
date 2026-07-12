@@ -58,20 +58,26 @@ public sealed partial class SandboxClient
 
         // The wire DTOs (see SandboxWireDtos.cs) model required fields (alias/name/...) as
         // non-nullable `string`, but System.Text.Json deserialization does not enforce that at
-        // runtime — a semantically-invalid 2xx body can still supply `null` for one. The
-        // SandboxMarketplace* model constructors validate those fields and throw ArgumentException,
-        // which must surface as a SandboxException(Protocol) like every other malformed-response
-        // case, never as a raw ArgumentException escaping this SDK's exception contract.
+        // runtime — a semantically-invalid 2xx body can still supply `null` for one, or a `null`
+        // collection element. The SandboxMarketplace* model constructors validate required fields and
+        // throw ArgumentException, and SelectNonNullOrThrow rejects null elements as
+        // SandboxException(Protocol); both must surface as a SandboxException(Protocol) like every
+        // other malformed-response case, never as a raw ArgumentException/NullReferenceException
+        // escaping this SDK's exception contract.
+        var statusCode = (int)response.StatusCode;
+        const string operation = "marketplace preview";
         try
         {
-            return new SandboxMarketplaceCatalog(payload.Selected, payload.Marketplaces is null ? null : [.. payload.Marketplaces.Select(ToEntry)]);
+            var selected = SelectNonNullOrThrow(payload.Selected, static alias => alias, operation, statusCode);
+            var marketplaceEntries = SelectNonNullOrThrow(payload.Marketplaces, dto => ToEntry(dto, operation, statusCode), operation, statusCode);
+            return new SandboxMarketplaceCatalog(selected, marketplaceEntries);
         }
         catch (ArgumentException ex)
         {
             throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 "Sandbox gateway returned a marketplace catalog with a missing or invalid required field.",
-                (int)response.StatusCode,
+                statusCode,
                 ex
             );
         }
@@ -121,43 +127,42 @@ public sealed partial class SandboxClient
 
         // Same rationale as PreviewMarketplacesAsync above: DiscoveredItemDto's required fields
         // (kind/name/path) are non-nullable `string` on the wire type but can still deserialize as
-        // `null` from a semantically-invalid 2xx body — SandboxDiscoveredItem's constructor
-        // validation must map to SandboxException(Protocol), not leak a raw ArgumentException.
+        // `null` from a semantically-invalid 2xx body, and the collection can carry a `null` element —
+        // SandboxDiscoveredItem's constructor validation and SelectNonNullOrThrow's null-element
+        // rejection must both map to SandboxException(Protocol), not leak a raw
+        // ArgumentException/NullReferenceException.
+        var statusCode = (int)response.StatusCode;
+        var operation = $"listing discovered items for session '{sessionId}'";
         try
         {
-            return
-            [
-                .. payload.Items.Select(item => new SandboxDiscoveredItem(
-                    item.Kind,
-                    item.Name,
-                    item.Description,
-                    item.Path,
-                    item.Content,
-                    item.QualifiedName
-                )),
-            ];
+            return SelectNonNullOrThrow(
+                payload.Items,
+                item => new SandboxDiscoveredItem(item.Kind, item.Name, item.Description, item.Path, item.Content, item.QualifiedName),
+                operation,
+                statusCode
+            );
         }
         catch (ArgumentException ex)
         {
             throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 $"Sandbox gateway returned a discovered item with a missing or invalid required field for session '{sessionId}'.",
-                (int)response.StatusCode,
+                statusCode,
                 ex
             );
         }
     }
 
-    private static SandboxMarketplaceEntry ToEntry(MarketplaceEntryDto dto) =>
-        new(dto.Alias, dto.Error, dto.Plugins is null ? null : [.. dto.Plugins.Select(ToPlugin)]);
+    private static SandboxMarketplaceEntry ToEntry(MarketplaceEntryDto dto, string operation, int statusCode) =>
+        new(dto.Alias, dto.Error, SelectNonNullOrThrow(dto.Plugins, plugin => ToPlugin(plugin, operation, statusCode), operation, statusCode));
 
-    private static SandboxMarketplacePlugin ToPlugin(MarketplacePluginDto dto) =>
+    private static SandboxMarketplacePlugin ToPlugin(MarketplacePluginDto dto, string operation, int statusCode) =>
         new(
             dto.Name,
             dto.Version,
             dto.Description,
-            dto.Skills is null ? null : [.. dto.Skills.Select(ToSkill)],
-            dto.Agents is null ? null : [.. dto.Agents.Select(ToAgent)]
+            SelectNonNullOrThrow(dto.Skills, ToSkill, operation, statusCode),
+            SelectNonNullOrThrow(dto.Agents, ToAgent, operation, statusCode)
         );
 
     private static SandboxMarketplaceSkill ToSkill(MarketplaceSkillDto dto) => new(dto.Name, dto.Description, dto.Plugin, dto.Marketplace, dto.Path);

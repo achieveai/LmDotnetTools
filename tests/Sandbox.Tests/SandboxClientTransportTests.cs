@@ -51,6 +51,111 @@ public class SandboxClientTransportTests
         ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
     }
 
+    [Theory]
+    // Root is not a JSON object — reading a property off a non-object JsonElement would otherwise
+    // throw a raw InvalidOperationException, not a SandboxException.
+    [InlineData("[]")]
+    [InlineData("\"a bare string\"")]
+    [InlineData("42")]
+    [InlineData("null")]
+    // 'jsonrpc' missing / wrong version / not a string.
+    [InlineData("{\"id\":1,\"result\":{}}")]
+    [InlineData("{\"jsonrpc\":\"1.0\",\"id\":1,\"result\":{}}")]
+    [InlineData("{\"jsonrpc\":2.0,\"id\":1,\"result\":{}}")]
+    // 'id' missing / mismatched / wrong type (a compliant reply MUST echo the request id as a number).
+    [InlineData("{\"jsonrpc\":\"2.0\",\"result\":{}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{}}")]
+    // result/error mutual-exclusivity: neither present, or both present.
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"error\":{\"code\":-1,\"message\":\"x\"}}")]
+    // 'error' present but not a JSON-RPC error object.
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":\"boom\"}")]
+    public async Task SendMcpToolCallAsync_MalformedEnvelope_ThrowsProtocol_NeverRawException(string body)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/mcp", body);
+
+        var exception = await Record.ExceptionAsync(() => client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" }));
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_ResultCanBeAnyJsonValue_IncludingNull()
+    {
+        // JSON-RPC allows 'result' to be any value (including JSON null) as long as it is present and
+        // 'error' is absent — the envelope is well-formed and the (null) result is returned as-is.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/mcp", """{"jsonrpc":"2.0","id":1,"result":null}""");
+
+        var result = await client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" });
+
+        result.ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task SendMcpToolCallAsync_NullErrorMemberWithResult_IsTreatedAsSuccess()
+    {
+        // An explicit `"error": null` alongside a result is not an error envelope — it must resolve to
+        // the result, not be misclassified as a failure.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/mcp", """{"jsonrpc":"2.0","id":1,"error":null,"result":{"ok":true}}""");
+
+        var result = await client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" });
+
+        result.GetProperty("ok").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Rest3xxRedirect_IsRejectedAsProtocol_AndNeverFollowed()
+    {
+        // The SDK must never follow a redirect: following one would replay the X-Sbx-* credential
+        // headers to the redirect target. An observed 3xx is rejected as Protocol, and only the single
+        // original request is ever sent (the Location is not chased).
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            _ =>
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri("http://malicious.invalid:9999/api/v1/sandboxes");
+                return redirect;
+            }
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.CreateAsync(new SandboxCreateRequest("ws")));
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+        ((SandboxException)exception!).StatusCode.Should().Be(302);
+        handler.Requests.Should().ContainSingle();
+        handler.Requests.Single().Uri.Host.Should().NotBe("malicious.invalid");
+    }
+
+    [Fact]
+    public async Task Mcp3xxRedirect_IsRejectedAsProtocol()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/mcp", StringComparison.Ordinal),
+            _ =>
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect);
+                redirect.Headers.Location = new Uri("http://malicious.invalid:9999/mcp");
+                return redirect;
+            }
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.SendMcpToolCallAsync("sess-1", "Read", new { file_path = "/x" }));
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+        ((SandboxException)exception!).StatusCode.Should().Be(307);
+        handler.Requests.Should().ContainSingle();
+    }
+
     [Fact]
     public async Task IsHealthyAsync_SendsNoCredentialHeaders()
     {

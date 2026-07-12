@@ -254,4 +254,40 @@ public class SandboxClientCatalogTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
+
+    [Theory]
+    // A null array element deserializes to a null reference for a non-nullable wire DTO; projecting it
+    // (or handing it to a model constructor) would otherwise throw a raw NullReferenceException. Every
+    // collection level in the catalog tree must reject a null element as Protocol.
+    [InlineData("""{"selected":["official",null],"marketplaces":[]}""")]
+    [InlineData("""{"selected":[],"marketplaces":[null]}""")]
+    [InlineData("""{"selected":[],"marketplaces":[{"alias":"official","plugins":[null]}]}""")]
+    [InlineData("""{"selected":[],"marketplaces":[{"alias":"official","plugins":[{"name":"p","skills":[null],"agents":[]}]}]}""")]
+    [InlineData("""{"selected":[],"marketplaces":[{"alias":"official","plugins":[{"name":"p","skills":[],"agents":[null]}]}]}""")]
+    public async Task PreviewMarketplacesAsync_NullCollectionElement_ThrowsProtocol_NotNullReference(string body)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Get, "/api/v1/marketplaces/preview", body);
+
+        var exception = await Record.ExceptionAsync(() => client.PreviewMarketplacesAsync());
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_NullItemElement_ThrowsProtocol_NotNullReference()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1/discovered",
+            """{"discovered":[{"kind":"subagent","name":"reviewer","path":"/workspace/x"},null]}"""
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListDiscoveredAsync("sess-1"));
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
 }

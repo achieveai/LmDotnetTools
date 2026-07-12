@@ -55,16 +55,33 @@ constructor-validated `SandboxClientOptions.ServerAddress` — the borrowed clie
 `HttpClient.BaseAddress` is never consulted, so a `null` or mismatched `BaseAddress` on the borrowed
 client can neither break requests nor redirect credentials to the wrong host.
 
+> **Security precondition for a borrowed `HttpClient`:** configure its handler with
+> `AllowAutoRedirect = false`. This SDK authenticates with custom `X-Sbx-App-Id`/`X-Sbx-App-Key`
+> headers, and .NET's automatic-redirect logic only strips the standard `Authorization` header on a
+> cross-origin redirect — it re-sends every custom header (including these credential headers) to the
+> redirect target. If the borrowed handler follows a `3xx` internally it does so *before* the SDK
+> ever sees a response, so the SDK cannot observe or prevent that replay: the leak is only
+> preventable by the caller disabling auto-redirect. The owned-transport constructor (`new
+> SandboxClient(options)`) disables auto-redirect for you. As defense in depth, any `3xx` the SDK
+> *does* observe is rejected as `Protocol` rather than followed — the SDK never chases a redirect
+> itself.
+
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which
 carries a stable `SandboxErrorKind` (`Authorization`, `NotFound`, `TransportTimeout`, `Protocol`,
 plus `ExecutionTimeout`/`Integrity` reserved for later command/file capabilities). Caller
-cancellation always surfaces as a plain `OperationCanceledException`. This includes a 2xx response
-whose body is well-formed JSON but semantically invalid (e.g. missing/`null` a required field such
-as a marketplace alias or discovered-item kind/name/path) — the SDK never lets that surface as a raw
-`ArgumentException`/`NullReferenceException`; it is always classified as `SandboxException` with
-`SandboxErrorKind.Protocol`.
+cancellation always surfaces as a plain `OperationCanceledException`. `Protocol` covers every
+malformed-response case, and the SDK never lets one surface as a raw
+`ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
+
+- A 2xx REST body that is well-formed JSON but semantically invalid — a missing/`null` required field
+  (e.g. a marketplace alias or discovered-item kind/name/path) or a `null` collection element in any
+  lifecycle/catalog/discovery list.
+- A 2xx MCP reply that is not a complete JSON-RPC 2.0 envelope — a non-object root, a missing/wrong
+  `jsonrpc`, an `id` that does not match the request, both or neither of `result`/`error`, or a
+  non-object `error`. A JSON-RPC `error` envelope is likewise `Protocol`.
+- An observed `3xx` redirect (which the SDK refuses rather than follows).
 
 ## Security
 
@@ -72,3 +89,6 @@ as a marketplace alias or discovered-item kind/name/path) — the SDK never lets
   exception messages, logs, or URLs.
 - A non-loopback `ServerAddress` must use HTTPS unless `AllowInsecureDevelopmentTransport` is
   explicitly set for local development.
+- The owned transport disables automatic redirects; a borrowed `HttpClient` must do the same
+  (`AllowAutoRedirect = false`) — see the borrowed-client note above. The SDK never follows a
+  redirect itself and rejects any `3xx` it observes.

@@ -90,15 +90,16 @@ public sealed partial class SandboxClient
             );
         }
 
-        if (payload?.Sandboxes is null)
-        {
-            return [];
-        }
+        // Reject any null container entry as Protocol before projecting — a JSON `null` element would
+        // otherwise NullReference when we read entry.SessionId below. A null-attributed entry
+        // (session_id: null) is a valid, expected case (an unassigned/dormant container) and is
+        // filtered out, distinct from a null ENTRY (a malformed collection element).
+        var entries = SelectNonNullOrThrow(payload?.Sandboxes, static entry => entry, "sandbox list", (int)response.StatusCode);
 
         return
         [
-            .. payload
-                .Sandboxes.Where(entry => !string.IsNullOrWhiteSpace(entry.SessionId))
+            .. entries
+                .Where(entry => !string.IsNullOrWhiteSpace(entry.SessionId))
                 .Select(entry => new SandboxInfo(entry.SessionId!, entry.Id)),
         ];
     }

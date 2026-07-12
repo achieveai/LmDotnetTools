@@ -116,8 +116,28 @@ public sealed partial class SandboxClient
     /// must classify identically to one carrying an (ignored) error payload — reading the body first
     /// would risk a JSON-parse failure masking the real classification.
     /// </summary>
+    /// <remarks>
+    /// A <c>3xx</c> is treated as an explicit protocol violation, never followed: this SDK's owned
+    /// transport disables auto-redirect, and a borrowed transport is required to do the same (see the
+    /// borrowed-client constructor's security precondition). If a <c>3xx</c> is nevertheless observed
+    /// here, refusing it — rather than chasing the <c>Location</c> — is the only redirect protection
+    /// enforceable at this seam, and it keeps this SDK from ever replaying the <c>X-Sbx-*</c>
+    /// credential headers to a redirect target itself.
+    /// </remarks>
     private static SandboxException MapErrorResponse(HttpResponseMessage response, string operation)
     {
+        var statusCode = (int)response.StatusCode;
+        if (statusCode is >= 300 and < 400)
+        {
+            return new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned redirect status {statusCode} for {operation}; this SDK never "
+                    + "follows redirects (following one would replay the X-Sbx-* credential headers to the "
+                    + "redirect target). Point ServerAddress directly at the gateway's canonical origin.",
+                statusCode
+            );
+        }
+
         var kind = response.StatusCode switch
         {
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => SandboxErrorKind.Authorization,
@@ -125,7 +145,47 @@ public sealed partial class SandboxClient
             _ => SandboxErrorKind.Protocol,
         };
 
-        return new SandboxException(kind, $"Sandbox gateway returned {(int)response.StatusCode} for {operation}.", (int)response.StatusCode);
+        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}.", statusCode);
+    }
+
+    /// <summary>
+    /// Projects each element of a 2xx-response collection through <paramref name="map"/>, rejecting
+    /// any <c>null</c> element as <see cref="SandboxErrorKind.Protocol"/> first. System.Text.Json
+    /// deserializes a JSON <c>null</c> array element into a <c>null</c> reference even for a
+    /// non-nullable wire DTO, and projecting that <c>null</c> (or handing it to a model constructor)
+    /// would otherwise throw a raw <see cref="NullReferenceException"/> that escapes this SDK's
+    /// <see cref="SandboxException"/> contract. A <c>null</c> <paramref name="source"/> (absent field)
+    /// maps to an empty list, distinct from a present-but-null element.
+    /// </summary>
+    private static List<TOut> SelectNonNullOrThrow<TIn, TOut>(
+        IReadOnlyList<TIn?>? source,
+        Func<TIn, TOut> map,
+        string operation,
+        int statusCode
+    )
+        where TIn : class
+    {
+        if (source is null)
+        {
+            return [];
+        }
+
+        var result = new List<TOut>(source.Count);
+        foreach (var element in source)
+        {
+            if (element is null)
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a null collection element for {operation}.",
+                    statusCode
+                );
+            }
+
+            result.Add(map(element));
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -171,7 +231,7 @@ public sealed partial class SandboxClient
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(arguments);
 
-        var rpcRequest = new McpToolCallRequestDto("2.0", 1, "tools/call", new McpToolCallParamsDto(toolName, arguments));
+        var rpcRequest = new McpToolCallRequestDto(JsonRpcVersion, McpRequestId, "tools/call", new McpToolCallParamsDto(toolName, arguments));
         var json = JsonSerializer.Serialize(rpcRequest, SandboxJson.McpOptions);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, ResolveRequestUri("mcp"))
@@ -234,29 +294,83 @@ public sealed partial class SandboxClient
 
             using (document)
             {
-                if (document.RootElement.TryGetProperty("error", out var errorElement) && errorElement.ValueKind != JsonValueKind.Null)
-                {
-                    var message = errorElement.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
-                    throw new SandboxException(
-                        SandboxErrorKind.Protocol,
-                        $"Sandbox gateway MCP call '{toolName}' returned an error: {message ?? "(no message)"}.",
-                        (int)response.StatusCode
-                    );
-                }
-
-                if (!document.RootElement.TryGetProperty("result", out var resultElement))
-                {
-                    throw new SandboxException(
-                        SandboxErrorKind.Protocol,
-                        $"Sandbox gateway MCP call '{toolName}' returned no result.",
-                        (int)response.StatusCode
-                    );
-                }
+                var result = ValidateMcpEnvelopeAndExtractResult(document, toolName, (int)response.StatusCode);
 
                 // Clone before the enclosing JsonDocument is disposed: JsonElement values borrow their
                 // backing buffer from the document, which becomes invalid once it is disposed.
-                return resultElement.Clone();
+                return result.Clone();
             }
         }
     }
+
+    /// <summary>
+    /// Validates a 2xx MCP reply as a complete JSON-RPC 2.0 response envelope BEFORE touching its
+    /// <c>result</c>, and returns the <c>result</c> element on success. Every structural violation is
+    /// mapped to <see cref="SandboxErrorKind.Protocol"/> so a malformed 2xx body can never surface as
+    /// a raw <see cref="InvalidOperationException"/> (from calling <see cref="JsonElement.TryGetProperty(string, out JsonElement)"/>
+    /// on a non-object root) or <see cref="NullReferenceException"/>. The checks, in order:
+    /// <list type="bullet">
+    /// <item>the root is a JSON object;</item>
+    /// <item><c>jsonrpc</c> is the string <c>"2.0"</c>;</item>
+    /// <item><c>id</c> is a number equal to the request's <see cref="McpRequestId"/>;</item>
+    /// <item>exactly one of <c>result</c> or a non-null <c>error</c> is present (mutual exclusivity);</item>
+    /// <item>when <c>error</c> is present it is a JSON object — which is then surfaced as the failure.</item>
+    /// </list>
+    /// </summary>
+    private static JsonElement ValidateMcpEnvelopeAndExtractResult(JsonDocument document, string toolName, int statusCode)
+    {
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            throw MalformedEnvelope(toolName, statusCode, "the response is not a JSON object");
+        }
+
+        if (
+            !root.TryGetProperty("jsonrpc", out var versionElement)
+            || versionElement.ValueKind != JsonValueKind.String
+            || !string.Equals(versionElement.GetString(), JsonRpcVersion, StringComparison.Ordinal)
+        )
+        {
+            throw MalformedEnvelope(toolName, statusCode, $"the 'jsonrpc' member is missing or is not \"{JsonRpcVersion}\"");
+        }
+
+        if (!root.TryGetProperty("id", out var idElement) || idElement.ValueKind != JsonValueKind.Number || !idElement.TryGetInt32(out var id) || id != McpRequestId)
+        {
+            throw MalformedEnvelope(toolName, statusCode, $"the 'id' member is missing or does not match the request id ({McpRequestId})");
+        }
+
+        var hasResult = root.TryGetProperty("result", out var resultElement);
+        var hasError = root.TryGetProperty("error", out var errorElement) && errorElement.ValueKind != JsonValueKind.Null;
+
+        if (hasResult == hasError)
+        {
+            throw MalformedEnvelope(
+                toolName,
+                statusCode,
+                hasResult ? "it carries both a 'result' and an 'error' member" : "it carries neither a 'result' nor an 'error' member"
+            );
+        }
+
+        if (hasError)
+        {
+            if (errorElement.ValueKind != JsonValueKind.Object)
+            {
+                throw MalformedEnvelope(toolName, statusCode, "the 'error' member is not a JSON-RPC error object");
+            }
+
+            var message = errorElement.TryGetProperty("message", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
+                ? messageElement.GetString()
+                : null;
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway MCP call '{toolName}' returned an error: {message ?? "(no message)"}.",
+                statusCode
+            );
+        }
+
+        return resultElement;
+    }
+
+    private static SandboxException MalformedEnvelope(string toolName, int statusCode, string detail) =>
+        new(SandboxErrorKind.Protocol, $"Sandbox gateway returned a malformed MCP response envelope for '{toolName}': {detail}.", statusCode);
 }

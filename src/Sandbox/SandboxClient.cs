@@ -27,6 +27,16 @@ public sealed partial class SandboxClient : IDisposable
     private const string AppKeyHeader = "X-Sbx-App-Key";
     private const string SessionIdHeader = "X-Session-ID";
 
+    /// <summary>The only JSON-RPC version this SDK sends and the only one it accepts in a 2xx MCP reply.</summary>
+    private const string JsonRpcVersion = "2.0";
+
+    /// <summary>
+    /// The <c>id</c> stamped on every MCP <c>tools/call</c> request. Each call is a self-contained
+    /// request/response with no multiplexing, so a fixed id is sufficient — and a compliant 2xx reply
+    /// MUST echo exactly this id (see <see cref="ValidateMcpEnvelopeAndExtractResult"/>).
+    /// </summary>
+    private const int McpRequestId = 1;
+
     private readonly SandboxClientOptions _options;
     private bool _disposed;
 
@@ -58,6 +68,29 @@ public sealed partial class SandboxClient : IDisposable
     /// only to the owned no-retry pipeline: a borrowed handler configured with its own retry policy
     /// must not retry side-effecting requests (create/delete) itself.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>SECURITY PRECONDITION — the borrowed handler MUST NOT follow redirects automatically.</b>
+    /// Configure the borrowed client's underlying handler with
+    /// <see cref="HttpClientHandler.AllowAutoRedirect"/> (or
+    /// <c>SocketsHttpHandler.AllowAutoRedirect</c>) set to <c>false</c>. This SDK authenticates with
+    /// custom <c>X-Sbx-App-Id</c>/<c>X-Sbx-App-Key</c> headers, and .NET's automatic-redirect logic
+    /// only strips the standard <c>Authorization</c> header on a cross-origin redirect — it re-sends
+    /// every custom header (including this SDK's credential headers) to the redirect target. If the
+    /// borrowed handler follows a gateway/proxy <c>3xx</c> internally, that replay happens BEFORE this
+    /// SDK ever sees a response, so the SDK cannot observe or prevent it: preventing the leak on a
+    /// borrowed, auto-following handler is technically impossible from here, and this SDK does not
+    /// claim to. The owned-transport constructor (<see cref="SandboxClient(SandboxClientOptions)"/>)
+    /// disables auto-redirect for you; when you bring your own client you own that guarantee.
+    /// </para>
+    /// <para>
+    /// As defense in depth, any <c>3xx</c> this SDK actually observes (i.e. when the borrowed handler
+    /// did not auto-follow) is rejected as <see cref="SandboxErrorKind.Protocol"/> rather than
+    /// followed — this SDK never chases a redirect itself. That rejection is the only redirect
+    /// protection enforceable on a borrowed client; the no-auto-redirect precondition above is what
+    /// closes the gap for a handler that would otherwise follow internally.
+    /// </para>
+    /// </remarks>
     public SandboxClient(SandboxClientOptions options, HttpClient httpClient)
         : this(options, httpClient, ownsHttpClient: false)
     {

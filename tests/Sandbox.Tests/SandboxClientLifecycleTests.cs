@@ -163,6 +163,21 @@ public class SandboxClientLifecycleTests
     }
 
     [Fact]
+    public async Task ListAsync_NullEntryElement_ThrowsProtocol_NotNullReference()
+    {
+        // A null array element is a malformed collection element (distinct from an entry whose
+        // session_id is null, which is a valid-but-omitted case). Reading entry.SessionId off a null
+        // element would otherwise throw a raw NullReferenceException; it must map to Protocol.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes", """{"sandboxes":[{"id":"c1","session_id":"sess-1"},null]}""");
+
+        var exception = await Record.ExceptionAsync(() => client.ListAsync());
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
     public async Task DeleteAsync_HappyPath_SucceedsWithoutThrowing()
     {
         var (client, handler) = TestSupport.CreateBorrowedClient();
