@@ -44,6 +44,14 @@ internal sealed class DiscoveredSubAgentTemplateBuilder(ILogger<DiscoveredSubAge
                 continue;
             }
 
+            foreach (var diagnostic in parsed.Diagnostics)
+            {
+                logger.LogWarning(
+                    "Discovered sub-agent {Name} frontmatter diagnostic: {Diagnostic}",
+                    parsed.Name,
+                    diagnostic);
+            }
+
             if (!result.TryAdd(item.QualifiedName, SubAgentTemplateMapper.Map(parsed, agentFactory, MaxTurnsPerRun)))
             {
                 logger.LogWarning("Duplicate sub-agent {Name}; keeping the first.", item.QualifiedName);

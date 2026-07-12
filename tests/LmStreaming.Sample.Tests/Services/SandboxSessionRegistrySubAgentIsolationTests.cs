@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -87,6 +88,80 @@ public class SandboxSessionRegistrySubAgentIsolationTests
             Template("AlphaDiscovered", "Discovered by conversation A.")).Should().BeTrue();
 
         bindingA.Source.Templates.Keys.Should().Contain("alpha_discovered");
+    }
+
+    [Fact]
+    public async Task GetOrAddSubAgentBinding_PreservesLegacyFactory()
+    {
+        await using var registry = CreateRegistry();
+        var seed = new Dictionary<string, SubAgentTemplate>();
+
+        var fourParameterOverload = typeof(SandboxSessionRegistry).GetMethod(
+            nameof(SandboxSessionRegistry.GetOrAddSubAgentBinding),
+            [
+                typeof(string),
+                typeof(string),
+                typeof(IReadOnlyDictionary<string, SubAgentTemplate>),
+                typeof(Func<IStreamingAgent>),
+            ]);
+        var legacyBinding = registry.GetOrAddSubAgentBinding(
+            SessionId,
+            "legacy-conversation",
+            seed,
+            AgentFactory);
+        var (source, agentFactory) = legacyBinding;
+
+        fourParameterOverload.Should().NotBeNull("existing compiled callers require the original CLR signature");
+        source.Should().BeSameAs(legacyBinding.Source);
+        agentFactory.Should().BeSameAs(AgentFactory);
+        legacyBinding.AgentFactory.Should().BeSameAs(AgentFactory);
+        legacyBinding.CharacteristicsAgentFactory.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AddOrUpdateSubAgentBinding_RebindsFactoriesAndPreservesSourceIdentity()
+    {
+        await using var registry = CreateRegistry();
+        var firstAgent = new Mock<IStreamingAgent>().Object;
+        var latestAgent = new Mock<IStreamingAgent>().Object;
+        Func<IStreamingAgent> firstFactory = () => firstAgent;
+        Func<IStreamingAgent> latestFactory = () => latestAgent;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> latestCharacteristicsFactory =
+            _ => new SubAgentProviderAgent(
+                latestAgent,
+                ImmutableDictionary<string, object?>.Empty);
+        var seed = new Dictionary<string, SubAgentTemplate>
+        {
+            ["retained"] = new()
+            {
+                Name = "retained",
+                SystemPrompt = "retained",
+                AgentFactory = firstFactory,
+            },
+        };
+
+        var before = registry.AddOrUpdateSubAgentBinding(
+            SessionId,
+            "conversation",
+            seed,
+            firstFactory,
+            null);
+        var after = registry.AddOrUpdateSubAgentBinding(
+            SessionId,
+            "conversation",
+            seed,
+            latestFactory,
+            latestCharacteristicsFactory);
+
+        ReferenceEquals(before.Source, after.Source).Should().BeTrue();
+        after.AgentFactory.Should().BeSameAs(latestFactory);
+        after.CharacteristicsAgentFactory.Should().BeSameAs(latestCharacteristicsFactory);
+        after.Source.Templates["retained"].CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("explicit", null)
+                {
+                    IsModelExplicitlySelected = true,
+                })
+            .Agent.Should().BeSameAs(latestAgent);
     }
 
     /// <summary>

@@ -1,6 +1,8 @@
+using System.Collections.Immutable;
 using System.Net;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services.Discovery;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -379,9 +381,34 @@ public class ContextDiscoveryControllerTests
 
             var agentA = new Mock<IStreamingAgent>().Object;
             var agentB = new Mock<IStreamingAgent>().Object;
+            var characteristicsAgentA = new Mock<IStreamingAgent>().Object;
+            var characteristicsAgentB = new Mock<IStreamingAgent>().Object;
+            SubAgentCharacteristics? receivedCharacteristicsB = null;
+            Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactoryA =
+                _ => new SubAgentProviderAgent(
+                    characteristicsAgentA,
+                    ImmutableDictionary<string, object?>.Empty);
+            Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactoryB =
+                characteristics =>
+                {
+                    receivedCharacteristicsB = characteristics;
+                    return new SubAgentProviderAgent(
+                        characteristicsAgentB,
+                        ImmutableDictionary<string, object?>.Empty);
+                };
             var emptySeed = new Dictionary<string, SubAgentTemplate>();
-            var bindingA = registry.GetOrAddSubAgentBinding(gatewaySessionId, "conv-A", emptySeed, () => agentA);
-            var bindingB = registry.GetOrAddSubAgentBinding(gatewaySessionId, "conv-B", emptySeed, () => agentB);
+            var bindingA = registry.AddOrUpdateSubAgentBinding(
+                gatewaySessionId,
+                "conv-A",
+                emptySeed,
+                () => agentA,
+                characteristicsFactoryA);
+            var bindingB = registry.AddOrUpdateSubAgentBinding(
+                gatewaySessionId,
+                "conv-B",
+                emptySeed,
+                () => agentB,
+                characteristicsFactoryB);
 
             var loader = new WorkspaceSubAgentLoader(registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
             var controller = CreateController(authorizationHeader: Secret, registry: registry, loader: loader);
@@ -403,6 +430,23 @@ public class ContextDiscoveryControllerTests
             bindingB.Source.Templates["echo"].AgentFactory().Should().BeSameAs(
                 agentB,
                 "conversation B's discovered sub-agent must spawn with B's provider, not the first conversation's");
+            bindingA.Source.Templates["echo"].CharacteristicsAgentFactory.Should().NotBeNull();
+            bindingB.Source.Templates["echo"].CharacteristicsAgentFactory.Should().NotBeNull();
+
+            var characteristics = new SubAgentCharacteristics("conversation-b-model", ReasoningEffort.High);
+            var reboundProvider = bindingB.Source.Templates["echo"]
+                .CharacteristicsAgentFactory!(characteristics);
+
+            receivedCharacteristicsB.Should().BeSameAs(characteristics);
+            reboundProvider.Agent.Should().BeSameAs(
+                agentB,
+                "inherited webhook spawns must use the conversation's fresh legacy route");
+            var explicitProvider = bindingB.Source.Templates["echo"]
+                .CharacteristicsAgentFactory!(
+                    characteristics with { IsModelExplicitlySelected = true });
+            explicitProvider.Agent.Should().BeSameAs(
+                characteristicsAgentB,
+                "explicit webhook spawns must use the conversation's characteristics route");
         }
         finally
         {

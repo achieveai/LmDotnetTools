@@ -35,13 +35,26 @@ public sealed class WorkspaceSubAgentLoader
 
     private readonly SandboxSessionRegistry _registry;
     private readonly ILogger<WorkspaceSubAgentLoader> _logger;
+    private readonly SubAgentModelResolver? _modelResolver;
 
     public WorkspaceSubAgentLoader(
         SandboxSessionRegistry registry,
         ILogger<WorkspaceSubAgentLoader> logger)
+        : this(registry, logger, null)
     {
-        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    internal WorkspaceSubAgentLoader(
+        SandboxSessionRegistry registry,
+        ILogger<WorkspaceSubAgentLoader> logger,
+        SubAgentModelResolver? modelResolver)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _registry = registry;
+        _logger = logger;
+        _modelResolver = modelResolver;
     }
 
     /// <summary>
@@ -54,6 +67,18 @@ public sealed class WorkspaceSubAgentLoader
     public async Task<IReadOnlyDictionary<string, SubAgentTemplate>> LoadAsync(
         SandboxSession session,
         Func<IStreamingAgent> agentFactory,
+        CancellationToken ct = default)
+    {
+        return await LoadWithCharacteristicsAsync(session, agentFactory, null, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Discovers templates and attaches the conversation's characteristics-aware factory.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, SubAgentTemplate>> LoadWithCharacteristicsAsync(
+        SandboxSession session,
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -86,7 +111,13 @@ public sealed class WorkspaceSubAgentLoader
 
         foreach (var item in items)
         {
-            var loaded = await LoadOneAsync(session, item, agentFactory, ct).ConfigureAwait(false);
+            var loaded = await LoadOneWithCharacteristicsAsync(
+                    session,
+                    item,
+                    agentFactory,
+                    characteristicsAgentFactory,
+                    ct)
+                .ConfigureAwait(false);
             if (loaded is null || string.IsNullOrWhiteSpace(loaded.Name))
             {
                 continue;
@@ -125,6 +156,19 @@ public sealed class WorkspaceSubAgentLoader
         Func<IStreamingAgent> agentFactory,
         CancellationToken ct = default)
     {
+        return await LoadOneWithCharacteristicsAsync(session, item, agentFactory, null, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Loads one template and attaches the conversation's characteristics-aware factory.
+    /// </summary>
+    public async Task<SubAgentTemplate?> LoadOneWithCharacteristicsAsync(
+        SandboxSession session,
+        SandboxSessionRegistry.DiscoveredItem item,
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory,
+        CancellationToken ct = default)
+    {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(item);
         ArgumentNullException.ThrowIfNull(agentFactory);
@@ -151,7 +195,7 @@ public sealed class WorkspaceSubAgentLoader
                 return null;
             }
 
-            return SubAgentTemplateMapper.Map(parsedInline, agentFactory, DefaultMaxTurnsPerRun);
+            return MapParsed(parsedInline, agentFactory, characteristicsAgentFactory);
         }
 
         if (string.IsNullOrWhiteSpace(session.HostPath))
@@ -204,7 +248,45 @@ public sealed class WorkspaceSubAgentLoader
             return null;
         }
 
-        return SubAgentTemplateMapper.Map(parsed, agentFactory, DefaultMaxTurnsPerRun);
+        return MapParsed(parsed, agentFactory, characteristicsAgentFactory);
+    }
+
+    private SubAgentTemplate MapParsed(
+        ParsedSubAgent parsed,
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory)
+    {
+        foreach (var diagnostic in parsed.Diagnostics)
+        {
+            _logger.LogWarning(
+                "Discovered sub-agent {Name} frontmatter diagnostic: {Diagnostic}",
+                parsed.Name,
+                diagnostic);
+        }
+
+        var effectiveModel = _modelResolver?.Resolve(
+            parsed.Model,
+            parsed.ModelIntelligence);
+        var hasAuthorPinnedModel = !string.IsNullOrWhiteSpace(parsed.Model)
+            && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase);
+        var isTierResolved =
+            !hasAuthorPinnedModel
+            && parsed.ModelIntelligence is not null
+            && effectiveModel is not null;
+        var effectiveParsed = effectiveModel is null
+            ? parsed
+            : parsed with
+            {
+                Model = effectiveModel,
+                IsModelTierResolved = isTierResolved,
+            };
+        return SubAgentTemplateMapper.Map(
+            effectiveParsed,
+            agentFactory,
+            DefaultMaxTurnsPerRun) with
+        {
+            CharacteristicsAgentFactory = characteristicsAgentFactory,
+        };
     }
 
     /// <summary>

@@ -347,10 +347,21 @@ try
         sp.GetRequiredService<AuthSharedSecret>()
     ));
 
+    _ = builder.Services.AddSingleton(sp =>
+        SubAgentIntelligenceOptions.Load(
+            builder.Configuration,
+            sp.GetRequiredService<ILogger<SubAgentIntelligenceOptions>>()
+        )
+    );
+    _ = builder.Services.AddSingleton<SubAgentModelResolver>();
+
     // Workspace sub-agent discovery. The loader asks the gateway what it has discovered in
     // the session's workspace (sub-agent markdown files under .claude/agents/, etc.) and maps
     // them into SubAgentTemplate so they show up as spawnable types in the Agent tool catalog.
-    _ = builder.Services.AddSingleton<WorkspaceSubAgentLoader>();
+    _ = builder.Services.AddSingleton(sp => new WorkspaceSubAgentLoader(
+        sp.GetRequiredService<SandboxSessionRegistry>(),
+        sp.GetRequiredService<ILogger<WorkspaceSubAgentLoader>>(),
+        sp.GetRequiredService<SubAgentModelResolver>()));
 
     // Marketplace sub-agent bridge. Maps the agents the UI's marketplace browser lists (the
     // gateway's read-only catalog) into spawnable templates, filling any gap left by workspace
@@ -1018,8 +1029,9 @@ try
                     // a sandbox session is active, so the Agent tool advertises an identical catalog
                     // regardless of provider — and the mock-only instruction-chain tool_schema probe
                     // can validate the workspace-discovered/marketplace sub-agents. In all cases the
-                    // template AgentFactory reuses agentFactory(normalizedProviderId) so each spawn
-                    // builds a FRESH provider agent on the same backend as the parent.
+                    // Legacy AgentFactory still builds a fresh parent-backend agent. The
+                    // characteristics-aware factory below can instead route a resolved Copilot model
+                    // through its own transport, and safely falls back to the parent provider agent.
                     var isTestMode =
                         string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
                         || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal);
@@ -1029,11 +1041,19 @@ try
                     // cannot deadlock. The blocking call is HTTP only when a sandbox session is
                     // active; otherwise it completes synchronously.
                     Func<IStreamingAgent> subAgentFactory = () => agentFactory(normalizedProviderId);
+                    var characteristicsAgentFactory = new CharacteristicsAgentFactory(
+                        providerRegistry,
+                        providerAgent,
+                        model => CreateCopilotModelAgent(model, loggerFactory),
+                        loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
+                        parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null)
+                        .Create;
                     var subAgentOptions = BuildSubAgentOptionsAsync(
                             isTestMode,
                             sp.GetRequiredService<ITestAgentBuilder>(),
                             loggerFactory,
                             subAgentFactory,
+                            characteristicsAgentFactory,
                             sandboxSession,
                             sp.GetRequiredService<WorkspaceSubAgentLoader>(),
                             sp.GetRequiredService<MarketplaceSubAgentLoader>(),
@@ -1050,12 +1070,13 @@ try
                     MutableSubAgentTemplateSource? sharedSubAgentSource = null;
                     if (sandboxSession is not null && subAgentOptions is not null)
                     {
-                        var binding = sp.GetRequiredService<SandboxSessionRegistry>()
-                            .GetOrAddSubAgentBinding(
-                                sandboxSession.SessionId,
-                                threadId,
-                                subAgentOptions.Templates,
-                                subAgentFactory);
+                        var binding = BindConversationSubAgents(
+                            sp.GetRequiredService<SandboxSessionRegistry>(),
+                            sandboxSession.SessionId,
+                            threadId,
+                            subAgentOptions.Templates,
+                            subAgentFactory,
+                            characteristicsAgentFactory);
                         sharedSubAgentSource = binding.Source;
 
                         // Register this agent's threadId against the session so the
@@ -1588,7 +1609,7 @@ public partial class Program
     ///     models route through the Copilot Messages backend; OpenAI-shaped models through the Copilot
     ///     Responses backend.
     /// </summary>
-    private static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
+    internal static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
     {
         return model.Transport switch
         {
@@ -1951,23 +1972,62 @@ public partial class Program
     }
 
     /// <summary>
-    ///     Builds the sub-agent orchestration options for a chat agent, used by BOTH the real
-    ///     middleware providers (OpenAI / Anthropic / Copilot-backed) AND the mock providers
-    ///     (<c>test</c> / <c>test-anthropic</c>). The base catalog differs by provider kind — mock
-    ///     providers go through the <see cref="ITestAgentBuilder"/> seam (built-ins by default, or
-    ///     scripted templates injected by E2E); real providers start from the shared built-ins — but
-    ///     the workspace enrichment is identical for both, so the <c>Agent</c> tool advertises the
-    ///     same workspace + marketplace catalog regardless of provider. That parity is what lets the
-    ///     instruction-chain <c>tools_echo</c> / <c>tool_schema</c> probe (mock-only) validate the
-    ///     workspace-discovered and marketplace sub-agents. Each template reuses
-    ///     <paramref name="providerAgentFactory"/> — invoked per spawn so every sub-agent gets a
-    ///     FRESH provider agent on the same backend as the parent.
+    /// Attaches one conversation-scoped characteristics factory to every template while preserving
+    /// template-specific agents for inherited model routing.
     /// </summary>
+    internal static SubAgentOptions ApplyCharacteristicsAgentFactory(
+        SubAgentOptions options,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(characteristicsAgentFactory);
+
+        return options with
+        {
+            Templates = options.Templates.ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value with
+                {
+                    CharacteristicsAgentFactory = characteristics =>
+                    {
+                        var provider = characteristicsAgentFactory(characteristics);
+                        return characteristics.IsModelExplicitlySelected
+                            || characteristics.IsModelTierResolved
+                            ? provider
+                            : provider with
+                            {
+                                Agent = entry.Value.AgentFactory(),
+                                OwnsAgent = true,
+                            };
+                    },
+                },
+                StringComparer.Ordinal),
+        };
+    }
+
+    internal static SubAgentSessionBinding BindConversationSubAgents(
+        SandboxSessionRegistry registry,
+        string sessionId,
+        string conversationId,
+        IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        return registry.AddOrUpdateSubAgentBinding(
+            sessionId,
+            conversationId,
+            templates,
+            agentFactory,
+            characteristicsAgentFactory);
+    }
+
     private static async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
         bool isTestMode,
         ITestAgentBuilder testAgentBuilder,
         ILoggerFactory loggerFactory,
         Func<IStreamingAgent> providerAgentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory,
         SandboxSession? sandboxSession,
         WorkspaceSubAgentLoader workspaceLoader,
         MarketplaceSubAgentLoader marketplaceLoader,
@@ -1985,19 +2045,34 @@ public partial class Program
             };
 
         // No sandbox session (e.g. a non-workspace chat, or an E2E scenario with no gateway) means
-        // nothing to discover — keep the base catalog exactly as-is so injected E2E templates and the
-        // plain built-in surface are untouched.
-        if (baseOptions is null || sandboxSession is null)
+        // nothing to discover. Preserve the base catalog and only attach the conversation factory.
+        if (baseOptions is null)
         {
-            return baseOptions;
+            return null;
+        }
+
+        if (sandboxSession is null)
+        {
+            return ApplyCharacteristicsAgentFactory(
+                baseOptions,
+                characteristicsAgentFactory);
         }
 
         var templates = new Dictionary<string, SubAgentTemplate>(baseOptions.Templates, StringComparer.Ordinal);
         await EnrichWithWorkspaceCatalogAsync(
-                templates, providerAgentFactory, sandboxSession, workspaceLoader, marketplaceLoader, workspaceStore, logger)
+                templates,
+                providerAgentFactory,
+                characteristicsAgentFactory,
+                sandboxSession,
+                workspaceLoader,
+                marketplaceLoader,
+                workspaceStore,
+                logger)
             .ConfigureAwait(false);
 
-        return baseOptions with { Templates = templates };
+        return ApplyCharacteristicsAgentFactory(
+            baseOptions with { Templates = templates },
+            characteristicsAgentFactory);
     }
 
     /// <summary>
@@ -2018,6 +2093,7 @@ public partial class Program
     private static async Task EnrichWithWorkspaceCatalogAsync(
         IDictionary<string, SubAgentTemplate> templates,
         Func<IStreamingAgent> providerAgentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory,
         SandboxSession sandboxSession,
         WorkspaceSubAgentLoader workspaceLoader,
         MarketplaceSubAgentLoader marketplaceLoader,
@@ -2028,7 +2104,10 @@ public partial class Program
         // Fetch them concurrently so the (sync-over-async) blocking window is one round-trip, not two.
         // Both loaders are best-effort (log + return empty on failure), so neither task faults; the
         // dictionary is mutated only AFTER both complete, so the in-order merge stays single-threaded.
-        var discoveredTask = workspaceLoader.LoadAsync(sandboxSession, providerAgentFactory);
+        var discoveredTask = workspaceLoader.LoadWithCharacteristicsAsync(
+            sandboxSession,
+            providerAgentFactory,
+            characteristicsAgentFactory);
         var marketplaceTask = LoadMarketplaceSubAgentsAsync(
             marketplaceLoader, workspaceStore, sandboxSession.WorkspaceId, providerAgentFactory, logger);
 

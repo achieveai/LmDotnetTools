@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmSampleShared.Discovery;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
@@ -82,12 +83,190 @@ public class SubAgentMarkdownParserTests
     {
         // Verifies IgnoreUnmatchedProperties — additions in the gateway's frontmatter contract
         // must not break older builds.
-        var md = "---\nname: echo-agent\ndescription: Echo.\ntags: [demo, test]\nfuture_field: 42\n---\nBody.";
+        var md =
+            "---\nname: echo-agent\ndescription: Echo.\ntags: [demo, test]\nfuture_field: 42\n---\nBody.";
 
         var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
 
         parsed.Should().NotBeNull();
         parsed!.Name.Should().Be("echo-agent");
+    }
+
+    [Fact]
+    public void Parse_ModelIntelligenceLowercaseAlias_BindsTier()
+    {
+        var md = "---\nname: echo-agent\nmodelintelligence: 4\n---\nBody.";
+
+        var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
+
+        parsed.Should().NotBeNull();
+        parsed!.ModelIntelligence.Should().Be(4);
+        parsed.Diagnostics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_QuotedNumericModelIntelligence_RetainsAgentWithDiagnostic()
+    {
+        var md = "---\nname: echo-agent\nmodelintelligence: \"4\"\n---\nBody.";
+
+        var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
+
+        parsed.Should().NotBeNull();
+        parsed!.ModelIntelligence.Should().BeNull();
+        parsed
+            .Diagnostics.Should()
+            .ContainSingle(diagnostic =>
+                diagnostic.Contains("modelintelligence", StringComparison.OrdinalIgnoreCase)
+            );
+    }
+
+    [Theory]
+    [InlineData("modelintelligence")]
+    [InlineData("effort")]
+    public void Parse_ExplicitNullCharacteristic_RetainsAgentWithDiagnostic(string fieldName)
+    {
+        var md = $"---\nname: echo-agent\n{fieldName}: null\n---\nBody.";
+
+        var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
+
+        parsed.Should().NotBeNull();
+        parsed!.ModelIntelligence.Should().BeNull();
+        parsed.Effort.Should().BeNull();
+        parsed
+            .Diagnostics.Should()
+            .ContainSingle(diagnostic =>
+                diagnostic.Contains(fieldName, StringComparison.OrdinalIgnoreCase)
+            );
+    }
+
+    [Theory]
+    [InlineData("-1")]
+    [InlineData("7")]
+    [InlineData("frontier")]
+    [InlineData("[1, 2]")]
+    [InlineData("{ tier: 4 }")]
+    public void Parse_InvalidModelIntelligence_RetainsAgentWithDiagnostic(string yamlValue)
+    {
+        var md = $"---\nname: echo-agent\nmodelintelligence: {yamlValue}\n---\nBody.";
+
+        var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
+
+        parsed.Should().NotBeNull();
+        parsed!.ModelIntelligence.Should().BeNull();
+        parsed
+            .Diagnostics.Should()
+            .ContainSingle(diagnostic =>
+                diagnostic.Contains("modelintelligence", StringComparison.OrdinalIgnoreCase)
+            );
+    }
+
+    [Theory]
+    [InlineData("low", ReasoningEffort.Low)]
+    [InlineData("MEDIUM", ReasoningEffort.Medium)]
+    [InlineData("High", ReasoningEffort.High)]
+    [InlineData("ExTrA-HiGh", ReasoningEffort.Xhigh)]
+    [InlineData("XHIGH", ReasoningEffort.Xhigh)]
+    public void Parse_ValidEffort_MapsCaseInsensitively(string yamlValue, ReasoningEffort expected)
+    {
+        var md = $"---\nname: echo-agent\neffort: {yamlValue}\n---\nBody.";
+
+        var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
+
+        parsed.Should().NotBeNull();
+        parsed!.Effort.Should().Be(expected);
+        parsed.Diagnostics.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("maximum")]
+    [InlineData("[low, high]")]
+    public void Parse_InvalidEffort_RetainsAgentWithDiagnostic(string yamlValue)
+    {
+        var md = $"---\nname: echo-agent\neffort: {yamlValue}\n---\nBody.";
+
+        var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
+
+        parsed.Should().NotBeNull();
+        parsed!.Effort.Should().BeNull();
+        parsed
+            .Diagnostics.Should()
+            .ContainSingle(diagnostic =>
+                diagnostic.Contains("effort", StringComparison.OrdinalIgnoreCase)
+            );
+    }
+
+    [Theory]
+    [InlineData("effort")]
+    [InlineData("modelintelligence")]
+    public void Parse_EmptyCharacteristic_IsInvalidWhileAbsenceRemainsUnset(string fieldName)
+    {
+        var empty = SubAgentMarkdownParser.Parse(
+            $"---\nname: echo-agent\n{fieldName}:\n---\nBody.",
+            "echo-agent");
+        var absent = SubAgentMarkdownParser.Parse(
+            "---\nname: echo-agent\n---\nBody.",
+            "echo-agent");
+
+        empty.Should().NotBeNull();
+        empty!.Diagnostics.Should().ContainSingle(diagnostic =>
+            diagnostic.Contains(fieldName, StringComparison.OrdinalIgnoreCase));
+        absent.Should().NotBeNull();
+        absent!.ModelIntelligence.Should().BeNull();
+        absent.Effort.Should().BeNull();
+        absent.Diagnostics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_OptionalCharacteristicsAbsent_LeavesTypedValuesNull()
+    {
+        var md = "---\nname: echo-agent\n---\nBody.";
+
+        var parsed = SubAgentMarkdownParser.Parse(md, "echo-agent");
+
+        parsed.Should().NotBeNull();
+        parsed!.ModelIntelligence.Should().BeNull();
+        parsed.Effort.Should().BeNull();
+        parsed.Diagnostics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ParsedSubAgent_characteristics_do_not_change_legacy_equality_or_hash_code()
+    {
+        var legacy = new ParsedSubAgent("echo", "description", "model", ["Read"], "Body.");
+        var enriched = legacy with
+        {
+            ModelIntelligence = 6,
+            Effort = ReasoningEffort.Xhigh,
+            Diagnostics = ["diagnostic"],
+        };
+
+        enriched.Should().Be(legacy);
+        enriched.GetHashCode().Should().Be(legacy.GetHashCode());
+    }
+
+    [Fact]
+    public void ParsedSubAgent_Diagnostics_SnapshotsAssignedMutableList()
+    {
+        var source = new List<string> { "original" };
+        var parsed = new ParsedSubAgent("echo", null, null, null, "Body.") { Diagnostics = source };
+
+        source[0] = "mutated";
+        source.Add("added");
+
+        parsed.Diagnostics.Should().Equal("original");
+    }
+
+    [Fact]
+    public void ParsedSubAgent_Diagnostics_CannotBeMutatedThroughReturnedListCast()
+    {
+        List<string> source = ["original"];
+        var parsed = new ParsedSubAgent("echo", null, null, null, "Body.") { Diagnostics = source };
+        var returnedList = parsed.Diagnostics.Should().BeAssignableTo<IList<string>>().Subject;
+
+        var mutate = () => returnedList[0] = "mutated";
+
+        mutate.Should().Throw<NotSupportedException>();
+        parsed.Diagnostics.Should().Equal("original");
     }
 
     [Fact]
