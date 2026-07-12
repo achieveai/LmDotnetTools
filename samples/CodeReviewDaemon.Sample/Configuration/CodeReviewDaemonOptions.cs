@@ -71,6 +71,16 @@ internal sealed class CodeReviewDaemonOptions
     public string? LogFilePath { get; init; }
 
     /// <summary>
+    /// When true, a review whose sandbox session has NO <c>code-reviewer</c> sub-agent support (nothing
+    /// discovered → <c>SubAgentOptions</c> would be null) is ABORTED rather than degraded to a skill-only
+    /// review, and the daemon stops (<see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.StopApplication"/>)
+    /// — Revobot's reviews are only trustworthy WITH the code-reviewer skill + sub-agents, so a workspace
+    /// that can't provide them is a fatal misconfiguration to surface, not to review through. Default false
+    /// (degrade-not-fail, unchanged).
+    /// </summary>
+    public bool RequireSkillSupport { get; init; }
+
+    /// <summary>
     /// Model id the primary review agent runs with (the id sent to the Copilot-backed Anthropic Messages
     /// backend, e.g. <c>claude-sonnet-5</c>). The poller stamps it onto each review run so the primary
     /// review has a concrete model — an empty id would be rejected by the provider. The A/B comparison
@@ -167,6 +177,15 @@ internal sealed class CodeReviewDaemonOptions
 
     /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>, <c>superpowers</c>.</summary>
     public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
+
+    /// <summary>
+    /// Marketplace aliases whose discovered sub-agents are exposed to the review agent as spawnable
+    /// <c>Agent</c> templates — INDEPENDENT of <see cref="Marketplaces"/> (which controls what the gateway
+    /// loads for skills + discovery): a marketplace can stay loaded for its skills yet be excluded here. The
+    /// default <c>gb-plugins</c> exposes EVERY plugin's agents in that marketplace (not just
+    /// <c>code-reviewer</c>). An empty list ⇒ expose ALL discovered sub-agents regardless of marketplace.
+    /// </summary>
+    public IReadOnlyList<string> SubAgentMarketplaces { get; init; } = ["gb-plugins"];
 
     /// <summary>
     /// The read-only MCP tool names the review agent may call. The daemon owns all writes, so this must
