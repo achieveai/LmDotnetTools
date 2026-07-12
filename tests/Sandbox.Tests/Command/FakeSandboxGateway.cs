@@ -353,8 +353,8 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var expired = now > s.Lease;
-            var oldEnough = now - s.Created >= CommandArtifactLayout.StaleAgeSeconds;
-            if (s.Lease > 0 && s.Created > 0 && expired && oldEnough)
+            var pastRetentionWindow = now - s.Created > CommandArtifactLayout.StaleAgeSeconds;
+            if (s.Lease > 0 && s.Created > 0 && expired && pastRetentionWindow)
             {
                 _ops.Remove(request.OperationDirectory);
                 CleanedOperations.Add(request.OperationDirectory);

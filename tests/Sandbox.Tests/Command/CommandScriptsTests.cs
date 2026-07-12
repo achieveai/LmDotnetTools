@@ -38,13 +38,27 @@ public class CommandScriptsTests
     }
 
     [Fact]
-    public void BuildRun_HasNoExpiredLeaseTakeover_NeverDeletesAnExistingClaim()
+    public void BuildRun_NeverDeletesTheClaimDirectory_OnlyTheGcLock()
     {
         var script = CommandScripts.BuildRun(Op, "digest", "'ls'", string.Empty, 120);
 
-        // Removing the operation directory is exactly the non-atomic takeover that could double-run a
-        // command; the RUN wrapper must only ever mkdir-elect and never rm-rf/takeover a claim.
-        script.Should().NotContain("rm -rf");
+        // Deleting the operation directory is exactly the non-atomic takeover that could double-run a
+        // command; the RUN wrapper must never rm-rf the CLAIM directory. It may only reclaim a stale
+        // per-operation GC LOCK ("$OP.gc"), which is a different path.
+        script.Should().NotContain("rm -rf \"$OP\"");
+        script.Should().Contain("rm -rf \"$GCL\"");
+    }
+
+    [Fact]
+    public void BuildRun_RespectsAnActiveGcLock_BeforeCreatingAClaim()
+    {
+        var script = CommandScripts.BuildRun(Op, "digest", "'ls'", string.Empty, 120);
+
+        // Claim creation checks the sibling GC lock and its liveness, so a claim is never created into an
+        // in-progress purge of the same operation.
+        script.Should().Contain("GCL=\"$OP.gc\"");
+        script.Should().Contain("if [ -d \"$GCL\" ]; then");
+        script.Should().Contain("gclock_is_live");
     }
 
     [Fact]
@@ -97,6 +111,24 @@ public class CommandScriptsTests
         // never trusted from the SDK's earlier listing snapshot.
         script.Should().Contain("now=$(date +%s)");
         script.Should().Contain("rm -rf \"$OP\"");
+        // The age test is STRICTLY past the retention window (an operation exactly 24h old is retained).
+        script.Should().Contain("$((now - created))\" -gt \"$STALE\"");
+    }
+
+    [Fact]
+    public void BuildGcPurge_DeletesOnlyUnderTheGcLock_LosersNeverDelete()
+    {
+        var script = CommandScripts.BuildGcPurge(Op);
+
+        // The whole re-validate-and-delete body is gated on winning the per-op GC lock, so a purger that
+        // loses the atomic mkdir election never reaches the rm -rf.
+        script.Should().Contain("GCL=\"$OP.gc\"");
+        script.Should().Contain("if gclock_try; then");
+        script.Should().Contain("gclock_release");
+        var lockIndex = script.IndexOf("if gclock_try; then", StringComparison.Ordinal);
+        var deleteIndex = script.IndexOf("rm -rf \"$OP\"", StringComparison.Ordinal);
+        lockIndex.Should().BeGreaterThan(-1);
+        deleteIndex.Should().BeGreaterThan(lockIndex, "the delete must be inside the GC-lock-won branch");
     }
 
     [Fact]

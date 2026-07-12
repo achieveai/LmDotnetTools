@@ -53,13 +53,17 @@ public sealed partial class SandboxClient
     /// more than once even though this returns a single result.
     /// </para>
     /// <para>
-    /// <b>Same-id reuse never re-runs.</b> A verified success reclaims the operation's large output but
-    /// retains a bounded, credential-free completion marker (the manifest plus lease/created). A later
-    /// call with the same operation id is answered from that marker — the small output is returned
-    /// verbatim, and a reclaimed large output is rejected as <see cref="SandboxErrorKind.Integrity"/> —
-    /// without ever submitting a second RUN. Reusing an operation id with a <i>different</i> command
-    /// fails <see cref="SandboxErrorKind.Integrity"/> (canonical digest mismatch), also without
-    /// submitting.
+    /// <b>Same-id reuse never re-runs — within a bounded retention window.</b> A verified success
+    /// reclaims the operation's large output but retains a bounded, credential-free completion marker
+    /// (the manifest plus lease/created). For the operation-id idempotency/recovery retention window
+    /// (24&#160;hours from creation, <see cref="CommandArtifactLayout.StaleAgeSeconds"/>) a later call
+    /// with the same operation id is answered from that marker — the small output is returned verbatim,
+    /// and a reclaimed large output is rejected as <see cref="SandboxErrorKind.Integrity"/> — without
+    /// ever submitting a second RUN. Reusing an operation id with a <i>different</i> command fails
+    /// <see cref="SandboxErrorKind.Integrity"/> (canonical digest mismatch), also without submitting.
+    /// The window is inclusive of its 24&#160;hour boundary; once it elapses the bounded stale sweep may
+    /// reclaim the marker, after which reusing the id is treated as a NEW operation that may re-execute.
+    /// The SDK does not promise idempotency forever.
     /// </para>
     /// </remarks>
     /// <exception cref="SandboxException">

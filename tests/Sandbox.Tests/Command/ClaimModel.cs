@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.Sandbox.Command;
+
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 
 /// <summary>
@@ -17,6 +19,21 @@ internal sealed class ClaimFs
 
     /// <summary>Ordered list of callers whose command actually ran — one entry per side effect.</summary>
     public List<string> SideEffects { get; } = [];
+
+    /// <summary>Ordered list of callers whose purge/self-recovery actually deleted the operation directory — one entry per delete of an existing directory.</summary>
+    public List<string> Deletions { get; } = [];
+
+    /// <summary>Models a purge/self-recovery delete: <c>rm -rf</c> the directory and record the caller, but only when the directory actually existed.</summary>
+    public void DeleteOp(string caller, string dir)
+    {
+        if (!_dirs.Contains(dir))
+        {
+            return;
+        }
+
+        RmRf(dir);
+        Deletions.Add(caller);
+    }
 
     /// <summary>Idempotent <c>mkdir -p</c>.</summary>
     public void MkdirP(string dir) => _dirs.Add(dir);
@@ -73,14 +90,29 @@ internal sealed class ClaimModel
     public const string DigestFile = "root/op/digest";
     public const string Manifest = "root/op/manifest.json";
 
+    /// <summary>The sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) and its timestamp file.</summary>
+    public const string GcLock = "root/op.gc";
+    public const string GcLockTs = "root/op.gc/ts";
+
     /// <summary>Boundary: the caller has just won the <c>mkdir</c> claim but has NOT written its lease yet.</summary>
     public const string WonClaimBeforeLease = "won-claim-before-lease";
 
     /// <summary>Boundary (pre-fix only): the caller decided to take over an expired lease but has NOT yet run its non-atomic <c>rm -rf</c>+<c>mkdir</c>.</summary>
     public const string DecidedTakeoverBeforeRemove = "decided-takeover-before-remove";
 
+    /// <summary>Boundary: a purger/self-recovery has won the per-operation GC lock but has NOT yet re-validated or deleted.</summary>
+    public const string WonGcLock = "won-gclock";
+
+    /// <summary>Boundary: a purger lost the GC-lock election (a live holder owns it) and will NOT delete.</summary>
+    public const string LostGcLock = "lost-gclock";
+
+    /// <summary>Boundary (pre-fix only): an unlocked purger re-validated the claim as stale but has NOT yet deleted — the serialization hole the GC lock closes.</summary>
+    public const string DecidedPurgeWithoutLock = "decided-purge-without-lock";
+
     private const long Exec = 120;
     private const long Grace = 300;
+    private const long GcLockTtl = CommandArtifactLayout.GcLockStaleSeconds;
+    private const long StaleAge = CommandArtifactLayout.StaleAgeSeconds;
 
     private readonly bool _takeoverEnabled;
 
@@ -101,6 +133,18 @@ internal sealed class ClaimModel
             yield break;
         }
 
+        // F3: claim creation respects a live GC lock — never race an in-progress purge's delete.
+        if (Fs.DirExists(GcLock))
+        {
+            if (GcLockIsLive())
+            {
+                Fs.Emit(caller, Fs.FileExists(Manifest) ? "MANIFEST" : "PENDING");
+                yield break;
+            }
+
+            Fs.RmRf(GcLock); // stale lock (crashed purger): reclaim so it cannot block forever
+        }
+
         if (Fs.Mkdir(Op)) // if mkdir "$OP"; then claim_run; exit 0
         {
             yield return WonClaimBeforeLease;
@@ -118,10 +162,8 @@ internal sealed class ClaimModel
             yield break;
         }
 
-        // Pre-fix ONLY: the expired-lease takeover. The shipped wrapper has no takeover block — an
-        // expired-but-uncommitted claim falls straight through to PENDING and is left for the guarded
-        // stale sweep, because rm -rf + mkdir is not atomic against a concurrent contender and can
-        // double-run the command.
+        // Pre-fix ONLY: the expired-lease takeover. The shipped wrapper has no such non-atomic
+        // rm -rf + mkdir takeover — abandoned-claim recovery is instead guarded by the GC lock (F2/F3).
         if (_takeoverEnabled && Fs.FileExists(Lease) && IsExpired())
         {
             yield return DecidedTakeoverBeforeRemove;
@@ -138,6 +180,84 @@ internal sealed class ClaimModel
         }
 
         Fs.Emit(caller, Fs.FileExists(Manifest) ? "MANIFEST" : "PENDING"); // else PENDING
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="AchieveAi.LmDotnetTools.Sandbox.Command.CommandScripts.BuildGcPurge"/>: a
+    /// stale-sweep purger. When <paramref name="lockGuarded"/> (the shipped behavior) the delete happens
+    /// ONLY under the per-operation GC lock and ONLY after re-validating, under that lock, that the claim
+    /// is still expired AND strictly past the 24h retention window — so a purger that loses the election
+    /// never deletes, and a replacement active claim created after the winner released is never deleted.
+    /// The unlocked variant is retained to reproduce the double-delete hole the lock closes.
+    /// </summary>
+    public IEnumerable<string> Purge(string caller, bool lockGuarded)
+    {
+        if (lockGuarded)
+        {
+            if (!GcLockTry())
+            {
+                yield return LostGcLock; // a live holder owns the lock: never delete
+                yield break;
+            }
+
+            yield return WonGcLock;
+            if (RevalidateStaleForSweep())
+            {
+                Fs.DeleteOp(caller, Op);
+            }
+
+            GcLockRelease();
+            yield break;
+        }
+
+        // Pre-fix: no lock. Re-validate then delete with a gap in between, so a second unlocked purger
+        // can pass re-validation on the OLD claim and later delete a replacement created in the gap.
+        if (RevalidateStaleForSweep())
+        {
+            yield return DecidedPurgeWithoutLock;
+            Fs.DeleteOp(caller, Op);
+        }
+    }
+
+    /// <summary>Whether a held GC lock is fresh (stamped within the bounded TTL); a missing/old stamp is a crashed holder's leftover.</summary>
+    private bool GcLockIsLive()
+    {
+        var stamp = ParseOrZero(Fs.Read(GcLockTs));
+        return stamp > 0 && Fs.Now - stamp <= GcLockTtl;
+    }
+
+    /// <summary>Mirrors <c>gclock_try</c>: win the atomic mkdir (stamping the time), or reclaim a stale lock and re-elect a single owner. Returns whether THIS caller now holds the lock.</summary>
+    private bool GcLockTry()
+    {
+        if (Fs.Mkdir(GcLock))
+        {
+            Fs.Write(GcLockTs, Fs.Now.ToString());
+            return true;
+        }
+
+        if (GcLockIsLive())
+        {
+            return false;
+        }
+
+        Fs.RmRf(GcLock);
+        if (Fs.Mkdir(GcLock))
+        {
+            Fs.Write(GcLockTs, Fs.Now.ToString());
+            return true;
+        }
+
+        return false;
+    }
+
+    private void GcLockRelease() => Fs.RmRf(GcLock);
+
+    /// <summary>The stale-sweep re-validation: expired lease AND strictly past the 24h retention window, read at delete time.</summary>
+    private bool RevalidateStaleForSweep()
+    {
+        var lease = ParseOrZero(Fs.Read(Lease));
+        var created = ParseOrZero(Fs.Read(Created));
+        return lease > 0 && created > 0 && Fs.Now > lease && Fs.Now - created > StaleAge;
     }
 
     /// <summary>Mirrors <c>claim_run()</c>: establish lease (first) / created / digest, run the command, commit the manifest.</summary>

@@ -16,7 +16,9 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <para>
 /// <see cref="OperationId"/> is the resolved operation id (the caller's, or the one the SDK
 /// generated). Passing it back on a later <see cref="SandboxClient.ExecuteAsync"/> call recovers
-/// this same result without re-running the command.
+/// this same result without re-running the command, for a bounded 24-hour idempotency/recovery
+/// retention window from the operation's creation. After that window the retained marker may be
+/// swept and reusing the id is treated as a new operation, so recovery is not promised forever.
 /// </para>
 /// <para>
 /// <b>Delivery is at-least-once.</b> The SDK submits the command exactly once, but the gateway may
@@ -35,7 +37,7 @@ public sealed record SandboxCommandResult
     /// <summary>The exact standard-error bytes the command produced, decoded as UTF-8.</summary>
     public required string StandardError { get; init; }
 
-    /// <summary>The resolved operation id, usable to recover this result on a later call.</summary>
+    /// <summary>The resolved operation id, usable to recover this result on a later call within the bounded 24-hour retention window.</summary>
     public required string OperationId { get; init; }
 
     /// <summary>

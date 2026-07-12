@@ -3,9 +3,10 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Command;
 /// <summary>
 /// The pure stale-cleanup selection rule, kept separate from the gateway plumbing so it can be
 /// exercised directly. An artifact directory is eligible for deletion only when BOTH its lease has
-/// expired AND it is at least <see cref="CommandArtifactLayout.StaleAgeSeconds"/> (24 hours) old — so
-/// a still-leased (active) operation is protected regardless of age, and a recently-created operation
-/// is protected regardless of its lease.
+/// expired AND it is STRICTLY older than <see cref="CommandArtifactLayout.StaleAgeSeconds"/> (24 hours,
+/// the operation-id idempotency/recovery retention window) — so a still-leased (active) operation is
+/// protected regardless of age, an operation exactly at the 24-hour boundary is still retained (a
+/// same-id retry there is answered, never re-run), and only an operation past the window is reclaimed.
 /// </summary>
 internal static class CommandStaleCleanup
 {
@@ -31,9 +32,12 @@ internal static class CommandStaleCleanup
                 continue;
             }
 
+            // The 24-hour retention window is INCLUSIVE of its boundary: an operation exactly 24h old is
+            // still recoverable (kept); only one strictly past the window is reclaimed. This keeps the
+            // sweep honest against the documented "within the window a same-id retry never re-runs".
             var leaseExpired = nowUnixSeconds > lease;
-            var oldEnough = nowUnixSeconds - created >= CommandArtifactLayout.StaleAgeSeconds;
-            if (leaseExpired && oldEnough)
+            var pastRetentionWindow = nowUnixSeconds - created > CommandArtifactLayout.StaleAgeSeconds;
+            if (leaseExpired && pastRetentionWindow)
             {
                 stale.Add(name);
             }

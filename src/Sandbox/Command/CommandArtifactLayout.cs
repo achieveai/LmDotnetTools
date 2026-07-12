@@ -64,7 +64,14 @@ internal static class CommandArtifactLayout
     /// <summary>Grace period added to the execution timeout when computing an operation's lease expiry.</summary>
     public const int LeaseGraceSeconds = 300;
 
-    /// <summary>An artifact is eligible for stale cleanup only once it is at least this old (24 hours).</summary>
+    /// <summary>
+    /// The operation-id idempotency/recovery retention window: 24 hours. An operation's completion
+    /// marker (and any retained artifacts) is kept for at least this long after creation, so a same-id
+    /// retry within the window is always answered from it and the command is never re-run. An artifact
+    /// becomes eligible for stale cleanup only once its lease has expired AND it is STRICTLY older than
+    /// this (see <see cref="CommandStaleCleanup"/>); reuse of the id after the window may be treated as a
+    /// new operation. The window is deliberately bounded — the SDK does not promise idempotency forever.
+    /// </summary>
     public const long StaleAgeSeconds = 24 * 60 * 60;
 
     /// <summary>
@@ -73,6 +80,17 @@ internal static class CommandArtifactLayout
     /// could dominate a command's latency in a workspace with many stale operations.
     /// </summary>
     public const int StaleScanLimit = 256;
+
+    /// <summary>
+    /// Bounded time-to-live for a per-operation GC lock (the sibling <c>&lt;op&gt;.gc</c> directory a
+    /// purger/self-recovery mkdir-elects before it may delete a claim). A lock is held only for a
+    /// re-validate-and-delete that completes in milliseconds, so one still present after this many
+    /// seconds belongs to a crashed holder and may be safely reclaimed by the next contender. It is
+    /// deliberately far longer than the actual hold time (minutes, not milliseconds) so a merely-slow —
+    /// not crashed — holder is never mistaken for stale; correctness never relies on the TTL because
+    /// every delete is gated on a fresh under-lock re-validation of the operation's current lease.
+    /// </summary>
+    public const int GcLockStaleSeconds = 300;
 
     /// <summary>
     /// Exact character length of an operation-directory name (the lowercase-hex prefix of a SHA-256, see

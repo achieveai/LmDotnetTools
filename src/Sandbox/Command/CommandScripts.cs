@@ -99,6 +99,49 @@ internal static class CommandScripts
         + "' \"$b64\"; }";
 
     /// <summary>
+    /// Portable "read a small unsigned integer file, defaulting to 0" helper. A missing file, an empty
+    /// file, or any non-digit content all yield <c>0</c>, so downstream numeric comparisons are always
+    /// well-defined even against a torn or hostile lease/created/timestamp file.
+    /// </summary>
+    private const string NumFunction =
+        "lmsbx_num() { _v=$(cat \"$1\" 2>/dev/null || echo 0); case \"$_v\" in ''|*[!0-9]*) _v=0 ;; esac; printf '%s' \"$_v\"; }";
+
+    /// <summary>
+    /// The per-operation GC-lock primitive: a sibling <c>&lt;op&gt;.gc</c> directory whose sole owner is
+    /// elected by an atomic <c>mkdir</c>. Deletion of an operation directory (a stale-sweep purge or an
+    /// abandoned-claim self-recovery) may proceed ONLY while holding this lock, and every holder
+    /// re-validates the operation's CURRENT lease under the lock before deleting — so the lock serializes
+    /// contending purgers and the re-validation guarantees a refreshed/replacement active claim is never
+    /// deleted even in the rare double-owner window.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>gclock_is_live</c> reports whether a held lock is fresh (stamped within
+    /// <see cref="CommandArtifactLayout.GcLockStaleSeconds"/>): a live lock is respected (a contender
+    /// backs off), a lock with no or an old timestamp is a crashed holder's leftover.
+    /// </para>
+    /// <para>
+    /// <c>gclock_try</c> returns success (0) only if THIS caller now holds the lock: it wins the atomic
+    /// <c>mkdir</c> and stamps the time, or — finding a stale lock — reclaims it and re-elects a single
+    /// owner via a fresh <c>mkdir</c> (the loser's <c>mkdir</c> fails, so it never deletes). It returns
+    /// failure (1) while a LIVE lock is held by someone else. Reclaiming a stale lock cannot cause an
+    /// unsafe delete because the delete itself is always gated on a fresh under-lock re-validation.
+    /// </para>
+    /// </remarks>
+    private const string GcLockFunctions =
+        NumFunction
+        + "\n"
+        + "gclock_is_live() { _lts=$(lmsbx_num \"$GCL/ts\"); _now=$(date +%s); [ \"$_lts\" -gt 0 ] && [ \"$((_now - _lts))\" -le \"$GCLOCKTTL\" ]; }\n"
+        + "gclock_stamp() { printf '%s' \"$(date +%s)\" > \"$GCL/ts\" 2>/dev/null; }\n"
+        + "gclock_try() { "
+        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_stamp; return 0; fi; "
+        + "if gclock_is_live; then return 1; fi; "
+        + "rm -rf \"$GCL\" 2>/dev/null; "
+        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_stamp; return 0; fi; "
+        + "return 1; }\n"
+        + "gclock_release() { rm -rf \"$GCL\" 2>/dev/null; }";
+
+    /// <summary>
     /// Builds the single side-effecting wrapper. In order: fast-path an already-persisted manifest;
     /// atomically <c>mkdir</c>-claim and run (electing exactly one submitter); otherwise report PENDING
     /// so a caller behind an existing claim polls instead of re-running. The command's exact
@@ -107,14 +150,15 @@ internal static class CommandScripts
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>No claim is ever deleted or taken over here.</b> Electing a submitter is a single atomic
-    /// <c>mkdir</c>: the winner runs, every other concurrent caller sees the existing claim and reports
-    /// PENDING. There is deliberately no expired-lease takeover — reclaiming a claim would require a
-    /// delete+recreate that is not atomic against a concurrent contender under the pinned shell
-    /// primitives, and that race can double-run a non-idempotent command. An abandoned claim (a
-    /// submitter that crashed after claiming) is therefore left non-runnable and is reclaimed only by
-    /// the guarded, re-validated stale sweep after 24h of inactivity, after which a same-id retry
-    /// succeeds.
+    /// <b>Claim election respects an in-progress purge.</b> Electing a submitter is a single atomic
+    /// <c>mkdir</c> of the operation directory: the winner runs, every other concurrent caller sees the
+    /// existing claim and reports PENDING. Before claiming, the wrapper also checks the per-operation GC
+    /// lock (the sibling <c>&lt;op&gt;.gc</c> directory): while a live purge holds it, the wrapper reports
+    /// PENDING instead of creating a claim that could race the purger's delete, and a later retry
+    /// proceeds once the lock is released. A crashed purger's stale lock (older than the bounded TTL) is
+    /// reclaimed so it can never block the operation permanently. An abandoned claim (a crashed submitter
+    /// leaving an expired lease and no manifest) is still left non-runnable here and reclaimed by the
+    /// guarded, GC-locked stale sweep.
     /// </para>
     /// <para>
     /// <b>Umask is scoped to SDK artifacts only.</b> A restrictive <c>umask 077</c> governs the
@@ -156,6 +200,7 @@ internal static class CommandScripts
             "set -u",
             "ROOT=" + RootExpression,
             "OP=" + OpAssignment(operationDirectory),
+            "GCL=\"$OP.gc\"",
             "MAN=\"$OP/manifest.json\"",
             "OUT=\"$OP/stdout\"",
             "ERR=\"$OP/stderr\"",
@@ -163,10 +208,12 @@ internal static class CommandScripts
             "THRESH=" + CommandArtifactLayout.InlineThresholdBytes.ToString(CultureInfo.InvariantCulture),
             "EXEC=" + executionTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
             "GRACE=" + CommandArtifactLayout.LeaseGraceSeconds.ToString(CultureInfo.InvariantCulture),
+            "GCLOCKTTL=" + CommandArtifactLayout.GcLockStaleSeconds.ToString(CultureInfo.InvariantCulture),
             "SENT='" + CommandSentinel.Marker + "'",
             Sha256Function,
             StreamJsonFunction,
             EmitManifestFunction,
+            GcLockFunctions,
             "claim_run() {",
             "  created=$(date +%s)",
             "  lease=$((created + EXEC + GRACE))",
@@ -192,6 +239,19 @@ internal static class CommandScripts
             "umask 077",
             "mkdir -p \"$ROOT\" 2>/dev/null",
             "if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
+            // Respect an in-progress purge of THIS operation: a live GC lock means a purger may be about
+            // to delete the directory, so never create a claim that races it — report PENDING (or a
+            // manifest if one just appeared) and let a later retry proceed once the lock is released. A
+            // stale lock (crashed purger, past the bounded TTL) is reclaimed so it cannot block forever.
+            "if [ -d \"$GCL\" ]; then",
+            "  if gclock_is_live; then",
+            "    if [ -f \"$MAN\" ]; then emit_manifest; else printf '%s %s\\n' \"$SENT\" '"
+                + CommandSentinel.KindPending
+                + "'; fi",
+            "    exit 0",
+            "  fi",
+            "  rm -rf \"$GCL\" 2>/dev/null",
+            "fi",
             "if mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
             "if [ -f \"$MAN\" ]; then emit_manifest; else printf '%s %s\\n' \"$SENT\" '"
                 + CommandSentinel.KindPending
@@ -286,10 +346,13 @@ internal static class CommandScripts
         );
 
     /// <summary>
-    /// Builds a re-validated deletion of a single stale artifact directory. The eligibility decision is
-    /// re-made HERE, from the directory's current lease/created read at delete time, rather than trusted
-    /// from the SDK's earlier listing snapshot — so an operation that was refreshed (a re-established or
-    /// extended lease) or recreated between the listing and this call is never deleted.
+    /// Builds a re-validated, GC-lock-guarded deletion of a single stale artifact directory. Deletion
+    /// happens ONLY while holding the per-operation GC lock (<c>gclock_try</c>): a purger that loses the
+    /// election never deletes. The eligibility decision is then re-made HERE, from the directory's
+    /// current lease/created read at delete time UNDER the lock, rather than trusted from the SDK's
+    /// earlier listing snapshot — so an operation that was refreshed (a re-established or extended lease)
+    /// or replaced by a new active claim between the listing and this call is never deleted. The age test
+    /// is STRICTLY greater than the retention window, so an operation exactly 24h old is still retained.
     /// </summary>
     public static string BuildGcPurge(string operationDirectory) =>
         string.Join(
@@ -297,15 +360,20 @@ internal static class CommandScripts
             MarkerPrefix + "GCPURGE op=" + operationDirectory,
             "ROOT=" + RootExpression,
             "OP=" + OpAssignment(operationDirectory),
+            "GCL=\"$OP.gc\"",
             "SENT='" + CommandSentinel.Marker + "'",
             "STALE=" + CommandArtifactLayout.StaleAgeSeconds.ToString(CultureInfo.InvariantCulture),
-            "if [ -f \"$OP/lease\" ] && [ -f \"$OP/created\" ]; then",
-            "  lease=$(cat \"$OP/lease\" 2>/dev/null || echo 0)",
-            "  created=$(cat \"$OP/created\" 2>/dev/null || echo 0)",
-            "  now=$(date +%s)",
-            "  case \"$lease\" in ''|*[!0-9]*) lease=0 ;; esac",
-            "  case \"$created\" in ''|*[!0-9]*) created=0 ;; esac",
-            "  if [ \"$lease\" -gt 0 ] && [ \"$created\" -gt 0 ] && [ \"$now\" -gt \"$lease\" ] && [ \"$((now - created))\" -ge \"$STALE\" ]; then rm -rf \"$OP\" 2>/dev/null; fi",
+            "GCLOCKTTL=" + CommandArtifactLayout.GcLockStaleSeconds.ToString(CultureInfo.InvariantCulture),
+            GcLockFunctions,
+            // Only the GC-lock winner may revalidate and delete; a losing purger falls straight through.
+            "if gclock_try; then",
+            "  if [ -f \"$OP/lease\" ] && [ -f \"$OP/created\" ]; then",
+            "    lease=$(lmsbx_num \"$OP/lease\")",
+            "    created=$(lmsbx_num \"$OP/created\")",
+            "    now=$(date +%s)",
+            "    if [ \"$lease\" -gt 0 ] && [ \"$created\" -gt 0 ] && [ \"$now\" -gt \"$lease\" ] && [ \"$((now - created))\" -gt \"$STALE\" ]; then rm -rf \"$OP\" 2>/dev/null; fi",
+            "  fi",
+            "  gclock_release",
             "fi",
             "printf '%s %s\\n' \"$SENT\" '" + CommandSentinel.KindNone + "'"
         );

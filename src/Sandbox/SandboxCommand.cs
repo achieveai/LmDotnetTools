@@ -43,7 +43,9 @@ public sealed record SandboxCommand
     /// <summary>
     /// Optional caller-chosen operation id used to recover a result after an ambiguous transport
     /// failure. <c>null</c> (the default) lets the SDK generate one. Length-bounded and
-    /// control-character-free when supplied; never used directly as a filesystem path.
+    /// control-character-free when supplied; never used directly as a filesystem path. Recovery by
+    /// reusing the id is guaranteed only within a bounded 24-hour retention window (see
+    /// <see cref="SandboxClient.ExecuteAsync"/>); after it, reuse may start a new operation.
     /// </summary>
     public string? OperationId { get; }
 

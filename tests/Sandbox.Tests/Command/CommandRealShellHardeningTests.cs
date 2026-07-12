@@ -80,6 +80,78 @@ public class CommandRealShellHardeningTests
     }
 
     [SkippableFact]
+    public async Task RealShell_GcPurge_SecondPurgerCannotDeleteAReplacementActiveClaim()
+    {
+        await PosixShellHarness.RequireCapabilityAsync();
+        using var workspace = PosixShellHarness.NewWorkspace();
+        // An abandoned claim that is expired AND strictly past the retention window (ancient lease/created).
+        SeedClaimDirectory(workspace, OpA, lease: 1, created: 1);
+
+        // The first purger wins the GC lock, re-validates it as stale, and removes it.
+        await PosixShellHarness.RunAsync(CommandScripts.BuildGcPurge(OpA), workspace);
+        Directory
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{OpA}"))
+            .Should()
+            .BeFalse("the stale abandoned claim is purged under the GC lock");
+
+        // A fresh claimant replaces it with an ACTIVE claim (a far-future lease, no manifest yet).
+        var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        SeedClaimDirectory(workspace, OpA, lease: nowUnix + 100_000, created: nowUnix);
+
+        // A second purger re-validates the CURRENT state under the lock and must spare the replacement.
+        await PosixShellHarness.RunAsync(CommandScripts.BuildGcPurge(OpA), workspace);
+
+        Directory
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{OpA}"))
+            .Should()
+            .BeTrue("a re-validating, GC-locked purger never deletes a replacement active claim");
+    }
+
+    [SkippableFact]
+    public async Task RealShell_Run_RespectsALiveGcLock_ReportsPending_WithoutCreatingAClaimOrRunning()
+    {
+        await PosixShellHarness.RequireCapabilityAsync();
+        using var workspace = PosixShellHarness.NewWorkspace();
+        // A live GC lock on the op models a purge in progress the claim must not race.
+        var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        SeedGcLock(workspace, OpA, timestamp: nowUnix);
+        var argv = new[] { "sh", "-c", "printf ran > \"$SANDBOX_WORKSPACE/RAN\"" };
+        var script = CommandScripts.BuildRun(OpA, S_digest, PosixArgv.Join(argv), string.Empty, 120);
+
+        var result = await PosixShellHarness.RunAsync(script, workspace);
+
+        CommandSentinel.Parse(result.Stdout).Kind.Should().Be(CommandSentinel.KindPending);
+        workspace
+            .HostFileExists("RAN")
+            .Should()
+            .BeFalse("a claim is never created into a live purge, so the command must not run");
+        Directory
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{OpA}"))
+            .Should()
+            .BeFalse("no claim directory is created while a live GC lock is held");
+    }
+
+    [SkippableFact]
+    public async Task RealShell_Run_ReclaimsAStaleGcLock_ThenClaimsAndRunsExactlyOnce()
+    {
+        await PosixShellHarness.RequireCapabilityAsync();
+        using var workspace = PosixShellHarness.NewWorkspace();
+        // A crashed purger's stale GC lock (ancient timestamp) must not block a fresh run forever.
+        SeedGcLock(workspace, OpA, timestamp: 1);
+        var argv = new[] { "sh", "-c", "printf ran > \"$SANDBOX_WORKSPACE/RAN\"" };
+        var script = CommandScripts.BuildRun(OpA, S_digest, PosixArgv.Join(argv), string.Empty, 120);
+
+        var result = await PosixShellHarness.RunAsync(script, workspace);
+
+        CommandSentinel.Parse(result.Stdout).Kind.Should().Be(CommandSentinel.KindManifest);
+        workspace.HostFileExists("RAN").Should().BeTrue("a stale GC lock is reclaimed, so the claim proceeds and runs");
+        Directory
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{OpA}.gc"))
+            .Should()
+            .BeFalse("the reclaimed stale GC lock is removed, not left behind");
+    }
+
+    [SkippableFact]
     public async Task RealShell_StaleListing_IgnoresMaliciousDirectoryNames_AndPurgeNeverExecutesThem()
     {
         await PosixShellHarness.RequireCapabilityAsync();
@@ -196,6 +268,14 @@ public class CommandRealShellHardeningTests
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "lease"), lease.ToString());
         File.WriteAllText(Path.Combine(directory, "created"), created.ToString());
+    }
+
+    /// <summary>Seeds a sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) stamped with the given time, as a purger holding the lock would leave it.</summary>
+    private static void SeedGcLock(ShellWorkspace workspace, string name, long timestamp)
+    {
+        var directory = workspace.HostFile($".lmsbx-sdk/ops/{name}.gc");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "ts"), timestamp.ToString());
     }
 
     private static void AssertWellFormedProbeState(string probeText)

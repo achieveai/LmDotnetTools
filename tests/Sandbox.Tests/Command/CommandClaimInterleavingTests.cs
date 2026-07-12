@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.Sandbox.Command;
 using FluentAssertions;
 using Xunit;
 
@@ -107,6 +108,88 @@ public class CommandClaimInterleavingTests
         model.Fs.Mkdir(ClaimModel.Op);
         model.Fs.Write(ClaimModel.Lease, (model.Fs.Now - 100).ToString());
         model.Fs.Write(ClaimModel.Created, (model.Fs.Now - 10_000).ToString());
+    }
+
+    // ---- F3: atomic purge election via the per-operation GC lock ----
+
+    [Fact]
+    public void PreFixUnlockedPurgers_SecondPurgerDeletesAReplacementActiveClaim_ReproducingTheHole()
+    {
+        var model = new ClaimModel(takeoverEnabled: false);
+        SeedExpiredOldCrashedClaim(model);
+
+        var a = model.Purge("A", lockGuarded: false).GetEnumerator();
+        var b = model.Purge("B", lockGuarded: false).GetEnumerator();
+        // Both unlocked purgers re-validate the SAME expired+old claim as stale before either deletes.
+        AdvanceUntil(a, ClaimModel.DecidedPurgeWithoutLock);
+        AdvanceUntil(b, ClaimModel.DecidedPurgeWithoutLock);
+        RunToCompletion(a); // A deletes the abandoned claim.
+        RunToCompletion(model.Run("N")); // A fresh, ACTIVE claim replaces it (no lock blocks it).
+        RunToCompletion(b); // B — already past re-validation — deletes the REPLACEMENT active claim.
+
+        // The hole: the replacement active claim (whose command already ran) is destroyed by a second
+        // purger that decided to delete from a stale view.
+        model.Fs.Deletions.Should().Equal("A", "B");
+        model.Fs.DirExists(ClaimModel.Op).Should().BeFalse("the second unlocked purger deleted the live replacement");
+    }
+
+    [Fact]
+    public void LockedPurge_SecondPurgerCannotDeleteAReplacementActiveClaim()
+    {
+        var model = new ClaimModel(takeoverEnabled: false);
+        SeedExpiredOldCrashedClaim(model);
+
+        var a = model.Purge("A", lockGuarded: true).GetEnumerator();
+        AdvanceUntil(a, ClaimModel.WonGcLock); // A wins the GC lock, before revalidating/deleting.
+        RunToCompletion(model.Purge("B", lockGuarded: true)); // B loses the live lock: never deletes.
+        RunToCompletion(a); // A revalidates (still stale), deletes the abandoned claim, releases.
+
+        RunToCompletion(model.Run("N")); // A fresh, ACTIVE claim replaces it once the lock is released.
+        RunToCompletion(model.Purge("C", lockGuarded: true)); // A second purger of the now-active op.
+
+        // Only the abandoned claim was ever deleted; the losing purger and the second purger both
+        // declined to delete, so the replacement active claim (which ran exactly once) survives.
+        model.Fs.Deletions.Should().Equal("A");
+        model.Fs.SideEffects.Should().Equal("N");
+        model.Fs.DirExists(ClaimModel.Op).Should().BeTrue("the replacement active claim is re-validated and spared");
+    }
+
+    [Fact]
+    public void LockedPurge_LoserOfTheLockElection_NeverDeletes()
+    {
+        var model = new ClaimModel(takeoverEnabled: false);
+        SeedExpiredOldCrashedClaim(model);
+
+        var a = model.Purge("A", lockGuarded: true).GetEnumerator();
+        AdvanceUntil(a, ClaimModel.WonGcLock); // A holds the lock.
+        var b = model.Purge("B", lockGuarded: true).GetEnumerator();
+        AdvanceUntil(b, ClaimModel.LostGcLock); // B could not acquire the live lock.
+
+        RunToCompletion(b);
+        model.Fs.Deletions.Should().BeEmpty("a purger that lost the GC-lock election must never delete");
+        model.Fs.DirExists(ClaimModel.Op).Should().BeTrue();
+    }
+
+    [Fact]
+    public void LockedPurge_StaleAbandonedClaim_IsDeletedByTheSoleLockWinner()
+    {
+        var model = new ClaimModel(takeoverEnabled: false);
+        SeedExpiredOldCrashedClaim(model);
+
+        RunToCompletion(model.Purge("A", lockGuarded: true));
+
+        // The sole purger wins the lock, re-validates the claim as stale, and deletes it.
+        model.Fs.Deletions.Should().Equal("A");
+        model.Fs.DirExists(ClaimModel.Op).Should().BeFalse();
+    }
+
+    /// <summary>Seeds a crashed submitter's leftovers that are ALSO strictly past the 24h retention window (eligible for the stale sweep).</summary>
+    private static void SeedExpiredOldCrashedClaim(ClaimModel model)
+    {
+        model.Fs.Now = 10_000_000;
+        model.Fs.Mkdir(ClaimModel.Op);
+        model.Fs.Write(ClaimModel.Lease, (model.Fs.Now - CommandArtifactLayout.StaleAgeSeconds).ToString());
+        model.Fs.Write(ClaimModel.Created, (model.Fs.Now - (CommandArtifactLayout.StaleAgeSeconds * 2)).ToString());
     }
 
     private static void AdvanceUntil(IEnumerator<string> steps, string label)

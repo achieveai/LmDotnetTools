@@ -126,12 +126,17 @@ resubmission. A canonical, versioned digest (over the session id, argv, normaliz
 and execution timeout) is bound to each operation: reusing an operation id with a *different* command
 fails with `SandboxErrorKind.Integrity` and never submits.
 
-**Same-id reuse never re-runs.** On a verified success the SDK reclaims the (unbounded) captured output
-immediately but retains a bounded, credential-free **completion marker** (the manifest plus its
-lease/created timestamps). A later call with the same operation id is answered from that marker: the
-result is returned verbatim when the output was small enough to have been inlined, or — when a larger
-output had already been reclaimed — the duplicate is rejected as `SandboxErrorKind.Integrity` *without
-re-running the command*.
+**Same-id reuse never re-runs — within a bounded retention window.** On a verified success the SDK
+reclaims the (unbounded) captured output immediately but retains a bounded, credential-free **completion
+marker** (the manifest plus its lease/created timestamps). The **operation-id idempotency/recovery
+retention window is 24 hours** from the operation's creation. For that window a later call with the same
+operation id is answered from the marker: the result is returned verbatim when the output was small
+enough to have been inlined, or — when a larger output had already been reclaimed — the duplicate is
+rejected as `SandboxErrorKind.Integrity` *without re-running the command*. The window is **inclusive** of
+its 24-hour boundary (a same-id retry at exactly 24 hours is still recovered, never re-run). Once the
+window elapses the bounded stale sweep may reclaim the marker, after which reusing the operation id is
+treated as a **new** operation and may re-execute. The SDK deliberately does **not** promise idempotency
+forever — retention is bounded so artifacts cannot accumulate without limit.
 
 **Abandoned claims are never taken over.** A submitter that crashes after claiming (leaving an expired
 lease and no manifest) is deliberately *not* reclaimed by a competing execution — the delete-and-recreate
@@ -155,8 +160,9 @@ restrictive sibling temp file and renamed), so a concurrent probe never observes
 A verified successful operation **reclaims its large output immediately** while retaining the bounded
 completion marker described above; an interrupted, transport-timed-out, or integrity-failed operation
 retains all of its artifacts for recovery. Each successful command also runs a bounded, session-scoped
-stale sweep that deletes only artifacts whose lease has expired and that are at least 24 hours old
-(active operations are protected). The sweep re-validates each directory's *current* lease/age in the
+stale sweep that deletes only artifacts whose lease has expired and that are **strictly older than the
+24-hour retention window** (active operations are protected, and an operation exactly at the boundary is
+still retained). The sweep re-validates each directory's *current* lease/age in the
 sandbox immediately before deleting — never from the earlier listing snapshot, so a refreshed operation
 is never deleted — and every candidate directory name is validated as fixed-length lowercase hex before
 use. Sandbox deletion remains the final cleanup boundary.

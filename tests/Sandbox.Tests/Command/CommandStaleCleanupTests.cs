@@ -23,11 +23,21 @@ public class CommandStaleCleanupTests
     }
 
     [Fact]
-    public void SelectStale_ExpiredAndExactly24hOld_IsDeleted()
+    public void SelectStale_ExpiredAndExactly24hOld_IsKept_WithinRetentionWindow()
     {
+        // The 24h retention window is INCLUSIVE of its boundary: an operation exactly 24h old is still
+        // recoverable, so a same-id retry at =24h is answered from the marker, never re-run.
         var entries = new[] { ("boundary", Now - 100, Now - Day) };
 
-        CommandStaleCleanup.SelectStale(entries, Now).Should().ContainSingle().Which.Should().Be("boundary");
+        CommandStaleCleanup.SelectStale(entries, Now).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SelectStale_ExpiredAndJustPastTheRetentionWindow_IsDeleted()
+    {
+        var entries = new[] { ("just-past", Now - 100, Now - (Day + 1)) };
+
+        CommandStaleCleanup.SelectStale(entries, Now).Should().ContainSingle().Which.Should().Be("just-past");
     }
 
     [Fact]
@@ -65,17 +75,20 @@ public class CommandStaleCleanupTests
     }
 
     [Fact]
-    public void SelectStale_Mixed_SelectsOnlyExpiredAndOldEnough()
+    public void SelectStale_Mixed_SelectsOnlyExpiredAndPastTheRetentionWindow()
     {
         var entries = new[]
         {
             ("young", Now - 100, Now - 3600),
             ("boundary", Now - 1, Now - Day),
+            ("just-past", Now - 1, Now - (Day + 1)),
             ("old", Now - 100, Now - (Day * 2)),
             ("active", Now + 100, Now - (Day * 9)),
         };
 
-        CommandStaleCleanup.SelectStale(entries, Now).Should().BeEquivalentTo(["boundary", "old"]);
+        // "young" (within window), "boundary" (exactly 24h, still retained), and "active" (unexpired
+        // lease) are all kept; only the two strictly past the retention window are selected.
+        CommandStaleCleanup.SelectStale(entries, Now).Should().BeEquivalentTo(["just-past", "old"]);
     }
 
     [Fact]
