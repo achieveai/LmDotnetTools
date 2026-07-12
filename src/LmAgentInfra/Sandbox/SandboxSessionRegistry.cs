@@ -1,12 +1,9 @@
 using System.Collections.Concurrent;
-using System.Net;
-using System.Net.Http.Json;
-using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 
@@ -67,7 +64,7 @@ public sealed record WorkspaceRef(
 /// or a caller and the interactive UI default) never collide on one shared session.
 /// </para>
 /// </remarks>
-public sealed partial class SandboxSessionRegistry : IAsyncDisposable
+public sealed class SandboxSessionRegistry : IAsyncDisposable
 {
     /// <summary>
     /// Logical id of the default workspace, which maps to the configured
@@ -81,11 +78,21 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// </summary>
     private static readonly TimeSpan SessionLivenessProbeTimeout = TimeSpan.FromSeconds(5);
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
+    /// <summary>
+    /// Per-credential control-plane clients (issue #191): one <see cref="SandboxClient"/> per
+    /// distinct app credential, resolved and cached by <see cref="ClientFor"/>. Each client is
+    /// KEYLESS — it stamps only the app id — because a per-caller app KEY is an opaque, gateway-
+    /// validated string that the SDK's base64 <c>ClientSecret</c> validation would reject; the key
+    /// is instead stamped verbatim downstream by a per-credential <see cref="GatewayAuthHandler"/>.
+    /// All clients BORROW the one shared <see cref="_httpClient"/> transport through a cloning
+    /// forwarding handler, so they share its connection pool (and, in tests, its recording handler).
+    /// Keyed by the full (AppId, AppKey) credential so a rotated key yields a fresh client.
+    /// </summary>
+    private readonly ConcurrentDictionary<(string AppId, string AppKey), SandboxClientEntry> _clients =
+        new();
+
+    /// <summary>A cached per-credential client plus the dedicated transport it borrows through.</summary>
+    private sealed record SandboxClientEntry(SandboxClient Client, HttpClient Transport);
 
     /// <summary>
     /// Sandbox sessions, partitioned by the (workspace id, caller app id) pair — see the class
@@ -206,29 +213,102 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         _sessionCredentials.TryGetValue(sessionId, out var credential) ? credential : _defaultCredential;
 
     /// <summary>
-    /// Sends <paramref name="request"/> to the gateway with the per-request <c>X-Sbx-App-Id</c> /
-    /// <c>X-Sbx-App-Key</c> headers stamped from <paramref name="credential"/> (plus
-    /// <c>X-Session-ID</c> when <paramref name="sessionId"/> is supplied). This is the ONLY place
-    /// gateway auth headers are attached — every gated call site routes through here so a single
-    /// seam stamps them consistently. Deliberately never touches
-    /// <see cref="HttpClient.DefaultRequestHeaders"/>: that is process-global and would leak one
-    /// caller's credential onto every other concurrent caller's request.
+    /// Resolves (and caches) the credential-scoped <see cref="SandboxClient"/> for
+    /// <paramref name="credential"/>. Every gateway control-plane call routes through here so a
+    /// single seam owns the per-credential client lifetime. The client is KEYLESS: it stamps only
+    /// <c>X-Sbx-App-Id</c> (from the credential's app id, also carried as the wire <c>app.id</c>);
+    /// the opaque per-app KEY is stamped verbatim downstream by a per-credential
+    /// <see cref="GatewayAuthHandler"/>. Routing the key through the SDK's <c>ClientSecret</c> would
+    /// fail-fast on a non-base64 dev key that the gateway itself would accept, so the SDK never sees
+    /// it. All clients borrow the one shared <see cref="_httpClient"/> transport via a cloning
+    /// forwarding handler, so the connection pool (and, in tests, the recording handler) is shared
+    /// and no caller's key ever lands on a shared client's default headers.
     /// </summary>
-    private async Task<HttpResponseMessage> SendGatewayAsync(
-        HttpRequestMessage request,
-        SandboxCredential credential,
-        CancellationToken ct,
-        string? sessionId = null,
-        HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead
-    )
+    private SandboxClient ClientFor(SandboxCredential credential)
     {
-        credential.StampHeaders(request);
-        if (sessionId is not null)
-        {
-            request.Headers.TryAddWithoutValidation("X-Session-ID", sessionId);
-        }
+        var entry = _clients.GetOrAdd(
+            (credential.AppId, credential.AppKey),
+            static (key, state) =>
+            {
+                var (registry, cred) = state;
+                var serverAddress = new Uri(
+                    registry._gateway.GatewayBaseUrl.TrimEnd('/') + "/",
+                    UriKind.Absolute
+                );
+                // TransportTimeout is enforced per-call by the SDK via a linked token; borrow the
+                // shared client's timeout (default 100s) so behaviour matches the pre-SDK path, and
+                // fall back to 100s when the shared client's timeout is infinite/unset.
+                var transportTimeout =
+                    registry._httpClient.Timeout > TimeSpan.Zero
+                        ? registry._httpClient.Timeout
+                        : TimeSpan.FromSeconds(100);
+                var options = new SandboxClientOptions(
+                    serverAddress,
+                    cred.AppId,
+                    clientSecret: string.Empty,
+                    executionTimeout: TimeSpan.FromMinutes(5),
+                    transportTimeout: transportTimeout,
+                    allowInsecureDevelopmentTransport: true
+                );
+                // Pipeline: GatewayAuthHandler stamps the per-caller app key verbatim (idempotent,
+                // gated on a configured key), then the forwarding handler clones the request onto the
+                // shared borrowed transport. The per-credential HttpClient owns ONLY this pipeline —
+                // disposing it never disposes the shared transport.
+                var pipeline = new GatewayAuthHandler(cred.AppId, cred.AppKey)
+                {
+                    InnerHandler = new SharedTransportForwardingHandler(registry._httpClient),
+                };
+                var transport = new HttpClient(pipeline, disposeHandler: true);
+                var client = new SandboxClient(options, transport);
+                return new SandboxClientEntry(client, transport);
+            },
+            (this, credential)
+        );
+        return entry.Client;
+    }
 
-        return await _httpClient.SendAsync(request, completion, ct).ConfigureAwait(false);
+    /// <summary>
+    /// Forwards each per-credential SDK request onto the ONE shared borrowed <see cref="HttpClient"/>
+    /// transport. The request is CLONED first because a single <see cref="HttpRequestMessage"/> can
+    /// not be sent through two <see cref="HttpClient"/> instances (the outer per-credential client
+    /// and this shared one) — the second send throws "request already sent". Cloning lets every
+    /// per-credential client share the shared client's connection pool (and, in tests, its recording
+    /// handler) while the per-credential pipeline still stamps the caller's opaque app key. Never
+    /// disposes the shared transport: it is borrowed and the registry owns its lifetime.
+    /// </summary>
+    private sealed class SharedTransportForwardingHandler(HttpClient shared) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken
+        )
+        {
+            var clone = new HttpRequestMessage(request.Method, request.RequestUri)
+            {
+                Version = request.Version,
+                VersionPolicy = request.VersionPolicy,
+            };
+            foreach (var header in request.Headers)
+            {
+                _ = clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            if (request.Content is not null)
+            {
+                var bytes = await request
+                    .Content.ReadAsByteArrayAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                var content = new ByteArrayContent(bytes);
+                foreach (var header in request.Content.Headers)
+                {
+                    _ = content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+
+                clone.Content = content;
+            }
+
+            return await shared.SendAsync(clone, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -396,8 +476,6 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             return false;
         }
 
-        var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{sessionId}";
-
         // Cap the probe well under the shared client timeout: a wedged (non-404) gateway must not
         // stall the turn — degrade quickly to "assume alive" instead. The linked token still honours
         // a genuine caller cancellation.
@@ -405,32 +483,25 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         probeCts.CancelAfter(SessionLivenessProbeTimeout);
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-            using var response = await SendGatewayAsync(
-                    request,
-                    CredentialFor(sessionId),
-                    probeCts.Token,
-                    completion: HttpCompletionOption.ResponseHeadersRead
-                )
+            _ = await ClientFor(CredentialFor(sessionId))
+                .GetAsync(sessionId, probeCts.Token)
                 .ConfigureAwait(false);
-
-            if (response.StatusCode == HttpStatusCode.NotFound)
-            {
-                // Auth-scoping signal: a KNOWN session id (we hold a handle to it) 404ing while
-                // valid auth headers were sent may indicate the session belongs to a different
-                // app id rather than being genuinely evicted. Does not change control flow — the
-                // caller still treats this as "not alive" and recreates.
-                _logger.LogWarning(
-                    "Sandbox gateway returned 404 for known session {SessionId} with auth headers "
-                        + "present ({is_scoped_404}); may indicate app-id scoping/ownership drift "
-                        + "rather than a genuinely evicted session.",
-                    sessionId,
-                    true
-                );
-                return false;
-            }
-
             return true;
+        }
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.NotFound)
+        {
+            // Auth-scoping signal: a KNOWN session id (we hold a handle to it) 404ing while valid
+            // auth headers were sent may indicate the session belongs to a different app id rather
+            // than being genuinely evicted. Does not change control flow — the caller still treats
+            // this as "not alive" and recreates.
+            _logger.LogWarning(
+                "Sandbox gateway returned 404 for known session {SessionId} with auth headers "
+                    + "present ({is_scoped_404}); may indicate app-id scoping/ownership drift "
+                    + "rather than a genuinely evicted session.",
+                sessionId,
+                true
+            );
+            return false;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -438,8 +509,10 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Probe timeout or transient error → assume alive so a flaky/slow gateway never churns a
-            // healthy session (recreating wouldn't help if the gateway is unreachable anyway).
+            // Probe timeout or transient error — including a malformed/empty 2xx body, which the SDK
+            // surfaces as Protocol — → assume alive so a flaky/slow gateway never churns a healthy
+            // session (recreating wouldn't help if the gateway is unreachable anyway). Only a
+            // definitive 404 (handled above) reports "not alive", matching the pre-SDK contract.
             _logger.LogInformation(
                 ex,
                 "Liveness probe for sandbox session {SessionId} failed or timed out; assuming the session is still alive.",
@@ -522,7 +595,6 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         var (_, workspaceLeaf, _) = _options.ResolveWorkspace(workspaceRef.DirectoryRelPath);
         var workspaceRelPath = workspaceLeaf ?? string.Empty;
 
-        var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
         var (authProviders, network) = BuildAuthProviders();
         var discovery = BuildDiscovery();
         // Per-workspace marketplace selection wins; fall back to the global config default when the
@@ -534,13 +606,16 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         // the process-wide default (M1 behavior, still the only path for the daemon and any other
         // contextless caller).
         var effectiveCredential = credential ?? _defaultCredential;
-        var request = new CreateSandboxRequest(
-            new AppRef(effectiveCredential.AppId),
+        // The SDK owns protocol only: it maps this fully-formed request to the wire
+        // `app.id` (from the credential-scoped client) / `workspace` / `auth_providers` / `network` /
+        // `discovery` / `marketplaces` shape the gateway expects — identical bytes to the hand-rolled
+        // DTOs this migration removed.
+        var createRequest = new SandboxCreateRequest(
             workspaceRelPath,
+            marketplaces,
             authProviders,
             network,
-            discovery,
-            marketplaces
+            discovery
         );
 
         _logger.LogInformation(
@@ -564,21 +639,20 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             );
         }
 
-        HttpResponseMessage response;
+        SandboxInfo info;
         try
         {
-            using var createRequest = new HttpRequestMessage(HttpMethod.Post, requestUri)
-            {
-                Content = JsonContent.Create(request, options: JsonOptions),
-            };
-            response = await SendGatewayAsync(createRequest, effectiveCredential, ct).ConfigureAwait(false);
+            info = await ClientFor(effectiveCredential)
+                .CreateAsync(createRequest, ct)
+                .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)
         {
-            // The gateway became unreachable mid-request (down / restarting / connection refused).
-            // Surface it as the same clean, handled "sandbox unavailable" signal the WebSocket and
-            // mode-switch layers already catch — not a raw HttpRequestException that crashes the
-            // request with an unhandled 500.
+            // The gateway was unreachable (down / restarting / connection refused) or the request
+            // timed out. Surface it as the same clean, handled "sandbox unavailable" signal the
+            // WebSocket and mode-switch layers already catch — not a raw exception that crashes the
+            // request with an unhandled 500. (A genuine CALLER cancellation is re-thrown by the SDK as
+            // OperationCanceledException, not a SandboxException, so it bypasses this catch.)
             _logger.LogWarning(
                 ex,
                 "Sandbox create could not reach the gateway at {GatewayBaseUrl} for workspace {WorkspaceId}",
@@ -593,70 +667,61 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
                 ex
             );
         }
-
-        using var responseScope = response;
-
-        if (!response.IsSuccessStatusCode)
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Authorization)
         {
-            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            {
-                // Distinct marker from the connectivity-failure path above: this is the gateway
-                // actively rejecting the presented credential (misconfigured/rotated/wrong app key),
-                // not an unreachable gateway. Deliberately does NOT log the raw gateway body: on the
-                // auth-rejection path the upstream response is the one most likely to echo submitted
-                // credential material or header values, so logging it would undercut the PR's
-                // never-log-the-key invariant. The app id + status code are the safe diagnostic
-                // signal; inspect the gateway's own logs for the rejection detail.
-                _logger.LogError(
-                    "Sandbox create failed for workspace {WorkspaceId}: sandbox_auth_failed "
-                        + "({StatusCode}) for app {AppId}",
-                    workspaceId,
-                    (int)response.StatusCode,
-                    effectiveCredential.AppId
-                );
-                throw new SandboxSessionUnavailableException(
-                    workspaceId,
-                    (int)response.StatusCode,
-                    // Client-safe: the raw gateway auth body is logged above but deliberately kept OUT
-                    // of the exception message, which controllers surface verbatim as the public
-                    // `detail` field. Naming only the app id + status code avoids echoing arbitrary
-                    // (potentially secret-bearing) upstream auth output through our API.
-                    $"sandbox_auth_failed: sandbox gateway rejected the credential for app "
-                        + $"'{effectiveCredential.AppId}' creating a session for workspace '{workspaceId}' "
-                        + $"({(int)response.StatusCode})."
-                );
-            }
-
+            // Distinct marker from the connectivity-failure path above: this is the gateway actively
+            // rejecting the presented credential (misconfigured/rotated/wrong app key), not an
+            // unreachable gateway. The SDK never reads the gateway auth-rejection body (the response
+            // most likely to echo submitted credential material), so only the app id + status code are
+            // logged — preserving the never-log-the-key invariant.
             _logger.LogError(
-                "Sandbox create failed for workspace {WorkspaceId}: {StatusCode} {Body}",
+                "Sandbox create failed for workspace {WorkspaceId}: sandbox_auth_failed "
+                    + "({StatusCode}) for app {AppId}",
                 workspaceId,
-                (int)response.StatusCode,
-                body
+                ex.StatusCode,
+                effectiveCredential.AppId
             );
             throw new SandboxSessionUnavailableException(
                 workspaceId,
-                (int)response.StatusCode,
-                // Client-safe: body is logged above but kept out of the controller-surfaced message.
-                $"Sandbox gateway returned {(int)response.StatusCode} creating a session for "
+                ex.StatusCode,
+                // Client-safe: names only the app id + status code, never any upstream auth output,
+                // so the controller-surfaced `detail` field can never echo secret-bearing material.
+                $"sandbox_auth_failed: sandbox gateway rejected the credential for app "
+                    + $"'{effectiveCredential.AppId}' creating a session for workspace '{workspaceId}' "
+                    + $"({ex.StatusCode})."
+            );
+        }
+        catch (SandboxException ex) when (ex.StatusCode is >= 200 and < 300)
+        {
+            // A success status with an unusable body (missing session id or malformed JSON), which the
+            // SDK classifies as Protocol. Mirrors the pre-SDK "success but no session id"
+            // InvalidOperationException.
+            throw new InvalidOperationException(
+                $"Sandbox gateway returned a success status but no session id for workspace '{workspaceId}'.",
+                ex
+            );
+        }
+        catch (SandboxException ex)
+        {
+            // Any other non-success status (e.g. a rejected network policy 4xx/5xx). The SDK never
+            // surfaces the gateway body, so the previous body-in-log/message diagnostic is dropped in
+            // favour of the status code; the observable outcome (SandboxSessionUnavailableException
+            // carrying the gateway status) is unchanged.
+            _logger.LogError(
+                "Sandbox create failed for workspace {WorkspaceId}: {StatusCode}",
+                workspaceId,
+                ex.StatusCode
+            );
+            throw new SandboxSessionUnavailableException(
+                workspaceId,
+                ex.StatusCode,
+                $"Sandbox gateway returned {ex.StatusCode} creating a session for "
                     + $"workspace '{workspaceId}'."
             );
         }
 
-        var payload = await response
-            .Content.ReadFromJsonAsync<CreateSandboxResponse>(JsonOptions, ct)
-            .ConfigureAwait(false);
-
-        if (payload is null || string.IsNullOrWhiteSpace(payload.SessionId))
-        {
-            throw new InvalidOperationException(
-                $"Sandbox gateway returned a success status but no session id for workspace '{workspaceId}'."
-            );
-        }
-
-        var hostPath = StripLongPathPrefix(payload.Volumes?.Workspace?.ContainerPath ?? string.Empty);
-        var session = new SandboxSession(workspaceId, payload.SessionId, workspaceRelPath, hostPath);
+        var hostPath = StripLongPathPrefix(info.WorkspaceContainerPath ?? string.Empty);
+        var session = new SandboxSession(workspaceId, info.SessionId, workspaceRelPath, hostPath);
 
         // Register the reverse session-id → session mapping so the context-discovery webhook can
         // resolve back to the session. Last-write-wins is acceptable because session ids are
@@ -750,6 +815,18 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         _sessionThreads.Clear();
         _discoverySeen.Clear();
         _sessionCredentials.Clear();
+
+        // Dispose the per-credential transports (each owns only its GatewayAuthHandler → forwarding
+        // pipeline; the SandboxClient over it is borrowed, so disposing the client is a no-op and the
+        // forwarding handler never disposes the shared transport). The shared transport is disposed
+        // last, below.
+        foreach (var entry in _clients.Values)
+        {
+            entry.Client.Dispose();
+            entry.Transport.Dispose();
+        }
+
+        _clients.Clear();
         _httpClient.Dispose();
     }
 
@@ -762,7 +839,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// <param name="ct">Cancellation token observed by the HTTP call.</param>
     /// <returns>The discovered items. Empty when the gateway reports no discoveries; never null.</returns>
     /// <exception cref="InvalidOperationException">
-    /// Thrown when the gateway returns a non-success status. The body (truncated) is included so
+    /// Thrown when the gateway returns a non-success status. The gateway status code is included so
     /// callers can correlate against gateway logs. Caller is expected to catch + log + degrade.
     /// </exception>
     public async Task<IReadOnlyList<DiscoveredItem>> ListDiscoveredAsync(string sessionId, CancellationToken ct = default)
@@ -770,49 +847,58 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
 
-        var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{sessionId}/discovered";
-        using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-        using var response = await SendGatewayAsync(request, CredentialFor(sessionId), ct).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            var bodySnippet = TruncateBody(body);
-            // Log + throw, matching CreateSessionAsync's policy: the caller is expected to catch
-            // and degrade, but we still want a server-log breadcrumb correlating the failure with
-            // gateway logs by session id.
+            var items = await ClientFor(CredentialFor(sessionId))
+                .ListDiscoveredAsync(sessionId, ct)
+                .ConfigureAwait(false);
+            return
+            [
+                .. items.Select(i => new DiscoveredItem(
+                    i.Kind,
+                    i.Name!,
+                    i.Description,
+                    i.Path,
+                    i.Content,
+                    i.QualifiedName
+                )),
+            ];
+        }
+        catch (SandboxException ex)
+        {
+            // Log + throw, matching CreateSessionAsync's policy: the caller is expected to catch and
+            // degrade, but we still want a server-log breadcrumb correlating the failure with gateway
+            // logs by session id. The SDK never surfaces the raw gateway body (it may echo submitted
+            // material), so only the status code is available as the correlation signal.
             _logger.LogError(
-                "Sandbox discovered-items list failed for session {SessionId}: {StatusCode} {Body}",
+                "Sandbox discovered-items list failed for session {SessionId}: {StatusCode}",
                 sessionId,
-                (int)response.StatusCode,
-                bodySnippet
+                ex.StatusCode
             );
             throw new InvalidOperationException(
-                $"Sandbox gateway returned {(int)response.StatusCode} listing discovered items for "
-                    + $"session '{sessionId}': {bodySnippet}"
+                $"Sandbox gateway returned {ex.StatusCode} listing discovered items for "
+                    + $"session '{sessionId}'.",
+                ex
             );
         }
-
-        var payload = await response
-            .Content.ReadFromJsonAsync<DiscoveredItemsResponse>(JsonOptions, ct)
-            .ConfigureAwait(false);
-
-        return payload?.Items ?? [];
     }
 
     /// <summary>
-    /// Reads the text content of a file inside the session's sandbox through the gateway's MCP
-    /// <c>Read</c> tool (<c>POST {gateway}/mcp</c>, <c>tools/call</c>, scoped by the
-    /// <c>X-Session-ID</c> header). This is the ONLY way the (local-host) backend can obtain a
-    /// workspace file's content in the Docker topology — it cannot read the container's
-    /// <c>/workspace</c> filesystem directly, and the discovery query API is metadata-only.
+    /// Reads the text content of a file inside the session's sandbox through the gateway via the
+    /// typed <see cref="SandboxClient"/> SDK's verified transfer protocol (an MCP <c>Bash</c> STAT +
+    /// chunked READ under the hood, scoped by the <c>X-Session-ID</c> header). This is the ONLY way
+    /// the (local-host) backend can obtain a workspace file's content in the Docker topology — it
+    /// cannot read the container's <c>/workspace</c> filesystem directly, and the discovery query API
+    /// is metadata-only.
     /// </summary>
     /// <param name="sessionId">Gateway session id whose sandbox the file lives in.</param>
-    /// <param name="absolutePath">Absolute path INSIDE the sandbox (e.g. <c>/workspace/CLAUDE.md</c>).</param>
+    /// <param name="absolutePath">Path INSIDE the sandbox — accepts a rooted
+    /// <c>/workspace/CLAUDE.md</c>, the session's host path, or an already-relative
+    /// <c>CLAUDE.md</c>; it is normalised to a workspace-relative path for the SDK.</param>
     /// <param name="ct">Cancellation token observed by the HTTP call.</param>
     /// <returns>
-    /// The file's text with the <c>Read</c> tool's <c>cat -n</c> line-number prefixes stripped, or
-    /// <c>null</c> when the file is missing, the tool reports an error, or the call fails. Best-effort
-    /// by contract: callers treat <c>null</c> as "no content" and degrade.
+    /// The file's raw text, or <c>null</c> when the file is missing, the tool reports an error, or the
+    /// call fails. Best-effort by contract: callers treat <c>null</c> as "no content" and degrade.
     /// </returns>
     public async Task<string?> ReadWorkspaceFileAsync(string sessionId, string absolutePath, CancellationToken ct = default)
     {
@@ -820,70 +906,60 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
 
-        // JSON-RPC field names are the MCP wire contract (jsonrpc/method/params/name/arguments/
-        // file_path) — serialize them verbatim rather than through the snake_case JsonOptions.
-        var body = JsonSerializer.Serialize(new
-        {
-            jsonrpc = "2.0",
-            id = 1,
-            method = "tools/call",
-            @params = new { name = "Read", arguments = new { file_path = absolutePath } },
-        });
+        // The SDK's transfer protocol addresses files by WORKSPACE-RELATIVE path and rejects rooted /
+        // backslash paths; the callers here pass an in-sandbox absolute path (/workspace/CLAUDE.md) or
+        // the session host path, so convert before delegating.
+        var relativePath = ToWorkspaceRelativePath(sessionId, absolutePath);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_gateway.GatewayBaseUrl}/mcp")
-        {
-            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
-        };
-
-        using var response = await SendGatewayAsync(request, CredentialFor(sessionId), ct, sessionId: sessionId)
-            .ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            // Best-effort: a non-2xx transport result is "no content", never a thrown error — the
-            // caller (boot-time system-prompt seed) degrades to no workspace instructions.
-            return null;
-        }
-
-        McpReadResponse? payload;
         try
         {
-            payload = await response
-                .Content.ReadFromJsonAsync<McpReadResponse>(JsonOptions, ct)
+            return await ClientFor(CredentialFor(sessionId))
+                .ReadTextFileAsync(sessionId, relativePath, ct)
                 .ConfigureAwait(false);
         }
-        catch (JsonException)
+        catch (SandboxException)
         {
+            // Best-effort: a missing file, an evicted session, a tool-level error, or any transport
+            // failure is "no content", never a thrown error — the caller (boot-time system-prompt
+            // seed) degrades to no workspace instructions. A genuine caller cancellation surfaces as
+            // OperationCanceledException (not a SandboxException) and is left to propagate.
             return null;
         }
-
-        // JSON-RPC error (e.g. evicted session) OR a tool-level error (isError, e.g. missing file)
-        // both mean "no usable content".
-        if (payload?.Error is not null || payload?.Result is null || payload.Result.IsError == true)
-        {
-            return null;
-        }
-
-        var text = payload.Result.Content?
-            .FirstOrDefault(c => string.Equals(c.Type, "text", StringComparison.Ordinal))?.Text;
-        if (string.IsNullOrEmpty(text))
-        {
-            return null;
-        }
-
-        return StripReadLineNumbers(text);
     }
 
     /// <summary>
-    /// Strips the <c>Read</c> tool's <c>cat -n</c> line-number prefixes (<c>"   123\t"</c>) so the
-    /// recovered text is the raw file content, suitable for injecting into the system prompt. The
-    /// matcher is source-generated (compiled once at build) rather than constructed per call.
+    /// Normalises an in-sandbox path (a rooted <c>/workspace/…</c> path, the session's host path, or
+    /// an already-relative path) to the workspace-relative form the SDK's transfer protocol requires.
+    /// Strips a leading host-path prefix (when the session is known), then a leading
+    /// <c>/workspace/</c> segment, then any residual leading slash; backslashes are normalised to
+    /// forward slashes for the container filesystem.
     /// </summary>
-    private static string StripReadLineNumbers(string text) =>
-        ReadLineNumberPrefixRegex().Replace(text, string.Empty);
+    private string ToWorkspaceRelativePath(string sessionId, string absolutePath)
+    {
+        var path = absolutePath.Replace('\\', '/');
 
-    [GeneratedRegex(@"^ *\d+\t", RegexOptions.Multiline | RegexOptions.CultureInvariant)]
-    private static partial Regex ReadLineNumberPrefixRegex();
+        if (_sessionsById.TryGetValue(sessionId, out var session)
+            && !string.IsNullOrEmpty(session.HostPath))
+        {
+            var hostPath = session.HostPath.Replace('\\', '/').TrimEnd('/');
+            if (path.StartsWith(hostPath + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                path = path[(hostPath.Length + 1)..];
+            }
+            else if (string.Equals(path, hostPath, StringComparison.OrdinalIgnoreCase))
+            {
+                path = string.Empty;
+            }
+        }
 
+        const string WorkspacePrefix = "/workspace/";
+        if (path.StartsWith(WorkspacePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            path = path[WorkspacePrefix.Length..];
+        }
+
+        return path.TrimStart('/');
+    }
     /// <summary>
     /// Returns the <see cref="SubAgentSessionBinding"/> for the
     /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair, creating one on
@@ -1133,41 +1209,24 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         return [.. _sessionsById.Keys];
     }
 
-    private const int ErrorBodyMaxLength = 500;
-
-    /// <summary>
-    /// Caps a gateway error body so a large HTML error page (e.g. a 502 from a reverse proxy) can
-    /// not blow up server logs or the exception message. Mirrors the doc-claim on
-    /// <see cref="ListDiscoveredAsync"/>.
-    /// </summary>
-    private static string TruncateBody(string body) =>
-        string.IsNullOrEmpty(body) || body.Length <= ErrorBodyMaxLength
-            ? body
-            : body[..ErrorBodyMaxLength] + "...(truncated)";
-
     private async Task DestroySessionAsync(SandboxSession session, CancellationToken ct = default)
     {
         try
         {
-            using var request = new HttpRequestMessage(
-                HttpMethod.Delete,
-                $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes/{session.SessionId}"
-            );
-            using var response = await SendGatewayAsync(request, CredentialFor(session.SessionId), ct)
+            await ClientFor(CredentialFor(session.SessionId))
+                .DeleteAsync(session.SessionId, ct)
                 .ConfigureAwait(false);
-
-            if (response.IsSuccessStatusCode)
-            {
-                _logger.LogInformation("Destroyed sandbox session {SessionId}", session.SessionId);
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "Sandbox destroy returned {StatusCode} for session {SessionId}",
-                    (int)response.StatusCode,
-                    session.SessionId
-                );
-            }
+            _logger.LogInformation("Destroyed sandbox session {SessionId}", session.SessionId);
+        }
+        catch (SandboxException ex)
+        {
+            // Best-effort teardown: a non-success gateway status (incl. a 404 for an already-evicted
+            // session) is logged and swallowed so shutdown/run-cleanup never throws.
+            _logger.LogWarning(
+                "Sandbox destroy returned {StatusCode} for session {SessionId}",
+                ex.StatusCode,
+                session.SessionId
+            );
         }
         catch (Exception ex)
         {
@@ -1214,35 +1273,35 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
         BuildAuthProviders().Providers?.Select(p => p.Id).ToArray() ?? [];
 
-    private (IReadOnlyList<AuthProviderDto>? Providers, NetworkDto? Network) BuildAuthProviders()
+    private (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProviders()
     {
-        var providers = new List<AuthProviderDto>();
-        var rules = new List<NetworkRuleDto>();
+        var providers = new List<SandboxAuthProvider>();
+        var rules = new List<SandboxNetworkRule>();
         var baseUrl = _authOptions.Webhook.CallbackBaseUrl;
 
         if (!string.IsNullOrWhiteSpace(_authOptions.Github.ClientId))
         {
             providers.Add(
-                new AuthProviderDto(
-                    Id: "github-auth",
-                    Type: "webhook",
-                    Endpoint: $"{baseUrl}/api/auth/webhook/github",
-                    GatewayAuth: _sharedSecret.Value,
-                    CacheTtlSeconds: 300,
-                    RequiredScopes: []
+                new SandboxAuthProvider(
+                    id: "github-auth",
+                    type: "webhook",
+                    endpoint: $"{baseUrl}/api/auth/webhook/github",
+                    gatewayAuth: _sharedSecret.Value,
+                    cacheTtlSeconds: 300,
+                    requiredScopes: []
                 )
             );
             rules.Add(
-                new NetworkRuleDto(
-                    Id: "github",
-                    Action: "allow",
-                    Hosts: OAuthProviderHosts.For("github"),
-                    Ports: [443],
-                    Methods: [],
-                    Paths: [],
-                    AuthProvider: "github-auth",
-                    RequiredScopes: [],
-                    Priority: 100
+                new SandboxNetworkRule(
+                    id: "github",
+                    action: "allow",
+                    hosts: OAuthProviderHosts.For("github"),
+                    ports: [443],
+                    methods: [],
+                    paths: [],
+                    authProvider: "github-auth",
+                    requiredScopes: [],
+                    priority: 100
                 )
             );
         }
@@ -1250,26 +1309,26 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(_authOptions.Ado.ClientId))
         {
             providers.Add(
-                new AuthProviderDto(
-                    Id: "ado-auth",
-                    Type: "webhook",
-                    Endpoint: $"{baseUrl}/api/auth/webhook/ado",
-                    GatewayAuth: _sharedSecret.Value,
-                    CacheTtlSeconds: 300,
-                    RequiredScopes: []
+                new SandboxAuthProvider(
+                    id: "ado-auth",
+                    type: "webhook",
+                    endpoint: $"{baseUrl}/api/auth/webhook/ado",
+                    gatewayAuth: _sharedSecret.Value,
+                    cacheTtlSeconds: 300,
+                    requiredScopes: []
                 )
             );
             rules.Add(
-                new NetworkRuleDto(
-                    Id: "ado",
-                    Action: "allow",
-                    Hosts: OAuthProviderHosts.For("ado"),
-                    Ports: [443],
-                    Methods: [],
-                    Paths: [],
-                    AuthProvider: "ado-auth",
-                    RequiredScopes: [],
-                    Priority: 100
+                new SandboxNetworkRule(
+                    id: "ado",
+                    action: "allow",
+                    hosts: OAuthProviderHosts.For("ado"),
+                    ports: [443],
+                    methods: [],
+                    paths: [],
+                    authProvider: "ado-auth",
+                    requiredScopes: [],
+                    priority: 100
                 )
             );
         }
@@ -1281,31 +1340,31 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             && !string.IsNullOrWhiteSpace(_authOptions.M365.ClientSecret))
         {
             providers.Add(
-                new AuthProviderDto(
-                    Id: "m365-auth",
-                    Type: "webhook",
-                    Endpoint: $"{baseUrl}/api/auth/webhook/m365",
-                    GatewayAuth: _sharedSecret.Value,
-                    CacheTtlSeconds: 300,
-                    RequiredScopes: []
+                new SandboxAuthProvider(
+                    id: "m365-auth",
+                    type: "webhook",
+                    endpoint: $"{baseUrl}/api/auth/webhook/m365",
+                    gatewayAuth: _sharedSecret.Value,
+                    cacheTtlSeconds: 300,
+                    requiredScopes: []
                 )
             );
             rules.Add(
-                new NetworkRuleDto(
-                    Id: "m365",
-                    Action: "allow",
-                    Hosts: OAuthProviderHosts.For("m365"),
-                    Ports: [443],
-                    Methods: [],
-                    Paths: [],
-                    AuthProvider: "m365-auth",
-                    RequiredScopes: [],
-                    Priority: 100
+                new SandboxNetworkRule(
+                    id: "m365",
+                    action: "allow",
+                    hosts: OAuthProviderHosts.For("m365"),
+                    ports: [443],
+                    methods: [],
+                    paths: [],
+                    authProvider: "m365-auth",
+                    requiredScopes: [],
+                    priority: 100
                 )
             );
         }
 
-        return providers.Count > 0 ? (providers, new NetworkDto(rules)) : (null, null);
+        return providers.Count > 0 ? (providers, rules) : (null, null);
     }
 
     /// <summary>
@@ -1314,7 +1373,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// already uses for auth callbacks) plus the discovery route; the auth value is the
     /// gateway↔webhook shared secret. SECRET — never logged.
     /// </summary>
-    private DiscoveryDto BuildDiscovery()
+    private SandboxDiscoverySettings BuildDiscovery()
     {
         var url = DiscoveryWebhookUrl;
         // Registration breadcrumb: logs WHERE the gateway will deliver discoveries so an operator
@@ -1324,54 +1383,18 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             "ContextDiscovery: gateway will deliver discoveries to {WebhookUrl} (enabled={Enabled}).",
             url,
             DiscoveryEnabled);
-        return new DiscoveryDto(
-            new DiscoveryWebhookDto(
-                Url: url,
-                Auth: _sharedSecret.Value
-            )
-        );
+        return new SandboxDiscoverySettings(url, _sharedSecret.Value);
     }
 
-
-    // --- Gateway JSON contract (snake_case via JsonOptions) ---
-
-    private sealed record CreateSandboxRequest(
-        [property: JsonPropertyName("app")] AppRef App,
-        [property: JsonPropertyName("workspace")] string Workspace,
-        [property: JsonPropertyName("auth_providers")] IReadOnlyList<AuthProviderDto>? AuthProviders,
-        [property: JsonPropertyName("network")] NetworkDto? Network,
-        [property: JsonPropertyName("discovery")] DiscoveryDto? Discovery = null,
-        // Omitted when null (JsonOptions ignores nulls) so the gateway keeps its default-set
-        // behaviour; an empty/blank config must therefore parse to null, never an empty array.
-        [property: JsonPropertyName("marketplaces")] IReadOnlyList<string>? Marketplaces = null
-    );
-
-    /// <summary>Outbound <c>discovery</c> block telling the gateway where to deliver
-    /// context-discovery events. Omitted from the request JSON when null.</summary>
-    internal sealed record DiscoveryDto(
-        [property: JsonPropertyName("webhook")] DiscoveryWebhookDto Webhook
-    );
-
-    /// <summary>Webhook descriptor inside the outbound <c>discovery</c> block. The gateway reads
-    /// the secret from <c>auth_header</c> (its <c>WebhookConfig</c> field) and sends it back
-    /// <em>verbatim</em> as the <c>Authorization</c> header on every context-discovery callback —
-    /// which is what the consuming app's <c>ContextDiscoveryController</c> then validates (that
-    /// controller lives in the host app, so it is referenced by name here, not by cref, to keep
-    /// this shared library independent of any one host). The field name MUST be <c>auth_header</c>:
-    /// under the legacy name <c>auth</c> the
-    /// gateway parses it as absent and sends no <c>Authorization</c> header, so every callback is
-    /// rejected 401 and no context file is ever delivered.</summary>
-    internal sealed record DiscoveryWebhookDto(
-        [property: JsonPropertyName("url")] string Url,
-        [property: JsonPropertyName("auth_header")] string Auth
-    );
 
     /// <summary>One item the gateway has discovered for the workspace (a sub-agent file,
     /// a skill descriptor, …). <see cref="Kind"/> is the discriminator the caller filters by;
     /// <see cref="Path"/> is workspace-relative. <see cref="Content"/> carries the item's inline
     /// body when the gateway includes it (e.g. a marketplace sub-agent's full markdown source);
     /// <see cref="QualifiedName"/> is the plugin-qualified id (e.g.
-    /// <c>code-reviewer:architecture-review</c>).</summary>
+    /// <c>code-reviewer:architecture-review</c>). Mapped from the SDK's
+    /// <see cref="SandboxDiscoveredItem"/>; the <c>JsonPropertyName</c> attributes are retained only
+    /// so any host that still serializes this public type keeps its snake_case wire shape.</summary>
     public sealed record DiscoveredItem(
         [property: JsonPropertyName("kind")] string Kind,
         [property: JsonPropertyName("name")] string Name,
@@ -1379,71 +1402,5 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         [property: JsonPropertyName("path")] string Path,
         [property: JsonPropertyName("content")] string? Content = null,
         [property: JsonPropertyName("qualified_name")] string? QualifiedName = null
-    );
-
-    private sealed record DiscoveredItemsResponse(
-        [property: JsonPropertyName("discovered")] IReadOnlyList<DiscoveredItem> Items
-    );
-
-    // --- Gateway MCP /mcp JSON-RPC contract (for ReadWorkspaceFileAsync) ---
-    // Explicit names: the gateway emits camelCase `isError` (MCP convention), which the snake_case
-    // JsonOptions would otherwise look for as `is_error`.
-
-    private sealed record McpReadResponse(
-        [property: JsonPropertyName("result")] McpReadResult? Result,
-        [property: JsonPropertyName("error")] McpRpcError? Error
-    );
-
-    private sealed record McpReadResult(
-        [property: JsonPropertyName("content")] IReadOnlyList<McpContentItem>? Content,
-        [property: JsonPropertyName("isError")] bool? IsError
-    );
-
-    private sealed record McpContentItem(
-        [property: JsonPropertyName("type")] string? Type,
-        [property: JsonPropertyName("text")] string? Text
-    );
-
-    private sealed record McpRpcError(
-        [property: JsonPropertyName("code")] int Code,
-        [property: JsonPropertyName("message")] string? Message
-    );
-
-    private sealed record AppRef([property: JsonPropertyName("id")] string Id);
-
-    private sealed record AuthProviderDto(
-        [property: JsonPropertyName("id")] string Id,
-        [property: JsonPropertyName("type")] string Type,
-        [property: JsonPropertyName("endpoint")] string Endpoint,
-        [property: JsonPropertyName("gateway_auth")] string GatewayAuth,
-        [property: JsonPropertyName("cache_ttl_seconds")] int CacheTtlSeconds,
-        [property: JsonPropertyName("required_scopes")] IReadOnlyList<string> RequiredScopes
-    );
-
-    private sealed record NetworkDto([property: JsonPropertyName("rules")] IReadOnlyList<NetworkRuleDto> Rules);
-
-    private sealed record NetworkRuleDto(
-        [property: JsonPropertyName("id")] string Id,
-        [property: JsonPropertyName("action")] string Action,
-        [property: JsonPropertyName("hosts")] IReadOnlyList<string> Hosts,
-        [property: JsonPropertyName("ports")] IReadOnlyList<int> Ports,
-        [property: JsonPropertyName("methods")] IReadOnlyList<string> Methods,
-        [property: JsonPropertyName("paths")] IReadOnlyList<string> Paths,
-        [property: JsonPropertyName("auth_provider")] string AuthProvider,
-        [property: JsonPropertyName("required_scopes")] IReadOnlyList<string> RequiredScopes,
-        [property: JsonPropertyName("priority")] int Priority
-    );
-
-    private sealed record CreateSandboxResponse(
-        [property: JsonPropertyName("session_id")] string SessionId,
-        [property: JsonPropertyName("container_id")] string? ContainerId,
-        [property: JsonPropertyName("volumes")] VolumesDto? Volumes
-    );
-
-    private sealed record VolumesDto([property: JsonPropertyName("workspace")] WorkspaceVolumeDto? Workspace);
-
-    private sealed record WorkspaceVolumeDto(
-        [property: JsonPropertyName("container_path")] string? ContainerPath,
-        [property: JsonPropertyName("read_only")] bool ReadOnly
     );
 }

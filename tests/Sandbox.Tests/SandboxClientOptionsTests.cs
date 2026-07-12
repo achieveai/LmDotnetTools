@@ -118,26 +118,27 @@ public class SandboxClientOptionsTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public void Constructor_BlankClientSecret_Throws(string secret)
+    public void Constructor_BlankClientSecret_IsKeyless(string secret)
     {
-        var act = () => Build(clientSecret: secret);
+        // A blank secret is the keyless dev path (AUTH_ENFORCE=off): construction succeeds and the
+        // stored secret is normalized to empty so no X-Sbx-App-Key header is ever sent.
+        var options = Build(clientSecret: secret);
 
-        act.Should().Throw<ArgumentException>();
+        options.ClientSecret.Should().BeEmpty();
     }
 
     [Fact]
-    public void Constructor_NullClientSecret_Throws()
+    public void Constructor_NullClientSecret_IsKeyless()
     {
-        var act = () =>
-            new SandboxClientOptions(
-                new Uri("https://sandbox.example.com"),
-                "app-1",
-                null!,
-                TimeSpan.FromMinutes(1),
-                TimeSpan.FromSeconds(30)
-            );
+        var options = new SandboxClientOptions(
+            new Uri("https://sandbox.example.com"),
+            "app-1",
+            null!,
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromSeconds(30)
+        );
 
-        act.Should().Throw<ArgumentException>();
+        options.ClientSecret.Should().BeEmpty();
     }
 
     [Fact]

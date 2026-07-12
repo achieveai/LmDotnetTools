@@ -86,11 +86,10 @@ public class SandboxSessionRegistryListDiscoveredTests
     }
 
     [Fact]
-    public async Task ListDiscoveredAsync_NonSuccess_ThrowsWithTruncatedBody()
+    public async Task ListDiscoveredAsync_NonSuccess_ThrowsWithStatusCode()
     {
-        // Reviewer flagged the doc claim "(truncated)" vs zero-truncation in code as a
-        // doc/code mismatch. Pin both halves: large body is actually truncated AND the
-        // marker appears in the thrown message.
+        // The SDK never surfaces the raw gateway body (it can echo submitted material), so the
+        // registry correlates failures by the gateway status code only — no body / truncation marker.
         var largeBody = new string('x', 1200);
         var (registry, _) = CreateRegistry(_ => new HttpResponseMessage(HttpStatusCode.BadGateway)
         {
@@ -101,8 +100,7 @@ public class SandboxSessionRegistryListDiscoveredTests
 
         var ex = await act.Should().ThrowAsync<InvalidOperationException>();
         ex.Which.Message.Should().Contain("502");
-        ex.Which.Message.Should().Contain("...(truncated)");
-        ex.Which.Message.Length.Should().BeLessThan(1200 + 200);
+        ex.Which.Message.Should().NotContain(largeBody);
     }
 
     [Fact]
@@ -117,7 +115,6 @@ public class SandboxSessionRegistryListDiscoveredTests
 
         var ex = await act.Should().ThrowAsync<InvalidOperationException>();
         ex.Which.Message.Should().Contain("404");
-        ex.Which.Message.Should().Contain("session not found");
     }
 
     [Fact]

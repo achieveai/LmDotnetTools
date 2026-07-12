@@ -64,6 +64,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmStreaming.AspNetCore\AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\LmAgentInfra\AchieveAi.LmDotnetTools.LmAgentInfra.csproj" />
+    <ProjectReference Include="..\..\src\Sandbox\AchieveAi.LmDotnetTools.Sandbox.csproj" />
     <ProjectReference Include="..\..\src\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
     <ProjectReference Include="..\..\src\LmWorkflow\AchieveAi.LmDotnetTools.LmWorkflow.csproj" />
     <ProjectReference Include="..\..\src\Misc\AchieveAi.LmDotnetTools.Misc.csproj" />

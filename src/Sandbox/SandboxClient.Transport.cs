@@ -92,7 +92,14 @@ public sealed partial class SandboxClient
     private void StampAuthHeaders(HttpRequestMessage request)
     {
         _ = request.Headers.TryAddWithoutValidation(AppIdHeader, _options.AppId);
-        _ = request.Headers.TryAddWithoutValidation(AppKeyHeader, _options.ClientSecret);
+
+        // Keyless dev path (AUTH_ENFORCE=off): an empty secret means no X-Sbx-App-Key header at all,
+        // so an empty value never reaches the gateway and a borrowed transport's own auth handler can
+        // supply the header instead without colliding with an empty one stamped here.
+        if (!string.IsNullOrEmpty(_options.ClientSecret))
+        {
+            _ = request.Headers.TryAddWithoutValidation(AppKeyHeader, _options.ClientSecret);
+        }
     }
 
     /// <summary>

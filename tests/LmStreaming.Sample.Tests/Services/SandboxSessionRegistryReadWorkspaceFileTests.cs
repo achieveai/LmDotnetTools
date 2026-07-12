@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -6,67 +7,61 @@ namespace LmStreaming.Sample.Tests.Services;
 /// <summary>
 /// Pins the gateway-read seam used to inject workspace context files (CLAUDE.md / AGENTS.md) into
 /// the system prompt at boot. The backend cannot read the container's <c>/workspace</c> filesystem,
-/// so it fetches content through the gateway's MCP <c>Read</c> tool (<c>POST {gateway}/mcp</c>,
-/// <c>tools/call</c>, scoped by the <c>X-Session-ID</c> header). These tests pin the request shape,
-/// the <c>cat -n</c> line-number stripping, and the best-effort null contract on errors.
+/// so it fetches content through the gateway via the typed Sandbox SDK's verified transfer protocol
+/// (an MCP <c>Bash</c> STAT probe + a base64 READ chunk, both scoped by the <c>X-Session-ID</c>
+/// header). These tests drive that protocol end-to-end: they assert the raw file bytes are returned
+/// (the SDK returns exact content — no <c>cat -n</c> stripping), that a missing file yields the
+/// best-effort <c>null</c> contract, and that a gateway/tool error also yields <c>null</c>.
 /// </summary>
 public sealed class SandboxSessionRegistryReadWorkspaceFileTests
 {
     private const string GatewayBaseUrl = "http://localhost:3000";
+    private const string XferMarker = "@@LMSBX-XFER@@";
 
     [Fact]
-    public async Task ReadWorkspaceFile_CallsGatewayMcpRead_AndStripsLineNumbers()
+    public async Task ReadWorkspaceFile_TransfersFileContent_ReturnsRawBytes()
     {
-        HttpRequestMessage? captured = null;
-        string? capturedBody = null;
+        // Raw file content — note it deliberately contains no line-number prefixes: the SDK's
+        // transfer protocol returns the file's exact bytes, unlike the old MCP Read `cat -n` path.
+        const string fileText = "# Hello\nWorld\n";
+        var fileBytes = Encoding.UTF8.GetBytes(fileText);
+
+        var sessionIds = new List<string>();
+        var mcpUris = new List<string>();
 
         HttpResponseMessage Respond(HttpRequestMessage req)
         {
-            captured = req;
-            capturedBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
-            // Mock the gateway's MCP Read result — content is cat -n line-number prefixed.
-            const string mcp = """
-                {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"     1\t# Hello\n     2\tWorld\n     3\t"}],"isError":false}}
-                """;
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            mcpUris.Add(req.RequestUri!.AbsoluteUri);
+            if (req.Headers.TryGetValues("X-Session-ID", out var ids))
             {
-                Content = new StringContent(mcp, Encoding.UTF8, "application/json"),
-            };
+                sessionIds.AddRange(ids);
+            }
+
+            var script = ReadScript(req);
+            // STAT probe → META with size/mtime/sha256; READ chunk → CHUNK with size/mtime/base64.
+            var text = IsStat(script)
+                ? $"{XferMarker} META {fileBytes.Length} 1 {Sha256Hex(fileBytes)}"
+                : $"{XferMarker} CHUNK {fileBytes.Length} 1 {Convert.ToBase64String(fileBytes)}";
+            return Mcp(text, isError: false);
         }
 
         await using var registry = CreateRegistry(Respond);
 
         var content = await registry.ReadWorkspaceFileAsync("sess-1", "/workspace/CLAUDE.md");
 
-        // Line-number prefixes stripped; the empty trailing numbered line becomes a blank line.
-        content.Should().Be("# Hello\nWorld\n");
+        content.Should().Be(fileText);
 
-        // Request shape: POST {gateway}/mcp with the session header and a tools/call Read body.
-        captured.Should().NotBeNull();
-        captured!.Method.Should().Be(HttpMethod.Post);
-        captured.RequestUri!.AbsoluteUri.Should().Be($"{GatewayBaseUrl}/mcp");
-        captured.Headers.GetValues("X-Session-ID").Should().ContainSingle().Which.Should().Be("sess-1");
-
-        capturedBody.Should().NotBeNull();
-        using var doc = JsonDocument.Parse(capturedBody!);
-        var root = doc.RootElement;
-        root.GetProperty("method").GetString().Should().Be("tools/call");
-        var p = root.GetProperty("params");
-        p.GetProperty("name").GetString().Should().Be("Read");
-        p.GetProperty("arguments").GetProperty("file_path").GetString().Should().Be("/workspace/CLAUDE.md");
+        // The transfer is a STAT then a READ — both POSTed to {gateway}/mcp with the session header.
+        mcpUris.Should().OnlyContain(u => u == $"{GatewayBaseUrl}/mcp");
+        mcpUris.Should().HaveCount(2);
+        sessionIds.Should().OnlyContain(id => id == "sess-1");
     }
 
     [Fact]
-    public async Task ReadWorkspaceFile_ToolReportsIsError_ReturnsNull()
+    public async Task ReadWorkspaceFile_FileMissing_ReturnsNull()
     {
-        // A missing file surfaces as an MCP result with isError=true (not a transport failure).
-        static HttpResponseMessage Respond(HttpRequestMessage _) => new(HttpStatusCode.OK)
-        {
-            Content = new StringContent(
-                """{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"File not found"}],"isError":true}}""",
-                Encoding.UTF8,
-                "application/json"),
-        };
+        // A missing file surfaces as the transfer protocol's NOTFOUND sentinel on the STAT probe.
+        static HttpResponseMessage Respond(HttpRequestMessage _) => Mcp($"{XferMarker} NOTFOUND", isError: false);
 
         await using var registry = CreateRegistry(Respond);
 
@@ -76,22 +71,51 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
     }
 
     [Fact]
-    public async Task ReadWorkspaceFile_JsonRpcError_ReturnsNull()
+    public async Task ReadWorkspaceFile_GatewayToolError_ReturnsNull()
     {
-        // The gateway returns a JSON-RPC error (e.g. evicted session) — best-effort null, never throw.
-        static HttpResponseMessage Respond(HttpRequestMessage _) => new(HttpStatusCode.OK)
-        {
-            Content = new StringContent(
-                """{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Session not found"}}""",
-                Encoding.UTF8,
-                "application/json"),
-        };
+        // The Bash tool reports an error (e.g. evicted session) — the SDK surfaces a Protocol failure
+        // which the registry maps to the best-effort null contract, never a throw.
+        static HttpResponseMessage Respond(HttpRequestMessage _) => Mcp("permission denied", isError: true);
 
         await using var registry = CreateRegistry(Respond);
 
         var content = await registry.ReadWorkspaceFileAsync("sess-gone", "/workspace/CLAUDE.md");
 
         content.Should().BeNull();
+    }
+
+    private static string Sha256Hex(byte[] bytes) =>
+        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    private static string ReadScript(HttpRequestMessage req)
+    {
+        var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement
+            .GetProperty("params")
+            .GetProperty("arguments")
+            .GetProperty("command")
+            .GetString() ?? string.Empty;
+    }
+
+    private static bool IsStat(string script) => script.Contains("XFER STAT", StringComparison.Ordinal);
+
+    private static HttpResponseMessage Mcp(string text, bool isError)
+    {
+        var envelope = new
+        {
+            jsonrpc = "2.0",
+            id = 1,
+            result = new
+            {
+                content = new[] { new { type = "text", text } },
+                isError,
+            },
+        };
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(envelope), Encoding.UTF8, "application/json"),
+        };
     }
 
     private static SandboxSessionRegistry CreateRegistry(Func<HttpRequestMessage, HttpResponseMessage> respond)

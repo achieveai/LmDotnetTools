@@ -245,8 +245,16 @@ try
     // unenforced gateway is unaffected.
     HttpClient GatewayHttpClient(TimeSpan? timeout = null)
     {
+        // AllowAutoRedirect=false is a security precondition of the Sandbox SDK's borrowed-client
+        // contract: the SDK authenticates with custom X-Sbx-* headers, which .NET's auto-redirect
+        // logic would re-send to a redirect target (it only strips the standard Authorization header).
+        // The per-credential SandboxClient instances the registry builds forward onto this shared
+        // client, so disabling it here closes that leak for the whole gateway transport.
         var client = new HttpClient(
-            new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey) { InnerHandler = new HttpClientHandler() });
+            new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey)
+            {
+                InnerHandler = new HttpClientHandler { AllowAutoRedirect = false },
+            });
         if (timeout is { } t)
         {
             client.Timeout = t;
@@ -2038,9 +2046,10 @@ public partial class Program
     /// <summary>
     /// Seeds the workspace's root instruction file (AGENTS.md, else CLAUDE.md) into the system
     /// prompt at agent build, so the model has the workspace's high-priority instructions on turn 1
-    /// WITHOUT having to read any file. The content is fetched THROUGH the gateway's MCP <c>Read</c>
-    /// tool (<see cref="SandboxSessionRegistry.ReadWorkspaceFileAsync"/>): the local-host backend
-    /// cannot read the container's <c>/workspace</c> filesystem, and this path is race-free (it does
+    /// WITHOUT having to read any file. The content is fetched THROUGH the gateway via the typed
+    /// Sandbox SDK (<see cref="SandboxSessionRegistry.ReadWorkspaceFileAsync"/>, which addresses the
+    /// file by its workspace-relative path): the local-host backend cannot read the container's
+    /// <c>/workspace</c> filesystem, and this path is race-free (it does
     /// not depend on the async discovery webhook, which fires after the system prompt is built).
     /// AGENTS.md takes precedence over CLAUDE.md — the first file that exists is injected and the
     /// search stops. Returns an empty string when neither exists, the session has no host path, or

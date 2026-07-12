@@ -32,7 +32,9 @@ public sealed class SandboxClientOptions
     /// <summary>
     /// Base64-encoded per-app shared secret sent as the <c>X-Sbx-App-Key</c> header on every
     /// app-facing request. SECRET — never logged, never included in an exception message, and
-    /// never rendered by <see cref="ToString"/>.
+    /// never rendered by <see cref="ToString"/>. An empty string denotes the KEYLESS dev path
+    /// (the gateway running with <c>AUTH_ENFORCE=off</c>): no <c>X-Sbx-App-Key</c> header is sent
+    /// and no base64 validation is performed. A non-blank value is always validated at construction.
     /// </summary>
     public string ClientSecret { get; }
 
@@ -105,7 +107,15 @@ public sealed class SandboxClientOptions
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(appId);
-        ValidateClientSecretOrThrow(appId, clientSecret);
+
+        // A blank/null secret is the KEYLESS dev path (AUTH_ENFORCE=off): store empty and skip
+        // validation so no X-Sbx-App-Key header is ever sent. A NON-blank secret is still validated
+        // so a genuinely malformed key fails fast at startup.
+        var keyless = string.IsNullOrWhiteSpace(clientSecret);
+        if (!keyless)
+        {
+            ValidateClientSecretOrThrow(appId, clientSecret);
+        }
 
         if (executionTimeout <= TimeSpan.Zero)
         {
@@ -119,7 +129,7 @@ public sealed class SandboxClientOptions
 
         ServerAddress = serverAddress;
         AppId = appId;
-        ClientSecret = clientSecret;
+        ClientSecret = keyless ? string.Empty : clientSecret;
         ExecutionTimeout = executionTimeout;
         TransportTimeout = transportTimeout;
         AllowInsecureDevelopmentTransport = allowInsecureDevelopmentTransport;
@@ -137,22 +147,14 @@ public sealed class SandboxClientOptions
             + $"AllowInsecureDevelopmentTransport = {AllowInsecureDevelopmentTransport} }}";
 
     /// <summary>
-    /// Validates that <paramref name="clientSecret"/> decodes as STANDARD base64 (never URL-safe) to
-    /// at least <see cref="MinClientSecretBytes"/> bytes. Every failure message includes only
-    /// <paramref name="appId"/> and (on a length failure) the decoded byte count — never the secret
-    /// or any substring of it.
+    /// Validates that a NON-blank <paramref name="clientSecret"/> decodes as STANDARD base64 (never
+    /// URL-safe) to at least <see cref="MinClientSecretBytes"/> bytes. Every failure message includes
+    /// only <paramref name="appId"/> and (on a length failure) the decoded byte count — never the
+    /// secret or any substring of it. A blank secret is the keyless dev path and is handled by the
+    /// caller before this method is reached.
     /// </summary>
     private static void ValidateClientSecretOrThrow(string appId, string clientSecret)
     {
-        if (string.IsNullOrWhiteSpace(clientSecret))
-        {
-            throw new ArgumentException(
-                $"Sandbox client secret for app '{appId}' is missing or blank. "
-                    + "(The secret value itself is never included in this message.)",
-                nameof(clientSecret)
-            );
-        }
-
         byte[] decoded;
         try
         {
