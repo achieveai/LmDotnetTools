@@ -207,6 +207,189 @@ public sealed class NotifyWaitDurableRestoreTests
         }
     }
 
+    [Fact]
+    public async Task ScheduleNotifyWait_ExhaustedFireBudgetAfterRestart_ClearsRowWithoutReArming()
+    {
+        var (root, conversationsPath, notifyDbPath) = NewTempPaths();
+        var threadId = "notify-restore-exhausted-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            var now = NowMs();
+            await SeedAsync(conversationsPath, notifyDbPath, threadId,
+            [
+                // Restorable schedule kind whose fire budget is already spent (FiresSoFar == MaxFires):
+                // stale terminal state left behind when the process crashed between the final fire's
+                // envelope and its row-delete. Restore must DELETE this row without re-arming — never
+                // double-firing — even though its TTL is far in the future. This is the exact inverse of
+                // the survive-test's non-exhausted schedule row, which re-arms and stays active.
+                new NotifyWaitRecord(
+                    WaitId: ScheduleWaitId,
+                    ThreadId: threadId,
+                    Kind: ScheduleTriggerSource.KindName,
+                    Args: "{\"intervalSeconds\":86400}",
+                    Label: null,
+                    MaxFires: 1,
+                    FiresSoFar: 1,
+                    TimeoutAtUnixMs: now + 3_600_000,
+                    ArmedAtUnixMs: now,
+                    Status: "active"),
+
+                // Non-restorable barrier: its deletion proves restore ran this pass, so the exhausted
+                // row's absence is a real cleanup rather than "restore hasn't run yet".
+                new NotifyWaitRecord(
+                    WaitId: ProcessBarrierWaitId,
+                    ThreadId: threadId,
+                    Kind: ProcessTriggerSource.KindName,
+                    Args: "{\"handle\":\"proc-xyz\"}",
+                    Label: null,
+                    MaxFires: null,
+                    FiresSoFar: 0,
+                    TimeoutAtUnixMs: now + 3_600_000,
+                    ArmedAtUnixMs: now,
+                    Status: "active"),
+            ]);
+
+            await using var host = new NotifyRestoreWebAppFactory(notifyDbPath, conversationsPath);
+            var notifyStore = host.Services.GetRequiredService<INotifyWaitStore>();
+            var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
+            var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+
+            _ = pool.GetOrCreateAgent(threadId, mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+
+            var active = await PollActiveUntilAsync(notifyStore, threadId, rows => rows.Count == 0);
+
+            active.Should().BeEmpty(
+                "an exhausted schedule row (fires_so_far >= maxFires) is deleted without re-arming, so no " +
+                "fire is double-delivered on restart");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            TryDeleteDir(root);
+        }
+    }
+
+    [Fact]
+    public async Task ScheduleNotifyWait_TtlElapsedWhileOffline_TimesOutAndClearsRow()
+    {
+        var (root, conversationsPath, notifyDbPath) = NewTempPaths();
+        var threadId = "notify-restore-timeout-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            var now = NowMs();
+            await SeedAsync(conversationsPath, notifyDbPath, threadId,
+            [
+                // Restorable schedule kind, but its ceiling already elapsed while the process was offline
+                // (deadline in the past). Restore must resolve it as timed_out and CLEAR the row rather
+                // than re-arm — the mirror image of the survive-test, where a live-TTL schedule row stays
+                // active. A long interval rules out any fire racing the ceiling for the latch.
+                new NotifyWaitRecord(
+                    WaitId: ScheduleWaitId,
+                    ThreadId: threadId,
+                    Kind: ScheduleTriggerSource.KindName,
+                    Args: "{\"intervalSeconds\":86400}",
+                    Label: null,
+                    MaxFires: null,
+                    FiresSoFar: 0,
+                    TimeoutAtUnixMs: now - 1000,
+                    ArmedAtUnixMs: now - 2000,
+                    Status: "active"),
+
+                // Non-restorable barrier: its deletion proves restore ran this pass, so the timed-out
+                // row's absence is a real cleanup rather than "restore hasn't run yet".
+                new NotifyWaitRecord(
+                    WaitId: ProcessBarrierWaitId,
+                    ThreadId: threadId,
+                    Kind: ProcessTriggerSource.KindName,
+                    Args: "{\"handle\":\"proc-xyz\"}",
+                    Label: null,
+                    MaxFires: null,
+                    FiresSoFar: 0,
+                    TimeoutAtUnixMs: now + 3_600_000,
+                    ArmedAtUnixMs: now,
+                    Status: "active"),
+            ]);
+
+            await using var host = new NotifyRestoreWebAppFactory(notifyDbPath, conversationsPath);
+            var notifyStore = host.Services.GetRequiredService<INotifyWaitStore>();
+            var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
+            var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+
+            _ = pool.GetOrCreateAgent(threadId, mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+
+            var active = await PollActiveUntilAsync(notifyStore, threadId, rows => rows.Count == 0);
+
+            active.Should().BeEmpty(
+                "the schedule row's ceiling elapsed while offline, so restore resolves it as timed_out and " +
+                "clears the durable row (unlike a live-TTL schedule row, which re-arms and survives)");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            TryDeleteDir(root);
+        }
+    }
+
+    [Fact]
+    public async Task ScheduleNotifyWait_ReArmsAndFiresAfterRestart_PersistsAdvancedFireCount()
+    {
+        var (root, conversationsPath, notifyDbPath) = NewTempPaths();
+        var threadId = "notify-restore-refire-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            var now = NowMs();
+            await SeedAsync(conversationsPath, notifyDbPath, threadId,
+            [
+                // Short interval + small cap: restore re-arms this schedule wait, its wall-clock timer
+                // fires ~1s later, and because a CAPPED wait persists fires_so_far on EVERY fire (only
+                // uncapped waits debounce the count — see OnSourceFiredAsync), the durable row advances to
+                // fires_so_far >= 1 while still active. That advanced-count-while-active state is the
+                // strongest durable proof: it shows the restored wait actually re-armed AND fired AND
+                // persisted the new count, not merely that its row survived.
+                //
+                // Signal chosen: fires_so_far >= 1 while the row is still active. It is observable during
+                // the ~1s window between the first fire (fires_so_far -> 1, row stays active) and the
+                // second/final fire (which tears the row down), comfortably inside the ~10s poll budget.
+                // The alternative "row terminates at maxFires" would also work but proves strictly less.
+                new NotifyWaitRecord(
+                    WaitId: ScheduleWaitId,
+                    ThreadId: threadId,
+                    Kind: ScheduleTriggerSource.KindName,
+                    Args: "{\"intervalSeconds\":1}",
+                    Label: null,
+                    MaxFires: 2,
+                    FiresSoFar: 0,
+                    TimeoutAtUnixMs: now + 3_600_000,
+                    ArmedAtUnixMs: now,
+                    Status: "active"),
+            ]);
+
+            await using var host = new NotifyRestoreWebAppFactory(notifyDbPath, conversationsPath);
+            var notifyStore = host.Services.GetRequiredService<INotifyWaitStore>();
+            var pool = host.Services.GetRequiredService<MultiTurnAgentPool>();
+            var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+
+            _ = pool.GetOrCreateAgent(threadId, mode, requestedProviderId: "test", requestResponseDumpFileName: null);
+
+            // Converge on the durable proof: the restored schedule wait is active with an advanced fire
+            // count. Polling a predicate (never a fixed sleep) keeps this race-free.
+            var active = await PollActiveUntilAsync(
+                notifyStore,
+                threadId,
+                rows => rows.Any(r => r.WaitId == ScheduleWaitId && r.FiresSoFar >= 1));
+
+            active.Should().Contain(
+                r => r.WaitId == ScheduleWaitId && r.FiresSoFar >= 1,
+                "the restored schedule wait re-arms, fires on its wall-clock timer, and persists an " +
+                "advanced fires_so_far while still active");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            TryDeleteDir(root);
+        }
+    }
+
     // --- helpers -----------------------------------------------------------------------------
 
     private static long NowMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();

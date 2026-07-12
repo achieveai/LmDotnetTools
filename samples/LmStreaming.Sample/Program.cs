@@ -395,9 +395,16 @@ try
     // IAsyncDisposable-only singleton makes ServiceProvider.Dispose() (synchronous) throw
     // "only implements IAsyncDisposable". The sample host is torn down synchronously in tests
     // (BrowserWebAppFactory calls IHost.Dispose()), so tracking the factory would regress every E2E
-    // test that creates an agent. The inline factory is instead reclaimed by GC at process end — a
-    // benign leak (it only holds SemaphoreSlims, which allocate no OS handle here), which is the right
-    // trade for a sample host that must stay sync-dispose-safe.
+    // test that creates an agent. The factory OBJECT itself only holds SemaphoreSlims (no OS handle)
+    // and is reclaimed by GC at process end; the real cost of never disposing it is that the
+    // PROCESS-WIDE Microsoft.Data.Sqlite connection pool — not owned by this object — stays populated
+    // with live WAL connections (this factory sets Pooling=true + Cache=Shared and runs
+    // PRAGMA journal_mode=WAL), each an open OS file handle plus its -wal/-shm sidecars, until the
+    // process exits or SqliteConnection.ClearAllPools() is called. Acceptable here ONLY because this
+    // path is test-mode-gated and the tests clear the pool in their finally. FOLLOW-UP (#161): before
+    // flipping the real-provider gate, register real async disposal (e.g.
+    // IHostApplicationLifetime.ApplicationStopped -> SqliteConnection.ClearAllPools()) so the pooled
+    // WAL handles are released deterministically instead of lingering to process exit.
     // Configurable path (default a sibling of the conversations/ folder) mirrors
     // CodeReviewDaemon.Sample's CodeReviewDaemon:DatabasePath so a WebApplicationFactory test can
     // UseSetting an isolated file.
