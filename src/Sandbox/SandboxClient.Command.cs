@@ -400,7 +400,15 @@ public sealed partial class SandboxClient
             OperationId = operationId,
         };
 
-        await BestEffortReclaimAsync(sessionId, operationDirectory, operationId, ct).ConfigureAwait(false);
+        await BestEffortReclaimAsync(
+                sessionId,
+                operationDirectory,
+                operationId,
+                manifest.Generation,
+                manifest.Digest,
+                ct
+            )
+            .ConfigureAwait(false);
         return result;
     }
 
@@ -552,18 +560,28 @@ public sealed partial class SandboxClient
     /// <summary>
     /// Reclaims the verified operation's large output while retaining its bounded completion marker,
     /// then runs a bounded stale sweep. Both are best-effort and never fail the command: the result is
-    /// already assembled, so a failed reclaim/sweep must not turn a success into a failure.
+    /// already assembled, so a failed reclaim/sweep must not turn a success into a failure. The reclaim
+    /// carries the verified manifest's generation and digest so the sandbox can re-validate, under the GC
+    /// lock, that it is still the SAME execution before deleting any output — a delayed reclaim from an
+    /// expired old execution never touches a newer re-execution that reused the operation directory.
     /// </summary>
     private async Task BestEffortReclaimAsync(
         string sessionId,
         string operationDirectory,
         string operationId,
+        string generation,
+        string digest,
         CancellationToken ct
     )
     {
         try
         {
-            _ = await SubmitBashAsync(sessionId, CommandScripts.BuildReclaim(operationDirectory), ct, operationId)
+            _ = await SubmitBashAsync(
+                    sessionId,
+                    CommandScripts.BuildReclaim(operationDirectory, generation, digest),
+                    ct,
+                    operationId
+                )
                 .ConfigureAwait(false);
         }
         catch (SandboxException)

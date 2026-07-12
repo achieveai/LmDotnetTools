@@ -28,6 +28,7 @@ public class CommandManifestWireTests
         {
             ["v"] = CommandManifest.CurrentVersion,
             ["digest"] = CommandTestSupport.Digest(Session, command),
+            ["gen"] = new string('e', 32),
             ["exit"] = 0,
             ["stdout"] = new JsonObject
             {
@@ -59,6 +60,7 @@ public class CommandManifestWireTests
             "stderr",
             "lease",
             "created",
+            "gen",
             "stdout.len",
             "stdout.sha256",
             "stdout.inline",
@@ -78,6 +80,7 @@ public class CommandManifestWireTests
             "stderr",
             "lease",
             "created",
+            "gen",
             "stdout.len",
             "stdout.sha256",
             "stderr.len",

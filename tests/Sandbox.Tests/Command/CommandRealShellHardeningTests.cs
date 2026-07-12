@@ -270,13 +270,17 @@ public class CommandRealShellHardeningTests
         File.WriteAllText(Path.Combine(directory, "created"), created.ToString());
     }
 
-    /// <summary>Seeds a sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) stamped with the given time, as a purger holding the lock would leave it.</summary>
-    private static void SeedGcLock(ShellWorkspace workspace, string name, long timestamp)
+    /// <summary>Seeds a sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) owned by a token stamped at the given time, as a holder would leave it (fresh time = live, ancient time = a crashed holder's stale lock).</summary>
+    private static void SeedGcLock(ShellWorkspace workspace, string name, long timestamp, string token = "seeded-owner-token")
     {
         var directory = workspace.HostFile($".lmsbx-sdk/ops/{name}.gc");
         Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, "ts"), timestamp.ToString());
+        File.WriteAllText(Path.Combine(directory, "owner"), $"{token} {timestamp}");
     }
+
+    /// <summary>Seeds a GC lock directory with NO owner token yet — the state a holder leaves in the tiny <c>mkdir</c>→token establishment window (which must be treated LIVE, never reclaimed).</summary>
+    private static void SeedOwnerlessGcLock(ShellWorkspace workspace, string name) =>
+        Directory.CreateDirectory(workspace.HostFile($".lmsbx-sdk/ops/{name}.gc"));
 
     private static void AssertWellFormedProbeState(string probeText)
     {

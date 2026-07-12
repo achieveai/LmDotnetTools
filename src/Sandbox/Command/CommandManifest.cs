@@ -7,8 +7,9 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Command;
 /// The completion manifest a command wrapper persists after running the command, and the SDK reads
 /// back to assemble (or recover) a <see cref="SandboxCommandResult"/>. It is metadata only — exit
 /// code, per-stream length/digest, an optional small inline copy of each stream, the canonical
-/// command digest, and the lease/creation timestamps — and deliberately carries <b>no</b> credential
-/// or gateway-controlled free text, so persisting it under restrictive permissions leaks nothing.
+/// command digest, an immutable per-execution generation id, and the lease/creation timestamps — and
+/// deliberately carries <b>no</b> credential or gateway-controlled free text, so persisting it under
+/// restrictive permissions leaks nothing.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -42,6 +43,18 @@ internal sealed record CommandManifest
     [JsonPropertyName("digest")]
     [JsonRequired]
     public string Digest { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The immutable per-execution generation identifier (32 lowercase-hex characters) assigned when the
+    /// command was claimed and run. Because the artifact directory name is derived from the session and
+    /// operation id only (not the command), the SAME directory can be reused across executions after the
+    /// retention window elapses; the generation distinguishes those executions so a delayed output reclaim
+    /// issued by an expired old execution can re-read it under the GC lock and refuse to delete a NEWER
+    /// re-execution's output. It is written once and never mutated for a given execution.
+    /// </summary>
+    [JsonPropertyName("gen")]
+    [JsonRequired]
+    public string Generation { get; init; } = string.Empty;
 
     /// <summary>The command's process exit code.</summary>
     [JsonPropertyName("exit")]

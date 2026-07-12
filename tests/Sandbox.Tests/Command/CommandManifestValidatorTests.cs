@@ -19,6 +19,7 @@ public class CommandManifestValidatorTests
         {
             Version = CommandManifest.CurrentVersion,
             Digest = new string('a', 64),
+            Generation = new string('e', 32),
             ExitCode = 0,
             Stdout = new CommandStreamManifest
             {
@@ -55,6 +56,11 @@ public class CommandManifestValidatorTests
             ("digest uppercase hex", Valid() with { Digest = new string('A', 64) }),
             ("digest non-hex", Valid() with { Digest = "not-hex-value" }),
             ("digest empty", Valid() with { Digest = "" }),
+            ("generation too short", Valid() with { Generation = new string('e', 31) }),
+            ("generation wrong length (64)", Valid() with { Generation = new string('e', 64) }),
+            ("generation uppercase hex", Valid() with { Generation = new string('E', 32) }),
+            ("generation non-hex", Valid() with { Generation = "not-hex-generation-value-32chars" }),
+            ("generation empty", Valid() with { Generation = "" }),
             ("null stdout record", Valid() with { Stdout = null! }),
             ("null stderr record", Valid() with { Stderr = null! }),
             (

@@ -40,7 +40,8 @@ internal readonly record struct CommandScriptRequest(
     string? Stream,
     long Offset,
     long Length,
-    int Max
+    int Max,
+    string? Generation = null
 );
 
 /// <summary>
@@ -107,39 +108,67 @@ internal static class CommandScripts
         "lmsbx_num() { _v=$(cat \"$1\" 2>/dev/null || echo 0); case \"$_v\" in ''|*[!0-9]*) _v=0 ;; esac; printf '%s' \"$_v\"; }";
 
     /// <summary>
+    /// Portable generator of a per-acquisition unique identifier: EXACTLY 32 lowercase hex characters,
+    /// used both as a GC-lock owner token and as an execution generation id. It hashes 32 bytes of
+    /// <c>/dev/urandom</c> together with the shell pid and the current second, so two concurrent holders
+    /// (distinct live pids) and two executions separated in time both get distinct tokens. It relies only
+    /// on the coreutils the wrapper already requires (<c>sha256sum</c>/<c>shasum</c>, <c>head</c>,
+    /// <c>date</c>, <c>cut</c>, <c>tr</c>) — never <c>od</c>/<c>$RANDOM</c> — and if <c>/dev/urandom</c> is
+    /// unreadable the pid+second seed still yields a well-distributed value, with a final pid-derived
+    /// last-ditch fallback so the result is never empty.
+    /// </summary>
+    internal const string UidFunction =
+        "lmsbx_uid() { _u=$( (head -c 32 /dev/urandom 2>/dev/null; printf '%s' \"$$ $(date +%s)\") "
+        + "| (sha256sum 2>/dev/null || shasum -a 256 2>/dev/null) | cut -d' ' -f1 | tr 'A-F' 'a-f' | cut -c1-32 ); "
+        + "case \"$_u\" in *[!0-9a-f]*) _u= ;; esac; [ ${#_u} -eq 32 ] || _u=$(printf '%032d' \"$$\"); printf '%s' \"$_u\"; }";
+
+    /// <summary>
     /// The per-operation GC-lock primitive: a sibling <c>&lt;op&gt;.gc</c> directory whose sole owner is
-    /// elected by an atomic <c>mkdir</c>. Deletion of an operation directory (a stale-sweep purge or an
-    /// abandoned-claim self-recovery) may proceed ONLY while holding this lock, and every holder
-    /// re-validates the operation's CURRENT lease under the lock before deleting — so the lock serializes
-    /// contending purgers and the re-validation guarantees a refreshed/replacement active claim is never
-    /// deleted even in the rare double-owner window.
+    /// elected by an atomic <c>mkdir</c> and then IDENTIFIED by a unique owner token
+    /// (<see cref="UidFunction"><c>lmsbx_uid</c></see>) persisted in <c>&lt;op&gt;.gc/owner</c>. Deletion
+    /// of an operation directory (a stale-sweep purge or an abandoned-claim self-recovery) and reclaim of
+    /// output may proceed ONLY while holding this lock, and every holder both re-validates the operation's
+    /// CURRENT state and re-verifies its own token (<c>gclock_owned</c>) immediately before the destructive
+    /// action — so exactly one true owner ever deletes, even in the rare <c>gclock_try</c> reclaim race.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <c>gclock_is_live</c> reports whether a held lock is fresh (stamped within
-    /// <see cref="CommandArtifactLayout.GcLockStaleSeconds"/>): a live lock is respected (a contender
-    /// backs off), a lock with no or an old timestamp is a crashed holder's leftover.
+    /// <b>Owner-token fencing.</b> <c>gclock_owned</c> is true only while <c>&lt;op&gt;.gc/owner</c> still
+    /// carries THIS caller's token. Every destructive action is gated on it, and <c>gclock_release</c>
+    /// removes the lock ONLY when still owned — so a delayed release from an old owner whose lock was
+    /// already stale-reclaimed by a successor can NEVER delete the successor's lock (the double-ownership
+    /// bug this closes).
     /// </para>
     /// <para>
-    /// <c>gclock_try</c> returns success (0) only if THIS caller now holds the lock: it wins the atomic
-    /// <c>mkdir</c> and stamps the time, or — finding a stale lock — reclaims it and re-elects a single
-    /// owner via a fresh <c>mkdir</c> (the loser's <c>mkdir</c> fails, so it never deletes). It returns
-    /// failure (1) while a LIVE lock is held by someone else. Reclaiming a stale lock cannot cause an
-    /// unsafe delete because the delete itself is always gated on a fresh under-lock re-validation.
+    /// <b>Liveness favours safety.</b> <c>gclock_is_live</c> treats a lock whose <c>owner</c> file is not
+    /// yet present as LIVE — a just-<c>mkdir</c>'d lock mid-establishment (the tiny <c>mkdir</c>→token
+    /// window) is respected, never reclaimed, so a contender in that window backs off instead of racing
+    /// into double ownership. A lock WITH an owner token is fresh only while stamped within
+    /// <see cref="CommandArtifactLayout.GcLockStaleSeconds"/>; an old stamp is a crashed holder's leftover
+    /// that <c>gclock_try</c> reclaims (<c>rm -rf</c> + re-<c>mkdir</c> + re-token). The residual boundary
+    /// is honest: a crash in the single-syscall <c>mkdir</c>→first-write window leaves an owner-less lock
+    /// that the fast TTL will not reclaim (it is treated live forever), blocking only that one operation's
+    /// maintenance — never same-id idempotency or the manifest fast path — until the artifact root is
+    /// reset. Correctness never relies on the TTL: every delete is additionally gated on a fresh under-lock
+    /// re-validation and the owner-token re-check.
     /// </para>
     /// </remarks>
-    private const string GcLockFunctions =
+    internal const string GcLockFunctions =
         NumFunction
         + "\n"
-        + "gclock_is_live() { _lts=$(lmsbx_num \"$GCL/ts\"); _now=$(date +%s); [ \"$_lts\" -gt 0 ] && [ \"$((_now - _lts))\" -le \"$GCLOCKTTL\" ]; }\n"
-        + "gclock_stamp() { printf '%s' \"$(date +%s)\" > \"$GCL/ts\" 2>/dev/null; }\n"
+        + "gclock_owner_token() { cut -d' ' -f1 \"$GCL/owner\" 2>/dev/null; }\n"
+        + "gclock_owner_ts() { _t=$(cut -d' ' -f2 \"$GCL/owner\" 2>/dev/null); case \"$_t\" in ''|*[!0-9]*) _t=0 ;; esac; printf '%s' \"$_t\"; }\n"
+        + "gclock_owned() { [ -f \"$GCL/owner\" ] && [ \"$(gclock_owner_token)\" = \"$OWNER\" ]; }\n"
+        + "gclock_is_live() { [ -d \"$GCL\" ] || return 1; [ -f \"$GCL/owner\" ] || return 0; "
+        + "_lts=$(gclock_owner_ts); _now=$(date +%s); [ \"$_lts\" -gt 0 ] && [ \"$((_now - _lts))\" -le \"$GCLOCKTTL\" ]; }\n"
+        + "gclock_write_owner() { printf '%s %s' \"$OWNER\" \"$(date +%s)\" > \"$GCL/owner\" 2>/dev/null; }\n"
         + "gclock_try() { "
-        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_stamp; return 0; fi; "
+        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_write_owner; gclock_owned; return; fi; "
         + "if gclock_is_live; then return 1; fi; "
         + "rm -rf \"$GCL\" 2>/dev/null; "
-        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_stamp; return 0; fi; "
+        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_write_owner; gclock_owned; return; fi; "
         + "return 1; }\n"
-        + "gclock_release() { rm -rf \"$GCL\" 2>/dev/null; }";
+        + "gclock_release() { gclock_owned && rm -rf \"$GCL\" 2>/dev/null; return 0; }";
 
     /// <summary>
     /// Builds the single side-effecting wrapper. In order: fast-path an already-persisted manifest;
@@ -215,13 +244,17 @@ internal static class CommandScripts
             Sha256Function,
             StreamJsonFunction,
             EmitManifestFunction,
+            UidFunction,
             GcLockFunctions,
+            "OWNER=$(lmsbx_uid)",
+            "GEN=$(lmsbx_uid)",
             "claim_run() {",
             "  created=$(date +%s)",
             "  lease=$((created + EXEC + GRACE))",
             "  printf '%s' \"$lease\" > \"$OP/lease\"",
             "  printf '%s' \"$created\" > \"$OP/created\"",
             "  printf '%s' \"$DIGEST\" > \"$OP/digest\"",
+            "  printf '%s' \"$GEN\" > \"$OP/gen\"",
             "  : > \"$OUT\"",
             "  : > \"$ERR\"",
             "  umask \"$OLDUMASK\"",
@@ -232,7 +265,7 @@ internal static class CommandScripts
             "  ol=${so%%|*}; sor=${so#*|}; os=${sor%%|*}; oi=${sor#*|}",
             "  el=${se%%|*}; ser=${se#*|}; es=${ser%%|*}; ei=${ser#*|}",
             "  MTMP=\"$OP/.manifest.$$.tmp\"",
-            "  printf '{\"v\":1,\"digest\":\"%s\",\"exit\":%d,\"stdout\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"stderr\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"lease\":%d,\"created\":%d}' \"$DIGEST\" \"$code\" \"$ol\" \"$os\" \"$oi\" \"$el\" \"$es\" \"$ei\" \"$lease\" \"$created\" > \"$MTMP\"",
+            "  printf '{\"v\":1,\"digest\":\"%s\",\"gen\":\"%s\",\"exit\":%d,\"stdout\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"stderr\":{\"len\":%d,\"sha256\":\"%s\",\"inline\":%s},\"lease\":%d,\"created\":%d}' \"$DIGEST\" \"$GEN\" \"$code\" \"$ol\" \"$os\" \"$oi\" \"$el\" \"$es\" \"$ei\" \"$lease\" \"$created\" > \"$MTMP\"",
             "  mv \"$MTMP\" \"$MAN\"",
             "  umask \"$OLDUMASK\"",
             "  emit_manifest",
@@ -247,18 +280,21 @@ internal static class CommandScripts
             "  if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
             // Respect an in-progress purge of THIS operation: while a live GC lock is held a purger may be
             // deleting the directory, so never create/recover a claim that races it — fall through to
-            // PENDING and let a later retry proceed. A stale lock (crashed holder) is reclaimed here.
+            // PENDING and let a later retry proceed. A stale lock (a crashed holder) is reclaimed through
+            // the ownership protocol (gclock_try then a token-checked release) — never a blind rm that
+            // could delete a successor's freshly-elected lock.
             "  if [ -d \"$GCL\" ]; then",
             "    if gclock_is_live; then break; fi",
-            "    rm -rf \"$GCL\" 2>/dev/null",
+            "    if gclock_try; then gclock_release; fi",
             "  fi",
             "  if mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
             "  if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
             // An existing, uncommitted claim. Recover ONLY an abandoned one: an ESTABLISHED lease that has
             // EXPIRED (a lease-less mid-establishment claim, or an unexpired/active lease, is never
             // touched). The recovery deletes and re-claims under the per-operation GC lock, re-validating
-            // the current state UNDER the lock, so exactly one new claimant is elected and a still-active
-            // or freshly-replaced claim is never destroyed.
+            // the current state AND re-verifying our own lock token (gclock_owned) immediately before the
+            // delete, so exactly one new claimant is elected and a still-active or freshly-replaced claim
+            // is never destroyed even if gclock_try's stale-reclaim raced another contender.
             "  if [ -f \"$OP/lease\" ]; then",
             "    lease=$(lmsbx_num \"$OP/lease\")",
             "    now=$(date +%s)",
@@ -267,7 +303,7 @@ internal static class CommandScripts
             "        if [ ! -f \"$MAN\" ] && [ -f \"$OP/lease\" ]; then",
             "          rlease=$(lmsbx_num \"$OP/lease\")",
             "          rnow=$(date +%s)",
-            "          if [ \"$rlease\" -gt 0 ] && [ \"$rnow\" -gt \"$rlease\" ]; then rm -rf \"$OP\" 2>/dev/null; fi",
+            "          if [ \"$rlease\" -gt 0 ] && [ \"$rnow\" -gt \"$rlease\" ] && gclock_owned; then rm -rf \"$OP\" 2>/dev/null; fi",
             "        fi",
             "        gclock_release",
             "        continue",
@@ -322,20 +358,46 @@ internal static class CommandScripts
         );
 
     /// <summary>
-    /// Builds a best-effort reclaim of a verified operation's large stream files. It deletes only
-    /// <c>stdout</c>/<c>stderr</c> (the unbounded artifacts), retaining the bounded completion marker —
-    /// the manifest plus the lease/created files — so a later same-id call recovers the retained result
-    /// (or is safely rejected without re-running) and the stale sweep can still reclaim the marker once
-    /// it is old enough.
+    /// Builds a lock- and generation-safe reclaim of a verified operation's large stream files. It deletes
+    /// only <c>stdout</c>/<c>stderr</c> (the unbounded artifacts), retaining the bounded completion marker —
+    /// the manifest plus the lease/created/digest/gen files — so a later same-id call recovers the retained
+    /// result (or is safely rejected without re-running) and the stale sweep can still reclaim the marker
+    /// once it is old enough.
     /// </summary>
-    public static string BuildReclaim(string operationDirectory) =>
+    /// <remarks>
+    /// The delete happens ONLY while holding the per-operation GC lock and ONLY after re-reading, UNDER the
+    /// lock, that the directory's CURRENT execution generation and command digest still equal
+    /// <paramref name="generation"/> and <paramref name="digest"/> (the values from the manifest the SDK
+    /// verified) and a manifest is still present — then re-verifying our own lock token. A delayed reclaim
+    /// issued by an expired OLD execution therefore never touches a NEWER re-execution that reused the same
+    /// operation directory: its generation no longer matches, so its output is left intact.
+    /// </remarks>
+    public static string BuildReclaim(string operationDirectory, string generation, string digest) =>
         string.Join(
             '\n',
-            MarkerPrefix + "RECLAIM op=" + operationDirectory,
+            MarkerPrefix + "RECLAIM op=" + operationDirectory + " gen=" + generation + " digest=" + digest,
             "ROOT=" + RootExpression,
             "OP=" + OpAssignment(operationDirectory),
-            "rm -f \"$OP/stdout\" \"$OP/stderr\" 2>/dev/null",
-            "printf '%s %s\\n' '" + CommandSentinel.Marker + "' '" + CommandSentinel.KindNone + "'"
+            "GCL=\"$OP.gc\"",
+            "MAN=\"$OP/manifest.json\"",
+            "SENT='" + CommandSentinel.Marker + "'",
+            "GEN='" + generation + "'",
+            "DIGEST='" + digest + "'",
+            "GCLOCKTTL=" + CommandArtifactLayout.GcLockStaleSeconds.ToString(CultureInfo.InvariantCulture),
+            UidFunction,
+            GcLockFunctions,
+            "OWNER=$(lmsbx_uid)",
+            // Only the GC-lock winner may reclaim, and only for the SAME generation it verified; a losing
+            // caller (a live purge/reclaim in flight) falls straight through without touching any output.
+            "if gclock_try; then",
+            "  if [ -f \"$MAN\" ] && [ -f \"$OP/gen\" ] && [ -f \"$OP/digest\" ]; then",
+            "    curgen=$(cat \"$OP/gen\" 2>/dev/null)",
+            "    curdig=$(cat \"$OP/digest\" 2>/dev/null)",
+            "    if [ \"$curgen\" = \"$GEN\" ] && [ \"$curdig\" = \"$DIGEST\" ] && gclock_owned; then rm -f \"$OP/stdout\" \"$OP/stderr\" 2>/dev/null; fi",
+            "  fi",
+            "  gclock_release",
+            "fi",
+            "printf '%s %s\\n' \"$SENT\" '" + CommandSentinel.KindNone + "'"
         );
 
     /// <summary>Builds a bounded listing (at most <paramref name="max"/> entries) of artifact directories for stale cleanup.</summary>
@@ -373,9 +435,10 @@ internal static class CommandScripts
     /// happens ONLY while holding the per-operation GC lock (<c>gclock_try</c>): a purger that loses the
     /// election never deletes. The eligibility decision is then re-made HERE, from the directory's
     /// current lease/created read at delete time UNDER the lock, rather than trusted from the SDK's
-    /// earlier listing snapshot — so an operation that was refreshed (a re-established or extended lease)
-    /// or replaced by a new active claim between the listing and this call is never deleted. The age test
-    /// is STRICTLY greater than the retention window, so an operation exactly 24h old is still retained.
+    /// earlier listing snapshot — and the purger re-verifies its own lock token (<c>gclock_owned</c>)
+    /// immediately before the delete — so an operation that was refreshed (a re-established or extended
+    /// lease) or replaced by a new active claim between the listing and this call is never deleted. The age
+    /// test is STRICTLY greater than the retention window, so an operation exactly 24h old is still retained.
     /// </summary>
     public static string BuildGcPurge(string operationDirectory) =>
         string.Join(
@@ -387,14 +450,16 @@ internal static class CommandScripts
             "SENT='" + CommandSentinel.Marker + "'",
             "STALE=" + CommandArtifactLayout.StaleAgeSeconds.ToString(CultureInfo.InvariantCulture),
             "GCLOCKTTL=" + CommandArtifactLayout.GcLockStaleSeconds.ToString(CultureInfo.InvariantCulture),
+            UidFunction,
             GcLockFunctions,
+            "OWNER=$(lmsbx_uid)",
             // Only the GC-lock winner may revalidate and delete; a losing purger falls straight through.
             "if gclock_try; then",
             "  if [ -f \"$OP/lease\" ] && [ -f \"$OP/created\" ]; then",
             "    lease=$(lmsbx_num \"$OP/lease\")",
             "    created=$(lmsbx_num \"$OP/created\")",
             "    now=$(date +%s)",
-            "    if [ \"$lease\" -gt 0 ] && [ \"$created\" -gt 0 ] && [ \"$now\" -gt \"$lease\" ] && [ \"$((now - created))\" -gt \"$STALE\" ]; then rm -rf \"$OP\" 2>/dev/null; fi",
+            "    if [ \"$lease\" -gt 0 ] && [ \"$created\" -gt 0 ] && [ \"$now\" -gt \"$lease\" ] && [ \"$((now - created))\" -gt \"$STALE\" ] && gclock_owned; then rm -rf \"$OP\" 2>/dev/null; fi",
             "  fi",
             "  gclock_release",
             "fi",
@@ -438,6 +503,7 @@ internal static class CommandScripts
         string op = string.Empty,
             stream = string.Empty;
         string? digest = null;
+        string? generation = null;
         long offset = 0,
             length = 0;
         var max = 0;
@@ -459,6 +525,9 @@ internal static class CommandScripts
                 case "digest":
                     digest = value;
                     break;
+                case "gen":
+                    generation = value;
+                    break;
                 case "stream":
                     stream = value;
                     break;
@@ -476,6 +545,15 @@ internal static class CommandScripts
             }
         }
 
-        return new CommandScriptRequest(kind, op, digest, stream.Length == 0 ? null : stream, offset, length, max);
+        return new CommandScriptRequest(
+            kind,
+            op,
+            digest,
+            stream.Length == 0 ? null : stream,
+            offset,
+            length,
+            max,
+            generation
+        );
     }
 }

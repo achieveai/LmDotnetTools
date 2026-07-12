@@ -7,13 +7,15 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 public class CommandScriptsTests
 {
     private const string Op = "abcdef0123456789abcdef0123456789";
+    private const string Gen = "0123456789abcdef0123456789abcdef";
+    private const string Digest = "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf0";
 
     private static string[] AllScripts() =>
         [
             CommandScripts.BuildRun(Op, "digesthex", "'ls' '-la'", "sub/dir", 120),
             CommandScripts.BuildProbe(Op),
             CommandScripts.BuildRead(Op, "stdout", 12288, 12288),
-            CommandScripts.BuildReclaim(Op),
+            CommandScripts.BuildReclaim(Op, Gen, Digest),
             CommandScripts.BuildGc(256),
             CommandScripts.BuildGcPurge(Op),
         ];
@@ -136,6 +138,54 @@ public class CommandScriptsTests
     }
 
     [Fact]
+    public void GcLock_UsesOwnerTokenFencing_LiveOnMissingToken_AndReleaseIsOwnershipChecked()
+    {
+        // Every GC-lock-bearing script carries the owner-token primitives: a per-acquisition token
+        // (lmsbx_uid) written into <op>.gc/owner, an ownership check, a release gated on ownership, and a
+        // liveness rule that treats an owner-less (mid-establishment) lock as LIVE rather than stale.
+        foreach (var script in new[] { CommandScripts.BuildRun(Op, Digest, "'ls'", string.Empty, 120), CommandScripts.BuildGcPurge(Op), CommandScripts.BuildReclaim(Op, Gen, Digest) })
+        {
+            script.Should().Contain("OWNER=$(lmsbx_uid)");
+            script.Should().Contain("> \"$GCL/owner\"", "the owner token is persisted inside the lock directory");
+            script.Should().Contain("gclock_owned() { [ -f \"$GCL/owner\" ] && [ \"$(gclock_owner_token)\" = \"$OWNER\" ]; }");
+            // A lock with no owner token yet is treated LIVE (favor safety over liveness in the mkdir->token gap).
+            script.Should().Contain("[ -f \"$GCL/owner\" ] || return 0");
+            // Release removes the lock ONLY when still owned — never a successor's lock.
+            script.Should().Contain("gclock_release() { gclock_owned && rm -rf \"$GCL\" 2>/dev/null; return 0; }");
+        }
+    }
+
+    [Fact]
+    public void BuildRun_WritesImmutableExecutionGeneration_IntoTheSidecarAndManifest()
+    {
+        var script = CommandScripts.BuildRun(Op, Digest, "'ls'", string.Empty, 120);
+
+        // A fresh per-execution generation is minted (lmsbx_uid), persisted beside the other marker files,
+        // and embedded in the manifest JSON so any SDK that reads the manifest learns the generation.
+        script.Should().Contain("GEN=$(lmsbx_uid)");
+        script.Should().Contain("printf '%s' \"$GEN\" > \"$OP/gen\"");
+        script.Should().Contain("\"gen\":\"%s\"");
+    }
+
+    [Fact]
+    public void BuildReclaim_IsGcLockGuarded_AndOnlyDeletesOutputForTheSameGenerationAndDigest()
+    {
+        var script = CommandScripts.BuildReclaim(Op, Gen, Digest);
+
+        // The reclaim carries the verified generation/digest, acquires the GC lock, re-reads the CURRENT
+        // generation/digest under the lock, re-verifies ownership, and only then drops stdout/stderr.
+        script.Should().Contain("GEN='" + Gen + "'");
+        script.Should().Contain("DIGEST='" + Digest + "'");
+        script.Should().Contain("if gclock_try; then");
+        script.Should().Contain("curgen=$(cat \"$OP/gen\" 2>/dev/null)");
+        script.Should().Contain("[ \"$curgen\" = \"$GEN\" ] && [ \"$curdig\" = \"$DIGEST\" ] && gclock_owned");
+        script.Should().Contain("rm -f \"$OP/stdout\" \"$OP/stderr\"");
+        var lockIndex = script.IndexOf("if gclock_try; then", StringComparison.Ordinal);
+        var deleteIndex = script.IndexOf("rm -f \"$OP/stdout\"", StringComparison.Ordinal);
+        deleteIndex.Should().BeGreaterThan(lockIndex, "the output delete must sit inside the GC-lock-won, generation-matched branch");
+    }
+
+    [Fact]
     public void NoScript_ReferencesTheGatewaysUnstableOutputTxtPath()
     {
         foreach (var script in AllScripts())
@@ -172,7 +222,12 @@ public class CommandScriptsTests
     public void ParseRequest_RoundTripsProbeReclaimGcAndGcPurge()
     {
         CommandScripts.ParseRequest(CommandScripts.BuildProbe("op-dir")).Kind.Should().Be(CommandScriptKind.Probe);
-        CommandScripts.ParseRequest(CommandScripts.BuildReclaim("op-dir")).Kind.Should().Be(CommandScriptKind.Reclaim);
+
+        var reclaim = CommandScripts.ParseRequest(CommandScripts.BuildReclaim("op-dir", Gen, Digest));
+        reclaim.Kind.Should().Be(CommandScriptKind.Reclaim);
+        reclaim.Generation.Should().Be(Gen, "the reclaim carries the verified execution generation");
+        reclaim.Digest.Should().Be(Digest, "the reclaim carries the verified command digest");
+
         CommandScripts.ParseRequest(CommandScripts.BuildGcPurge("op-dir")).Kind.Should().Be(CommandScriptKind.GcPurge);
 
         var gc = CommandScripts.ParseRequest(CommandScripts.BuildGc(256));

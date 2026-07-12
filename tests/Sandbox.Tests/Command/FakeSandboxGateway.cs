@@ -122,7 +122,8 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         byte[] stdout,
         byte[] stderr,
         long lease = long.MaxValue,
-        long created = 1
+        long created = 1,
+        string? generation = null
     )
     {
         lock (_lock)
@@ -133,7 +134,15 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
                 Committed = true,
                 Stdout = stdout,
                 Stderr = stderr,
-                Manifest = BuildManifest(digest, exitCode, stdout, stderr, lease, created),
+                Manifest = BuildManifest(
+                    digest,
+                    exitCode,
+                    stdout,
+                    stderr,
+                    lease,
+                    created,
+                    generation ?? NewGeneration()
+                ),
             };
         }
     }
@@ -328,7 +337,15 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         state.Claimed = true;
         state.Stdout = stdout;
         state.Stderr = stderr;
-        state.Manifest = BuildManifest(request.Digest ?? string.Empty, exit, stdout, stderr, lease, created);
+        state.Manifest = BuildManifest(
+            request.Digest ?? string.Empty,
+            exit,
+            stdout,
+            stderr,
+            lease,
+            created,
+            NewGeneration()
+        );
         state.Committed = true;
         SideEffectCount++;
     }
@@ -346,16 +363,26 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
 
     private (string Text, bool IsError, bool Hang) HandleReclaim(CommandScriptRequest request)
     {
-        if (!SuppressClean && _ops.TryGetValue(request.OperationDirectory, out var state))
+        ReclaimedOperations.Add(request.OperationDirectory);
+        if (!SuppressClean && _ops.TryGetValue(request.OperationDirectory, out var state) && state.Committed)
         {
-            // Reclaim drops only the large stream bytes; the committed manifest (the bounded completion
-            // marker) is retained, so a later same-id call is still answered without re-running.
-            state.Stdout = [];
-            state.Stderr = [];
+            // Faithfully mirror the lock/generation-safe reclaim: drop the large stream bytes ONLY when the
+            // directory's CURRENT execution generation (and command digest) still match the ones the SDK
+            // verified. A delayed reclaim from an expired old execution carries the OLD generation, so a
+            // newer re-execution that reused the same directory keeps its output intact.
+            var currentGeneration = state.Manifest?.Generation;
+            var currentDigest = state.Manifest?.Digest;
+            if (
+                string.Equals(currentGeneration, request.Generation, StringComparison.Ordinal)
+                && string.Equals(currentDigest, request.Digest, StringComparison.Ordinal)
+            )
+            {
+                state.Stdout = [];
+                state.Stderr = [];
+                CleanedOperations.Add(request.OperationDirectory);
+            }
         }
 
-        ReclaimedOperations.Add(request.OperationDirectory);
-        CleanedOperations.Add(request.OperationDirectory);
         return (CommandSentinel.None(), false, false);
     }
 
@@ -461,18 +488,23 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
         byte[] stdout,
         byte[] stderr,
         long lease,
-        long created
+        long created,
+        string generation
     ) =>
         new()
         {
             Version = CommandManifest.CurrentVersion,
             Digest = digest,
+            Generation = generation,
             ExitCode = exitCode,
             Stdout = BuildStreamManifest(stdout),
             Stderr = BuildStreamManifest(stderr),
             LeaseUnixSeconds = lease,
             CreatedUnixSeconds = created,
         };
+
+    /// <summary>A fresh 32-hex per-execution generation id, exactly as the real wrapper's <c>lmsbx_uid</c> produces.</summary>
+    private static string NewGeneration() => Guid.NewGuid().ToString("N");
 
     private static CommandStreamManifest BuildStreamManifest(byte[] bytes) =>
         new()

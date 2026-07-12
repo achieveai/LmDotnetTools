@@ -141,14 +141,22 @@ forever — retention is bounded so artifacts cannot accumulate without limit.
 **Abandoned claims self-recover on a same-id retry.** A submitter that crashes after claiming (leaving an
 expired lease and no manifest) is recovered in place by the next same-id call — it does **not** wait for
 the 24h sweep and does **not** depend on any unrelated command. The recovery deletes the abandoned claim
-and re-elects exactly one new claimant, but only under a sibling per-operation **GC lock** (created by an
-atomic `mkdir`) and only after re-validating, under that lock, that the claim is still expired and
-uncommitted. Claim creation and the stale-sweep purge both respect that lock — only the lock winner may
+and re-elects exactly one new claimant, but only under a sibling per-operation **GC lock** with **real
+exclusive ownership**: the lock is a directory elected by an atomic `mkdir`, and its sole owner is
+identified by a **unique owner token** persisted inside it. Every destructive action (a purge, a
+self-recovery delete, an output reclaim) re-verifies that token immediately before acting *and* on release
+— so a delayed release from an old owner whose lock was already stale-reclaimed by a successor can never
+delete the successor's lock, and a purger that lost ownership never deletes a replacement active claim.
+Claim creation and the stale-sweep purge both respect that lock — only the token-verified owner may
 revalidate and delete, losing purgers never delete — so a purge in progress can never be raced into a
-double-run and a second purger can never delete a replacement active claim. A still-active or
-still-establishing (lease-less) claim is never recovered: a same-id caller there reports PENDING and
-polls the manifest rather than resubmitting. A crashed holder's stale GC lock is reclaimed within a
-bounded time so it can never block recovery permanently.
+double-run. A still-active or still-establishing (lease-less) claim is never recovered: a same-id caller
+there reports PENDING and polls the manifest rather than resubmitting. A crashed holder's stale GC lock
+(one whose owner token is present but stamped past a bounded TTL) is reclaimed and re-elected to a single
+new owner, so it can never block recovery permanently. Safety is favoured over liveness for the tiny
+`mkdir`→token establishment window: a lock with **no** owner token yet is treated as *live* (never
+reclaimed into double ownership), so a crash in that single-write window can orphan one operation's lock —
+bounded in blast radius to that operation's maintenance, never its same-id idempotency, until the artifact
+root is reset.
 
 Because the gateway may rematerialize a lost container and retry the underlying invocation once,
 command execution is **at-least-once**: a non-idempotent command can run more than once even though the
@@ -164,11 +172,17 @@ restrictive sibling temp file and renamed), so a concurrent probe never observes
 
 A verified successful operation **reclaims its large output immediately** while retaining the bounded
 completion marker described above; an interrupted, transport-timed-out, or integrity-failed operation
-retains all of its artifacts for recovery. Each successful command also runs a bounded, session-scoped
-stale sweep that deletes only artifacts whose lease has expired and that are **strictly older than the
-24-hour retention window** (active operations are protected, and an operation exactly at the boundary is
-still retained). The sweep re-validates each directory's *current* lease/age in the
-sandbox immediately before deleting — never from the earlier listing snapshot, so a refreshed operation
+retains all of its artifacts for recovery. The reclaim is **lock- and generation-safe**: the manifest
+carries an immutable per-execution **generation** id, and the reclaim deletes the captured streams only
+while holding the GC lock and only after re-reading, under that lock, that the directory's *current*
+generation and command digest still match the ones the SDK verified. Because the artifact directory is
+keyed on the session and operation id (not the command), the same directory can be reused across
+executions once the window elapses — so a delayed reclaim issued by an expired *old* execution finds a
+different generation and leaves the *newer* re-execution's output intact. Each successful command also runs
+a bounded, session-scoped stale sweep that deletes only artifacts whose lease has expired and that are
+**strictly older than the 24-hour retention window** (active operations are protected, and an operation
+exactly at the boundary is still retained). The sweep re-validates each directory's *current* lease/age in
+the sandbox immediately before deleting — never from the earlier listing snapshot, so a refreshed operation
 is never deleted — and every candidate directory name is validated as fixed-length lowercase hex before
 use. Sandbox deletion remains the final cleanup boundary.
 

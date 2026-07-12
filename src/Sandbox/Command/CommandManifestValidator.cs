@@ -15,12 +15,15 @@ internal static class CommandManifestValidator
     /// <summary>Length, in characters, of a lowercase-hex SHA-256 digest.</summary>
     private const int Sha256HexLength = 64;
 
+    /// <summary>Length, in characters, of the lowercase-hex per-execution generation identifier.</summary>
+    private const int GenerationHexLength = CommandArtifactLayout.OperationDirectoryNameLength;
+
     /// <summary>
-    /// Validates <paramref name="manifest"/> in full: schema version, digest shape, non-null stream
-    /// records, each stream's non-negative length and well-formed digest, and non-negative timestamps.
-    /// Throws <see cref="SandboxException"/> (<see cref="SandboxErrorKind.Protocol"/>) — never a raw
-    /// exception — on the first violation. The digest's VALUE match against the expected command digest
-    /// is a separate integrity check performed by the caller after this structural pass.
+    /// Validates <paramref name="manifest"/> in full: schema version, digest shape, execution-generation
+    /// shape, non-null stream records, each stream's non-negative length and well-formed digest, and
+    /// non-negative timestamps. Throws <see cref="SandboxException"/> (<see cref="SandboxErrorKind.Protocol"/>)
+    /// — never a raw exception — on the first violation. The digest's VALUE match against the expected
+    /// command digest is a separate integrity check performed by the caller after this structural pass.
     /// </summary>
     public static void Validate(CommandManifest manifest, string operationId)
     {
@@ -34,6 +37,11 @@ internal static class CommandManifestValidator
         if (!IsLowercaseHex(manifest.Digest, Sha256HexLength))
         {
             throw Malformed("its command digest is not a 64-character lowercase-hex value", operationId);
+        }
+
+        if (!IsLowercaseHex(manifest.Generation, GenerationHexLength))
+        {
+            throw Malformed("its execution generation is not a 32-character lowercase-hex value", operationId);
         }
 
         if (manifest.Stdout is null || manifest.Stderr is null)

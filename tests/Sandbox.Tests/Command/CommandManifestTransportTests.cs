@@ -171,6 +171,7 @@ public class CommandManifestTransportTests
         var manifest = new CommandManifest
         {
             Digest = new string('f', 64),
+            Generation = new string('f', 32),
             ExitCode = int.MinValue,
             Stdout = InlineStreamManifest(stdoutInlineBytes),
             Stderr = InlineStreamManifest(stderrInlineBytes),
