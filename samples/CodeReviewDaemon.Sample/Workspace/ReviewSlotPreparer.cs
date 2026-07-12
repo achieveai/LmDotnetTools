@@ -99,6 +99,17 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
         var storeRoot = slot.StorePath;
 
+        // 0. Clean-on-entry (the durability guarantee): bring the persistent warm store to a pristine state
+        // BEFORE any git step, so a stale lock / dirty tree / half-checked-out submodule left by a crashed
+        // prior lease can never wedge or contaminate this one. A structurally broken store is re-cloned by
+        // the executor's recovery ladder.
+        if (await SlotHygiene.EnsureCleanAsync(_git, storeRoot, cancellationToken).ConfigureAwait(false)
+            == HygieneVerdict.NeedsReclone)
+        {
+            throw new SlotNeedsRecloneException(
+                $"Run {run.Id}: slot {slot.Index} store is structurally unusable; re-clone required.");
+        }
+
         // 1. Fetch origin — refreshes the store's remote-tracking refs so the branch-resolve below sees
         // the PR's persistent branch (or the latest default branch) if it moved since the last lease.
         await RunGitOrThrowAsync(
@@ -131,6 +142,16 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             _logger.LogWarning(
                 "Run {RunId}: submodule '{Path}' ({Url}) was not initialized: {Reason}",
                 run.Id, denied.Path, denied.Url, denied.Reason);
+        }
+
+        // Post-init verification (the executor's store-checkout path already does this): the REVIEWED
+        // submodule must have actually initialized. Without this a denied/failed init silently proceeds to
+        // the fetch below, which then fails opaquely; treat a missing reviewed submodule as slot corruption
+        // so the recovery ladder re-clones instead of looping on a half-inited store.
+        if (!outcome.InitializedPaths.Contains(submoduleRelPath, StringComparer.Ordinal))
+        {
+            throw new SlotCorruptException(
+                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; slot needs re-clone.");
         }
 
         // 4. Advance the reviewed submodule to the PR head exactly like FetchAndCheckoutHeadAsync.
@@ -172,8 +193,13 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         var result = await _git.RunAsync(gitArgs, workingDirectory, cancellationToken).ConfigureAwait(false);
         if (!result.Succeeded)
         {
-            throw new InvalidOperationException(
-                $"Run {run.Id}: {action} failed (exit {result.ExitCode}): {result.Stderr}");
+            var message = $"Run {run.Id}: {action} failed (exit {result.ExitCode}): {result.Stderr}";
+            // A corrupt-slot failure (stale lock that survived cleaning, dirty tree, broken object) drives
+            // the executor's re-clone escalation; a transient/unknown failure is a normal retry that keeps
+            // the warm store.
+            throw GitFailureClassifier.Classify(result.Stderr) == GitFailureKind.Corrupt
+                ? new SlotCorruptException(message)
+                : new InvalidOperationException(message);
         }
     }
 
