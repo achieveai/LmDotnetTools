@@ -39,10 +39,9 @@ public sealed class SandboxClientOptions
     /// <summary>
     /// Upper bound on how long a remote gateway operation (e.g. a command execution) is allowed to
     /// run. This is a GATEWAY-side deadline communicated to the gateway; it is distinct from
-    /// <see cref="TransportTimeout"/>, the SDK's own client-side HTTP/MCP call deadline. Reserved
-    /// for command execution (a later SDK capability) — no member of <see cref="SandboxClient"/> in
-    /// this release reads it, but it is validated here so it is available without a breaking change
-    /// once that capability lands.
+    /// <see cref="TransportTimeout"/>, the SDK's own client-side HTTP/MCP call deadline. Consumed by
+    /// <see cref="SandboxClient.ExecuteAsync"/> as the gateway Bash execution timeout (in whole
+    /// seconds) and bound into each command's canonical recovery digest.
     /// </summary>
     public TimeSpan ExecutionTimeout { get; }
 

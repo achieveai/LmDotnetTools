@@ -26,8 +26,10 @@ public enum SandboxErrorKind
     NotFound,
 
     /// <summary>
-    /// The gateway-side execution deadline for a command elapsed. Reserved for command execution
-    /// (a later SDK capability); no <see cref="SandboxClient"/> member in this release throws it.
+    /// The gateway-side execution deadline for a command elapsed. Raised by
+    /// <see cref="SandboxClient.ExecuteAsync"/> when the gateway's Bash execution timeout elapses
+    /// before the command completes — distinct from <see cref="TransportTimeout"/> (the client-side
+    /// call deadline).
     /// </summary>
     ExecutionTimeout,
 
@@ -46,9 +48,10 @@ public enum SandboxErrorKind
     Protocol,
 
     /// <summary>
-    /// A transferred payload failed a verification check (e.g. a length/digest mismatch). Reserved
-    /// for file transfer (a later SDK capability); no <see cref="SandboxClient"/> member in this
-    /// release throws it.
+    /// A transferred payload failed a verification check (e.g. a length/digest mismatch). Raised by
+    /// <see cref="SandboxClient.ExecuteAsync"/> when reassembled command output fails its length/SHA-256
+    /// check, or when an operation id is reused with a different command (canonical digest mismatch);
+    /// also reserved for later exact-byte file transfer.
     /// </summary>
     Integrity,
 }

@@ -220,9 +220,8 @@ public sealed partial class SandboxClient
     /// Sends a direct MCP JSON-RPC <c>tools/call</c> request, serialized verbatim via
     /// <see cref="SandboxJson.McpOptions"/> (never the REST snake_case options) and scoped to
     /// <paramref name="sessionId"/> via <see cref="SessionIdHeader"/>. Internal transport primitive:
-    /// no typed command/file operation in this release calls it yet, but the wire separation and
-    /// header stamping it exercises are part of this SDK's authenticated-transport contract and are
-    /// exercised directly by tests.
+    /// <see cref="ExecuteAsync"/> builds every command Bash submission on it, and it is also exercised
+    /// directly by tests for the wire separation and header stamping it enforces.
     /// </summary>
     internal async Task<JsonElement> SendMcpToolCallAsync(string sessionId, string toolName, object arguments, CancellationToken ct = default)
     {

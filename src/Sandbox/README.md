@@ -17,9 +17,11 @@ OAuth/network/discovery policy remain the caller's responsibility.
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing
   session-discovery REST endpoint.
+- **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive command in a
+  Bash/POSIX-capable sandbox and get its exact output back, with recovery across an ambiguous lost
+  response. See [Command execution](#command-execution) below.
 
-Command execution and exact-byte file transfer are later SDK capabilities and are not part of this
-release.
+Exact-byte file transfer is a later SDK capability and is not part of this release.
 
 ## Usage
 
@@ -40,6 +42,14 @@ try
 {
     var catalog = await client.PreviewMarketplacesAsync();
     var discovered = await client.ListDiscoveredAsync(sandbox.SessionId);
+
+    var clone = await client.ExecuteAsync(
+        sandbox.SessionId,
+        new SandboxCommand(["git", "clone", "https://example.com/repo.git", "repo"]));
+    var build = await client.ExecuteAsync(
+        sandbox.SessionId,
+        new SandboxCommand(["dotnet", "build"], workingDirectory: "repo"));
+    Console.WriteLine($"exit={build.ExitCode}\n{build.CombinedOutput}");
 }
 finally
 {
@@ -66,14 +76,72 @@ client can neither break requests nor redirect credentials to the wrong host.
 > *does* observe is rejected as `Protocol` rather than followed — the SDK never chases a redirect
 > itself.
 
+## Command execution
+
+`ExecuteAsync(sessionId, command)` runs one non-interactive command in a gateway Bash/POSIX-capable
+sandbox. `SandboxCommand` is validated at construction:
+
+- **`Arguments`** — a non-empty, ordered argv. The SDK POSIX-quotes every token into a single
+  `/bin/sh -c` string, so a hostile argument can never break out of its token or inject a second
+  command; a NUL byte is rejected (it cannot occur in a shell word). V1 is POSIX-only and does not
+  claim native cross-platform argv semantics.
+- **`WorkingDirectory`** (optional) — a workspace-relative POSIX path. Rooted paths, Windows
+  drive/UNC/device roots, backslash/mixed-separator forms, and any `..` segment are rejected,
+  independent of the host OS. This is a necessary lexical guard only — the gateway remains
+  authoritative for filesystem containment (e.g. symlink traversal).
+- **`OperationId`** (optional) — a bounded, control-character-free recovery key. When omitted the SDK
+  generates one and returns it on the result; it is never used directly as a filesystem path (it is
+  hashed into a fixed-length artifact directory name).
+
+`SandboxCommandResult` exposes `ExitCode`, the exact `StandardOutput` and `StandardError` (reassembled
+beyond the gateway's 20&#160;KB/500-line `exec` truncation — the gateway's unstable `output_*.txt`
+file is never used), and `CombinedOutput` (stdout then stderr; a convenience concatenation, not a
+real-time interleaving).
+
+### Outcomes
+
+- **Gateway execution timeout** → `SandboxException` with `SandboxErrorKind.ExecutionTimeout`.
+- **Client-side transport timeout / lost response** → `SandboxErrorKind.TransportTimeout`, carrying the
+  recoverable `SandboxException.OperationId`. Artifacts are retained; re-issue the same command with
+  the same operation id to recover.
+- **Caller cancellation** → a plain `OperationCanceledException`.
+
+Neither timeout claims the remote process tree was terminated — the gateway may still be running the
+command after the client stops waiting.
+
+### Single submission, recovery, and at-least-once
+
+The SDK makes exactly **one** side-effecting Bash submission per operation and never resubmits it.
+State probes, chunked output reads, and cleanup are idempotent reads. An atomic persisted claim
+elects a single submitter; concurrent callers using the same operation id poll the persisted manifest
+instead of running again, and a later call with the same operation id recovers the retained result. A
+canonical, versioned digest (over the session id, argv, normalized working directory, and execution
+timeout) is bound to each operation: reusing an operation id with a *different* command fails with
+`SandboxErrorKind.Integrity` and never submits.
+
+Because the gateway may rematerialize a lost container and retry the underlying invocation once,
+command execution is **at-least-once**: a non-idempotent command can run more than once even though the
+SDK submits once and returns a single result.
+
+### Artifacts
+
+Command wrapper artifacts (a manifest plus captured output) are persisted under a reserved,
+per-session path inside the workspace with restrictive permissions and **no** credentials. A verified
+successful operation deletes its artifacts immediately; an interrupted, transport-timed-out, or
+integrity-failed operation retains them for recovery. Each successful command also runs a bounded,
+session-scoped stale sweep that deletes only artifacts whose lease has expired and that are at least
+24 hours old (active operations are protected), and sandbox deletion remains the final cleanup
+boundary.
+
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which
 carries a stable `SandboxErrorKind` (`Authorization`, `NotFound`, `TransportTimeout`, `Protocol`,
-plus `ExecutionTimeout`/`Integrity` reserved for later command/file capabilities). Caller
-cancellation always surfaces as a plain `OperationCanceledException`. `Protocol` covers every
-malformed-response case, and the SDK never lets one surface as a raw
-`ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
+plus `ExecutionTimeout` and `Integrity` — raised by [command execution](#command-execution) for a
+gateway execution-timeout and an output/digest verification failure respectively; `Integrity` is also
+reserved for later file capabilities). Caller cancellation always surfaces as a plain
+`OperationCanceledException`. `Protocol` covers every malformed-response case, and the SDK never lets
+one surface as a raw `ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
 
 - A 2xx REST body that is well-formed JSON but semantically invalid — a missing/`null` required field
   (e.g. a marketplace alias or discovered-item kind/path — a discovered item's `name` is genuinely

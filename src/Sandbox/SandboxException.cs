@@ -26,10 +26,20 @@ public sealed class SandboxException : Exception
     /// </summary>
     public int? StatusCode { get; }
 
-    public SandboxException(SandboxErrorKind kind, string message, int? statusCode = null, Exception? innerException = null)
+    /// <summary>
+    /// The resolved operation id of a command execution, when this failure is recoverable by re-issuing
+    /// the same command with the same operation id (e.g. a <see cref="SandboxErrorKind.TransportTimeout"/>
+    /// on a submitted-but-unconfirmed command). <c>null</c> for failures with no recoverable operation
+    /// (control-plane calls, or failures that occur before an operation id is resolved). It is a
+    /// caller-supplied or SDK-generated identifier, never secret-bearing.
+    /// </summary>
+    public string? OperationId { get; }
+
+    public SandboxException(SandboxErrorKind kind, string message, int? statusCode = null, Exception? innerException = null, string? operationId = null)
         : base(message, innerException)
     {
         Kind = kind;
         StatusCode = statusCode;
+        OperationId = operationId;
     }
 }
