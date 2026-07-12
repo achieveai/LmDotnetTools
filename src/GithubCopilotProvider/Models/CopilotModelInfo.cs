@@ -47,10 +47,14 @@ public sealed record CopilotModelInfo(
     /// <summary>
     ///     Reasoning effort values advertised by <c>capabilities.supports.reasoning_effort</c>.
     /// </summary>
+    /// <remarks>
+    /// This capability is intentionally excluded from equality and hash-code semantics to preserve
+    /// the record's legacy positional identity contract.
+    /// </remarks>
     public IReadOnlyList<string> ReasoningEfforts
     {
         get => _reasoningEfforts;
-        init => _reasoningEfforts = [.. value];
+        init => _reasoningEfforts = value is null ? [] : [.. value];
     }
 
     /// <inheritdoc />

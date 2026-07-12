@@ -165,6 +165,7 @@ public class SubAgentMarkdownParserTests
     [InlineData("MEDIUM", ReasoningEffort.Medium)]
     [InlineData("High", ReasoningEffort.High)]
     [InlineData("ExTrA-HiGh", ReasoningEffort.Xhigh)]
+    [InlineData("XHIGH", ReasoningEffort.Xhigh)]
     public void Parse_ValidEffort_MapsCaseInsensitively(string yamlValue, ReasoningEffort expected)
     {
         var md = $"---\nname: echo-agent\neffort: {yamlValue}\n---\nBody.";
@@ -192,6 +193,27 @@ public class SubAgentMarkdownParserTests
             .ContainSingle(diagnostic =>
                 diagnostic.Contains("effort", StringComparison.OrdinalIgnoreCase)
             );
+    }
+
+    [Theory]
+    [InlineData("effort")]
+    [InlineData("modelintelligence")]
+    public void Parse_EmptyCharacteristic_IsInvalidWhileAbsenceRemainsUnset(string fieldName)
+    {
+        var empty = SubAgentMarkdownParser.Parse(
+            $"---\nname: echo-agent\n{fieldName}:\n---\nBody.",
+            "echo-agent");
+        var absent = SubAgentMarkdownParser.Parse(
+            "---\nname: echo-agent\n---\nBody.",
+            "echo-agent");
+
+        empty.Should().NotBeNull();
+        empty!.Diagnostics.Should().ContainSingle(diagnostic =>
+            diagnostic.Contains(fieldName, StringComparison.OrdinalIgnoreCase));
+        absent.Should().NotBeNull();
+        absent!.ModelIntelligence.Should().BeNull();
+        absent.Effort.Should().BeNull();
+        absent.Diagnostics.Should().BeEmpty();
     }
 
     [Fact]

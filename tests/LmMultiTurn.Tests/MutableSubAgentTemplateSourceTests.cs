@@ -221,8 +221,11 @@ public class MutableSubAgentTemplateSourceTests
     {
         Func<IStreamingAgent> oldFactory = StubFactory;
         Func<IStreamingAgent> newFactory = () => new Mock<IStreamingAgent>().Object;
-        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = characteristics =>
-            throw new InvalidOperationException(characteristics.ModelId);
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = _ =>
+            new SubAgentProviderAgent(
+                routedAgent,
+                System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty);
         var source = new MutableSubAgentTemplateSource(
             new Dictionary<string, SubAgentTemplate>
             {
@@ -240,12 +243,24 @@ public class MutableSubAgentTemplateSourceTests
             .OnlyContain(template =>
                 ReferenceEquals(template.AgentFactory, oldFactory) && template.CharacteristicsAgentFactory == null
             );
-        newSnapshot
-            .Values.Should()
-            .OnlyContain(template =>
-                ReferenceEquals(template.AgentFactory, newFactory)
-                && ReferenceEquals(template.CharacteristicsAgentFactory, characteristicsFactory)
+        newSnapshot.Values.Should().OnlyContain(template => ReferenceEquals(template.AgentFactory, oldFactory));
+        foreach (var template in newSnapshot.Values)
+        {
+            var inherited = template.CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics(null, null)
             );
+            inherited.Agent.Should().NotBeNull();
+            inherited.OwnsAgent.Should().BeTrue();
+            template
+                .CharacteristicsAgentFactory!(
+                    new SubAgentCharacteristics("explicit", null)
+                    {
+                        IsModelExplicitlySelected = true,
+                    }
+                )
+                .Agent.Should()
+                .BeSameAs(routedAgent);
+        }
         newSnapshot.Should().NotBeSameAs(oldSnapshot);
     }
 
@@ -253,15 +268,30 @@ public class MutableSubAgentTemplateSourceTests
     public void TryRegister_AfterRebind_UsesCurrentFactories()
     {
         Func<IStreamingAgent> newFactory = () => new Mock<IStreamingAgent>().Object;
-        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = characteristics =>
-            throw new InvalidOperationException(characteristics.ModelId);
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = _ =>
+            new SubAgentProviderAgent(
+                routedAgent,
+                System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty);
         var source = new MutableSubAgentTemplateSource();
         source.RebindFactories(newFactory, characteristicsFactory);
 
         source.TryRegister("later", Template("later")).Should().BeTrue();
 
         var registered = source.Templates["later"];
-        registered.AgentFactory.Should().BeSameAs(newFactory);
-        registered.CharacteristicsAgentFactory.Should().BeSameAs(characteristicsFactory);
+        registered.AgentFactory.Should().BeSameAs(StubFactory);
+        registered
+            .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, null))
+            .Agent.Should()
+            .NotBeNull();
+        registered
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("explicit", null)
+                {
+                    IsModelExplicitlySelected = true,
+                }
+            )
+            .Agent.Should()
+            .BeSameAs(routedAgent);
     }
 }

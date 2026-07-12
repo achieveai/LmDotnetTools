@@ -267,9 +267,19 @@ public sealed class WorkspaceSubAgentLoader
         var effectiveModel = _modelResolver?.Resolve(
             parsed.Model,
             parsed.ModelIntelligence);
+        var hasAuthorPinnedModel = !string.IsNullOrWhiteSpace(parsed.Model)
+            && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase);
+        var isTierResolved =
+            !hasAuthorPinnedModel
+            && parsed.ModelIntelligence is not null
+            && effectiveModel is not null;
         var effectiveParsed = effectiveModel is null
             ? parsed
-            : parsed with { Model = effectiveModel };
+            : parsed with
+            {
+                Model = effectiveModel,
+                IsModelTierResolved = isTierResolved,
+            };
         return SubAgentTemplateMapper.Map(
             effectiveParsed,
             agentFactory,

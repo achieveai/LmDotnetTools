@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -36,7 +37,24 @@ internal class SubAgentState
     public required string AgentId { get; init; }
     public required string TemplateName { get; init; }
     public required string Task { get; init; }
-    public required IMultiTurnAgent Agent { get; init; }
+    public required IMultiTurnAgent Agent { get; set; }
+
+    /// <summary>
+    /// The template and spawn inputs needed to recreate a completed owned-provider run before a
+    /// continuation. Borrowed providers retain the existing loop.
+    /// </summary>
+    public required SubAgentTemplate Template { get; init; }
+    public string? ModelOverride { get; init; }
+    public string[]? AddTools { get; init; }
+    public string[]? RemoveTools { get; init; }
+
+    /// <summary>
+    /// Provider pipeline created specifically for this sub-agent. Null means the provider is
+    /// borrowed/shared and must not be disposed by this state.
+    /// </summary>
+    public IStreamingAgent? OwnedProviderAgent { get; private set; }
+
+    private int _ownedProviderDisposed;
 
     /// <summary>
     /// Optional caller-supplied handle so SendMessage can address this agent by name.
@@ -59,7 +77,7 @@ internal class SubAgentState
     private volatile SubAgentStatus _status = SubAgentStatus.Running;
     public SubAgentStatus Status { get => _status; set => _status = value; }
 
-    public IConversationStore? Store { get; init; }
+    public IConversationStore? Store { get; set; }
 
     /// <summary>
     /// Set to true when SendToParentAsync fails, so CheckAgent/Peek can surface the error.
@@ -84,6 +102,43 @@ internal class SubAgentState
     /// tool result.
     /// </summary>
     public TaskCompletionSource<string> Completion { get; private set; } = CreateCompletionSource();
+
+    public async ValueTask DisposeOwnedProviderAgentAsync()
+    {
+        if (
+            OwnedProviderAgent is null
+            || Interlocked.Exchange(ref _ownedProviderDisposed, 1) != 0
+        )
+        {
+            return;
+        }
+
+        if (OwnedProviderAgent is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (OwnedProviderAgent is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Indicates that the current run's owned provider has been disposed at completion and a
+    /// continuation must create a fresh provider pipeline.
+    /// </summary>
+    public bool HasDisposedOwnedProviderAgent =>
+        OwnedProviderAgent is not null && Volatile.Read(ref _ownedProviderDisposed) != 0;
+
+    /// <summary>
+    /// Assigns the provider created for the current run. This resets the per-run disposal guard
+    /// when a completed owned-provider sub-agent is recreated for a continuation.
+    /// </summary>
+    public void SetOwnedProviderAgent(IStreamingAgent? ownedProviderAgent)
+    {
+        OwnedProviderAgent = ownedProviderAgent;
+        Volatile.Write(ref _ownedProviderDisposed, 0);
+    }
 
     /// <summary>
     /// Guards the read-check-replace of <see cref="Completion"/> against the monitor

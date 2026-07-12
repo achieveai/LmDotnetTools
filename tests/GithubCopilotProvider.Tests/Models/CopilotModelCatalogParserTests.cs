@@ -191,6 +191,21 @@ public sealed class CopilotModelCatalogParserTests
     }
 
     [Fact]
+    public void CopilotModelInfo_NullReasoningEffortsNormalizesToEmpty()
+    {
+        var model = new CopilotModelInfo(
+            "gpt-test",
+            "GPT Test",
+            CopilotModelVendor.OpenAI,
+            CopilotModelTransport.Responses)
+        {
+            ReasoningEfforts = null!,
+        };
+
+        model.ReasoningEfforts.Should().BeEmpty();
+    }
+
+    [Fact]
     public void CopilotModelInfo_preserves_positional_constructor_compatibility()
     {
         var model = new CopilotModelInfo(

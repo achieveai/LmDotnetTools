@@ -50,7 +50,7 @@ internal sealed class CharacteristicsAgentFactory
     {
         ArgumentNullException.ThrowIfNull(characteristics);
 
-        if (!characteristics.IsModelExplicitlySelected)
+        if (!characteristics.IsModelExplicitlySelected && !characteristics.IsModelTierResolved)
         {
             var extraProperties = _parentCopilotModel is null
                 ? ImmutableDictionary<string, object?>.Empty
@@ -75,7 +75,10 @@ internal sealed class CharacteristicsAgentFactory
             return ParentFallback();
         }
 
-        return new SubAgentProviderAgent(_modelAgentFactory(model), ShapeReasoning(model, characteristics.Effort));
+        return new SubAgentProviderAgent(_modelAgentFactory(model), ShapeReasoning(model, characteristics.Effort))
+        {
+            OwnsAgent = true,
+        };
     }
 
     private SubAgentProviderAgent ParentFallback() =>
@@ -116,7 +119,8 @@ internal sealed class CharacteristicsAgentFactory
         }
 
         if (
-            !string.Equals(selectedEffort, requestedEffort.Value.ToString(), StringComparison.OrdinalIgnoreCase)
+            CopilotReasoningShaper.GetEffortRank(selectedEffort)
+                != CopilotReasoningShaper.GetEffortRank(requestedEffort.Value)
             && _loggedEffortDiagnostics.TryAdd($"adjusted:{model.Id}:{requestedEffort.Value}:{selectedEffort}", 0)
         )
         {

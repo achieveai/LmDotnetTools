@@ -915,19 +915,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         string sessionId,
         string conversationId,
         IReadOnlyDictionary<string, SubAgentTemplate> seed,
-        Func<IStreamingAgent> agentFactory) =>
-        GetOrAddSubAgentBinding(sessionId, conversationId, seed, agentFactory, null);
-
-    /// <summary>
-    /// Returns the sub-agent binding for a conversation, remembering both provider factories when
-    /// creating it.
-    /// </summary>
-    public SubAgentSessionBinding GetOrAddSubAgentBinding(
-        string sessionId,
-        string conversationId,
-        IReadOnlyDictionary<string, SubAgentTemplate> seed,
-        Func<IStreamingAgent> agentFactory,
-        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory)
+        Func<IStreamingAgent> agentFactory)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -943,10 +931,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             conversationId,
             _ => new SubAgentSessionBinding(
                 new MutableSubAgentTemplateSource(seed),
-                agentFactory)
-            {
-                CharacteristicsAgentFactory = characteristicsAgentFactory,
-            });
+                agentFactory));
 
         return ReconcileSubAgentBindingSeed(binding, seed);
     }
@@ -979,11 +964,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 
         var binding = conversations.AddOrUpdate(
             conversationId,
-            _ => new SubAgentSessionBinding(
-                new MutableSubAgentTemplateSource(seed),
-                agentFactory)
+            _ =>
             {
-                CharacteristicsAgentFactory = characteristicsAgentFactory,
+                var source = new MutableSubAgentTemplateSource(seed);
+                source.RebindFactories(agentFactory, characteristicsAgentFactory);
+                return new SubAgentSessionBinding(source, agentFactory)
+                {
+                    CharacteristicsAgentFactory = characteristicsAgentFactory,
+                };
             },
             (_, existing) =>
             {

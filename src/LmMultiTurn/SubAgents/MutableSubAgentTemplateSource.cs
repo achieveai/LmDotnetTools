@@ -102,12 +102,30 @@ public sealed class MutableSubAgentTemplateSource
         }
     }
 
-    private SubAgentTemplate RebindTemplate(SubAgentTemplate template) =>
-        _rebindRegistrations
-            ? template with
-            {
-                AgentFactory = _agentFactory!,
-                CharacteristicsAgentFactory = _characteristicsAgentFactory,
-            }
-            : template;
+    private SubAgentTemplate RebindTemplate(SubAgentTemplate template)
+    {
+        if (!_rebindRegistrations)
+        {
+            return template;
+        }
+
+        var inheritedAgentFactory = template.AgentFactory;
+        return template with
+        {
+            CharacteristicsAgentFactory = _characteristicsAgentFactory is null
+                ? null
+                : characteristics =>
+                {
+                    var provider = _characteristicsAgentFactory(characteristics);
+                    return characteristics.IsModelExplicitlySelected
+                        || characteristics.IsModelTierResolved
+                        ? provider
+                        : provider with
+                        {
+                            Agent = inheritedAgentFactory(),
+                            OwnsAgent = true,
+                        };
+                },
+        };
+    }
 }

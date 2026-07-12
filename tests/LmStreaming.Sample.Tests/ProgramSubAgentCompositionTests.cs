@@ -1,9 +1,14 @@
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
+using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Services.Discovery;
+using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests;
 
@@ -66,6 +71,39 @@ public sealed class ProgramSubAgentCompositionTests
             });
 
         provider.Agent.Should().BeSameAs(routedAgent);
+    }
+
+    [Fact]
+    public void ApplyCharacteristicsAgentFactory_InheritedSpawnsReceiveFreshTemplateAgents()
+    {
+        var createdAgents = new List<IStreamingAgent>();
+        Func<IStreamingAgent> legacyFactory = () =>
+        {
+            var agent = new Mock<IStreamingAgent>().Object;
+            createdAgents.Add(agent);
+            return agent;
+        };
+        var result = global::Program.ApplyCharacteristicsAgentFactory(
+            new SubAgentOptions
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>
+                {
+                    ["custom"] = Template("custom", legacyFactory),
+                },
+            },
+            _ => new SubAgentProviderAgent(
+                new Mock<IStreamingAgent>().Object,
+                ImmutableDictionary<string, object?>.Empty));
+
+        var first = result.Templates["custom"].CharacteristicsAgentFactory!(
+            new SubAgentCharacteristics(null, null));
+        var second = result.Templates["custom"].CharacteristicsAgentFactory!(
+            new SubAgentCharacteristics(null, null));
+
+        first.Agent.Should().NotBeSameAs(second.Agent);
+        createdAgents.Should().Equal(first.Agent, second.Agent);
+        first.OwnsAgent.Should().BeTrue();
+        second.OwnsAgent.Should().BeTrue();
     }
 
     [Fact]
@@ -153,11 +191,16 @@ public sealed class ProgramSubAgentCompositionTests
                 .Excluding(template => template.CharacteristicsAgentFactory),
             "recreation must preserve all first-wins content and metadata");
         retained.Name.Should().NotBe("replacement");
-        retained.AgentFactory.Should().BeSameAs(latestLegacyFactory);
-        retained.AgentFactory().Should().BeSameAs(latestProvider);
-        retained.CharacteristicsAgentFactory.Should().BeSameAs(latestCharacteristicsFactory);
+        retained.AgentFactory.Should().BeSameAs(firstLegacyFactory);
+        retained.AgentFactory().Should().BeSameAs(firstProvider);
         retained.CharacteristicsAgentFactory!(
-                new SubAgentCharacteristics("spawn-model", ReasoningEffort.High))
+                new SubAgentCharacteristics(null, ReasoningEffort.High))
+            .Agent.Should().BeSameAs(firstProvider);
+        retained.CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("spawn-model", ReasoningEffort.High)
+                {
+                    IsModelExplicitlySelected = true,
+                })
             .Agent.Should().BeSameAs(latestProvider);
         await using var manager = new SubAgentManager(
             Mock.Of<IMultiTurnAgent>(),
@@ -166,7 +209,7 @@ public sealed class ProgramSubAgentCompositionTests
             new SubAgentOptions { Templates = recreatedBinding.Source.Templates },
             recreatedBinding.Source);
         _ = await manager.SpawnAsync("discovered", "invoke the retained template");
-        var discoveredAfterRefresh = Template("post-refresh", firstLegacyFactory) with
+        var discoveredAfterRefresh = Template("post-refresh", latestLegacyFactory) with
         {
             CharacteristicsAgentFactory = firstCharacteristicsFactory,
         };
@@ -182,6 +225,159 @@ public sealed class ProgramSubAgentCompositionTests
         recreatedBinding.CharacteristicsAgentFactory!(
                 new SubAgentCharacteristics("latest-model", ReasoningEffort.High))
             .Agent.Should().BeSameAs(latestProvider);
+    }
+
+    [Fact]
+    public async Task MarkdownThroughRebindAndSpawn_PreservesInheritedAndRoutedWireMetadata()
+    {
+        await using var registry = CreateRegistry();
+        var models = new[]
+        {
+            new CopilotModelInfo(
+                "parent-model",
+                "Parent",
+                CopilotModelVendor.OpenAI,
+                CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+            },
+            new CopilotModelInfo(
+                "tier-model",
+                "Tier",
+                CopilotModelVendor.OpenAI,
+                CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+            },
+            new CopilotModelInfo(
+                "explicit-model",
+                "Explicit",
+                CopilotModelVendor.OpenAI,
+                CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+            },
+        };
+        var catalog = new ProviderRegistry(models, Mock.Of<IFileSystemProbe>());
+        var resolver = new SubAgentModelResolver(
+            catalog,
+            new SubAgentIntelligenceOptions
+            {
+                Tiers = new Dictionary<int, string[]> { [3] = ["tier-model"] },
+            },
+            new CapturingLogger<SubAgentModelResolver>());
+        var loader = new WorkspaceSubAgentLoader(
+            registry,
+            new CapturingLogger<WorkspaceSubAgentLoader>(),
+            resolver);
+        var inheritedOptions = new List<GenerateReplyOptions?>();
+        var routedOptions = new Dictionary<string, GenerateReplyOptions?>();
+        Func<IStreamingAgent> inheritedAgentFactory = () =>
+            CreateRespondingAgent(options => inheritedOptions.Add(options)).Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> staleCharacteristicsFactory =
+            _ => throw new InvalidOperationException("The pre-recreation route must not execute.");
+        var session = new SandboxSession("default", "session", "default", "workspace");
+        var inherited = await loader.LoadOneWithCharacteristicsAsync(
+            session,
+            InlineAgent(
+                "inherited",
+                """
+                ---
+                name: inherited
+                effort: medium
+                ---
+                Use the inherited route.
+                """),
+            inheritedAgentFactory,
+            staleCharacteristicsFactory);
+        var tiered = await loader.LoadOneWithCharacteristicsAsync(
+            session,
+            InlineAgent(
+                "tiered",
+                """
+                ---
+                name: tiered
+                modelintelligence: 3
+                effort: high
+                ---
+                Use the tier-selected route.
+                """),
+            () => throw new InvalidOperationException("Tier routing must use the characteristics factory."),
+            staleCharacteristicsFactory);
+        var explicitTemplate = await loader.LoadOneWithCharacteristicsAsync(
+            session,
+            InlineAgent(
+                "explicit",
+                """
+                ---
+                name: explicit
+                model: explicit-model
+                effort: xhigh
+                ---
+                Use the author-pinned route.
+                """),
+            () => throw new InvalidOperationException("Explicit routing must use the characteristics factory."),
+            staleCharacteristicsFactory);
+        var initialOptions = global::Program.ApplyCharacteristicsAgentFactory(
+            new SubAgentOptions
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>
+                {
+                    ["inherited"] = inherited!,
+                    ["tiered"] = tiered!,
+                    ["explicit"] = explicitTemplate!,
+                },
+            },
+            staleCharacteristicsFactory);
+        var firstBinding = global::Program.BindConversationSubAgents(
+            registry,
+            "session",
+            "conversation",
+            initialOptions.Templates,
+            inheritedAgentFactory,
+            staleCharacteristicsFactory);
+        var latestFactory = new CharacteristicsAgentFactory(
+            catalog,
+            CreateRespondingAgent().Object,
+            model => CreateRespondingAgent(options => routedOptions[model.Id] = options).Object,
+            new CapturingLogger<CharacteristicsAgentFactory>(),
+            models[0]);
+        var rebound = global::Program.BindConversationSubAgents(
+            registry,
+            "session",
+            "conversation",
+            initialOptions.Templates,
+            inheritedAgentFactory,
+            latestFactory.Create);
+        rebound.Source.Should().BeSameAs(firstBinding.Source);
+        await using var manager = new SubAgentManager(
+            Mock.Of<IMultiTurnAgent>(),
+            [],
+            new Dictionary<string, ToolHandler>(),
+            new SubAgentOptions { Templates = rebound.Source.Templates },
+            rebound.Source,
+            parentModelId: "parent-model");
+
+        _ = await manager.SpawnAsync("inherited", "inherit");
+        _ = await manager.SpawnAsync("tiered", "tier");
+        _ = await manager.SpawnAsync("explicit", "explicit");
+
+        inheritedOptions.Should().ContainSingle();
+        inheritedOptions[0]!.ModelId.Should().Be("parent-model");
+        inheritedOptions[0]!.ExtraProperties["Reasoning"]
+            .Should().BeOfType<ResponseReasoningOptions>()
+            .Which.Effort.Should().Be("medium");
+        routedOptions["tier-model"]!.ModelId.Should().Be("tier-model");
+        routedOptions["tier-model"]!.ExtraProperties["Reasoning"]
+            .Should().BeOfType<ResponseReasoningOptions>()
+            .Which.Effort.Should().Be("high");
+        routedOptions["explicit-model"]!.ModelId.Should().Be("explicit-model");
+        routedOptions["explicit-model"]!.ExtraProperties["Reasoning"]
+            .Should().BeOfType<ResponseReasoningOptions>()
+            .Which.Effort.Should().Be("xhigh");
+        rebound.Source.Templates["tiered"].IsModelExplicitlySelected.Should().BeFalse();
+        rebound.Source.Templates["tiered"].IsModelTierResolved.Should().BeTrue();
+        rebound.Source.Templates["explicit"].IsModelExplicitlySelected.Should().BeTrue();
     }
 
     private static SandboxSessionRegistry CreateRegistry()
@@ -211,7 +407,11 @@ public sealed class ProgramSubAgentCompositionTests
             AgentFactory = agentFactory,
         };
 
-    private static Mock<IStreamingAgent> CreateRespondingAgent()
+    private static SandboxSessionRegistry.DiscoveredItem InlineAgent(string name, string content) =>
+        new("subagent", name, name, $"/marketplaces/test/{name}.md", content);
+
+    private static Mock<IStreamingAgent> CreateRespondingAgent(
+        Action<GenerateReplyOptions?>? captureOptions = null)
     {
         var agent = new Mock<IStreamingAgent>();
         agent
@@ -219,6 +419,8 @@ public sealed class ProgramSubAgentCompositionTests
                 It.IsAny<IEnumerable<IMessage>>(),
                 It.IsAny<GenerateReplyOptions?>(),
                 It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, options, _) => captureOptions?.Invoke(options))
             .ReturnsAsync(ToAsyncEnumerable([
                 new TextMessage { Text = "done", Role = Role.Assistant },
             ]));

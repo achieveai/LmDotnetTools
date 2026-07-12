@@ -33,12 +33,18 @@ public sealed record ParsedSubAgent(
     public ReasoningEffort? Effort { get; init; }
 
     /// <summary>
+    /// Whether <see cref="Model"/> was resolved from <see cref="ModelIntelligence"/> rather than
+    /// pinned directly in the markdown.
+    /// </summary>
+    public bool IsModelTierResolved { get; init; }
+
+    /// <summary>
     /// Non-fatal frontmatter validation messages.
     /// </summary>
     public IReadOnlyList<string> Diagnostics
     {
         get => _diagnostics;
-        init => _diagnostics = value.ToImmutableArray();
+        init => _diagnostics = value?.ToImmutableArray() ?? [];
     }
 
     /// <inheritdoc />
@@ -308,7 +314,7 @@ public static class SubAgentMarkdownParser
                 "low" => ReasoningEffort.Low,
                 "medium" => ReasoningEffort.Medium,
                 "high" => ReasoningEffort.High,
-                "extra-high" => ReasoningEffort.Xhigh,
+                "extra-high" or "xhigh" => ReasoningEffort.Xhigh,
                 _ => (ReasoningEffort?)null,
             };
 
@@ -319,7 +325,7 @@ public static class SubAgentMarkdownParser
         }
 
         diagnostics.Add(
-            "effort must be one of low, medium, high, or extra-high; the field was ignored."
+            "effort must be one of low, medium, high, extra-high, or xhigh; the field was ignored."
         );
         return null;
     }

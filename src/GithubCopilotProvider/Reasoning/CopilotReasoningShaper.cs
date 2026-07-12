@@ -72,14 +72,11 @@ public static class CopilotReasoningShaper
             return null;
         }
 
-        var requestedRank = requestedEffort.Value switch
+        var requestedRank = GetEffortRank(requestedEffort.Value);
+        if (requestedRank < 0)
         {
-            ReasoningEffort.Low => 2,
-            ReasoningEffort.Medium => 3,
-            ReasoningEffort.High => 4,
-            ReasoningEffort.Xhigh => 5,
-            _ => throw new ArgumentOutOfRangeException(nameof(requestedEffort)),
-        };
+            return null;
+        }
         var selectedRank = advertisedRanks
             .Where(rank => rank <= requestedRank)
             .DefaultIfEmpty(advertisedRanks.Min())
@@ -99,4 +96,18 @@ public static class CopilotReasoningShaper
 
         return -1;
     }
+
+    /// <summary>Returns the provider-independent rank for a typed effort, or -1 when unknown.</summary>
+    public static int GetEffortRank(ReasoningEffort effort) =>
+        effort switch
+        {
+            ReasoningEffort.Low => 2,
+            ReasoningEffort.Medium => 3,
+            ReasoningEffort.High => 4,
+            ReasoningEffort.Xhigh => 5,
+            _ => -1,
+        };
+
+    /// <summary>Returns the rank for a canonical provider effort token, or -1 when unknown.</summary>
+    public static int GetEffortRank(string effort) => GetSelectableRank(effort);
 }

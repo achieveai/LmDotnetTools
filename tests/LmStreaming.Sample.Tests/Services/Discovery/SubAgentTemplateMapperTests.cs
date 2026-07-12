@@ -46,6 +46,18 @@ public class SubAgentTemplateMapperTests
     }
 
     [Fact]
+    public void Map_TierResolvedModel_RetainsDistinctRoutingIntent()
+    {
+        var parsed = Parsed("gpt-tier") with { IsModelTierResolved = true };
+
+        var template = SubAgentTemplateMapper.Map(parsed, AgentFactory, maxTurnsPerRun: 25);
+
+        template.DefaultOptions!.ModelId.Should().Be("gpt-tier");
+        template.IsModelExplicitlySelected.Should().BeFalse();
+        template.IsModelTierResolved.Should().BeTrue();
+    }
+
+    [Fact]
     public void Map_Effort_CarriesTypedValue()
     {
         var parsed = Parsed("claude-sonnet-5") with { Effort = ReasoningEffort.Xhigh };

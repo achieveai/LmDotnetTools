@@ -92,6 +92,20 @@ public sealed class CopilotReasoningShaperTests
         CopilotReasoningShaper.Shape(model, ReasoningEffort.Low).Should().BeEmpty();
     }
 
+    [Fact]
+    public void SelectEffort_UnknownEnumValueFallsBackWithoutThrowing()
+    {
+        var model = CreateModel(
+            CopilotModelTransport.Responses,
+            supportsAdaptiveThinking: true,
+            "low",
+            "medium");
+
+        var selected = CopilotReasoningShaper.SelectEffort(model, (ReasoningEffort)999);
+
+        selected.Should().BeNull();
+    }
+
     private static CopilotModelInfo CreateModel(
         CopilotModelTransport transport,
         bool supportsAdaptiveThinking,

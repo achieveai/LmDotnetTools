@@ -31,9 +31,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
+    private int _disposeStarted;
 
     /// <summary>
-    /// Test-only seam: when set, <see cref="CreateSubAgent"/> returns this factory's
+    /// Test-only seam: when set, <see cref="CreateSubAgentAsync"/> returns this factory's
     /// <see cref="IMultiTurnAgent"/> instead of building a real <see cref="MultiTurnAgentLoop"/>,
     /// so a unit test can substitute a fake agent (e.g. one whose <c>SubscribeAsync</c> throws a
     /// non-cancellation exception) while still going through the real <see cref="SpawnAsync"/>/
@@ -123,7 +124,13 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
-            var agent = CreateSubAgent(agentId, template, model, addTools, removeTools, out var store);
+            var (agent, store, ownedProviderAgent) = await CreateSubAgentAsync(
+                agentId,
+                template,
+                model,
+                addTools,
+                removeTools
+            );
 
             state = new SubAgentState
             {
@@ -131,10 +138,15 @@ public sealed class SubAgentManager : IAsyncDisposable
                 TemplateName = templateName,
                 Task = task,
                 Agent = agent,
+                Template = template,
+                ModelOverride = model,
+                AddTools = addTools,
+                RemoveTools = removeTools,
                 Store = store,
                 Name = name,
                 NotifyParentOnCompletion = runInBackground,
             };
+            state.SetOwnedProviderAgent(ownedProviderAgent);
 
             _agents[agentId] = state;
             if (!string.IsNullOrWhiteSpace(name))
@@ -267,6 +279,32 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+        try { await state.Agent.DisposeAsync(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Agent dispose failed during spawn cleanup for sub-agent {AgentId}", agentId);
+        }
+
+        try { await state.DisposeOwnedProviderAgentAsync(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Provider dispose failed during spawn cleanup for sub-agent {AgentId}",
+                agentId
+            );
+        }
+
+        state.Cts.Dispose();
+        if (state.Store is IAsyncDisposable disposableStore)
+        {
+            try { await disposableStore.DisposeAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Store dispose failed during spawn cleanup for sub-agent {AgentId}", agentId);
+            }
+        }
+
         gateGuard.ReleaseOnce(_concurrencyGate);
     }
 
@@ -370,13 +408,6 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
-            // Recover conversation history if a store is available
-            if (state.Store != null
-                && state.Agent is MultiTurnAgentBase agentBase)
-            {
-                _ = await agentBase.RecoverAsync();
-            }
-
             // Cancel and dispose the old CTS to prevent double-monitor bugs:
             // the old monitor's closure captured the old CTS, and both monitors
             // would receive RunCompletedMessage causing double Release/Decrement.
@@ -405,6 +436,57 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
 
             state.Cts.Dispose();
+
+            if (state.HasDisposedOwnedProviderAgent)
+            {
+                var previousAgent = state.Agent;
+                var previousStore = state.Store;
+                var (replacementAgent, replacementStore, replacementOwnedProviderAgent) = await CreateSubAgentAsync(
+                    state.AgentId,
+                    state.Template,
+                    state.ModelOverride,
+                    state.AddTools,
+                    state.RemoveTools
+                );
+
+                try { await previousAgent.DisposeAsync(); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Completed agent dispose failed before restart for sub-agent {AgentId}",
+                        state.AgentId
+                    );
+                }
+
+                if (
+                    previousStore is IAsyncDisposable disposablePreviousStore
+                    && !ReferenceEquals(previousStore, replacementStore)
+                )
+                {
+                    try { await disposablePreviousStore.DisposeAsync(); }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Completed store dispose failed before restart for sub-agent {AgentId}",
+                            state.AgentId
+                        );
+                    }
+                }
+
+                state.Agent = replacementAgent;
+                state.Store = replacementStore;
+                state.SetOwnedProviderAgent(replacementOwnedProviderAgent);
+            }
+
+            // Recover conversation history after replacing a completed owned-provider loop, so a
+            // continuation uses the fresh provider pipeline while retaining persisted context.
+            if (state.Store != null
+                && state.Agent is MultiTurnAgentBase agentBase)
+            {
+                _ = await agentBase.RecoverAsync();
+            }
 
             // Create new CTS and start the loop again
             state.Cts = new CancellationTokenSource();
@@ -458,6 +540,22 @@ public sealed class SubAgentManager : IAsyncDisposable
                 {
                     _logger.LogWarning(ex, "MonitorTask faulted during restart cleanup for sub-agent {AgentId}", state.AgentId);
                 }
+            }
+
+            try { await state.Agent.DisposeAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Agent dispose failed during restart cleanup for sub-agent {AgentId}", state.AgentId);
+            }
+
+            try { await state.DisposeOwnedProviderAgentAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Provider dispose failed during restart cleanup for sub-agent {AgentId}",
+                    state.AgentId
+                );
             }
 
             // Idempotent: a no-op if the (now-observed) monitor's own finally already
@@ -557,6 +655,11 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        {
+            return;
+        }
+
         foreach (var (_, state) in _agents)
         {
             // Each step is isolated to prevent cascading failures:
@@ -600,6 +703,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _logger.LogWarning(ex, "DisposeAsync failed for sub-agent {AgentId}", state.AgentId);
             }
 
+            try { await state.DisposeOwnedProviderAgentAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Provider dispose failed for sub-agent {AgentId}", state.AgentId);
+            }
+
             try { state.Cts.Dispose(); }
             catch (Exception ex)
             {
@@ -624,94 +733,123 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Creates a MultiTurnAgentLoop configured for a sub-agent with filtered tools.
     /// </summary>
-    private IMultiTurnAgent CreateSubAgent(
+    private async Task<(IMultiTurnAgent Agent, IConversationStore? Store, IStreamingAgent? OwnedProviderAgent)> CreateSubAgentAsync(
         string agentId,
         SubAgentTemplate template,
         string? modelOverride,
         string[]? addTools,
-        string[]? removeTools,
-        out IConversationStore? store)
+        string[]? removeTools)
     {
         if (TestAgentFactoryOverride != null)
         {
-            store = null;
-            return TestAgentFactoryOverride(agentId, template);
+            return (TestAgentFactoryOverride(agentId, template), null, null);
         }
 
         // Resolve the sub-agent's options with model inheritance (override > template > parent).
         var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId);
         IStreamingAgent providerAgent;
+        IStreamingAgent? ownedProviderAgent = null;
+        IConversationStore? store = null;
 
-        if (template.CharacteristicsAgentFactory is { } characteristicsFactory)
+        try
         {
-            var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
-                ? null
-                : defaultOptions.ModelId;
-            var provider = characteristicsFactory(
-                new SubAgentCharacteristics(modelId, template.Effort)
+            if (template.CharacteristicsAgentFactory is { } characteristicsFactory)
+            {
+                var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
+                    ? null
+                    : defaultOptions.ModelId;
+                var provider = characteristicsFactory(
+                    new SubAgentCharacteristics(modelId, template.Effort)
+                    {
+                        IsModelExplicitlySelected =
+                            !string.IsNullOrWhiteSpace(modelOverride)
+                            || template.IsModelExplicitlySelected,
+                        IsModelTierResolved = template.IsModelTierResolved,
+                    });
+                providerAgent = provider.Agent;
+                ownedProviderAgent = provider.OwnsAgent ? provider.Agent : null;
+
+                if (provider.UseParentModel && defaultOptions is not null)
                 {
-                    IsModelExplicitlySelected =
-                        !string.IsNullOrWhiteSpace(modelOverride)
-                        || template.IsModelExplicitlySelected,
-                });
-            providerAgent = provider.Agent;
+                    defaultOptions = defaultOptions with { ModelId = _parentModelId ?? string.Empty };
+                }
 
-            if (provider.UseParentModel && defaultOptions is not null)
-            {
-                defaultOptions = defaultOptions with { ModelId = _parentModelId ?? string.Empty };
-            }
-
-            if (provider.ExtraProperties.Count > 0)
-            {
-                var requestExtraProperties =
-                    defaultOptions?.ExtraProperties
-                    ?? ImmutableDictionary<string, object?>.Empty;
-                defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                if (provider.ExtraProperties.Count > 0)
                 {
-                    ExtraProperties = provider.ExtraProperties.SetItems(requestExtraProperties),
-                };
+                    var requestExtraProperties =
+                        defaultOptions?.ExtraProperties
+                        ?? ImmutableDictionary<string, object?>.Empty;
+                    defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                    {
+                        // Template/request values intentionally win over generated reasoning metadata.
+                        ExtraProperties = provider.ExtraProperties.SetItems(requestExtraProperties),
+                    };
+                }
             }
-        }
-        else
-        {
-            providerAgent = template.AgentFactory();
-        }
-
-        // Determine conversation store
-        var storeFactory =
-            template.ConversationStoreFactory
-            ?? _options.DefaultConversationStoreFactory;
-        store = storeFactory?.Invoke($"subagent-{agentId}");
-
-        // Build a fresh FunctionRegistry with filtered parent tools
-        var registry = new FunctionRegistry();
-        var enabledSet = BuildEnabledToolSet(
-            template.EnabledTools, addTools, removeTools);
-
-        foreach (var contract in _parentContracts)
-        {
-            if (enabledSet != null && !enabledSet.Contains(contract.Name))
+            else
             {
-                continue;
+                providerAgent = template.AgentFactory();
             }
 
-            if (!_parentHandlers.TryGetValue(contract.Name, out var handler))
+            // Determine conversation store
+            var storeFactory =
+                template.ConversationStoreFactory
+                ?? _options.DefaultConversationStoreFactory;
+            store = storeFactory?.Invoke($"subagent-{agentId}");
+
+            // Build a fresh FunctionRegistry with filtered parent tools
+            var registry = new FunctionRegistry();
+            var enabledSet = BuildEnabledToolSet(
+                template.EnabledTools, addTools, removeTools);
+
+            foreach (var contract in _parentContracts)
             {
-                continue;
+                if (enabledSet != null && !enabledSet.Contains(contract.Name))
+                {
+                    continue;
+                }
+
+                if (!_parentHandlers.TryGetValue(contract.Name, out var handler))
+                {
+                    continue;
+                }
+
+                _ = registry.AddFunction(contract, handler, "ParentTools");
             }
 
-            _ = registry.AddFunction(contract, handler, "ParentTools");
+            return (
+                new MultiTurnAgentLoop(
+                    providerAgent,
+                    registry,
+                    threadId: $"subagent-{agentId}",
+                    systemPrompt: template.SystemPrompt,
+                    defaultOptions: defaultOptions,
+                    maxTurnsPerRun: template.MaxTurnsPerRun,
+                    store: store,
+                    logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger)
+                ),
+                store,
+                ownedProviderAgent
+            );
         }
+        catch
+        {
+            if (store is IAsyncDisposable disposableStore)
+            {
+                await disposableStore.DisposeAsync();
+            }
 
-        return new MultiTurnAgentLoop(
-            providerAgent,
-            registry,
-            threadId: $"subagent-{agentId}",
-            systemPrompt: template.SystemPrompt,
-            defaultOptions: defaultOptions,
-            maxTurnsPerRun: template.MaxTurnsPerRun,
-            store: store,
-            logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger));
+            if (ownedProviderAgent is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync();
+            }
+            else if (ownedProviderAgent is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+
+            throw;
+        }
     }
 
     /// <summary>
@@ -936,6 +1074,19 @@ public sealed class SubAgentManager : IAsyncDisposable
         // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
         // once per gate-acquisition epoch — not here, because a single monitor may handle
         // several completions when a background sub-agent is continued in place via SendMessage.
+        // An explicit/tier provider is scoped to a single completed run. Dispose it before any
+        // completion relay can block; a later continuation recreates its loop and provider through
+        // the same characteristics factory, while borrowed parent/template agents remain untouched.
+        try { await state.DisposeOwnedProviderAgentAsync(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Provider dispose failed at completion for sub-agent {AgentId}",
+                state.AgentId
+            );
+        }
+
         if (rcm.IsError)
         {
             state.Status = SubAgentStatus.Error;
@@ -978,6 +1129,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 await SendToParentAsync(state, resultText);
             }
         }
+
     }
 
     /// <summary>

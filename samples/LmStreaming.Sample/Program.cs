@@ -347,12 +347,12 @@ try
         sp.GetRequiredService<AuthSharedSecret>()
     ));
 
-    var subAgentIntelligenceOptions =
-        builder.Configuration
-            .GetSection(SubAgentIntelligenceOptions.SectionName)
-            .Get<SubAgentIntelligenceOptions>()
-        ?? new SubAgentIntelligenceOptions();
-    _ = builder.Services.AddSingleton(subAgentIntelligenceOptions);
+    _ = builder.Services.AddSingleton(sp =>
+        SubAgentIntelligenceOptions.Load(
+            builder.Configuration,
+            sp.GetRequiredService<ILogger<SubAgentIntelligenceOptions>>()
+        )
+    );
     _ = builder.Services.AddSingleton<SubAgentModelResolver>();
 
     // Workspace sub-agent discovery. The loader asks the gateway what it has discovered in
@@ -1967,8 +1967,13 @@ public partial class Program
                     {
                         var provider = characteristicsAgentFactory(characteristics);
                         return characteristics.IsModelExplicitlySelected
+                            || characteristics.IsModelTierResolved
                             ? provider
-                            : provider with { Agent = entry.Value.AgentFactory() };
+                            : provider with
+                            {
+                                Agent = entry.Value.AgentFactory(),
+                                OwnsAgent = true,
+                            };
                     },
                 },
                 StringComparer.Ordinal),

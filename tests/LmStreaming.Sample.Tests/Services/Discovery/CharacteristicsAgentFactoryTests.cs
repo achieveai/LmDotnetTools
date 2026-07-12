@@ -60,6 +60,7 @@ public sealed class CharacteristicsAgentFactoryTests
         );
 
         result.Agent.Should().BeSameAs(modelAgent);
+        result.OwnsAgent.Should().BeTrue();
         createdFor.Should().BeSameAs(model);
         if (transport == CopilotModelTransport.Anthropic)
         {
@@ -97,6 +98,7 @@ public sealed class CharacteristicsAgentFactoryTests
         var result = factory.Create(new SubAgentCharacteristics(inheritedModel.Id, ReasoningEffort.Medium));
 
         result.Agent.Should().BeSameAs(parentAgent);
+        result.OwnsAgent.Should().BeFalse();
         result
             .ExtraProperties["Reasoning"]
             .Should()
@@ -321,6 +323,203 @@ public sealed class CharacteristicsAgentFactoryTests
         receivedOptions!.ModelId.Should().Be("parent-model");
     }
 
+    [Fact]
+    public async Task Spawn_DisposesOwnedExplicitProviderExactlyOnce()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var ownedAgent = CreateRespondingDisposableAgent();
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => ownedAgent.Object);
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+        await manager.DisposeAsync();
+        await manager.DisposeAsync();
+
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Spawn_ContinuationRecreatesAndDisposesOwnedProviderPerCompletedRun()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var firstOwnedAgent = CreateRespondingDisposableAgent();
+        var secondOwnedAgent = CreateRespondingDisposableAgent();
+        var createdAgents = new Queue<IStreamingAgent>([firstOwnedAgent.Object, secondOwnedAgent.Object]);
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => createdAgents.Dequeue()
+        );
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        await using var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "first task", name: "owned");
+        _ = await manager.SendMessageAsync("owned", "continued task");
+
+        firstOwnedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+        secondOwnedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+        createdAgents.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Spawn_CompletionDisposesOwnedProviderBeforeBackgroundRelayCompletes()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var ownedAgent = CreateRespondingDisposableAgent();
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => ownedAgent.Object
+        );
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var relayStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeRelay = new TaskCompletionSource<SendReceipt>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var parent = new Mock<IMultiTurnAgent>();
+        parent
+            .Setup(agent => agent.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback(() => relayStarted.TrySetResult())
+            .Returns(new ValueTask<SendReceipt>(completeRelay.Task));
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        await using var manager = new SubAgentManager(
+            parent.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", runInBackground: true);
+        await relayStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+        }
+        finally
+        {
+            completeRelay.TrySetResult(new SendReceipt("receipt", null, DateTimeOffset.UtcNow));
+        }
+    }
+
+    [Fact]
+    public async Task Spawn_ConstructionFailureDisposesOwnedProvider()
+    {
+        var model = Model("owned-model", CopilotModelTransport.Responses, []);
+        var ownedAgent = CreateRespondingDisposableAgent();
+        var factory = CreateFactory(
+            [model],
+            new Mock<IStreamingAgent>().Object,
+            _ => ownedAgent.Object
+        );
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            DefaultOptions = new GenerateReplyOptions { ModelId = model.Id },
+            IsModelExplicitlySelected = true,
+            CharacteristicsAgentFactory = factory.Create,
+            ConversationStoreFactory = _ => throw new InvalidOperationException("Store creation failed."),
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        await using var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates)
+        );
+
+        var act = () => manager.SpawnAsync("test-agent", "test task");
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        ownedAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Spawn_NeverDisposesBorrowedParentProvider()
+    {
+        var parentAgent = CreateRespondingDisposableAgent();
+        var factory = CreateFactory([], parentAgent.Object, _ => throw new InvalidOperationException());
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "Test",
+            AgentFactory = () => throw new InvalidOperationException(),
+            CharacteristicsAgentFactory = factory.Create,
+        };
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+        };
+        var manager = new SubAgentManager(
+            new Mock<IMultiTurnAgent>().Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+        await manager.DisposeAsync();
+
+        parentAgent.As<IAsyncDisposable>().Verify(agent => agent.DisposeAsync(), Times.Never);
+    }
+
     private static CharacteristicsAgentFactory CreateFactory(
         IReadOnlyList<CopilotModelInfo> models,
         IStreamingAgent parentAgent,
@@ -337,6 +536,22 @@ public sealed class CharacteristicsAgentFactoryTests
             logger ?? new CapturingLogger<CharacteristicsAgentFactory>(),
             parentCopilotModel
         );
+    }
+
+    private static Mock<IStreamingAgent> CreateRespondingDisposableAgent()
+    {
+        var agent = new Mock<IStreamingAgent>();
+        agent
+            .Setup(candidate =>
+                candidate.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
+        agent.As<IAsyncDisposable>().Setup(candidate => candidate.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        return agent;
     }
 
     private static CopilotModelInfo Model(string id, CopilotModelTransport transport, IReadOnlyList<string> efforts) =>

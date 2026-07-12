@@ -38,8 +38,11 @@ public static class SubAgentTemplateMapper
         // aliases). Treat "inherit" (and a blank model) as "no explicit model" so the sub-agent inherits
         // the parent loop's concrete model instead.
         var hasExplicitModel = !string.IsNullOrWhiteSpace(parsed.Model)
+            && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase)
+            && !parsed.IsModelTierResolved;
+        var hasRoutedModel = !string.IsNullOrWhiteSpace(parsed.Model)
             && !string.Equals(parsed.Model.Trim(), "inherit", StringComparison.OrdinalIgnoreCase);
-        var defaults = hasExplicitModel
+        var defaults = hasRoutedModel
             ? new GenerateReplyOptions { ModelId = parsed.Model!.Trim() }
             : null;
 
@@ -52,6 +55,7 @@ public static class SubAgentTemplateMapper
             AgentFactory = agentFactory,
             DefaultOptions = defaults,
             IsModelExplicitlySelected = hasExplicitModel,
+            IsModelTierResolved = parsed.IsModelTierResolved,
             Effort = parsed.Effort,
             EnabledTools = parsed.Tools,
             MaxTurnsPerRun = maxTurnsPerRun,

@@ -211,10 +211,11 @@ effort: high
   candidates later in the array are ordered fallbacks. An absent map, missing tier, or tier with
   no routable candidate falls through to the parent model and logs a warning. The checked-in
   `appsettings.json` contains empty arrays for tiers 0–6, so it documents the schema without
-  selecting a model.
+  selecting a model. Malformed or out-of-range configuration keys are logged as errors and their
+  mappings are ignored without preventing application startup.
 
-- **`effort`** accepts **`low`**, **`medium`**, **`high`**, or **`extra-high`**
-  (`extra-high` is sent as `xhigh`). The request is clamped to the highest selectable effort
+- **`effort`** accepts **`low`**, **`medium`**, **`high`**, **`extra-high`**, or **`xhigh`**
+  (`extra-high` and `xhigh` are equivalent). The request is clamped to the highest selectable effort
   advertised by the resolved model at or below the request. If every advertised selectable
   effort is above the request, it snaps to the model's lowest selectable effort. If the model
   advertises no selectable effort (including a non-adaptive model), or its provider transport
@@ -225,6 +226,8 @@ Model precedence is **explicit `model:` > tier-resolved model > inherited parent
 per-spawn model override, when supplied by a caller, remains highest). An explicit model therefore
 disables tier selection. The characteristics-aware factory builds the sub-agent on the resolved
 model's routable transport and applies effort only after that model is known.
+The 0–6 model-intelligence tier space and the reasoning-effort values are deliberately independent;
+there is no ordinal or one-to-one mapping between them.
 
 Invalid or out-of-range `modelintelligence` values and unrecognized `effort` values do not reject
 the sub-agent. The shared parser ignores only the invalid field and emits a diagnostic, which the

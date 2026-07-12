@@ -14,4 +14,11 @@ public sealed record SubAgentCharacteristics(
     /// rather than parent-model inheritance.
     /// </summary>
     public bool IsModelExplicitlySelected { get; init; }
+
+    /// <summary>
+    /// Whether the effective model was selected from an operator-configured intelligence tier.
+    /// Tier resolution still requires provider routing, but remains distinct from an author-pinned
+    /// model selection.
+    /// </summary>
+    public bool IsModelTierResolved { get; init; }
 }

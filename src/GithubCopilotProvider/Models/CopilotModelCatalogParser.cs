@@ -87,7 +87,9 @@ public static class CopilotModelCatalogParser
             .. reasoningEffort
                 .EnumerateArray()
                 .Where(value => value.ValueKind == JsonValueKind.String)
-                .Select(value => value.GetString()!),
+                .Select(value => value.GetString())
+                .Where(value => value is not null)
+                .Select(value => value!),
         ];
     }
 

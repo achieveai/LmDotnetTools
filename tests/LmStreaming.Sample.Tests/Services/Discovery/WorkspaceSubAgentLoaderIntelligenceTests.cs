@@ -44,7 +44,8 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
 
         template.Should().NotBeNull();
         template!.DefaultOptions!.ModelId.Should().Be("routable-model");
-        template.IsModelExplicitlySelected.Should().BeTrue();
+        template.IsModelExplicitlySelected.Should().BeFalse();
+        template.IsModelTierResolved.Should().BeTrue();
         template.CharacteristicsAgentFactory.Should().BeSameAs(characteristicsAgentFactory);
         logger.Entries.Should().ContainSingle(entry =>
             entry.Level == LogLevel.Warning
@@ -78,6 +79,7 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
         template.Should().NotBeNull();
         template!.DefaultOptions.Should().BeNull();
         template.IsModelExplicitlySelected.Should().BeFalse();
+        template.IsModelTierResolved.Should().BeFalse();
     }
 
     private static WorkspaceSubAgentLoader CreateLoader(

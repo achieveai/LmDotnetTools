@@ -397,13 +397,13 @@ public class ContextDiscoveryControllerTests
                         ImmutableDictionary<string, object?>.Empty);
                 };
             var emptySeed = new Dictionary<string, SubAgentTemplate>();
-            var bindingA = registry.GetOrAddSubAgentBinding(
+            var bindingA = registry.AddOrUpdateSubAgentBinding(
                 gatewaySessionId,
                 "conv-A",
                 emptySeed,
                 () => agentA,
                 characteristicsFactoryA);
-            var bindingB = registry.GetOrAddSubAgentBinding(
+            var bindingB = registry.AddOrUpdateSubAgentBinding(
                 gatewaySessionId,
                 "conv-B",
                 emptySeed,
@@ -430,12 +430,8 @@ public class ContextDiscoveryControllerTests
             bindingB.Source.Templates["echo"].AgentFactory().Should().BeSameAs(
                 agentB,
                 "conversation B's discovered sub-agent must spawn with B's provider, not the first conversation's");
-            bindingA.Source.Templates["echo"]
-                .CharacteristicsAgentFactory.Should().BeSameAs(characteristicsFactoryA);
-            bindingB.Source.Templates["echo"]
-                .CharacteristicsAgentFactory.Should().BeSameAs(
-                    characteristicsFactoryB,
-                    "conversation B must retain its own cross-transport factory identity");
+            bindingA.Source.Templates["echo"].CharacteristicsAgentFactory.Should().NotBeNull();
+            bindingB.Source.Templates["echo"].CharacteristicsAgentFactory.Should().NotBeNull();
 
             var characteristics = new SubAgentCharacteristics("conversation-b-model", ReasoningEffort.High);
             var reboundProvider = bindingB.Source.Templates["echo"]
@@ -443,8 +439,14 @@ public class ContextDiscoveryControllerTests
 
             receivedCharacteristicsB.Should().BeSameAs(characteristics);
             reboundProvider.Agent.Should().BeSameAs(
+                agentB,
+                "inherited webhook spawns must use the conversation's fresh legacy route");
+            var explicitProvider = bindingB.Source.Templates["echo"]
+                .CharacteristicsAgentFactory!(
+                    characteristics with { IsModelExplicitlySelected = true });
+            explicitProvider.Agent.Should().BeSameAs(
                 characteristicsAgentB,
-                "the rebound template must route through conversation B's characteristics factory");
+                "explicit webhook spawns must use the conversation's characteristics route");
         }
         finally
         {

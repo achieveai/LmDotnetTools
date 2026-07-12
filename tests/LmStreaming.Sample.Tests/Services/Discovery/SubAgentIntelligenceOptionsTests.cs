@@ -1,5 +1,7 @@
 using LmStreaming.Sample.Services.Discovery;
+using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services.Discovery;
 
@@ -17,12 +19,31 @@ public sealed class SubAgentIntelligenceOptionsTests
             })
             .Build();
 
-        var options = configuration
-            .GetSection(SubAgentIntelligenceOptions.SectionName)
-            .Get<SubAgentIntelligenceOptions>();
+        var options = SubAgentIntelligenceOptions.Load(
+            configuration,
+            new CapturingLogger<SubAgentIntelligenceOptions>());
 
-        options.Should().NotBeNull();
-        options!.Tiers[3].Should().Equal("model-a", "model-b", "model-c");
+        options.Tiers[3].Should().Equal("model-a", "model-b", "model-c");
+    }
+
+    [Fact]
+    public void Load_LogsAndSkipsMalformedAndOutOfRangeKeysWithoutDroppingValidMappings()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["SubAgentIntelligence:Tiers:not-an-integer:0"] = "bad-model",
+                ["SubAgentIntelligence:Tiers:7:0"] = "out-of-range-model",
+                ["SubAgentIntelligence:Tiers:4:0"] = "valid-model",
+            })
+            .Build();
+        var logger = new CapturingLogger<SubAgentIntelligenceOptions>();
+
+        var options = SubAgentIntelligenceOptions.Load(configuration, logger);
+
+        options.Tiers.Should().ContainSingle().Which.Key.Should().Be(4);
+        options.Tiers[4].Should().Equal("valid-model");
+        logger.Entries.Count(entry => entry.Level == LogLevel.Error).Should().Be(2);
     }
 
     [Fact]

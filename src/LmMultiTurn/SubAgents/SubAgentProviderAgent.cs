@@ -16,16 +16,13 @@ public sealed record SubAgentProviderAgent
     /// </summary>
     /// <param name="Agent">The provider agent selected for the spawn.</param>
     /// <param name="ExtraProperties">Provider request hints to merge into the spawn options.</param>
-    /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="Agent"/> or <paramref name="ExtraProperties"/> is null.
-    /// </exception>
     public SubAgentProviderAgent(
         IStreamingAgent Agent,
-        ImmutableDictionary<string, object?> ExtraProperties)
+        ImmutableDictionary<string, object?> ExtraProperties
+    )
     {
         ArgumentNullException.ThrowIfNull(Agent);
         ArgumentNullException.ThrowIfNull(ExtraProperties);
-
         this.Agent = Agent;
         this.ExtraProperties = ExtraProperties;
     }
@@ -53,19 +50,15 @@ public sealed record SubAgentProviderAgent
     }
 
     /// <summary>
+    /// Whether the spawned sub-agent owns <see cref="Agent"/> and must dispose it when the
+    /// sub-agent is disposed. Borrowed parent/template agents leave this false.
+    /// </summary>
+    public bool OwnsAgent { get; init; }
+
+    /// <summary>
     /// Whether request options should restore the parent model id. This is used when routing falls
     /// back from an unsupported explicit model to the parent provider agent.
     /// </summary>
     public bool UseParentModel { get; init; }
 
-    /// <summary>Deconstructs the result into its compatibility-preserving positional values.</summary>
-    /// <param name="agent">Receives <see cref="Agent"/>.</param>
-    /// <param name="extraProperties">Receives <see cref="ExtraProperties"/>.</param>
-    public void Deconstruct(
-        out IStreamingAgent agent,
-        out ImmutableDictionary<string, object?> extraProperties)
-    {
-        agent = Agent;
-        extraProperties = ExtraProperties;
-    }
 }

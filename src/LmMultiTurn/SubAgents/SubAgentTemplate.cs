@@ -55,6 +55,12 @@ public record SubAgentTemplate
     public bool IsModelExplicitlySelected { get; init; }
 
     /// <summary>
+    /// Whether the template model was selected from a model-intelligence tier rather than pinned
+    /// directly by the template author.
+    /// </summary>
+    public bool IsModelTierResolved { get; init; }
+
+    /// <summary>
     /// Optional reasoning effort requested for this sub-agent.
     /// </summary>
     public ReasoningEffort? Effort { get; init; }
