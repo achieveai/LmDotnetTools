@@ -290,4 +290,73 @@ public class SandboxClientCatalogTests
         exception.Should().BeOfType<SandboxException>();
         ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
     }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_PinnedGatewayShape_ContextFileOmitsNameEntirely()
+    {
+        // Pinned against the gateway's DiscoveredFile wire contract
+        // (crates/mcp-gateway/src/api/sandboxes.rs, SandboxedOstoolsMcpServer@c0dc9cfee3e3aeafd4c3d203ef7153255a990bb6),
+        // reproducing Docs/examples/discovery/discovered_get.json from that repo: a "context_file"
+        // item never carries a "name" field at all (`Option<String>` = `None`,
+        // `skip_serializing_if = "Option::is_none"`), while "skill"/"subagent" items do.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1/discovered",
+            """
+            {
+              "discovered": [
+                {"kind": "context_file", "path": "/workspace/CLAUDE.md", "discovered_at": "2026-06-06T18:45:01.412Z", "notified": true},
+                {"kind": "context_file", "path": "/workspace/subdir/AGENTS.md", "discovered_at": "2026-06-06T18:45:14.873Z", "notified": true},
+                {"kind": "skill", "name": "probe", "description": "Diagnostic skill that prints workspace info", "path": "/workspace/.claude/skills/probe/", "discovered_at": "2026-06-06T18:45:01.519Z", "notified": true},
+                {"kind": "subagent", "name": "reviewer", "description": "Reviews changes for correctness and security", "path": "/workspace/.claude/agents/reviewer.md", "discovered_at": "2026-06-06T18:45:01.624Z", "notified": false}
+              ]
+            }
+            """
+        );
+
+        var items = await client.ListDiscoveredAsync("sess-1");
+
+        items.Should().HaveCount(4);
+        items.Where(i => i.Kind == "context_file").Should().OnlyContain(i => i.Name == null);
+        items.Single(i => i.Kind == "skill").Name.Should().Be("probe");
+        items.Single(i => i.Kind == "subagent").Name.Should().Be("reviewer");
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_ContextFileWithExplicitNullName_ParsesSuccessfully()
+    {
+        // Same contract as the previous test, but with the gateway sending an explicit JSON `null`
+        // for "name" rather than omitting the field outright — both must parse to a null Name, not
+        // throw.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes/sess-1/discovered",
+            """{"discovered":[{"kind":"context_file","name":null,"path":"/workspace/AGENTS.md"}]}"""
+        );
+
+        var items = await client.ListDiscoveredAsync("sess-1");
+
+        items.Should().ContainSingle();
+        items[0].Kind.Should().Be("context_file");
+        items[0].Name.Should().BeNull();
+        items[0].Path.Should().Be("/workspace/AGENTS.md");
+    }
+
+    [Fact]
+    public async Task ListDiscoveredAsync_UnrecognizedKind_IsToleratedNotRejected()
+    {
+        // The mapping must not hard-code per-kind requirements: a discriminator this SDK does not
+        // yet recognize (a future gateway addition) round-trips like any other kind, rather than
+        // being rejected as malformed.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Get, "/api/v1/sandboxes/sess-1/discovered", """{"discovered":[{"kind":"future_kind_v2","path":"/workspace/whatever"}]}""");
+
+        var items = await client.ListDiscoveredAsync("sess-1");
+
+        items.Should().ContainSingle();
+        items[0].Kind.Should().Be("future_kind_v2");
+        items[0].Name.Should().BeNull();
+    }
 }

@@ -126,10 +126,11 @@ public sealed partial class SandboxClient
         }
 
         // Same rationale as PreviewMarketplacesAsync above: DiscoveredItemDto's required fields
-        // (kind/name/path) are non-nullable `string` on the wire type but can still deserialize as
-        // `null` from a semantically-invalid 2xx body, and the collection can carry a `null` element —
-        // SandboxDiscoveredItem's constructor validation and SelectNonNullOrThrow's null-element
-        // rejection must both map to SandboxException(Protocol), not leak a raw
+        // (kind/path — "name" is genuinely optional per the gateway's DiscoveredFile contract, see
+        // SandboxDiscoveredItem's remarks) are non-nullable `string` on the wire type but can still
+        // deserialize as `null` from a semantically-invalid 2xx body, and the collection can carry a
+        // `null` element — SandboxDiscoveredItem's constructor validation and SelectNonNullOrThrow's
+        // null-element rejection must both map to SandboxException(Protocol), not leak a raw
         // ArgumentException/NullReferenceException.
         var statusCode = (int)response.StatusCode;
         var operation = $"listing discovered items for session '{sessionId}'";

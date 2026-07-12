@@ -76,8 +76,9 @@ malformed-response case, and the SDK never lets one surface as a raw
 `ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
 
 - A 2xx REST body that is well-formed JSON but semantically invalid — a missing/`null` required field
-  (e.g. a marketplace alias or discovered-item kind/name/path) or a `null` collection element in any
-  lifecycle/catalog/discovery list.
+  (e.g. a marketplace alias or discovered-item kind/path — a discovered item's `name` is genuinely
+  optional per the gateway's contract, e.g. a `"context_file"` item never has one) or a `null`
+  collection element in any lifecycle/catalog/discovery list.
 - A 2xx MCP reply that is not a complete JSON-RPC 2.0 envelope — a non-object root, a missing/wrong
   `jsonrpc`, an `id` that does not match the request, both or neither of `result`/`error`, or a
   non-object `error`. A JSON-RPC `error` envelope is likewise `Protocol`.

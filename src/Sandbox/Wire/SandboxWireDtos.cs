@@ -86,9 +86,12 @@ internal sealed record ListSandboxesResponseDto([property: JsonPropertyName("san
 
 // --- Session-discovery REST contract ---
 
+// "name" is `Option<String>` on the gateway's `DiscoveredFile` (crates/mcp-gateway/src/api/
+// sandboxes.rs) and is omitted from the wire entirely for a "context_file" item (and any other
+// kind the gateway has no name for) — only "kind" and "path" are non-optional there.
 internal sealed record DiscoveredItemDto(
     [property: JsonPropertyName("kind")] string Kind,
-    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("description")] string? Description,
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("content")] string? Content,

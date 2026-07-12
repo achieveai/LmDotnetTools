@@ -104,4 +104,43 @@ public class SandboxModelsTests
 
         act.Should().Throw<ArgumentException>();
     }
+
+    [Fact]
+    public void SandboxDiscoveredItem_NullName_IsAllowed()
+    {
+        // Pinned against the gateway's DiscoveredFile wire contract
+        // (crates/mcp-gateway/src/api/sandboxes.rs, SandboxedOstoolsMcpServer@c0dc9cfe...): "name" is
+        // `Option<String>` and is omitted entirely for a "context_file" item. The model must not
+        // require it.
+        var item = new SandboxDiscoveredItem("context_file", name: null, description: null, path: "/workspace/CLAUDE.md");
+
+        item.Name.Should().BeNull();
+        item.Kind.Should().Be("context_file");
+        item.Path.Should().Be("/workspace/CLAUDE.md");
+    }
+
+    [Fact]
+    public void SandboxDiscoveredItem_UnrecognizedKind_IsAllowed()
+    {
+        // The model does not hard-code per-kind requirements, so a discriminator this SDK does not
+        // yet recognize (a future gateway addition) is tolerated rather than rejected.
+        var item = new SandboxDiscoveredItem("future_kind_v2", name: null, description: null, path: "/workspace/whatever");
+
+        item.Kind.Should().Be("future_kind_v2");
+        item.Name.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("", "/workspace/x")]
+    [InlineData("   ", "/workspace/x")]
+    [InlineData("context_file", "")]
+    [InlineData("context_file", "   ")]
+    public void SandboxDiscoveredItem_BlankKindOrPath_Throws(string kind, string path)
+    {
+        // Unlike "name", "kind" and "path" ARE required by the gateway's wire contract for every
+        // kind, so validation for those two fields must be preserved.
+        var act = () => new SandboxDiscoveredItem(kind, name: null, description: null, path: path);
+
+        act.Should().Throw<ArgumentException>();
+    }
 }
