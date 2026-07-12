@@ -5,6 +5,12 @@ ASP.NET or LLM-provider dependencies, and owns only gateway protocol/local trans
 spawning/adopting the gateway, host-path resolution, session caching, credential selection, and
 OAuth/network/discovery policy remain the caller's responsibility.
 
+> **All programmatic sandbox gateway access must go through this SDK** — see
+> [ADR 0001](../../docs/adrs/0001-route-gateway-access-through-sandbox-sdk.md). Do not open a raw
+> `HttpClient`/MCP connection to a gateway endpoint; the SDK is the single audited place that
+> enforces authentication, transport hardening, credential-replay protection, and the typed error
+> taxonomy.
+
 ## What this release covers
 
 - **Lifecycle:** `CreateAsync`, `GetAsync`, `ListAsync`, `DeleteAsync` — explicit sandbox
@@ -20,8 +26,28 @@ OAuth/network/discovery policy remain the caller's responsibility.
 - **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive command in a
   Bash/POSIX-capable sandbox and get its exact output back, with recovery across an ambiguous lost
   response. See [Command execution](#command-execution) below.
+- **Exact file transfer:** `ReadTextFileAsync`, `WriteTextFileAsync`, `ListDirectoryAsync` — exact,
+  integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
+  path. See [File transfer](#file-transfer) below.
 
-Exact-byte file transfer is a later SDK capability and is not part of this release.
+## File transfer
+
+All three take a workspace-relative POSIX `path`, validated exactly like a command's
+`WorkingDirectory` (rooted, drive/UNC/device-qualified, backslash-bearing, `..`-escaping, or
+NUL-bearing values are rejected); the gateway remains authoritative for symlink containment.
+
+- **`ReadTextFileAsync(sessionId, path)`** — reads a workspace file as **strict UTF-8**, returning
+  EXACTLY its bytes decoded. The file is probed for size/mtime/whole-file SHA-256, read back in
+  bounded integrity-verified chunks, and re-verified against that digest before decode. If the file
+  mutates between chunks — or the reassembled digest no longer matches, or the bytes are not valid
+  UTF-8 — the read fails `SandboxErrorKind.Integrity` rather than returning a stitched or
+  replacement-substituted result.
+- **`WriteTextFileAsync(sessionId, path, content)`** — writes `content` as UTF-8, replacing any
+  existing file **atomically**: bytes stream in bounded idempotent chunks into an exclusive sibling
+  temp in the same directory, the temp's size and SHA-256 are verified, and only then is it
+  `mv`-renamed over the target (`mkdir -p` creates the parent first). The original is always
+  preserved on failure — there is no window in which the target is half-written.
+- **`ListDirectoryAsync(sessionId, path)`** — lists the entries of a workspace directory.
 
 ## Usage
 
@@ -50,6 +76,10 @@ try
         sandbox.SessionId,
         new SandboxCommand(["dotnet", "build"], workingDirectory: "repo"));
     Console.WriteLine($"exit={build.ExitCode}\n{build.CombinedOutput}");
+
+    await client.WriteTextFileAsync(sandbox.SessionId, "repo/notes.md", "# build passed\n");
+    var notes = await client.ReadTextFileAsync(sandbox.SessionId, "repo/notes.md");
+    var entries = await client.ListDirectoryAsync(sandbox.SessionId, "repo");
 }
 finally
 {
@@ -202,8 +232,8 @@ use. Sandbox deletion remains the final cleanup boundary.
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which
 carries a stable `SandboxErrorKind` (`Authorization`, `NotFound`, `TransportTimeout`, `Protocol`,
 plus `ExecutionTimeout` and `Integrity` — raised by [command execution](#command-execution) for a
-gateway execution-timeout and an output/digest verification failure respectively; `Integrity` is also
-reserved for later file capabilities). Caller cancellation always surfaces as a plain
+gateway execution-timeout and an output/digest verification failure respectively, and by
+[file transfer](#file-transfer) for a read/write integrity or UTF-8 failure). Caller cancellation always surfaces as a plain
 `OperationCanceledException`. `Protocol` covers every malformed-response case, and the SDK never lets
 one surface as a raw `ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
 
