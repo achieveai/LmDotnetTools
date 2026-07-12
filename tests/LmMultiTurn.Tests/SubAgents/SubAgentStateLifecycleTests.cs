@@ -95,6 +95,93 @@ public class SubAgentStateLifecycleTests
         third.RestartCompleted!.IsCompleted.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task BeginTerminalDisposal_UnblocksWedgedInjectSend_ViaLifecycleTokenCancellation()
+    {
+        // Blocker B: an admitted inject send that wedges on a stalled provider/channel must be
+        // cancellable by terminal disposal, even when the CALLER'S token never fires. The send links
+        // LinkLifecycleToken(caller); terminal disposal cancels the lifecycle token so the send unblocks,
+        // its lease drains, and disposal proceeds instead of parking forever.
+        var state = NewOwnedProviderState();
+
+        var decision = state.BeginContinuation(notifyParentOnCompletion: false);
+        decision.Mode.Should().Be(ContinuationMode.Inject);
+
+        // The wedged inject send: a non-cancelable caller token (CancellationToken.None) linked with the
+        // run's lifecycle token, awaiting forever. Its lease is released in finally, mirroring the manager.
+        var sendObservedCancellation = false;
+        var wedgedSend = Task.Run(async () =>
+        {
+            using var linked = state.LinkLifecycleToken(CancellationToken.None);
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                sendObservedCancellation = true;
+            }
+            finally
+            {
+                state.EndInjectLease();
+            }
+        });
+
+        // Terminal disposal parks on the lease drain AND cancels the lifecycle token, which unblocks the
+        // wedged send; without the lifecycle link this would hang forever on the non-cancelable caller.
+        var disposal = state.BeginTerminalDisposalAsync(isError: false);
+
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+        await wedgedSend.WaitAsync(TimeSpan.FromSeconds(5));
+
+        sendObservedCancellation.Should().BeTrue("terminal disposal must cancel the wedged inject send");
+        state.Status.Should().Be(SubAgentStatus.Completed);
+    }
+
+    [Fact]
+    public async Task TryArmRunning_AfterRunReachedTerminal_DoesNotResurrectToRunning()
+    {
+        // Blocker C: a fast restarted run can complete and dispose its owned provider before the restart's
+        // "arm Running" publish executes. That publish (TryArmRunning) must be generation-guarded so it
+        // cannot overwrite the terminal state — otherwise the next continuation injects into a dead run
+        // whose provider is already disposed.
+        var terminated = NewOwnedProviderState();
+        var generation = terminated.BeginRunGeneration();
+
+        // The restarted run completes terminally BEFORE TryArmRunning runs.
+        await terminated.BeginTerminalDisposalAsync(isError: false);
+        terminated.Status.Should().Be(SubAgentStatus.Completed);
+
+        terminated.TryArmRunning(generation).Should().BeFalse(
+            "a run that already reached terminal must not be resurrected to Running");
+        terminated.Status.Should().Be(SubAgentStatus.Completed, "the terminal state must survive the guarded publish");
+
+        // Control: a generation whose run has NOT gone terminal publishes Running normally.
+        var live = NewOwnedProviderState();
+        var liveGeneration = live.BeginRunGeneration();
+        live.TryArmRunning(liveGeneration).Should().BeTrue();
+        live.Status.Should().Be(SubAgentStatus.Running);
+    }
+
+    [Fact]
+    public void OwnedProviderPoison_IsSetOnFailedDisposal_AndClearedByFreshProvider()
+    {
+        // Blocker A: a FAILED terminal disposal must poison the run's provider so a continuation rebuilds a
+        // fresh one instead of reusing a partially-disposed instance. A failed disposal leaves the dispose
+        // guard reset (HasDisposedOwnedProviderAgent == false), so the poison flag is the signal the
+        // restart path keys on; assigning a fresh provider clears it.
+        var state = NewOwnedProviderState();
+        state.OwnedProviderTerminalDisposeFailed.Should().BeFalse();
+
+        state.MarkOwnedProviderTerminalDisposeFailed();
+        state.OwnedProviderTerminalDisposeFailed.Should().BeTrue("a failed terminal disposal poisons the provider");
+        state.HasDisposedOwnedProviderAgent.Should().BeFalse(
+            "a failed disposal did not latch Disposed, so poison — not HasDisposed — must drive the rebuild");
+
+        state.SetOwnedProviderAgent(new Mock<IStreamingAgent>().Object);
+        state.OwnedProviderTerminalDisposeFailed.Should().BeFalse("assigning a fresh provider clears the poison");
+    }
+
     private static SubAgentState NewOwnedProviderState()
     {
         var state = new SubAgentState

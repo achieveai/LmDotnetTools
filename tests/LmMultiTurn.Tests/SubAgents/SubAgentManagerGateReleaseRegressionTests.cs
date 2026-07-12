@@ -322,6 +322,139 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         Volatile.Read(ref disposeCount).Should().Be(1, "the terminal completion disposes the owned provider once");
     }
 
+    [Fact]
+    public async Task RestartRunAsync_AfterFailedTerminalDisposal_RebuildsFreshProviderInsteadOfReusingPoisoned()
+    {
+        // Blocker A: if a terminal owned-provider disposal THROWS, the provider may be partially torn
+        // down. A later continuation must NOT reuse it — the restart path must rebuild a fresh provider.
+        // A failed disposal resets the dispose guard (HasDisposedOwnedProviderAgent == false), so without
+        // the poison flag the rebuild branch would be skipped and the partially-disposed provider reused.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        };
+
+        _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
+
+        // Agent #1 completes once (triggering terminal disposal), then keeps its subscription open; the
+        // restarted agent #2 just waits so the resumed run stays alive for assertions.
+        var agentCallCount = 0;
+        _manager.TestAgentFactoryOverride = (_, _) =>
+        {
+            var idx = Interlocked.Increment(ref agentCallCount);
+            return new FakeMultiTurnAgent
+            {
+                SubscribeImpl = (_, ct) => idx == 1
+                    ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                    : FakeMultiTurnAgent.WaitForeverStream(ct),
+            };
+        };
+
+        // Provider #1's terminal disposal throws (poison); provider #2 is the fresh rebuild.
+        var providerCallCount = 0;
+        var poisonedDisposeAttempts = 0;
+        _manager.TestOwnedProviderOverride = (_, _) =>
+        {
+            var idx = Interlocked.Increment(ref providerCallCount);
+            if (idx == 1)
+            {
+                var poisoned = new Mock<IStreamingAgent>();
+                poisoned.As<IAsyncDisposable>()
+                    .Setup(d => d.DisposeAsync())
+                    .Returns(() =>
+                    {
+                        _ = Interlocked.Increment(ref poisonedDisposeAttempts);
+                        return ValueTask.FromException(new InvalidOperationException("dispose failed"));
+                    });
+                return poisoned.Object;
+            }
+
+            return new Mock<IStreamingAgent>().Object;
+        };
+
+        var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Wait until the first run has completed (its terminal disposal ran and threw).
+        await WaitForConditionAsync(
+            () =>
+            {
+                try { return _manager!.Peek(agentId).Contains("\"completed\""); }
+                catch { return false; }
+            },
+            TimeSpan.FromSeconds(10));
+        Volatile.Read(ref poisonedDisposeAttempts).Should().BeGreaterThanOrEqualTo(1,
+            "the terminal disposal must have attempted (and failed) to dispose provider #1");
+        providerCallCount.Should().Be(1, "only the initial provider exists before the continuation");
+
+        // Act: a continuation restarts the finished run. Because provider #1's terminal disposal FAILED,
+        // the restart must rebuild a fresh provider (call #2), never reuse the poisoned instance.
+        _ = await _manager.SendMessageAsync(agentId, "continue", runInBackground: true);
+
+        providerCallCount.Should().Be(2, "the poisoned provider must be replaced with a fresh one on restart");
+        _manager.Peek(agentId).Should().Contain("\"running\"", "the resumed run is live on the fresh provider");
+    }
+
+    [Fact]
+    public async Task MonitorSubAgentAsync_PendingMessageCompletion_HoldsConcurrencyPermitUntilTerminal()
+    {
+        // Blocker D: with limit 1, a nonterminal (HasPendingMessages) completion must NOT release the
+        // concurrency permit — the same sub-agent keeps processing queued work. Releasing early would let
+        // a second sub-agent start, exceeding MaxConcurrentSubAgents. The permit is freed only on the
+        // TERMINAL completion.
+        const int maxConcurrent = 1;
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["pending"] = DummyTemplate("pending"),
+            ["normal"] = DummyTemplate("normal"),
+        };
+
+        _manager = CreateManagerWithTemplates(maxConcurrent, templates);
+
+        var pendingEmitted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseTerminal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _manager.TestAgentFactoryOverride = (_, template) => template.Name == "pending"
+            ? new FakeMultiTurnAgent
+            {
+                SubscribeImpl = (_, ct) => FakeMultiTurnAgent.PendingThenTerminalStream(
+                    "run-1", pendingEmitted, releaseTerminal.Task, ct),
+            }
+            : new FakeMultiTurnAgent();
+
+        var spawnJson = await _manager.SpawnAsync("pending", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var pendingAgentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // After the pending completion is processed, the permit must still be held.
+        (await pendingEmitted.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+        await Task.Delay(150); // give the monitor time to (wrongly) release the permit if it regressed
+
+        var whileBusy = () => _manager!.SpawnAsync("normal", "should-not-start", runInBackground: true);
+        await whileBusy.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Max concurrent sub-agents*",
+                "a pending (nonterminal) completion must not free the slot while the sub-agent is still active");
+
+        // The terminal completion frees the slot: wait for the busy agent to settle terminal, then a
+        // single fresh spawn must succeed on the now-released slot.
+        releaseTerminal.SetResult(true);
+        await WaitForConditionAsync(
+            () =>
+            {
+                try { return _manager!.Peek(pendingAgentId).Contains("\"completed\""); }
+                catch { return false; }
+            },
+            TimeSpan.FromSeconds(10));
+
+        var afterTerminalJson = await _manager
+            .SpawnAsync("normal", "after-terminal", runInBackground: true)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        using var afterDoc = JsonDocument.Parse(afterTerminalJson);
+        afterDoc.RootElement.GetProperty("status").GetString().Should().Be("spawned",
+            "the terminal completion released the slot, so a new sub-agent can start");
+    }
+
     #region Helpers
 
     private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)

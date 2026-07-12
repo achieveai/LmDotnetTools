@@ -112,6 +112,24 @@ internal class SubAgentState
     private bool _restarting;
     private TaskCompletionSource<bool>? _restartCompleted;
 
+    // Per-run lifecycle cancellation. Cancelled when a terminal owned-provider disposal begins so an
+    // admitted inject send that is wedged on a stalled channel/provider is unblocked (it links this
+    // token, not only the caller's) and its lease can drain — otherwise the terminal drain could wait
+    // forever on a caller token that never cancels. Re-armed per run epoch by ResetLifecycleCts.
+    private CancellationTokenSource _lifecycleCts = new();
+
+    // Set when a TERMINAL owned-provider disposal throws: the provider may be partially torn down, so a
+    // continuation must NOT reuse it — the restart path rebuilds a fresh provider (retrying disposal of
+    // this one) instead. Cleared when a fresh provider is assigned via SetOwnedProviderAgent.
+    private volatile bool _ownedProviderTerminalDisposeFailed;
+
+    // Monotonic run-instance counter. A restart opens a new generation (BeginRunGeneration) before the
+    // restarted loop can report completion; the terminal completion for that run records it in
+    // _terminalGeneration. The restart's own "arm Running" publish (TryArmRunning) is guarded by this so
+    // a run that completed-and-disposed before the publish executed cannot be resurrected to Running.
+    private long _runGeneration;
+    private long _terminalGeneration = -1;
+
     private static TaskCompletionSource<bool> NewLifecycleSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -226,6 +244,7 @@ internal class SubAgentState
     public async Task BeginTerminalDisposalAsync(bool isError)
     {
         Task? drain = null;
+        CancellationTokenSource? toCancel = null;
         lock (_lifecycleLock)
         {
             _terminating = true;
@@ -236,8 +255,15 @@ internal class SubAgentState
             {
                 _sendLeasesDrained = NewLifecycleSignal();
                 drain = _sendLeasesDrained.Task;
+
+                // Unblock a wedged in-flight inject send whose caller token may never fire, so its lease
+                // can drain and this disposal isn't stuck forever. Cancel OUTSIDE the lock (below):
+                // Cancel() can run linked-token continuations synchronously.
+                toCancel = _lifecycleCts;
             }
         }
+
+        toCancel?.Cancel();
 
         if (drain is not null)
         {
@@ -250,6 +276,9 @@ internal class SubAgentState
 
         lock (_lifecycleLock)
         {
+            // Record which run generation reached terminal so a racing restart's TryArmRunning cannot
+            // resurrect this now-disposing run back to Running with an about-to-be-disposed provider.
+            _terminalGeneration = _runGeneration;
             _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
         }
     }
@@ -265,6 +294,80 @@ internal class SubAgentState
             _terminating = false;
         }
     }
+
+    /// <summary>
+    /// Returns a cancellation source that fires when EITHER the caller's token or this run's lifecycle
+    /// token (cancelled at terminal owned-provider disposal) fires. The inject-send path passes the
+    /// resulting token so a terminal disposal can unblock a stalled send; the caller disposes the source.
+    /// </summary>
+    public CancellationTokenSource LinkLifecycleToken(CancellationToken caller)
+    {
+        lock (_lifecycleLock)
+        {
+            return CancellationTokenSource.CreateLinkedTokenSource(caller, _lifecycleCts.Token);
+        }
+    }
+
+    /// <summary>
+    /// Re-arms the per-run lifecycle cancellation for a new run epoch (call from the restart transition
+    /// before the restarted loop can admit injects). Disposes the previous, already-cancelled source.
+    /// </summary>
+    public void ResetLifecycleCts()
+    {
+        CancellationTokenSource old;
+        lock (_lifecycleLock)
+        {
+            old = _lifecycleCts;
+            _lifecycleCts = new CancellationTokenSource();
+        }
+
+        old.Dispose();
+    }
+
+    /// <summary>
+    /// Opens a new run generation for a restart (call under the restart transition, before starting the
+    /// restarted loop). The returned token guards the later <see cref="TryArmRunning"/> publish so a run
+    /// that completes and disposes before the publish executes cannot be resurrected to Running.
+    /// </summary>
+    public long BeginRunGeneration()
+    {
+        lock (_lifecycleLock)
+        {
+            return ++_runGeneration;
+        }
+    }
+
+    /// <summary>
+    /// Publishes <see cref="SubAgentStatus.Running"/> for <paramref name="generation"/> UNLESS that run
+    /// has already reached a terminal completion (its owned provider may already be disposed) — so a fast
+    /// restarted run that completed before this publish executed is never resurrected to Running. Returns
+    /// true if Running was published.
+    /// </summary>
+    public bool TryArmRunning(long generation)
+    {
+        lock (_lifecycleLock)
+        {
+            if (_terminalGeneration == generation)
+            {
+                return false;
+            }
+
+            _status = SubAgentStatus.Running;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// True when a terminal owned-provider disposal threw for the current run: the provider is in an
+    /// unknown/partial state and a continuation must rebuild a fresh one rather than reuse it.
+    /// </summary>
+    public bool OwnedProviderTerminalDisposeFailed => _ownedProviderTerminalDisposeFailed;
+
+    /// <summary>
+    /// Marks the current run's owned provider as failed-to-dispose at terminal completion so the restart
+    /// path rebuilds a fresh provider (and retries disposing this one) instead of reusing it.
+    /// </summary>
+    public void MarkOwnedProviderTerminalDisposeFailed() => _ownedProviderTerminalDisposeFailed = true;
 
     public IConversationStore? Store { get; set; }
 
@@ -352,6 +455,7 @@ internal class SubAgentState
     {
         OwnedProviderAgent = ownedProviderAgent;
         Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeIdle);
+        _ownedProviderTerminalDisposeFailed = false;
     }
 
     /// <summary>

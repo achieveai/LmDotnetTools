@@ -353,8 +353,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 try
                 {
                     // Inject the message into the currently running agent while holding the send lease.
+                    // Link the caller token with the run's lifecycle token so a terminal owned-provider
+                    // disposal can unblock this send if it wedges — otherwise the lease (which the
+                    // disposal waits to drain) could be held forever on a caller token that never cancels.
+                    using var linkedCts = state.LinkLifecycleToken(ct);
                     _ = await state.Agent.SendAsync(
-                        [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
+                        [new TextMessage { Role = Role.User, Text = prompt }], ct: linkedCts.Token);
                 }
                 finally
                 {
@@ -482,7 +486,10 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             state.Cts.Dispose();
 
-            if (state.HasDisposedOwnedProviderAgent)
+            // Rebuild the provider pipeline when the previous run's owned provider was disposed at
+            // completion OR its terminal disposal FAILED (poisoned): in both cases the provider must not
+            // be reused — a failed disposal may have left it partially torn down.
+            if (state.HasDisposedOwnedProviderAgent || state.OwnedProviderTerminalDisposeFailed)
             {
                 var previousAgent = state.Agent;
                 var previousStore = state.Store;
@@ -520,6 +527,23 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
                 }
 
+                // If the previous terminal disposal FAILED (poisoned), retry disposing that provider
+                // before swapping in the replacement so the partially-disposed instance isn't leaked.
+                // The disposal guard reset to Idle on the earlier failure, so this genuinely retries;
+                // when it had been cleanly disposed the flag is false and this block is skipped.
+                if (state.OwnedProviderTerminalDisposeFailed)
+                {
+                    try { await state.DisposeOwnedProviderAgentAsync(); }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Retry dispose of poisoned owned provider failed before restart for sub-agent {AgentId}",
+                            state.AgentId
+                        );
+                    }
+                }
+
                 state.Agent = replacementAgent;
                 state.Store = replacementStore;
                 state.SetOwnedProviderAgent(replacementOwnedProviderAgent);
@@ -537,6 +561,12 @@ public sealed class SubAgentManager : IAsyncDisposable
             state.Cts = new CancellationTokenSource();
             var cts = state.Cts;
 
+            // Re-arm the lifecycle cancellation and open a new run generation for this epoch BEFORE the
+            // restarted loop can report completion, so (a) injects into the new run link a fresh token
+            // and (b) the Running publish below is generation-guarded against a fast completion.
+            state.ResetLifecycleCts();
+            var runGeneration = state.BeginRunGeneration();
+
             state.RunTask = state.Agent.RunAsync(cts.Token);
 
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
@@ -545,7 +575,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             _ = await state.Agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
 
-            state.Status = SubAgentStatus.Running;
+            // Publish Running as the final step of the restart transition, but skip it if the restarted
+            // run already completed-and-disposed (a fast run can finish before this line executes):
+            // resurrecting a terminal run to Running would let the next continuation inject through a
+            // provider that terminal handling has already disposed.
+            _ = state.TryArmRunning(runGeneration);
 
             _logger.LogInformation(
                 "Resumed sub-agent {AgentId} with message: {Message}",
@@ -1093,12 +1127,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                 {
                     state.LastResult = lastTextContent;
 
-                    // Release the slot BEFORE the (possibly slow/backpressured) parent
-                    // relay in HandleRunCompletionAsync: the run itself is done, so a
-                    // blocked SendToParentAsync must not hold up a fresh sub-agent spawn
-                    // that's waiting on the concurrency gate. Idempotent, so the fallback
-                    // release in the finally block below is a safe no-op afterward.
-                    gateGuard.ReleaseOnce(_concurrencyGate);
+                    // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
+                    // HandleRunCompletionAsync — but ONLY for a TERMINAL completion. A nonterminal
+                    // (HasPendingMessages) completion keeps the SAME loop/provider busy processing queued
+                    // work, so releasing its permit now would let another sub-agent start while this one
+                    // is still active, exceeding MaxConcurrentSubAgents. The permit is held until the run
+                    // truly ends: the terminal completion here, or the monitor's finally if the stream
+                    // ends first. Idempotent, so that fallback release is a safe no-op afterward.
+                    if (!rcm.HasPendingMessages)
+                    {
+                        gateGuard.ReleaseOnce(_concurrencyGate);
+                    }
+
                     await HandleRunCompletionAsync(state, rcm, lastTextContent);
                     lastTextContent = null;
                     textGenerationId = null;
@@ -1175,6 +1215,10 @@ public sealed class SubAgentManager : IAsyncDisposable
             try { await state.DisposeOwnedProviderAgentAsync(); }
             catch (Exception ex)
             {
+                // Poison the run's provider: a continuation must rebuild a fresh one rather than reuse
+                // this partially-disposed instance (the restart path retries disposing it). Clearing the
+                // terminating flag below still lets a restart proceed — but against a fresh provider.
+                state.MarkOwnedProviderTerminalDisposeFailed();
                 _logger.LogWarning(
                     ex,
                     "Provider dispose failed at completion for sub-agent {AgentId}",
