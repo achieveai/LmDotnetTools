@@ -186,7 +186,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Start monitoring BEFORE sending the task to avoid subscribe-after-send race:
             // if SendAsync triggers a fast completion before the monitor subscribes,
             // the RunCompletedMessage would fire with no subscriber listening.
-            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, cts.Token);
+            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, state.CurrentRunGeneration, cts.Token);
 
             // Send the task as user input (triggers first turn)
             _ = await agent.SendAsync(
@@ -606,7 +606,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             state.RunTask = state.Agent.RunAsync(cts.Token);
 
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
-            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, cts.Token);
+            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, runGeneration, cts.Token);
 
             _ = await state.Agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
@@ -1114,10 +1114,16 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// read from a shared field on <paramref name="state"/>, so a later restart's own guard can
     /// never be conflated with this monitor's - see <see cref="GateReleaseGuard"/>.
     /// </param>
+    /// <param name="runGeneration">
+    /// The run generation this monitor belongs to (0 for the initial spawn; the restart's generation
+    /// otherwise). On a monitor fault, the terminal Error is recorded against this generation so a
+    /// racing restart's <c>TryArmRunning</c> cannot resurrect the faulted run to Running.
+    /// </param>
     /// <param name="ct">Cancellation token for this run's lifetime.</param>
     private async Task MonitorSubAgentAsync(
         SubAgentState state,
         GateReleaseGuard gateGuard,
+        long runGeneration,
         CancellationToken ct)
     {
         string? lastTextContent = null;
@@ -1214,7 +1220,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            state.Status = SubAgentStatus.Error;
+            // Record the fault as a generation-aware terminal Error (not a raw Status write): a restarted
+            // run's monitor can fault before RestartRunAsync's TryArmRunning(runGeneration) executes, and
+            // that publish must observe this generation's terminal record and refuse to overwrite Error
+            // with Running (which would advertise a dead run).
+            state.MarkRunFaulted(runGeneration);
             state.SendToParentError = $"Monitor failed: {ex.Message}";
             _logger.LogError(
                 ex,

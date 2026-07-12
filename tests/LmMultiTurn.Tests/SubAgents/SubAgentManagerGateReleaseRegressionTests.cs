@@ -520,6 +520,78 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RestartRunAsync_RestartedMonitorFaultsBeforeArmRunning_DoesNotResurrectRunning()
+    {
+        // Round-6 blocker: a restarted run's monitor can fault BEFORE RestartRunAsync's TryArmRunning
+        // executes. The monitor's fault path must record a GENERATION-AWARE terminal Error (not a raw
+        // Status write), so TryArmRunning observes this generation's terminal and refuses to overwrite
+        // Error with Running — which would advertise a dead run. Synchronized so it deterministically hits
+        // the fault-before-arm ordering.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        };
+
+        _manager = CreateManagerWithTemplates(maxConcurrent: 2, templates);
+
+        var restartSendGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agentCallCount = 0;
+        _manager.TestAgentFactoryOverride = (_, _) =>
+        {
+            var which = Interlocked.Increment(ref agentCallCount);
+            if (which == 1)
+            {
+                // Agent #1 completes once (becomes restartable), then keeps its subscription open.
+                return new FakeMultiTurnAgent
+                {
+                    SubscribeImpl = (_, ct) => FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct),
+                };
+            }
+
+            // Agent #2 (the restart): its monitor faults immediately; its restart SendAsync blocks on the
+            // gate so the test can confirm the fault was recorded (status Error) BEFORE TryArmRunning runs.
+            return new FakeMultiTurnAgent
+            {
+                SubscribeImpl = (_, _) =>
+                    FakeMultiTurnAgent.ThrowingStream(new InvalidOperationException("restarted monitor blew up")),
+                SendWithTokenImpl = async (_, sendCt) =>
+                {
+                    await restartSendGate.Task.WaitAsync(sendCt);
+                    return new SendReceipt("restart-send", null, DateTimeOffset.UtcNow);
+                },
+            };
+        };
+
+        // Owned provider disposes cleanly at agent #1's terminal, so the restart rebuilds (agent #2).
+        _manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+
+        var spawnJson = await _manager.SpawnAsync("owned", "task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        await WaitForConditionAsync(
+            () => { try { return _manager!.Peek(agentId).Contains("\"completed\""); } catch { return false; } },
+            TimeSpan.FromSeconds(10));
+
+        // Begin the restart on a background task; its restart SendAsync blocks on the gate.
+        var restartTask = Task.Run(() => _manager!.SendMessageAsync(agentId, "resumed-prompt", runInBackground: true));
+
+        // The restarted monitor faults and records the generation-aware terminal Error.
+        await WaitForConditionAsync(
+            () => { try { return _manager!.Peek(agentId).Contains("\"error\""); } catch { return false; } },
+            TimeSpan.FromSeconds(10));
+
+        // Now let the restart SendAsync return so TryArmRunning(runGeneration) executes AFTER the fault.
+        restartSendGate.SetResult(true);
+        _ = await restartTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // TryArmRunning must NOT resurrect the faulted run: status stays Error, never Running.
+        _manager.Peek(agentId).Should().Contain("\"error\"",
+            "a monitor fault recorded against the run generation must block TryArmRunning from restoring Running");
+        _manager.Peek(agentId).Should().NotContain("\"running\"");
+    }
+
+    [Fact]
     public async Task MonitorSubAgentAsync_PendingMessageCompletion_HoldsConcurrencyPermitUntilTerminal()
     {
         // Blocker D: with limit 1, a nonterminal (HasPendingMessages) completion must NOT release the

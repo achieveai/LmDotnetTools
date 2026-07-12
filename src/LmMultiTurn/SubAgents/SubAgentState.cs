@@ -350,6 +350,21 @@ internal class SubAgentState
     }
 
     /// <summary>
+    /// The current run generation (0 for the initial spawn; incremented by each restart). Read when
+    /// starting a run's monitor so the monitor's fault path can record a generation-aware terminal.
+    /// </summary>
+    public long CurrentRunGeneration
+    {
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return _runGeneration;
+            }
+        }
+    }
+
+    /// <summary>
     /// Publishes <see cref="SubAgentStatus.Running"/> for <paramref name="generation"/> UNLESS that run
     /// has already reached a terminal completion (its owned provider may already be disposed) — so a fast
     /// restarted run that completed before this publish executed is never resurrected to Running. Returns
@@ -366,6 +381,24 @@ internal class SubAgentState
 
             _status = SubAgentStatus.Running;
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Records a terminal <see cref="SubAgentStatus.Error"/> for <paramref name="generation"/> through the
+    /// SAME generation-aware transition as a graceful terminal completion, so a racing restart's
+    /// <see cref="TryArmRunning"/> cannot resurrect a monitor-faulted run back to Running. Applied only
+    /// while that generation is still the current run (a newer restart supersedes an older run's fault).
+    /// </summary>
+    public void MarkRunFaulted(long generation)
+    {
+        lock (_lifecycleLock)
+        {
+            if (_runGeneration == generation)
+            {
+                _terminalGeneration = generation;
+                _status = SubAgentStatus.Error;
+            }
         }
     }
 
