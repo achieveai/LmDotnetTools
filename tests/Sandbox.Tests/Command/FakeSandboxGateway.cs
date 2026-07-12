@@ -60,6 +60,13 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
     /// <summary>Operation directories a CLEAN deleted.</summary>
     public List<string> CleanedOperations { get; } = [];
 
+    /// <summary>
+    /// The largest response body, in UTF-8 bytes, this gateway ever returned AFTER applying the real
+    /// gateway's <c>exec</c> truncation — lets an F1 transport test assert the manifest sentinel line
+    /// (and every other wire line) genuinely stayed under the gateway limit rather than trusting it did.
+    /// </summary>
+    public int MaxObservedResponseBytes { get; private set; }
+
     public int RunSubmissionCount { get; private set; }
 
     /// <summary>Number of times the command actually ran (a RUN that won the claim and committed a fresh manifest).</summary>
@@ -137,7 +144,16 @@ internal sealed class FakeSandboxGateway : HttpMessageHandler
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
         }
 
-        return McpSuccess(id, text, isError);
+        // Model the gateway's exec truncation on EVERY response, so a test can never rely on the fake
+        // delivering an over-limit line whole. A manifest sentinel line that overflows would be cut
+        // here, breaking its base64 and failing the SDK's parse — which is exactly the F1 failure mode.
+        var wire = GatewayTruncation.Apply(text);
+        lock (_lock)
+        {
+            MaxObservedResponseBytes = Math.Max(MaxObservedResponseBytes, Encoding.UTF8.GetByteCount(wire));
+        }
+
+        return McpSuccess(id, wire, isError);
     }
 
     private (string Text, bool IsError, bool Hang) Handle(CommandScriptRequest request, long executionSeconds)

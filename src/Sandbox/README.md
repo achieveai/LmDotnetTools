@@ -96,7 +96,11 @@ sandbox. `SandboxCommand` is validated at construction:
 `SandboxCommandResult` exposes `ExitCode`, the exact `StandardOutput` and `StandardError` (reassembled
 beyond the gateway's 20&#160;KB/500-line `exec` truncation — the gateway's unstable `output_*.txt`
 file is never used), and `CombinedOutput` (stdout then stderr; a convenience concatenation, not a
-real-time interleaving).
+real-time interleaving). The completion signal the SDK reads back through that truncating `exec` is a
+single, deliberately small line: only a compact per-stream digest/length (plus a bounded inline copy of
+*small* streams) travels on it, and each larger stream is reassembled from integrity-checked chunk
+reads — so the signal itself stays provably under the truncation limit regardless of how large the
+command's output is.
 
 ### Outcomes
 

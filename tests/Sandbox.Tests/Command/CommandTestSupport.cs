@@ -34,4 +34,20 @@ internal static class CommandTestSupport
             command.NormalizedWorkingDirectory,
             ExecutionSeconds
         );
+
+    /// <summary>
+    /// Deterministic printable-ASCII payload of <paramref name="length"/> bytes. Every byte is a
+    /// printable ASCII character, so the payload round-trips through UTF-8 and exact-byte comparison of a
+    /// reassembled stream is meaningful; <paramref name="seed"/> shifts the pattern so two streams differ.
+    /// </summary>
+    public static byte[] PrintablePattern(int length, int seed)
+    {
+        var bytes = new byte[length];
+        for (var i = 0; i < length; i++)
+        {
+            bytes[i] = (byte)(32 + ((i + (seed * 7)) % 95));
+        }
+
+        return bytes;
+    }
 }
