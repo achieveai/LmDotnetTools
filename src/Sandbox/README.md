@@ -9,6 +9,10 @@ OAuth/network/discovery policy remain the caller's responsibility.
 
 - **Lifecycle:** `CreateAsync`, `GetAsync`, `ListAsync`, `DeleteAsync` — explicit sandbox
   create/get/list/delete. Disposing a `SandboxClient` never deletes a sandbox.
+  `ListAsync` reads the gateway's Docker-level container inventory (`GET /api/v1/sandboxes`), a
+  different wire shape from `CreateAsync`/`GetAsync` — it carries no workspace/volume info, so every
+  returned `SandboxInfo.WorkspaceContainerPath` is `null`, and an entry the gateway hasn't attributed
+  to any session is omitted (it cannot be represented without a session id).
 - **Marketplace preview:** `PreviewMarketplacesAsync` — a read-only browse of plugins, skills, and
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing

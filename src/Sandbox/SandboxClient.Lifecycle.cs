@@ -56,7 +56,17 @@ public sealed partial class SandboxClient
         return ToSandboxInfo(payload);
     }
 
-    /// <summary>Lists every sandbox visible to this client's credential.</summary>
+    /// <summary>
+    /// Lists every sandbox visible to this client's credential. Unlike <see cref="CreateAsync"/> and
+    /// <see cref="GetAsync"/>, the gateway's list response is its Docker-level container inventory
+    /// (each entry's container id is under <c>id</c>, and there is no <c>volumes</c> field at all —
+    /// see <see cref="Wire.ContainerEntryDto"/>), so every <see cref="SandboxInfo"/> this returns has
+    /// a <c>null</c> <see cref="SandboxInfo.WorkspaceContainerPath"/>. An entry the gateway hasn't
+    /// attributed to any session (<c>session_id: null</c> — e.g. a live but not-yet-assigned
+    /// container) is omitted rather than surfaced with a fabricated session id, since every
+    /// <see cref="SandboxInfo"/> this SDK hands back must carry a real one to be usable with
+    /// <see cref="GetAsync"/>/<see cref="DeleteAsync"/>.
+    /// </summary>
     public async Task<IReadOnlyList<SandboxInfo>> ListAsync(CancellationToken ct = default)
     {
         using var response = await SendRestAsync(HttpMethod.Get, "api/v1/sandboxes", body: null, sessionId: null, ct).ConfigureAwait(false);
@@ -85,7 +95,12 @@ public sealed partial class SandboxClient
             return [];
         }
 
-        return [.. payload.Sandboxes.Select(ToSandboxInfo)];
+        return
+        [
+            .. payload
+                .Sandboxes.Where(entry => !string.IsNullOrWhiteSpace(entry.SessionId))
+                .Select(entry => new SandboxInfo(entry.SessionId!, entry.Id)),
+        ];
     }
 
     /// <summary>

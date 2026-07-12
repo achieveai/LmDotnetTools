@@ -105,7 +105,7 @@ public class SandboxClientTransportTests
     public async Task OwnedClient_Dispose_DisposesTransport()
     {
         var options = new SandboxClientOptions(
-            TestSupport.LoopbackAddress,
+            TestSupport.NewLoopbackAddress(),
             "app-1",
             TestSupport.ValidSecret,
             TimeSpan.FromMinutes(1),

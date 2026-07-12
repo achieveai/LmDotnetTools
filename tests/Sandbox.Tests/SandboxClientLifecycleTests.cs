@@ -108,17 +108,47 @@ public class SandboxClientLifecycleTests
     [Fact]
     public async Task ListAsync_HappyPath_ReturnsAllSandboxes()
     {
+        // Real gateway list shape (verified against SandboxedOsToolsMcpServer@c0dc9cfe
+        // crates/mcp-gateway/src/api/sandboxes.rs::list_sandboxes): each entry is a flattened Docker
+        // container (`id`, `state`, `status`, `running`, ...) plus `session_id` — NOT the
+        // create/get response shape. The container id field is `id`, never `container_id`.
         var (client, handler) = TestSupport.CreateBorrowedClient();
         handler.OnJson(
             HttpMethod.Get,
             "/api/v1/sandboxes",
-            """{"sandboxes":[{"session_id":"sess-1"},{"session_id":"sess-2","container_id":"c2"}]}"""
+            """
+            {"sandboxes":[
+                {"id":"c1","state":"running","status":"Up 2 minutes","running":true,"session_id":"sess-1"},
+                {"id":"c2","state":"running","status":"Up 5 minutes","running":true,"session_id":"sess-2"}
+            ]}
+            """
         );
 
         var infos = await client.ListAsync();
 
         infos.Should().HaveCount(2);
         infos.Select(i => i.SessionId).Should().BeEquivalentTo(["sess-1", "sess-2"]);
+        infos.Select(i => i.ContainerId).Should().BeEquivalentTo(["c1", "c2"]);
+        infos.Should().OnlyContain(i => i.WorkspaceContainerPath == null);
+    }
+
+    [Fact]
+    public async Task ListAsync_EntryWithNullSessionId_IsOmitted()
+    {
+        // A live container the gateway hasn't attributed to any session (or a dormant record with a
+        // gone container) reports session_id: null. SandboxInfo requires a non-null session id, so
+        // such an entry must be skipped rather than crash or fabricate one.
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(
+            HttpMethod.Get,
+            "/api/v1/sandboxes",
+            """{"sandboxes":[{"id":"unowned","state":"running","status":"Up","running":true,"session_id":null},{"id":"c2","session_id":"sess-2"}]}"""
+        );
+
+        var infos = await client.ListAsync();
+
+        infos.Should().ContainSingle();
+        infos.Single().SessionId.Should().Be("sess-2");
     }
 
     [Fact]

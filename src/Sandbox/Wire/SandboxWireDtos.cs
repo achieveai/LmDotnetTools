@@ -3,8 +3,10 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.Sandbox.Wire;
 
 // --- Gateway sandbox-create/get/list REST contract (snake_case via SandboxJson.RestOptions) ---
-// Mirrors the exact shape LmAgentInfra.Sandbox.SandboxSessionRegistry already speaks against the
-// gateway (POST/GET/DELETE /api/v1/sandboxes) so the wire contract this SDK relies on is unchanged.
+// POST/GET/DELETE /api/v1/sandboxes mirror the exact shape LmAgentInfra.Sandbox.SandboxSessionRegistry
+// already speaks against the gateway, so that wire contract this SDK relies on is unchanged. The list
+// endpoint (GET /api/v1/sandboxes, no path segment) is DIFFERENT — see ContainerEntryDto below — and
+// was verified directly against the gateway's handler source rather than assumed.
 
 internal sealed record CreateSandboxRequestDto(
     [property: JsonPropertyName("app")] AppRefDto App,
@@ -61,14 +63,26 @@ internal sealed record WorkspaceVolumeDto(
 );
 
 /// <summary>
-/// Response shape for <c>GET /api/v1/sandboxes</c> (list). No public gateway contract test pins this
-/// shape yet (list is not exercised by any existing caller this SDK was extracted from) — it mirrors
-/// the create/get response element shape under a <c>sandboxes</c> wrapper, matching the gateway's
-/// existing "wrap the collection in a named field" convention (see <see cref="DiscoveredItemsResponseDto"/>).
+/// One entry of <c>GET /api/v1/sandboxes</c> (list) — verified against the gateway's actual handler
+/// (<c>list_sandboxes</c> in <c>crates/mcp-gateway/src/api/sandboxes.rs</c>,
+/// SandboxedOsToolsMcpServer@c0dc9cfe). This is the gateway's Docker-level container inventory
+/// (<c>ContainerEntry</c> = its <c>docker::ContainerInfo</c> flattened — <c>id</c>/<c>names</c>/
+/// <c>state</c>/<c>status</c>/<c>created</c>/<c>running</c>/<c>finished_at</c>/<c>started_at</c> —
+/// plus <c>session_id</c>), a DIFFERENT shape from the create/get response
+/// (<see cref="CreateSandboxResponseDto"/>): the container id field is <c>id</c>, not
+/// <c>container_id</c>, there is no <c>volumes</c> field at all, and <c>session_id</c> is nullable (a
+/// live container the gateway hasn't attributed to any session, or — for the dormant tail the
+/// handler appends — a persisted session whose container is gone). Only the fields this SDK's
+/// <see cref="SandboxInfo"/> surfaces are modeled; the rest are left for the JSON reader's default
+/// unknown-member handling to ignore.
 /// </summary>
-internal sealed record ListSandboxesResponseDto(
-    [property: JsonPropertyName("sandboxes")] IReadOnlyList<CreateSandboxResponseDto>? Sandboxes
+internal sealed record ContainerEntryDto(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("session_id")] string? SessionId
 );
+
+/// <summary>Response shape for <c>GET /api/v1/sandboxes</c> (list). See <see cref="ContainerEntryDto"/>.</summary>
+internal sealed record ListSandboxesResponseDto([property: JsonPropertyName("sandboxes")] IReadOnlyList<ContainerEntryDto>? Sandboxes);
 
 // --- Session-discovery REST contract ---
 
