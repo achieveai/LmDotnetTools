@@ -60,6 +60,24 @@ public class SandboxModelsTests
     }
 
     [Fact]
+    public void SandboxNetworkRule_OmittedAuthProvider_IsNullNotEmpty()
+    {
+        var rule = new SandboxNetworkRule("github", "allow");
+
+        rule.AuthProvider.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void SandboxNetworkRule_BlankAuthProvider_Throws(string authProvider)
+    {
+        var act = () => new SandboxNetworkRule("github", "allow", authProvider: authProvider);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public void SandboxCreateRequest_CollectionArguments_AreDefensivelyCopied()
     {
         var marketplaces = new List<string> { "official" };

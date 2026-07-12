@@ -56,10 +56,53 @@ public class SandboxClientLifecycleTests
         networkRule.GetProperty("id").GetString().Should().Be("github");
         networkRule.GetProperty("hosts")[0].GetString().Should().Be("github.com");
         networkRule.GetProperty("ports")[0].GetInt32().Should().Be(443);
+        networkRule.TryGetProperty("auth_provider", out _).Should().BeFalse();
 
         var discovery = body.GetProperty("discovery").GetProperty("webhook");
         discovery.GetProperty("url").GetString().Should().Be("https://app/discovery");
         discovery.GetProperty("auth_header").GetString().Should().Be("discovery-secret");
+    }
+
+    [Fact]
+    public async Task CreateAsync_NetworkRuleWithoutAuthProvider_OmitsAuthProviderFromWireBody()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        var request = new SandboxCreateRequest(
+            "my-workspace",
+            networkRules: [new SandboxNetworkRule("open", "allow", hosts: ["example.com"])]
+        );
+
+        _ = await client.CreateAsync(request);
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var body = JsonDocument.Parse(sent.Body!).RootElement;
+        var networkRule = body.GetProperty("network").GetProperty("rules")[0];
+
+        // A present-but-empty "auth_provider" is `Some("")` on the gateway's NetworkRule — a
+        // provider-id lookup it fails — not "no provider". The field must be absent entirely.
+        networkRule.TryGetProperty("auth_provider", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CreateAsync_NetworkRuleWithAuthProvider_IncludesAuthProviderInWireBody()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.OnJson(HttpMethod.Post, "/api/v1/sandboxes", CreateResponseJson);
+
+        var request = new SandboxCreateRequest(
+            "my-workspace",
+            networkRules: [new SandboxNetworkRule("github", "allow", hosts: ["github.com"], authProvider: "github-auth")]
+        );
+
+        _ = await client.CreateAsync(request);
+
+        var sent = handler.Requests.Single(r => r.Method == HttpMethod.Post);
+        var body = JsonDocument.Parse(sent.Body!).RootElement;
+        var networkRule = body.GetProperty("network").GetProperty("rules")[0];
+
+        networkRule.GetProperty("auth_provider").GetString().Should().Be("github-auth");
     }
 
     [Fact]

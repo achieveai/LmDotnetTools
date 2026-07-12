@@ -26,10 +26,13 @@ public sealed class SandboxNetworkRule
     public IReadOnlyList<string> Paths { get; }
 
     /// <summary>
-    /// Id of the <see cref="SandboxAuthProvider"/> this rule injects a token from, or an empty
-    /// string when the rule requires no token injection.
+    /// Id of the <see cref="SandboxAuthProvider"/> this rule injects a token from, or
+    /// <c>null</c> when the rule requires no token injection. <c>null</c> is omitted from the
+    /// wire entirely rather than sent as an empty string — the gateway treats a present-but-empty
+    /// <c>auth_provider</c> as a provider id to look up (and fails that lookup), not as "no
+    /// provider".
     /// </summary>
-    public string AuthProvider { get; }
+    public string? AuthProvider { get; }
 
     /// <summary>OAuth scopes this rule requires, defensively copied at construction.</summary>
     public IReadOnlyList<string> RequiredScopes { get; }
@@ -44,14 +47,17 @@ public sealed class SandboxNetworkRule
         IReadOnlyList<int>? ports = null,
         IReadOnlyList<string>? methods = null,
         IReadOnlyList<string>? paths = null,
-        string authProvider = "",
+        string? authProvider = null,
         IReadOnlyList<string>? requiredScopes = null,
         int priority = 0
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentException.ThrowIfNullOrWhiteSpace(action);
-        ArgumentNullException.ThrowIfNull(authProvider);
+        if (authProvider is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(authProvider);
+        }
 
         Id = id;
         Action = action;

@@ -30,6 +30,11 @@ internal sealed record AuthProviderDto(
 
 internal sealed record NetworkDto([property: JsonPropertyName("rules")] IReadOnlyList<NetworkRuleDto> Rules);
 
+// `auth_provider` is `Option<String>` on the gateway's NetworkRule (proxy_policy/models.rs,
+// SandboxedOsToolsMcpServer@c0dc9cfe) and, when present, is looked up by id (proxy.rs) — a
+// present-but-empty string is `Some("")`, a lookup the gateway fails, not "no provider". Kept
+// nullable here (and omitted from the wire via SandboxJson.RestOptions) so "no auth provider"
+// serializes as field-absent, matching the gateway's `None`.
 internal sealed record NetworkRuleDto(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("action")] string Action,
@@ -37,7 +42,7 @@ internal sealed record NetworkRuleDto(
     [property: JsonPropertyName("ports")] IReadOnlyList<int> Ports,
     [property: JsonPropertyName("methods")] IReadOnlyList<string> Methods,
     [property: JsonPropertyName("paths")] IReadOnlyList<string> Paths,
-    [property: JsonPropertyName("auth_provider")] string AuthProvider,
+    [property: JsonPropertyName("auth_provider")] string? AuthProvider,
     [property: JsonPropertyName("required_scopes")] IReadOnlyList<string> RequiredScopes,
     [property: JsonPropertyName("priority")] int Priority
 );
