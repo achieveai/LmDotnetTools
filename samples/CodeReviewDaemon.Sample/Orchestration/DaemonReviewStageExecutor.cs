@@ -314,7 +314,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 discovered, _options.SubAgentMarketplaces, _providerAgentFactory, _options.SubAgentModelId);
             if (templates.Count > 0)
             {
-                return new SubAgentOptions { Templates = templates };
+                return new SubAgentOptions
+                {
+                    Templates = templates,
+                    MaxConcurrentSubAgents = _options.MaxConcurrentSubAgents,
+                };
             }
 
             _logger.LogInformation(

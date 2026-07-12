@@ -43,6 +43,8 @@ public class CodeReviewDaemonOptionsTests
         o.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
         o.MergeNotesBranchOnClose.Should().BeTrue();
         o.ScratchDirName.Should().Be("scratch");
+        o.MaxConcurrentSubAgents.Should()
+            .Be(5, "default matches the library's SubAgentOptions default; a profile raises it to fan out wider");
     }
 
     [Fact]

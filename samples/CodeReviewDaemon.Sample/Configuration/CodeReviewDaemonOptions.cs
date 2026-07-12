@@ -105,6 +105,15 @@ internal sealed class CodeReviewDaemonOptions
     public string SubAgentModelId { get; init; } = "";
 
     /// <summary>
+    /// Maximum number of discovered <c>code-reviewer:*</c> sub-agents the review loop may run concurrently
+    /// (maps to the library's <c>SubAgentOptions.MaxConcurrentSubAgents</c>). Once this many are in flight the
+    /// dispatcher blocks with "Max concurrent sub-agents (N) reached" until one completes, so a higher value
+    /// lets a deep review parallelize more of its focused passes — at the cost of more simultaneous model
+    /// calls and gateway load. Defaults to the library default of 5.
+    /// </summary>
+    public int MaxConcurrentSubAgents { get; init; } = 5;
+
+    /// <summary>
     /// Model id the at-close <b>knowledge-extraction agent</b> runs with (<see cref="EnableKnowledgeAgent"/>) —
     /// the gated pass that distils a merged PR's review notes into the Knowledge Base. Empty (default) ⇒ the
     /// extraction loop inherits the primary <see cref="ReviewModelId"/>, exactly as before. Set it to run the
