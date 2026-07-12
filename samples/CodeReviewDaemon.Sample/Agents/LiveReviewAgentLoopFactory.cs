@@ -69,12 +69,25 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
     }
 
     /// <summary>
-    /// The shared, lazily-created Copilot-backed agent for the primary configured
-    /// <see cref="CodeReviewDaemonOptions.ReviewModelId"/>'s vendor (see the Lifetime remarks on this type),
-    /// exposed as an <see cref="IStreamingAgent"/> factory so a discovered <c>code-reviewer:*</c> sub-agent
-    /// (Task 12) is driven by that same provider agent instead of standing up a second one.
+    /// The shared, lazily-created Copilot-backed agent that drives the discovered <c>code-reviewer:*</c>
+    /// review sub-agents (Task 12), exposed as an <see cref="IStreamingAgent"/> factory so a sub-agent is
+    /// driven by that same provider agent instead of standing up a second one. It routes by the
+    /// <b>effective sub-agent model</b>'s vendor (<see cref="CodeReviewDaemonOptions.SubAgentModelId"/> when
+    /// set, else the primary <see cref="CodeReviewDaemonOptions.ReviewModelId"/> — see the Lifetime remarks
+    /// on this type), so review sub-agents on a different-vendor model than the dispatcher still get the
+    /// matching backend.
     /// </summary>
-    public Func<IStreamingAgent> SharedAgentFactory => () => GetSharedAgent(IsOpenAiModel(_options.ReviewModelId));
+    public Func<IStreamingAgent> SharedAgentFactory => () => GetSharedAgent(IsOpenAiModel(EffectiveSubAgentModelId));
+
+    /// <summary>
+    /// The model the review sub-agents run with: the configured
+    /// <see cref="CodeReviewDaemonOptions.SubAgentModelId"/> when set, else the primary
+    /// <see cref="CodeReviewDaemonOptions.ReviewModelId"/> (sub-agents inherit the dispatcher's model).
+    /// Drives only the sub-agent provider-agent vendor selection; the per-turn model id is set on the
+    /// sub-agent template's options.
+    /// </summary>
+    private string EffectiveSubAgentModelId =>
+        string.IsNullOrWhiteSpace(_options.SubAgentModelId) ? _options.ReviewModelId : _options.SubAgentModelId;
 
     public IMultiTurnAgent Create(
         AgentProfile profile,

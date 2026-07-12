@@ -310,7 +310,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 sessionId,
                 subagentCount,
                 string.Join(",", discovered.Select(d => d.Kind).Distinct()));
-            var templates = _subAgentTemplateBuilder.Build(discovered, _options.SubAgentMarketplaces, _providerAgentFactory);
+            var templates = _subAgentTemplateBuilder.Build(
+                discovered, _options.SubAgentMarketplaces, _providerAgentFactory, _options.SubAgentModelId);
             if (templates.Count > 0)
             {
                 return new SubAgentOptions { Templates = templates };

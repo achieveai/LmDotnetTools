@@ -81,12 +81,28 @@ internal sealed class CodeReviewDaemonOptions
     public bool RequireSkillSupport { get; init; }
 
     /// <summary>
-    /// Model id the primary review agent runs with (the id sent to the Copilot-backed Anthropic Messages
-    /// backend, e.g. <c>claude-sonnet-5</c>). The poller stamps it onto each review run so the primary
-    /// review has a concrete model — an empty id would be rejected by the provider. The A/B comparison
-    /// (B) variant keeps its own bounded model id and is unaffected by this knob.
+    /// Model id the <b>primary orchestrator loop</b> runs with — the "dispatcher / state" agent that reads
+    /// the diff, dispatches the <c>code-reviewer:*</c> review sub-agents, holds the review's conversation
+    /// state, and synthesizes the final posted review (the id sent to the Copilot backend, e.g.
+    /// <c>claude-sonnet-5</c> or <c>gpt-5.6-luna</c>). The poller stamps it onto each review run so the
+    /// primary review has a concrete model — an empty id would be rejected by the provider. The deep review
+    /// passes can run on a different model via <see cref="SubAgentModelId"/>; the A/B comparison (B) variant
+    /// keeps its own bounded model id and is unaffected by this knob.
     /// </summary>
     public string ReviewModelId { get; init; } = "claude-sonnet-5";
+
+    /// <summary>
+    /// Model id the discovered <c>code-reviewer:*</c> <b>review sub-agents</b> run with — the agents that do
+    /// the focused, deep review passes the primary loop dispatches. Empty (default) ⇒ sub-agents inherit the
+    /// primary loop's model (<see cref="ReviewModelId"/>), exactly as before. Set it to split the two roles:
+    /// a stronger model for the actual reviewing (e.g. <c>gpt-5.6-sol</c>) while the orchestrator/dispatcher
+    /// runs a lighter one (<see cref="ReviewModelId"/>, e.g. <c>gpt-5.6-luna</c>). When set it overrides
+    /// whatever <c>model:</c> a discovered sub-agent's markdown declares. It must be served by the same
+    /// Copilot backend the daemon uses (a <c>gpt-*</c>/<c>o*</c> id routes through OpenAI Responses, a
+    /// <c>claude-*</c> id through Anthropic Messages) — an unsupported slug is rejected with
+    /// <c>model_not_supported</c>.
+    /// </summary>
+    public string SubAgentModelId { get; init; } = "";
 
     /// <summary>
     /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a

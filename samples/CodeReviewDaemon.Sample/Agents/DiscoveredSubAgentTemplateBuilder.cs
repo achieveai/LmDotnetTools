@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmSampleShared.Discovery;
 
@@ -21,17 +22,22 @@ internal sealed class DiscoveredSubAgentTemplateBuilder(ILogger<DiscoveredSubAge
     /// <summary>
     /// Maps the discovered <c>subagent</c> items to templates, keeping only those whose source marketplace is
     /// in <paramref name="marketplaceFilter"/> (empty ⇒ keep all, regardless of marketplace). Marketplace
-    /// aliases are matched case-insensitively against the alias parsed from each item's <c>Path</c>.
+    /// aliases are matched case-insensitively against the alias parsed from each item's <c>Path</c>. When
+    /// <paramref name="subAgentModelId"/> is non-empty every kept template's model is forced to it (the
+    /// "review agent" model), overriding whatever <c>model:</c> the sub-agent's markdown declares; empty/null
+    /// leaves the mapped model as-is so the sub-agent inherits the parent loop's model exactly as before.
     /// </summary>
     public IReadOnlyDictionary<string, SubAgentTemplate> Build(
         IReadOnlyList<SandboxSessionRegistry.DiscoveredItem> items,
         IReadOnlyList<string> marketplaceFilter,
-        Func<IStreamingAgent> agentFactory)
+        Func<IStreamingAgent> agentFactory,
+        string? subAgentModelId = null)
     {
         ArgumentNullException.ThrowIfNull(items);
         ArgumentNullException.ThrowIfNull(marketplaceFilter);
         ArgumentNullException.ThrowIfNull(agentFactory);
 
+        var modelOverride = string.IsNullOrWhiteSpace(subAgentModelId) ? null : subAgentModelId.Trim();
         var result = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal);
 
         foreach (var item in items)
@@ -51,7 +57,13 @@ internal sealed class DiscoveredSubAgentTemplateBuilder(ILogger<DiscoveredSubAge
                 continue;
             }
 
-            if (!result.TryAdd(item.QualifiedName, SubAgentTemplateMapper.Map(parsed, agentFactory, MaxTurnsPerRun)))
+            var template = SubAgentTemplateMapper.Map(parsed, agentFactory, MaxTurnsPerRun);
+            if (modelOverride is not null)
+            {
+                template = template with { DefaultOptions = new GenerateReplyOptions { ModelId = modelOverride } };
+            }
+
+            if (!result.TryAdd(item.QualifiedName, template))
             {
                 logger.LogWarning("Duplicate sub-agent {Name}; keeping the first.", item.QualifiedName);
             }

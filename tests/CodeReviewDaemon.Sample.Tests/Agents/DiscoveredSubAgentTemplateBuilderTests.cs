@@ -61,4 +61,41 @@ public class DiscoveredSubAgentTemplateBuilderTests
         templates.Should().ContainKey("code-reviewer:architecture-review");
         templates.Should().ContainKey("superpowers:thing");
     }
+
+    [Fact]
+    public void Build_SubAgentModelId_OverridesEveryTemplateModel()
+    {
+        // A configured SubAgentModelId is the "review agent" model: it forces every discovered sub-agent onto
+        // that model, overriding whatever `model:` its markdown declares (Body declares none → would inherit).
+        var items = new List<SandboxSessionRegistry.DiscoveredItem>
+        {
+            new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/code-reviewer/agents/a.md",
+                Content: Body, QualifiedName: "code-reviewer:architecture-review"),
+        };
+        var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
+
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory, "gpt-5.6-sol");
+
+        templates["code-reviewer:architecture-review"].DefaultOptions!.ModelId.Should().Be("gpt-5.6-sol");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Build_NoSubAgentModelId_LeavesTemplateModelToInherit(string? subAgentModelId)
+    {
+        // Empty/absent SubAgentModelId ⇒ no override: the sub-agent (Body declares no model) inherits the
+        // parent loop's model exactly as before, so the template carries no explicit model options.
+        var items = new List<SandboxSessionRegistry.DiscoveredItem>
+        {
+            new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/code-reviewer/agents/a.md",
+                Content: Body, QualifiedName: "code-reviewer:architecture-review"),
+        };
+        var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
+
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory, subAgentModelId);
+
+        templates["code-reviewer:architecture-review"].DefaultOptions.Should().BeNull();
+    }
 }
