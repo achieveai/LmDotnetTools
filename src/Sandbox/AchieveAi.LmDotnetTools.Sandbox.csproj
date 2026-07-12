@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.Sandbox</PackageId>
+    <Description>Typed .NET SDK for the sandbox gateway's control plane: authenticated lifecycle (create/get/list/delete), marketplace preview, and session discovery. No ASP.NET or LLM-provider dependencies.</Description>
+    <PackageTags>$(PackageTags);sandbox;gateway;client</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.Sandbox.Tests" />
+  </ItemGroup>
+</Project>
