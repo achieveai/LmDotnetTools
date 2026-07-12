@@ -410,9 +410,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
                 allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
 
-            var prepared = await _slotWorkspace.Preparer.PrepareAsync(
-                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
-                    cancellationToken)
+            var prepared = await PrepareWithRecoveryAsync(
+                slot, run, storeUrl, submoduleRelPath, branch, notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
 
             // Diff + manifest run HOST-side against the prepared submodule working tree (privileged daemon
@@ -474,6 +473,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             {
                 await _slotWorkspace.Pool.ReturnAsync(slot, CancellationToken.None).ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// Prepares the leased slot, escalating to a re-clone on corruption. <see cref="ReviewSlotPreparer"/>'s
+    /// clean-on-entry self-heals stale locks / dirty trees in place; when it instead reports the store is
+    /// structurally unusable (<see cref="SlotNeedsRecloneException"/>) or a git step fails corrupt
+    /// (<see cref="SlotCorruptException"/>), the slot's store is re-cloned from scratch and prepare is
+    /// retried ONCE. A second failure surfaces so the stage retries and the retry governor bounds it.
+    /// </summary>
+    private async Task<PreparedCheckout> PrepareWithRecoveryAsync(
+        ReviewSlot slot, ReviewRun run, string storeUrl, string submoduleRelPath, string branch,
+        string notesRelPath, OperationPolicy policy, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _slotWorkspace!.Preparer.PrepareAsync(
+                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SlotNeedsRecloneException or SlotCorruptException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: pooled slot {Index} store is corrupt; re-cloning and retrying prepare once.",
+                run.Id, slot.Index);
+            await _slotWorkspace!.Pool.RecloneStoreAsync(slot, cancellationToken).ConfigureAwait(false);
+            return await _slotWorkspace.Preparer.PrepareAsync(
+                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
@@ -1122,6 +1153,24 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
             finally
             {
+                // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
+                // slot's store to a pristine state so the next lease starts clean with nothing left around.
+                // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
+                // block the slot's return (which would leak pool capacity). Committed notes survive the strip
+                // (reset --hard keeps HEAD; clean removes only untracked byproduct).
+                try
+                {
+                    await SlotHygiene.StripAsync(
+                            new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex, "Run {RunId}: best-effort slot strip failed; the next lease's clean-on-entry covers it.",
+                        run.Id);
+                }
+
                 await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
             }
         }

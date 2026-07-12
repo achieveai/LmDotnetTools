@@ -24,6 +24,13 @@ internal interface IReviewSlotPool
     Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken);
 
     Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Discards a leased slot's store and re-clones it from scratch — the recovery escalation when the warm
+    /// store is corrupt (a stale lock that survived cleaning, a broken object, a half-inited submodule). The
+    /// caller keeps the same leased slot; only its store contents are replaced.
+    /// </summary>
+    Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -137,6 +144,21 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
         _gate.Release();
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Discards the slot's store and re-clones it — the recovery escalation when the warm store is corrupt.
+    /// The lease is retained; only the store contents are replaced. Mirrors the first-lease clone path.
+    /// </summary>
+    public async Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(slot);
+
+        _logger.LogWarning(
+            "Re-cloning corrupt store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
+        TryResetStore(slot.StorePath);
+        Directory.CreateDirectory(slot.HostPath);
+        await _ensureStoreClonedAsync(slot, cancellationToken).ConfigureAwait(false);
     }
 
     private int TakeIndex()

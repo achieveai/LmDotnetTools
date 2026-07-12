@@ -77,6 +77,41 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ContextReady_reclones_and_retries_prepare_once_when_the_slot_is_corrupt()
+    {
+        using var fixture = Fixture.Create();
+        // The warm store is corrupt: the first prepare reports it, the executor re-clones and retries once.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("stale lock survived"));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        fixture.Pool.RecloneCount.Should().Be(1, "a corrupt store is re-cloned before the retry");
+        fixture.Preparer.PrepareCount.Should().Be(2, "prepare is retried exactly once after the re-clone");
+        fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind,
+                "the retried prepare succeeded, so the stage completed with a context artifact");
+    }
+
+    [Fact]
+    public async Task ContextReady_surfaces_and_returns_the_slot_when_prepare_still_fails_after_reclone()
+    {
+        using var fixture = Fixture.Create();
+        // Corrupt twice: re-clone + retry does not help, so the failure surfaces (the retry governor bounds it)
+        // and the slot must be returned so it cannot leak pool capacity.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("corrupt 1"));
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("corrupt 2"));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotCorruptException>();
+        fixture.Pool.RecloneCount.Should().Be(1, "re-clone is attempted once");
+        fixture.Preparer.PrepareCount.Should().Be(2, "prepare is attempted once, then once more after the re-clone");
+        fixture.Pool.ReturnCount.Should().Be(1, "the failed lease is returned so it cannot leak pool capacity");
+    }
+
+    [Fact]
     public async Task Reviewed_builds_a_scoped_write_tool_context_with_the_notes_and_scratch_roots()
     {
         using var fixture = Fixture.Create();
@@ -283,6 +318,22 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
     }
 
+    [Fact]
+    public async Task Posted_strips_the_slot_store_to_pristine_after_committing_the_notes()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // Commit-then-strip: after the notes are committed, the store working tree is reset + cleaned so the
+        // next lease starts clean with nothing left around (the user's durability requirement).
+        var commands = fixture.HostRunner.Commands.Select(Join).ToList();
+        commands.Should().Contain(a => a.Contains("reset --hard"), "the slot store is reset on terminal return");
+        commands.Should().Contain(a => a.Contains("clean -ffdx"), "untracked review byproduct is cleaned on return");
+        fixture.Pool.ReturnCount.Should().Be(1, "the slot is still returned after the strip");
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
@@ -388,6 +439,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
+        public int RecloneCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
 
         public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
@@ -404,6 +456,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
             Returned.Add(slot);
             return Task.CompletedTask;
         }
+
+        public Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
+        {
+            RecloneCount++;
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>Records the prepare inputs and returns a <see cref="PreparedCheckout"/> whose paths are the
@@ -415,6 +473,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public string? LastBranch { get; private set; }
         public string? LastNotesRelPath { get; private set; }
         public string? LastDefaultBranch { get; private set; }
+
+        /// <summary>Exceptions to throw on the first N prepare calls (then succeed) — drives the re-clone ladder.</summary>
+        public Queue<Exception> ThrowThenSucceed { get; } = new();
 
         public Task<PreparedCheckout> PrepareAsync(
             ReviewSlot slot,
@@ -428,6 +489,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
             CancellationToken cancellationToken)
         {
             PrepareCount++;
+            if (ThrowThenSucceed.Count > 0)
+            {
+                throw ThrowThenSucceed.Dequeue();
+            }
+
             LastSubmoduleRelPath = submoduleRelPath;
             LastBranch = branch;
             LastNotesRelPath = notesRelPath;
