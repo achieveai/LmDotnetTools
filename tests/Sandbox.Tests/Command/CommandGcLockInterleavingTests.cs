@@ -4,13 +4,13 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 
 /// <summary>
-/// Deterministic, script-level state-machine proofs of the per-operation GC lock's REAL exclusive
-/// ownership (owner-token fencing) and of the lock/generation-safe output reclaim, driven through the
-/// exact interleavings that must never yield double ownership or delete a live claim / a newer execution's
-/// output. Each test mirrors the primitives
+/// Deterministic, script-level state-machine proofs of the per-operation GC lock's REAL exclusive,
+/// NON-STEALABLE ownership and of the lock/generation-safe output reclaim, driven through the exact
+/// interleavings that must never yield double ownership, remove a lock the caller does not hold, or delete
+/// a newer execution's output. Each test mirrors the primitives
 /// <see cref="AchieveAi.LmDotnetTools.Sandbox.Command.CommandScripts"/> emits (<c>gclock_try</c>,
-/// <c>gclock_owned</c>, <c>gclock_is_live</c>, <c>gclock_release</c>, and the generation-gated reclaim); the
-/// real generated scripts are exercised under a POSIX shell by <c>CommandGcLockRealShellTests</c>.
+/// <c>gclock_owned</c>, <c>gclock_release</c>, and the generation-gated reclaim); the real generated
+/// scripts are exercised under a POSIX shell by <c>CommandGcLockRealShellTests</c>.
 /// </summary>
 public class CommandGcLockInterleavingTests
 {
@@ -23,94 +23,111 @@ public class CommandGcLockInterleavingTests
         return model;
     }
 
-    // ---- Scenario: a contender arriving during the mkdir -> token establishment gap ----
+    // ---- Scenario: the lock is non-stealable — any existing lock makes a contender back off ----
 
-    [Fact]
-    public void OwnerlessLock_DuringMkdirToTokenGap_IsTreatedLive_AndAContenderBacksOff()
+    [Theory]
+    [InlineData("an owner-less lock (a holder in the mkdir->token gap)", false, null)]
+    [InlineData("a freshly-owned lock", true, "holder")]
+    [InlineData("a would-be-stale owned lock (a crashed holder — once TTL-reclaimed, now never)", true, "crashed-holder")]
+    public void AnyExistingLock_IsNeverStolen_AContenderBacksOff_AndTheLockAndOwnerAreUntouched(
+        string scenario,
+        bool hasOwner,
+        string? ownerToken
+    )
     {
         var model = NewModel();
-        // A holder has won the atomic mkdir of the lock but has NOT yet written its owner token.
-        model.Fs.Mkdir(ClaimModel.GcLock).Should().BeTrue();
+        // A holder has won the atomic mkdir of the lock (optionally having written its owner token).
+        model.Fs.Mkdir(ClaimModel.GcLock).Should().BeTrue(scenario);
+        if (hasOwner)
+        {
+            model.Fs.Write(ClaimModel.GcLockOwner, ownerToken!);
+        }
 
-        model.GcLockIsLive().Should().BeTrue("a lock with no owner token yet is mid-establishment — treated LIVE, never stale");
         var acquired = model.GcLockTry("contender");
 
-        acquired.Should().BeFalse("a contender in the mkdir->token gap must back off, never reclaim into double ownership");
-        model.Fs.Read(ClaimModel.GcLockOwner).Should().BeNull("the contender must not have reclaimed or written an owner token");
+        acquired.Should().BeFalse("a non-stealable lock can never be acquired by a contender while it exists");
+        model.Fs.DirExists(ClaimModel.GcLock).Should().BeTrue("the contender must never remove an existing lock");
+        model
+            .Fs.Read(ClaimModel.GcLockOwner)
+            .Should()
+            .Be(hasOwner ? ownerToken : null, "the contender must never write or overwrite a lock it does not hold");
+        model.GcLockOwned("contender").Should().BeFalse();
     }
 
-    // ---- Scenario: stale owner replacement ----
+    // ---- Scenario: a release from a caller that does not hold the lock must never remove it ----
 
     [Fact]
-    public void StaleOwnerLock_IsReclaimedAndReElectedToASingleNewOwner()
+    public void ReleaseByANonOwner_NeverRemovesTheLock_ButTheOwnersReleaseDoes()
     {
         var model = NewModel();
-        // A crashed holder's leftover: an owner token stamped far in the past (older than the TTL).
         model.Fs.Mkdir(ClaimModel.GcLock);
-        model.Fs.Write(ClaimModel.GcLockOwner, "crashed-owner 1");
+        model.Fs.Write(ClaimModel.GcLockOwner, "owner");
 
-        model.GcLockIsLive().Should().BeFalse("an owner token stamped older than the TTL is a crashed holder's leftover");
-        var acquired = model.GcLockTry("replacement");
+        // A caller that does not hold the lock issues a release — it must be a no-op.
+        model.GcLockRelease("not-the-owner");
 
-        acquired.Should().BeTrue("the stale lock is reclaimed and re-elected to a single new owner");
-        model.GcLockOwned("replacement").Should().BeTrue();
-        model.GcLockOwned("crashed-owner").Should().BeFalse("the crashed holder no longer owns the reclaimed lock");
-    }
-
-    // ---- Scenario: an old owner's DELAYED release must not remove a successor's lock ----
-
-    [Fact]
-    public void DelayedReleaseByAnOldOwner_NeverRemovesASuccessorsLock()
-    {
-        var model = NewModel();
-        // A successor currently holds the lock (freshly stamped).
-        model.Fs.Mkdir(ClaimModel.GcLock);
-        model.Fs.Write(ClaimModel.GcLockOwner, $"successor {Now}");
-
-        // The old owner (whose lock was already stale-reclaimed by the successor) issues its delayed release.
-        model.GcLockRelease("old-owner");
-
-        model.Fs.DirExists(ClaimModel.GcLock).Should().BeTrue("a delayed release from an old owner must not remove the successor's lock");
-        model.GcLockOwned("successor").Should().BeTrue("the successor still owns its lock after the old owner's release");
+        model.Fs.DirExists(ClaimModel.GcLock).Should().BeTrue("a release from a non-owner must never remove the lock");
+        model.GcLockOwned("owner").Should().BeTrue("the true owner still owns its lock after a non-owner's release");
 
         // The true owner's release DOES remove it — the fence only blocks a non-owner.
-        model.GcLockRelease("successor");
+        model.GcLockRelease("owner");
         model.Fs.DirExists(ClaimModel.GcLock).Should().BeFalse("the current owner's release removes its own lock");
     }
 
-    // ---- Scenario: a replacement active claim is never deleted by a purger that lost ownership ----
+    // ---- Scenario: a contender replacing the lock AFTER the owner's ownership check is impossible ----
 
     [Fact]
-    public void PurgerWhoseLockWasReplaced_FailsTheOwnershipReCheck_AndNeverDeletesTheReplacementActiveClaim()
+    public void AContenderReplacingTheLockAfterTheOwnersOwnershipCheck_Fails_SoTheOwnersDeleteIsSafe()
     {
         var model = NewModel();
-        // A replacement ACTIVE claim (a far-future lease) now occupies the operation directory.
-        model.Fs.Mkdir(ClaimModel.Op);
-        model.Fs.Write(ClaimModel.Lease, (Now + 100_000).ToString());
-        model.Fs.Write(ClaimModel.Created, Now.ToString());
-        // The lock is now owned by the successor that installed the replacement.
-        model.Fs.Mkdir(ClaimModel.GcLock);
-        model.Fs.Write(ClaimModel.GcLockOwner, $"successor {Now}");
+        // An abandoned, expired claim the owner is about to self-recover (delete) under the lock.
+        SeedExpiredClaim(model);
 
-        // The old purger re-verifies ownership immediately before its destructive delete — and fails it.
-        var oldPurgerStillOwns = model.GcLockOwned("old-purger");
+        // The owner wins the non-stealable lock and passes its pre-delete ownership re-check.
+        model.GcLockTry("owner").Should().BeTrue();
+        model.GcLockOwned("owner").Should().BeTrue("the owner holds the lock right up to its destructive action");
 
-        oldPurgerStillOwns.Should().BeFalse("the old purger's token was replaced, so its pre-delete ownership re-check fails");
-        model.Fs.DirExists(ClaimModel.Op).Should().BeTrue("the replacement active claim is never deleted by a purger that lost ownership");
+        // At the ownership-check -> delete seam a contender tries to steal/replace the lock — and fails,
+        // because the lock is held and non-stealable, so it cannot be removed or its token overwritten.
+        model.GcLockTry("contender").Should().BeFalse("the held lock is non-stealable");
+        model.Fs.Read(ClaimModel.GcLockOwner).Should().Be("owner", "the contender could not replace the owner token");
+
+        // The owner — still the sole owner — proceeds with its destructive delete exactly once.
+        model.GcLockOwned("owner").Should().BeTrue();
+        model.Fs.DeleteOp("owner", ClaimModel.Op);
+        model.Fs.Deletions.Should().Equal("owner");
+        model.GcLockRelease("owner");
+        model.Fs.DirExists(ClaimModel.GcLock).Should().BeFalse("the owner releases the lock after its critical section");
     }
 
+    // ---- Scenario: the generation cannot be replaced under a reclaim's held lock ----
+
     [Fact]
-    public void LockReclaimRace_OnlyTheFinalOwnerPassesThePreDeleteOwnershipReCheck()
+    public void AContenderCannotReplaceTheGenerationOrLockAfterAReclaimsCheck_SoTheDeleteStaysGenerationSafe()
     {
         var model = NewModel();
-        // Model the residual gclock_try reclaim race: two purgers both believe they hold a reclaimed lock,
-        // but the owner file's LAST writer wins, so only that token passes the mandatory pre-delete re-check.
-        model.Fs.Mkdir(ClaimModel.GcLock);
-        model.Fs.Write(ClaimModel.GcLockOwner, $"A {Now}");
-        model.Fs.Write(ClaimModel.GcLockOwner, $"B {Now}"); // B's token is the last write.
+        RunToCompletion(model.Run("first")); // Execution 1 commits generation gen-1 with its captured output.
+        var generation = model.Fs.Read(ClaimModel.GenerationFile)!;
 
-        model.GcLockOwned("A").Should().BeFalse("A lost the race, so its pre-delete ownership re-check declines the delete");
-        model.GcLockOwned("B").Should().BeTrue("only the final owner may perform the destructive action");
+        // The reclaim for gen-1 acquires the non-stealable lock and passes its ownership+generation check,
+        // pausing just before the delete.
+        var reclaim = model.ReclaimSteps("reclaimer", generation, ClaimModel.Digest).GetEnumerator();
+        AdvanceUntil(reclaim, ClaimModel.CheckedReclaimEligibilityBeforeDelete);
+
+        // While the reclaim holds the lock a contender tries to (a) steal the lock and (b) replace the
+        // generation by re-claiming the directory. Replacing the generation requires an rm+re-claim that
+        // needs this very lock, so both attempts fail and the current generation cannot change under us.
+        model.GcLockTry("contender").Should().BeFalse("the reclaim's lock is non-stealable");
+        model
+            .Fs.Read(ClaimModel.GenerationFile)
+            .Should()
+            .Be(generation, "the generation cannot be replaced while the reclaim holds the lock");
+
+        // The reclaim resumes and drops exactly the generation it verified, then releases.
+        RunToCompletion(reclaim);
+        model.Fs.FileExists(ClaimModel.StdoutFile).Should().BeFalse("the reclaim drops the verified generation's stdout");
+        model.Fs.FileExists(ClaimModel.StderrFile).Should().BeFalse();
+        model.Fs.DirExists(ClaimModel.GcLock).Should().BeFalse("the reclaim releases the lock it held");
     }
 
     // ---- Scenario: a delayed reclaim from an expired old execution must not touch a newer generation ----
@@ -161,9 +178,37 @@ public class CommandGcLockInterleavingTests
         model.Fs.FileExists(ClaimModel.StdoutFile).Should().BeTrue("a digest mismatch must leave the output intact");
     }
 
+    /// <summary>Seeds a crashed submitter's leftovers: the claim exists with an established-but-expired lease and no manifest.</summary>
+    private static void SeedExpiredClaim(ClaimModel model)
+    {
+        model.Fs.Mkdir(ClaimModel.Op);
+        model.Fs.Write(ClaimModel.Lease, (Now - 100).ToString());
+        model.Fs.Write(ClaimModel.Created, (Now - 10_000).ToString());
+    }
+
+    private static void AdvanceUntil(IEnumerator<string> steps, string label)
+    {
+        while (steps.MoveNext())
+        {
+            if (steps.Current == label)
+            {
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"Model never reached the '{label}' step.");
+    }
+
     private static void RunToCompletion(IEnumerable<string> steps)
     {
         foreach (var _ in steps)
+        {
+        }
+    }
+
+    private static void RunToCompletion(IEnumerator<string> steps)
+    {
+        while (steps.MoveNext())
         {
         }
     }

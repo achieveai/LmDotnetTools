@@ -6,11 +6,12 @@ using Xunit;
 namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 
 /// <summary>
-/// Capability-guarded real-shell proofs of the per-operation GC lock's owner-token fencing and of the
+/// Capability-guarded real-shell proofs of the per-operation GC lock's NON-STEALABLE ownership and of the
 /// lock/generation-safe output reclaim. The lock scenarios source the ACTUAL
 /// <see cref="CommandScripts.GcLockFunctions"/>/<see cref="CommandScripts.UidFunction"/> the wrapper embeds
-/// and drive them under a POSIX shell; the reclaim scenario runs the ACTUAL
-/// <see cref="CommandScripts.BuildReclaim"/> script. Each skips visibly (or fails when
+/// and drive them under a POSIX shell; the run/reclaim scenarios run the ACTUAL
+/// <see cref="CommandScripts.BuildRun"/>/<see cref="CommandScripts.BuildReclaim"/>/
+/// <see cref="CommandScripts.BuildGcPurge"/> scripts. Each skips visibly (or fails when
 /// <c>LMSBX_REQUIRE_POSIX_SHELL</c> is set) when no shell is present — never a silently passing contract test.
 /// </summary>
 public class CommandGcLockRealShellTests
@@ -20,88 +21,72 @@ public class CommandGcLockRealShellTests
     private const string GenNew = "00000000000000000000000000000002";
     private static readonly string S_digest = new('d', 64);
 
-    // ---- Scenario: a contender during the mkdir -> owner-token establishment gap ----
+    // ---- Scenario: the lock is non-stealable — any existing lock makes a contender back off ----
 
-    [SkippableFact]
-    public async Task RealShell_OwnerlessLock_IsTreatedLive_AndAContenderBacksOff()
+    public static IEnumerable<object[]> NonStealableLockScenarios =>
+        [
+            ["an owner-less lock (a holder in the mkdir->token gap)", null!],
+            ["a freshly-owned lock", "holder"],
+            ["a would-be-stale owned lock (a crashed holder — once TTL-reclaimed, now never)", "crashed-holder 1"],
+        ];
+
+    [SkippableTheory]
+    [MemberData(nameof(NonStealableLockScenarios))]
+    public async Task RealShell_AnyExistingLock_IsNeverStolen_AContenderBacksOff(string scenario, string? ownerContents)
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
-        // A holder won the atomic mkdir of the lock but has not yet written its owner token.
-        SeedOwnerlessLock(workspace);
+        SeedLock(workspace, ownerContents);
 
         var result = await RunLockAsync(
             workspace,
             owner: "contender",
-            body: "if gclock_try; then printf ACQUIRED; else printf BACKED_OFF; fi"
+            body: "if gclock_try; then printf STOLE; else printf BACKED_OFF; fi"
         );
 
-        result.Stdout.Trim().Should().Be("BACKED_OFF", "an owner-less lock is treated LIVE, so a contender in the gap backs off");
-        LockOwner(workspace).Should().BeNull("the contender must not reclaim or write an owner token into the establishing lock");
-        LockExists(workspace).Should().BeTrue();
+        result.Stdout.Trim().Should().Be("BACKED_OFF", scenario + " is non-stealable, so a contender backs off");
+        LockExists(workspace).Should().BeTrue("the contender must never remove an existing lock");
+        LockOwner(workspace)
+            .Should()
+            .Be(ownerContents, "the contender must never write or overwrite a lock it does not hold");
     }
 
-    // ---- Scenario: stale owner replacement ----
+    // ---- Scenario: a release from a caller that does not hold the lock must never remove it ----
 
     [SkippableFact]
-    public async Task RealShell_StaleOwnerLock_IsReclaimed_AndReElectedToASingleNewOwner()
+    public async Task RealShell_ReleaseByANonOwner_NeverRemovesTheLock_ButTheOwnersReleaseDoes()
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
-        // A crashed holder's leftover: an owner token stamped in the distant past (older than the TTL).
-        SeedLockOwner(workspace, token: "crashed-owner", timestamp: 1);
+        SeedLock(workspace, "owner");
 
-        var result = await RunLockAsync(
+        // A caller that does not hold the lock issues its release — it must be a no-op.
+        var byNonOwner = await RunLockAsync(
             workspace,
-            owner: "replacement",
-            body: "if gclock_try; then printf 'OWNED '; cut -d' ' -f1 \"$GCL/owner\"; else printf FAILED; fi"
-        );
-
-        result.Stdout.Should().StartWith("OWNED ", "the stale lock is reclaimed");
-        result.Stdout.Should().Contain("replacement", "and re-elected to the single new owner");
-        OwnerToken(workspace).Should().Be("replacement");
-    }
-
-    // ---- Scenario: an old owner's DELAYED release must not remove a successor's lock ----
-
-    [SkippableFact]
-    public async Task RealShell_DelayedReleaseByAnOldOwner_NeverRemovesASuccessorsLock()
-    {
-        await PosixShellHarness.RequireCapabilityAsync();
-        using var workspace = PosixShellHarness.NewWorkspace();
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        // A successor currently holds a freshly stamped lock.
-        SeedLockOwner(workspace, token: "successor", timestamp: now);
-
-        // The old owner (whose lock the successor already stale-reclaimed) issues its delayed release.
-        var delayed = await RunLockAsync(
-            workspace,
-            owner: "old-owner",
+            owner: "not-the-owner",
             body: "gclock_release; if [ -d \"$GCL\" ]; then printf PRESERVED; else printf REMOVED; fi"
         );
 
-        delayed.Stdout.Trim().Should().Be("PRESERVED", "a delayed release from an old owner must not remove the successor's lock");
-        OwnerToken(workspace).Should().Be("successor", "the successor still owns its lock after the old owner's release");
+        byNonOwner.Stdout.Trim().Should().Be("PRESERVED", "a release from a non-owner must never remove the lock");
+        OwnerToken(workspace).Should().Be("owner", "the true owner still owns its lock after a non-owner's release");
 
         // The true owner's release DOES remove it — the fence only blocks a non-owner.
-        var owned = await RunLockAsync(
+        var byOwner = await RunLockAsync(
             workspace,
-            owner: "successor",
+            owner: "owner",
             body: "gclock_release; if [ -d \"$GCL\" ]; then printf PRESERVED; else printf REMOVED; fi"
         );
-        owned.Stdout.Trim().Should().Be("REMOVED", "the current owner's release removes its own lock");
+        byOwner.Stdout.Trim().Should().Be("REMOVED", "the current owner's release removes its own lock");
     }
 
-    // ---- Scenario: a purger that lost ownership never deletes a replacement active claim ----
+    // ---- Scenario: a purger that does not own the lock never deletes ----
 
     [SkippableFact]
-    public async Task RealShell_PurgerThatLostOwnership_FailsThePreDeleteOwnershipReCheck()
+    public async Task RealShell_APurgerThatDoesNotOwnTheLock_FailsThePreDeleteOwnershipReCheck()
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        // The lock is now owned by the successor that installed a replacement active claim.
-        SeedLockOwner(workspace, token: "successor", timestamp: now);
+        SeedLock(workspace, "owner");
 
         // The old purger re-verifies its own token immediately before the destructive action — and fails.
         var result = await RunLockAsync(
@@ -110,25 +95,81 @@ public class CommandGcLockRealShellTests
             body: "if gclock_owned; then printf WOULD_DELETE; else printf SPARED; fi"
         );
 
-        result.Stdout.Trim().Should().Be("SPARED", "a purger whose token was replaced must decline the delete, sparing the replacement claim");
+        result.Stdout.Trim().Should().Be("SPARED", "a caller that does not own the lock must decline the destructive action");
     }
 
-    [SkippableFact]
-    public async Task RealShell_OwnerlessLock_BlocksAStaleSweepPurge_EndToEnd()
+    [SkippableTheory]
+    [InlineData("an owner-less establishing lock", null)]
+    [InlineData("an owned (crash-orphaned) lock", "crashed-holder 1")]
+    public async Task RealShell_AnyPreExistingLock_BlocksAStaleSweepPurge_EndToEnd(string scenario, string? ownerContents)
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
         // A claim that would otherwise be purged (expired + strictly past the retention window)...
         SeedClaimDirectory(workspace, Op, lease: 1, created: 1);
-        // ...but an owner-less GC lock (a holder mid-establishment) is present beside it.
+        // ...but a pre-existing GC lock beside it (in-flight or crash-orphaned).
         Directory.CreateDirectory(workspace.HostFile($".lmsbx-sdk/ops/{Op}.gc"));
+        if (ownerContents is not null)
+        {
+            File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}.gc/owner"), ownerContents);
+        }
 
         await PosixShellHarness.RunAsync(CommandScripts.BuildGcPurge(Op), workspace);
 
         Directory
             .Exists(workspace.HostFile($".lmsbx-sdk/ops/{Op}"))
             .Should()
-            .BeTrue("a purger must treat the owner-less (establishing) lock as live and never delete under it");
+            .BeTrue(scenario + " is non-stealable, so the purger never wins the lock and never deletes under it");
+    }
+
+    // ---- Scenario: a crash-orphaned cleanup lock freezes same-id recovery, but the manifest fast path survives ----
+
+    [SkippableFact]
+    public async Task RealShell_OrphanLock_FreezesSameIdRunRecovery_ButAManifestIsStillFastPathed()
+    {
+        await PosixShellHarness.RequireCapabilityAsync();
+        using var workspace = PosixShellHarness.NewWorkspace();
+        var argv = PosixArgv.Join(["sh", "-c", "printf out"]);
+
+        // An abandoned, expired claim (established-but-expired lease, no manifest) beside a crash-orphaned GC
+        // lock. Normally a same-id RUN would self-recover the abandoned claim; the orphan lock freezes it.
+        SeedClaimDirectory(workspace, Op, lease: 1, created: 1);
+        Directory.CreateDirectory(workspace.HostFile($".lmsbx-sdk/ops/{Op}.gc"));
+
+        var frozen = await PosixShellHarness.RunAsync(
+            CommandScripts.BuildRun(Op, S_digest, argv, string.Empty, 120),
+            workspace
+        );
+
+        CommandSentinel
+            .Parse(frozen.Stdout)
+            .Kind.Should()
+            .Be(
+                CommandSentinel.KindPending,
+                "a crash-orphaned cleanup lock is retained interrupted state — same-id recovery is frozen, never re-run"
+            );
+        workspace
+            .HostFileExists($".lmsbx-sdk/ops/{Op}/manifest.json")
+            .Should()
+            .BeFalse("the frozen RUN must not have run the command (no duplicate side effect)");
+        Directory
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{Op}.gc"))
+            .Should()
+            .BeTrue("the orphan lock is left intact — never stolen");
+
+        // A committed manifest is ALWAYS recovered from the fast path, which never consults the lock — so
+        // 24h retention / same-id idempotency survives even while the orphan lock is present.
+        File.WriteAllText(workspace.HostFile($".lmsbx-sdk/ops/{Op}/manifest.json"), "{}");
+
+        var recovered = await PosixShellHarness.RunAsync(
+            CommandScripts.BuildRun(Op, S_digest, argv, string.Empty, 120),
+            workspace
+        );
+
+        CommandSentinel
+            .Parse(recovered.Stdout)
+            .Kind.Should()
+            .Be(CommandSentinel.KindManifest, "a committed manifest is fast-pathed even under an orphan lock");
     }
 
     // ---- Scenario: a delayed reclaim from an expired old execution must not touch a newer generation ----
@@ -194,13 +235,12 @@ public class CommandGcLockRealShellTests
         sidecar.Should().Be(manifest.Generation);
     }
 
-    private static async Task<ShellResult> RunLockAsync(ShellWorkspace workspace, string owner, string body, long ttl = 300)
+    private static async Task<ShellResult> RunLockAsync(ShellWorkspace workspace, string owner, string body)
     {
         var script = string.Join(
             '\n',
             "GCL=\"$SANDBOX_WORKSPACE/op.gc\"",
             $"OWNER='{owner}'",
-            $"GCLOCKTTL={ttl}",
             CommandScripts.UidFunction,
             CommandScripts.GcLockFunctions,
             body
@@ -208,14 +248,15 @@ public class CommandGcLockRealShellTests
         return await PosixShellHarness.RunAsync(script, workspace);
     }
 
-    private static void SeedOwnerlessLock(ShellWorkspace workspace) =>
-        Directory.CreateDirectory(workspace.HostFile("op.gc"));
-
-    private static void SeedLockOwner(ShellWorkspace workspace, string token, long timestamp)
+    /// <summary>Seeds a per-operation GC lock: the <c>op.gc</c> directory, optionally with an exact <c>owner</c> file (a holder mid-establishment has none).</summary>
+    private static void SeedLock(ShellWorkspace workspace, string? ownerContents)
     {
         var directory = workspace.HostFile("op.gc");
         Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, "owner"), $"{token} {timestamp}");
+        if (ownerContents is not null)
+        {
+            File.WriteAllText(Path.Combine(directory, "owner"), ownerContents);
+        }
     }
 
     private static bool LockExists(ShellWorkspace workspace) => Directory.Exists(workspace.HostFile("op.gc"));

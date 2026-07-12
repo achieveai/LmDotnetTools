@@ -96,7 +96,7 @@ internal sealed class ClaimModel
     public const string StderrFile = "root/op/stderr";
     public const string Manifest = "root/op/manifest.json";
 
-    /// <summary>The sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) and the owner-token file (<c>"&lt;token&gt; &lt;ts&gt;"</c>) that fences it.</summary>
+    /// <summary>The sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) and the owner-token file (<c>"&lt;token&gt;"</c>) that fences it.</summary>
     public const string GcLock = "root/op.gc";
     public const string GcLockOwner = "root/op.gc/owner";
 
@@ -112,15 +112,17 @@ internal sealed class ClaimModel
     /// <summary>Boundary: a purger/self-recovery has won the per-operation GC lock but has NOT yet re-validated or deleted.</summary>
     public const string WonGcLock = "won-gclock";
 
-    /// <summary>Boundary: a purger lost the GC-lock election (a live holder owns it) and will NOT delete.</summary>
+    /// <summary>Boundary: a purger lost the GC-lock election (a holder owns it) and will NOT delete.</summary>
     public const string LostGcLock = "lost-gclock";
 
     /// <summary>Boundary (pre-fix only): an unlocked purger re-validated the claim as stale but has NOT yet deleted — the serialization hole the GC lock closes.</summary>
     public const string DecidedPurgeWithoutLock = "decided-purge-without-lock";
 
+    /// <summary>Boundary: a reclaim holding the non-stealable lock has re-read the current generation/digest and re-verified ownership, but has NOT yet deleted the output.</summary>
+    public const string CheckedReclaimEligibilityBeforeDelete = "checked-reclaim-eligibility-before-delete";
+
     private const long Exec = 120;
     private const long Grace = 300;
-    private const long GcLockTtl = CommandArtifactLayout.GcLockStaleSeconds;
     private const long StaleAge = CommandArtifactLayout.StaleAgeSeconds;
 
     private readonly bool _takeoverEnabled;
@@ -143,21 +145,14 @@ internal sealed class ClaimModel
             yield break;
         }
 
-        // F3: claim creation respects a live GC lock — never race an in-progress purge's delete. A stale
-        // lock is reclaimed through the ownership protocol (gclock_try then a token-checked release),
-        // never a blind rm that could delete a successor's freshly-elected lock.
+        // The sibling GC lock is non-stealable: its mere presence (an in-flight purge/reclaim/self-recovery
+        // or a crash-orphaned lock) makes this RUN report PENDING rather than create or recover a claim that
+        // races (or is frozen behind) it. A committed manifest was already fast-pathed above, so an orphaned
+        // lock never blocks same-id idempotency — only this operation's maintenance.
         if (Fs.DirExists(GcLock))
         {
-            if (GcLockIsLive())
-            {
-                Fs.Emit(caller, Fs.FileExists(Manifest) ? "MANIFEST" : "PENDING");
-                yield break;
-            }
-
-            if (GcLockTry(caller))
-            {
-                GcLockRelease(caller);
-            }
+            Fs.Emit(caller, Fs.FileExists(Manifest) ? "MANIFEST" : "PENDING");
+            yield break;
         }
 
         if (Fs.Mkdir(Op)) // if mkdir "$OP"; then claim_run; exit 0
@@ -193,10 +188,10 @@ internal sealed class ClaimModel
             }
         }
 
-        // Shipped (F2): self-recover an abandoned claim — an ESTABLISHED, EXPIRED lease with no manifest.
-        // The delete + re-election happen under the per-operation GC lock, re-validating the CURRENT
-        // state under the lock, so exactly one new claimant runs and a still-active/replaced claim is
-        // never destroyed. A lease-less or unexpired (active) claim is never recovered.
+        // Shipped: self-recover an abandoned claim — an ESTABLISHED, EXPIRED lease with no manifest. The
+        // delete + re-election happen under the per-operation NON-STEALABLE GC lock, re-validating the
+        // CURRENT state under the lock, so exactly one new claimant runs and a still-active/replaced claim
+        // is never destroyed. A lease-less or unexpired (active) claim is never recovered.
         if (!_takeoverEnabled && Fs.FileExists(Lease) && IsExpired() && GcLockTry(caller))
         {
             yield return WonGcLock;
@@ -270,52 +265,24 @@ internal sealed class ClaimModel
     }
 
     /// <summary>
-    /// Mirrors <c>gclock_is_live</c>: a lock whose owner token is not yet present is treated LIVE (the
-    /// <c>mkdir</c>→token establishment gap — favour safety over liveness); a lock WITH a token is fresh
-    /// only while stamped within the bounded TTL.
+    /// Mirrors the NON-STEALABLE <c>gclock_try</c>: win the atomic <c>mkdir</c> (writing the owner token),
+    /// or — if the lock already exists (any holder, or a crash-orphaned lock) — fail outright. It never
+    /// removes or replaces an existing lock, so there is no TTL and no liveness notion: portable
+    /// <c>sh</c> has no atomic compare-and-delete, and a steal would be a racy read-modify-write. Returns
+    /// whether THIS token now owns the lock.
     /// </summary>
-    public bool GcLockIsLive()
-    {
-        if (!Fs.DirExists(GcLock))
-        {
-            return false;
-        }
-
-        var owner = Fs.Read(GcLockOwner);
-        if (owner is null)
-        {
-            return true;
-        }
-
-        var stamp = OwnerTs(owner);
-        return stamp > 0 && Fs.Now - stamp <= GcLockTtl;
-    }
-
-    /// <summary>Mirrors <c>gclock_try</c>: win the atomic mkdir (writing the owner token), or reclaim a stale lock and re-elect a single owner. Returns whether THIS token now owns the lock.</summary>
     public bool GcLockTry(string token)
     {
-        if (Fs.Mkdir(GcLock))
-        {
-            GcLockWriteOwner(token);
-            return GcLockOwned(token);
-        }
-
-        if (GcLockIsLive())
+        if (!Fs.Mkdir(GcLock))
         {
             return false;
         }
 
-        Fs.RmRf(GcLock);
-        if (Fs.Mkdir(GcLock))
-        {
-            GcLockWriteOwner(token);
-            return GcLockOwned(token);
-        }
-
-        return false;
+        GcLockWriteOwner(token);
+        return GcLockOwned(token);
     }
 
-    /// <summary>Mirrors <c>gclock_release</c>: remove the lock ONLY while still owned, so a delayed old owner never deletes a successor's lock.</summary>
+    /// <summary>Mirrors <c>gclock_release</c>: remove the lock ONLY while still owned, so a caller that no longer holds it never deletes the lock.</summary>
     public void GcLockRelease(string token)
     {
         if (GcLockOwned(token))
@@ -332,17 +299,32 @@ internal sealed class ClaimModel
     /// </summary>
     public void Reclaim(string caller, string expectedGeneration, string expectedDigest)
     {
+        foreach (var _ in ReclaimSteps(caller, expectedGeneration, expectedDigest))
+        {
+        }
+    }
+
+    /// <summary>
+    /// A step-resumable reclaim that yields at the ownership/generation-check boundary
+    /// (<see cref="CheckedReclaimEligibilityBeforeDelete"/>) so a test can interleave a contender that
+    /// attempts to replace the lock or the generation AFTER the check but before the delete — and prove the
+    /// non-stealable lock makes both impossible, so the delete only ever targets the matching generation.
+    /// </summary>
+    public IEnumerable<string> ReclaimSteps(string caller, string expectedGeneration, string expectedDigest)
+    {
         if (!GcLockTry(caller))
         {
-            return;
+            yield break;
         }
 
-        if (
+        yield return WonGcLock;
+        var eligible =
             Fs.FileExists(Manifest)
             && Fs.Read(GenerationFile) == expectedGeneration
             && Fs.Read(DigestFile) == expectedDigest
-            && GcLockOwned(caller)
-        )
+            && GcLockOwned(caller);
+        yield return CheckedReclaimEligibilityBeforeDelete;
+        if (eligible)
         {
             Fs.Remove(StdoutFile);
             Fs.Remove(StderrFile);
@@ -351,15 +333,9 @@ internal sealed class ClaimModel
         GcLockRelease(caller);
     }
 
-    private void GcLockWriteOwner(string token) => Fs.Write(GcLockOwner, $"{token} {Fs.Now}");
+    private void GcLockWriteOwner(string token) => Fs.Write(GcLockOwner, token);
 
     private static string OwnerToken(string owner) => owner.Split(' ')[0];
-
-    private static long OwnerTs(string owner)
-    {
-        var parts = owner.Split(' ');
-        return parts.Length > 1 && long.TryParse(parts[1], out var ts) ? ts : 0;
-    }
 
     /// <summary>The stale-sweep re-validation: expired lease AND strictly past the 24h retention window, read at delete time.</summary>
     private bool RevalidateStaleForSweep()

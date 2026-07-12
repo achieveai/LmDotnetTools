@@ -142,21 +142,30 @@ forever — retention is bounded so artifacts cannot accumulate without limit.
 expired lease and no manifest) is recovered in place by the next same-id call — it does **not** wait for
 the 24h sweep and does **not** depend on any unrelated command. The recovery deletes the abandoned claim
 and re-elects exactly one new claimant, but only under a sibling per-operation **GC lock** with **real
-exclusive ownership**: the lock is a directory elected by an atomic `mkdir`, and its sole owner is
-identified by a **unique owner token** persisted inside it. Every destructive action (a purge, a
-self-recovery delete, an output reclaim) re-verifies that token immediately before acting *and* on release
-— so a delayed release from an old owner whose lock was already stale-reclaimed by a successor can never
-delete the successor's lock, and a purger that lost ownership never deletes a replacement active claim.
-Claim creation and the stale-sweep purge both respect that lock — only the token-verified owner may
-revalidate and delete, losing purgers never delete — so a purge in progress can never be raced into a
-double-run. A still-active or still-establishing (lease-less) claim is never recovered: a same-id caller
-there reports PENDING and polls the manifest rather than resubmitting. A crashed holder's stale GC lock
-(one whose owner token is present but stamped past a bounded TTL) is reclaimed and re-elected to a single
-new owner, so it can never block recovery permanently. Safety is favoured over liveness for the tiny
-`mkdir`→token establishment window: a lock with **no** owner token yet is treated as *live* (never
-reclaimed into double ownership), so a crash in that single-write window can orphan one operation's lock —
-bounded in blast radius to that operation's maintenance, never its same-id idempotency, until the artifact
-root is reset.
+exclusive, non-stealable ownership**: the lock is a directory elected by an atomic `mkdir`, and its sole
+owner is identified by a **unique owner token** persisted inside it. Once the `mkdir` wins, **no contender
+may ever remove or replace that lock** (a `try` that finds it present simply fails), and only the persisted
+matching owner releases it — after its entire critical section. Every destructive action (a purge, a
+self-recovery delete, an output reclaim) runs while that lock is held and re-verifies its own token
+immediately before acting, so a caller that does not hold the lock never deletes, and a purger that lost
+the election never deletes a replacement active claim. Claim creation and the stale-sweep purge both defer
+to the lock — so a purge in progress can never be raced into a double-run. A still-active or
+still-establishing (lease-less) claim is never recovered: a same-id caller there reports PENDING and polls
+the manifest rather than resubmitting.
+
+The lock is deliberately non-stealable because portable POSIX `sh` has **no atomic compare-and-delete**:
+any TTL-based "reclaim a stale lock" (check liveness, then remove, then re-create) is a racy
+read-modify-write that can delete a lock another holder just re-established, leaving two simultaneous
+owners. Removing stealing outright closes that class of race — at a narrow, honestly-stated cost. **A
+holder that crashes while holding the lock (including in the single-syscall `mkdir`→first-write window)
+orphans that one operation's lock.** A crash-orphaned cleanup lock is treated as **retained interrupted
+state**: the operation's maintenance (purge, output reclaim, abandoned-claim self-recovery) and any same-id
+re-run are frozen — favouring **no duplicate and no lost side effect over cleanup liveness** — until the
+sandbox is explicitly deleted (or a future gateway primitive resets the artifact root). The blast radius is
+exactly that one operation id: every other operation uses its own sibling lock and is unaffected, and a
+**committed operation is still recovered from its manifest fast path**, which never consults the lock — so
+an orphaned lock never blocks same-id idempotency or the 24-hour retention guarantee, only that operation's
+own cleanup.
 
 Because the gateway may rematerialize a lost container and retry the underlying invocation once,
 command execution is **at-least-once**: a non-idempotent command can run more than once even though the
@@ -175,10 +184,11 @@ completion marker described above; an interrupted, transport-timed-out, or integ
 retains all of its artifacts for recovery. The reclaim is **lock- and generation-safe**: the manifest
 carries an immutable per-execution **generation** id, and the reclaim deletes the captured streams only
 while holding the GC lock and only after re-reading, under that lock, that the directory's *current*
-generation and command digest still match the ones the SDK verified. Because the artifact directory is
-keyed on the session and operation id (not the command), the same directory can be reused across
-executions once the window elapses — so a delayed reclaim issued by an expired *old* execution finds a
-different generation and leaves the *newer* re-execution's output intact. Each successful command also runs
+generation and command digest still match the ones the SDK verified. Because the lock is non-stealable it
+is held unbroken from that re-read to the delete, so the current generation cannot change under it. Because
+the artifact directory is keyed on the session and operation id (not the command), the same directory can
+be reused across executions once the window elapses — so a delayed reclaim issued by an expired *old*
+execution finds a different generation and leaves the *newer* re-execution's output intact. Each successful command also runs
 a bounded, session-scoped stale sweep that deletes only artifacts whose lease has expired and that are
 **strictly older than the 24-hour retention window** (active operations are protected, and an operation
 exactly at the boundary is still retained). The sweep re-validates each directory's *current* lease/age in

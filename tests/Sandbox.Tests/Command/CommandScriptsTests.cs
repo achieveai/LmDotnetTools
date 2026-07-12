@@ -56,15 +56,16 @@ public class CommandScriptsTests
     }
 
     [Fact]
-    public void BuildRun_RespectsAnActiveGcLock_BeforeCreatingAClaim()
+    public void BuildRun_DefersToAnyExistingGcLock_BeforeCreatingAClaim()
     {
         var script = CommandScripts.BuildRun(Op, "digest", "'ls'", string.Empty, 120);
 
-        // Claim creation checks the sibling GC lock and its liveness, so a claim is never created into an
-        // in-progress purge of the same operation.
+        // The GC lock is non-stealable, so its mere presence (an in-flight purge/reclaim/self-recovery or a
+        // crash-orphaned lock) makes RUN report PENDING rather than create a claim that races it — never a
+        // liveness/TTL check and never a steal.
         script.Should().Contain("GCL=\"$OP.gc\"");
-        script.Should().Contain("if [ -d \"$GCL\" ]; then");
-        script.Should().Contain("gclock_is_live");
+        script.Should().Contain("if [ -d \"$GCL\" ]; then break; fi");
+        script.Should().NotContain("gclock_is_live", "the non-stealable lock has no liveness/TTL notion");
     }
 
     [Fact]
@@ -138,19 +139,29 @@ public class CommandScriptsTests
     }
 
     [Fact]
-    public void GcLock_UsesOwnerTokenFencing_LiveOnMissingToken_AndReleaseIsOwnershipChecked()
+    public void GcLock_IsNonStealable_MkdirElectedOwnerTokenFenced_AndReleaseIsOwnershipChecked()
     {
-        // Every GC-lock-bearing script carries the owner-token primitives: a per-acquisition token
-        // (lmsbx_uid) written into <op>.gc/owner, an ownership check, a release gated on ownership, and a
-        // liveness rule that treats an owner-less (mid-establishment) lock as LIVE rather than stale.
-        foreach (var script in new[] { CommandScripts.BuildRun(Op, Digest, "'ls'", string.Empty, 120), CommandScripts.BuildGcPurge(Op), CommandScripts.BuildReclaim(Op, Gen, Digest) })
+        // Every GC-lock-bearing script carries the non-stealable owner-token primitives: a per-acquisition
+        // token (lmsbx_uid) written into <op>.gc/owner, a gclock_try that ONLY wins the atomic mkdir (never
+        // steals an existing lock), an ownership check, and a release gated on ownership.
+        foreach (
+            var script in new[]
+            {
+                CommandScripts.BuildRun(Op, Digest, "'ls'", string.Empty, 120),
+                CommandScripts.BuildGcPurge(Op),
+                CommandScripts.BuildReclaim(Op, Gen, Digest),
+            }
+        )
         {
             script.Should().Contain("OWNER=$(lmsbx_uid)");
             script.Should().Contain("> \"$GCL/owner\"", "the owner token is persisted inside the lock directory");
             script.Should().Contain("gclock_owned() { [ -f \"$GCL/owner\" ] && [ \"$(gclock_owner_token)\" = \"$OWNER\" ]; }");
-            // A lock with no owner token yet is treated LIVE (favor safety over liveness in the mkdir->token gap).
-            script.Should().Contain("[ -f \"$GCL/owner\" ] || return 0");
-            // Release removes the lock ONLY when still owned — never a successor's lock.
+            // Acquisition is a single atomic mkdir with NO fallback steal (no liveness/TTL check, no
+            // rm-then-remkdir), so once a lock exists no contender can ever remove or replace it.
+            script.Should().Contain("gclock_try() { mkdir \"$GCL\" 2>/dev/null || return 1; gclock_write_owner; gclock_owned; }");
+            script.Should().NotContain("gclock_is_live", "a non-stealable lock has no liveness/TTL notion");
+            script.Should().NotContain("GCLOCKTTL", "a non-stealable lock has no TTL");
+            // Release removes the lock ONLY when still owned — never a lock the caller does not hold.
             script.Should().Contain("gclock_release() { gclock_owned && rm -rf \"$GCL\" 2>/dev/null; return 0; }");
         }
     }

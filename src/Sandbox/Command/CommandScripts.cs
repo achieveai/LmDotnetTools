@@ -129,45 +129,47 @@ internal static class CommandScripts
     /// of an operation directory (a stale-sweep purge or an abandoned-claim self-recovery) and reclaim of
     /// output may proceed ONLY while holding this lock, and every holder both re-validates the operation's
     /// CURRENT state and re-verifies its own token (<c>gclock_owned</c>) immediately before the destructive
-    /// action — so exactly one true owner ever deletes, even in the rare <c>gclock_try</c> reclaim race.
+    /// action.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Owner-token fencing.</b> <c>gclock_owned</c> is true only while <c>&lt;op&gt;.gc/owner</c> still
-    /// carries THIS caller's token. Every destructive action is gated on it, and <c>gclock_release</c>
-    /// removes the lock ONLY when still owned — so a delayed release from an old owner whose lock was
-    /// already stale-reclaimed by a successor can NEVER delete the successor's lock (the double-ownership
-    /// bug this closes).
+    /// <b>The lock is NON-STEALABLE.</b> The only way to acquire it is to win the atomic <c>mkdir</c>; once
+    /// that succeeds no contender may ever remove or replace it. <c>gclock_try</c> that finds the directory
+    /// already present simply fails (it never deletes), and only the persisted matching owner removes it —
+    /// in <c>gclock_release</c>, after its whole critical section. This is deliberate: portable POSIX
+    /// <c>sh</c> has no atomic compare-and-delete, so any TTL-based "reclaim a stale lock" (check liveness,
+    /// then <c>rm -rf</c>, then re-<c>mkdir</c>) is a non-atomic read-modify-write in which a contender can
+    /// delete a lock another holder just (re-)established and both then believe they own it. That entire
+    /// class of double-ownership race is designed out by never stealing — the lock has no TTL and no
+    /// liveness notion at all.
     /// </para>
     /// <para>
-    /// <b>Liveness favours safety.</b> <c>gclock_is_live</c> treats a lock whose <c>owner</c> file is not
-    /// yet present as LIVE — a just-<c>mkdir</c>'d lock mid-establishment (the tiny <c>mkdir</c>→token
-    /// window) is respected, never reclaimed, so a contender in that window backs off instead of racing
-    /// into double ownership. A lock WITH an owner token is fresh only while stamped within
-    /// <see cref="CommandArtifactLayout.GcLockStaleSeconds"/>; an old stamp is a crashed holder's leftover
-    /// that <c>gclock_try</c> reclaims (<c>rm -rf</c> + re-<c>mkdir</c> + re-token). The residual boundary
-    /// is honest: a crash in the single-syscall <c>mkdir</c>→first-write window leaves an owner-less lock
-    /// that the fast TTL will not reclaim (it is treated live forever), blocking only that one operation's
-    /// maintenance — never same-id idempotency or the manifest fast path — until the artifact root is
-    /// reset. Correctness never relies on the TTL: every delete is additionally gated on a fresh under-lock
-    /// re-validation and the owner-token re-check.
+    /// <b>Owner-token fencing.</b> <c>gclock_owned</c> is true only while <c>&lt;op&gt;.gc/owner</c> still
+    /// carries THIS caller's token. Every destructive action is gated on it, and <c>gclock_release</c>
+    /// removes the lock ONLY when still owned. Because the lock is non-stealable the token can never in fact
+    /// be overwritten by another caller (a contender's <c>mkdir</c> fails, so it never reaches
+    /// <c>gclock_write_owner</c>), so the check is a locally verifiable proof that only the true owner ever
+    /// deletes or releases — never a delayed actor that no longer holds the lock.
+    /// </para>
+    /// <para>
+    /// <b>Safety boundary (correctness over cleanup liveness).</b> Because the lock is never reclaimed, a
+    /// holder that crashes — in the single-syscall <c>mkdir</c>→first-write window, or anywhere inside its
+    /// critical section — orphans that one operation's <c>&lt;op&gt;.gc</c>. That orphan is honestly treated
+    /// as retained interrupted state: the operation's maintenance (purge / output reclaim / abandoned-claim
+    /// self-recovery) and any same-id re-run are frozen — favouring no duplicate and no lost side effect
+    /// over cleanup liveness — until the sandbox is explicitly deleted (or a future gateway primitive resets
+    /// the artifact root). The blast radius is exactly that one operation id: every other operation uses its
+    /// own sibling lock and runs unaffected, and a committed operation is still recovered from its manifest
+    /// fast path, which never consults the lock.
     /// </para>
     /// </remarks>
     internal const string GcLockFunctions =
         NumFunction
         + "\n"
         + "gclock_owner_token() { cut -d' ' -f1 \"$GCL/owner\" 2>/dev/null; }\n"
-        + "gclock_owner_ts() { _t=$(cut -d' ' -f2 \"$GCL/owner\" 2>/dev/null); case \"$_t\" in ''|*[!0-9]*) _t=0 ;; esac; printf '%s' \"$_t\"; }\n"
         + "gclock_owned() { [ -f \"$GCL/owner\" ] && [ \"$(gclock_owner_token)\" = \"$OWNER\" ]; }\n"
-        + "gclock_is_live() { [ -d \"$GCL\" ] || return 1; [ -f \"$GCL/owner\" ] || return 0; "
-        + "_lts=$(gclock_owner_ts); _now=$(date +%s); [ \"$_lts\" -gt 0 ] && [ \"$((_now - _lts))\" -le \"$GCLOCKTTL\" ]; }\n"
-        + "gclock_write_owner() { printf '%s %s' \"$OWNER\" \"$(date +%s)\" > \"$GCL/owner\" 2>/dev/null; }\n"
-        + "gclock_try() { "
-        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_write_owner; gclock_owned; return; fi; "
-        + "if gclock_is_live; then return 1; fi; "
-        + "rm -rf \"$GCL\" 2>/dev/null; "
-        + "if mkdir \"$GCL\" 2>/dev/null; then gclock_write_owner; gclock_owned; return; fi; "
-        + "return 1; }\n"
+        + "gclock_write_owner() { printf '%s' \"$OWNER\" > \"$GCL/owner\" 2>/dev/null; }\n"
+        + "gclock_try() { mkdir \"$GCL\" 2>/dev/null || return 1; gclock_write_owner; gclock_owned; }\n"
         + "gclock_release() { gclock_owned && rm -rf \"$GCL\" 2>/dev/null; return 0; }";
 
     /// <summary>
@@ -187,9 +189,12 @@ internal static class CommandScripts
     /// (<c>gclock_try</c>) and ONLY after re-validating, under that lock, that the claim is still expired
     /// and uncommitted, then it re-elects exactly one new claimant via the same atomic <c>mkdir</c>. A
     /// still-active or still-establishing (lease-less) claim is never recovered — a same-id caller there
-    /// reports PENDING and polls rather than resubmitting — and claim creation itself respects a live GC
-    /// lock, so a purge in progress can never be raced into a double-run. The claim loop is bounded (one
-    /// recovery attempt), so it always terminates.
+    /// reports PENDING and polls rather than resubmitting — and claim creation itself defers to the sibling
+    /// GC lock: the lock is non-stealable, so its mere presence (an in-flight purge/reclaim/self-recovery,
+    /// or a crash-orphaned lock) makes this RUN report PENDING rather than race it, so a purge in progress
+    /// can never be raced into a double-run and an orphaned lock freezes only this operation's maintenance,
+    /// never the manifest fast path. The claim loop is bounded (one recovery attempt), so it always
+    /// terminates.
     /// </para>
     /// <para>
     /// <b>Umask is scoped to SDK artifacts only.</b> A restrictive <c>umask 077</c> governs the
@@ -239,7 +244,6 @@ internal static class CommandScripts
             "THRESH=" + CommandArtifactLayout.InlineThresholdBytes.ToString(CultureInfo.InvariantCulture),
             "EXEC=" + executionTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
             "GRACE=" + CommandArtifactLayout.LeaseGraceSeconds.ToString(CultureInfo.InvariantCulture),
-            "GCLOCKTTL=" + CommandArtifactLayout.GcLockStaleSeconds.ToString(CultureInfo.InvariantCulture),
             "SENT='" + CommandSentinel.Marker + "'",
             Sha256Function,
             StreamJsonFunction,
@@ -278,23 +282,22 @@ internal static class CommandScripts
             "while [ \"$attempt\" -lt 2 ]; do",
             "  attempt=$((attempt+1))",
             "  if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
-            // Respect an in-progress purge of THIS operation: while a live GC lock is held a purger may be
-            // deleting the directory, so never create/recover a claim that races it — fall through to
-            // PENDING and let a later retry proceed. A stale lock (a crashed holder) is reclaimed through
-            // the ownership protocol (gclock_try then a token-checked release) — never a blind rm that
-            // could delete a successor's freshly-elected lock.
-            "  if [ -d \"$GCL\" ]; then",
-            "    if gclock_is_live; then break; fi",
-            "    if gclock_try; then gclock_release; fi",
-            "  fi",
+            // Defer to the sibling GC lock of THIS operation. The lock is non-stealable, so its mere
+            // presence means either a purge/reclaim/self-recovery is in flight or a holder crashed and
+            // orphaned it. Either way this RUN must not create or recover a claim that races (or is frozen
+            // behind) it — fall through to PENDING, the retained interrupted state, and let a later retry
+            // proceed once the lock is released. A committed manifest was already fast-pathed above, so an
+            // orphaned lock never blocks same-id idempotency, only this operation's maintenance.
+            "  if [ -d \"$GCL\" ]; then break; fi",
             "  if mkdir \"$OP\" 2>/dev/null; then claim_run; exit 0; fi",
             "  if [ -f \"$MAN\" ]; then emit_manifest; exit 0; fi",
             // An existing, uncommitted claim. Recover ONLY an abandoned one: an ESTABLISHED lease that has
             // EXPIRED (a lease-less mid-establishment claim, or an unexpired/active lease, is never
-            // touched). The recovery deletes and re-claims under the per-operation GC lock, re-validating
-            // the current state AND re-verifying our own lock token (gclock_owned) immediately before the
-            // delete, so exactly one new claimant is elected and a still-active or freshly-replaced claim
-            // is never destroyed even if gclock_try's stale-reclaim raced another contender.
+            // touched). The recovery deletes and re-claims under the per-operation GC lock (won by the
+            // atomic mkdir inside gclock_try — which fails outright if any lock is present, never stealing
+            // one), re-validating the current state AND re-verifying our own lock token (gclock_owned)
+            // immediately before the delete. Because the lock is non-stealable it is still held through the
+            // rm, so the re-elected claim it clears the way for can never be destroyed by a racing holder.
             "  if [ -f \"$OP/lease\" ]; then",
             "    lease=$(lmsbx_num \"$OP/lease\")",
             "    now=$(date +%s)",
@@ -383,12 +386,15 @@ internal static class CommandScripts
             "SENT='" + CommandSentinel.Marker + "'",
             "GEN='" + generation + "'",
             "DIGEST='" + digest + "'",
-            "GCLOCKTTL=" + CommandArtifactLayout.GcLockStaleSeconds.ToString(CultureInfo.InvariantCulture),
             UidFunction,
             GcLockFunctions,
             "OWNER=$(lmsbx_uid)",
-            // Only the GC-lock winner may reclaim, and only for the SAME generation it verified; a losing
-            // caller (a live purge/reclaim in flight) falls straight through without touching any output.
+            // Only the GC-lock winner may reclaim, and only for the SAME generation it verified; a caller
+            // that loses the atomic mkdir (a purge/reclaim/self-recovery in flight, or a crash-orphaned
+            // lock) falls straight through without touching any output. Because the lock is non-stealable it
+            // is held unbroken from the generation re-read to the delete, and a new generation can only
+            // appear via a re-claim that first needs this very lock — so the current generation cannot
+            // change under us, and a stale-generation reclaim can never delete a newer execution's output.
             "if gclock_try; then",
             "  if [ -f \"$MAN\" ] && [ -f \"$OP/gen\" ] && [ -f \"$OP/digest\" ]; then",
             "    curgen=$(cat \"$OP/gen\" 2>/dev/null)",
@@ -449,11 +455,13 @@ internal static class CommandScripts
             "GCL=\"$OP.gc\"",
             "SENT='" + CommandSentinel.Marker + "'",
             "STALE=" + CommandArtifactLayout.StaleAgeSeconds.ToString(CultureInfo.InvariantCulture),
-            "GCLOCKTTL=" + CommandArtifactLayout.GcLockStaleSeconds.ToString(CultureInfo.InvariantCulture),
             UidFunction,
             GcLockFunctions,
             "OWNER=$(lmsbx_uid)",
-            // Only the GC-lock winner may revalidate and delete; a losing purger falls straight through.
+            // Only the GC-lock winner may revalidate and delete; a purger that loses the atomic mkdir (an
+            // in-flight holder or a crash-orphaned lock) falls straight through. The lock is non-stealable,
+            // so it is held unbroken across the fresh lease/created re-read and the rm — a refreshed or
+            // replacement active claim cannot appear under us, and is never deleted.
             "if gclock_try; then",
             "  if [ -f \"$OP/lease\" ] && [ -f \"$OP/created\" ]; then",
             "    lease=$(lmsbx_num \"$OP/lease\")",

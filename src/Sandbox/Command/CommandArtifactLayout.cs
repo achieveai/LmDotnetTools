@@ -82,17 +82,6 @@ internal static class CommandArtifactLayout
     public const int StaleScanLimit = 256;
 
     /// <summary>
-    /// Bounded time-to-live for a per-operation GC lock (the sibling <c>&lt;op&gt;.gc</c> directory a
-    /// purger/self-recovery mkdir-elects before it may delete a claim). A lock is held only for a
-    /// re-validate-and-delete that completes in milliseconds, so one still present after this many
-    /// seconds belongs to a crashed holder and may be safely reclaimed by the next contender. It is
-    /// deliberately far longer than the actual hold time (minutes, not milliseconds) so a merely-slow —
-    /// not crashed — holder is never mistaken for stale; correctness never relies on the TTL because
-    /// every delete is gated on a fresh under-lock re-validation of the operation's current lease.
-    /// </summary>
-    public const int GcLockStaleSeconds = 300;
-
-    /// <summary>
     /// Exact character length of an operation-directory name (the lowercase-hex prefix of a SHA-256, see
     /// <see cref="CommandOperation.OperationDirectoryName"/>). Every stale-cleanup directory name is
     /// validated to be exactly this many lowercase-hex characters before it is used in any script, so a

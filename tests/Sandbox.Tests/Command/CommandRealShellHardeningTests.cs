@@ -108,13 +108,12 @@ public class CommandRealShellHardeningTests
     }
 
     [SkippableFact]
-    public async Task RealShell_Run_RespectsALiveGcLock_ReportsPending_WithoutCreatingAClaimOrRunning()
+    public async Task RealShell_Run_DefersToAnInFlightGcLock_ReportsPending_WithoutCreatingAClaimOrRunning()
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
-        // A live GC lock on the op models a purge in progress the claim must not race.
-        var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        SeedGcLock(workspace, OpA, timestamp: nowUnix);
+        // An in-flight GC lock on the op models a purge/reclaim/self-recovery the claim must not race.
+        SeedGcLock(workspace, OpA);
         var argv = new[] { "sh", "-c", "printf ran > \"$SANDBOX_WORKSPACE/RAN\"" };
         var script = CommandScripts.BuildRun(OpA, S_digest, PosixArgv.Join(argv), string.Empty, 120);
 
@@ -124,31 +123,40 @@ public class CommandRealShellHardeningTests
         workspace
             .HostFileExists("RAN")
             .Should()
-            .BeFalse("a claim is never created into a live purge, so the command must not run");
+            .BeFalse("a claim is never created while a GC lock is held, so the command must not run");
         Directory
             .Exists(workspace.HostFile($".lmsbx-sdk/ops/{OpA}"))
             .Should()
-            .BeFalse("no claim directory is created while a live GC lock is held");
+            .BeFalse("no claim directory is created while a GC lock is held");
     }
 
     [SkippableFact]
-    public async Task RealShell_Run_ReclaimsAStaleGcLock_ThenClaimsAndRunsExactlyOnce()
+    public async Task RealShell_Run_NeverReclaimsAnOrphanGcLock_ReportsPending_AndLeavesTheLockIntact()
     {
         await PosixShellHarness.RequireCapabilityAsync();
         using var workspace = PosixShellHarness.NewWorkspace();
-        // A crashed purger's stale GC lock (ancient timestamp) must not block a fresh run forever.
-        SeedGcLock(workspace, OpA, timestamp: 1);
+        // A crash-orphaned GC lock (left in the mkdir->first-write window). The lock is non-stealable, so it
+        // is NEVER reclaimed: this operation's recovery is frozen as retained interrupted state — favouring
+        // no duplicate/lost side effect over cleanup liveness — rather than racing a possibly-live holder.
+        SeedOwnerlessGcLock(workspace, OpA);
         var argv = new[] { "sh", "-c", "printf ran > \"$SANDBOX_WORKSPACE/RAN\"" };
         var script = CommandScripts.BuildRun(OpA, S_digest, PosixArgv.Join(argv), string.Empty, 120);
 
         var result = await PosixShellHarness.RunAsync(script, workspace);
 
-        CommandSentinel.Parse(result.Stdout).Kind.Should().Be(CommandSentinel.KindManifest);
-        workspace.HostFileExists("RAN").Should().BeTrue("a stale GC lock is reclaimed, so the claim proceeds and runs");
+        CommandSentinel.Parse(result.Stdout).Kind.Should().Be(CommandSentinel.KindPending);
+        workspace
+            .HostFileExists("RAN")
+            .Should()
+            .BeFalse("an orphan GC lock is never reclaimed, so the command must not run (no duplicate side effect)");
         Directory
             .Exists(workspace.HostFile($".lmsbx-sdk/ops/{OpA}.gc"))
             .Should()
-            .BeFalse("the reclaimed stale GC lock is removed, not left behind");
+            .BeTrue("the orphan GC lock is left intact — never stolen, cleared only by explicit sandbox deletion");
+        Directory
+            .Exists(workspace.HostFile($".lmsbx-sdk/ops/{OpA}"))
+            .Should()
+            .BeFalse("no claim directory is created while the orphan lock is present");
     }
 
     [SkippableFact]
@@ -270,15 +278,15 @@ public class CommandRealShellHardeningTests
         File.WriteAllText(Path.Combine(directory, "created"), created.ToString());
     }
 
-    /// <summary>Seeds a sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) owned by a token stamped at the given time, as a holder would leave it (fresh time = live, ancient time = a crashed holder's stale lock).</summary>
-    private static void SeedGcLock(ShellWorkspace workspace, string name, long timestamp, string token = "seeded-owner-token")
+    /// <summary>Seeds a sibling per-operation GC lock (<c>&lt;op&gt;.gc</c>) owned by a token, as an in-flight holder would leave it.</summary>
+    private static void SeedGcLock(ShellWorkspace workspace, string name, string token = "seeded-owner-token")
     {
         var directory = workspace.HostFile($".lmsbx-sdk/ops/{name}.gc");
         Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, "owner"), $"{token} {timestamp}");
+        File.WriteAllText(Path.Combine(directory, "owner"), token);
     }
 
-    /// <summary>Seeds a GC lock directory with NO owner token yet — the state a holder leaves in the tiny <c>mkdir</c>→token establishment window (which must be treated LIVE, never reclaimed).</summary>
+    /// <summary>Seeds a GC lock directory with NO owner token yet — the state a holder leaves in the tiny <c>mkdir</c>→token establishment window; since the lock is non-stealable it is never reclaimed, so this crash orphans the operation's lock.</summary>
     private static void SeedOwnerlessGcLock(ShellWorkspace workspace, string name) =>
         Directory.CreateDirectory(workspace.HostFile($".lmsbx-sdk/ops/{name}.gc"));
 
