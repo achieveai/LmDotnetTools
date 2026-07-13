@@ -9,6 +9,13 @@ import path from 'path';
 import bashPlain from '../fixtures/persisted/bash.plain.json';
 import readNumbered from '../fixtures/persisted/read.numbered.json';
 import agentOverlimit from '../fixtures/persisted/agent.overlimit.json';
+import writeConfirm from '../fixtures/persisted/write.confirm.json';
+import editDiff from '../fixtures/persisted/edit.diff.json';
+import taskoutput from '../fixtures/persisted/taskoutput.obj.json';
+import grepMatches from '../fixtures/persisted/grep.matches.json';
+import weatherDouble from '../fixtures/persisted/weather.doubleenc.json';
+import globPaths from '../fixtures/persisted/glob.paths.json';
+import agentSpawned from '../fixtures/persisted/agent.spawned.json';
 
 function resultMsg(id: string, result: string, isError = false): ToolCallResultMessage {
   return { $type: MessageType.ToolCallResult, tool_call_id: id, result, is_error: isError, role: 'tool' };
@@ -119,6 +126,75 @@ describe('ToolPill — states & fallback', () => {
     // present as text, not parsed into elements
     expect(w.get('.tool-call-result').text()).toContain('<img');
     expect(w.find('.tool-call-result img').exists()).toBe(false);
+  });
+});
+
+describe('ToolPill — live family → rich-component dispatch', () => {
+  interface Fx {
+    toolName: string;
+    functionArgs: string;
+    result: string;
+    isError: boolean;
+  }
+  function pillFromFixture(fx: Fx) {
+    const tc: ToolCall = { tool_call_id: 'fx', function_name: fx.toolName, function_args: fx.functionArgs };
+    return mountPill(tc, resultMsg('fx', fx.result, fx.isError));
+  }
+
+  // Each family maps to the rich component's distinctive root class (or null → generic body only).
+  const cases: Array<{ name: string; fx: Fx; richRoot: string | null }> = [
+    { name: 'read → CodeBlockRich', fx: readNumbered, richRoot: '.code' },
+    { name: 'write → CodeBlockRich', fx: writeConfirm, richRoot: '.code' },
+    { name: 'edit → DiffRich', fx: editDiff, richRoot: '.diff' },
+    { name: 'shell → TerminalRich', fx: bashPlain, richRoot: '.term' },
+    { name: 'task → TerminalRich', fx: taskoutput, richRoot: '.term' },
+    { name: 'grep → MatchesRich', fx: grepMatches, richRoot: '.matches' },
+    { name: 'weather → WeatherRich', fx: weatherDouble, richRoot: '.weather-rich' },
+    { name: 'glob → generic (no rich comp)', fx: globPaths, richRoot: null },
+    { name: 'agent → generic (no rich comp)', fx: agentSpawned, richRoot: null },
+  ];
+
+  for (const c of cases) {
+    it(`mounts the right body for ${c.name}`, async () => {
+      const w = pillFromFixture(c.fx);
+      await w.get('.tool-pill__header').trigger('click');
+      if (c.richRoot) {
+        expect(w.find(c.richRoot).exists()).toBe(true);
+      } else {
+        // No rich component for this family — only the generic body + raw result.
+        for (const sel of ['.code', '.diff', '.term', '.matches', '.weather-rich']) {
+          expect(w.find(sel).exists()).toBe(false);
+        }
+        expect(w.find('.tool-call-result').exists()).toBe(true);
+      }
+    });
+  }
+});
+
+describe('ToolPill — Agent (async sub-agent) family', () => {
+  it('collapsed summary shows subagent_type and the prompt', () => {
+    const tc: ToolCall = { tool_call_id: 'ag', function_name: 'Agent', function_args: agentSpawned.functionArgs };
+    const w = mountPill(tc, resultMsg('ag', agentSpawned.result));
+    const summary = w.get('.tool-pill__summary').text();
+    const args = JSON.parse(agentSpawned.functionArgs) as { subagent_type: string };
+    expect(summary).toContain(args.subagent_type);
+    // the prompt (or a prefix of it) is surfaced alongside the type
+    expect(summary.length).toBeGreaterThan(args.subagent_type.length);
+  });
+
+  it('shows the background chip when the Agent result is {status:"spawned"}', () => {
+    const tc: ToolCall = { tool_call_id: 'ag2', function_name: 'Agent', function_args: agentSpawned.functionArgs };
+    const w = mountPill(tc, resultMsg('ag2', agentSpawned.result));
+    expect(w.find('.tool-pill__chip').exists()).toBe(true);
+    expect(w.get('.tool-pill__chip').text()).toContain('background');
+  });
+
+  it('renders the spawned agent_id in the raw result on expand', async () => {
+    const tc: ToolCall = { tool_call_id: 'ag3', function_name: 'Agent', function_args: agentSpawned.functionArgs };
+    const w = mountPill(tc, resultMsg('ag3', agentSpawned.result));
+    await w.get('.tool-pill__header').trigger('click');
+    expect(w.get('.tool-call-result').element.textContent).toBe(agentSpawned.result);
+    expect(w.get('.tool-call-result').text()).toContain('spawned');
   });
 });
 

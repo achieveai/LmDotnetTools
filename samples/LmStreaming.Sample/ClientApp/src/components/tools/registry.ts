@@ -8,7 +8,6 @@
  * that maps to it (multiple keys → the same object identity).
  */
 import type { ToolRenderer } from '@/utils/toolTypes';
-import { parseDiff, parseMatches } from '@/utils/toolParsers';
 import { parseWeatherData, getWeatherEmoji, formatTemperature, getRainForecast } from '@/utils/weatherParser';
 
 /** Returns the first non-empty string value among `keys` in `args`, or '' when absent/non-string. */
@@ -24,6 +23,21 @@ function firstString(args: Record<string, unknown> | null, keys: readonly string
 /** Trim `s` to `n` chars with an ellipsis. */
 function trunc(s: string, n = 60): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+/** Cheap line count for a collapsed summary — no row allocation (empty/nullish → 0). */
+function lineCount(value: unknown): number {
+  return typeof value === 'string' && value.length > 0 ? value.split('\n').length : 0;
+}
+
+/**
+ * Cheap Grep match count for the COLLAPSED summary: scan only the trailing "N matches found" line
+ * (bounded to the tail) instead of parsing every result row — the heavy per-row parse (parseMatches)
+ * is deferred to the expanded MatchesRich renderer.
+ */
+function grepMatchCount(resultText: string): number | null {
+  const match = resultText.slice(-300).match(/(\d+) matches found/);
+  return match ? parseInt(match[1], 10) : null;
 }
 
 /** Compact `key: value` join of the first 1-2 args, capped near 60 chars. Null-safe; never throws. */
@@ -60,12 +74,7 @@ const editRenderer: ToolRenderer = {
   summarize: (args) => {
     const path = firstString(args, ['file_path']);
     if (!args) return path;
-    const diff = parseDiff(
-      args.old_string as string,
-      args.new_string as string,
-      args.replace_all as boolean
-    );
-    const stat = `+${diff.added} −${diff.removed}`;
+    const stat = `+${lineCount(args.new_string)} −${lineCount(args.old_string)}`;
     return path ? `${path} · ${stat}` : stat;
   },
 };
@@ -90,8 +99,8 @@ const grepRenderer: ToolRenderer = {
   iconAlt: 'search',
   summarize: (args, resultText) => {
     const pattern = firstString(args, ['pattern', 'query']);
-    const matches = parseMatches(resultText);
-    return matches.totalMatches ? `${pattern} · ${matches.totalMatches} matches` : pattern;
+    const count = grepMatchCount(resultText);
+    return count != null ? `${pattern} · ${count} matches` : pattern;
   },
 };
 

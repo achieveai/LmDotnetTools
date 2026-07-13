@@ -69,19 +69,38 @@ describe('TerminalRich — shell Bash results', () => {
 });
 
 describe('TerminalRich — structured TaskOutput results', () => {
-  it('taskoutput.obj: structured object → non-failed exit 0 line and structured stdout', () => {
+  it('taskoutput.obj: envelope exit_code 0 but stdout ends with [Exit code: 2] → renders failure (exit 2)', () => {
     const w = mountRich(taskoutput);
+
+    const exit = w.find('.term-exit');
+    expect(exit.exists()).toBe(true);
+    expect(exit.classes()).toContain('failed');
+    expect(exit.text()).toContain('2');
+    expect(exit.text()).toContain('✗');
+
+    // stdout is the structured object's `stdout` field, not the raw JSON envelope.
+    const out = w.get('.term-out').text();
+    expect(out).toContain('python3');
+    expect(out).not.toContain('"exit_code"');
+  });
+
+  it('a genuinely clean structured result renders a non-failed exit 0 line', () => {
+    const clean = JSON.stringify({ exit_code: 0, status: 'completed', stdout: 'all good\n', stderr: '' });
+    const view = deriveToolPillState({
+      functionArgs: '{}',
+      result: clean,
+      hasResult: true,
+      isErrorFlag: false,
+    });
+    const w = mount(TerminalRich, {
+      props: { view, toolCall: { tool_call_id: 't', function_name: 'TaskOutput', function_args: '{}' } },
+    });
 
     const exit = w.find('.term-exit');
     expect(exit.exists()).toBe(true);
     expect(exit.classes()).not.toContain('failed');
     expect(exit.text()).toContain('exit 0');
     expect(exit.text()).toContain('✓');
-
-    // stdout is the structured object's `stdout` field, not the raw JSON envelope.
-    const out = w.get('.term-out').text();
-    expect(out).toContain('python3');
-    expect(out).not.toContain('"exit_code"');
   });
 });
 

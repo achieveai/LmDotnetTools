@@ -7,6 +7,30 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /**
+ * Authoritative exit code for a result, preferring ANY non-zero signal.
+ *
+ * A structured TaskOutput envelope can report `exit_code: 0` / `status: "completed"` while its
+ * captured `stdout` ends with a failing command's trailing `[Exit code: N]` — that captured
+ * command failed, so the pill must surface the failure (AC: "non-zero exit renders as failure
+ * even when is_error=false"), not a confident green success.
+ */
+function resolveExitCode(value: unknown, text: string): number | null {
+  if (isRecord(value) && typeof value.exit_code === 'number') {
+    if (value.exit_code !== 0) return value.exit_code;
+    // Envelope says 0 — but a captured command may still have failed; check its stream tails.
+    for (const stream of [value.stdout, value.stderr]) {
+      if (typeof stream === 'string') {
+        const nested = parseExitCode(stream);
+        if (nested !== null && nested !== 0) return nested;
+      }
+    }
+    return value.exit_code; // genuinely 0
+  }
+  // Plain string result (e.g. Bash): trailing `[Exit code: N]` marker.
+  return parseExitCode(text);
+}
+
+/**
  * Pure, mount-free state derivation for one tool call + its (optional) result.
  *
  * The state machine is `streaming-args → awaiting-result → success | error`:
@@ -40,20 +64,21 @@ export function deriveToolPillState(input: ToolPillInput): ToolPillView {
     const unwrapped = unwrapResult(result);
     resultText = unwrapped.text;
     resultValue = unwrapped.value;
-    isError = isErrorResult(result, isErrorFlag);
 
-    // Exit code: structured `exit_code` (TaskOutput) wins, else trailing `[Exit code: N]` (Bash).
-    if (isRecord(resultValue) && typeof resultValue.exit_code === 'number') {
-      exitCode = resultValue.exit_code;
-    } else {
-      exitCode = parseExitCode(unwrapped.text);
-    }
+    // Exit code: prefer any non-zero signal (see resolveExitCode — a task can report envelope
+    // exit_code 0 while its captured stdout ends with a failing command's `[Exit code: N]`).
+    exitCode = resolveExitCode(resultValue, unwrapped.text);
+
+    // A non-zero exit is a failure regardless of the (unreliable) is_error flag / envelope status.
+    isError = isErrorResult(result, isErrorFlag) || (exitCode !== null && exitCode !== 0);
 
     if (isError) {
       if (isRecord(resultValue) && resultValue.error != null && resultValue.error !== false) {
         errorText = String(resultValue.error);
       } else if (typeof result === 'string' && result.startsWith('Error executing MCP tool')) {
         errorText = result;
+      } else if (exitCode !== null && exitCode !== 0) {
+        errorText = `Exited with code ${exitCode}`;
       } else {
         errorText = resultText || (typeof result === 'string' ? result : '');
       }

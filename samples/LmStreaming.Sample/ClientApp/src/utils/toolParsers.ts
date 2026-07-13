@@ -140,7 +140,10 @@ export function parseTerminal(
   if (structured != null && typeof structured === 'object') {
     const stdout = typeof structured.stdout === 'string' ? structured.stdout : '';
     const stderr = typeof structured.stderr === 'string' ? structured.stderr : '';
-    const exitCode = typeof structured.exit_code === 'number' ? structured.exit_code : null;
+    const envelopeExit = typeof structured.exit_code === 'number' ? structured.exit_code : null;
+    // An explicit authoritative exitCode (resolved by deriveToolPillState, which also accounts for
+    // a failing command captured in stdout) takes precedence over the envelope's own exit_code.
+    const exitCode = opts?.exitCode ?? envelopeExit;
     const failed = (exitCode != null && exitCode !== 0) || structured.status === 'failed';
     return { stdout, stderr, exitCode, failed };
   }

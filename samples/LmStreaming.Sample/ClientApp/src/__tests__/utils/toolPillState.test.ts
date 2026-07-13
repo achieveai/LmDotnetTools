@@ -73,8 +73,17 @@ describe('deriveToolPillState', () => {
   });
 
   describe('exit code', () => {
-    it('structured exit_code from TaskOutput (0) is not an error', () => {
+    it('surfaces a failing captured command even when the TaskOutput envelope reports exit_code 0', () => {
+      // taskoutput.obj: envelope exit_code:0/status:"completed", but stdout ends with `[Exit code: 2]`.
       const v = deriveToolPillState(withResult(taskoutput));
+      expect(v.exitCode).toBe(2);
+      expect(v.isError).toBe(true);
+      expect(v.state).toBe('error');
+    });
+
+    it('a genuinely clean structured result (exit_code 0, no nested failure) is success', () => {
+      const clean = JSON.stringify({ exit_code: 0, status: 'completed', stdout: 'all good\n', stderr: '' });
+      const v = deriveToolPillState({ functionArgs: '{}', result: clean, hasResult: true, isErrorFlag: false });
       expect(v.exitCode).toBe(0);
       expect(v.isError).toBe(false);
       expect(v.state).toBe('success');
