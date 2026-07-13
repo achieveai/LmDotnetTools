@@ -24,6 +24,12 @@ public class GitFailureClassifierTests
     public void Transient_network_stderr_classifies_as_Transient(string stderr) =>
         GitFailureClassifier.Classify(stderr).Should().Be(GitFailureKind.Transient);
 
+    [Theory]
+    [InlineData("error: unable to create file foo/bar: Permission denied")] // a perm/disk error, not local corruption
+    [InlineData("remote: The repository is empty.")] // a normal empty remote, not local corruption
+    public void Non_corruption_stderr_containing_broad_fragments_is_not_Corrupt(string stderr) =>
+        GitFailureClassifier.Classify(stderr).Should().NotBe(GitFailureKind.Corrupt);
+
     [Fact]
     public void Unrecognized_stderr_classifies_as_Unknown() =>
         GitFailureClassifier.Classify("something weird").Should().Be(GitFailureKind.Unknown);
