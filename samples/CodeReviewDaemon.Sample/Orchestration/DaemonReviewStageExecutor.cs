@@ -1100,6 +1100,59 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         CancellationToken cancellationToken)
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
+
+        ReviewAgentResult result;
+        try
+        {
+            result = await RunReviewAttemptAsync(
+                    run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (toolContext is not null && IsContextWindowOverflow(ex))
+        {
+            // The tool-assisted attempt accumulated more input than the model's context window — the PR diff
+            // plus the fanned-out sub-agents' full results, folded into one conversation. Rather than the run
+            // dying with no output, retry ONCE diff-only (toolContext=null → no sub-agents, no tool results to
+            // accumulate) so the PR still gets a leaner review. Config lowers the peak (MaxConcurrentSubAgents),
+            // this guarantees a result when it still overflows. A diff so large it overflows even diff-only is
+            // left to fail (RetryPending) — nothing more to shed. The retry uses a FRESH thread so it starts a
+            // clean conversation instead of reloading the overflowing history that just blew the window.
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: tool-assisted review exceeded the model's context window; retrying diff-only (no sub-agents).",
+                run.Id);
+            result = await RunReviewAttemptAsync(
+                    run, reviewInput, checkoutRoot, storeRoot,
+                    toolContext: null, ThreadId(run, run.VariantId + "-ctxretry"), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ReviewArtifactSchemaVersion,
+            ArtifactKind = ReviewArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(
+                new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId)),
+        });
+    }
+
+    /// <summary>
+    /// Runs one primary-review attempt with the given <paramref name="toolContext"/> (non-null = tool-assisted
+    /// with sub-agents; null = diff-only) on its own conversation <paramref name="threadId"/>, returning the
+    /// collected review. Split out of <see cref="RunPrimaryReviewAsync"/> so an attempt that overflows the
+    /// model context window can be retried diff-only on a fresh thread without re-running context assembly.
+    /// </summary>
+    private async Task<ReviewAgentResult> RunReviewAttemptAsync(
+        ReviewRun run,
+        string reviewInput,
+        string? checkoutRoot,
+        string? storeRoot,
+        ReviewToolContext? toolContext,
+        string threadId,
+        CancellationToken cancellationToken)
+    {
         var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
             run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
         var variables = BuildPromptVariables(
@@ -1111,19 +1164,28 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
         var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
         await using var loop = _loopFactory.Create(
-            profile, run.ModelId, ThreadId(run, run.VariantId), reasoningEffort: effort, toolContext: toolContext);
+            profile, run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
-        var result = await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
+        return await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
+    }
 
-        _ = _store.AddArtifact(new ReviewArtifact
+    /// <summary>
+    /// True when <paramref name="ex"/> (or any exception it wraps) is the model API rejecting a request whose
+    /// input exceeded the context window ("Your input exceeds the context window of this model."). Matched on
+    /// the distinctive "context window" phrase so it fires on the provider's 400 regardless of which HTTP or
+    /// provider exception type the loop surfaces it as.
+    /// </summary>
+    private static bool IsContextWindowOverflow(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
         {
-            ReviewRunId = run.Id,
-            ArtifactSchemaVersion = ReviewArtifactSchemaVersion,
-            ArtifactKind = ReviewArtifactKind,
-            Provider = provider,
-            Payload = JsonSerializer.Serialize(
-                new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId)),
-        });
+            if (e.Message.Contains("context window", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task RunVariantArmAsync(

@@ -41,6 +41,12 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// inspect the <see cref="FakeMultiTurnAgent.ReceivedInputs"/> the executor sent each one.</summary>
     public List<FakeMultiTurnAgent> CreatedAgents { get; } = [];
 
+    /// <summary>When set, a tool-assisted <see cref="Create"/> (non-null <c>toolContext</c>) returns an agent
+    /// that THROWS this exception instead of scripted text — models the model API rejecting the accumulated
+    /// tool-assisted context (e.g. a context-window 400) so the executor's diff-only degrade is exercised.
+    /// The diff-only path (null <c>toolContext</c>) still returns scripted text.</summary>
+    public Exception? ThrowWhenToolAssisted { get; set; }
+
     public IMultiTurnAgent Create(
         AgentProfile profile,
         string? modelId,
@@ -53,6 +59,13 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         ThreadIds.Add(threadId);
         ReasoningEfforts.Add(reasoningEffort);
         ToolContexts.Add(toolContext);
+
+        if (toolContext is not null && ThrowWhenToolAssisted is not null)
+        {
+            var throwing = FakeMultiTurnAgent.Throwing($"run-{profile.Id}-overflow", ThrowWhenToolAssisted);
+            CreatedAgents.Add(throwing);
+            return throwing;
+        }
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";

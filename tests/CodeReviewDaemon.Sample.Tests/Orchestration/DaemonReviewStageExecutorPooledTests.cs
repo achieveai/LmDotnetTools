@@ -129,6 +129,38 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_retries_diff_only_when_the_tool_assisted_review_exceeds_the_context_window()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The tool-assisted attempt (non-null toolContext) is rejected by the model API with the context-window
+        // 400 the daemon saw live (the PR diff + fanned-out sub-agent results overflow the window). The diff-only
+        // retry (null toolContext) succeeds — so the run yields a leaner review instead of producing nothing.
+        fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+        fixture.Factory.DefaultText = "## Review (diff-only)\nMust: null check missing in Foo.cs:10.";
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // Two attempts: the tool-assisted one (non-null context) then the diff-only retry (null context).
+        fixture.Factory.ToolContexts.Should().HaveCount(2);
+        fixture.Factory.ToolContexts[0].Should().NotBeNull();
+        fixture.Factory.ToolContexts[1].Should().BeNull();
+
+        // The retry runs on a DISTINCT thread so it starts a clean conversation rather than reloading the
+        // overflowing history that just blew the window.
+        fixture.Factory.ThreadIds[0].Should().NotBe(fixture.Factory.ThreadIds[1]);
+
+        // The review artifact holds the diff-only review — the run produced content, not a silent nothing.
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        artifact.Payload.Should().Contain("diff-only");
+    }
+
+    [Fact]
     public async Task Reviewed_templates_the_notes_dir_into_the_review_system_prompt()
     {
         using var fixture = Fixture.Create();
