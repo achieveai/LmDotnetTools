@@ -69,6 +69,19 @@ public sealed class ContextDiscoveryInjector
     }
 
     /// <summary>
+    /// Back-compat constructor matching the pre-#198 signature: routing defaults OFF (behaviour
+    /// identical to pre-#198) for callers that do not supply options/diagnostics.
+    /// </summary>
+    public ContextDiscoveryInjector(
+        SandboxSessionRegistry registry,
+        MultiTurnAgentPool pool,
+        ContextDiscoveryFormatter formatter,
+        ILogger<ContextDiscoveryInjector> logger)
+        : this(registry, pool, formatter, new ContextDiscoveryOptions(), new ContextDiscoveryDiagnostics(), logger)
+    {
+    }
+
+    /// <summary>
     /// Best-effort: delivers the formatted file body to its target — the opening sub-agent (routed)
     /// or every live thread of the session (fallback). Returns the number of conversations the
     /// message was actually delivered to (0 when nothing is live, the discovery is a duplicate, the
@@ -274,9 +287,10 @@ public sealed class ContextDiscoveryInjector
         }
 
         // No sink owns the id: the sub-agent hasn't registered yet (pre-registration race), or it is a
-        // nested / cross-session agent. Drop and UN-mark so the gateway's redelivery can retry once the
-        // sub-agent is live — but still never fall back to the primary.
-        _registry.EvictDiscoverySeenForTarget(body.SessionId!, agentId);
+        // nested / cross-session agent. Drop and un-mark ONLY this discovery's (target, kind, path) so the
+        // gateway's redelivery can retry once the sub-agent is live — precise so a concurrent delivery's
+        // mark for another path of the same agent survives — but still never fall back to the primary.
+        _registry.UnmarkDiscoverySeen(body.SessionId!, agentId, body.Kind!, body.Path!);
         _logger.LogDebug(
             "ContextDiscovery context_file: no live sub-agent owns {AgentId} for {Path} in session {SessionId}; "
             + "dropping and allowing gateway retry.",

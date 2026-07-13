@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// <see cref="SandboxSessionRegistry.UnregisterThread"/>,
 /// <see cref="SandboxSessionRegistry.UnregisterThreadFromAllSessions"/>,
 /// <see cref="SandboxSessionRegistry.GetThreads"/>, and
-/// <see cref="SandboxSessionRegistry.TryMarkDiscoverySeen"/>.
+/// <see cref="SandboxSessionRegistry.TryMarkDiscoverySeen(string, string, string, string)"/>.
 /// </summary>
 public class SandboxSessionRegistryThreadTrackingTests
 {
@@ -133,45 +133,58 @@ public class SandboxSessionRegistryThreadTrackingTests
     }
 
     [Fact]
-    public async Task EvictDiscoverySeenForTarget_ClearsOnlyThatTargetsEntries()
+    public async Task UnmarkDiscoverySeen_RemovesOnlyThatKey_LeavingSiblingPathsAndTargets()
     {
         await using var registry = CreateRegistry();
         const string Kind = "context_file";
-        const string DirPath = "sub/CLAUDE.md";
+        const string PathX = "sub/CLAUDE.md";
+        const string PathY = "sub/AGENTS.md";
 
-        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeTrue();
-        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathX).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathY).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, PathX).Should().BeTrue();
 
-        // Per-sub-agent eviction — invoked by LmMultiTurn on sub-agent teardown (post-merge) and by the
-        // injector to un-mark an undeliverable routed discovery. Only agent-A's entries clear.
-        registry.EvictDiscoverySeenForTarget(SessionA, "agent-A");
+        // Precise per-(target, kind, path) rollback — used by the injector to un-mark an undeliverable
+        // routed discovery. ONLY agent-A's PathX key clears; a sibling path of the same target and a
+        // different target are both untouched (the C5 regression this replaces used a target-wide prefix
+        // wipe that also erased a concurrent path's mark).
+        registry.UnmarkDiscoverySeen(SessionA, "agent-A", Kind, PathX);
 
-        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeTrue("agent-A's entry was evicted");
-        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeFalse("agent-B was untouched");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathX).Should().BeTrue("only agent-A's PathX key was un-marked");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathY).Should().BeFalse("a sibling path of the same target is untouched");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, PathX).Should().BeFalse("another target is untouched");
     }
 
     [Fact]
-    public async Task EvictDiscoverySeenForTarget_UnknownSessionOrTarget_IsNoOp()
+    public async Task UnmarkDiscoverySeen_UnknownSessionOrKey_IsNoOp()
     {
         await using var registry = CreateRegistry();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md").Should().BeTrue();
 
-        // Must not throw for an unknown session or a never-marked target.
-        registry.EvictDiscoverySeenForTarget("ghost-session", "agent-A");
-        registry.EvictDiscoverySeenForTarget(SessionA, "agent-never-marked");
+        // Must not throw for an unknown session, a never-marked target, or a never-marked path, and
+        // must leave the one real mark intact.
+        registry.UnmarkDiscoverySeen("ghost-session", "agent-A", "context_file", "CLAUDE.md");
+        registry.UnmarkDiscoverySeen(SessionA, "agent-never-marked", "context_file", "CLAUDE.md");
+        registry.UnmarkDiscoverySeen(SessionA, "agent-A", "context_file", "other/path.md");
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
+            .Should().BeFalse("no-op un-marks must leave the real mark intact");
     }
 
     [Fact]
-    public async Task UnregisterThreadFromAllSessions_ClearsDedupWhenSessionLosesLastThread()
+    public async Task UnregisterThreadFromAllSessions_KeepsDedupLedger_UntilSessionDestroy()
     {
         await using var registry = CreateRegistry();
         registry.RegisterThread(SessionA, "thread-1");
         registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md").Should().BeTrue();
 
-        // Removing the session's last thread evicts its (now-dead) sub-agents' dedup entries.
+        // Removing the session's last thread must NOT clear its discovery ledger (the pre-#198
+        // behaviour, restored to drop the check-then-act race vs a concurrent RegisterThread). The
+        // ledger is cleared only on session destroy/dispose, so a redelivery still dedups.
         registry.UnregisterThreadFromAllSessions("thread-1");
 
         registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
-            .Should().BeTrue("a fresh conversation on the session legitimately re-receives context");
+            .Should().BeFalse("the dedup ledger persists until the session is destroyed/disposed");
     }
 
     [Fact]

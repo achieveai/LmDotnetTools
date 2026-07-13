@@ -143,6 +143,42 @@ public sealed class ContextDiscoveryInjectorRoutingTests
     }
 
     [Fact]
+    public async Task AllNotOwned_UnmarksOnlyItsPath_LeavingConcurrentDeliveredPathIntact()
+    {
+        // FIX 1 (C5): the all-NotOwned rollback must un-mark ONLY the current (target, kind, path), never
+        // every path recorded under the same agent_id. A concurrent delivery's mark for a DIFFERENT path
+        // of the SAME sub-agent must survive the rollback (the old target-wide eviction erased it).
+        const string DeliveredPath = "sub/CLAUDE.md";
+        const string NotOwnedPath = "sub/AGENTS.md";
+
+        using var harness = new Harness(routeToSubAgent: true);
+        _ = harness.RegisterSinkThread(SessionId, "thread-sub", SubAgentContextDeliveryResult.NotOwned);
+
+        // Simulate a concurrent delivery having already marked DeliveredPath under the same agent_id.
+        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, DeliveredPath).Should().BeTrue();
+
+        // This routed discovery for NotOwnedPath resolves NotOwned ⇒ dropped and un-marked (retry-friendly).
+        var sent = await harness.Injector.InjectAsync(
+            new ContextDiscoveryPayload
+            {
+                SessionId = SessionId,
+                Kind = Kind,
+                Path = NotOwnedPath,
+                Content = Content,
+                AgentId = AgentId,
+            },
+            CancellationToken.None);
+        sent.Should().Be(0);
+
+        // The concurrent DeliveredPath mark MUST still be present — precise un-mark, not target-wide wipe.
+        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, DeliveredPath)
+            .Should().BeFalse("the precise rollback must not erase a concurrent path's mark for the same agent_id");
+        // …while NotOwnedPath's own mark WAS rolled back so a gateway redelivery can heal the race.
+        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, NotOwnedPath)
+            .Should().BeTrue("the un-delivered path was un-marked so a gateway retry can heal the pre-registration race");
+    }
+
+    [Fact]
     public async Task Aggregation_DeliveredWins_OverNotDeliverable_RegardlessOfOrder()
     {
         using var harness = new Harness(routeToSubAgent: true);
