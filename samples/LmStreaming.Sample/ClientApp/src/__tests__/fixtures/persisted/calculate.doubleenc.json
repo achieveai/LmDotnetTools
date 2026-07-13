@@ -1,0 +1,9 @@
+{
+  "family": "math",
+  "sourceThread": "thread-1782540376333-sa6ayks",
+  "toolName": "calculate",
+  "toolCallId": "tool_mgyB6v0lulFs4vRGdctokH2E",
+  "functionArgs": "{\"a\": 2, \"operation\": \"add\", \"b\": 2}",
+  "result": "\"{\\r\\n  \\u0022expression\\u0022: \\u00222 add 2\\u0022,\\r\\n  \\u0022result\\u0022: 4,\\r\\n  \\u0022operation\\u0022: \\u0022add\\u0022,\\r\\n  \\u0022a\\u0022: 2,\\r\\n  \\u0022b\\u0022: 2\\r\\n}\"",
+  "isError": false
+}

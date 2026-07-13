@@ -1,0 +1,9 @@
+{
+  "family": "web",
+  "sourceThread": "thread-1782517688504-33y9v2u",
+  "toolName": "web_search",
+  "toolCallId": "tool_dxX1n6Mfbq7MX3lXuNE08G4Q",
+  "functionArgs": "{\"query\":\"SandboxedOsToolsMcpServer pending PRs achieveai/SandboxedOsToolsMcpServer review status PRs awaiting review SandboxedOsToolsMcpServer\"}",
+  "result": "[{\"type\":\"web_search_result\",\"url\":\"https://github.com/orgs/community/discussions/194705\",\"title\":\"Sort PRs by status (approved / pending review / approved) #194705\",\"page_age\":\"2026-05-03\",\"encrypted_content\":\"\"},{\"type\":\"web_search_result\",\"url\":\"https://github.com/google/go-github/issues/858\",\"title\":\"get all Pr that are waiting for review from one specific user · Issue #858\",\"page_age\":\"2018-03-01\",\"encrypted_content\":\"\"},{\"type\":\"web_search_result\",\"url\":\"https://github.com/cli/cli/issues/5184\",\"title\":\"List PRs with passing checks · Issue #5184 · cli/cli - GitHub\",\"page_age\":\"2022-02-08\",\"encrypted_content\":\"\"}]",
+  "isError": false
+}

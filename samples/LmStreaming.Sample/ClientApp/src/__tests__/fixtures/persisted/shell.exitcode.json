@@ -1,0 +1,9 @@
+{
+  "family": "shell",
+  "sourceThread": "thread-1780522545790-1ykfuuw",
+  "toolName": "sandbox-Bash",
+  "toolCallId": "tool_ovy8tcfgUE0P1Lnof7lUxj5a",
+  "functionArgs": "{\"command\":\"curl --ssl-no-revoke -fsS https://raw.githubusercontent.com/achieveai/LmDotnetTools/main/README.md\"}",
+  "result": "curl: (22) The requested URL returned error: 403\n\n[Exit code: 22]",
+  "isError": false
+}

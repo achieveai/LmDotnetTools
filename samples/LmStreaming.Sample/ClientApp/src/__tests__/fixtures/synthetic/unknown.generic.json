@@ -1,0 +1,9 @@
+{
+  "family": "generic",
+  "sourceThread": "synthetic",
+  "toolName": "SendMessage",
+  "functionArgs": "{\"to\":\"reviewer\",\"message\":\"start on task #1\"}",
+  "result": "{\"delivered\":true,\"queued\":false}",
+  "isError": false,
+  "_note": "Synthetic. Covers the labeled-kv generic fallback for tools with zero persisted data (KillShell / SendMessage / NotifyMessage / Workflow* / PascalCase Web* / MultiEdit)."
+}
