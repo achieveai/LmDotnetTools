@@ -91,11 +91,25 @@ internal sealed class PrOrchestrator
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.RetryPending, run.PrLifecycleState);
-                    _retryGovernor?.RecordFailure(run.Id, ex.Message);
+                    // The RetryGovernor bounds ONLY the ContextReady hot-loop (the stuck-slot case it exists for).
+                    // A failure at a later stage (Reviewed/Judged/Posted) is a different, usually self-healing
+                    // problem — e.g. a Posted-stage lock the next lease's clean-on-entry clears — so it must NOT
+                    // consume the context-retry budget or park otherwise-recoverable work.
+                    if (stage == ReviewStage.ContextReady)
+                    {
+                        _retryGovernor?.RecordFailure(run.Id, ex.Message);
+                    }
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
                     _progress?.Finished(
                         run, $"failed at {stage}", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
                     throw;
+                }
+
+                // ContextReady cleared its stuck cause → forget any accumulated retry state so a later re-review
+                // (or a resume past ContextReady) starts fresh; later stages are outside the governor's scope.
+                if (stage == ReviewStage.ContextReady)
+                {
+                    _retryGovernor?.RecordSuccess(run.Id);
                 }
 
                 var workflowStatus = StageMachine.IsComplete(stage) ? WorkflowStatus.Completed : WorkflowStatus.Running;
@@ -107,7 +121,6 @@ internal sealed class PrOrchestrator
                 run,
                 $"complete ({(string.Equals(run.Mode, "post", StringComparison.Ordinal) ? "posted" : "collect-only")})",
                 System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
-            _retryGovernor?.RecordSuccess(run.Id);
             return run;
         }
         finally
