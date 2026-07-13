@@ -62,10 +62,16 @@ internal sealed class RetryGovernor
 
     private sealed class State
     {
+        public long Seq;
         public int Attempts;
         public DateTimeOffset NextEligibleAt;
         public bool Parked;
     }
+
+    // Retry state is cleared on ContextReady success, but a persistently-failing/parked or superseded run's
+    // state would otherwise live for the whole daemon lifetime. Cap the tracked set and evict the oldest.
+    private const int MaxTrackedRuns = 10_000;
+    private long _seq;
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<long, State> _states = new();
 
@@ -90,7 +96,8 @@ internal sealed class RetryGovernor
     /// </summary>
     public RetryDecision RecordFailure(long runId, string lastError)
     {
-        var state = _states.GetOrAdd(runId, _ => new State());
+        var state = _states.GetOrAdd(runId, _ => new State { Seq = System.Threading.Interlocked.Increment(ref _seq) });
+        RetryDecision decision;
         lock (state)
         {
             state.Attempts++;
@@ -100,23 +107,46 @@ internal sealed class RetryGovernor
                 _logger.LogError(
                     "review_run PARKED run {RunId} after {Attempts} attempts: {Error}",
                     runId, state.Attempts, lastError);
-                return RetryDecision.Parked;
+                decision = RetryDecision.Parked;
             }
-
-            // Exponential backoff, clamped to the cap. The exponent is bounded, and the base*2^shift product is
-            // clamped to the cap WITHOUT overflowing the intermediate multiply: if base would exceed cap/2^shift
-            // the product would exceed the cap anyway, so use the cap directly rather than computing a value that
-            // could overflow long (the concern the reviewer raised).
-            var shift = Math.Min(state.Attempts - 1, 30);
-            var multiplier = 1L << shift;
-            var delayTicks = _backoffBase.Ticks > _backoffCap.Ticks / multiplier
-                ? _backoffCap.Ticks
-                : _backoffBase.Ticks * multiplier;
-            state.NextEligibleAt = _clock() + TimeSpan.FromTicks(delayTicks);
-            return RetryDecision.Retry;
+            else
+            {
+                // Exponential backoff, clamped to the cap. The exponent is bounded, and the base*2^shift product
+                // is clamped to the cap WITHOUT overflowing the intermediate multiply: if base would exceed
+                // cap/2^shift the product would exceed the cap anyway, so use the cap directly.
+                var shift = Math.Min(state.Attempts - 1, 30);
+                var multiplier = 1L << shift;
+                var delayTicks = _backoffBase.Ticks > _backoffCap.Ticks / multiplier
+                    ? _backoffCap.Ticks
+                    : _backoffBase.Ticks * multiplier;
+                state.NextEligibleAt = _clock() + TimeSpan.FromTicks(delayTicks);
+                decision = RetryDecision.Retry;
+            }
         }
+
+        EvictOldestOverCapacity();
+        return decision;
     }
 
     /// <summary>Clears a run's retry state after a successful attempt.</summary>
     public void RecordSuccess(long runId) => _states.TryRemove(runId, out _);
+
+    /// <summary>
+    /// Keeps the tracked set bounded by evicting the oldest entries once it exceeds <see cref="MaxTrackedRuns"/>.
+    /// Safe: a re-polled evicted run simply starts fresh (<see cref="ShouldAttempt"/> returns true), and eviction
+    /// only ever reaches the very oldest ids — long past their active retry/backoff window.
+    /// </summary>
+    private void EvictOldestOverCapacity()
+    {
+        var overflow = _states.Count - MaxTrackedRuns;
+        if (overflow <= 0)
+        {
+            return;
+        }
+
+        foreach (var key in _states.OrderBy(kv => kv.Value.Seq).Take(overflow).Select(kv => kv.Key).ToArray())
+        {
+            _states.TryRemove(key, out _);
+        }
+    }
 }

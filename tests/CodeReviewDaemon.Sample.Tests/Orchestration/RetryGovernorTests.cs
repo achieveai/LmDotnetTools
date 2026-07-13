@@ -121,4 +121,20 @@ public class RetryGovernorTests
         _now = _now.AddDays(2001);
         g.ShouldAttempt(1).Should().BeTrue("the backoff is bounded by the 2000-day cap, not an overflowed delay");
     }
+
+    [Fact]
+    public void Tracked_state_is_bounded_and_evicts_the_oldest_runs()
+    {
+        // Retry state only clears on success; without eviction a long-lived daemon's parked/superseded runs
+        // would accumulate for its whole lifetime. Past the cap, the oldest run ids are evicted (start fresh)
+        // while recent failing runs stay governed.
+        var g = Create(maxAttempts: 100); // never parks within the loop, so each failing run keeps state
+        for (var i = 0; i < 10_050; i++)
+        {
+            g.RecordFailure(i, "x");
+        }
+
+        g.ShouldAttempt(0).Should().BeTrue("the oldest tracked run was evicted to bound memory");
+        g.ShouldAttempt(10_049).Should().BeFalse("the most recent failing run is still governed (backing off)");
+    }
 }
