@@ -78,4 +78,47 @@ public class RetryGovernorTests
 
         g.ShouldAttempt(2).Should().BeTrue("a different run id (e.g. a new commit) is unaffected by run 1's park");
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_rejects_a_nonpositive_maxAttempts(int maxAttempts)
+    {
+        var act = () => new RetryGovernor(
+            maxAttempts, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(900), () => _now, NullLogger<RetryGovernor>.Instance);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Constructor_rejects_a_negative_base_delay()
+    {
+        var act = () => new RetryGovernor(
+            5, TimeSpan.FromSeconds(-1), TimeSpan.FromSeconds(900), () => _now, NullLogger<RetryGovernor>.Instance);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Constructor_rejects_a_cap_below_the_base()
+    {
+        var act = () => new RetryGovernor(
+            5, TimeSpan.FromSeconds(900), TimeSpan.FromSeconds(30), () => _now, NullLogger<RetryGovernor>.Instance);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Backoff_stays_cap_bounded_and_does_not_overflow_with_a_large_base()
+    {
+        // A large base at a high attempt count would overflow base * 2^shift; the clamp must fall back to the
+        // cap instead of computing (and storing) an overflowed/negative delay.
+        var g = new RetryGovernor(
+            maxAttempts: 40, TimeSpan.FromDays(1000), TimeSpan.FromDays(2000), () => _now, NullLogger<RetryGovernor>.Instance);
+
+        for (var i = 0; i < 35; i++)
+        {
+            g.RecordFailure(1, "x").Should().Be(RetryDecision.Retry); // never throws OverflowException
+        }
+
+        _now = _now.AddDays(2001);
+        g.ShouldAttempt(1).Should().BeTrue("the backoff is bounded by the 2000-day cap, not an overflowed delay");
+    }
 }
