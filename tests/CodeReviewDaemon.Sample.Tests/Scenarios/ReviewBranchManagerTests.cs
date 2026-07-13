@@ -231,7 +231,29 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         result.Should().BeTrue();
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"merge --no-edit origin/{ReviewBranch}"));
+        commands.Should().Contain(a => a.Contains($"merge --no-edit -X theirs origin/{ReviewBranch}"));
+    }
+
+    [Fact]
+    public async Task MergeToDefault_aborts_any_conflicted_merge_and_resets_before_checking_out_the_default()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs)
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        result.Should().BeTrue();
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        // Clean-on-entry: a PRIOR sweep's non-ff merge could have hit a conflict and left this SHARED retention
+        // checkout with an unresolved index — after which every `git checkout` fails "you need to resolve your
+        // current index first", wedging the sweep for this PR every cycle. Abort any in-progress merge and
+        // hard-reset BEFORE checking out the default so the checkout can't inherit that state.
+        IndexOf(commands, "merge --abort").Should().BeGreaterThanOrEqualTo(0);
+        IndexOf(commands, "reset --hard").Should().BeGreaterThanOrEqualTo(0);
+        IndexOf(commands, "merge --abort").Should().BeLessThan(IndexOf(commands, $"checkout {DefaultBranch}"));
+        IndexOf(commands, "reset --hard").Should().BeLessThan(IndexOf(commands, $"checkout {DefaultBranch}"));
     }
 
     [Fact]

@@ -219,6 +219,17 @@ internal sealed class ReviewBranchManager
             return true;
         }
 
+        // Clean-on-entry: a PRIOR sweep's non-ff merge (below) may have hit a conflict and left this SHARED
+        // ReviewBot retention checkout with an unresolved index — after which every `git checkout` fails with
+        // "you need to resolve your current index first", wedging the sweep (and the KnowledgeExtractionCommitter)
+        // for this PR every cycle. Abort any in-progress merge and hard-reset so the checkout below starts clean
+        // and a one-time conflict self-heals. Best-effort — a clean checkout has nothing to abort. (SlotHygiene
+        // does this for the pooled review slot; the host retention checkout needs the same guard.)
+        _ = await RunGitAsync(["merge", "--abort"], repoRoot, cancellationToken, allowFailure: true)
+            .ConfigureAwait(false);
+        _ = await RunGitAsync(["reset", "--hard"], repoRoot, cancellationToken, allowFailure: true)
+            .ConfigureAwait(false);
+
         await RunGitAsync(["checkout", defaultBranch], repoRoot, cancellationToken).ConfigureAwait(false);
 
         var ffOnly = await RunGitAsync(
@@ -229,7 +240,14 @@ internal sealed class ReviewBranchManager
             .ConfigureAwait(false);
         if (!ffOnly.Succeeded)
         {
-            await RunGitAsync(["merge", "--no-edit", remoteBranch], repoRoot, cancellationToken).ConfigureAwait(false);
+            // Not a fast-forward — land a merge commit. `-X theirs` auto-resolves a content conflict on an
+            // accumulated notes file (the notes branch's latest review.md vs a default that advanced under a
+            // concurrent PR's merge) in favour of the notes branch — which is exactly what we want to carry —
+            // instead of leaving a conflicted index that would wedge this checkout on the next sweep. Without
+            // it the same conflict re-throws every cycle and the notes never land.
+            await RunGitAsync(
+                    ["merge", "--no-edit", "-X", "theirs", remoteBranch], repoRoot, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         var pushed = await TryPushWithRebaseAsync(repoRoot, defaultBranch, cancellationToken)
