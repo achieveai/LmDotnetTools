@@ -8,6 +8,8 @@
  * that maps to it (multiple keys → the same object identity).
  */
 import type { ToolRenderer } from '@/utils/toolTypes';
+import { parseDiff, parseMatches } from '@/utils/toolParsers';
+import { parseWeatherData, getWeatherEmoji, formatTemperature, getRainForecast } from '@/utils/weatherParser';
 
 /** Returns the first non-empty string value among `keys` in `args`, or '' when absent/non-string. */
 function firstString(args: Record<string, unknown> | null, keys: readonly string[]): string {
@@ -17,6 +19,11 @@ function firstString(args: Record<string, unknown> | null, keys: readonly string
     if (typeof value === 'string' && value.length > 0) return value;
   }
   return '';
+}
+
+/** Trim `s` to `n` chars with an ellipsis. */
+function trunc(s: string, n = 60): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
 /** Compact `key: value` join of the first 1-2 args, capped near 60 chars. Null-safe; never throws. */
@@ -30,8 +37,8 @@ function genericSummary(args: Record<string, unknown> | null): string {
   return joined.length > 60 ? joined.slice(0, 57) + '...' : joined;
 }
 
-// One renderer per family. `summarize` is intentionally tiny + null-safe (must NEVER throw); the
-// orchestrator refines rich summaries later, so these only pull the single most useful arg.
+// One renderer per family. `summarize` must be null-safe and NEVER throw (args/result may be
+// null/partial). They enrich the one-line only from data actually present.
 const readRenderer: ToolRenderer = {
   family: 'read',
   icon: '📄',
@@ -50,28 +57,42 @@ const editRenderer: ToolRenderer = {
   family: 'edit',
   icon: '✏️',
   iconAlt: 'file edit',
-  summarize: (args) => firstString(args, ['file_path']),
+  summarize: (args) => {
+    const path = firstString(args, ['file_path']);
+    if (!args) return path;
+    const diff = parseDiff(
+      args.old_string as string,
+      args.new_string as string,
+      args.replace_all as boolean
+    );
+    const stat = `+${diff.added} −${diff.removed}`;
+    return path ? `${path} · ${stat}` : stat;
+  },
 };
 
 const shellRenderer: ToolRenderer = {
   family: 'shell',
   icon: '>_',
   iconAlt: 'shell command',
-  summarize: (args) => firstString(args, ['command']),
+  summarize: (args) => trunc(firstString(args, ['command'])),
 };
 
 const taskRenderer: ToolRenderer = {
   family: 'task',
   icon: '⏱',
   iconAlt: 'task',
-  summarize: () => '',
+  summarize: (args) => firstString(args, ['shell_id', 'status']),
 };
 
 const grepRenderer: ToolRenderer = {
   family: 'grep',
   icon: '🔍',
   iconAlt: 'search',
-  summarize: (args) => firstString(args, ['pattern', 'query']),
+  summarize: (args, resultText) => {
+    const pattern = firstString(args, ['pattern', 'query']);
+    const matches = parseMatches(resultText);
+    return matches.totalMatches ? `${pattern} · ${matches.totalMatches} matches` : pattern;
+  },
 };
 
 const globRenderer: ToolRenderer = {
@@ -92,42 +113,67 @@ const agentRenderer: ToolRenderer = {
   family: 'agent',
   icon: '🤖',
   iconAlt: 'sub-agent',
-  summarize: (args) => firstString(args, ['subagent_type']),
+  summarize: (args) => {
+    const type = firstString(args, ['subagent_type', 'agent_id', 'shell_id']);
+    const prompt = firstString(args, ['prompt', 'message']);
+    return prompt ? `${type ? type + ' · ' : ''}${trunc(prompt, 40)}` : type;
+  },
 };
 
 const flowRenderer: ToolRenderer = {
   family: 'flow',
   icon: '⛓',
   iconAlt: 'workflow',
-  summarize: () => '',
+  summarize: (args) => firstString(args, ['node', 'currentNode', 'status']),
 };
 
 const waitRenderer: ToolRenderer = {
   family: 'wait',
   icon: '🔧',
   iconAlt: 'wait',
-  summarize: () => '',
+  summarize: (args) => genericSummary(args),
 };
 
 const mathRenderer: ToolRenderer = {
   family: 'math',
   icon: '🖩',
   iconAlt: 'math',
-  summarize: (args) => firstString(args, ['expression']),
+  summarize: (args, resultText) => {
+    try {
+      const parsed = JSON.parse(resultText) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object' && 'result' in parsed) {
+        return `${parsed.expression ?? ''} = ${parsed.result}`.trim();
+      }
+    } catch {
+      /* no result yet / not JSON */
+    }
+    return firstString(args, ['expression']) || genericSummary(args);
+  },
 };
 
 const webRenderer: ToolRenderer = {
   family: 'web',
   icon: '🌐',
   iconAlt: 'web',
-  summarize: (args) => firstString(args, ['query', 'url']),
+  summarize: (args) => trunc(firstString(args, ['query', 'url'])),
 };
 
 const weatherRenderer: ToolRenderer = {
   family: 'weather',
   icon: '🌤️',
   iconAlt: 'weather',
-  summarize: (args) => firstString(args, ['location']),
+  summarize: (args, resultText) => {
+    const location = firstString(args, ['location']);
+    const data = parseWeatherData(resultText);
+    if (data) {
+      const chip = `${getWeatherEmoji(data.condition)} ${formatTemperature(
+        data.temperature,
+        data.temperatureUnit
+      )} · ${getRainForecast(data.condition, data.humidity)}`;
+      return location ? `${location} · ${chip}` : chip;
+    }
+    return location ? `${location} · Loading…` : '';
+  },
 };
 
 /** Fallback renderer for unknown / labeled-kv tools. Exported so lookups can return it directly. */

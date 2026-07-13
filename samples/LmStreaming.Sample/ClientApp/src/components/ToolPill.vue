@@ -4,6 +4,11 @@ import type { Component } from 'vue';
 import type { ToolCall } from '@/types';
 import { resolveRenderer, deriveToolPillState } from '@/utils';
 import { useToolResult } from '@/composables/useToolResult';
+import CodeBlockRich from '@/components/tools/CodeBlockRich.vue';
+import DiffRich from '@/components/tools/DiffRich.vue';
+import TerminalRich from '@/components/tools/TerminalRich.vue';
+import MatchesRich from '@/components/tools/MatchesRich.vue';
+import WeatherRich from '@/components/tools/WeatherRich.vue';
 
 const props = defineProps<{ toolCall: ToolCall }>();
 
@@ -41,8 +46,16 @@ const argEntries = computed(() =>
   view.value.parsedArgs ? Object.entries(view.value.parsedArgs) : []
 );
 
-/** family → rich component. Empty in the base pill; populated when wiring the rich comps. */
-const richMap: Partial<Record<string, Component>> = {};
+/** family → rich component. Families without an entry render the generic body. */
+const richMap: Partial<Record<string, Component>> = {
+  read: CodeBlockRich,
+  write: CodeBlockRich,
+  edit: DiffRich,
+  shell: TerminalRich,
+  task: TerminalRich,
+  grep: MatchesRich,
+  weather: WeatherRich,
+};
 const richComponent = computed<Component | null>(() => richMap[renderer.value.family] ?? null);
 
 const statusIcon = computed(() => {
