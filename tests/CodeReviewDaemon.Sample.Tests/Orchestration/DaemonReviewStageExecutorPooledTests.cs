@@ -331,6 +331,23 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ReleaseReviewLease_destroys_the_session_before_returning_the_slot()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Lease a slot (ContextReady) and provision the session (Reviewed), then simulate a cancel/fail before
+        // Posted: the orchestrator's terminal ReleaseReviewLeaseAsync must tear the session down before returning
+        // the slot, so no session-side work races the next lease's clean-on-entry (review #180).
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
+    }
+
+    [Fact]
     public async Task ReleaseReviewLease_returns_the_leased_slot_and_is_idempotent()
     {
         using var fixture = Fixture.Create();
@@ -629,6 +646,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+        {
+            Order?.Add("destroy");
+            return Task.CompletedTask;
+        }
+
+        public Task DestroyAsync(long runId, CancellationToken ct)
         {
             Order?.Add("destroy");
             return Task.CompletedTask;

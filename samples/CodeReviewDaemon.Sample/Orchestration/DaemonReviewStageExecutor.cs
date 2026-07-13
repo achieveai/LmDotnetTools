@@ -361,6 +361,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(runId, out var lease))
         {
+            // Tear the session down (terminating any lingering sub-agent git child + unmounting) BEFORE the slot
+            // returns to the pool, so a cancelled/failed run — which reaches here via the orchestrator's terminal
+            // finally without running the Posted-stage cleanup — can't leave session-side work racing the next
+            // lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a no-op when no
+            // session was provisioned, and harmless if the Posted stage already destroyed it.
+            if (_options.EnableToolAssistedReview && _provisioner is not null)
+            {
+                await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
+            }
+
             await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
             _logger.LogInformation("Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
         }
