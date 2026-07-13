@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
@@ -15,6 +16,21 @@ namespace LmMultiTurn.Tests;
 public class MutableSubAgentTemplateSourceTests
 {
     private static readonly Func<IStreamingAgent> StubFactory = () => new Mock<IStreamingAgent>().Object;
+
+    private sealed record TrackingSubAgentTemplate : SubAgentTemplate
+    {
+        public TrackingSubAgentTemplate() { }
+
+        [SetsRequiredMembers]
+        private TrackingSubAgentTemplate(TrackingSubAgentTemplate original)
+            : base(original)
+        {
+            OnCopy = original.OnCopy;
+            OnCopy();
+        }
+
+        public Action OnCopy { get; init; } = () => { };
+    }
 
     private static SubAgentTemplate Template(string name) =>
         new()
@@ -80,10 +96,7 @@ public class MutableSubAgentTemplateSourceTests
     {
         // First-wins matches WorkspaceSubAgentLoader.MergeBuiltInWins's trust boundary: a
         // discovered template (untrusted) cannot shadow a built-in (trusted) seed.
-        var seed = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
-        {
-            ["echo"] = Template("echo"),
-        };
+        var seed = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal) { ["echo"] = Template("echo") };
         var source = new MutableSubAgentTemplateSource(seed);
         var replacement = Template("echo") with { Description = "replacement" };
 
@@ -91,6 +104,26 @@ public class MutableSubAgentTemplateSourceTests
 
         added.Should().BeFalse();
         source.Templates["echo"].Description.Should().Be("echo description");
+    }
+
+    [Fact]
+    public void TryRegister_DuplicateNameAfterRebind_DoesNotCopyRejectedTemplate()
+    {
+        var source = new MutableSubAgentTemplateSource(
+            new Dictionary<string, SubAgentTemplate> { ["echo"] = Template("echo") }
+        );
+        source.RebindFactories(StubFactory, null);
+        var copyCount = 0;
+        var duplicate = new TrackingSubAgentTemplate
+        {
+            SystemPrompt = "duplicate",
+            AgentFactory = StubFactory,
+            OnCopy = () => copyCount++,
+        };
+
+        source.TryRegister("echo", duplicate).Should().BeFalse();
+
+        copyCount.Should().Be(0);
     }
 
     [Fact]
@@ -118,21 +151,25 @@ public class MutableSubAgentTemplateSourceTests
     [Fact]
     public async Task ConcurrentTryRegister_NeverThrows_FinalCountMatches()
     {
-        // ConcurrentDictionary guarantees TryAdd's atomicity; this test pins the surface contract
-        // and ensures no race in our wrapper causes a torn read or lost write under high contention.
+        // The update gate serializes immutable snapshot publication; this test pins the surface
+        // contract and ensures no race causes a torn read or lost write under high contention.
         var source = new MutableSubAgentTemplateSource();
         const int writerCount = 32;
         const int writesPerWriter = 100;
 
-        var tasks = Enumerable.Range(0, writerCount).Select(writerIdx => Task.Run(() =>
-        {
-            for (var i = 0; i < writesPerWriter; i++)
-            {
-                // Each writer uses its own keyspace so the only valid race outcome is "everything
-                // landed"; collisions across writers would mask races as a false-success.
-                source.TryRegister($"w{writerIdx}-{i}", Template($"w{writerIdx}-{i}"));
-            }
-        }));
+        var tasks = Enumerable
+            .Range(0, writerCount)
+            .Select(writerIdx =>
+                Task.Run(() =>
+                {
+                    for (var i = 0; i < writesPerWriter; i++)
+                    {
+                        // Each writer uses its own keyspace so the only valid race outcome is "everything
+                        // landed"; collisions across writers would mask races as a false-success.
+                        source.TryRegister($"w{writerIdx}-{i}", Template($"w{writerIdx}-{i}"));
+                    }
+                })
+            );
 
         await Task.WhenAll(tasks);
 
@@ -148,29 +185,113 @@ public class MutableSubAgentTemplateSourceTests
         var source = new MutableSubAgentTemplateSource();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
-        var writer = Task.Run(() =>
-        {
-            var i = 0;
-            while (!cts.IsCancellationRequested)
+        var writer = Task.Run(
+            () =>
             {
-                source.TryRegister($"key-{i++}", Template($"k{i}"));
-            }
-        }, cts.Token);
-
-        var reader = Task.Run(() =>
-        {
-            while (!cts.IsCancellationRequested)
-            {
-                // Force enumeration of both keys and values; ConcurrentDictionary's snapshot
-                // semantics make this safe but the test makes the invariant explicit.
-                foreach (var kvp in source.Templates)
+                var i = 0;
+                while (!cts.IsCancellationRequested)
                 {
-                    _ = kvp.Key.Length;
-                    _ = kvp.Value.Name;
+                    source.TryRegister($"key-{i++}", Template($"k{i}"));
                 }
-            }
-        }, cts.Token);
+            },
+            cts.Token
+        );
+
+        var reader = Task.Run(
+            () =>
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    // Force enumeration of both keys and values from each immutable snapshot.
+                    foreach (var kvp in source.Templates)
+                    {
+                        _ = kvp.Key.Length;
+                        _ = kvp.Value.Name;
+                    }
+                }
+            },
+            cts.Token
+        );
 
         await Task.WhenAll(writer, reader);
+    }
+
+    [Fact]
+    public void RebindFactories_PublishesConsistentOldAndNewSnapshots()
+    {
+        Func<IStreamingAgent> oldFactory = StubFactory;
+        Func<IStreamingAgent> newFactory = () => new Mock<IStreamingAgent>().Object;
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = _ =>
+            new SubAgentProviderAgent(
+                routedAgent,
+                System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty);
+        var source = new MutableSubAgentTemplateSource(
+            new Dictionary<string, SubAgentTemplate>
+            {
+                ["first"] = Template("first") with { AgentFactory = oldFactory },
+                ["second"] = Template("second") with { AgentFactory = oldFactory },
+            }
+        );
+        var oldSnapshot = source.Templates;
+
+        source.RebindFactories(newFactory, characteristicsFactory);
+        var newSnapshot = source.Templates;
+
+        oldSnapshot
+            .Values.Should()
+            .OnlyContain(template =>
+                ReferenceEquals(template.AgentFactory, oldFactory) && template.CharacteristicsAgentFactory == null
+            );
+        newSnapshot.Values.Should().OnlyContain(template => ReferenceEquals(template.AgentFactory, oldFactory));
+        foreach (var template in newSnapshot.Values)
+        {
+            var inherited = template.CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics(null, null)
+            );
+            inherited.Agent.Should().NotBeNull();
+            inherited.OwnsAgent.Should().BeTrue();
+            template
+                .CharacteristicsAgentFactory!(
+                    new SubAgentCharacteristics("explicit", null)
+                    {
+                        IsModelExplicitlySelected = true,
+                    }
+                )
+                .Agent.Should()
+                .BeSameAs(routedAgent);
+        }
+        newSnapshot.Should().NotBeSameAs(oldSnapshot);
+    }
+
+    [Fact]
+    public void TryRegister_AfterRebind_UsesCurrentFactories()
+    {
+        Func<IStreamingAgent> newFactory = () => new Mock<IStreamingAgent>().Object;
+        var routedAgent = new Mock<IStreamingAgent>().Object;
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsFactory = _ =>
+            new SubAgentProviderAgent(
+                routedAgent,
+                System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty);
+        var source = new MutableSubAgentTemplateSource();
+        source.RebindFactories(newFactory, characteristicsFactory);
+
+        source.TryRegister("later", Template("later")).Should().BeTrue();
+
+        var registered = source.Templates["later"];
+        registered.AgentFactory.Should().BeSameAs(StubFactory);
+        registered
+            .CharacteristicsAgentFactory!(new SubAgentCharacteristics(null, null))
+            .Agent.Should()
+            .NotBeNull();
+        registered
+            .CharacteristicsAgentFactory!(
+                new SubAgentCharacteristics("explicit", null)
+                {
+                    IsModelExplicitlySelected = true,
+                }
+            )
+            .Agent.Should()
+            .BeSameAs(routedAgent);
     }
 }

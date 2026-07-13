@@ -88,8 +88,11 @@ public sealed class WorkflowRuntime
     /// <summary>
     ///     Creates a runtime. A custom <paramref name="schemaValidator"/> may be injected for tests, and an
     ///     optional <paramref name="logger"/> surfaces otherwise-swallowed best-effort persistence faults.
+    ///     Internal: a runtime is only constructed inside the library (via <see cref="WorkflowSession"/> /
+    ///     <see cref="WorkflowManager"/> / <see cref="FromSnapshot"/>) so the controller-isolation invariant
+    ///     cannot be bypassed by newing one up directly.
     /// </summary>
-    public WorkflowRuntime(IJsonSchemaValidator? schemaValidator = null, ILogger? logger = null)
+    internal WorkflowRuntime(IJsonSchemaValidator? schemaValidator = null, ILogger? logger = null)
     {
         _schemaValidator = schemaValidator ?? new JsonSchemaValidator();
         _logger = logger;

@@ -42,6 +42,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
     public SubAgentManager? SubAgentManager { get; }
 
+    /// <summary>
+    /// The names of every tool registered on this loop after the middleware stack was built —
+    /// the parent's own tools plus any Agent/Wait tools the loop self-registered. Read-only; the
+    /// order is unspecified. Internal diagnostic/test accessor used to assert a loop's effective
+    /// tool surface (e.g. the workflow controller's restricted set).
+    /// </summary>
+    internal IReadOnlyCollection<string> RegisteredToolNames => [.. _toolHandlers.Keys];
+
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
 
@@ -121,6 +129,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
             // Agent/CheckAgent tools, preventing unbounded recursive delegation.
             var (contracts, handlers) = functionRegistry.Build();
 
+            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflow/
+            // CheckWorkflow/WaitWorkflow) from the snapshot handed to sub-agents. Unlike the
+            // Agent-family tools — excluded structurally because they're registered AFTER this
+            // snapshot — these are registered on the parent's own registry BEFORE the loop is
+            // built, so they're already in the snapshot and would otherwise be inherited by a
+            // sub-agent whose template sets EnabledTools = null. Filtering the snapshot copy does
+            // not touch the parent's own tool set (built from the full registry below).
+            var inheritableContracts =
+                FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames);
+
             // Use the caller-supplied source when present (so an outer owner — typically
             // a sandbox session registry — can activate discovered subagents mid-session
             // by calling TryRegister on it). Otherwise wrap the static template dictionary
@@ -130,7 +148,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
 
             SubAgentManager = new SubAgentManager(
                 parentAgent: this,
-                parentContracts: [.. contracts],
+                parentContracts: [.. inheritableContracts],
                 parentHandlers: handlers,
                 options: subAgentOptions,
                 source: source,
@@ -200,6 +218,25 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
         {
             await _triggerRuntime.DisposeAsync();
         }
+    }
+
+    /// <summary>
+    /// Filters the parent-tool snapshot handed to sub-agents, dropping any contract whose name is
+    /// in <paramref name="nonInheritedToolNames"/>. Returns the input unchanged when there is
+    /// nothing to exclude. The parent's own tool set is unaffected — only the inherited copy is
+    /// filtered. See <see cref="SubAgents.SubAgentOptions.NonInheritedToolNames"/>.
+    /// </summary>
+    internal static IReadOnlyList<FunctionContract> FilterInheritableContracts(
+        IEnumerable<FunctionContract> contracts,
+        IReadOnlyCollection<string>? nonInheritedToolNames)
+    {
+        if (nonInheritedToolNames is not { Count: > 0 })
+        {
+            return contracts as IReadOnlyList<FunctionContract> ?? [.. contracts];
+        }
+
+        var excluded = new HashSet<string>(nonInheritedToolNames, StringComparer.Ordinal);
+        return [.. contracts.Where(c => !excluded.Contains(c.Name))];
     }
 
     /// <inheritdoc />

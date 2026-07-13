@@ -63,6 +63,14 @@ internal sealed class DiscoveredSubAgentTemplateBuilder(ILogger<DiscoveredSubAge
                 continue;
             }
 
+            foreach (var diagnostic in parsed.Diagnostics)
+            {
+                logger.LogWarning(
+                    "Discovered sub-agent {Name} frontmatter diagnostic: {Diagnostic}",
+                    parsed.Name,
+                    diagnostic);
+            }
+
             var template = SubAgentTemplateMapper.Map(parsed, agentFactory, MaxTurnsPerRun);
             if (modelOverride is not null)
             {

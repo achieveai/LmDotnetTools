@@ -13,13 +13,20 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 /// <summary>
 /// Per-session binding the context-discovery webhook needs to convert a discovered subagent into
 /// a live template: the catalog the loop reads (<see cref="Source"/>) plus the agent factory the
-/// template's spawn-time wiring will reuse (<see cref="AgentFactory"/>). The factory is provider-
-/// specific and only known at agent-creation time, so it must travel with the source rather than
-/// be re-derived inside the webhook handler.
+/// template's spawn-time wiring will reuse (<see cref="AgentFactory"/> and
+/// <see cref="CharacteristicsAgentFactory"/>). The factories are provider-specific and only known
+/// at agent-creation time, so they must travel with the source rather than be re-derived inside the
+/// webhook handler.
 /// </summary>
 public sealed record SubAgentSessionBinding(
     MutableSubAgentTemplateSource Source,
-    Func<IStreamingAgent> AgentFactory);
+    Func<IStreamingAgent> AgentFactory)
+{
+    /// <summary>
+    /// Optional factory that creates the provider agent from resolved spawn characteristics.
+    /// </summary>
+    public Func<SubAgentCharacteristics, SubAgentProviderAgent>? CharacteristicsAgentFactory { get; init; }
+}
 
 /// <summary>
 /// A sandbox session created against the gateway and bound to a workspace directory.
@@ -922,8 +929,67 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
 
         var binding = conversations.GetOrAdd(
             conversationId,
-            _ => new SubAgentSessionBinding(new MutableSubAgentTemplateSource(seed), agentFactory));
+            _ => new SubAgentSessionBinding(
+                new MutableSubAgentTemplateSource(seed),
+                agentFactory));
 
+        return ReconcileSubAgentBindingSeed(binding, seed);
+    }
+
+    /// <summary>
+    /// Creates a conversation binding or atomically refreshes both provider factories on its
+    /// existing binding while preserving the conversation's template source.
+    /// </summary>
+    /// <remarks>
+    /// Use this when recreating an agent for the same conversation. Existing
+    /// <see cref="GetOrAddSubAgentBinding(string, string, IReadOnlyDictionary{string, SubAgentTemplate}, Func{IStreamingAgent})"/>
+    /// overloads intentionally retain their unchanged-on-hit behavior.
+    /// </remarks>
+    public SubAgentSessionBinding AddOrUpdateSubAgentBinding(
+        string sessionId,
+        string conversationId,
+        IReadOnlyDictionary<string, SubAgentTemplate> seed,
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent>? characteristicsAgentFactory)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentNullException.ThrowIfNull(seed);
+        ArgumentNullException.ThrowIfNull(agentFactory);
+
+        var conversations = _subAgentBindings.GetOrAdd(
+            sessionId,
+            _ => new ConcurrentDictionary<string, SubAgentSessionBinding>(StringComparer.Ordinal));
+
+        var binding = conversations.AddOrUpdate(
+            conversationId,
+            _ =>
+            {
+                var source = new MutableSubAgentTemplateSource(seed);
+                source.RebindFactories(agentFactory, characteristicsAgentFactory);
+                return new SubAgentSessionBinding(source, agentFactory)
+                {
+                    CharacteristicsAgentFactory = characteristicsAgentFactory,
+                };
+            },
+            (_, existing) =>
+            {
+                existing.Source.RebindFactories(agentFactory, characteristicsAgentFactory);
+                return existing with
+                {
+                    AgentFactory = agentFactory,
+                    CharacteristicsAgentFactory = characteristicsAgentFactory,
+                };
+            });
+
+        return ReconcileSubAgentBindingSeed(binding, seed);
+    }
+
+    private static SubAgentSessionBinding ReconcileSubAgentBindingSeed(
+        SubAgentSessionBinding binding,
+        IReadOnlyDictionary<string, SubAgentTemplate> seed)
+    {
         // Reconcile the seed every call: a later pool factory invocation for the same conversation
         // may present additional built-in templates that weren't present on the first call.
         // TryRegister is first-wins, so previously seeded entries (and any discovered templates
@@ -939,7 +1005,8 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// <summary>
     /// Tries to look up the sub-agent binding previously registered for the
     /// (<paramref name="sessionId"/>, <paramref name="conversationId"/>) pair via
-    /// <see cref="GetOrAddSubAgentBinding"/>. Returns false (with <paramref name="binding"/> set to
+    /// <see cref="GetOrAddSubAgentBinding(string, string, IReadOnlyDictionary{string, SubAgentTemplate}, Func{IStreamingAgent})"/>.
+    /// Returns false (with <paramref name="binding"/> set to
     /// null) when no binding exists — the discovery webhook treats that as a best-effort no-op
     /// rather than an error, since the conversation may not have routed through the agent path yet.
     /// </summary>
