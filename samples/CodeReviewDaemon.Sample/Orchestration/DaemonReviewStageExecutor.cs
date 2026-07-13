@@ -1287,10 +1287,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id);
         }
 
+        // Terminal-stage session teardown (design §7), done BEFORE the slot is stripped/returned below: the
+        // sandbox session is mounted OVER the leased slot, so a lingering sub-agent's git op inside it would
+        // otherwise race the host-side StripAsync/ReturnAsync on the SAME store (the concurrency window called
+        // out in review #180 — and the mechanism behind the Posted-stage index.lock we observed). Destroying
+        // the session first terminates those child processes and unmounts, so the slot is quiescent before we
+        // touch it. Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
+        if (_options.EnableToolAssistedReview && _provisioner is not null)
+        {
+            await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+        }
+
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
         // pooled slot commits its notes onto the slot's store checkout scoped to ONLY the PR notes dir, then
         // returns the slot; every other run uses the host ReviewBot retention checkout. The slot is ALWAYS
-        // returned (finally) and the session ALWAYS torn down (below), so an empty review still frees its
+        // returned (finally) and the session is torn down just ABOVE, so an empty review still frees its
         // resources; the atomic TryRemove guards against a double-return.
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(run.Id, out var lease))
         {
@@ -1329,14 +1340,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // Durably persist the primary review's artifacts to the ReviewBot repo (AC#6, plan §2). This is
             // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
-        }
-
-        // Terminal-stage cleanup (Task 18, design §7): tear down the run's per-run sandbox session (and
-        // its host workspace dir, best-effort) now that the run has reached its terminal stage. The
-        // diff-only path never provisioned a session, so there is nothing to consult.
-        if (_options.EnableToolAssistedReview && _provisioner is not null)
-        {
-            await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
         }
     }
 

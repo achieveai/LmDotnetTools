@@ -317,6 +317,20 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Posted_destroys_the_session_before_returning_the_slot()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // The sandbox session is mounted OVER the slot, so it must be torn down BEFORE the slot is returned to
+        // the pool — otherwise a lingering sub-agent git op could race the next lease's clean-on-entry on the
+        // same store (the concurrency window flagged in review #180).
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
+    }
+
+    [Fact]
     public async Task ReleaseReviewLease_returns_the_leased_slot_and_is_idempotent()
     {
         using var fixture = Fixture.Create();
@@ -425,6 +439,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
             Pool = new FakeReviewSlotPool("/pool");
             Preparer = new FakeReviewSlotPreparer();
 
+            // Shared cleanup-order log so a test can assert the session is destroyed before the slot is returned.
+            Pool.Order = CleanupOrder;
+            Provisioner.Order = CleanupOrder;
+
             _options = new CodeReviewDaemonOptions
             {
                 EnableToolAssistedReview = true,
@@ -456,6 +474,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
         public RecordingProvisioner Provisioner { get; } = new();
+        public List<string> CleanupOrder { get; } = [];
         public FakeSandboxCommandRunner BootRunner { get; }
         public FakeSandboxCommandRunner HostRunner { get; }
         public FakeSandboxFileSystem HostFileSystem { get; }
@@ -512,6 +531,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public int RecloneCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
 
+        /// <summary>Shared cleanup-order log (with <see cref="RecordingProvisioner"/>) to assert the session is
+        /// destroyed before the slot is returned.</summary>
+        public List<string>? Order { get; set; }
+
         public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
         {
             LeaseCount++;
@@ -524,6 +547,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             ReturnCount++;
             Returned.Add(slot);
+            Order?.Add("return");
             return Task.CompletedTask;
         }
 
@@ -583,6 +607,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public int GetOrCreateCalls { get; private set; }
         public ReviewSlot? LastSlot { get; private set; }
 
+        /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
+        public List<string>? Order { get; set; }
+
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
         {
             GetOrCreateCalls++;
@@ -601,7 +628,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
         }
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+        public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+        {
+            Order?.Add("destroy");
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>Delegates every stage to a real executor but throws at a chosen stage, so a run driven
