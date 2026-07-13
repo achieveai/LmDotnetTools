@@ -756,7 +756,7 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task TryDeliverToRunningAsync_AtCompletionBoundary_ParentRelayHappensExactlyOnce()
+    public async Task TryDeliverToRunningAsync_AfterCompletion_ParentRelayHappensExactlyOnce()
     {
         // Completion-boundary contract (blind-spot #2): a context delivery racing a just-finished
         // background sub-agent must never spawn a second run, relay a second completion, or run against a
