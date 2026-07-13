@@ -372,6 +372,13 @@ try
     // <context-discovery> wrapper tag shared by the boot-time system prompt and the mid-session
     // user-turn injection; the injector wires gateway webhook deliveries into every live agent
     // thread bound to the same sandbox session.
+    // Bind the routing options FIRST (default-off) so the injector resolves them from DI. Off ⇒
+    // discovery behaves byte-identically to today; on ⇒ a context_file carrying an agent_id is
+    // routed to the opening sub-agent (cf. #187/#198).
+    var contextDiscoveryOptions =
+        builder.Configuration.GetSection(ContextDiscoveryOptions.SectionName).Get<ContextDiscoveryOptions>()
+        ?? new ContextDiscoveryOptions();
+    _ = builder.Services.AddSingleton(contextDiscoveryOptions);
     _ = builder.Services.AddSingleton<ContextDiscoveryFormatter>();
     _ = builder.Services.AddSingleton<ContextDiscoveryInjector>();
     // Tracks received discovery webhooks per session for GET /api/diagnostics/context-discovery,
@@ -2235,8 +2242,14 @@ public partial class Program
 
             // Mark the seeded file as seen so a same-file delivery on the webhook side (the gateway
             // re-emits the root path right after session creation) is dropped by the injector —
-            // otherwise the model would see the file twice on turn 1.
-            _ = sandboxRegistry.TryMarkDiscoverySeen(sandboxSession.SessionId, ContextFileKind, path);
+            // otherwise the model would see the file twice on turn 1. Marked under the session-level
+            // sentinel (the root seed is not attributed to any sub-agent), matching the injector's
+            // fallback-path dedup target.
+            _ = sandboxRegistry.TryMarkDiscoverySeen(
+                sandboxSession.SessionId,
+                SandboxSessionRegistry.SessionDiscoveryTarget,
+                ContextFileKind,
+                path);
 
             logger.LogInformation(
                 "Seeded workspace root context file {Path} ({Length} chars) into the system prompt for session {SessionId}.",

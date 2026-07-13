@@ -83,6 +83,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     public const string DefaultWorkspaceId = "default";
 
     /// <summary>
+    /// Dedup-ledger target sentinel for a discovery that is NOT routed to a specific sub-agent —
+    /// i.e. the fallback session fan-out and the boot-time root-file seed. Kept distinct from any
+    /// real <c>agent_id</c> so the primary conversation and a sub-agent that enter the SAME
+    /// directory each dedup independently (see <see cref="TryMarkDiscoverySeen"/>).
+    /// </summary>
+    public const string SessionDiscoveryTarget = "__session__";
+
+    /// <summary>
     /// Upper bound on the gateway session-liveness probe so a wedged gateway degrades to "assume
     /// alive" quickly rather than blocking the turn for the full shared-client timeout.
     /// </summary>
@@ -1120,9 +1128,22 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             return;
         }
 
-        foreach (var set in _sessionThreads.Values)
+        foreach (var (sessionId, set) in _sessionThreads)
         {
-            _ = set.TryRemove(threadId, out _);
+            if (!set.TryRemove(threadId, out _))
+            {
+                continue;
+            }
+
+            // Once a session has lost its last live thread, no primary conversation OR sub-agent
+            // remains that a dedup mark could protect, so drop the whole session's dedup ledger to
+            // bound its per-target growth (blind-spot #5). A later conversation on the same session
+            // legitimately re-receives that directory's context. Guarded by IsEmpty so a session
+            // that still routes another live conversation keeps its (shared + sub-agent) marks.
+            if (set.IsEmpty)
+            {
+                _ = _discoverySeen.TryRemove(sessionId, out _);
+            }
         }
 
         // Release the conversation's per-conversation sub-agent binding (keyed by conversation ==
@@ -1153,15 +1174,24 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Atomically marks <c>(kind, path)</c> as seen for <paramref name="sessionId"/>. Returns
-    /// true on the first call (caller proceeds with injection) and false on every subsequent
-    /// call for the same tuple (caller drops the duplicate). Used to defend against gateway
-    /// retry storms re-firing the same discovery event.
+    /// Atomically marks <c>(target, kind, path)</c> as seen for <paramref name="sessionId"/>.
+    /// Returns true on the first call (caller proceeds with injection) and false on every subsequent
+    /// call for the same tuple (caller drops the duplicate). Used to defend against gateway retry
+    /// storms re-firing the same discovery event.
     /// </summary>
-    public bool TryMarkDiscoverySeen(string sessionId, string kind, string path)
+    /// <remarks>
+    /// <paramref name="target"/> discriminates WHO the discovery was delivered to: a sub-agent's
+    /// <c>agent_id</c> for a routed delivery, or <see cref="SessionDiscoveryTarget"/> for the session
+    /// fan-out / root-file seed. Keying on it lets the primary and a sub-agent (or two sub-agents)
+    /// entering the same directory each receive that directory's context exactly once.
+    /// </remarks>
+    public bool TryMarkDiscoverySeen(string sessionId, string target, string kind, string path)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(path))
+        if (string.IsNullOrWhiteSpace(sessionId)
+            || string.IsNullOrWhiteSpace(target)
+            || string.IsNullOrWhiteSpace(kind)
+            || string.IsNullOrWhiteSpace(path))
         {
             return false;
         }
@@ -1169,7 +1199,39 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         var set = _discoverySeen.GetOrAdd(
             sessionId,
             _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
-        return set.TryAdd($"{kind}\0{path}", 0);
+        return set.TryAdd($"{target}\0{kind}\0{path}", 0);
+    }
+
+    /// <summary>
+    /// Evicts every dedup-ledger entry recorded under <paramref name="target"/> for
+    /// <paramref name="sessionId"/> (all <c>(kind, path)</c> tuples for that target). Two uses:
+    /// (1) the caller un-marks a routed discovery it optimistically marked but could NOT deliver to a
+    /// live sub-agent (all sinks returned <c>NotOwned</c>), so a later gateway redelivery can retry
+    /// once the sub-agent is registered — healing the pre-registration race; and (2) LmMultiTurn
+    /// reclaims a sub-agent's entries when it tears down (invoked post-merge), bounding per-agent
+    /// growth within a long-lived session. Idempotent + best-effort; a no-op for an unknown session
+    /// or after disposal.
+    /// </summary>
+    public void EvictDiscoverySeenForTarget(string sessionId, string target)
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(target))
+        {
+            return;
+        }
+
+        if (!_discoverySeen.TryGetValue(sessionId, out var set))
+        {
+            return;
+        }
+
+        var prefix = $"{target}\0";
+        foreach (var key in set.Keys)
+        {
+            if (key.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                _ = set.TryRemove(key, out _);
+            }
+        }
     }
 
     /// <summary>

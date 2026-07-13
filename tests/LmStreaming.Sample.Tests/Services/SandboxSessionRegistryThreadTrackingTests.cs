@@ -80,33 +80,114 @@ public class SandboxSessionRegistryThreadTrackingTests
     public async Task TryMarkDiscoverySeen_FirstCallTrue_RepeatFalse()
     {
         await using var registry = CreateRegistry();
+        var target = SandboxSessionRegistry.SessionDiscoveryTarget;
 
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeTrue();
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeFalse();
     }
 
     [Fact]
-    public async Task TryMarkDiscoverySeen_ScopedByKindAndPathAndSession()
+    public async Task TryMarkDiscoverySeen_ScopedByTargetKindPathAndSession()
     {
         await using var registry = CreateRegistry();
+        var target = SandboxSessionRegistry.SessionDiscoveryTarget;
 
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeTrue();
         // Same path different kind: distinct entry.
-        registry.TryMarkDiscoverySeen(SessionA, "subagent", "CLAUDE.md").Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, target, "subagent", "CLAUDE.md").Should().BeTrue();
         // Same kind+path, different session: distinct entry.
-        registry.TryMarkDiscoverySeen(SessionB, "context_file", "CLAUDE.md").Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionB, target, "context_file", "CLAUDE.md").Should().BeTrue();
         // Repeat of the original — must be deduped.
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TryMarkDiscoverySeen_DistinctByTarget_PrimaryVsSubAgents_SameDirectory()
+    {
+        await using var registry = CreateRegistry();
+        const string Kind = "context_file";
+        const string DirPath = "sub/CLAUDE.md";
+
+        // The primary (session sentinel) and two DISTINCT sub-agents entering the SAME directory each
+        // get their own first-sight true — dedup is per (target, kind, path).
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeTrue();
+
+        // …and each independently dedups on repeat.
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath).Should().BeFalse();
     }
 
     [Fact]
     public async Task TryMarkDiscoverySeen_RejectsBlankInputs()
     {
         await using var registry = CreateRegistry();
+        var target = SandboxSessionRegistry.SessionDiscoveryTarget;
 
-        registry.TryMarkDiscoverySeen("", "context_file", "CLAUDE.md").Should().BeFalse();
-        registry.TryMarkDiscoverySeen(SessionA, "", "CLAUDE.md").Should().BeFalse();
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "").Should().BeFalse();
+        registry.TryMarkDiscoverySeen("", target, "context_file", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, "", "context_file", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, target, "", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task EvictDiscoverySeenForTarget_ClearsOnlyThatTargetsEntries()
+    {
+        await using var registry = CreateRegistry();
+        const string Kind = "context_file";
+        const string DirPath = "sub/CLAUDE.md";
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeTrue();
+
+        // Per-sub-agent eviction — invoked by LmMultiTurn on sub-agent teardown (post-merge) and by the
+        // injector to un-mark an undeliverable routed discovery. Only agent-A's entries clear.
+        registry.EvictDiscoverySeenForTarget(SessionA, "agent-A");
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeTrue("agent-A's entry was evicted");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeFalse("agent-B was untouched");
+    }
+
+    [Fact]
+    public async Task EvictDiscoverySeenForTarget_UnknownSessionOrTarget_IsNoOp()
+    {
+        await using var registry = CreateRegistry();
+
+        // Must not throw for an unknown session or a never-marked target.
+        registry.EvictDiscoverySeenForTarget("ghost-session", "agent-A");
+        registry.EvictDiscoverySeenForTarget(SessionA, "agent-never-marked");
+    }
+
+    [Fact]
+    public async Task UnregisterThreadFromAllSessions_ClearsDedupWhenSessionLosesLastThread()
+    {
+        await using var registry = CreateRegistry();
+        registry.RegisterThread(SessionA, "thread-1");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md").Should().BeTrue();
+
+        // Removing the session's last thread evicts its (now-dead) sub-agents' dedup entries.
+        registry.UnregisterThreadFromAllSessions("thread-1");
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
+            .Should().BeTrue("a fresh conversation on the session legitimately re-receives context");
+    }
+
+    [Fact]
+    public async Task UnregisterThreadFromAllSessions_KeepsDedupWhileAnotherThreadIsLive()
+    {
+        await using var registry = CreateRegistry();
+        registry.RegisterThread(SessionA, "thread-stays");
+        registry.RegisterThread(SessionA, "thread-goes");
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should().BeTrue();
+
+        registry.UnregisterThreadFromAllSessions("thread-goes");
+
+        // The session still routes thread-stays, so its dedup ledger must survive (else double-inject).
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should().BeFalse();
     }
 
     [Fact]
@@ -114,7 +195,8 @@ public class SandboxSessionRegistryThreadTrackingTests
     {
         var registry = CreateRegistry();
         registry.RegisterThread(SessionA, "thread-1");
-        _ = registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md");
+        _ = registry.TryMarkDiscoverySeen(
+            SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md");
 
         await registry.DisposeAsync();
 
