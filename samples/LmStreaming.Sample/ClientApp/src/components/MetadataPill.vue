@@ -1,49 +1,41 @@
 <script setup lang="ts">
-import { ref, inject, watch, nextTick } from 'vue';
-import type { ReasoningMessage, ToolsCallMessage, ToolCallResultMessage, ToolCall } from '@/types';
+import { ref, watch, nextTick } from 'vue';
+import type { ReasoningMessage, ToolsCallMessage } from '@/types';
 import { isReasoningMessage, isToolsCallMessage, normalizeReasoningVisibility } from '@/types';
-import { truncateText, parseWeatherData, isWeatherTool, getWeatherEmoji, formatTemperature, getRainForecast, type WeatherData } from '@/utils';
+import { truncateText } from '@/utils';
+import ToolPill from '@/components/ToolPill.vue';
 
 const props = defineProps<{
   items: Array<ReasoningMessage | ToolsCallMessage>;
 }>();
 
-// Inject getResultForToolCall from parent
-const getResultForToolCall = inject<(toolCallId: string | null | undefined) => ToolCallResultMessage | null>(
-  'getResultForToolCall',
-  () => null
-);
-
-// Track which items are expanded
+// Track which reasoning items are expanded (tool pills own their own expansion).
 const expandedItems = ref<Set<number>>(new Set());
 
-// Track if the entire pill is expanded
+// Track if the entire pill is expanded (the "Show all N items" affordance).
 const isPillExpanded = ref(false);
 
-// Reference to the scrollable container
+// Reference to the scrollable container.
 const pillItemsContainer = ref<HTMLElement | null>(null);
 
-// Auto-scroll to bottom when new items are added (only when collapsed)
-watch(() => props.items.length, async () => {
-  if (!isPillExpanded.value) {
-    await nextTick();
-    if (pillItemsContainer.value) {
-      pillItemsContainer.value.scrollTop = pillItemsContainer.value.scrollHeight;
+// Auto-scroll to bottom when new items are added (only when collapsed).
+watch(
+  () => props.items.length,
+  async () => {
+    if (!isPillExpanded.value) {
+      await nextTick();
+      if (pillItemsContainer.value) {
+        pillItemsContainer.value.scrollTop = pillItemsContainer.value.scrollHeight;
+      }
     }
   }
-});
+);
 
-/**
- * Toggle expansion of the entire pill
- */
 function togglePillExpansion(event: Event) {
   event.stopPropagation();
   isPillExpanded.value = !isPillExpanded.value;
 }
 
-/**
- * Toggle expansion of an item
- */
 function toggleExpand(index: number) {
   if (expandedItems.value.has(index)) {
     expandedItems.value.delete(index);
@@ -52,9 +44,6 @@ function toggleExpand(index: number) {
   }
 }
 
-/**
- * Get summary text for a reasoning message
- */
 function getReasoningSummary(item: ReasoningMessage): string {
   if (isEncryptedReasoning(item)) {
     return 'Encrypted reasoning';
@@ -64,176 +53,6 @@ function getReasoningSummary(item: ReasoningMessage): string {
 
 function isEncryptedReasoning(item: ReasoningMessage): boolean {
   return normalizeReasoningVisibility(item.visibility) === 'Encrypted';
-}
-
-/**
- * Get summary for a tool call
- */
-function getToolCallSummary(toolCall: ToolCall): string {
-  const name = toolCall.function_name || 'unknown';
-  let argsSummary = '';
-  
-  if (toolCall.function_args) {
-    try {
-      const args = JSON.parse(toolCall.function_args);
-      const keys = Object.keys(args);
-      if (keys.length > 0) {
-        const firstKey = keys[0];
-        const firstValue = args[firstKey];
-        argsSummary = `${firstKey}: ${JSON.stringify(firstValue)}`;
-        if (keys.length > 1) {
-          argsSummary += `, +${keys.length - 1} more`;
-        }
-      }
-    } catch {
-      argsSummary = truncateText(toolCall.function_args, 40);
-    }
-  }
-  
-  return argsSummary ? `${name}(${argsSummary})` : name;
-}
-
-/**
- * Check if a tool call is a server-side search tool
- */
-function isSearchTool(functionName: string | null | undefined): boolean {
-  if (!functionName) return false;
-  const name = functionName.toLowerCase();
-  return name === 'web_search' || name === 'web_fetch';
-}
-
-/**
- * Check if a tool call is a code execution tool
- */
-function isCodeExecutionTool(functionName: string | null | undefined): boolean {
-  if (!functionName) return false;
-  const name = functionName.toLowerCase();
-  return name === 'code_execution' || name === 'bash_code_execution' || name === 'text_editor_code_execution';
-}
-
-/**
- * Get icon for message type or tool-specific icon
- */
-function getIcon(item: ReasoningMessage | ToolsCallMessage): string {
-  if (isReasoningMessage(item)) {
-    return '💭'; // Thinking emoji
-  }
-
-  // For tool calls, try to get tool-specific icon
-  if (isToolsCallMessage(item) && item.tool_calls.length === 1) {
-    const toolCall = item.tool_calls[0];
-    // Show warning icon for error results
-    if (isToolCallError(toolCall)) {
-      return '⚠️';
-    }
-    if (isSearchTool(toolCall.function_name)) {
-      return '🔍'; // Search emoji for web_search/web_fetch
-    }
-    if (isCodeExecutionTool(toolCall.function_name)) {
-      return '💻'; // Computer emoji for code execution
-    }
-    if (isWeatherTool(toolCall.function_name)) {
-      // For weather tools, try to get weather-specific emoji
-      const weatherData = getWeatherData(toolCall);
-      if (weatherData) {
-        return getWeatherEmoji(weatherData.condition);
-      }
-      // Default weather icon if no result yet
-      return '🌤️';
-    }
-  }
-
-  return '🔧'; // Generic tool emoji
-}
-
-/**
- * Check if a tool call has a result
- */
-function hasResult(toolCall: ToolCall): boolean {
-  return getResult(toolCall) !== null;
-}
-
-/**
- * Check if a tool call result is an error (either is_error flag or JSON with "error" key)
- */
-function isToolCallError(toolCall: ToolCall): boolean {
-  const result = getResult(toolCall);
-  if (!result) return false;
-  if (result.is_error) return true;
-  try {
-    const parsed = JSON.parse(result.result);
-    return typeof parsed === 'object' && parsed !== null && 'error' in parsed;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Get error message from a tool call result
- */
-function getToolCallErrorMessage(toolCall: ToolCall): string {
-  const result = getResult(toolCall);
-  if (!result) return 'Unknown error';
-  try {
-    const parsed = JSON.parse(result.result);
-    if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
-      return String(parsed.error);
-    }
-  } catch {
-    // fall through
-  }
-  return result.result;
-}
-
-/**
- * Get result for a tool call
- */
-function getResult(toolCall: ToolCall): ToolCallResultMessage | null {
-  return getResultForToolCall(toolCall.tool_call_id);
-}
-
-/**
- * Format tool result for display
- */
-function formatResult(result: ToolCallResultMessage): string {
-  try {
-    const parsed = JSON.parse(result.result);
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return result.result;
-  }
-}
-
-/**
- * Get weather data for a tool call if it's a weather tool
- */
-function getWeatherData(toolCall: ToolCall): WeatherData | null {
-  if (!isWeatherTool(toolCall.function_name)) {
-    return null;
-  }
-  
-  const result = getResult(toolCall);
-  if (!result) {
-    return null;
-  }
-  
-  return parseWeatherData(result.result);
-}
-
-/**
- * Get location from weather tool call arguments (for immediate display)
- */
-function getWeatherLocation(toolCall: ToolCall): string | null {
-  if (!isWeatherTool(toolCall.function_name)) {
-    return null;
-  }
-  
-  try {
-    const args = JSON.parse(toolCall.function_args || '{}');
-    return args.location || null;
-  } catch {
-    return null;
-  }
 }
 </script>
 
@@ -246,95 +65,38 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
         {{ isPillExpanded ? 'Collapse' : `Show all ${props.items.length} items` }}
       </span>
     </div>
-    
-    <div 
-      class="pill-items" 
-      :class="{ 'expanded': isPillExpanded }"
-      ref="pillItemsContainer"
-    >
+
+    <div class="pill-items" :class="{ expanded: isPillExpanded }" ref="pillItemsContainer">
       <template v-for="(item, index) in props.items" :key="index">
+        <!-- Reasoning stays INLINE (locked by MetadataPillEncryptedReasoning.test) -->
         <div
+          v-if="isReasoningMessage(item)"
           class="pill-item"
           :class="{ expanded: expandedItems.has(index) }"
-          :data-testid="isReasoningMessage(item) ? 'thinking-pill' : 'tool-call-pill'"
-          :data-tool-name="isToolsCallMessage(item) && item.tool_calls.length === 1 ? (item.tool_calls[0].function_name || undefined) : undefined"
+          data-testid="thinking-pill"
           @click="toggleExpand(index)"
         >
           <div class="item-header">
-            <span 
-              class="item-icon" 
-              :class="{ 'pulsing': isToolsCallMessage(item) && item.tool_calls.length === 1 && !hasResult(item.tool_calls[0]) }"
-            >
-              {{ getIcon(item) }}
-            </span>
-            
-            <!-- Reasoning item -->
-            <template v-if="isReasoningMessage(item)">
-              <span class="item-label">Thinking:</span>
-              <span class="item-summary">{{ getReasoningSummary(item) }}</span>
-            </template>
-            
-            <!-- Tool calls item -->
-            <template v-else-if="isToolsCallMessage(item)">
-              <template v-if="item.tool_calls.length === 1">
-                <!-- Special weather display -->
-                <template v-if="getWeatherLocation(item.tool_calls[0]) && !isToolCallError(item.tool_calls[0])">
-                  <span class="item-label weather-label">
-                    {{ getWeatherLocation(item.tool_calls[0]) }}
-                  </span>
-                  <span class="weather-summary">
-                    <template v-if="getWeatherData(item.tool_calls[0])">
-                      <span class="weather-temp">{{ formatTemperature(getWeatherData(item.tool_calls[0])!.temperature, getWeatherData(item.tool_calls[0])!.temperatureUnit) }}</span>
-                      <span class="weather-condition">{{ getRainForecast(getWeatherData(item.tool_calls[0])!.condition, getWeatherData(item.tool_calls[0])!.humidity) }}</span>
-                    </template>
-                    <span v-else class="weather-loading">Loading...</span>
-                  </span>
-                </template>
-                <!-- Error display for failed tool calls -->
-                <template v-else-if="isToolCallError(item.tool_calls[0])">
-                  <span class="item-label tool-error-label">{{ item.tool_calls[0].function_name || 'Tool' }}:</span>
-                  <span class="item-summary tool-error-summary">{{ getToolCallErrorMessage(item.tool_calls[0]) }}</span>
-                </template>
-                <!-- Regular tool display -->
-                <template v-else>
-                  <span class="item-label">{{ item.tool_calls[0].function_name || 'Tool' }}:</span>
-                  <span class="item-summary">{{ getToolCallSummary(item.tool_calls[0]) }}</span>
-                </template>
-              </template>
-              <template v-else>
-                <span class="item-label">Tools:</span>
-                <span class="item-summary">{{ item.tool_calls.length }} calls</span>
-              </template>
-            </template>
-            
+            <span class="item-icon">💭</span>
+            <span class="item-label">Thinking:</span>
+            <span class="item-summary">{{ getReasoningSummary(item) }}</span>
             <span class="expand-icon">{{ expandedItems.has(index) ? '▼' : '▶' }}</span>
           </div>
-          
-          <!-- Expanded content -->
           <div v-if="expandedItems.has(index)" class="item-content">
-              <!-- Reasoning content -->
-              <template v-if="isReasoningMessage(item)">
-                <pre class="reasoning-text">{{ isEncryptedReasoning(item) ? '[Encrypted reasoning hidden]' : item.reasoning }}</pre>
-              </template>
-            
-            <!-- Tool calls content -->
-            <template v-else-if="isToolsCallMessage(item)">
-              <div v-for="(toolCall, tcIndex) in item.tool_calls" :key="tcIndex" class="tool-call">
-                <div class="tool-call-header">
-                  <strong>{{ toolCall.function_name || 'unknown' }}</strong>
-                </div>
-                <div class="tool-call-args">
-                  <strong>Arguments:</strong>
-                  <pre>{{ toolCall.function_args }}</pre>
-                </div>
-                <div v-if="getResult(toolCall)" class="tool-call-result">
-                  <strong>Result:</strong>
-                  <pre>{{ formatResult(getResult(toolCall)!) }}</pre>
-                </div>
-              </div>
-            </template>
+            <pre class="reasoning-text">{{
+              isEncryptedReasoning(item) ? '[Encrypted reasoning hidden]' : item.reasoning
+            }}</pre>
           </div>
         </div>
+
+        <!-- Tool calls delegate to ToolPill — one pill per tool_call -->
+        <template v-else-if="isToolsCallMessage(item)">
+          <ToolPill
+            v-for="(toolCall, tcIndex) in item.tool_calls"
+            :key="`${index}-${tcIndex}`"
+            :tool-call="toolCall"
+          />
+        </template>
       </template>
     </div>
   </div>
@@ -382,7 +144,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 150px; /* Height for ~3 collapsed items (42px each + gaps) */
+  max-height: 150px; /* Height for ~3 collapsed items */
   overflow-y: auto;
   overflow-x: hidden;
   transition: max-height 0.3s ease;
@@ -393,7 +155,6 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   overflow-y: visible;
 }
 
-/* Scrollbar styling for pill items */
 .pill-items::-webkit-scrollbar {
   width: 6px;
 }
@@ -412,6 +173,7 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   background: #a0a0a0;
 }
 
+/* Reasoning pill (tool pills style themselves) */
 .pill-item {
   background: #fff;
   border-radius: 8px;
@@ -427,10 +189,6 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   border-color: #d0d0d0;
 }
 
-.pill-item.expanded {
-  background: #fff;
-}
-
 .item-header {
   display: flex;
   align-items: center;
@@ -442,21 +200,6 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
 .item-icon {
   font-size: 16px;
   flex-shrink: 0;
-}
-
-.item-icon.pulsing {
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.6;
-    transform: scale(0.95);
-  }
 }
 
 .item-label {
@@ -471,56 +214,6 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.weather-label {
-  font-weight: 600;
-  color: #1976d2;
-  font-size: 15px;
-}
-
-.weather-summary {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: 1;
-}
-
-.weather-temp {
-  font-weight: 600;
-  color: #333;
-  font-size: 16px;
-}
-
-.weather-condition {
-  color: #666;
-  font-size: 14px;
-}
-
-.weather-loading {
-  color: #999;
-  font-size: 14px;
-  font-style: italic;
-  animation: fadeInOut 1.5s ease-in-out infinite;
-}
-
-@keyframes fadeInOut {
-  0%, 100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.tool-error-label {
-  font-weight: 600;
-  color: #d32f2f;
-}
-
-.tool-error-summary {
-  color: #d32f2f;
-  font-style: italic;
 }
 
 .expand-icon {
@@ -546,43 +239,6 @@ function getWeatherLocation(toolCall: ToolCall): string | null {
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;
-  overflow-x: auto;
-}
-
-.tool-call {
-  margin-bottom: 12px;
-}
-
-.tool-call:last-child {
-  margin-bottom: 0;
-}
-
-.tool-call-header {
-  margin-bottom: 8px;
-  color: #1976d2;
-}
-
-.tool-call-args,
-.tool-call-result {
-  margin-bottom: 8px;
-}
-
-.tool-call-args strong,
-.tool-call-result strong {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 12px;
-  color: #666;
-}
-
-.tool-call-args pre,
-.tool-call-result pre {
-  margin: 0;
-  padding: 8px;
-  background: #f8f9fa;
-  border-radius: 4px;
-  font-size: 12px;
-  line-height: 1.4;
   overflow-x: auto;
 }
 </style>
