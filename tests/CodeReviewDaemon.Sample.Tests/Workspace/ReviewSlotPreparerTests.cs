@@ -181,6 +181,27 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task PrepareAsync_ReviewedSubmoduleTransientInitFailure_DoesNotDriveReclone()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --init",
+            new SandboxCommandResult(
+                1, string.Empty, "fatal: unable to access 'https://github.com/x': Could not resolve host: github.com"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        // A transient auth/network init failure must retry the warm store, NOT trigger a destructive reclone
+        // (which cannot fix it and would loop) — so it throws, but not the reclone-driving SlotCorruptException.
+        var thrown = await act.Should().ThrowAsync<Exception>();
+        thrown.Which.Should().NotBeOfType<SlotCorruptException>();
+    }
+
+    [Fact]
     public async Task PrepareAsync_CorruptStderrOnAGitStep_ThrowsSlotCorrupt()
     {
         var slot = CreateSlot();

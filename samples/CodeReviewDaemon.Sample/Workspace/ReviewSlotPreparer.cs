@@ -146,12 +146,22 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
         // Post-init verification (the executor's store-checkout path already does this): the REVIEWED
         // submodule must have actually initialized. Without this a denied/failed init silently proceeds to
-        // the fetch below, which then fails opaquely; treat a missing reviewed submodule as slot corruption
-        // so the recovery ladder re-clones instead of looping on a half-inited store.
+        // the fetch below, which then fails opaquely. But NOT every failure is slot corruption: a TRANSIENT
+        // cause (auth/network/throttle — captured in the denial reason's stderr) must retry the warm store, not
+        // trigger a destructive reclone that can't fix it and would loop (review #180). Only corrupt/unrecognized
+        // failures drive the reclone ladder.
         if (!outcome.InitializedPaths.Contains(submoduleRelPath, StringComparer.Ordinal))
         {
+            var reason = outcome.Denied
+                .FirstOrDefault(d => string.Equals(d.Path, submoduleRelPath, StringComparison.Ordinal))?.Reason;
+            if (GitFailureClassifier.Classify(reason) == GitFailureKind.Transient)
+            {
+                throw new InvalidOperationException(
+                    $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize (transient): {reason}");
+            }
+
             throw new SlotCorruptException(
-                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; slot needs re-clone.");
+                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; slot needs re-clone. {reason}");
         }
 
         // 4. Advance the reviewed submodule to the PR head exactly like FetchAndCheckoutHeadAsync.
