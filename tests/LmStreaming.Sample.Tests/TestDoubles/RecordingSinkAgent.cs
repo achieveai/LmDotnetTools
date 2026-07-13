@@ -32,6 +32,13 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
     /// <summary>Result <see cref="TryDeliverContextAsync"/> returns for every call.</summary>
     public SubAgentContextDeliveryResult CannedResult { get; set; }
 
+    /// <summary>
+    /// When set, <see cref="TryDeliverContextAsync"/> THROWS this instead of returning a result —
+    /// modelling a misbehaving sink whose failure the injector cannot disambiguate from a partial
+    /// delivery (the "ambiguous" outcome).
+    /// </summary>
+    public Exception? ThrowOnDeliver { get; set; }
+
     /// <summary>Number of times <see cref="TryDeliverContextAsync"/> was invoked.</summary>
     public int DeliverCallCount { get; private set; }
 
@@ -73,6 +80,11 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
         {
             DeliverCallCount++;
             LastDeliveredAgentId = agentId;
+            if (ThrowOnDeliver is not null)
+            {
+                throw ThrowOnDeliver;
+            }
+
             if (CannedResult == SubAgentContextDeliveryResult.Delivered)
             {
                 _delivered.AddRange(messages);

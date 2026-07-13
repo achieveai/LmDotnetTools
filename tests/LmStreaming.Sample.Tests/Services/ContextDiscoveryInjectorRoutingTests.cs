@@ -193,6 +193,55 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(0);
     }
 
+    [Fact]
+    public async Task AmbiguousSinkException_KeepsMark_NoRetryDoubleInject()
+    {
+        // SHOULD-1 regression: a sink whose TryDeliverContextAsync THROWS is AMBIGUOUS — it may have
+        // accepted (delivered) the send before throwing. The injector must DROP (never fall back to the
+        // primary) AND KEEP the dedup mark: un-marking would let a gateway redelivery retry and
+        // double-inject the same context. Contrast AllNotOwned_…_AllowsRetry, which un-marks on a clean
+        // NotOwned so the pre-registration race can heal.
+        using var harness = new Harness(routeToSubAgent: true);
+        var primary = harness.RegisterPrimaryThread(SessionId, "thread-primary");
+        var sink = harness.RegisterSinkThread(SessionId, "thread-sub", SubAgentContextDeliveryResult.NotOwned);
+        sink.ThrowOnDeliver = new InvalidOperationException("sink boom (may already have delivered)");
+
+        var sent = await harness.Injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
+
+        sent.Should().Be(0);
+        primary.SentMessages.Should().BeEmpty("an ambiguous sink failure must never fall back to the primary");
+        sink.SentMessages.Should().BeEmpty();
+        harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(1);
+        // The mark is KEPT (returns false = already seen), so a gateway redelivery is deduped instead of
+        // risking a second inject of a context the throwing sink may already have delivered.
+        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should().BeFalse("an ambiguous sink failure keeps the dedup mark so a retry can't double-inject");
+    }
+
+    // --- Back-compat constructor (SHOULD-2) ---
+
+    [Fact]
+    public async Task CompatCtor_RoutingDefaultsOff_PresentAgentId_FansOutToPrimary()
+    {
+        // The restored 4-arg (registry, pool, formatter, logger) constructor defaults routing OFF, so a
+        // discovery carrying a present agent_id must fan out to the primary via SendAsync — the sink's
+        // routed TryDeliverContextAsync path is never consulted.
+        using var harness = new Harness(routeToSubAgent: true);
+        var sink = harness.RegisterSinkThread(SessionId, "thread-1", SubAgentContextDeliveryResult.Delivered);
+
+        var compatInjector = new ContextDiscoveryInjector(
+            harness.Registry,
+            harness.Pool,
+            new ContextDiscoveryFormatter(),
+            NullLogger<ContextDiscoveryInjector>.Instance);
+
+        var sent = await compatInjector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
+
+        sent.Should().Be(1);
+        sink.SentMessages.Should().ContainSingle("the compat ctor defaults routing OFF, so a present agent_id fans out to the primary");
+        sink.DeliverCallCount.Should().Be(0, "routing is off, so the sink's routed delivery path is never consulted");
+    }
+
     // --- AC7 logging ---
 
     [Fact]

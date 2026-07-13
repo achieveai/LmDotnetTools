@@ -121,6 +121,22 @@ public class SandboxSessionRegistryThreadTrackingTests
     }
 
     [Fact]
+    public async Task TryMarkDiscoverySeen_ThreeArgOverload_DedupsUnderSessionSentinel_SharingTheBucket()
+    {
+        // SHOULD-2: the restored 3-arg (sessionId, kind, path) overload marks under the __session__
+        // sentinel, deduping identically to the 4-arg form: first true, repeat false…
+        await using var registry = CreateRegistry();
+
+        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeFalse();
+
+        // …and it shares the SAME bucket as the explicit 4-arg __session__ form, so a caller mixing the
+        // two overloads still dedups the same discovery exactly once (no rogue second bucket).
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should().BeFalse("the 3-arg overload and the 4-arg __session__ form share one dedup bucket");
+    }
+
+    [Fact]
     public async Task TryMarkDiscoverySeen_RejectsBlankInputs()
     {
         await using var registry = CreateRegistry();

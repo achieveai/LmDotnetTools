@@ -198,13 +198,21 @@ public sealed class ContextDiscoveryInjector
     /// <summary>
     /// Routes the discovery to the sub-agent identified by <c>agent_id</c>. Marks the dedup ledger
     /// under the agent id FIRST (so a redelivery of an already-resolved discovery drops); then asks
-    /// each session thread's <see cref="ISubAgentContextSink"/> in turn. Aggregation: the first
-    /// <see cref="SubAgentContextDeliveryResult.Delivered"/> wins (routed); otherwise if any sink
-    /// owns the id but can't take it (<see cref="SubAgentContextDeliveryResult.TargetNotDeliverable"/>)
-    /// the discovery is dropped WITHOUT fan-out and the mark kept (terminal); if no sink owns it
-    /// (all <see cref="SubAgentContextDeliveryResult.NotOwned"/>) the discovery is dropped and the
-    /// mark REMOVED so a gateway redelivery can retry once the sub-agent registers (pre-registration
-    /// race). A present-but-unresolved <c>agent_id</c> never falls back to the primary.
+    /// each session thread's <see cref="ISubAgentContextSink"/> in turn. Aggregation across the
+    /// non-delivered outcomes: the first <see cref="SubAgentContextDeliveryResult.Delivered"/> wins
+    /// (routed); otherwise, in priority order —
+    /// <list type="number">
+    ///   <item>if any sink owns the id but can't take it
+    ///   (<see cref="SubAgentContextDeliveryResult.TargetNotDeliverable"/>) the discovery is dropped
+    ///   WITHOUT fan-out and the mark KEPT (terminal — a retry can't succeed);</item>
+    ///   <item>else if any sink THREW, the mark is likewise KEPT: a throwing sink may already have
+    ///   accepted (delivered) the send, so un-marking could DOUBLE-INJECT the same context on a
+    ///   gateway retry — safer to drop-and-hold;</item>
+    ///   <item>else (every sink cleanly returned <see cref="SubAgentContextDeliveryResult.NotOwned"/>)
+    ///   the discovery is dropped and the mark REMOVED so a gateway redelivery can retry once the
+    ///   sub-agent registers (pre-registration race).</item>
+    /// </list>
+    /// A present-but-unresolved <c>agent_id</c> never falls back to the primary.
     /// </summary>
     private async Task<int> RouteToSubAgentAsync(ContextDiscoveryPayload body, CancellationToken ct)
     {
@@ -225,6 +233,7 @@ public sealed class ContextDiscoveryInjector
         IReadOnlyList<IMessage> messages = [message];
 
         var anyNotDeliverable = false;
+        var anyAmbiguous = false;
         foreach (var threadId in _registry.GetThreads(body.SessionId!))
         {
             if (!_pool.TryGet(threadId, out var agent) || agent is not ISubAgentContextSink sink)
@@ -243,13 +252,18 @@ public sealed class ContextDiscoveryInjector
             }
             catch (Exception ex)
             {
-                // A misbehaving sink must not strand routing — treat it as not-owned and keep scanning.
+                // A misbehaving sink must not strand routing — keep scanning the other threads so a
+                // healthy sink can still Deliver. But flag the failure as AMBIGUOUS: because the throw
+                // could have happened AFTER the sink accepted (delivered) the send, we can no longer be
+                // sure this discovery wasn't delivered. The final aggregation uses this to KEEP the mark
+                // rather than un-marking, so a gateway retry can't double-inject.
                 _logger.LogWarning(
                     ex,
                     "ContextDiscovery context_file: sink delivery threw for agent {AgentId} on thread {ThreadId}; "
-                    + "treating as not-owned.",
+                    + "treating as ambiguous (delivery may have occurred).",
                     agentId,
                     threadId);
+                anyAmbiguous = true;
                 continue;
             }
 
@@ -286,10 +300,28 @@ public sealed class ContextDiscoveryInjector
             return 0;
         }
 
-        // No sink owns the id: the sub-agent hasn't registered yet (pre-registration race), or it is a
-        // nested / cross-session agent. Drop and un-mark ONLY this discovery's (target, kind, path) so the
-        // gateway's redelivery can retry once the sub-agent is live — precise so a concurrent delivery's
-        // mark for another path of the same agent survives — but still never fall back to the primary.
+        if (anyAmbiguous)
+        {
+            // A sink THREW after being asked to deliver, and no other sink Delivered. We cannot tell
+            // whether the throwing sink already accepted (delivered) the send, so KEEP the mark rather
+            // than un-marking: un-marking would let a gateway redelivery retry and could DOUBLE-INJECT
+            // the same context if that sink had in fact delivered. Drop-and-hold (no retry) is the safe
+            // choice — still never fall back to the primary.
+            _logger.LogWarning(
+                "ContextDiscovery context_file: ambiguous sink failure for {AgentId} on {Path} in session "
+                + "{SessionId}; keeping the dedup mark (no gateway retry) to avoid a possible double-inject.",
+                agentId,
+                body.Path,
+                body.SessionId);
+            _diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Dropped);
+            return 0;
+        }
+
+        // No sink owns the id AND none threw: the sub-agent hasn't registered yet (pre-registration
+        // race), or it is a nested / cross-session agent. Drop and un-mark ONLY this discovery's
+        // (target, kind, path) so the gateway's redelivery can retry once the sub-agent is live —
+        // precise so a concurrent delivery's mark for another path of the same agent survives — but
+        // still never fall back to the primary.
         _registry.UnmarkDiscoverySeen(body.SessionId!, agentId, body.Kind!, body.Path!);
         _logger.LogDebug(
             "ContextDiscovery context_file: no live sub-agent owns {AgentId} for {Path} in session {SessionId}; "
