@@ -1,0 +1,9 @@
+{
+  "family": "agent",
+  "sourceThread": "thread-1781044169284-uzln751",
+  "toolName": "Agent",
+  "toolCallId": "call_qAT3x8jAR4bSkX0mvyfuKiF6",
+  "functionArgs": "{\"subagent_type\":\"researcher\",\"prompt\":\"Check the current open issues for GitHub repository https://github.com/achieveai/LmdotnetTools. Use GitHub API if available. Separate actual issues from pull requests, because GitHub's issues endpoint includes PRs. Return a concise list with issue number, title, labels, assignees, comments, updated time, and URL, plus count of open PRs if seen. If auth/tooling fails, say so explicitly.\",\"description\":\"Recheck GitHub issues\",\"name\":\"gh-issues-recheck\",\"model\":\"\",\"run_in_background\":false,\"add_tools\":\"\",\"remove_tools\":\"\"}",
+  "result": "(no text response)",
+  "isError": false
+}

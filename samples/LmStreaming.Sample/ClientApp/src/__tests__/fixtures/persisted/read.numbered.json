@@ -1,0 +1,9 @@
+{
+  "family": "read",
+  "sourceThread": "thread-1780438386279-5b9immb",
+  "toolName": "sandbox-Read",
+  "toolCallId": "tool_n8C0Ozmq8IGU1IR2xFrUE1nb",
+  "functionArgs": "{\"file_path\":\"B:\\\\sandbox-workspaces\\\\demo\\\\README.md\"}",
+  "result": "     1\t# Sandbox Demo Workspace\n     2\t\n     3\tThis is the isolated workspace the **Workspace Agent** operates in (configured via\n     4\t`SandboxGateway.WorkspaceBasePath` + `SandboxGateway.Workspace`). The LLM's file and\n     5\tshell tools are confined here through the SandboxedOstools MCP gateway.\n     6\t\n     7\tTry in the chat (Workspace Agent mode):\n     8\t- \"Use the repo-explorer skill to map this workspace.\"\n     9\t- \"Use the workspace-summary skill to inventory this folder.\"\n    10\t- \"Create notes.md with today's plan and read it back.\"\n",
+  "isError": false
+}

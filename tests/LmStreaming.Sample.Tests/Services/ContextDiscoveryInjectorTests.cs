@@ -128,8 +128,10 @@ public class ContextDiscoveryInjectorTests
 
         sent.Should().Be(0);
         // Dedup MUST be marked even when no thread received the injection — by design, so a later
-        // redelivery doesn't surprise a freshly-spun-up thread with stale content.
-        harness.Registry.TryMarkDiscoverySeen(SessionId, Kind, Path).Should().BeFalse();
+        // redelivery doesn't surprise a freshly-spun-up thread with stale content. The fallback path
+        // marks under the session-level sentinel target.
+        harness.Registry.TryMarkDiscoverySeen(
+            SessionId, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, Path).Should().BeFalse();
     }
 
     [Fact]
@@ -243,6 +245,8 @@ public class ContextDiscoveryInjectorTests
                 Registry,
                 Pool,
                 new ContextDiscoveryFormatter(),
+                new ContextDiscoveryOptions(),
+                new ContextDiscoveryDiagnostics(),
                 NullLogger<ContextDiscoveryInjector>.Instance);
         }
 

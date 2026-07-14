@@ -355,29 +355,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // (running agent) is kept so existing waiters observe the next resolution.
                 state.ResetCompletionIfFinished();
 
-                var injectCancelledByLifecycle = false;
+                // The caller owns BeginContinuation/EndInjectLease; the helper performs the send under
+                // that already-held lease and reports whether the run's lifecycle cancelled it.
+                bool injectCancelledByLifecycle;
+                List<IMessage> injected = [new TextMessage { Role = Role.User, Text = prompt }];
                 try
                 {
-                    // Inject the message into the currently running agent while holding the send lease.
-                    // Link the caller token with the run's lifecycle token so a terminal owned-provider
-                    // disposal can unblock this send if it wedges — otherwise the lease (which the
-                    // disposal waits to drain) could be held forever on a caller token that never cancels.
-                    using var linkedCts = state.LinkLifecycleToken(ct);
-                    try
-                    {
-                        _ = await state.Agent.SendAsync(
-                            [new TextMessage { Role = Role.User, Text = prompt }], ct: linkedCts.Token);
-                    }
-                    catch (OperationCanceledException) when (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
-                    {
-                        // The send was cancelled specifically by the run's LIFECYCLE token (terminal
-                        // disposal began) — NOT by the caller, and NOT an internal SendAsync
-                        // timeout/cancellation unrelated to either supplied token (which must propagate
-                        // rather than be retried, to avoid duplicate delivery / an unbounded retry loop).
-                        // The loop we injected into is finishing, so re-evaluate the continuation to
-                        // deliver the prompt to the restarted run instead of dropping the user's message.
-                        injectCancelledByLifecycle = true;
-                    }
+                    injectCancelledByLifecycle = await InjectIntoRunningLoopAsync(state, injected, ct);
                 }
                 finally
                 {
@@ -437,23 +421,127 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Attempts to deliver out-of-band context (a sandbox-discovered directory <c>CLAUDE.md</c>/
+    /// <c>AGENTS.md</c>) into a currently-running sub-agent identified by id or caller-supplied name.
+    /// Implements the running-branch half of <see cref="ISubAgentContextSink"/>: it delivers ONLY into a
+    /// genuinely-running loop under a side-effect-free inject lease, and NEVER restarts a finished run,
+    /// mutates the parent-relay preference, or relays a spurious completion. A target that is not safely
+    /// running is refused so the caller drops the delivery (it must not fall back to the primary).
+    /// </summary>
+    /// <returns>
+    /// <see cref="SubAgentContextDeliveryResult.NotOwned"/> when no live sub-agent matches
+    /// <paramref name="agentId"/>; <see cref="SubAgentContextDeliveryResult.Delivered"/> when injected into
+    /// a running loop; <see cref="SubAgentContextDeliveryResult.TargetNotDeliverable"/> when the matched
+    /// sub-agent is finished/terminating (dropped, never restarted).
+    /// </returns>
+    public async Task<SubAgentContextDeliveryResult> TryDeliverToRunningAsync(
+        string agentId,
+        IReadOnlyList<IMessage> messages,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+
+        if (!TryResolveAgentId(agentId, out var resolvedId)
+            || !_agents.TryGetValue(resolvedId, out var state))
+        {
+            // Not one of this sink's sub-agents (unknown id/name, or a pre-registration race). The caller
+            // keeps looking / drops without marking-seen so a gateway redelivery can still route it.
+            return SubAgentContextDeliveryResult.NotOwned;
+        }
+
+        // Admit ONLY under a side-effect-free inject lease — NOT BeginContinuation, which would clobber the
+        // relay preference and claim the restart. A finished/terminating target refuses the lease: the
+        // context is dropped, never restarted, never relayed, never run through a disposing provider.
+        if (!state.TryBeginInjectLease())
+        {
+            return SubAgentContextDeliveryResult.TargetNotDeliverable;
+        }
+
+        try
+        {
+            var injectCancelledByLifecycle = await InjectIntoRunningLoopAsync(state, messages, ct);
+
+            // A lifecycle cancel means a terminal disposal began mid-send, so the send did not land: drop
+            // the context. Unlike SendMessageAsync, a context delivery does NOT re-evaluate into a restart.
+            return injectCancelledByLifecycle
+                ? SubAgentContextDeliveryResult.TargetNotDeliverable
+                : SubAgentContextDeliveryResult.Delivered;
+        }
+        finally
+        {
+            state.EndInjectLease();
+        }
+    }
+
+    /// <summary>
+    /// Performs an inject send into the sub-agent's currently-running loop under a send lease the CALLER
+    /// already holds (via <see cref="SubAgentState.BeginContinuation"/> or
+    /// <see cref="SubAgentState.TryBeginInjectLease"/>) and releases (via
+    /// <see cref="SubAgentState.EndInjectLease"/>). Links the caller token with the run's lifecycle token
+    /// so a terminal owned-provider disposal can unblock a wedged send. Carries NEITHER a
+    /// <see cref="SubAgentState.NotifyParentOnCompletion"/> mutation NOR
+    /// <see cref="SubAgentState.ResetCompletionIfFinished"/> — those are the caller's concern.
+    /// </summary>
+    /// <returns><c>true</c> when the send was cancelled specifically by the run's LIFECYCLE token (terminal
+    /// disposal began) so the loop is finishing — the caller re-evaluates (SendMessage restart) or drops
+    /// (context delivery); <c>false</c> when the send landed.</returns>
+    private static async Task<bool> InjectIntoRunningLoopAsync(
+        SubAgentState state,
+        IReadOnlyList<IMessage> messages,
+        CancellationToken ct)
+    {
+        using var linkedCts = state.LinkLifecycleToken(ct);
+        var payload = messages as List<IMessage> ?? [.. messages];
+        try
+        {
+            _ = await state.Agent.SendAsync(payload, ct: linkedCts.Token);
+            return false;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
+        {
+            // Cancelled specifically by the run's LIFECYCLE token (terminal disposal began) — NOT by the
+            // caller, and NOT an internal SendAsync cancellation unrelated to either supplied token (which
+            // must propagate rather than be swallowed, to avoid duplicate delivery / an unbounded retry).
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Resolves a caller-supplied target (agent id or name) to a concrete agent id.
     /// </summary>
     private string ResolveAgentId(string target)
     {
-        if (_agents.ContainsKey(target))
+        if (TryResolveAgentId(target, out var agentId))
         {
-            return target;
-        }
-
-        if (_namesToIds.TryGetValue(target, out var id) && _agents.ContainsKey(id))
-        {
-            return id;
+            return agentId;
         }
 
         throw new ArgumentException(
             $"Unknown sub-agent '{target}'. Provide a valid agent id or name.",
             nameof(target));
+    }
+
+    /// <summary>
+    /// Non-throwing counterpart to <see cref="ResolveAgentId"/>: resolves a target (agent id or name) to a
+    /// concrete, still-registered agent id. Returns false (rather than throwing) when the target matches no
+    /// live sub-agent, so a caller can distinguish "not ours" from a deliverable target without exceptions.
+    /// </summary>
+    private bool TryResolveAgentId(string target, out string agentId)
+    {
+        if (_agents.ContainsKey(target))
+        {
+            agentId = target;
+            return true;
+        }
+
+        if (_namesToIds.TryGetValue(target, out var id) && _agents.ContainsKey(id))
+        {
+            agentId = id;
+            return true;
+        }
+
+        agentId = string.Empty;
+        return false;
     }
 
     /// <summary>

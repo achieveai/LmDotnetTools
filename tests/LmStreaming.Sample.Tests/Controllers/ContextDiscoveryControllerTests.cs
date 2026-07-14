@@ -68,6 +68,8 @@ public class ContextDiscoveryControllerTests
             registry,
             pool,
             new ContextDiscoveryFormatter(),
+            new ContextDiscoveryOptions(),
+            new ContextDiscoveryDiagnostics(),
             NullLogger<ContextDiscoveryInjector>.Instance);
     }
 
@@ -220,7 +222,7 @@ public class ContextDiscoveryControllerTests
 
         result.Should().BeOfType<OkResult>();
         registry
-            .TryMarkDiscoverySeen("session-dispatch", "context_file", "CLAUDE.md")
+            .TryMarkDiscoverySeen("session-dispatch", SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
             .Should().BeFalse("the injector should have already marked this entry as seen during dispatch");
     }
 

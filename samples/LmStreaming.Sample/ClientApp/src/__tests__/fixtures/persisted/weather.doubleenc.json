@@ -1,0 +1,9 @@
+{
+  "family": "weather",
+  "sourceThread": "thread-1773982069027-r7t6cvj",
+  "toolName": "get_weather",
+  "toolCallId": "tool_S6fo5hiORwB05xXsALX9T7iz",
+  "functionArgs": "{\"location\": \"New York\"}",
+  "result": "\"{\\r\\n  \\u0022location\\u0022: \\u0022New York\\u0022,\\r\\n  \\u0022temperature\\u0022: 74,\\r\\n  \\u0022temperatureUnit\\u0022: \\u0022F\\u0022,\\r\\n  \\u0022condition\\u0022: \\u0022Sunny\\u0022,\\r\\n  \\u0022humidity\\u0022: 66,\\r\\n  \\u0022windSpeed\\u0022: 12,\\r\\n  \\u0022windUnit\\u0022: \\u0022mph\\u0022\\r\\n}\"",
+  "isError": false
+}

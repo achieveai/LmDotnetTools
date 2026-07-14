@@ -220,6 +220,76 @@ public class SubAgentStateLifecycleTests
             "a throwing cancellation callback must not abort the terminal transition");
     }
 
+    [Fact]
+    public void TryBeginInjectLease_WhileRunning_GrantsLease_WithoutMutatingNotifyOrClaimingRestart()
+    {
+        // The out-of-band context-delivery lease (WI #198) admits into a genuinely-running sub-agent, but —
+        // unlike BeginContinuation(bool) — must NOT overwrite the parent-relay preference (which would
+        // silently drop or double the sub-agent's own completion relay).
+        var state = NewOwnedProviderState();
+        state.NotifyParentOnCompletion = true;
+
+        state.TryBeginInjectLease().Should().BeTrue("a running, non-terminating sub-agent accepts context");
+        state.NotifyParentOnCompletion.Should().BeTrue(
+            "TryBeginInjectLease must not mutate NotifyParentOnCompletion");
+
+        state.EndInjectLease();
+    }
+
+    [Fact]
+    public async Task TryBeginInjectLease_TakesTheSameLeaseTerminalDisposalDrains()
+    {
+        // The inject lease shares the counter BeginTerminalDisposalAsync awaits, so a disposal cannot flip
+        // terminal (and dispose the owned provider) while an admitted context send is still in flight.
+        var state = NewOwnedProviderState();
+
+        state.TryBeginInjectLease().Should().BeTrue();
+
+        var disposal = state.BeginTerminalDisposalAsync(isError: false);
+        await Task.Delay(100);
+        disposal.IsCompleted.Should().BeFalse("terminal disposal must await the in-flight inject lease");
+        state.Status.Should().Be(SubAgentStatus.Running);
+
+        state.EndInjectLease();
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+        state.Status.Should().Be(SubAgentStatus.Completed);
+    }
+
+    [Fact]
+    public void TryBeginInjectLease_WhenCompleted_Refused_AndDoesNotClaimRestart()
+    {
+        // A finished sub-agent refuses context (dropped, never restarted). The refusal must also leave the
+        // single-flight restart claim untouched, so a real continuation still owns the restart.
+        var state = NewOwnedProviderState();
+        state.Status = SubAgentStatus.Completed;
+
+        state.TryBeginInjectLease().Should().BeFalse("a finished sub-agent must not accept context");
+
+        state.BeginContinuation(notifyParentOnCompletion: false).Mode
+            .Should().Be(ContinuationMode.Restart, "TryBeginInjectLease must not consume the restart claim");
+        state.EndRestart();
+    }
+
+    [Fact]
+    public async Task TryBeginInjectLease_WhileTerminating_Refused_TeardownRace()
+    {
+        // Teardown race: a context delivery arriving after a terminal owned-provider disposal has begun
+        // (status still Running, but _terminating set) must be refused, never resurrecting the finishing
+        // sub-agent into an extra run against a provider that is being torn down.
+        var state = NewOwnedProviderState();
+
+        // Hold a lease so the terminal disposal parks in the "terminating" state (status still Running).
+        state.BeginContinuation(notifyParentOnCompletion: false).Mode.Should().Be(ContinuationMode.Inject);
+        var disposal = state.BeginTerminalDisposalAsync(isError: false);
+        await Task.Delay(50);
+
+        state.TryBeginInjectLease().Should().BeFalse(
+            "context must not be injected into a sub-agent whose terminal disposal has begun");
+
+        state.EndInjectLease();
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     private static SubAgentState NewOwnedProviderState()
     {
         var state = new SubAgentState
