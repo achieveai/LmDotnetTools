@@ -84,6 +84,10 @@ public sealed class ContextDiscoveryController(
                 Path = item.Path,
                 Content = item.Content,
                 Truncated = item.Truncated,
+                // Copy the triggering-agent id PER ITEM, not from the envelope: the gateway stamps it
+                // on the individual discovery (a batch can mix a sub-agent-triggered file with a
+                // session-level root file that carries none), so a batch-wide value would misroute.
+                AgentId = item.AgentId,
             };
 
             if (!IsValid(payload))
@@ -387,4 +391,10 @@ public sealed record ContextDiscoveryItem
 
     [JsonPropertyName("truncated")]
     public bool? Truncated { get; init; }
+
+    /// <summary>Optional id/name of the sub-agent that triggered this discovery (cf. #187). Stamped
+    /// per item, so the controller copies it onto the per-item <see cref="ContextDiscoveryPayload"/>
+    /// rather than reading a batch-wide value.</summary>
+    [JsonPropertyName("agent_id")]
+    public string? AgentId { get; init; }
 }

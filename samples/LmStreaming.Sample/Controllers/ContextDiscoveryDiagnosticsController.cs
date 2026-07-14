@@ -46,7 +46,8 @@ public sealed class ContextDiscoveryDiagnosticsController(
         return Ok(new ContextDiscoveryDiagnosticsResponse(
             DiscoveryEnabled: registry.DiscoveryEnabled,
             WebhookUrl: registry.DiscoveryWebhookUrl,
-            Sessions: sessions));
+            Sessions: sessions,
+            Routing: diagnostics.RoutingSnapshot()));
     }
 }
 
@@ -54,7 +55,8 @@ public sealed class ContextDiscoveryDiagnosticsController(
 public sealed record ContextDiscoveryDiagnosticsResponse(
     bool DiscoveryEnabled,
     string WebhookUrl,
-    IReadOnlyList<ContextDiscoverySessionInfo> Sessions);
+    IReadOnlyList<ContextDiscoverySessionInfo> Sessions,
+    RoutingOutcomeCounts Routing);
 
 /// <summary>Per-session discovery state. <see cref="ReceivedCount"/> is 0 (with null timestamps)
 /// for a live session that has not yet received any discovery webhook.</summary>

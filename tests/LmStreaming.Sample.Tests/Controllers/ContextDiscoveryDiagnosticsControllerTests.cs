@@ -65,6 +65,30 @@ public sealed class ContextDiscoveryDiagnosticsControllerTests
         response.Sessions.Single(s => s.SessionId == "sess-b").ReceivedCount.Should().Be(1);
     }
 
+    [Fact]
+    public async Task Get_SurfacesRoutingOutcomeCounts()
+    {
+        // The controller must expose the per-outcome sub-agent routing tally: a routed delivery renders
+        // no "Context loaded" pill in the primary view, so these counters are an operator's only signal
+        // that routing (vs. today's fan-out or an unresolved drop) is actually happening.
+        await using var registry = CreateRegistry();
+        var diagnostics = new ContextDiscoveryDiagnostics();
+        diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Routed);
+        diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Routed);
+        diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Dropped);
+        diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Fallback);
+        diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Fallback);
+        diagnostics.RecordRoutingOutcome(ContextRoutingOutcome.Fallback);
+        var controller = new ContextDiscoveryDiagnosticsController(registry, diagnostics);
+
+        var response = GetResponse(controller);
+
+        response.Routing.Should().NotBeNull();
+        response.Routing.Routed.Should().Be(2);
+        response.Routing.Dropped.Should().Be(1);
+        response.Routing.Fallback.Should().Be(3);
+    }
+
     private static ContextDiscoveryDiagnosticsResponse GetResponse(ContextDiscoveryDiagnosticsController controller)
     {
         var result = controller.Get();
