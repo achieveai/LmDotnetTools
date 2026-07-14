@@ -114,11 +114,13 @@ public sealed partial class SandboxClient
                 .ReadFromJsonAsync<WriteFileResponseDto>(SandboxJson.RestOptions, ct)
                 .ConfigureAwait(false);
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
             throw new SandboxException(
               SandboxErrorKind.Protocol,
-              $"Sandbox gateway returned a malformed write response for '{path}'."
+              $"Sandbox gateway returned a malformed write response for '{path}'.",
+              (int)response.StatusCode,
+              ex
             );
         }
 
@@ -195,11 +197,13 @@ public sealed partial class SandboxClient
                     $"Sandbox gateway returned an empty response for {operation}."
                   );
             }
-            catch (JsonException)
+            catch (Exception ex) when (ex is JsonException or NotSupportedException)
             {
                 throw new SandboxException(
                   SandboxErrorKind.Protocol,
-                  $"Sandbox gateway returned a malformed directory listing for {operation}."
+                  $"Sandbox gateway returned a malformed directory listing for {operation}.",
+                  (int)response.StatusCode,
+                  ex
                 );
             }
 

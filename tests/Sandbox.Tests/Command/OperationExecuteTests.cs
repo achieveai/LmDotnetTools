@@ -235,4 +235,61 @@ public sealed class OperationExecuteTests
         handler.Requests.Should().Contain(r => r.Method == HttpMethod.Post && r.Body != null && r.Body.Contains($"\"operation_id\":\"{operationId}\"", StringComparison.Ordinal));
         handler.Requests.Should().Contain(r => r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitError_DoesNotLeakGatewayErrorMessage()
+    {
+        // The gateway's free-text `error` message can carry captured/credential material; the SDK must
+        // surface only the closed-vocabulary `error_code`, never the message.
+        const string sessionId = "sess-leak";
+        const string sentinel = "sk-sandbox-op-secret-9f3a1c";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(
+            handler,
+            "{\"error\":\"" + sentinel + "\",\"code\":409,\"error_code\":\"idempotency_conflict\",\"retryable\":false}",
+            HttpStatusCode.Conflict
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-leak"));
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
+        exception.Which.Message.Should().NotContain(sentinel);
+        exception.Which.ToString().Should().NotContain(sentinel);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalFailedWithoutExitCode_ThrowsProtocol()
+    {
+        const string sessionId = "sess-noexit";
+        const string operationId = "op-noexit";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // A `failed` status with no exit_code is a protocol anomaly (a real failure always carries the
+        // child's code) — the SDK refuses to fabricate one.
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"failed\"}", HttpStatusCode.OK);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["false"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollDeadlineElapses_ThrowsExecutionTimeout()
+    {
+        const string sessionId = "sess-stuck";
+        const string operationId = "op-stuck";
+        // A short client-side execution ceiling so the poll deadline (ExecutionTimeout + grace) elapses fast.
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromMilliseconds(150));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // The submit and every poll report the operation still `running`: it never terminalizes, so the
+        // SDK's own poll deadline must fire and surface ExecutionTimeout.
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        RegisterPoll(handler, operationId, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "999"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
+    }
 }

@@ -157,15 +157,17 @@ public sealed partial class SandboxClient
 
     /// <summary>
     /// Sends a session-scoped direct-API (ADR 0031) request and returns the RAW
-    /// <see cref="HttpResponseMessage"/> for the caller to inspect or stream (e.g. an
-    /// <c>application/octet-stream</c> file body) — the caller owns and disposes it. Reuses the same
-    /// auth-header stamping, absolute-URI resolution (never trusting a borrowed transport's
+    /// <see cref="HttpResponseMessage"/> for the caller to read (an <c>application/octet-stream</c> file
+    /// body or a small JSON snapshot) — the caller owns and disposes it. Reuses the same auth-header
+    /// stamping, absolute-URI resolution (never trusting a borrowed transport's
     /// <see cref="HttpClient.BaseAddress"/>), no-auto-redirect posture, and per-call transport-timeout
-    /// hardening as <see cref="SendRestAsync"/>, but does NOT deserialize the response (direct
-    /// endpoints return octet streams and small JSON alike) and completes on
-    /// <see cref="HttpCompletionOption.ResponseHeadersRead"/> so a large file body streams rather than
-    /// buffering. <paramref name="content"/>, when supplied, is the request body (JSON for
-    /// <c>operations</c>, octet bytes for a file <c>PUT</c>).
+    /// hardening as <see cref="SendRestAsync"/>. Completes on
+    /// <see cref="HttpCompletionOption.ResponseContentRead"/> so the configured
+    /// <see cref="SandboxClientOptions.TransportTimeout"/> bounds the WHOLE call — headers AND body — not
+    /// just the headers; the SDK reads each artifact/file fully into memory regardless (operation output
+    /// is gateway-capped), so buffering here costs nothing and closes the body-stall gap a
+    /// headers-only completion would leave under the caller's token alone. <paramref name="content"/>,
+    /// when supplied, is the request body (JSON for <c>operations</c>, octet bytes for a file <c>PUT</c>).
     /// </summary>
     private async Task<HttpResponseMessage> SendDirectAsync(
         HttpMethod method,
@@ -190,12 +192,14 @@ public sealed partial class SandboxClient
         timeoutCts.CancelAfter(_options.TransportTimeout);
         try
         {
-            // ResponseHeadersRead: the caller streams/reads the body itself. The request message is
-            // disposed by the caller-visible response lifetime via the returned message's own content;
-            // we intentionally do not wrap `request` in `using` because the send is awaited to headers
-            // only and disposing it here could tear down an in-flight request content stream.
+            // ResponseContentRead: SendAsync completes only once the entire body is buffered, so the
+            // linked transport-timeout token covers the body, not just the headers. The caller then reads
+            // that in-memory buffer synchronously (no further network), so it is safe for this method's
+            // `timeoutCts` to be disposed on return. `request` is intentionally not wrapped in `using`:
+            // disposing it here could tear down an in-flight request content stream, and its managed
+            // content is released by GC (the PUT body is disposed by the caller's own `using`).
             return await Transport
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
+                .SendAsync(request, HttpCompletionOption.ResponseContentRead, timeoutCts.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)

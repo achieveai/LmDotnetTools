@@ -205,7 +205,7 @@ public sealed partial class SandboxClient
         {
             status = await response.Content.ReadFromJsonAsync<OperationStatusDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
             throw new SandboxException(
                 SandboxErrorKind.Protocol,

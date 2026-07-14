@@ -30,7 +30,8 @@ internal static class TestSupport
     public static (SandboxClient Client, FakeGatewayHandler Handler) CreateBorrowedClient(
         TimeSpan? transportTimeout = null,
         string appId = "app-1",
-        string? clientSecret = null
+        string? clientSecret = null,
+        TimeSpan? executionTimeout = null
     )
     {
         var handler = new FakeGatewayHandler();
@@ -40,7 +41,7 @@ internal static class TestSupport
             serverAddress,
             appId,
             clientSecret ?? ValidSecret,
-            TimeSpan.FromMinutes(5),
+            executionTimeout ?? TimeSpan.FromMinutes(5),
             transportTimeout ?? TimeSpan.FromSeconds(30)
         );
         var client = new SandboxClient(options, httpClient);

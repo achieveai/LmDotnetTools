@@ -161,4 +161,68 @@ public class DirectFileTransferTests
         exception.Which.Kind.Should().Be(SandboxErrorKind.Protocol);
         exception.Which.StatusCode.Should().Be(400);
     }
+
+    [Fact]
+    public async Task ReadTextFileAsync_Redirect_IsRejectedAsProtocol_AndNeverFollowed()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ =>
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                redirect.Headers.Location = new Uri("http://malicious.invalid:9999/files/7?path=x");
+                return redirect;
+            }
+        );
+
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt");
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        // The SDK never chases the Location — the credentialed request only ever reaches the gateway host.
+        handler.Requests.Should().NotContain(r => r.Uri.Host == "malicious.invalid");
+    }
+
+    [Fact]
+    public async Task ReadTextFileAsync_Unauthorized_IsAuthorization_AndNeverLeaksTheResponseBody()
+    {
+        // A 401/403 body is the response most likely to echo credential material, so the SDK must
+        // classify it WITHOUT reading the body — the sentinel below must never reach the exception.
+        const string sentinel = "sk-sandbox-leaked-secret-abc123";
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        handler.OnJson(
+            HttpMethod.Get,
+            $"/files/{MountId}",
+            $$"""{"error":"{{sentinel}}","code":403,"error_code":"forbidden","retryable":false}""",
+            HttpStatusCode.Forbidden
+        );
+
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt");
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Authorization);
+        exception.Which.Message.Should().NotContain(sentinel);
+        exception.Which.ToString().Should().NotContain(sentinel);
+    }
+
+    [Fact]
+    public async Task ReadTextFileAsync_NonUtf8Body_ThrowsIntegrity()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        // 0xFF/0xFE are never valid UTF-8 lead bytes — a strict decode must reject them rather than
+        // substituting U+FFFD replacement characters.
+        var invalidUtf8 = new byte[] { 0xFF, 0xFE, 0x00, 0x80 };
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(invalidUtf8) }
+        );
+
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "binary.bin");
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Integrity);
+    }
 }

@@ -11,9 +11,10 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// to the typed <see cref="SandboxClient"/> SDK (issue #192). It implements BOTH the daemon's
 /// <see cref="ISandboxCommandRunner"/> and <see cref="ISandboxFileSystem"/> ports over one borrowed
 /// gateway session, replacing the hand-rolled <c>SandboxOrchestrator</c> + <c>SandboxFileSystem</c> +
-/// <c>PosixShell</c> protocol duplication: the SDK now owns POSIX quoting, the exit-code capture, the
-/// base64/manifest wire format, chunking, retries, and recovery. This class is pure mapping —
-/// daemon types ↔ SDK types, and the daemon's PR #121 H4 output cap / per-command timeout contracts.
+/// <c>PosixShell</c> protocol duplication: the SDK now owns the gateway's direct REST wire protocol
+/// (the native operations API, exact-byte file I/O, and directory listing), the exit-code capture, and
+/// error classification. This class is pure mapping — daemon types ↔ SDK types, and the daemon's
+/// PR #121 H4 output cap / per-command timeout contracts.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -215,10 +216,10 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
     /// <see cref="SandboxCredential"/>, so <see cref="SandboxCredential.AppKey"/> is always empty (keyless)
     /// or valid — it is passed straight through as <c>clientSecret</c>, yielding the IDENTICAL
     /// X-Sbx-App-Id/X-Sbx-App-Key stamping the old <c>BuildTransportHeaders</c> produced.
-    /// <c>ExecutionTimeout</c> is the daemon's per-command timeout (mapped to the gateway Bash timeout);
-    /// <c>TransportTimeout</c> adds a grace so a single call is never aborted before that deadline. Plain
-    /// HTTP is allowed because the daemon's gateway is a local/dev endpoint, exactly as the old MCP
-    /// transport assumed.
+    /// <c>ExecutionTimeout</c> is the daemon's per-command timeout (mapped to the operation's
+    /// <c>timeout_secs</c>); <c>TransportTimeout</c> adds a grace so a single call is never aborted
+    /// before that deadline. Plain HTTP is allowed because the daemon's gateway is a local/dev
+    /// endpoint, exactly as the old transport assumed.
     /// </summary>
     private SandboxClient BuildClient()
     {

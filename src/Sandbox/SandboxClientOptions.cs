@@ -39,17 +39,17 @@ public sealed class SandboxClientOptions
     public string ClientSecret { get; }
 
     /// <summary>
-    /// Upper bound on how long a remote gateway operation (e.g. a command execution) is allowed to
-    /// run. This is a GATEWAY-side deadline communicated to the gateway; it is distinct from
-    /// <see cref="TransportTimeout"/>, the SDK's own client-side HTTP/MCP call deadline. Consumed by
-    /// <see cref="SandboxClient.ExecuteAsync"/> as the gateway Bash execution timeout (in whole
-    /// seconds) and bound into each command's canonical recovery digest.
+    /// Upper bound on how long a remote gateway operation (a command execution) is allowed to run.
+    /// This is a GATEWAY-side deadline communicated to the gateway; it is distinct from
+    /// <see cref="TransportTimeout"/>, the SDK's own client-side HTTP call deadline. Consumed by
+    /// <see cref="SandboxClient.ExecuteAsync"/> as the operation's <c>timeout_secs</c> (in whole
+    /// seconds) and as the client-side ceiling for polling the operation to a terminal state.
     /// </summary>
     public TimeSpan ExecutionTimeout { get; }
 
     /// <summary>
-    /// Upper bound on a single client-side HTTP/MCP call to the gateway. Elapsing this deadline
-    /// raises a <see cref="SandboxException"/> with <see cref="SandboxErrorKind.TransportTimeout"/>
+    /// Upper bound on a single client-side HTTP call to the gateway — headers and body. Elapsing this
+    /// deadline raises a <see cref="SandboxException"/> with <see cref="SandboxErrorKind.TransportTimeout"/>
     /// — it does NOT guarantee the gateway aborts whatever remote operation was in flight; the
     /// gateway may still complete (or continue running) the request after the client gives up
     /// waiting for its response.
