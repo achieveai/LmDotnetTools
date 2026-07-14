@@ -9,7 +9,9 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// and routed deliveries (<see cref="TryDeliverContextAsync"/> → <see cref="DeliveredMessages"/>),
 /// and returns a canned <see cref="SubAgentContextDeliveryResult"/> so a test can drive each branch
 /// of the injector's aggregation (Delivered / TargetNotDeliverable / NotOwned) deterministically —
-/// without needing the real <c>MultiTurnAgentLoop</c> sink (that lands in the LmMultiTurn half).
+/// without needing the real <c>MultiTurnAgentLoop</c> sink (that lands in the LmMultiTurn half). A
+/// test that must decide the result by consult order or throw mid-delivery sets
+/// <see cref="DeliverBehavior"/>, a per-call hook that overrides the canned result.
 /// </summary>
 internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
 {
@@ -38,6 +40,15 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
     /// delivery (the "ambiguous" outcome).
     /// </summary>
     public Exception? ThrowOnDeliver { get; set; }
+
+    /// <summary>
+    /// Optional per-call delivery hook. When set, <see cref="TryDeliverContextAsync"/> invokes it
+    /// (after bumping <see cref="DeliverCallCount"/>/<see cref="LastDeliveredAgentId"/>) and uses its
+    /// return value instead of <see cref="CannedResult"/>; if the hook THROWS, that throw propagates —
+    /// modelling a sink that decides its outcome by consult order or fails mid-delivery. This lets one
+    /// double serve both the canned-result and programmable-sink test needs.
+    /// </summary>
+    public Func<string, IReadOnlyList<IMessage>, SubAgentContextDeliveryResult>? DeliverBehavior { get; set; }
 
     /// <summary>Number of times <see cref="TryDeliverContextAsync"/> was invoked.</summary>
     public int DeliverCallCount { get; private set; }
@@ -85,13 +96,18 @@ internal sealed class RecordingSinkAgent : IMultiTurnAgent, ISubAgentContextSink
                 throw ThrowOnDeliver;
             }
 
-            if (CannedResult == SubAgentContextDeliveryResult.Delivered)
+            // A per-call behaviour hook lets a test decide the result by consult order or throw
+            // mid-delivery (its throw propagates unchanged, modelling the ambiguous sink); with no
+            // hook the canned result stands.
+            var result = DeliverBehavior is not null ? DeliverBehavior(agentId, messages) : CannedResult;
+
+            if (result == SubAgentContextDeliveryResult.Delivered)
             {
                 _delivered.AddRange(messages);
             }
-        }
 
-        return Task.FromResult(CannedResult);
+            return Task.FromResult(result);
+        }
     }
 
     public ValueTask<SendReceipt> SendAsync(
