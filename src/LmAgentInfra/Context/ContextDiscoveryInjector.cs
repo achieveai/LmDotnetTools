@@ -254,11 +254,12 @@ public sealed class ContextDiscoveryInjector
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                // Cancellation reached us AFTER we optimistically placed the routed dedup mark but
-                // before any sink completed a delivery. Roll the mark back (mirroring the all-NotOwned
-                // rollback below) so a later gateway redelivery is NOT wrongly deduped/dropped — nothing
-                // was delivered under this mark.
-                _registry.UnmarkDiscoverySeen(body.SessionId!, agentId, body.Kind!, body.Path!);
+                // Cancellation reached us AFTER the sink was invoked. The sink ultimately calls SendAsync,
+                // which may have accepted/enqueued the message before observing cancellation — so whether
+                // this context was delivered is AMBIGUOUS. KEEP the routed dedup mark (do NOT roll it back)
+                // so a gateway retry can't inject the same context twice. Cancellation that arrives BEFORE
+                // delivery begins is handled at the top of InjectAsync (ThrowIfCancellationRequested throws
+                // before the mark is ever created), so there is no stale-mark case to roll back here.
                 throw;
             }
             catch (Exception ex)

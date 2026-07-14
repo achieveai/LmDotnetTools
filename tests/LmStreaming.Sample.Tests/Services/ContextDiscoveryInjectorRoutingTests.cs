@@ -264,12 +264,13 @@ public sealed class ContextDiscoveryInjectorRoutingTests
     }
 
     [Fact]
-    public async Task CancelledDuringSinkDelivery_UnmarksRoutedMark_AndThrows()
+    public async Task CancelledDuringSinkDelivery_KeepsMark_AsAmbiguous_AndThrows()
     {
-        // If cancellation lands AFTER the routed mark is placed but at/before the first sink delivery,
-        // the OperationCanceledException catch must un-mark before rethrowing — else the stranded mark
-        // wrongly dedups a later gateway redelivery. Modelled by a delivery hook that cancels the token
-        // and throws OCE mid-delivery.
+        // Cancellation that lands AFTER a sink was invoked is AMBIGUOUS: the sink ultimately calls
+        // SendAsync, which may have accepted/enqueued the message before observing cancellation. The
+        // routed mark must be KEPT (not rolled back) so a gateway retry can't inject the same context
+        // twice. (A pre-delivery cancellation never reaches this branch — it throws at the top of
+        // InjectAsync before the mark is created.) Modelled by a hook that cancels + throws OCE mid-delivery.
         using var harness = new Harness(routeToSubAgent: true);
         using var cts = new CancellationTokenSource();
         var sink = harness.RegisterSinkThread(SessionId, "thread-sub", SubAgentContextDeliveryResult.TargetNotDeliverable);
@@ -283,7 +284,7 @@ public sealed class ContextDiscoveryInjectorRoutingTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
-            .Should().BeTrue("cancellation before any delivery rolls back the routed mark so a gateway retry can heal");
+            .Should().BeFalse("cancellation after sink invocation is ambiguous, so the mark is KEPT to prevent a retry double-inject");
     }
 
     [Fact]
