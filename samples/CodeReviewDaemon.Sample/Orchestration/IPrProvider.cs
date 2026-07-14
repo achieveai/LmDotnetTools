@@ -52,6 +52,14 @@ internal sealed record PrPollRequest
 
     /// <summary>Previously persisted cursor, or <c>null</c> to resync from scratch (plan §12).</summary>
     public OpaqueCursor? Cursor { get; init; }
+
+    /// <summary>
+    /// The recency-window cutoff (UTC) for this poll, or <c>null</c> when no recency filter is configured.
+    /// A provider whose PR list carries a real last-activity timestamp ignores this. A provider whose list
+    /// does not (Azure DevOps) may use it to fetch a per-PR activity signal — bounded to only the PRs that
+    /// would otherwise be excluded — so "updated since" works there too. Providers must not throw if unset.
+    /// </summary>
+    public DateTimeOffset? RecencyCutoff { get; init; }
 }
 
 /// <summary>The result of one poll: the open PRs plus the cursor to persist.</summary>
@@ -78,4 +86,18 @@ internal sealed record PullRequestDescriptor
     public required string TriggerWatermark { get; init; }
 
     public required PrLifecycleState LifecycleState { get; init; }
+
+    /// <summary>
+    /// When the PR was opened, if the provider's list exposes it (GitHub <c>created_at</c>, ADO
+    /// <c>creationDate</c>). The recency filter (<see cref="Configuration.CodeReviewDaemonOptions.MaxPrAgeDays"/>)
+    /// falls back to this when <see cref="UpdatedAt"/> is null. Null when the provider gives no date.
+    /// </summary>
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    /// <summary>
+    /// The PR's last-activity time, if the provider exposes it (GitHub <c>updated_at</c>). ADO's PR list
+    /// has no last-activity field, so it is left null there and the recency filter falls back to
+    /// <see cref="CreatedAt"/>. Null when the provider gives no date.
+    /// </summary>
+    public DateTimeOffset? UpdatedAt { get; init; }
 }

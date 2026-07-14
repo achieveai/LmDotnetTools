@@ -69,12 +69,25 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
     }
 
     /// <summary>
-    /// The shared, lazily-created Copilot-backed agent for the primary configured
-    /// <see cref="CodeReviewDaemonOptions.ReviewModelId"/>'s vendor (see the Lifetime remarks on this type),
-    /// exposed as an <see cref="IStreamingAgent"/> factory so a discovered <c>code-reviewer:*</c> sub-agent
-    /// (Task 12) is driven by that same provider agent instead of standing up a second one.
+    /// The shared, lazily-created Copilot-backed agent that drives the discovered <c>code-reviewer:*</c>
+    /// review sub-agents (Task 12), exposed as an <see cref="IStreamingAgent"/> factory so a sub-agent is
+    /// driven by that same provider agent instead of standing up a second one. It routes by the
+    /// <b>effective sub-agent model</b>'s vendor (<see cref="CodeReviewDaemonOptions.SubAgentModelId"/> when
+    /// set, else the primary <see cref="CodeReviewDaemonOptions.ReviewModelId"/> — see the Lifetime remarks
+    /// on this type), so review sub-agents on a different-vendor model than the dispatcher still get the
+    /// matching backend.
     /// </summary>
-    public Func<IStreamingAgent> SharedAgentFactory => () => GetSharedAgent(IsOpenAiModel(_options.ReviewModelId));
+    public Func<IStreamingAgent> SharedAgentFactory => () => GetSharedAgent(IsOpenAiModel(EffectiveSubAgentModelId));
+
+    /// <summary>
+    /// The model the review sub-agents run with: the configured
+    /// <see cref="CodeReviewDaemonOptions.SubAgentModelId"/> when set, else the primary
+    /// <see cref="CodeReviewDaemonOptions.ReviewModelId"/> (sub-agents inherit the dispatcher's model).
+    /// Drives only the sub-agent provider-agent vendor selection; the per-turn model id is set on the
+    /// sub-agent template's options.
+    /// </summary>
+    private string EffectiveSubAgentModelId =>
+        string.IsNullOrWhiteSpace(_options.SubAgentModelId) ? _options.ReviewModelId : _options.SubAgentModelId;
 
     public IMultiTurnAgent Create(
         AgentProfile profile,
@@ -172,10 +185,11 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             systemPrompt: profile.SystemPrompt,
             defaultOptions: new GenerateReplyOptions
             {
-                ModelId = modelId ?? string.Empty,
+                ModelId = ResolveRequestModelId(modelId, _options.ReviewModelId),
                 MaxToken = _options.ReviewMaxTokens,
                 ExtraProperties = extraProperties,
             },
+            maxTurnsPerRun: _options.ReviewMaxTurns,
             store: _conversationStore,
             logger: _loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
             subAgentOptions: subAgentOptions,
@@ -188,6 +202,29 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         // fire-and-forget start SubAgentManager and the README use). The executor await-usings the loop,
         // whose DisposeAsync → StopAsync cancels this task, so it is not leaked.
         var logger = _loggerFactory.CreateLogger<LiveReviewAgentLoopFactory>();
+
+        // DIAGNOSTIC: prove exactly which tool surface the model receives — specifically whether the
+        // sub-agent orchestration tools (Agent/SendMessage/CheckAgent) are exposed. The "kept=[...]" log
+        // above is captured BEFORE the loop's ctor adds the sub-agent provider, so it never shows them;
+        // re-building the (same) registry after loop construction reflects what the model actually gets.
+        if (subAgentOptions is not null)
+        {
+            var (finalContracts, _) = registry.Build();
+            logger.LogInformation(
+                "Loop {ThreadId}: sub-agent orchestration ENABLED — tool surface exposed to the model = "
+                    + "[{Tools}]; {TemplateCount} sub-agent template(s): [{Templates}]",
+                threadId,
+                string.Join(",", finalContracts.Select(c => c.Name)),
+                subAgentOptions.Templates.Count,
+                string.Join(",", subAgentOptions.Templates.Keys));
+        }
+        else
+        {
+            logger.LogWarning(
+                "Loop {ThreadId}: sub-agent orchestration DISABLED (subAgentOptions is null) — no Agent tool exposed.",
+                threadId);
+        }
+
         _ = loop.RunAsync().ContinueWith(
             t => logger.LogError(t.Exception, "Review agent loop '{ThreadId}' faulted.", threadId),
             CancellationToken.None,
@@ -261,6 +298,18 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
 
         return (isOpenAi, extraProperties);
     }
+
+    /// <summary>
+    /// The model id actually sent on the request: the per-call <paramref name="modelId"/> override when
+    /// supplied, else the configured <paramref name="configuredModelId"/> (the daemon's
+    /// <see cref="CodeReviewDaemonOptions.ReviewModelId"/>). This mirrors the fallback
+    /// <see cref="ResolveReasoning"/> already applies for VENDOR routing, so the request model and the routed
+    /// backend can never diverge — a caller that passes no model (e.g. the knowledge-extraction loop, which
+    /// calls with <c>modelId: null</c> to mean "use the daemon default") is served the configured model
+    /// instead of an empty <c>model</c> the Copilot backend rejects with <c>model_not_supported</c>.
+    /// </summary>
+    internal static string ResolveRequestModelId(string? modelId, string? configuredModelId) =>
+        string.IsNullOrWhiteSpace(modelId) ? configuredModelId ?? string.Empty : modelId;
 
     /// <summary>
     /// Whether <paramref name="modelId"/> is served by the Copilot <b>OpenAI Responses</b> backend

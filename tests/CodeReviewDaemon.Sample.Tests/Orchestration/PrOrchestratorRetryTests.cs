@@ -31,7 +31,7 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     {
         var governor = Governor(maxAttempts: 1);
         var executor = new CountingFailingExecutor();
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, governor);
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
         var run = SeedRun();
 
         // First poll: the stage throws → recorded as a failure → parked (maxAttempts=1).
@@ -49,7 +49,7 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     {
         var governor = Governor(maxAttempts: 5);
         var executor = new CountingFailingExecutor();
-        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, governor);
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
         var run = SeedRun();
 
         var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
@@ -64,6 +64,26 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         _now = _now.AddSeconds(31);
         await attempt.Should().ThrowAsync<InvalidOperationException>();
         executor.ExecuteCalls.Should().Be(2, "after the backoff elapses the run is attempted again");
+    }
+
+    [Fact]
+    public async Task A_failure_after_ContextReady_is_not_parked_by_the_context_retry_budget()
+    {
+        // The RetryGovernor bounds ONLY the ContextReady hot-loop. A later-stage failure (e.g. a Posted-stage
+        // lock that the next lease's clean-on-entry heals) must NOT consume the context-retry budget, so even
+        // at maxAttempts=1 the run is attempted again rather than parked.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(ReviewStage.Posted);
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+        executor.FailStageCalls.Should().Be(1);
+
+        // Not parked (a ContextReady failure at maxAttempts=1 WOULD be): the Posted stage is attempted again.
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+        executor.FailStageCalls.Should().Be(2, "a non-ContextReady failure is not governed by the context-retry budget");
     }
 
     private RetryGovernor Governor(int maxAttempts) => new(
@@ -106,6 +126,25 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         {
             ExecuteCalls++;
             throw new InvalidOperationException("simulated ContextReady failure");
+        }
+
+        public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    /// <summary>Succeeds every stage except <paramref name="failAt"/>, where it throws; counts those failures.</summary>
+    private sealed class FailsAtStageExecutor(ReviewStage failAt) : IReviewStageExecutor
+    {
+        public int FailStageCalls { get; private set; }
+
+        public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
+        {
+            if (stage == failAt)
+            {
+                FailStageCalls++;
+                throw new InvalidOperationException($"simulated {failAt} failure");
+            }
+
+            return Task.CompletedTask;
         }
 
         public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) => Task.CompletedTask;

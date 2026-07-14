@@ -107,12 +107,27 @@ DOTNET_ENVIRONMENT=MCQdb \
 ASPNETCORE_URLS=http://127.0.0.1:5081 \
 Auth__TokenStoreDir=<shared-oauth-tokens-dir> \
 CRD_SANDBOX_GATEWAY=<sandbox-gateway-base-url> \
+SandboxGateway__BaseUrl=<sandbox-gateway-base-url> \
+SandboxGateway__WorkspaceBasePath=<gateway WORKSPACE_BASE_PATH> \
+CodeReviewDaemon__ReviewPoolHostRoot=<gateway WORKSPACE_BASE_PATH>/review-pool-mcqdb \
 CRD_SANDBOX_APP_ID=codereview-daemon-mcqdb \
 dotnet run --project samples/CodeReviewDaemon.Sample
 ```
 
 (`CRD_SANDBOX_APP_KEY` is only needed when the gateway runs with `AUTH_ENFORCE=on`; omit it for the
 keyless dev path.)
+
+> **Workspace topology — the pooled path is the only one that works against an adopted gateway.** When the
+> daemon *adopts* an already-running gateway (rather than spawning its own), the gateway does **not**
+> create-if-missing: it rejects a session whose workspace directory doesn't already exist under its
+> `WORKSPACE_BASE_PATH` (`400 workspace path 'review-run-N' not found under WORKSPACE_BASE_PATH`). The
+> pooled review path is what satisfies this — it **pre-creates** the slot directories, so the review agent's
+> session mounts over an existing slot. That is why `EnableToolAssistedReview` + `EnableReviewerWrites` +
+> a resolved store must all be on (they are, in `appsettings.MCQdb.json`), and why the pool root
+> (`ReviewPoolHostRoot`, defaulting to `<WorkspaceBasePath>/review-pool`) **must live under the gateway's
+> `WORKSPACE_BASE_PATH`** — give each parallel instance its own leaf (e.g. `review-pool-mcqdb`) so it never
+> collides with the GitHub daemon's pool. A diff-only or non-pooled per-run configuration sends a
+> `review-run-N` path the adopted gateway never created, and fails.
 
 ### 5. Verify
 

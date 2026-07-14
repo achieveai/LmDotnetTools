@@ -43,6 +43,8 @@ public class CodeReviewDaemonOptionsTests
         o.WritableToolAllowList.Should().BeEquivalentTo(["Write", "Edit", "Bash"]);
         o.MergeNotesBranchOnClose.Should().BeTrue();
         o.ScratchDirName.Should().Be("scratch");
+        o.MaxConcurrentSubAgents.Should()
+            .Be(5, "default matches the library's SubAgentOptions default; a profile raises it to fan out wider");
     }
 
     [Fact]
@@ -53,5 +55,16 @@ public class CodeReviewDaemonOptionsTests
         o.MaxContextRetries.Should().Be(5, "a stuck ContextReady is parked after a bounded number of attempts");
         o.RetryBackoffBaseSeconds.Should().Be(30, "the first backoff replaces the old ~30s hot-loop");
         o.RetryBackoffCapSeconds.Should().Be(900, "the exponential backoff is capped at 15m");
+    }
+
+    [Fact]
+    public void Model_role_knobs_default_to_empty_so_secondary_agents_inherit_the_primary()
+    {
+        var o = new CodeReviewDaemonOptions();
+
+        o.ReviewModelId.Should().Be("claude-sonnet-5", "the primary dispatcher always has a concrete model");
+        o.SubAgentModelId.Should().BeEmpty("empty ⇒ review sub-agents inherit ReviewModelId");
+        o.KnowledgeModelId.Should()
+            .BeEmpty("empty ⇒ the at-close knowledge-extraction loop inherits ReviewModelId; set it (e.g. claude-opus-4.8) to run extraction on a dedicated model");
     }
 }

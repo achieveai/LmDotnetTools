@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -29,9 +31,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
+    private int _disposeStarted;
+
+    // Owned providers whose terminal disposal failed AND whose in-restart retry also failed: the state's
+    // OwnedProviderAgent slot is about to be overwritten by the replacement, so their handle is retained
+    // here for a best-effort final dispose at manager teardown rather than being silently abandoned.
+    private readonly ConcurrentBag<IStreamingAgent> _abandonedProviders = [];
 
     /// <summary>
-    /// Test-only seam: when set, <see cref="CreateSubAgent"/> returns this factory's
+    /// Test-only seam: when set, <see cref="CreateSubAgentAsync"/> returns this factory's
     /// <see cref="IMultiTurnAgent"/> instead of building a real <see cref="MultiTurnAgentLoop"/>,
     /// so a unit test can substitute a fake agent (e.g. one whose <c>SubscribeAsync</c> throws a
     /// non-cancellation exception) while still going through the real <see cref="SpawnAsync"/>/
@@ -45,6 +53,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// production code never sets this.
     /// </summary>
     internal Func<string, SubAgentTemplate, IMultiTurnAgent>? TestAgentFactoryOverride { get; set; }
+
+    /// <summary>
+    /// Test-only companion to <see cref="TestAgentFactoryOverride"/>: when set, supplies the OWNED
+    /// provider agent returned alongside the fake loop, so a unit test can exercise the real
+    /// owned-provider disposal lifecycle (completion disposal, pending-message deferral, restart
+    /// recreation) that the plain <see cref="TestAgentFactoryOverride"/> path — which returns a null
+    /// owned provider — cannot. Null (the default) keeps the fake loop's owned provider null.
+    /// </summary>
+    internal Func<string, SubAgentTemplate, IStreamingAgent?>? TestOwnedProviderOverride { get; set; }
 
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
@@ -121,7 +138,13 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
-            var agent = CreateSubAgent(agentId, template, model, addTools, removeTools, out var store);
+            var (agent, store, ownedProviderAgent) = await CreateSubAgentAsync(
+                agentId,
+                template,
+                model,
+                addTools,
+                removeTools
+            );
 
             state = new SubAgentState
             {
@@ -129,10 +152,15 @@ public sealed class SubAgentManager : IAsyncDisposable
                 TemplateName = templateName,
                 Task = task,
                 Agent = agent,
+                Template = template,
+                ModelOverride = model,
+                AddTools = addTools,
+                RemoveTools = removeTools,
                 Store = store,
                 Name = name,
                 NotifyParentOnCompletion = runInBackground,
             };
+            state.SetOwnedProviderAgent(ownedProviderAgent);
 
             _agents[agentId] = state;
             if (!string.IsNullOrWhiteSpace(name))
@@ -158,7 +186,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Start monitoring BEFORE sending the task to avoid subscribe-after-send race:
             // if SendAsync triggers a fast completion before the monitor subscribes,
             // the RunCompletedMessage would fire with no subscriber listening.
-            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, cts.Token);
+            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, state.CurrentRunGeneration, cts.Token);
 
             // Send the task as user input (triggers first turn)
             _ = await agent.SendAsync(
@@ -265,6 +293,32 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+        try { await state.Agent.DisposeAsync(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Agent dispose failed during spawn cleanup for sub-agent {AgentId}", agentId);
+        }
+
+        try { await state.DisposeOwnedProviderAgentAsync(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Provider dispose failed during spawn cleanup for sub-agent {AgentId}",
+                agentId
+            );
+        }
+
+        state.Cts.Dispose();
+        if (state.Store is IAsyncDisposable disposableStore)
+        {
+            try { await disposableStore.DisposeAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Store dispose failed during spawn cleanup for sub-agent {AgentId}", agentId);
+            }
+        }
+
         gateGuard.ReleaseOnce(_concurrencyGate);
     }
 
@@ -284,26 +338,87 @@ public sealed class SubAgentManager : IAsyncDisposable
         var agentId = ResolveAgentId(target);
         var state = _agents[agentId];
 
-        var wasRunning = state.Status == SubAgentStatus.Running;
-        state.NotifyParentOnCompletion = runInBackground;
-
-        // A finished completion is replaced so this run can be awaited fresh; a pending
-        // one (running agent) is kept so existing waiters observe the next resolution.
-        state.ResetCompletionIfFinished();
-
-        if (wasRunning)
+        // Decide how to continue this sub-agent atomically against a concurrent terminal completion and
+        // any other concurrent continuation. An admitted "inject into the running loop" holds a send
+        // lease that a terminal owned-provider disposal awaits, so a send can never race the provider
+        // being disposed; a finished run is restarted with a fresh provider by exactly ONE caller (any
+        // others await that restart and then inject into the re-armed loop). See
+        // SubAgentState.BeginContinuation.
+        bool wasRunning;
+        while (true)
         {
-            // Inject the message into the currently running agent.
-            _ = await state.Agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
+            var decision = state.BeginContinuation(runInBackground);
 
-            _logger.LogInformation(
-                "Sent message to running sub-agent {AgentId}: {Message}",
-                agentId, Truncate(prompt, 100));
-        }
-        else
-        {
-            await RestartRunAsync(state, prompt, ct);
+            if (decision.Mode == ContinuationMode.Inject)
+            {
+                // A finished completion is replaced so this run can be awaited fresh; a pending one
+                // (running agent) is kept so existing waiters observe the next resolution.
+                state.ResetCompletionIfFinished();
+
+                var injectCancelledByLifecycle = false;
+                try
+                {
+                    // Inject the message into the currently running agent while holding the send lease.
+                    // Link the caller token with the run's lifecycle token so a terminal owned-provider
+                    // disposal can unblock this send if it wedges — otherwise the lease (which the
+                    // disposal waits to drain) could be held forever on a caller token that never cancels.
+                    using var linkedCts = state.LinkLifecycleToken(ct);
+                    try
+                    {
+                        _ = await state.Agent.SendAsync(
+                            [new TextMessage { Role = Role.User, Text = prompt }], ct: linkedCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
+                    {
+                        // The send was cancelled specifically by the run's LIFECYCLE token (terminal
+                        // disposal began) — NOT by the caller, and NOT an internal SendAsync
+                        // timeout/cancellation unrelated to either supplied token (which must propagate
+                        // rather than be retried, to avoid duplicate delivery / an unbounded retry loop).
+                        // The loop we injected into is finishing, so re-evaluate the continuation to
+                        // deliver the prompt to the restarted run instead of dropping the user's message.
+                        injectCancelledByLifecycle = true;
+                    }
+                }
+                finally
+                {
+                    state.EndInjectLease();
+                }
+
+                if (injectCancelledByLifecycle)
+                {
+                    // The lease is released; re-enter the decision loop. The run is now terminal, so
+                    // BeginContinuation routes this to a fresh-provider restart that delivers the prompt.
+                    continue;
+                }
+
+                _logger.LogInformation(
+                    "Sent message to running sub-agent {AgentId}: {Message}",
+                    agentId, Truncate(prompt, 100));
+
+                wasRunning = true;
+                break;
+            }
+
+            if (decision.Mode == ContinuationMode.Restart)
+            {
+                state.ResetCompletionIfFinished();
+
+                try
+                {
+                    await RestartRunAsync(state, prompt, ct);
+                }
+                finally
+                {
+                    state.EndRestart();
+                }
+
+                wasRunning = false;
+                break;
+            }
+
+            // AwaitRestart: another caller owns the in-flight restart. Wait for it to finish, then
+            // re-evaluate — the restart flips the loop back to Running, so the retry injects into it.
+            await decision.RestartCompleted!.WaitAsync(ct);
         }
 
         if (runInBackground)
@@ -368,13 +483,6 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
-            // Recover conversation history if a store is available
-            if (state.Store != null
-                && state.Agent is MultiTurnAgentBase agentBase)
-            {
-                _ = await agentBase.RecoverAsync();
-            }
-
             // Cancel and dispose the old CTS to prevent double-monitor bugs:
             // the old monitor's closure captured the old CTS, and both monitors
             // would receive RunCompletedMessage causing double Release/Decrement.
@@ -404,19 +512,110 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             state.Cts.Dispose();
 
+            // Rebuild the provider pipeline when the previous run's owned provider was disposed at
+            // completion OR its terminal disposal FAILED (poisoned): in both cases the provider must not
+            // be reused — a failed disposal may have left it partially torn down.
+            if (state.HasDisposedOwnedProviderAgent || state.OwnedProviderTerminalDisposeFailed)
+            {
+                var previousAgent = state.Agent;
+                var previousStore = state.Store;
+                var (replacementAgent, replacementStore, replacementOwnedProviderAgent) = await CreateSubAgentAsync(
+                    state.AgentId,
+                    state.Template,
+                    state.ModelOverride,
+                    state.AddTools,
+                    state.RemoveTools
+                );
+
+                try { await previousAgent.DisposeAsync(); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Completed agent dispose failed before restart for sub-agent {AgentId}",
+                        state.AgentId
+                    );
+                }
+
+                if (
+                    previousStore is IAsyncDisposable disposablePreviousStore
+                    && !ReferenceEquals(previousStore, replacementStore)
+                )
+                {
+                    try { await disposablePreviousStore.DisposeAsync(); }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Completed store dispose failed before restart for sub-agent {AgentId}",
+                            state.AgentId
+                        );
+                    }
+                }
+
+                // If the previous terminal disposal FAILED (poisoned), retry disposing that provider
+                // before swapping in the replacement so the partially-disposed instance isn't leaked.
+                // The disposal guard reset to Idle on the earlier failure, so this genuinely retries;
+                // when it had been cleanly disposed the flag is false and this block is skipped.
+                if (state.OwnedProviderTerminalDisposeFailed)
+                {
+                    try { await state.DisposeOwnedProviderAgentAsync(); }
+                    catch (Exception ex)
+                    {
+                        // Retry failed a second time: we are about to overwrite the OwnedProviderAgent
+                        // slot, which would drop this handle forever. Retain it for a best-effort dispose
+                        // at manager teardown so a repeatedly-undisposable provider is accounted for
+                        // rather than silently abandoned.
+                        var undisposed = state.OwnedProviderAgent;
+                        if (undisposed is not null)
+                        {
+                            _abandonedProviders.Add(undisposed);
+                        }
+
+                        _logger.LogWarning(
+                            ex,
+                            "Retry dispose of poisoned owned provider failed before restart for sub-agent {AgentId}; retained for cleanup at manager disposal",
+                            state.AgentId
+                        );
+                    }
+                }
+
+                state.Agent = replacementAgent;
+                state.Store = replacementStore;
+                state.SetOwnedProviderAgent(replacementOwnedProviderAgent);
+            }
+
+            // Recover conversation history after replacing a completed owned-provider loop, so a
+            // continuation uses the fresh provider pipeline while retaining persisted context.
+            if (state.Store != null
+                && state.Agent is MultiTurnAgentBase agentBase)
+            {
+                _ = await agentBase.RecoverAsync();
+            }
+
             // Create new CTS and start the loop again
             state.Cts = new CancellationTokenSource();
             var cts = state.Cts;
 
+            // Re-arm the lifecycle cancellation and open a new run generation for this epoch BEFORE the
+            // restarted loop can report completion, so (a) injects into the new run link a fresh token
+            // and (b) the Running publish below is generation-guarded against a fast completion.
+            state.ResetLifecycleCts();
+            var runGeneration = state.BeginRunGeneration();
+
             state.RunTask = state.Agent.RunAsync(cts.Token);
 
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
-            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, cts.Token);
+            state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, runGeneration, cts.Token);
 
             _ = await state.Agent.SendAsync(
                 [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
 
-            state.Status = SubAgentStatus.Running;
+            // Publish Running as the final step of the restart transition, but skip it if the restarted
+            // run already completed-and-disposed (a fast run can finish before this line executes):
+            // resurrecting a terminal run to Running would let the next continuation inject through a
+            // provider that terminal handling has already disposed.
+            _ = state.TryArmRunning(runGeneration);
 
             _logger.LogInformation(
                 "Resumed sub-agent {AgentId} with message: {Message}",
@@ -456,6 +655,22 @@ public sealed class SubAgentManager : IAsyncDisposable
                 {
                     _logger.LogWarning(ex, "MonitorTask faulted during restart cleanup for sub-agent {AgentId}", state.AgentId);
                 }
+            }
+
+            try { await state.Agent.DisposeAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Agent dispose failed during restart cleanup for sub-agent {AgentId}", state.AgentId);
+            }
+
+            try { await state.DisposeOwnedProviderAgentAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Provider dispose failed during restart cleanup for sub-agent {AgentId}",
+                    state.AgentId
+                );
             }
 
             // Idempotent: a no-op if the (now-observed) monitor's own finally already
@@ -555,6 +770,11 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        {
+            return;
+        }
+
         foreach (var (_, state) in _agents)
         {
             // Each step is isolated to prevent cascading failures:
@@ -598,6 +818,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 _logger.LogWarning(ex, "DisposeAsync failed for sub-agent {AgentId}", state.AgentId);
             }
 
+            try { await state.DisposeOwnedProviderAgentAsync(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Provider dispose failed for sub-agent {AgentId}", state.AgentId);
+            }
+
             try { state.Cts.Dispose(); }
             catch (Exception ex)
             {
@@ -616,66 +842,183 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         _agents.Clear();
         _namesToIds.Clear();
+
+        // Best-effort final dispose of providers whose in-restart retry disposal also failed; their state
+        // slots were overwritten by replacements, so this is their last cleanup opportunity.
+        foreach (var abandoned in _abandonedProviders)
+        {
+            try
+            {
+                if (abandoned is IAsyncDisposable asyncDisposable)
+                {
+                    await asyncDisposable.DisposeAsync();
+                }
+                else if (abandoned is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Abandoned owned-provider dispose failed at manager disposal");
+            }
+        }
+
         _concurrencyGate.Dispose();
     }
 
     /// <summary>
     /// Creates a MultiTurnAgentLoop configured for a sub-agent with filtered tools.
     /// </summary>
-    private IMultiTurnAgent CreateSubAgent(
+    private async Task<(IMultiTurnAgent Agent, IConversationStore? Store, IStreamingAgent? OwnedProviderAgent)> CreateSubAgentAsync(
         string agentId,
         SubAgentTemplate template,
         string? modelOverride,
         string[]? addTools,
-        string[]? removeTools,
-        out IConversationStore? store)
+        string[]? removeTools)
     {
         if (TestAgentFactoryOverride != null)
         {
-            store = null;
-            return TestAgentFactoryOverride(agentId, template);
+            return (
+                TestAgentFactoryOverride(agentId, template),
+                null,
+                TestOwnedProviderOverride?.Invoke(agentId, template));
         }
-
-        var providerAgent = template.AgentFactory();
 
         // Resolve the sub-agent's options with model inheritance (override > template > parent).
         var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId);
+        IStreamingAgent providerAgent;
+        IStreamingAgent? ownedProviderAgent = null;
+        IConversationStore? store = null;
 
-        // Determine conversation store
-        var storeFactory =
-            template.ConversationStoreFactory
-            ?? _options.DefaultConversationStoreFactory;
-        store = storeFactory?.Invoke($"subagent-{agentId}");
-
-        // Build a fresh FunctionRegistry with filtered parent tools
-        var registry = new FunctionRegistry();
-        var enabledSet = BuildEnabledToolSet(
-            template.EnabledTools, addTools, removeTools);
-
-        foreach (var contract in _parentContracts)
+        try
         {
-            if (enabledSet != null && !enabledSet.Contains(contract.Name))
+            if (template.CharacteristicsAgentFactory is { } characteristicsFactory)
             {
-                continue;
+                var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
+                    ? null
+                    : defaultOptions.ModelId;
+                var provider = characteristicsFactory(
+                    new SubAgentCharacteristics(modelId, template.Effort)
+                    {
+                        IsModelExplicitlySelected =
+                            !string.IsNullOrWhiteSpace(modelOverride)
+                            || template.IsModelExplicitlySelected,
+                        IsModelTierResolved = template.IsModelTierResolved,
+                    });
+                providerAgent = provider.Agent;
+                ownedProviderAgent = provider.OwnsAgent ? provider.Agent : null;
+
+                if (provider.UseParentModel && defaultOptions is not null)
+                {
+                    defaultOptions = defaultOptions with { ModelId = _parentModelId ?? string.Empty };
+                }
+
+                if (provider.ExtraProperties.Count > 0)
+                {
+                    var requestExtraProperties =
+                        defaultOptions?.ExtraProperties
+                        ?? ImmutableDictionary<string, object?>.Empty;
+                    defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                    {
+                        // Template/request values intentionally win over generated reasoning metadata.
+                        ExtraProperties = provider.ExtraProperties.SetItems(requestExtraProperties),
+                    };
+                }
+            }
+            else
+            {
+                providerAgent = template.AgentFactory();
             }
 
-            if (!_parentHandlers.TryGetValue(contract.Name, out var handler))
+            // Determine conversation store
+            var storeFactory =
+                template.ConversationStoreFactory
+                ?? _options.DefaultConversationStoreFactory;
+            store = storeFactory?.Invoke($"subagent-{agentId}");
+
+            // Build a fresh FunctionRegistry with filtered parent tools
+            var registry = new FunctionRegistry();
+            var enabledSet = BuildEnabledToolSet(
+                template.EnabledTools, addTools, removeTools);
+
+            foreach (var contract in _parentContracts)
             {
-                continue;
+                if (enabledSet != null && !enabledSet.Contains(contract.Name))
+                {
+                    continue;
+                }
+
+                if (!_parentHandlers.TryGetValue(contract.Name, out var handler))
+                {
+                    continue;
+                }
+
+                _ = registry.AddFunction(contract, handler, "ParentTools");
             }
 
-            _ = registry.AddFunction(contract, handler, "ParentTools");
+            return (
+                new MultiTurnAgentLoop(
+                    providerAgent,
+                    registry,
+                    threadId: $"subagent-{agentId}",
+                    systemPrompt: template.SystemPrompt,
+                    defaultOptions: defaultOptions,
+                    maxTurnsPerRun: template.MaxTurnsPerRun,
+                    store: store,
+                    logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger)
+                ),
+                store,
+                ownedProviderAgent
+            );
         }
+        catch
+        {
+            // Roll back partial construction. Attempt each cleanup INDEPENDENTLY so a failure in one
+            // (e.g. store disposal throwing) does not skip the other (provider disposal), and let the
+            // ORIGINAL construction exception propagate — cleanup failures are logged, never rethrown,
+            // so they can't mask the real cause.
+            if (store is IAsyncDisposable disposableStore)
+            {
+                try { await disposableStore.DisposeAsync(); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Store dispose failed while rolling back sub-agent {AgentId} construction",
+                        agentId
+                    );
+                }
+            }
 
-        return new MultiTurnAgentLoop(
-            providerAgent,
-            registry,
-            threadId: $"subagent-{agentId}",
-            systemPrompt: template.SystemPrompt,
-            defaultOptions: defaultOptions,
-            maxTurnsPerRun: template.MaxTurnsPerRun,
-            store: store,
-            logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger));
+            try { await DisposeProviderAgentAsync(ownedProviderAgent); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Provider dispose failed while rolling back sub-agent {AgentId} construction",
+                    agentId
+                );
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Disposes a provider agent regardless of whether it exposes async or synchronous disposal.
+    /// No-op when <paramref name="provider"/> is null or implements neither disposal interface.
+    /// </summary>
+    private static async ValueTask DisposeProviderAgentAsync(IStreamingAgent? provider)
+    {
+        if (provider is IAsyncDisposable asyncDisposable)
+        {
+            await asyncDisposable.DisposeAsync();
+        }
+        else if (provider is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
     /// <summary>
@@ -771,10 +1114,16 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// read from a shared field on <paramref name="state"/>, so a later restart's own guard can
     /// never be conflated with this monitor's - see <see cref="GateReleaseGuard"/>.
     /// </param>
+    /// <param name="runGeneration">
+    /// The run generation this monitor belongs to (0 for the initial spawn; the restart's generation
+    /// otherwise). On a monitor fault, the terminal Error is recorded against this generation so a
+    /// racing restart's <c>TryArmRunning</c> cannot resurrect the faulted run to Running.
+    /// </param>
     /// <param name="ct">Cancellation token for this run's lifetime.</param>
     private async Task MonitorSubAgentAsync(
         SubAgentState state,
         GateReleaseGuard gateGuard,
+        long runGeneration,
         CancellationToken ct)
     {
         string? lastTextContent = null;
@@ -842,12 +1191,18 @@ public sealed class SubAgentManager : IAsyncDisposable
                 {
                     state.LastResult = lastTextContent;
 
-                    // Release the slot BEFORE the (possibly slow/backpressured) parent
-                    // relay in HandleRunCompletionAsync: the run itself is done, so a
-                    // blocked SendToParentAsync must not hold up a fresh sub-agent spawn
-                    // that's waiting on the concurrency gate. Idempotent, so the fallback
-                    // release in the finally block below is a safe no-op afterward.
-                    gateGuard.ReleaseOnce(_concurrencyGate);
+                    // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
+                    // HandleRunCompletionAsync — but ONLY for a TERMINAL completion. A nonterminal
+                    // (HasPendingMessages) completion keeps the SAME loop/provider busy processing queued
+                    // work, so releasing its permit now would let another sub-agent start while this one
+                    // is still active, exceeding MaxConcurrentSubAgents. The permit is held until the run
+                    // truly ends: the terminal completion here, or the monitor's finally if the stream
+                    // ends first. Idempotent, so that fallback release is a safe no-op afterward.
+                    if (!rcm.HasPendingMessages)
+                    {
+                        gateGuard.ReleaseOnce(_concurrencyGate);
+                    }
+
                     await HandleRunCompletionAsync(state, rcm, lastTextContent);
                     lastTextContent = null;
                     textGenerationId = null;
@@ -865,7 +1220,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            state.Status = SubAgentStatus.Error;
+            // Record the fault as a generation-aware terminal Error (not a raw Status write): a restarted
+            // run's monitor can fault before RestartRunAsync's TryArmRunning(runGeneration) executes, and
+            // that publish must observe this generation's terminal record and refuse to overwrite Error
+            // with Running (which would advertise a dead run).
+            state.MarkRunFaulted(runGeneration);
             state.SendToParentError = $"Monitor failed: {ex.Message}";
             _logger.LogError(
                 ex,
@@ -897,13 +1256,51 @@ public sealed class SubAgentManager : IAsyncDisposable
         RunCompletedMessage rcm,
         string? lastTextContent)
     {
+        // A run that still has queued messages is NOT terminal: another run will follow and reuse the
+        // same loop/provider, so neither flip the sub-agent terminal nor dispose its owned provider
+        // here — the final completion (HasPendingMessages == false) resolves and, if owned, disposes.
+        if (rcm.HasPendingMessages)
+        {
+            return;
+        }
+
+        // Transition out of Running BEFORE disposing the owned provider, atomically against a
+        // concurrent SendMessageAsync (see SubAgentState.BeginContinuation). This blocks new inject
+        // admissions and waits for any in-flight admitted send to finish, so the disposal below can
+        // never overlap a send through the provider; a racing continuation then observes the finished
+        // status and takes the restart path (which recreates a fresh provider).
+        await state.BeginTerminalDisposalAsync(rcm.IsError);
+
         // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
         // once per gate-acquisition epoch — not here, because a single monitor may handle
         // several completions when a background sub-agent is continued in place via SendMessage.
+        // An explicit/tier provider is scoped to a single completed run. Dispose it before any
+        // completion relay can block; a later continuation recreates its loop and provider through
+        // the same characteristics factory, while borrowed parent/template agents remain untouched.
+        // EndTerminalDisposal clears the terminating flag so a later restart's re-arm admits injects.
+        try
+        {
+            try { await state.DisposeOwnedProviderAgentAsync(); }
+            catch (Exception ex)
+            {
+                // Poison the run's provider: a continuation must rebuild a fresh one rather than reuse
+                // this partially-disposed instance (the restart path retries disposing it). Clearing the
+                // terminating flag below still lets a restart proceed — but against a fresh provider.
+                state.MarkOwnedProviderTerminalDisposeFailed();
+                _logger.LogWarning(
+                    ex,
+                    "Provider dispose failed at completion for sub-agent {AgentId}",
+                    state.AgentId
+                );
+            }
+        }
+        finally
+        {
+            state.EndTerminalDisposal();
+        }
+
         if (rcm.IsError)
         {
-            state.Status = SubAgentStatus.Error;
-
             var errorText =
                 $"<sub-agent name=\"{state.TemplateName}\" " +
                 $"id=\"{state.AgentId}\">\n" +
@@ -924,8 +1321,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         else
         {
-            state.Status = SubAgentStatus.Completed;
-
             var result = lastTextContent ?? "(no text response)";
 
             var resultText =
@@ -942,6 +1337,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 await SendToParentAsync(state, resultText);
             }
         }
+
     }
 
     /// <summary>

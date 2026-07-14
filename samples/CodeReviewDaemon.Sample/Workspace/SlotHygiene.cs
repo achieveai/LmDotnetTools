@@ -40,19 +40,36 @@ internal static class SlotHygiene
         // 2. Abort any in-progress merge/rebase/cherry-pick left by an interrupted prior lease.
         AbortInProgress(gitDir);
 
-        // 3. Reset + clean the superproject, then every submodule working tree. Non-zero exits here are
-        //    tolerated — the health probe (step 4) is the real gate; a genuinely broken store fails it.
-        await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
-        await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
-        await git.RunAsync(
+        // 3. Reset + clean the superproject, then every submodule working tree.
+        var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
+        var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
+        var submodules = await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
                 storePath, ct)
             .ConfigureAwait(false);
 
-        // 4. Health probe — a missing/broken gitdir means the warm store is unusable and must be re-cloned.
+        // 4. Structural probe — a missing/broken gitdir means the warm store is unusable and must be re-cloned.
         var probe = await git.RunAsync(["-C", storePath, "rev-parse", "--git-dir"], storePath, ct)
             .ConfigureAwait(false);
-        return probe.Succeeded ? HygieneVerdict.Clean : HygieneVerdict.NeedsReclone;
+        if (!probe.Succeeded)
+        {
+            return HygieneVerdict.NeedsReclone;
+        }
+
+        // 5. Cleanliness gate: `rev-parse --git-dir` only proves the repo STRUCTURE is intact, not that the tree
+        //    is CLEAN. A cleanup step that reported failure, or a working tree still showing tracked/untracked
+        //    changes afterwards, means stale state would cross into the next run — so force a re-clone rather
+        //    than reporting a still-dirty slot as Clean (which would let contamination survive the pool).
+        if (!reset.Succeeded || !clean.Succeeded || !submodules.Succeeded)
+        {
+            return HygieneVerdict.NeedsReclone;
+        }
+
+        var status = await git.RunAsync(["-C", storePath, "status", "--porcelain"], storePath, ct)
+            .ConfigureAwait(false);
+        return status.Succeeded && string.IsNullOrWhiteSpace(status.Stdout)
+            ? HygieneVerdict.Clean
+            : HygieneVerdict.NeedsReclone;
     }
 
     /// <summary>

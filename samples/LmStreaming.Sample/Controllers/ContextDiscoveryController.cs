@@ -299,7 +299,11 @@ public sealed class ContextDiscoveryController(
             // (with the first conversation's factory), but each conversation must spawn the
             // discovered sub-agent with its OWN provider — otherwise a sub-agent fanned into
             // conversation B would run on conversation A's provider.
-            var conversationTemplate = template with { AgentFactory = binding.AgentFactory };
+            var conversationTemplate = template with
+            {
+                AgentFactory = binding.AgentFactory,
+                CharacteristicsAgentFactory = binding.CharacteristicsAgentFactory,
+            };
 
             if (binding.Source.TryRegister(conversationTemplate.Name!, conversationTemplate))
             {

@@ -20,11 +20,11 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
-using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
-using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
+using AchieveAi.LmDotnetTools.LmWorkflow;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
@@ -347,10 +347,21 @@ try
         sp.GetRequiredService<AuthSharedSecret>()
     ));
 
+    _ = builder.Services.AddSingleton(sp =>
+        SubAgentIntelligenceOptions.Load(
+            builder.Configuration,
+            sp.GetRequiredService<ILogger<SubAgentIntelligenceOptions>>()
+        )
+    );
+    _ = builder.Services.AddSingleton<SubAgentModelResolver>();
+
     // Workspace sub-agent discovery. The loader asks the gateway what it has discovered in
     // the session's workspace (sub-agent markdown files under .claude/agents/, etc.) and maps
     // them into SubAgentTemplate so they show up as spawnable types in the Agent tool catalog.
-    _ = builder.Services.AddSingleton<WorkspaceSubAgentLoader>();
+    _ = builder.Services.AddSingleton(sp => new WorkspaceSubAgentLoader(
+        sp.GetRequiredService<SandboxSessionRegistry>(),
+        sp.GetRequiredService<ILogger<WorkspaceSubAgentLoader>>(),
+        sp.GetRequiredService<SubAgentModelResolver>()));
 
     // Marketplace sub-agent bridge. Maps the agents the UI's marketplace browser lists (the
     // gateway's read-only catalog) into spawnable templates, filling any gap left by workspace
@@ -387,6 +398,40 @@ try
     var conversationStore = new FileConversationStore(conversationsPath);
     _ = builder.Services.AddSingleton<IConversationStore>(conversationStore);
     _ = builder.Services.AddSingleton<IRunLedgerStore>(conversationStore);
+
+    // #145: durable notify-wait persistence. Register ONLY the (non-disposable) INotifyWaitStore and
+    // construct its SqliteConnectionFactory INLINE — deliberately NOT as a separately-tracked
+    // singleton. ISqliteConnectionFactory is IAsyncDisposable-only; a container-tracked
+    // IAsyncDisposable-only singleton makes ServiceProvider.Dispose() (synchronous) throw
+    // "only implements IAsyncDisposable". The sample host is torn down synchronously in tests
+    // (BrowserWebAppFactory calls IHost.Dispose()), so tracking the factory would regress every E2E
+    // test that creates an agent. The factory OBJECT itself only holds SemaphoreSlims (no OS handle)
+    // and is reclaimed by GC at process end; the real cost of never disposing it is that the
+    // PROCESS-WIDE Microsoft.Data.Sqlite connection pool — not owned by this object — stays populated
+    // with live WAL connections (this factory sets Pooling=true + Cache=Shared and runs
+    // PRAGMA journal_mode=WAL), each an open OS file handle plus its -wal/-shm sidecars, until the
+    // process exits or SqliteConnection.ClearAllPools() is called. Acceptable here ONLY because this
+    // path is test-mode-gated and the tests clear the pool in their finally. FOLLOW-UP (#161): before
+    // flipping the real-provider gate, register real async disposal (e.g.
+    // IHostApplicationLifetime.ApplicationStopped -> SqliteConnection.ClearAllPools()) so the pooled
+    // WAL handles are released deterministically instead of lingering to process exit.
+    // Configurable path (default a sibling of the conversations/ folder) mirrors
+    // CodeReviewDaemon.Sample's CodeReviewDaemon:DatabasePath so a WebApplicationFactory test can
+    // UseSetting an isolated file.
+    // NOTE (intentional): SqliteNotifyWaitStore self-initializes via the shared SqliteSchemaInitializer,
+    // which also creates currently-unused sibling tables (messages/thread_metadata/run_ledger/
+    // accepted_inputs) in this db file — accepted to reuse shared infra rather than fork a
+    // notify-only initializer.
+    // KNOWN LIMITATION (#145, accepted): notify_waits rows for threads that are never reopened after a
+    // restart are never pruned (restore/cleanup only runs when that thread's loop is reconstructed).
+    // Acceptable for a sample app; no pruning logic added.
+    var notifyWaitDbPath = builder.Configuration["LmStreaming:NotifyWaitDbPath"];
+    if (string.IsNullOrWhiteSpace(notifyWaitDbPath))
+    {
+        notifyWaitDbPath = Path.Combine(AppContext.BaseDirectory, "notify-waits.db");
+    }
+    _ = builder.Services.AddSingleton<INotifyWaitStore>(_ =>
+        new SqliteNotifyWaitStore(new SqliteConnectionFactory(notifyWaitDbPath)));
 
     // The REST status resolver (ConversationsController dependency) reads the conversation store plus
     // its run ledger. Resolve the ledger from the registered IConversationStore so a test host that
@@ -472,6 +517,10 @@ try
         var functionRegistry = sp.GetRequiredService<FunctionRegistry>();
         var agentFactory = sp.GetRequiredService<Func<string, IStreamingAgent>>();
         var conversationStore = sp.GetRequiredService<IConversationStore>();
+        // #145: the durable notify-wait store is a process singleton (like conversationStore); captured
+        // here so the inner per-thread agent factory can attach it to TriggerOptions (see the Build(...)
+        // call site below). ThreadId is per-thread via context.ThreadId inside that factory.
+        var notifyWaitStore = sp.GetRequiredService<INotifyWaitStore>();
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
@@ -817,7 +866,7 @@ try
                 // Add LlmQuery book search MCP tools — only for medical knowledge mode
                 // Track MCP clients for proper disposal alongside the agent
                 List<IAsyncDisposable>? ownedResources = null;
-                WorkflowRuntime? workflowRuntime = null;
+                var workspaceWorkflowEnabled = false;
                 if (!string.IsNullOrEmpty(mcpBaseUrl))
                 {
                     var (_, mcpClients) = ConnectLlmQueryMcpClients(
@@ -846,22 +895,20 @@ try
                     // observes the loop's own message stream (see ownedResources wiring below) to
                     // correlate Agent tool-call spawns back into workflow state.
                     //
+                    // Let the Workspace Agent launch LmWorkflow workflows via the StartWorkflow tool
+                    // family. Each StartWorkflow spins up an ISOLATED controller loop (its own model +
+                    // restricted tool surface); the chat agent never gets direct
+                    // SetWorkflow/GetWorkflow access (that #130 wiring is retired here). The tools
+                    // themselves are wired below, once the conversation loop exists so an async
+                    // workflow's completion notification can reach it.
+                    //
                     // On by default, but disable-able per deployment WITHOUT a redeploy via
-                    // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false. This one flag gates all three behaviors as a
-                    // unit — the workflow tool surface (here), the appended controller prompt (below), and the
-                    // correlation observer (further below, which is already gated on `workflowRuntime`).
-                    var workflowEnabled = !string.Equals(
+                    // WORKSPACE_AGENT_LMWORKFLOW_ENABLED=false.
+                    workspaceWorkflowEnabled = !string.Equals(
                         Environment.GetEnvironmentVariable("WORKSPACE_AGENT_LMWORKFLOW_ENABLED"),
                         "false",
                         StringComparison.OrdinalIgnoreCase
                     );
-                    if (workflowEnabled)
-                    {
-                        workflowRuntime = new WorkflowRuntime(
-                            logger: loggerFactory.CreateLogger<WorkflowRuntime>()
-                        );
-                        _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
-                    }
 
                     // Workspace Agent mode: expose the sandbox file/shell tools via the gateway's
                     // MCP endpoint, bound to this agent's sandbox session by the X-Session-ID header
@@ -913,19 +960,6 @@ try
                                     + "the system prompt now reports degraded mode instead of claiming tools",
                                 threadId
                             );
-                    }
-
-                    // Append last, off whatever effectiveMode currently is (default or the
-                    // degraded-sandbox notice above) so the controller prompt survives either path. Gated on
-                    // the workflow runtime (i.e. WORKSPACE_AGENT_LMWORKFLOW_ENABLED) so disabling the feature
-                    // also drops the extra controller instructions from the prompt.
-                    if (workflowRuntime is not null)
-                    {
-                        effectiveMode = effectiveMode with
-                        {
-                            SystemPrompt =
-                                effectiveMode.SystemPrompt + "\n\n" + ControllerSystemPrompt.Default,
-                        };
                     }
                 }
 
@@ -995,8 +1029,9 @@ try
                     // a sandbox session is active, so the Agent tool advertises an identical catalog
                     // regardless of provider — and the mock-only instruction-chain tool_schema probe
                     // can validate the workspace-discovered/marketplace sub-agents. In all cases the
-                    // template AgentFactory reuses agentFactory(normalizedProviderId) so each spawn
-                    // builds a FRESH provider agent on the same backend as the parent.
+                    // Legacy AgentFactory still builds a fresh parent-backend agent. The
+                    // characteristics-aware factory below can instead route a resolved Copilot model
+                    // through its own transport, and safely falls back to the parent provider agent.
                     var isTestMode =
                         string.Equals(normalizedProviderId, "test", StringComparison.Ordinal)
                         || string.Equals(normalizedProviderId, "test-anthropic", StringComparison.Ordinal);
@@ -1006,11 +1041,19 @@ try
                     // cannot deadlock. The blocking call is HTTP only when a sandbox session is
                     // active; otherwise it completes synchronously.
                     Func<IStreamingAgent> subAgentFactory = () => agentFactory(normalizedProviderId);
+                    var characteristicsAgentFactory = new CharacteristicsAgentFactory(
+                        providerRegistry,
+                        providerAgent,
+                        model => CreateCopilotModelAgent(model, loggerFactory),
+                        loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
+                        parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null)
+                        .Create;
                     var subAgentOptions = BuildSubAgentOptionsAsync(
                             isTestMode,
                             sp.GetRequiredService<ITestAgentBuilder>(),
                             loggerFactory,
                             subAgentFactory,
+                            characteristicsAgentFactory,
                             sandboxSession,
                             sp.GetRequiredService<WorkspaceSubAgentLoader>(),
                             sp.GetRequiredService<MarketplaceSubAgentLoader>(),
@@ -1027,12 +1070,13 @@ try
                     MutableSubAgentTemplateSource? sharedSubAgentSource = null;
                     if (sandboxSession is not null && subAgentOptions is not null)
                     {
-                        var binding = sp.GetRequiredService<SandboxSessionRegistry>()
-                            .GetOrAddSubAgentBinding(
-                                sandboxSession.SessionId,
-                                threadId,
-                                subAgentOptions.Templates,
-                                subAgentFactory);
+                        var binding = BindConversationSubAgents(
+                            sp.GetRequiredService<SandboxSessionRegistry>(),
+                            sandboxSession.SessionId,
+                            threadId,
+                            subAgentOptions.Templates,
+                            subAgentFactory,
+                            characteristicsAgentFactory);
                         sharedSubAgentSource = binding.Source;
 
                         // Register this agent's threadId against the session so the
@@ -1047,9 +1091,89 @@ try
                     // inside its own ctor, so a subagent-kind source can't be handed the manager
                     // directly — it resolves it lazily once the loop (and thus the manager) exists.
                     MultiTurnAgentLoop agent = null!;
+                    // #145: attach the durable notify-wait store + this thread's id so notify-mode waits
+                    // survive a process restart (TriggerRuntime restores/reconciles them on thread
+                    // recovery). Set via a record `with` on Build's result so SampleTriggerRegistrations.Build
+                    // keeps its trigger-source-only responsibility. Test-mode/mock-provider ONLY today — same
+                    // gate as the triggerOptions pass-through at the loop ctor below; real-provider rollout is
+                    // tracked in #161. (When !isTestMode the whole triggerOptions object is discarded there,
+                    // so leaving the store null keeps it from being attached to a thrown-away options value.)
                     var triggerOptions = SampleTriggerRegistrations.Build(
                         sandboxEnabled: sandboxSession is not null,
-                        subAgentManagerAccessor: () => agent?.SubAgentManager);
+                        subAgentManagerAccessor: () => agent?.SubAgentManager) with
+                    {
+                        NotifyWaitStore = isTestMode ? notifyWaitStore : null,
+                        ThreadId = isTestMode ? threadId : null,
+                    };
+
+                    // Wire the StartWorkflow tool family onto the conversation registry (Workspace Agent
+                    // mode). Declared before the loop ctor so the launch tools are registered before the
+                    // sub-agent snapshot is taken; the completion notifier is late-bound to `agent` (assigned
+                    // just below). This replaces #130's direct SetWorkflow/GetWorkflow wiring.
+                    if (workspaceWorkflowEnabled)
+                    {
+                        // Q2: the controller runs on a single, FIXED, pre-configured model — a configured
+                        // value if present, else the conversation's own default model. Never the caller's.
+                        var configuredControllerModel =
+                            Environment.GetEnvironmentVariable("WORKFLOW_CONTROLLER_MODEL");
+                        var controllerModelId = string.IsNullOrWhiteSpace(configuredControllerModel)
+                            ? modelId
+                            : configuredControllerModel;
+
+                        // Q5: concurrent-workflow cap defaults to 8, overridable via config.
+                        var maxConcurrentWorkflows =
+                            int.TryParse(
+                                Environment.GetEnvironmentVariable("WORKFLOW_MAX_CONCURRENT"),
+                                out var configuredCap
+                            ) && configuredCap >= 1
+                                ? configuredCap
+                                : 8;
+
+                        var controllerSubAgentOptions = new SubAgentOptions
+                        {
+                            Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(subAgentFactory),
+                            MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+                        };
+
+                        var workflowManager = new WorkflowManager(
+                            controllerAgentFactory: subAgentFactory,
+                            controllerSubAgentOptions: controllerSubAgentOptions,
+                            completionNotifier: async (notify, notifyCt) =>
+                            {
+                                // Late-bound to `agent` (assigned just below). Re-injects the async workflow's
+                                // completion as a NotifyMessage into the conversation. WorkflowManager wraps
+                                // this call in its own try/catch, so a SendAsync on an already-disposed loop
+                                // (conversation torn down before the workflow finished) is tolerated — logged,
+                                // never fatal.
+                                var conversation = agent;
+                                if (conversation is not null)
+                                {
+                                    _ = await conversation.SendAsync([notify], ct: notifyCt);
+                                }
+                            },
+                            maxConcurrentWorkflows: maxConcurrentWorkflows,
+                            controllerDefaultOptions: new GenerateReplyOptions { ModelId = controllerModelId },
+                            logger: loggerFactory.CreateLogger<WorkflowManager>()
+                        );
+
+                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(workflowManager));
+                        ownedResources = [.. ownedResources ?? [], workflowManager];
+
+                        // Keep the launch tools out of sub-agent inheritance so a spawned sub-agent can't
+                        // launch a nested workflow (out of scope for v1). Union with any exclusions the host
+                        // already set rather than replacing them.
+                        if (subAgentOptions is not null)
+                        {
+                            subAgentOptions = subAgentOptions with
+                            {
+                                NonInheritedToolNames =
+                                [
+                                    .. subAgentOptions.NonInheritedToolNames ?? [],
+                                    .. StartWorkflowToolProvider.ToolNames,
+                                ],
+                            };
+                        }
+                    }
 
                     agent = new MultiTurnAgentLoop(
                         providerAgent,
@@ -1089,62 +1213,6 @@ try
                         // flag) is tracked in #161.
                         triggerOptions: isTestMode ? triggerOptions : null
                     );
-
-                    if (workflowRuntime is not null)
-                    {
-                        // Correlate sub-agent spawn results back into the workflow runtime via a
-                        // second, independent subscriber to this loop's own message stream (tool
-                        // handlers above cover the synchronous SetWorkflow/SetCurrentNode/etc. path;
-                        // this covers the async Agent-tool-call/result correlation). The first
-                        // MoveNextAsync() is primed synchronously here — before this factory returns
-                        // "agent" to the caller — so the per-subscriber channel is registered before
-                        // any SendAsync can occur on this conversation.
-                        var observerCts = new CancellationTokenSource();
-                        var enumerator = agent.SubscribeAsync(observerCts.Token)
-                            .GetAsyncEnumerator(observerCts.Token);
-                        var pendingFirstMoveNext = enumerator.MoveNextAsync();
-                        var observerTask = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                if (await pendingFirstMoveNext)
-                                {
-                                    workflowRuntime.ObserveMessage(enumerator.Current);
-                                    while (await enumerator.MoveNextAsync())
-                                    {
-                                        workflowRuntime.ObserveMessage(enumerator.Current);
-                                    }
-                                }
-                            }
-                            catch (OperationCanceledException) when (observerCts.IsCancellationRequested)
-                            { /* expected on shutdown */
-                            }
-                            catch (Exception ex)
-                            {
-                                // This background task is the critical path that correlates Agent
-                                // tool-call spawns/results back into the workflow runtime. If it faults, the
-                                // agent keeps serving workflow tools but joins never settle — so surface the
-                                // first failure loudly (disposal below would otherwise swallow it).
-                                loggerFactory
-                                    .CreateLogger<WorkflowRuntime>()
-                                    .LogError(
-                                        ex,
-                                        "Workflow observer for thread {ThreadId} failed; Agent-result "
-                                            + "correlation is now disabled for this conversation",
-                                        threadId
-                                    );
-                            }
-                            finally
-                            {
-                                await enumerator.DisposeAsync();
-                            }
-                        });
-                        ownedResources =
-                        [
-                            .. ownedResources ?? [],
-                            new WorkflowObserverDisposable(observerCts, observerTask),
-                        ];
-                    }
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
                 }
@@ -1431,28 +1499,6 @@ public partial class Program
     }
 
     /// <summary>
-    ///     Cancels and awaits the background workflow-observer task on disposal, mirroring the same
-    ///     cancel→await/swallow→dispose idiom <c>MultiTurnAgentPool.AgentEntry.DisposeAsync</c>
-    ///     already uses for the agent's own run loop.
-    /// </summary>
-    private sealed class WorkflowObserverDisposable(CancellationTokenSource cts, Task observerTask)
-        : IAsyncDisposable
-    {
-        public async ValueTask DisposeAsync()
-        {
-            await cts.CancelAsync();
-            try
-            {
-                await observerTask;
-            }
-            catch
-            { /* best-effort shutdown */
-            }
-            cts.Dispose();
-        }
-    }
-
-    /// <summary>
     ///     Creates a test-mode agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
     /// </summary>
     private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
@@ -1563,7 +1609,7 @@ public partial class Program
     ///     models route through the Copilot Messages backend; OpenAI-shaped models through the Copilot
     ///     Responses backend.
     /// </summary>
-    private static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
+    internal static IStreamingAgent CreateCopilotModelAgent(CopilotModelInfo model, ILoggerFactory loggerFactory)
     {
         return model.Transport switch
         {
@@ -1926,23 +1972,62 @@ public partial class Program
     }
 
     /// <summary>
-    ///     Builds the sub-agent orchestration options for a chat agent, used by BOTH the real
-    ///     middleware providers (OpenAI / Anthropic / Copilot-backed) AND the mock providers
-    ///     (<c>test</c> / <c>test-anthropic</c>). The base catalog differs by provider kind — mock
-    ///     providers go through the <see cref="ITestAgentBuilder"/> seam (built-ins by default, or
-    ///     scripted templates injected by E2E); real providers start from the shared built-ins — but
-    ///     the workspace enrichment is identical for both, so the <c>Agent</c> tool advertises the
-    ///     same workspace + marketplace catalog regardless of provider. That parity is what lets the
-    ///     instruction-chain <c>tools_echo</c> / <c>tool_schema</c> probe (mock-only) validate the
-    ///     workspace-discovered and marketplace sub-agents. Each template reuses
-    ///     <paramref name="providerAgentFactory"/> — invoked per spawn so every sub-agent gets a
-    ///     FRESH provider agent on the same backend as the parent.
+    /// Attaches one conversation-scoped characteristics factory to every template while preserving
+    /// template-specific agents for inherited model routing.
     /// </summary>
+    internal static SubAgentOptions ApplyCharacteristicsAgentFactory(
+        SubAgentOptions options,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(characteristicsAgentFactory);
+
+        return options with
+        {
+            Templates = options.Templates.ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value with
+                {
+                    CharacteristicsAgentFactory = characteristics =>
+                    {
+                        var provider = characteristicsAgentFactory(characteristics);
+                        return characteristics.IsModelExplicitlySelected
+                            || characteristics.IsModelTierResolved
+                            ? provider
+                            : provider with
+                            {
+                                Agent = entry.Value.AgentFactory(),
+                                OwnsAgent = true,
+                            };
+                    },
+                },
+                StringComparer.Ordinal),
+        };
+    }
+
+    internal static SubAgentSessionBinding BindConversationSubAgents(
+        SandboxSessionRegistry registry,
+        string sessionId,
+        string conversationId,
+        IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        Func<IStreamingAgent> agentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        return registry.AddOrUpdateSubAgentBinding(
+            sessionId,
+            conversationId,
+            templates,
+            agentFactory,
+            characteristicsAgentFactory);
+    }
+
     private static async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
         bool isTestMode,
         ITestAgentBuilder testAgentBuilder,
         ILoggerFactory loggerFactory,
         Func<IStreamingAgent> providerAgentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory,
         SandboxSession? sandboxSession,
         WorkspaceSubAgentLoader workspaceLoader,
         MarketplaceSubAgentLoader marketplaceLoader,
@@ -1960,19 +2045,34 @@ public partial class Program
             };
 
         // No sandbox session (e.g. a non-workspace chat, or an E2E scenario with no gateway) means
-        // nothing to discover — keep the base catalog exactly as-is so injected E2E templates and the
-        // plain built-in surface are untouched.
-        if (baseOptions is null || sandboxSession is null)
+        // nothing to discover. Preserve the base catalog and only attach the conversation factory.
+        if (baseOptions is null)
         {
-            return baseOptions;
+            return null;
+        }
+
+        if (sandboxSession is null)
+        {
+            return ApplyCharacteristicsAgentFactory(
+                baseOptions,
+                characteristicsAgentFactory);
         }
 
         var templates = new Dictionary<string, SubAgentTemplate>(baseOptions.Templates, StringComparer.Ordinal);
         await EnrichWithWorkspaceCatalogAsync(
-                templates, providerAgentFactory, sandboxSession, workspaceLoader, marketplaceLoader, workspaceStore, logger)
+                templates,
+                providerAgentFactory,
+                characteristicsAgentFactory,
+                sandboxSession,
+                workspaceLoader,
+                marketplaceLoader,
+                workspaceStore,
+                logger)
             .ConfigureAwait(false);
 
-        return baseOptions with { Templates = templates };
+        return ApplyCharacteristicsAgentFactory(
+            baseOptions with { Templates = templates },
+            characteristicsAgentFactory);
     }
 
     /// <summary>
@@ -1993,6 +2093,7 @@ public partial class Program
     private static async Task EnrichWithWorkspaceCatalogAsync(
         IDictionary<string, SubAgentTemplate> templates,
         Func<IStreamingAgent> providerAgentFactory,
+        Func<SubAgentCharacteristics, SubAgentProviderAgent> characteristicsAgentFactory,
         SandboxSession sandboxSession,
         WorkspaceSubAgentLoader workspaceLoader,
         MarketplaceSubAgentLoader marketplaceLoader,
@@ -2003,7 +2104,10 @@ public partial class Program
         // Fetch them concurrently so the (sync-over-async) blocking window is one round-trip, not two.
         // Both loaders are best-effort (log + return empty on failure), so neither task faults; the
         // dictionary is mutated only AFTER both complete, so the in-order merge stays single-threaded.
-        var discoveredTask = workspaceLoader.LoadAsync(sandboxSession, providerAgentFactory);
+        var discoveredTask = workspaceLoader.LoadWithCharacteristicsAsync(
+            sandboxSession,
+            providerAgentFactory,
+            characteristicsAgentFactory);
         var marketplaceTask = LoadMarketplaceSubAgentsAsync(
             marketplaceLoader, workspaceStore, sandboxSession.WorkspaceId, providerAgentFactory, logger);
 

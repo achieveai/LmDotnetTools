@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -28,6 +29,29 @@ public record SubAgentTurnSummary
 }
 
 /// <summary>
+/// How a <c>SubAgentManager.SendMessageAsync</c> continuation must proceed, decided atomically by
+/// <see cref="SubAgentState.BeginContinuation"/> against a concurrent terminal completion and other
+/// concurrent continuations.
+/// </summary>
+internal enum ContinuationMode
+{
+    /// <summary>Inject into the still-running loop under a send lease that terminal disposal awaits.</summary>
+    Inject,
+
+    /// <summary>Restart the finished run with a fresh provider; this caller owns the restart.</summary>
+    Restart,
+
+    /// <summary>Another caller owns an in-flight restart; await it, then re-evaluate.</summary>
+    AwaitRestart,
+}
+
+/// <summary>
+/// Result of <see cref="SubAgentState.BeginContinuation"/>. For <see cref="ContinuationMode.AwaitRestart"/>,
+/// <see cref="RestartCompleted"/> completes when the owning restart finishes.
+/// </summary>
+internal readonly record struct ContinuationDecision(ContinuationMode Mode, Task? RestartCompleted);
+
+/// <summary>
 /// Mutable state tracker for a running sub-agent instance.
 /// Internal to the SubAgents module; not exposed to consumers.
 /// </summary>
@@ -36,7 +60,78 @@ internal class SubAgentState
     public required string AgentId { get; init; }
     public required string TemplateName { get; init; }
     public required string Task { get; init; }
-    public required IMultiTurnAgent Agent { get; init; }
+    public required IMultiTurnAgent Agent { get; set; }
+
+    /// <summary>
+    /// The template and spawn inputs needed to recreate a completed owned-provider run before a
+    /// continuation. Borrowed providers retain the existing loop.
+    /// </summary>
+    public required SubAgentTemplate Template { get; init; }
+    public string? ModelOverride { get; init; }
+    public string[]? AddTools { get; init; }
+    public string[]? RemoveTools { get; init; }
+
+    /// <summary>
+    /// Provider pipeline created specifically for this sub-agent. Null means the provider is
+    /// borrowed/shared and must not be disposed by this state.
+    /// </summary>
+    public IStreamingAgent? OwnedProviderAgent { get; private set; }
+
+    // Owned-provider disposal progress. A single caller transitions Idle -> InProgress and performs
+    // the disposal; concurrent callers back off. A successful disposal latches Disposed; a FAILED
+    // attempt resets the guard to Idle so a later cleanup path (completion, restart, manager dispose)
+    // can retry instead of leaking the provider — the guard is never permanently latched on failure.
+    private const int OwnedProviderDisposeIdle = 0;
+    private const int OwnedProviderDisposeInProgress = 1;
+    private const int OwnedProviderDisposeDisposed = 2;
+    private int _ownedProviderDisposeState;
+
+    /// <summary>
+    /// Guards the sub-agent lifecycle bookkeeping — the status transition, the outstanding inject-send
+    /// lease count, and the single-flight restart claim — so a continuation's admission decision, a
+    /// terminal owned-provider disposal, and a restart never interleave incorrectly. Only synchronous
+    /// work runs under this lock (no awaits), so a blocking/backpressured send or a slow provider
+    /// disposal can never deadlock it; the awaitable coordination is done via the drain/restart signals.
+    /// </summary>
+    private readonly object _lifecycleLock = new();
+
+    // Terminal owned-provider disposal is in progress. Once set (for an owned provider) no new
+    // inject-continuation is admitted — a concurrent SendMessage is routed to a fresh-provider restart
+    // instead of injecting into the provider being disposed.
+    private bool _terminating;
+
+    // Count of admitted inject-continuations whose SendAsync is still in flight. A terminal disposal
+    // waits for this to reach zero (via _sendLeasesDrained) so disposal can never overlap a send
+    // through the owned provider.
+    private int _activeSendLeases;
+    private TaskCompletionSource<bool>? _sendLeasesDrained;
+
+    // Single-flight restart claim. Exactly one caller restarts a finished run; concurrent continuations
+    // await _restartCompleted and then re-evaluate (the restart flips the loop back to Running, so they
+    // inject into it) — so two callers can never both enter RestartRunAsync.
+    private bool _restarting;
+    private TaskCompletionSource<bool>? _restartCompleted;
+
+    // Per-run lifecycle cancellation. Cancelled when a terminal owned-provider disposal begins so an
+    // admitted inject send that is wedged on a stalled channel/provider is unblocked (it links this
+    // token, not only the caller's) and its lease can drain — otherwise the terminal drain could wait
+    // forever on a caller token that never cancels. Re-armed per run epoch by ResetLifecycleCts.
+    private CancellationTokenSource _lifecycleCts = new();
+
+    // Set when a TERMINAL owned-provider disposal throws: the provider may be partially torn down, so a
+    // continuation must NOT reuse it — the restart path rebuilds a fresh provider (retrying disposal of
+    // this one) instead. Cleared when a fresh provider is assigned via SetOwnedProviderAgent.
+    private volatile bool _ownedProviderTerminalDisposeFailed;
+
+    // Monotonic run-instance counter. A restart opens a new generation (BeginRunGeneration) before the
+    // restarted loop can report completion; the terminal completion for that run records it in
+    // _terminalGeneration. The restart's own "arm Running" publish (TryArmRunning) is guarded by this so
+    // a run that completed-and-disposed before the publish executed cannot be resurrected to Running.
+    private long _runGeneration;
+    private long _terminalGeneration = -1;
+
+    private static TaskCompletionSource<bool> NewLifecycleSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>
     /// Optional caller-supplied handle so SendMessage can address this agent by name.
@@ -59,7 +154,267 @@ internal class SubAgentState
     private volatile SubAgentStatus _status = SubAgentStatus.Running;
     public SubAgentStatus Status { get => _status; set => _status = value; }
 
-    public IConversationStore? Store { get; init; }
+    /// <summary>
+    /// Decides — atomically against a concurrent terminal completion and other concurrent
+    /// continuations — how <c>SubAgentManager.SendMessageAsync</c> must continue this sub-agent, and
+    /// records the continuation's relay preference.
+    /// <list type="bullet">
+    /// <item><description><see cref="ContinuationMode.Inject"/>: the loop is running and no owned-provider
+    /// disposal is under way. A send lease is taken; the caller injects, then calls
+    /// <see cref="EndInjectLease"/>. A terminal disposal awaits this lease, so a send can never race the
+    /// provider being disposed.</description></item>
+    /// <item><description><see cref="ContinuationMode.Restart"/>: the run finished (or its owned provider
+    /// is being disposed). This caller owns the restart; it runs <c>RestartRunAsync</c> then calls
+    /// <see cref="EndRestart"/>.</description></item>
+    /// <item><description><see cref="ContinuationMode.AwaitRestart"/>: another caller already owns the
+    /// restart. The caller awaits <see cref="ContinuationDecision.RestartCompleted"/> and re-evaluates —
+    /// the restart flips the loop back to Running, so the retry injects into it.</description></item>
+    /// </list>
+    /// </summary>
+    public ContinuationDecision BeginContinuation(bool notifyParentOnCompletion)
+    {
+        lock (_lifecycleLock)
+        {
+            _notifyParentOnCompletion = notifyParentOnCompletion;
+
+            // Inject into the live loop only when it is genuinely running AND an owned-provider terminal
+            // disposal is not under way. Once disposal has begun for an owned provider, route to restart
+            // so we never inject through a provider that is being torn down.
+            if (_status == SubAgentStatus.Running && !(_terminating && OwnedProviderAgent is not null))
+            {
+                _activeSendLeases++;
+                return new ContinuationDecision(ContinuationMode.Inject, null);
+            }
+
+            if (_restarting)
+            {
+                _restartCompleted ??= NewLifecycleSignal();
+                return new ContinuationDecision(ContinuationMode.AwaitRestart, _restartCompleted.Task);
+            }
+
+            _restarting = true;
+            _restartCompleted = NewLifecycleSignal();
+            return new ContinuationDecision(ContinuationMode.Restart, null);
+        }
+    }
+
+    /// <summary>
+    /// Releases an inject send lease taken by <see cref="BeginContinuation"/> (call in a finally after
+    /// the inject SendAsync). When the last lease drains during a terminal disposal, the waiting
+    /// disposal is signalled so it can proceed.
+    /// </summary>
+    public void EndInjectLease()
+    {
+        lock (_lifecycleLock)
+        {
+            _activeSendLeases--;
+            if (_activeSendLeases == 0 && _sendLeasesDrained is not null)
+            {
+                _ = _sendLeasesDrained.TrySetResult(true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Releases the restart claim taken by <see cref="BeginContinuation"/> (call in a finally after
+    /// <c>RestartRunAsync</c>, success or failure) and wakes any continuations awaiting the restart so
+    /// they re-evaluate against the re-armed (or still-finished, on failure) status.
+    /// </summary>
+    public void EndRestart()
+    {
+        TaskCompletionSource<bool>? toSignal;
+        lock (_lifecycleLock)
+        {
+            _restarting = false;
+            toSignal = _restartCompleted;
+            _restartCompleted = null;
+        }
+
+        _ = toSignal?.TrySetResult(true);
+    }
+
+    /// <summary>
+    /// Begins a genuine terminal completion. Blocks new inject admissions (for an owned provider), waits
+    /// for any in-flight admitted send to finish so the imminent owned-provider disposal cannot overlap a
+    /// send through it, then flips the status terminal. The manager disposes the owned provider only
+    /// AFTER this returns; a continuation that arrives now observes the finished status (or the
+    /// disposing owned provider) and takes the restart path — recreating a fresh provider — instead of
+    /// injecting into the one being disposed.
+    /// </summary>
+    public async Task BeginTerminalDisposalAsync(bool isError)
+    {
+        Task? drain = null;
+        CancellationTokenSource? toCancel = null;
+        lock (_lifecycleLock)
+        {
+            _terminating = true;
+
+            // Only an owned provider is disposed at completion, so only then is there anything a send
+            // could race; wait for outstanding inject leases to drain before flipping terminal.
+            if (OwnedProviderAgent is not null && _activeSendLeases > 0)
+            {
+                _sendLeasesDrained = NewLifecycleSignal();
+                drain = _sendLeasesDrained.Task;
+
+                // Unblock a wedged in-flight inject send whose caller token may never fire, so its lease
+                // can drain and this disposal isn't stuck forever. Cancel OUTSIDE the lock (below):
+                // Cancel() can run linked-token continuations synchronously.
+                toCancel = _lifecycleCts;
+            }
+        }
+
+        // Cancel outside the lock to unblock a wedged in-flight inject send (see above). Cancel() runs
+        // linked-token callbacks synchronously and, with the default throwOnFirstException=false, still
+        // cancels the token and invokes EVERY callback before aggregating any that threw. So a throwing
+        // callback must NOT abort the drain/terminal/disposal transition below — swallow the aggregate;
+        // the cancellation itself has fully propagated.
+        try
+        {
+            toCancel?.Cancel();
+        }
+        catch (AggregateException)
+        {
+            // A linked-token callback threw; the lifecycle token is already cancelled, so proceed.
+        }
+
+        if (drain is not null)
+        {
+            await drain;
+            lock (_lifecycleLock)
+            {
+                _sendLeasesDrained = null;
+            }
+        }
+
+        lock (_lifecycleLock)
+        {
+            // Record which run generation reached terminal so a racing restart's TryArmRunning cannot
+            // resurrect this now-disposing run back to Running with an about-to-be-disposed provider.
+            _terminalGeneration = _runGeneration;
+            _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
+        }
+    }
+
+    /// <summary>
+    /// Clears the terminal-disposal flag after the owned provider has been disposed (call in a finally),
+    /// so a subsequent restart's re-arm to Running admits injects again.
+    /// </summary>
+    public void EndTerminalDisposal()
+    {
+        lock (_lifecycleLock)
+        {
+            _terminating = false;
+        }
+    }
+
+    /// <summary>
+    /// Returns a cancellation source that fires when EITHER the caller's token or this run's lifecycle
+    /// token (cancelled at terminal owned-provider disposal) fires. The inject-send path passes the
+    /// resulting token so a terminal disposal can unblock a stalled send; the caller disposes the source.
+    /// </summary>
+    public CancellationTokenSource LinkLifecycleToken(CancellationToken caller)
+    {
+        lock (_lifecycleLock)
+        {
+            return CancellationTokenSource.CreateLinkedTokenSource(caller, _lifecycleCts.Token);
+        }
+    }
+
+    /// <summary>
+    /// Re-arms the per-run lifecycle cancellation for a new run epoch (call from the restart transition
+    /// before the restarted loop can admit injects). Disposes the previous, already-cancelled source.
+    /// </summary>
+    public void ResetLifecycleCts()
+    {
+        CancellationTokenSource old;
+        lock (_lifecycleLock)
+        {
+            old = _lifecycleCts;
+            _lifecycleCts = new CancellationTokenSource();
+        }
+
+        old.Dispose();
+    }
+
+    /// <summary>
+    /// Opens a new run generation for a restart (call under the restart transition, before starting the
+    /// restarted loop). The returned token guards the later <see cref="TryArmRunning"/> publish so a run
+    /// that completes and disposes before the publish executes cannot be resurrected to Running.
+    /// </summary>
+    public long BeginRunGeneration()
+    {
+        lock (_lifecycleLock)
+        {
+            return ++_runGeneration;
+        }
+    }
+
+    /// <summary>
+    /// The current run generation (0 for the initial spawn; incremented by each restart). Read when
+    /// starting a run's monitor so the monitor's fault path can record a generation-aware terminal.
+    /// </summary>
+    public long CurrentRunGeneration
+    {
+        get
+        {
+            lock (_lifecycleLock)
+            {
+                return _runGeneration;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Publishes <see cref="SubAgentStatus.Running"/> for <paramref name="generation"/> UNLESS that run
+    /// has already reached a terminal completion (its owned provider may already be disposed) — so a fast
+    /// restarted run that completed before this publish executed is never resurrected to Running. Returns
+    /// true if Running was published.
+    /// </summary>
+    public bool TryArmRunning(long generation)
+    {
+        lock (_lifecycleLock)
+        {
+            if (_terminalGeneration == generation)
+            {
+                return false;
+            }
+
+            _status = SubAgentStatus.Running;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Records a terminal <see cref="SubAgentStatus.Error"/> for <paramref name="generation"/> through the
+    /// SAME generation-aware transition as a graceful terminal completion, so a racing restart's
+    /// <see cref="TryArmRunning"/> cannot resurrect a monitor-faulted run back to Running. Applied only
+    /// while that generation is still the current run (a newer restart supersedes an older run's fault).
+    /// </summary>
+    public void MarkRunFaulted(long generation)
+    {
+        lock (_lifecycleLock)
+        {
+            if (_runGeneration == generation)
+            {
+                _terminalGeneration = generation;
+                _status = SubAgentStatus.Error;
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when a terminal owned-provider disposal threw for the current run: the provider is in an
+    /// unknown/partial state and a continuation must rebuild a fresh one rather than reuse it.
+    /// </summary>
+    public bool OwnedProviderTerminalDisposeFailed => _ownedProviderTerminalDisposeFailed;
+
+    /// <summary>
+    /// Marks the current run's owned provider as failed-to-dispose at terminal completion so the restart
+    /// path rebuilds a fresh provider (and retries disposing this one) instead of reusing it.
+    /// </summary>
+    public void MarkOwnedProviderTerminalDisposeFailed() => _ownedProviderTerminalDisposeFailed = true;
+
+    public IConversationStore? Store { get; set; }
 
     /// <summary>
     /// Set to true when SendToParentAsync fails, so CheckAgent/Peek can surface the error.
@@ -84,6 +439,69 @@ internal class SubAgentState
     /// tool result.
     /// </summary>
     public TaskCompletionSource<string> Completion { get; private set; } = CreateCompletionSource();
+
+    public async ValueTask DisposeOwnedProviderAgentAsync()
+    {
+        if (OwnedProviderAgent is null)
+        {
+            return;
+        }
+
+        // Claim the disposal: only the caller that transitions Idle -> InProgress performs it; a
+        // caller that finds it already Disposed (or another disposal in progress) backs off. Crucially
+        // the guard is set to its terminal Disposed value only AFTER a successful DisposeAsync/Dispose;
+        // a failed attempt resets it to Idle in the catch below so a later cleanup can retry rather
+        // than leak the provider behind a guard that latched before the work actually succeeded.
+        if (
+            Interlocked.CompareExchange(
+                ref _ownedProviderDisposeState,
+                OwnedProviderDisposeInProgress,
+                OwnedProviderDisposeIdle
+            ) != OwnedProviderDisposeIdle
+        )
+        {
+            return;
+        }
+
+        try
+        {
+            if (OwnedProviderAgent is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync();
+            }
+            else if (OwnedProviderAgent is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+
+            Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeDisposed);
+        }
+        catch
+        {
+            // Disposal failed: reset the guard so a subsequent cleanup path can retry the disposal.
+            Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeIdle);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Indicates that the current run's owned provider has been disposed at completion and a
+    /// continuation must create a fresh provider pipeline.
+    /// </summary>
+    public bool HasDisposedOwnedProviderAgent =>
+        OwnedProviderAgent is not null
+        && Volatile.Read(ref _ownedProviderDisposeState) == OwnedProviderDisposeDisposed;
+
+    /// <summary>
+    /// Assigns the provider created for the current run. This resets the per-run disposal guard
+    /// when a completed owned-provider sub-agent is recreated for a continuation.
+    /// </summary>
+    public void SetOwnedProviderAgent(IStreamingAgent? ownedProviderAgent)
+    {
+        OwnedProviderAgent = ownedProviderAgent;
+        Volatile.Write(ref _ownedProviderDisposeState, OwnedProviderDisposeIdle);
+        _ownedProviderTerminalDisposeFailed = false;
+    }
 
     /// <summary>
     /// Guards the read-check-replace of <see cref="Completion"/> against the monitor

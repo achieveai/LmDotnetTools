@@ -14,12 +14,25 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 {
     private readonly IReadOnlyList<IMessage> _scripted;
+    private readonly Exception? _throwOnRun;
 
     public FakeMultiTurnAgent(string runId, params IMessage[] scripted)
     {
         CurrentRunId = runId;
         _scripted = scripted;
     }
+
+    private FakeMultiTurnAgent(string runId, Exception throwOnRun)
+    {
+        CurrentRunId = runId;
+        _scripted = [];
+        _throwOnRun = throwOnRun;
+    }
+
+    /// <summary>An agent whose <see cref="ExecuteRunAsync"/> throws <paramref name="ex"/> when driven,
+    /// modelling a provider that rejects the request (e.g. the model API's context-window 400) so the
+    /// consumer's error/degrade path can be exercised.</summary>
+    public static FakeMultiTurnAgent Throwing(string runId, Exception ex) => new(runId, ex);
 
     /// <summary>Every <see cref="UserInput"/> passed to <see cref="ExecuteRunAsync"/>, in order.</summary>
     public List<UserInput> ReceivedInputs { get; } = [];
@@ -36,6 +49,11 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
     )
     {
         ReceivedInputs.Add(userInput);
+        if (_throwOnRun is not null)
+        {
+            throw _throwOnRun;
+        }
+
         foreach (var message in _scripted)
         {
             ct.ThrowIfCancellationRequested();

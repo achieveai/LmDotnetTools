@@ -97,4 +97,26 @@ public sealed class PrPollTargetBuilderTests : LoggingTestBase
 
         targets.Should().ContainSingle().Which.Repo.RepoName.Should().Be("LmDotnetTools");
     }
+
+    [Fact]
+    public void The_recency_bound_flows_from_options_onto_each_target()
+    {
+        var targets = Build(new CodeReviewDaemonOptions
+        {
+            EnableAdoProvider = true,
+            MaxPrAgeDays = 5,
+            EnabledRepos = ["achieveai/LmDotnetTools", "contoso/Platform/widgets"],
+        });
+
+        targets.Should().HaveCount(2);
+        targets.Should().OnlyContain(t => t.MaxPrAgeDays == 5, "the operator recency bound is stamped onto every target");
+    }
+
+    [Fact]
+    public void The_recency_bound_defaults_to_zero_off()
+    {
+        var targets = Build(new CodeReviewDaemonOptions { EnabledRepos = ["achieveai/LmDotnetTools"] });
+
+        targets.Should().ContainSingle().Which.MaxPrAgeDays.Should().Be(0, "the filter is off unless an operator sets it");
+    }
 }

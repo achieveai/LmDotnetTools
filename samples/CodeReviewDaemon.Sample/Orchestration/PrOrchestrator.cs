@@ -14,17 +14,20 @@ internal sealed class PrOrchestrator
     private readonly ReviewStore _store;
     private readonly IReviewStageExecutor _executor;
     private readonly ILogger<PrOrchestrator> _logger;
+    private readonly ReviewProgressReporter? _progress;
     private readonly RetryGovernor? _retryGovernor;
 
     public PrOrchestrator(
         ReviewStore store,
         IReviewStageExecutor executor,
         ILogger<PrOrchestrator> logger,
+        ReviewProgressReporter? progress = null,
         RetryGovernor? retryGovernor = null)
     {
         _store = store;
         _executor = executor;
         _logger = logger;
+        _progress = progress;
         _retryGovernor = retryGovernor;
     }
 
@@ -52,12 +55,19 @@ internal sealed class PrOrchestrator
                 return run;
             }
 
+            // Everything below is real work for this run — announce it once. The steady-state no-op poll
+            // (a completed run) returns above, so finished PRs don't re-announce every cycle.
+            var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            _progress?.Picked(run, DescribePickReason(run));
+
             if (run.PrLifecycleState != PrLifecycleState.Open)
             {
                 // PR merged/closed/abandoned — stop working it without marking the run as failed.
                 _logger.LogInformation(
                     "Review run {RunId} halted: PR {PrId} is {State}.", run.Id, run.PrId, run.PrLifecycleState);
                 _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.Completed, run.PrLifecycleState);
+                _progress?.Finished(
+                    run, $"halted (PR {run.PrLifecycleState})", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
                 return run with { WorkflowStatus = WorkflowStatus.Completed };
             }
 
@@ -73,6 +83,7 @@ internal sealed class PrOrchestrator
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                _progress?.StageStarting(run, stage);
                 try
                 {
                     await _executor.ExecuteStageAsync(stage, run, cancellationToken);
@@ -80,9 +91,25 @@ internal sealed class PrOrchestrator
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.RetryPending, run.PrLifecycleState);
-                    _retryGovernor?.RecordFailure(run.Id, ex.Message);
+                    // The RetryGovernor bounds ONLY the ContextReady hot-loop (the stuck-slot case it exists for).
+                    // A failure at a later stage (Reviewed/Judged/Posted) is a different, usually self-healing
+                    // problem — e.g. a Posted-stage lock the next lease's clean-on-entry clears — so it must NOT
+                    // consume the context-retry budget or park otherwise-recoverable work.
+                    if (stage == ReviewStage.ContextReady)
+                    {
+                        _retryGovernor?.RecordFailure(run.Id, ex.Message);
+                    }
                     _logger.LogError(ex, "Review run {RunId} failed at stage {Stage}.", run.Id, stage);
+                    _progress?.Finished(
+                        run, $"failed at {stage}", System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
                     throw;
+                }
+
+                // ContextReady cleared its stuck cause → forget any accumulated retry state so a later re-review
+                // (or a resume past ContextReady) starts fresh; later stages are outside the governor's scope.
+                if (stage == ReviewStage.ContextReady)
+                {
+                    _retryGovernor?.RecordSuccess(run.Id);
                 }
 
                 var workflowStatus = StageMachine.IsComplete(stage) ? WorkflowStatus.Completed : WorkflowStatus.Running;
@@ -90,7 +117,10 @@ internal sealed class PrOrchestrator
                 run = run with { Stage = stage, WorkflowStatus = workflowStatus };
             }
 
-            _retryGovernor?.RecordSuccess(run.Id);
+            _progress?.Finished(
+                run,
+                $"complete ({(string.Equals(run.Mode, "post", StringComparison.Ordinal) ? "posted" : "collect-only")})",
+                System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
             return run;
         }
         finally
@@ -101,5 +131,30 @@ internal sealed class PrOrchestrator
             // never leak pool capacity. Uses CancellationToken.None so a cancelled run still returns its slot.
             await _executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
         }
+    }
+
+    /// <summary>Human-readable reason a PR was picked this cycle: a brand-new run is "new PR" (no prior
+    /// review of this PR) or "new commit {sha}" (its head advanced past the last reviewed commit); an
+    /// incomplete run being resumed after a restart/retry reports the stage it left off at.</summary>
+    private string DescribePickReason(ReviewRun run)
+    {
+        if (run.Stage != ReviewStage.Discovered)
+        {
+            return $"resuming at {run.Stage}";
+        }
+
+        var prior = _store.GetPriorReviewSummary(run.RepoId, run.PrId, run.Id);
+        if (prior.PrevHeadSha is null)
+        {
+            return "new PR";
+        }
+
+        if (!string.Equals(prior.PrevHeadSha, run.HeadSha, StringComparison.Ordinal))
+        {
+            var shortSha = run.HeadSha.Length >= 7 ? run.HeadSha[..7] : run.HeadSha;
+            return $"new commit {shortSha}";
+        }
+
+        return "re-review";
     }
 }

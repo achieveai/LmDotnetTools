@@ -23,16 +23,20 @@ internal enum GitFailureKind
 internal static class GitFailureClassifier
 {
     // Stale lock / dirty tree / broken object — the store is contended or damaged and must be re-cloned.
+    // Markers are SPECIFIC on purpose: bare fragments like "unable to create" (also a permission/disk error)
+    // or "is empty" (also a normal empty remote — "repository is empty") would misclassify unrelated or
+    // benign failures as corruption and trigger a destructive reclone. The real corruption cases those were
+    // meant to catch are already covered by the anchored markers below (".lock': file exists"/"index.lock" for
+    // the stuck-lock incident; "object file" for an empty/broken object). Anything unmatched falls to Unknown
+    // (treated as transient + logged), which is the safe default.
     private static readonly string[] CorruptMarkers =
     [
         "index.lock",
         "shallow.lock",
         ".lock': file exists",
-        "unable to create",
         "not a git repository",
         "object file",
         "loose object",
-        "is empty",
         "corrupt",
         "would be overwritten",
         "cannot lock ref",

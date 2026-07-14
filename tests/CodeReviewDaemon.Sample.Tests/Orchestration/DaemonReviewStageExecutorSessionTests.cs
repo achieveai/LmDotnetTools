@@ -59,7 +59,6 @@ public sealed class DaemonReviewStageExecutorSessionTests
             runner,
             fileSystem,
             options,
-            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             provisioner);
     }
@@ -115,5 +114,7 @@ public sealed class DaemonReviewStageExecutorSessionTests
         }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
     }
 }

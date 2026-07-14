@@ -1,5 +1,7 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -19,22 +21,152 @@ public class DiscoveredSubAgentTemplateBuilderTests
         """;
 
     [Fact]
-    public void Build_KeepsCodeReviewerSubAgents_KeyedByQualifiedName()
+    public void Build_KeepsEveryPluginInAllowedMarketplace_KeyedByQualifiedName()
+    {
+        var items = new List<SandboxSessionRegistry.DiscoveredItem>
+        {
+            // code-reviewer plugin in gb-plugins
+            new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/code-reviewer/agents/a.md",
+                Content: Body, QualifiedName: "code-reviewer:architecture-review"),
+            // a DIFFERENT plugin in the SAME gb-plugins marketplace — must also be kept (all plugins, not just code-reviewer)
+            new("subagent", "blind-spot-detector", "bsd", "/marketplaces/gb-plugins/development/agents/b.md",
+                Content: Body, QualifiedName: "development:blind-spot-detector"),
+            // an agent from a marketplace NOT in the allow-list — must be dropped
+            new("subagent", "other", "x", "/marketplaces/superpowers/agents/o.md",
+                Content: Body, QualifiedName: "superpowers:thing"),
+            new("skill", "review", null, ".claude/skills/review.md"),
+        };
+        var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
+
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory);
+
+        templates.Should().ContainKey("code-reviewer:architecture-review");
+        templates.Should().ContainKey("development:blind-spot-detector");
+        templates.Should().NotContainKey("superpowers:thing");
+        templates["code-reviewer:architecture-review"].SystemPrompt.Should().Contain("review architecture");
+    }
+
+    [Fact]
+    public void Build_EmptyFilter_KeepsEverySubAgentRegardlessOfMarketplace()
     {
         var items = new List<SandboxSessionRegistry.DiscoveredItem>
         {
             new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/agents/a.md",
                 Content: Body, QualifiedName: "code-reviewer:architecture-review"),
-            new("subagent", "other", "x", "/marketplaces/other/agents/o.md",
-                Content: Body, QualifiedName: "other-plugin:thing"),
-            new("skill", "review", null, ".claude/skills/review.md"),
+            new("subagent", "thing", "x", "/marketplaces/superpowers/agents/o.md",
+                Content: Body, QualifiedName: "superpowers:thing"),
         };
         var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
 
-        var templates = builder.Build(items, "code-reviewer", AgentFactory);
+        var templates = builder.Build(items, [], AgentFactory);
 
         templates.Should().ContainKey("code-reviewer:architecture-review");
-        templates.Should().NotContainKey("other-plugin:thing");
-        templates["code-reviewer:architecture-review"].SystemPrompt.Should().Contain("review architecture");
+        templates.Should().ContainKey("superpowers:thing");
+    }
+
+    [Fact]
+    public void Build_SubAgentModelId_OverridesEveryTemplateModel()
+    {
+        // A configured SubAgentModelId is the "review agent" model: it forces every discovered sub-agent onto
+        // that model, overriding whatever `model:` its markdown declares (Body declares none → would inherit).
+        var items = new List<SandboxSessionRegistry.DiscoveredItem>
+        {
+            new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/code-reviewer/agents/a.md",
+                Content: Body, QualifiedName: "code-reviewer:architecture-review"),
+        };
+        var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
+
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory, "gpt-5.6-sol");
+
+        templates["code-reviewer:architecture-review"].DefaultOptions!.ModelId.Should().Be("gpt-5.6-sol");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Build_NoSubAgentModelId_LeavesTemplateModelToInherit(string? subAgentModelId)
+    {
+        // Empty/absent SubAgentModelId ⇒ no override: the sub-agent (Body declares no model) inherits the
+        // parent loop's model exactly as before, so the template carries no explicit model options.
+        var items = new List<SandboxSessionRegistry.DiscoveredItem>
+        {
+            new("subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/code-reviewer/agents/a.md",
+                Content: Body, QualifiedName: "code-reviewer:architecture-review"),
+        };
+        var builder = new DiscoveredSubAgentTemplateBuilder(NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
+
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory, subAgentModelId);
+
+        templates["code-reviewer:architecture-review"].DefaultOptions.Should().BeNull();
+    }
+
+    [Fact]
+    public void Build_LogsEverySharedParserDiagnostic()
+    {
+        var logger = new CapturingLogger<DiscoveredSubAgentTemplateBuilder>();
+        var builder = new DiscoveredSubAgentTemplateBuilder(logger);
+        var items = ItemsWithFrontmatter(
+            """
+            modelintelligence: 7
+            effort: maximum
+            """);
+
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory);
+
+        templates.Should().ContainKey("code-reviewer:architecture-review");
+        logger.WarningCount("modelintelligence must be an integer").Should().Be(1);
+        logger.WarningCount("effort must be one of").Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("modelintelligence: 4\neffort: high", "")]
+    [InlineData("modelintelligence: invalid\neffort: maximum", "")]
+    [InlineData(
+        "model: claude-sonnet-5\nmodelintelligence: 4\neffort: extra-high",
+        "model: claude-sonnet-5")]
+    public void Build_CharacteristicsFrontmatter_DoesNotChangeDaemonRequestOptions(
+        string characteristicsFrontmatter,
+        string baselineModelFrontmatter)
+    {
+        var builder = new DiscoveredSubAgentTemplateBuilder(
+            NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
+        var baseline = builder.Build(
+            ItemsWithFrontmatter(baselineModelFrontmatter),
+            ["gb-plugins"],
+            AgentFactory)["code-reviewer:architecture-review"];
+
+        var actual = builder.Build(
+            ItemsWithFrontmatter(characteristicsFrontmatter),
+            ["gb-plugins"],
+            AgentFactory)["code-reviewer:architecture-review"];
+
+        JsonSerializer.SerializeToUtf8Bytes(actual.DefaultOptions)
+            .Should().Equal(JsonSerializer.SerializeToUtf8Bytes(baseline.DefaultOptions));
+        actual.CharacteristicsAgentFactory.Should().BeNull();
+        actual.AgentFactory.Should().BeSameAs(AgentFactory);
+    }
+
+    private static IReadOnlyList<SandboxSessionRegistry.DiscoveredItem> ItemsWithFrontmatter(
+        string additionalFrontmatter)
+    {
+        var content = $"""
+            ---
+            name: architecture-review
+            description: Reviews architecture.
+            {additionalFrontmatter}
+            ---
+            You review architecture across the connected repos.
+            """;
+        return
+        [
+            new(
+                "subagent",
+                "architecture-review",
+                "arch",
+                "/marketplaces/gb-plugins/agents/a.md",
+                Content: content,
+                QualifiedName: "code-reviewer:architecture-review"),
+        ];
     }
 }

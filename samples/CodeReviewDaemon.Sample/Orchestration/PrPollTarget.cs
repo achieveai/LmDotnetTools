@@ -24,4 +24,11 @@ internal sealed record PrPollTarget
 
     /// <summary>Model id stamped onto runs discovered for this target (the primary review's model).</summary>
     public string? ModelId { get; init; }
+
+    /// <summary>
+    /// When &gt; 0, the poller skips PRs whose last activity (GitHub <c>updated_at</c>) or, as a fallback,
+    /// opened date (ADO <c>creationDate</c>) is older than this many days — the operator recency bound from
+    /// <see cref="Configuration.CodeReviewDaemonOptions.MaxPrAgeDays"/>. 0 (default) reviews all open PRs.
+    /// </summary>
+    public int MaxPrAgeDays { get; init; }
 }

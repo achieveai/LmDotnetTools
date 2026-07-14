@@ -103,6 +103,36 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_reports_NeedsReclone_when_the_tree_is_still_dirty_after_cleanup()
+    {
+        // rev-parse --git-dir succeeds (structure intact) but the working tree is STILL dirty — a partially
+        // failed clean must not be reported as Clean, or the contamination crosses into the next review run.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "status --porcelain", new SandboxCommandResult(0, " M src/Foo.cs\n?? leftover.tmp\n", string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
+    public async Task EnsureClean_reports_NeedsReclone_when_a_cleanup_step_fails()
+    {
+        // A clean -ffdx that could not remove contamination (e.g. a locked file) is not tolerated: the slot is
+        // re-cloned rather than reused with residual state.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "clean -ffdx", new SandboxCommandResult(1, string.Empty, "warning: failed to remove leftover.tmp"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
     public async Task StripAsync_issues_reset_and_clean()
     {
         var store = SeedStore();

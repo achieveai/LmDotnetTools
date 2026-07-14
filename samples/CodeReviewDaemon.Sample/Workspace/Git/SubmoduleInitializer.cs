@@ -124,11 +124,14 @@ internal sealed class SubmoduleInitializer
                 .ConfigureAwait(false);
             if (!result.Succeeded)
             {
+                // Carry the git STDERR into the reason so a caller can classify the failure (a transient
+                // auth/network fault vs. real local corruption — review #180) instead of treating every failed
+                // init as corruption.
                 denied.Add(
                     new SubmoduleDenied(
                         submodulePath,
                         entry.Url,
-                        $"git submodule update failed (exit {result.ExitCode})"));
+                        $"git submodule update failed (exit {result.ExitCode}): {result.Stderr}"));
                 continue;
             }
 

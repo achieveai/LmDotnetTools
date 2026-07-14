@@ -211,7 +211,6 @@ public sealed class ReviewToolContextBuildTests
             new FakeSandboxCommandRunner(),
             new FakeSandboxFileSystem(),
             options,
-            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             provisioner,
             discoveredItemsSource,
@@ -282,6 +281,8 @@ public sealed class ReviewToolContextBuildTests
             throw new InvalidOperationException("sandbox gateway unreachable");
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
     }
 
     /// <summary>Simulates provisioning being cancelled — must propagate, never degrade to diff-only.</summary>
@@ -294,6 +295,8 @@ public sealed class ReviewToolContextBuildTests
             throw new OperationCanceledException("provisioning cancelled");
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
     }
 
     private sealed class FakeReviewSessionProvisioner(string sessionId) : IReviewSessionProvisioner
@@ -315,6 +318,8 @@ public sealed class ReviewToolContextBuildTests
         }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
     }
 
     /// <summary>Scripted discovery results for the sub-agent degrade-tier tests (Task 12).</summary>

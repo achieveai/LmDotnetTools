@@ -12,7 +12,7 @@ namespace CodeReviewDaemon.Sample.Tests.Orchestration;
 /// <summary>
 /// Task 18 — a run's per-run sandbox session (and its host-dir) must not outlive the run: once a run
 /// reaches the terminal <see cref="ReviewStage.Posted"/> stage, the executor calls
-/// <see cref="IReviewSessionProvisioner.DestroyAsync"/> so the session is torn down (design §7). The
+/// <see cref="IReviewSessionProvisioner.DestroyAsync(ReviewRun, System.Threading.CancellationToken)"/> so the session is torn down (design §7). The
 /// diff-only path (no provisioner consulted at all) must stay unaffected.
 /// </summary>
 public sealed class RunCleanupTests
@@ -53,7 +53,6 @@ public sealed class RunCleanupTests
             new FakeSandboxCommandRunner(),
             new FakeSandboxFileSystem(),
             options,
-            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             provisioner);
 
@@ -118,5 +117,7 @@ public sealed class RunCleanupTests
             DestroyCalls.Add(run);
             return Task.CompletedTask;
         }
+
+        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
     }
 }

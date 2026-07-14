@@ -50,7 +50,6 @@ public sealed class HostRetentionTests
             sandbox,
             sandboxFileSystem,
             new CodeReviewDaemonOptions { ReviewBotRepoUrl = ReviewBotRepoUrl },
-            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             hostRetention: hostRetention);
         var run = SeedRun(store);

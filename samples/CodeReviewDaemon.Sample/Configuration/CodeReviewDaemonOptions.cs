@@ -71,12 +71,58 @@ internal sealed class CodeReviewDaemonOptions
     public string? LogFilePath { get; init; }
 
     /// <summary>
-    /// Model id the primary review agent runs with (the id sent to the Copilot-backed Anthropic Messages
-    /// backend, e.g. <c>claude-sonnet-5</c>). The poller stamps it onto each review run so the primary
-    /// review has a concrete model — an empty id would be rejected by the provider. The A/B comparison
-    /// (B) variant keeps its own bounded model id and is unaffected by this knob.
+    /// When true, a review whose sandbox session has NO <c>code-reviewer</c> sub-agent support (nothing
+    /// discovered → <c>SubAgentOptions</c> would be null) is ABORTED rather than degraded to a skill-only
+    /// review, and the daemon stops (<see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.StopApplication"/>)
+    /// — Revobot's reviews are only trustworthy WITH the code-reviewer skill + sub-agents, so a workspace
+    /// that can't provide them is a fatal misconfiguration to surface, not to review through. Default false
+    /// (degrade-not-fail, unchanged).
+    /// </summary>
+    public bool RequireSkillSupport { get; init; }
+
+    /// <summary>
+    /// Model id the <b>primary orchestrator loop</b> runs with — the "dispatcher / state" agent that reads
+    /// the diff, dispatches the <c>code-reviewer:*</c> review sub-agents, holds the review's conversation
+    /// state, and synthesizes the final posted review (the id sent to the Copilot backend, e.g.
+    /// <c>claude-sonnet-5</c> or <c>gpt-5.6-luna</c>). The poller stamps it onto each review run so the
+    /// primary review has a concrete model — an empty id would be rejected by the provider. The deep review
+    /// passes can run on a different model via <see cref="SubAgentModelId"/>; the A/B comparison (B) variant
+    /// keeps its own bounded model id and is unaffected by this knob.
     /// </summary>
     public string ReviewModelId { get; init; } = "claude-sonnet-5";
+
+    /// <summary>
+    /// Model id the discovered <c>code-reviewer:*</c> <b>review sub-agents</b> run with — the agents that do
+    /// the focused, deep review passes the primary loop dispatches. Empty (default) ⇒ sub-agents inherit the
+    /// primary loop's model (<see cref="ReviewModelId"/>), exactly as before. Set it to split the two roles:
+    /// a stronger model for the actual reviewing (e.g. <c>gpt-5.6-sol</c>) while the orchestrator/dispatcher
+    /// runs a lighter one (<see cref="ReviewModelId"/>, e.g. <c>gpt-5.6-luna</c>). When set it overrides
+    /// whatever <c>model:</c> a discovered sub-agent's markdown declares. It must be served by the same
+    /// Copilot backend the daemon uses (a <c>gpt-*</c>/<c>o*</c> id routes through OpenAI Responses, a
+    /// <c>claude-*</c> id through Anthropic Messages) — an unsupported slug is rejected with
+    /// <c>model_not_supported</c>.
+    /// </summary>
+    public string SubAgentModelId { get; init; } = "";
+
+    /// <summary>
+    /// Maximum number of discovered <c>code-reviewer:*</c> sub-agents the review loop may run concurrently
+    /// (maps to the library's <c>SubAgentOptions.MaxConcurrentSubAgents</c>). Once this many are in flight the
+    /// dispatcher blocks with "Max concurrent sub-agents (N) reached" until one completes, so a higher value
+    /// lets a deep review parallelize more of its focused passes — at the cost of more simultaneous model
+    /// calls and gateway load. Defaults to the library default of 5.
+    /// </summary>
+    public int MaxConcurrentSubAgents { get; init; } = 5;
+
+    /// <summary>
+    /// Model id the at-close <b>knowledge-extraction agent</b> runs with (<see cref="EnableKnowledgeAgent"/>) —
+    /// the gated pass that distils a merged PR's review notes into the Knowledge Base. Empty (default) ⇒ the
+    /// extraction loop inherits the primary <see cref="ReviewModelId"/>, exactly as before. Set it to run the
+    /// extraction on a dedicated model — e.g. a stronger writer like <c>claude-opus-4.8</c> — independent of
+    /// the dispatcher. Like the other model knobs it must be served by the daemon's Copilot backend (a
+    /// <c>claude-*</c> id routes through Anthropic Messages, a <c>gpt-*</c>/<c>o*</c> id through OpenAI
+    /// Responses); an unsupported slug — or an empty request model — is rejected with <c>model_not_supported</c>.
+    /// </summary>
+    public string KnowledgeModelId { get; init; } = "";
 
     /// <summary>
     /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a
@@ -106,6 +152,16 @@ internal sealed class CodeReviewDaemonOptions
     /// scaffolding consumes more of the budget than a single-pass diff review.
     /// </summary>
     public int ReviewMaxTokens { get; init; } = 32000;
+
+    /// <summary>
+    /// Maximum turns the primary review agent's multi-turn loop may take before it is stopped (the per-run
+    /// cap handed to the review loop). The tool-assisted path reads across the checkout, loads skills, and
+    /// dispatches sub-agents, so a large PR can exhaust the library default (50) before the loop ever writes
+    /// its review — yielding an empty review that then posts nothing. Raised so big diffs have the headroom
+    /// to finish. Applies to every loop this daemon's loop factory creates (review, judge, knowledge, and the
+    /// A/B variant arm); the review sub-agents are bounded separately by their own template cap.
+    /// </summary>
+    public int ReviewMaxTurns { get; init; } = 150;
 
     /// <summary>
     /// Reasoning effort for the review agent's adaptive-thinking model (<c>output_config.effort</c>:
@@ -152,6 +208,17 @@ internal sealed class CodeReviewDaemonOptions
     public int MaxPagesPerPoll { get; init; } = 10;
 
     /// <summary>
+    /// When &gt; 0, the poller only reviews PRs whose recency signal falls within this many days: GitHub
+    /// uses the PR's <c>updated_at</c> (true last activity); ADO's PR list has no last-activity field, so it
+    /// uses <c>creationDate</c> and — for PRs opened before the window — the source branch's last-push time
+    /// (the tip commit's date), fetched per-PR so an old-but-recently-pushed PR is still reviewed. A PR the
+    /// provider gives no date for is always kept (never silently skipped). 0 (default) disables the filter —
+    /// every open PR is reviewed. Overridable per run with the <c>--days N</c> / <c>--max-pr-age-days N</c>
+    /// command-line flag, which wins over this value.
+    /// </summary>
+    public int MaxPrAgeDays { get; init; }
+
+    /// <summary>
     /// When <c>false</c> (default) the daemon runs the diff-only review (empty tool registry, no
     /// sub-agents, boot-lifetime sandbox session) exactly as before. Enabling it provisions a per-run
     /// sandbox session, exposes the read-only MCP tools + <c>Skill</c>, and dispatches the
@@ -167,6 +234,15 @@ internal sealed class CodeReviewDaemonOptions
 
     /// <summary>Plugin-marketplace aliases enabled on the per-run session. Default <c>gb-plugins</c>, <c>superpowers</c>.</summary>
     public IReadOnlyList<string> Marketplaces { get; init; } = ["gb-plugins", "superpowers"];
+
+    /// <summary>
+    /// Marketplace aliases whose discovered sub-agents are exposed to the review agent as spawnable
+    /// <c>Agent</c> templates — INDEPENDENT of <see cref="Marketplaces"/> (which controls what the gateway
+    /// loads for skills + discovery): a marketplace can stay loaded for its skills yet be excluded here. The
+    /// default <c>gb-plugins</c> exposes EVERY plugin's agents in that marketplace (not just
+    /// <c>code-reviewer</c>). An empty list ⇒ expose ALL discovered sub-agents regardless of marketplace.
+    /// </summary>
+    public IReadOnlyList<string> SubAgentMarketplaces { get; init; } = ["gb-plugins"];
 
     /// <summary>
     /// The read-only MCP tool names the review agent may call. The daemon owns all writes, so this must
