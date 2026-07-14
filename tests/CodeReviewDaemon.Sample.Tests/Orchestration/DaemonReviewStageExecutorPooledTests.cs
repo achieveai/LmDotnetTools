@@ -572,12 +572,6 @@ public sealed class DaemonReviewStageExecutorPooledTests
             RecloneCount++;
             return Task.CompletedTask;
         }
-
-        public Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
-        {
-            RecloneCount++;
-            return Task.CompletedTask;
-        }
     }
 
     /// <summary>Records the prepare inputs and returns a <see cref="PreparedCheckout"/> whose paths are the
