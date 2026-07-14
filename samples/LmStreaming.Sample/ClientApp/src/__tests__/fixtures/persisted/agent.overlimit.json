@@ -1,0 +1,9 @@
+{
+  "family": "agent",
+  "sourceThread": "thread-1782544711349-l6kkfh8",
+  "toolName": "Agent",
+  "toolCallId": "call_ZrD4C5nd5ySibmh94tPpDXCK",
+  "functionArgs": "{\"subagent_type\":\"duplicate-code-detector\",\"prompt\":\"Detect duplicate or near-duplicate code introduced by GitHub PR #104 in /workspace/SandboxedOsToolsMcpServer.\\n\\nContext:\\n- Current checkout: PR HEAD b78d0a2d15be08e599b28358d6198967341b2881.\\n- Merge base: d767c2243a765706ff06429170fe8db60736b809.\\n- Diff: git diff d767c2243a765706ff06429170fe8db60736b809...HEAD.\\n- Changed files include several agent-cli command modules with similar clap arg changes and mcp-gateway path rewrite/config code.\\n\\nInstructions:\\n1. Look for copy-pasted parsing or config handling that should be extracted.\\n2. Distinguish acceptable repeated clap option attributes from harmful duplication.\\n3. Do not modify files.\\n4. Return actionable findings only, with severity and concrete refactoring suggestion.\",\"description\":\"Duplication scan\",\"name\":\"pr104-duplication\",\"model\":\"\",\"run_in_background\":true,\"add_tools\":\"\",\"remove_tools\":\"\"}",
+  "result": "{\"error\":\"Max concurrent sub-agents (5) reached. Wait for a sub-agent to complete or increase the limit.\"}",
+  "isError": true
+}

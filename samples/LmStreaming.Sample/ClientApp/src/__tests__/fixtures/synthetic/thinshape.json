@@ -1,0 +1,9 @@
+{
+  "family": "generic",
+  "sourceThread": "synthetic",
+  "toolName": "MysteryTool",
+  "functionArgs": "{\"foo\":1}",
+  "result": "some plain result with no structure",
+  "isError": false,
+  "_note": "Synthetic thin shape: a result is present but there is no recognizable tool_name family and no is_error. Exercises the null-safe generic fallback path (0 real analogs)."
+}

@@ -1,0 +1,9 @@
+{
+  "family": "task",
+  "sourceThread": "thread-1782606365948-qdb8n1u",
+  "toolName": "TaskOutput",
+  "toolCallId": "call_fmdmbju7cBOJj2zR8uclB2jx",
+  "functionArgs": "{\"block\":true,\"shell_id\":\"f9530b43ba0c0436b0d30a386c6986a827f9d0f1d02c4c1a2c1a3b12e2b77914\",\"timeout\":300000}",
+  "result": "{\"events\":[],\"exit_code\":0,\"output_file\":null,\"shell_id\":\"f9530b43ba0c0436b0d30a386c6986a827f9d0f1d02c4c1a2c1a3b12e2b77914\",\"status\":\"completed\",\"stderr\":\"\",\"stdout\":\"python3: can't open file '/skills/egress-auth/scripts/sandbox-auth-fetch.py': [Errno 2] No such file or directory\\n\\n[Exit code: 2]\"}",
+  "isError": false
+}

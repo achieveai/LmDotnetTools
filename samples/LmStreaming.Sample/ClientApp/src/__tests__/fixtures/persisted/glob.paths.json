@@ -1,0 +1,9 @@
+{
+  "family": "glob",
+  "sourceThread": "thread-1780438386279-5b9immb",
+  "toolName": "sandbox-Glob",
+  "toolCallId": "tool_F8jEBXqXaCD0Iu6mCOna5YGT",
+  "functionArgs": "{\"pattern\":\"**/*\",\"path\":\"B:\\\\sandbox-workspaces\\\\demo\",\"max_results\":200}",
+  "result": "B:\\sandbox-workspaces\\demo\\README.md\n\n1 files matched\n",
+  "isError": false
+}
