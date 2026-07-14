@@ -64,7 +64,11 @@ internal sealed record VolumesDto([property: JsonPropertyName("workspace")] Work
 
 internal sealed record WorkspaceVolumeDto(
     [property: JsonPropertyName("container_path")] string? ContainerPath,
-    [property: JsonPropertyName("read_only")] bool ReadOnly
+    [property: JsonPropertyName("read_only")] bool ReadOnly,
+    // The persisted session_mounts.id (issue #119) — the integer every direct file/command API is
+    // keyed by. Always present on a #119 create/get response (MountSummary.id is non-optional there);
+    // nullable here because the list response carries no volumes and a pre-#119 gateway omits it.
+    [property: JsonPropertyName("id")] long? Id
 );
 
 /// <summary>
@@ -142,6 +146,87 @@ internal sealed record MarketplaceAgentDto(
     [property: JsonPropertyName("plugin")] string? Plugin,
     [property: JsonPropertyName("marketplace")] string? Marketplace,
     [property: JsonPropertyName("path")] string? Path
+);
+
+// --- Direct file/command API REST contract (ADR 0031 / issue #119, snake_case via RestOptions) ---
+// Every direct route is keyed by the integer mount id (session_mounts.id), surfaced as
+// volumes.workspace.id on the create/get response (see WorkspaceVolumeDto.Id). Field names were
+// verified against the gateway's serde structs (crates/mcp-gateway/src/api/{operations,files,
+// directories}.rs and src/direct/error.rs, SandboxedOsToolsMcpServer@f4df670), not assumed.
+
+/// The working directory of an operation: a mount id plus a mount-relative path (empty/<c>.</c> = mount root).
+internal sealed record OperationCwdDto(
+    [property: JsonPropertyName("mount_id")] long MountId,
+    [property: JsonPropertyName("path")] string Path
+);
+
+/// <c>POST .../operations</c> body — a native <c>executable</c> + argv (no shell), with optional env
+/// overlay, mount-relative cwd, wall-clock timeout, and combined stdout+stderr byte cap. Empty
+/// <c>args</c>/<c>env</c> serialize as field-absent (the gateway defaults them), matching this SDK's
+/// nulls-omitted REST convention.
+internal sealed record CreateOperationRequestDto(
+    [property: JsonPropertyName("operation_id")] string OperationId,
+    [property: JsonPropertyName("executable")] string Executable,
+    [property: JsonPropertyName("args")] IReadOnlyList<string>? Args,
+    [property: JsonPropertyName("env")] IReadOnlyDictionary<string, string>? Env,
+    [property: JsonPropertyName("cwd")] OperationCwdDto? Cwd,
+    [property: JsonPropertyName("timeout_secs")] long? TimeoutSecs,
+    [property: JsonPropertyName("max_output_bytes")] long? MaxOutputBytes
+);
+
+/// Workspace mount-relative references to an operation's captured stdout/stderr, downloadable through
+/// the files API once the operation is terminal.
+internal sealed record OperationArtifactsDto(
+    [property: JsonPropertyName("mount_id")] long MountId,
+    [property: JsonPropertyName("stdout_path")] string StdoutPath,
+    [property: JsonPropertyName("stderr_path")] string StderrPath
+);
+
+/// <c>POST</c>/<c>GET .../operations</c> status snapshot. <c>status</c> is one of
+/// <c>running|succeeded|failed|timed_out|output_limit_exceeded|internal_failure</c>; <c>error</c>
+/// carries a sanitized message on the failure states (never surfaced by the SDK); <c>artifacts</c> is
+/// present once the session has a writable workspace (always true for a submitted operation).
+internal sealed record OperationStatusDto(
+    [property: JsonPropertyName("operation_id")] string OperationId,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("created_at")] string? CreatedAt,
+    [property: JsonPropertyName("terminal_at")] string? TerminalAt,
+    [property: JsonPropertyName("exit_code")] int? ExitCode,
+    [property: JsonPropertyName("stdout_bytes")] long? StdoutBytes,
+    [property: JsonPropertyName("stderr_bytes")] long? StderrBytes,
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("artifacts")] OperationArtifactsDto? Artifacts
+);
+
+/// One entry of a directory listing. <c>type</c> is <c>file|directory|symlink</c> (symlinks reported,
+/// never followed); <c>size</c> is present only for files; <c>name_lossy</c> marks a non-UTF-8 name
+/// rendered lossily (absent implies <c>false</c>).
+internal sealed record DirectoryEntryDto(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("size")] long? Size,
+    [property: JsonPropertyName("name_lossy")] bool? NameLossy
+);
+
+/// <c>GET .../directories/{mount_id}</c> response — one byte-sorted, non-recursive page.
+/// <c>next_cursor</c> is present only when more entries remain (an opaque, self-contained token).
+internal sealed record ListDirectoryResponseDto(
+    [property: JsonPropertyName("entries")] IReadOnlyList<DirectoryEntryDto>? Entries,
+    [property: JsonPropertyName("next_cursor")] string? NextCursor
+);
+
+/// <c>PUT .../files/{mount_id}</c> response.
+internal sealed record WriteFileResponseDto([property: JsonPropertyName("bytes_written")] long BytesWritten);
+
+/// The gateway's stable direct-API error body: <c>{ error, code, error_code, retryable }</c>. Only
+/// the fixed-string <c>error_code</c> — a closed, gateway-defined vocabulary, not caller free text —
+/// is ever surfaced by the SDK; the human <c>error</c> message is never echoed into a
+/// <see cref="SandboxException"/> (it may contain captured output/credential material).
+internal sealed record GatewayErrorDto(
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("code")] int? Code,
+    [property: JsonPropertyName("error_code")] string? ErrorCode,
+    [property: JsonPropertyName("retryable")] bool? Retryable
 );
 
 // --- MCP JSON-RPC contract (verbatim field names via SandboxJson.McpOptions) ---

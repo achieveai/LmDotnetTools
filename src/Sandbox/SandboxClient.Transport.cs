@@ -156,6 +156,143 @@ public sealed partial class SandboxClient
     }
 
     /// <summary>
+    /// Sends a session-scoped direct-API (ADR 0031) request and returns the RAW
+    /// <see cref="HttpResponseMessage"/> for the caller to inspect or stream (e.g. an
+    /// <c>application/octet-stream</c> file body) — the caller owns and disposes it. Reuses the same
+    /// auth-header stamping, absolute-URI resolution (never trusting a borrowed transport's
+    /// <see cref="HttpClient.BaseAddress"/>), no-auto-redirect posture, and per-call transport-timeout
+    /// hardening as <see cref="SendRestAsync"/>, but does NOT deserialize the response (direct
+    /// endpoints return octet streams and small JSON alike) and completes on
+    /// <see cref="HttpCompletionOption.ResponseHeadersRead"/> so a large file body streams rather than
+    /// buffering. <paramref name="content"/>, when supplied, is the request body (JSON for
+    /// <c>operations</c>, octet bytes for a file <c>PUT</c>).
+    /// </summary>
+    private async Task<HttpResponseMessage> SendDirectAsync(
+        HttpMethod method,
+        string relativeUri,
+        HttpContent? content,
+        string sessionId,
+        CancellationToken ct
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var request = new HttpRequestMessage(method, ResolveRequestUri(relativeUri));
+        if (content is not null)
+        {
+            request.Content = content;
+        }
+
+        StampAuthHeaders(request);
+        _ = request.Headers.TryAddWithoutValidation(SessionIdHeader, sessionId);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_options.TransportTimeout);
+        try
+        {
+            // ResponseHeadersRead: the caller streams/reads the body itself. The request message is
+            // disposed by the caller-visible response lifetime via the returned message's own content;
+            // we intentionally do not wrap `request` in `using` because the send is awaited to headers
+            // only and disposing it here could tear down an in-flight request content stream.
+            return await Transport
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            request.Dispose();
+            throw new SandboxException(
+                SandboxErrorKind.TransportTimeout,
+                $"Sandbox gateway request to '{relativeUri}' did not complete within the configured "
+                    + $"transport timeout ({_options.TransportTimeout})."
+            );
+        }
+        catch (HttpRequestException ex)
+        {
+            request.Dispose();
+            throw new SandboxException(
+                SandboxErrorKind.TransportTimeout,
+                $"Could not reach the sandbox gateway at '{_options.ServerAddress}'.",
+                statusCode: null,
+                ex
+            );
+        }
+    }
+
+    /// <summary>
+    /// Classifies a non-success direct-API (ADR 0031) response into a <see cref="SandboxException"/>.
+    /// For a NON-auth response it reads the gateway's small, stable
+    /// <c>{ error, code, error_code, retryable }</c> body and maps the fixed-string <c>error_code</c>
+    /// (a closed, gateway-defined vocabulary — safe to surface, like a JSON-RPC <c>code</c>) to a
+    /// <see cref="SandboxErrorKind"/>; the human <c>error</c> message is never echoed. A <c>401</c>/
+    /// <c>403</c> is classified as <see cref="SandboxErrorKind.Authorization"/> WITHOUT reading the
+    /// body (an auth rejection is the response most likely to echo credential material — the same
+    /// invariant <see cref="MapErrorResponse"/> holds; the gateway's own <c>403</c> error codes like
+    /// <c>mount_read_only</c> are therefore indistinguishable here, which is acceptable because the
+    /// write path only ever targets the writable workspace). A <c>3xx</c> is refused, never followed.
+    /// </summary>
+    private async Task<SandboxException> MapDirectErrorAsync(HttpResponseMessage response, string operation, CancellationToken ct)
+    {
+        var statusCode = (int)response.StatusCode;
+        if (statusCode is >= 300 and < 400)
+        {
+            return new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned redirect status {statusCode} for {operation}; this SDK never "
+                    + "follows redirects (following one would replay the X-Sbx-* credential headers to the "
+                    + "redirect target). Point ServerAddress directly at the gateway's canonical origin.",
+                statusCode
+            );
+        }
+
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return new SandboxException(SandboxErrorKind.Authorization, $"Sandbox gateway returned {statusCode} for {operation}.", statusCode);
+        }
+
+        string? errorCode = null;
+        try
+        {
+            var error = await response.Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
+            errorCode = error?.ErrorCode;
+        }
+        catch (JsonException)
+        {
+            // No machine-readable body — fall back to status-only classification below.
+        }
+
+        var kind = MapDirectErrorKind(response.StatusCode, errorCode);
+        var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
+        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode);
+    }
+
+    /// <summary>
+    /// Maps a direct-API <c>error_code</c> (preferred) or, absent one, the raw status to a
+    /// <see cref="SandboxErrorKind"/>. The operation terminal states <c>timed_out</c>/
+    /// <c>output_limit_exceeded</c> are NOT handled here — they arrive as a <c>200</c> status body,
+    /// not an HTTP error, and are classified by the command poll loop.
+    /// </summary>
+    private static SandboxErrorKind MapDirectErrorKind(HttpStatusCode status, string? errorCode) =>
+        errorCode switch
+        {
+            "session_not_found" or "mount_not_found" or "operation_not_found" or "path_not_found" => SandboxErrorKind.NotFound,
+            "idempotency_conflict" or "operation_running" or "target_locked" => SandboxErrorKind.Conflict,
+            "workspace_required" => SandboxErrorKind.WorkspaceRequired,
+            "operation_api_unavailable"
+            or "operation_probe_failed"
+            or "operation_concurrency_limit"
+            or "operation_capacity_exhausted"
+            or "too_many_concurrent_requests"
+            or "sandbox_busy" => SandboxErrorKind.Unavailable,
+            _ => status switch
+            {
+                HttpStatusCode.NotFound => SandboxErrorKind.NotFound,
+                HttpStatusCode.Conflict => SandboxErrorKind.Conflict,
+                _ => SandboxErrorKind.Protocol,
+            },
+        };
+
+    /// <summary>
     /// Projects each element of a 2xx-response collection through <paramref name="map"/>, rejecting
     /// any <c>null</c> element as <see cref="SandboxErrorKind.Protocol"/> first. System.Text.Json
     /// deserializes a JSON <c>null</c> array element into a <c>null</c> reference even for a

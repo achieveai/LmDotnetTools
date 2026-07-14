@@ -19,11 +19,27 @@ public sealed class SandboxInfo
     /// </summary>
     public string? WorkspaceContainerPath { get; }
 
-    public SandboxInfo(string sessionId, string? containerId = null, string? workspaceContainerPath = null)
+    /// <summary>
+    /// The persisted workspace mount id (<c>session_mounts.id</c>) the gateway's direct file/command
+    /// APIs are keyed by, when the gateway reports one. Present on a create/get result from a
+    /// #119-inclusive gateway; <c>null</c> on a <see cref="SandboxClient.ListAsync"/> result (the list
+    /// response carries no volumes) or against a pre-#119 gateway. Callers rarely need this directly —
+    /// the SDK resolves it internally per session — but it is surfaced so a caller already holding a
+    /// create result can avoid a redundant lookup.
+    /// </summary>
+    public long? WorkspaceMountId { get; }
+
+    public SandboxInfo(
+        string sessionId,
+        string? containerId = null,
+        string? workspaceContainerPath = null,
+        long? workspaceMountId = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         SessionId = sessionId;
         ContainerId = containerId;
         WorkspaceContainerPath = workspaceContainerPath;
+        WorkspaceMountId = workspaceMountId;
     }
 }

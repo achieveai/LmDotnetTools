@@ -54,4 +54,39 @@ public enum SandboxErrorKind
     /// also reserved for later exact-byte file transfer.
     /// </summary>
     Integrity,
+
+    /// <summary>
+    /// The gateway refused a request because it conflicts with existing server-side state: an
+    /// operation id reused with a different request payload (<c>409 idempotency_conflict</c>), a
+    /// delete of a still-running operation (<c>409 operation_running</c>), or a write blocked by a
+    /// concurrent holder of the target file (<c>409 target_locked</c>). Distinct from
+    /// <see cref="Integrity"/> (a local/verification failure) — here the gateway is authoritative.
+    /// </summary>
+    Conflict,
+
+    /// <summary>
+    /// The gateway could not service the request right now for a reason that is not the caller's
+    /// fault and may succeed on retry: the sandbox agent predates the command-operation protocol
+    /// (<c>424 operation_api_unavailable</c>), a transient probe failure (<c>503
+    /// operation_probe_failed</c>), a concurrency/capacity limit (<c>503 operation_concurrency_limit</c>
+    /// / <c>operation_capacity_exhausted</c> / <c>too_many_concurrent_requests</c>), or a briefly
+    /// quiescing session (<c>503 sandbox_busy</c>). The <c>424</c> case is NOT retryable without a
+    /// newer agent image; the <c>503</c> cases are.
+    /// </summary>
+    Unavailable,
+
+    /// <summary>
+    /// The operation requires a writable workspace mount the session does not have
+    /// (<c>409 workspace_required</c>): operation stdout/stderr artifacts must live under a writable
+    /// workspace, so a session created without one cannot host <see cref="SandboxClient.ExecuteAsync"/>.
+    /// </summary>
+    WorkspaceRequired,
+
+    /// <summary>
+    /// A command's combined stdout+stderr exceeded the operation's output cap and the gateway
+    /// terminalized it rather than silently truncating (<c>status: output_limit_exceeded</c>). Raised
+    /// by <see cref="SandboxClient.ExecuteAsync"/>; the output is intentionally not returned, since the
+    /// result would be incomplete.
+    /// </summary>
+    OutputLimitExceeded,
 }

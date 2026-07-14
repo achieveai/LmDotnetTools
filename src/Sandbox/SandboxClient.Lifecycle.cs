@@ -27,7 +27,9 @@ public sealed partial class SandboxClient
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
-        return ToSandboxInfo(payload);
+        var info = ToSandboxInfo(payload);
+        SeedWorkspaceMountId(info);
+        return info;
     }
 
     /// <summary>
@@ -53,7 +55,9 @@ public sealed partial class SandboxClient
         }
 
         var payload = await ReadSandboxResponseOrThrowAsync(response, $"sandbox '{sessionId}'", ct).ConfigureAwait(false);
-        return ToSandboxInfo(payload);
+        var info = ToSandboxInfo(payload);
+        SeedWorkspaceMountId(info);
+        return info;
     }
 
     /// <summary>
@@ -161,7 +165,7 @@ public sealed partial class SandboxClient
         );
 
     private static SandboxInfo ToSandboxInfo(CreateSandboxResponseDto dto) =>
-        new(dto.SessionId, dto.ContainerId, dto.Volumes?.Workspace?.ContainerPath);
+        new(dto.SessionId, dto.ContainerId, dto.Volumes?.Workspace?.ContainerPath, dto.Volumes?.Workspace?.Id);
 
     private static async Task<CreateSandboxResponseDto> ReadSandboxResponseOrThrowAsync(
         HttpResponseMessage response,
