@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using LmStreaming.Sample.Services.Discovery;
@@ -218,6 +219,97 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             .Should().BeFalse("an ambiguous sink failure keeps the dedup mark so a retry can't double-inject");
     }
 
+    // --- Cancellation & stop-scanning (Must-4 / Must-5) ---
+
+    [Fact]
+    public async Task PreCancelledToken_DoesNotMark_AndThrows()
+    {
+        // Must-4 (FIX A, edit 1): an already-cancelled call must throw BEFORE placing the routed dedup
+        // mark. Marking first and then throwing on the first sink call would strand a mark under which
+        // nothing was delivered, wrongly deduping a later gateway redelivery. The sink returns
+        // TargetNotDeliverable, which (absent the guard) would KEEP the mark — so this pins that the
+        // start-of-method guard, not a rollback, is what leaves the ledger clean.
+        using var harness = new Harness(routeToSubAgent: true);
+        _ = harness.RegisterSinkThread(SessionId, "thread-sub", SubAgentContextDeliveryResult.TargetNotDeliverable);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = async () => await harness.Injector.InjectAsync(Payload(agentId: AgentId), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should().BeTrue("a cancelled call must throw before marking, leaving the routed dedup slot free");
+    }
+
+    [Fact]
+    public async Task CancelledDuringSinkDelivery_UnmarksRoutedMark_AndThrows()
+    {
+        // Must-4 (FIX A, edit 2): if cancellation lands AFTER the routed mark is placed but at/before the
+        // first sink delivery, the OperationCanceledException catch must un-mark before rethrowing —
+        // else the stranded mark wrongly dedups a later gateway redelivery. Modelled by a sink that
+        // cancels the token and throws OCE mid-delivery.
+        using var harness = new Harness(routeToSubAgent: true);
+        using var cts = new CancellationTokenSource();
+        _ = harness.RegisterProgrammableSinkThread(
+            SessionId,
+            "thread-sub",
+            _ =>
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            });
+
+        var act = async () => await harness.Injector.InjectAsync(Payload(agentId: AgentId), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should().BeTrue("cancellation before any delivery rolls back the routed mark so a gateway retry can heal");
+    }
+
+    [Fact]
+    public async Task AmbiguousSink_StopsScanning_NoDeliveryToLaterSink()
+    {
+        // Must-5 (FIX B): once a sink throws (ambiguous — it may already have delivered), the injector
+        // must STOP scanning; a later sink that would return Delivered must NEVER be consulted, else the
+        // same context injects twice in one request. Registry thread order is non-deterministic, so the
+        // contract is pinned to CONSULT order via a shared counter: whichever sink is consulted FIRST
+        // throws; a would-be SECOND consult flips a flag and would Deliver. With the fix, the second
+        // consult never happens. (In practice only one sink owns an id — this pins the defensive
+        // contract.)
+        using var harness = new Harness(routeToSubAgent: true);
+        var primary = harness.RegisterPrimaryThread(SessionId, "thread-primary");
+
+        var consultCount = 0;
+        var laterSinkConsulted = false;
+        Func<CancellationToken, Task<SubAgentContextDeliveryResult>> onDeliver = _ =>
+        {
+            if (Interlocked.Increment(ref consultCount) == 1)
+            {
+                throw new InvalidOperationException("first consulted sink threw (may already have delivered)");
+            }
+
+            laterSinkConsulted = true;
+            return Task.FromResult(SubAgentContextDeliveryResult.Delivered);
+        };
+
+        var sinkA = harness.RegisterProgrammableSinkThread(SessionId, "thread-a", onDeliver);
+        var sinkB = harness.RegisterProgrammableSinkThread(SessionId, "thread-b", onDeliver);
+
+        var sent = await harness.Injector.InjectAsync(Payload(agentId: AgentId), CancellationToken.None);
+
+        sent.Should().Be(0, "an ambiguous throw drops the discovery — never routes to a later sink");
+        consultCount.Should().Be(1, "the scan must stop at the first (throwing) sink");
+        laterSinkConsulted.Should().BeFalse("no later sink may be consulted after an ambiguous throw");
+        (sinkA.DeliverCallCount + sinkB.DeliverCallCount)
+            .Should().Be(1, "exactly one sink is consulted before the scan stops");
+        primary.SentMessages.Should().BeEmpty("an ambiguous sink failure must never fall back to the primary");
+        harness.Diagnostics.RoutingSnapshot().Dropped.Should().Be(1);
+        harness.Diagnostics.RoutingSnapshot().Routed.Should().Be(0);
+        harness.Registry.TryMarkDiscoverySeen(SessionId, AgentId, Kind, Path)
+            .Should().BeFalse("the ambiguous drop keeps the dedup mark so a gateway retry can't double-inject");
+    }
+
     // --- Back-compat constructor (SHOULD-2) ---
 
     [Fact]
@@ -421,6 +513,22 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             return (RecordingSinkAgent)_agents[threadId];
         }
 
+        /// <summary>
+        /// Registers a sink thread whose <see cref="ISubAgentContextSink.TryDeliverContextAsync"/> runs
+        /// <paramref name="onDeliver"/> — lets a test drive delivery by CONSULT order (shared counter)
+        /// or throw mid-delivery, both of which the canned <see cref="RecordingSinkAgent"/> cannot do.
+        /// </summary>
+        public ProgrammableSink RegisterProgrammableSinkThread(
+            string sessionId,
+            string threadId,
+            Func<CancellationToken, Task<SubAgentContextDeliveryResult>> onDeliver)
+        {
+            _factories[threadId] = id => new ProgrammableSink(id, onDeliver);
+            _ = Pool.GetOrCreateAgent(threadId, Mode);
+            Registry.RegisterThread(sessionId, threadId);
+            return (ProgrammableSink)_agents[threadId];
+        }
+
         public ContextDiscoveryController CreateController()
         {
             var loader = new WorkspaceSubAgentLoader(Registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
@@ -473,5 +581,74 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         {
             return Task.FromResult(respond(request));
         }
+    }
+
+    /// <summary>
+    /// An <see cref="IMultiTurnAgent"/> + <see cref="ISubAgentContextSink"/> whose routed delivery is
+    /// driven by a caller-supplied callback, so a test can throw mid-delivery or decide the result by
+    /// consult order. Every other member is an inert no-op — only the sink path is exercised.
+    /// </summary>
+    private sealed class ProgrammableSink : IMultiTurnAgent, ISubAgentContextSink
+    {
+        private readonly Func<CancellationToken, Task<SubAgentContextDeliveryResult>> _onDeliver;
+
+        public ProgrammableSink(string threadId, Func<CancellationToken, Task<SubAgentContextDeliveryResult>> onDeliver)
+        {
+            ThreadId = threadId;
+            _onDeliver = onDeliver;
+        }
+
+        public string ThreadId { get; }
+
+        public string? CurrentRunId => null;
+
+        public bool IsRunning => true;
+
+        /// <summary>Number of times <see cref="TryDeliverContextAsync"/> was invoked.</summary>
+        public int DeliverCallCount { get; private set; }
+
+        public Task<SubAgentContextDeliveryResult> TryDeliverContextAsync(
+            string agentId,
+            IReadOnlyList<IMessage> messages,
+            CancellationToken cancellationToken = default)
+        {
+            DeliverCallCount++;
+            return _onDeliver(cancellationToken);
+        }
+
+        public ValueTask<SendReceipt> SendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) =>
+            ValueTask.FromResult(new SendReceipt(inputId ?? Guid.NewGuid().ToString("N"), inputId, DateTimeOffset.UtcNow));
+
+        public async ValueTask<SendReceipt?> TrySendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) =>
+            await SendAsync(messages, inputId, parentRunId, ct);
+
+#pragma warning disable CS1998, IDE0391
+        public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
+            UserInput userInput,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            yield break;
+        }
+
+        public async IAsyncEnumerable<IMessage> SubscribeAsync(
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            yield break;
+        }
+#pragma warning restore CS1998, IDE0391
+
+        public Task RunAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task StopAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

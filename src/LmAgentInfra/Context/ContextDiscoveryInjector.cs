@@ -91,6 +91,11 @@ public sealed class ContextDiscoveryInjector
     {
         ArgumentNullException.ThrowIfNull(body);
 
+        // Fail fast on an already-cancelled call BEFORE any validation or dedup mark. Marking first and
+        // then throwing on the first sink call would strand a dedup mark under which nothing was
+        // delivered, causing a later gateway redelivery to be wrongly deduped/dropped.
+        ct.ThrowIfCancellationRequested();
+
         if (string.IsNullOrWhiteSpace(body.SessionId))
         {
             _logger.LogInformation("ContextDiscovery context_file: payload missing session_id; dropping.");
@@ -205,9 +210,10 @@ public sealed class ContextDiscoveryInjector
     ///   <item>if any sink owns the id but can't take it
     ///   (<see cref="SubAgentContextDeliveryResult.TargetNotDeliverable"/>) the discovery is dropped
     ///   WITHOUT fan-out and the mark KEPT (terminal — a retry can't succeed);</item>
-    ///   <item>else if any sink THREW, the mark is likewise KEPT: a throwing sink may already have
-    ///   accepted (delivered) the send, so un-marking could DOUBLE-INJECT the same context on a
-    ///   gateway retry — safer to drop-and-hold;</item>
+    ///   <item>else if any sink THREW, the scan STOPS at that sink and the mark is likewise KEPT: a
+    ///   throwing sink may already have accepted (delivered) the send, so both consulting a later sink
+    ///   (double-inject in one request) and un-marking (double-inject on a gateway retry) are unsafe —
+    ///   drop-and-hold;</item>
     ///   <item>else (every sink cleanly returned <see cref="SubAgentContextDeliveryResult.NotOwned"/>)
     ///   the discovery is dropped and the mark REMOVED so a gateway redelivery can retry once the
     ///   sub-agent registers (pre-registration race).</item>
@@ -248,23 +254,28 @@ public sealed class ContextDiscoveryInjector
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                // Cancellation reached us AFTER we optimistically placed the routed dedup mark but
+                // before any sink completed a delivery. Roll the mark back (mirroring the all-NotOwned
+                // rollback below) so a later gateway redelivery is NOT wrongly deduped/dropped — nothing
+                // was delivered under this mark.
+                _registry.UnmarkDiscoverySeen(body.SessionId!, agentId, body.Kind!, body.Path!);
                 throw;
             }
             catch (Exception ex)
             {
-                // A misbehaving sink must not strand routing — keep scanning the other threads so a
-                // healthy sink can still Deliver. But flag the failure as AMBIGUOUS: because the throw
-                // could have happened AFTER the sink accepted (delivered) the send, we can no longer be
-                // sure this discovery wasn't delivered. The final aggregation uses this to KEEP the mark
-                // rather than un-marking, so a gateway retry can't double-inject.
+                // Once a sink MAY have accepted (delivered) the send we must STOP scanning: the throw
+                // could have happened AFTER the sink delivered, so consulting a later sink that then
+                // returns Delivered would inject the SAME context TWICE in this one request. Flag the
+                // failure AMBIGUOUS and break — the post-loop aggregation KEEPS the mark and drops
+                // (no fan-out, returns 0), which also stops a gateway retry from double-injecting.
                 _logger.LogWarning(
                     ex,
                     "ContextDiscovery context_file: sink delivery threw for agent {AgentId} on thread {ThreadId}; "
-                    + "treating as ambiguous (delivery may have occurred).",
+                    + "treating as ambiguous (delivery may have occurred) and stopping the scan.",
                     agentId,
                     threadId);
                 anyAmbiguous = true;
-                continue;
+                break;
             }
 
             if (result == SubAgentContextDeliveryResult.Delivered)
