@@ -59,7 +59,6 @@ public sealed class DaemonReviewStageExecutorSessionTests
             runner,
             fileSystem,
             options,
-            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             provisioner);
     }

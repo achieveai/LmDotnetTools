@@ -483,7 +483,6 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 BootRunner,
                 BootFileSystem,
                 _options,
-                [new FakeReviewCommentPublisher("github")],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace);

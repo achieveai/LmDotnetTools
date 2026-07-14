@@ -30,8 +30,9 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 ///   PR-close from the <see cref="PrLifecycleSweeper"/> (Layer-2, design §1).</item>
 ///   <item><see cref="ReviewStage.Judged"/> — if <c>EnableJudgeAgent</c>, grade the review with the
 ///   <see cref="JudgeAgent"/>.</item>
-///   <item><see cref="ReviewStage.Posted"/> — post the review via <see cref="ReviewPoster"/> with
-///   <c>LivePostingAuthorized = EnableCommentPosting</c> (collect-only by default).</item>
+///   <item><see cref="ReviewStage.Posted"/> — retention + cleanup only. The review AGENT posts to the PR
+///   itself via the <c>code-reviewer:post-pr-review</c> skill during the Reviewed stage; this terminal
+///   stage commits/pushes the notes and frees the pooled slot + sandbox session.</item>
 /// </list>
 /// </summary>
 internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
@@ -105,7 +106,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly ISandboxCommandRunner _commandRunner;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly CodeReviewDaemonOptions _options;
-    private readonly IReadOnlyList<IReviewCommentPublisher> _publishers;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DaemonReviewStageExecutor> _logger;
     private readonly IReviewSessionProvisioner? _provisioner;
@@ -139,7 +139,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ISandboxCommandRunner commandRunner,
         ISandboxFileSystem fileSystem,
         CodeReviewDaemonOptions options,
-        IEnumerable<IReviewCommentPublisher> publishers,
         ILoggerFactory loggerFactory,
         IReviewSessionProvisioner? provisioner = null,
         IDiscoveredItemsSource? discoveredItemsSource = null,
@@ -156,7 +155,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _commandRunner = commandRunner ?? throw new ArgumentNullException(nameof(commandRunner));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _publishers = [.. publishers ?? throw new ArgumentNullException(nameof(publishers))];
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<DaemonReviewStageExecutor>();
         _provisioner = provisioner;
@@ -983,6 +981,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private static Dictionary<string, object> BuildPromptVariables(
         string botName,
+        RepoIdentity repo,
+        string prId,
+        bool shouldPost,
         string? checkoutRoot,
         string? storeRoot,
         ReviewToolContext? toolContext,
@@ -992,17 +993,26 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IReadOnlyList<string> priorNotesFiles)
     {
         var notesDir = toolContext?.NotesDir;
+        var isRereview = !string.IsNullOrWhiteSpace(prevHeadSha);
         return new Dictionary<string, object>
         {
-            // The daemon prepends "[BotName]" to the POSTED comment; injecting it here too lets the review
-            // BODY self-identify with the same name instead of a name the model invents ad-hoc.
+            // Injected so the review BODY self-identifies with the same name; also passed to the
+            // code-reviewer:post-pr-review skill as its botPrefix (step 5).
             ["bot_name"] = botName,
+            // The reviewed repo + PR the agent posts to via code-reviewer:post-pr-review (step 5). GitHub
+            // "owner/repo"; the skill also re-resolves the provider from the checkout's git remote.
+            ["repository"] = $"{repo.OrgOrOwner}/{repo.RepoName}",
+            ["pr_number"] = prId,
+            // Whether this run posts (EnableCommentPosting). Collect-only => the agent produces the review
+            // but does NOT call the post skill.
+            ["should_post"] = shouldPost,
+            ["review_type"] = isRereview ? "re-review" : "initial",
             ["checkout_root"] = checkoutRoot ?? TargetRoot,
             ["has_store"] = !string.IsNullOrWhiteSpace(storeRoot),
             ["store_root"] = storeRoot ?? string.Empty,
             ["has_notes"] = !string.IsNullOrWhiteSpace(notesDir),
             ["notes_dir"] = notesDir ?? string.Empty,
-            ["is_rereview"] = !string.IsNullOrWhiteSpace(prevHeadSha),
+            ["is_rereview"] = isRereview,
             ["prev_commit"] = prevHeadSha ?? string.Empty,
             ["new_commit"] = headSha,
             ["review_round"] = reviewRound.ToString("D2", CultureInfo.InvariantCulture),
@@ -1165,8 +1175,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
             run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
+        var (repo, _) = ResolveRepo(run);
         var variables = BuildPromptVariables(
-            _options.BotName, checkoutRoot, storeRoot, toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
+            _options.BotName, repo, run.PrId, _options.EnableCommentPosting, checkoutRoot, storeRoot,
+            toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
         var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
@@ -1210,8 +1222,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // and no prior-files listing — but it is still told the same round/commit facts as the primary.
         var (prevHeadSha, reviewRound, _) = await ComputeRereviewContextAsync(run, notesDir: null, cancellationToken)
             .ConfigureAwait(false);
+        var (repo, _) = ResolveRepo(run);
         var variables = BuildPromptVariables(
-            _options.BotName, checkoutRoot, storeRoot, toolContext: null, run.HeadSha, prevHeadSha, reviewRound, []);
+            _options.BotName, repo, run.PrId, false, checkoutRoot, storeRoot,
+            null, run.HeadSha, prevHeadSha, reviewRound, []);
         var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);
@@ -1242,58 +1256,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task PostAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
-        var publisher = _publishers.FirstOrDefault(p =>
-            string.Equals(p.Provider, provider, StringComparison.Ordinal))
-            ?? throw new InvalidOperationException($"No review-comment publisher registered for provider '{provider}'.");
 
-        var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
-
-        // A review that produced NO content must post NOTHING. A "_No review content was produced._"
-        // placeholder would go through the full idempotency path and leave a marked comment on the provider;
-        // the backstop scan (ReviewPoster.FindPostedCommentAsync) later ADOPTS that placeholder and
-        // permanently suppresses a real review of the same head_sha — e.g. a re-run on a model that does
-        // produce content. So skip both the post and the retention when the review is empty. The run still
-        // reaches its terminal stage below (and its review_run row prevents re-review), and the slot/session
-        // are still freed, so nothing is leaked or looped.
+        // Posting is owned by the review AGENT: it calls the code-reviewer:post-pr-review skill from inside
+        // its sandbox session (see the review prompt's step 5). This terminal stage no longer posts to the
+        // provider — it reads the persisted review only to gate RETENTION (commit/push the notes) and to free
+        // the pooled slot + sandbox session. An empty review retains nothing; the run row still prevents
+        // re-review, and the slot/session are still freed below, so nothing is leaked or looped.
         var reviewText = ReadReviewText(run.Id);
         var hasContent = !string.IsNullOrWhiteSpace(reviewText);
-        if (hasContent)
-        {
-            // The POSTED comment is prefixed with "[BotName]" so a reader knows the content was authored by
-            // the bot on behalf of whichever OAuth app/person's credential actually posted it — the retained
-            // artifact (CommitPooledNotesAsync / PublishToReviewBotAsync below) keeps the raw, unprefixed body.
-            var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
-
-            var key = new IdempotencyKeyComponents(
-                Provider: provider,
-                OrgOrOwner: repo.OrgOrOwner,
-                Project: repo.Project,
-                // RepoStableId must be non-blank and ':'-free; fall back to the colon-free normalized key.
-                RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
-                PrId: run.PrId,
-                Operation: ReviewPoster.PostReviewCommentOperation,
-                ArtifactKind: ReviewArtifactKind,
-                ArtifactSubject: "summary",
-                // Scope the key to the reviewed COMMIT. head_sha is stable across re-polls and — unlike the PR
-                // updated_at — is not mutated by posting the comment, so a re-poll of the same commit resolves
-                // to the same key and the backstop scan recognizes the already-posted comment (no duplicate).
-                HeadSha: run.HeadSha,
-                VariantId: run.VariantId);
-
-            var request = new PostReviewRequest(
-                run.Id,
-                key,
-                new ReviewCommentTarget(repo, run.PrId),
-                postedBody,
-                LivePostingAuthorized: _options.EnableCommentPosting);
-
-            _ = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
-        }
-        else
+        if (!hasContent)
         {
             _logger.LogWarning(
-                "Run {RunId}: review produced no content; not posting a comment or claiming the head's dedup "
-                    + "slot (a placeholder would block a later real review of the same commit).",
+                "Run {RunId}: review produced no content; nothing to retain (the agent posts via "
+                    + "code-reviewer:post-pr-review, so an empty review means it posted nothing either).",
                 run.Id);
         }
 

@@ -277,10 +277,6 @@ builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
-builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
-    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
-    sp.GetRequiredService<GitHubOAuthProvider>(),
-    sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()));
 
 if (daemonOptions.EnableAdoProvider)
 {
@@ -288,10 +284,6 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoPrProvider>>()));
-    builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
-        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
-        sp.GetRequiredService<AdoOAuthProvider>(),
-        sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
 }
 
 // Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com
