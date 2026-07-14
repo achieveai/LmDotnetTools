@@ -9,7 +9,7 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <remarks>
 /// <para>
 /// <b>Ownership boundary.</b> This SDK owns gateway request construction, the <c>X-Sbx-*</c>/
-/// <c>X-Session-ID</c> headers, REST/MCP serialization, and error classification. It deliberately
+/// <c>X-Session-ID</c> headers, REST serialization, and error classification. It deliberately
 /// does NOT own: deciding when to create/recreate/delete a sandbox, host-path resolution, session
 /// caching, credential selection, or OAuth/network/discovery POLICY (which auth providers or
 /// network rules to attach) — callers pass fully-formed <see cref="SandboxCreateRequest"/> values
@@ -26,16 +26,6 @@ public sealed partial class SandboxClient : IDisposable
     private const string AppIdHeader = "X-Sbx-App-Id";
     private const string AppKeyHeader = "X-Sbx-App-Key";
     private const string SessionIdHeader = "X-Session-ID";
-
-    /// <summary>The only JSON-RPC version this SDK sends and the only one it accepts in a 2xx MCP reply.</summary>
-    private const string JsonRpcVersion = "2.0";
-
-    /// <summary>
-    /// The <c>id</c> stamped on every MCP <c>tools/call</c> request. Each call is a self-contained
-    /// request/response with no multiplexing, so a fixed id is sufficient — and a compliant 2xx reply
-    /// MUST echo exactly this id (see <see cref="ValidateMcpEnvelopeAndExtractResult"/>).
-    /// </summary>
-    private const int McpRequestId = 1;
 
     private readonly SandboxClientOptions _options;
     private bool _disposed;

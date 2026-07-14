@@ -4,9 +4,11 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 
 /// <summary>
 /// An immutable, constructor-validated description of one non-interactive command to run in a
-/// gateway Bash/POSIX-capable sandbox. V1 targets POSIX shells only: the ordered
-/// <see cref="Arguments"/> are POSIX-quoted into a single <c>/bin/sh -c</c> command string by the
-/// SDK — the API deliberately does not claim native cross-platform argv semantics.
+/// gateway sandbox via the direct operations API (ADR 0031 / issue #119). The ordered
+/// <see cref="Arguments"/> are a native argv vector — program name first, arguments passed verbatim
+/// with NO shell involved. The program name is resolved on the sandbox <c>PATH</c> when it is a bare
+/// name (a value containing a path separator is instead validated against the sandbox mounts), so a
+/// shell is invoked, when wanted, explicitly as <c>["sh", "-c", "…"]</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -20,8 +22,9 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <para>
 /// <see cref="OperationId"/> is optional; when it is <c>null</c> the SDK generates a
 /// collision-resistant id at execution time and surfaces it on the result so the caller can recover
-/// the same operation after an ambiguous transport failure. It is never used as a filesystem path
-/// directly — it is hashed into a fixed-length artifact directory name.
+/// the same operation after an ambiguous transport failure. It is the gateway's idempotency key for
+/// the operations API: resubmitting the same id with an identical request replays the existing
+/// operation rather than running it again.
 /// </para>
 /// </remarks>
 public sealed record SandboxCommand
@@ -43,17 +46,18 @@ public sealed record SandboxCommand
     /// <summary>
     /// Optional caller-chosen operation id used to recover a result after an ambiguous transport
     /// failure. <c>null</c> (the default) lets the SDK generate one. Length-bounded and
-    /// control-character-free when supplied; never used directly as a filesystem path. Recovery by
-    /// reusing the id is guaranteed only within a bounded 24-hour retention window (see
-    /// <see cref="SandboxClient.ExecuteAsync"/>); after it, reuse may start a new operation.
+    /// control-character-free when supplied. It is the gateway's idempotency key: resubmitting the
+    /// same id with an identical request replays the existing operation instead of running it again.
+    /// Idempotency is process-local on the gateway (a gateway restart drops the record; see
+    /// <see cref="SandboxClient.ExecuteAsync"/>), so recovery is not promised across a restart.
     /// </summary>
     public string? OperationId { get; }
 
     /// <summary>
     /// The <see cref="WorkingDirectory"/> normalized to a clean, forward-slash, workspace-relative
-    /// path (empty string = workspace root). Internal: production code uses this normalized form for
-    /// the canonical digest and the Bash wrapper, while the public <see cref="WorkingDirectory"/>
-    /// preserves what the caller passed.
+    /// path (empty string = workspace root). Internal: production code uses this normalized form as
+    /// the operation's <c>cwd</c> path, while the public <see cref="WorkingDirectory"/> preserves what
+    /// the caller passed.
     /// </summary>
     internal string NormalizedWorkingDirectory { get; }
 

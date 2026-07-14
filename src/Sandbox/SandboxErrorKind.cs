@@ -27,14 +27,14 @@ public enum SandboxErrorKind
 
     /// <summary>
     /// The gateway-side execution deadline for a command elapsed. Raised by
-    /// <see cref="SandboxClient.ExecuteAsync"/> when the gateway's Bash execution timeout elapses
-    /// before the command completes — distinct from <see cref="TransportTimeout"/> (the client-side
-    /// call deadline).
+    /// <see cref="SandboxClient.ExecuteAsync"/> when the operation's <c>timeout_secs</c> fires
+    /// (terminal status <c>timed_out</c>) before the command completes — distinct from
+    /// <see cref="TransportTimeout"/> (the client-side call deadline).
     /// </summary>
     ExecutionTimeout,
 
     /// <summary>
-    /// The SDK's own HTTP/MCP transport failed: the configured <see cref="SandboxClientOptions.TransportTimeout"/>
+    /// The SDK's own HTTP/direct-API transport failed: the configured <see cref="SandboxClientOptions.TransportTimeout"/>
     /// elapsed, or the gateway could not be reached at all (DNS/connection failure). Distinct from
     /// <see cref="ExecutionTimeout"/>, which is a gateway-side deadline on the remote operation
     /// itself, not the client-side transport call.
@@ -43,15 +43,16 @@ public enum SandboxErrorKind
 
     /// <summary>
     /// The gateway returned a response the SDK could not make sense of: an unexpected status code,
-    /// a malformed body, a missing required field, or a JSON-RPC error envelope.
+    /// a malformed body, a missing required field, or an unrecognized operation status.
     /// </summary>
     Protocol,
 
     /// <summary>
-    /// A transferred payload failed a verification check (e.g. a length/digest mismatch). Raised by
-    /// <see cref="SandboxClient.ExecuteAsync"/> when reassembled command output fails its length/SHA-256
-    /// check, or when an operation id is reused with a different command (canonical digest mismatch);
-    /// also reserved for later exact-byte file transfer.
+    /// Content the gateway delivered exact-byte failed the SDK's strict decode. Raised by
+    /// <see cref="SandboxClient.ReadTextFileAsync"/> and <see cref="SandboxClient.ExecuteAsync"/> when a
+    /// file's bytes or a command's captured stdout/stderr are not valid UTF-8 — the SDK surfaces text
+    /// only, so it refuses to substitute U+FFFD replacement characters. The gateway (not the SDK) now
+    /// owns byte-exactness and atomicity, so there is no length/digest reassembly check left here.
     /// </summary>
     Integrity,
 

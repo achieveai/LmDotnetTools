@@ -228,22 +228,3 @@ internal sealed record GatewayErrorDto(
     [property: JsonPropertyName("error_code")] string? ErrorCode,
     [property: JsonPropertyName("retryable")] bool? Retryable
 );
-
-// --- MCP JSON-RPC contract (verbatim field names via SandboxJson.McpOptions) ---
-
-internal sealed record McpToolCallRequestDto(
-    [property: JsonPropertyName("jsonrpc")] string JsonRpc,
-    [property: JsonPropertyName("id")] int Id,
-    [property: JsonPropertyName("method")] string Method,
-    [property: JsonPropertyName("params")] McpToolCallParamsDto Params
-);
-
-internal sealed record McpToolCallParamsDto(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("arguments")] object Arguments
-);
-
-internal sealed record McpRpcErrorDto(
-    [property: JsonPropertyName("code")] int Code,
-    [property: JsonPropertyName("message")] string? Message
-);

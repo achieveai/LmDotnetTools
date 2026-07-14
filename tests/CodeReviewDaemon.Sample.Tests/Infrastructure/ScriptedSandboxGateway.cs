@@ -1,218 +1,200 @@
 using System.Net;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
 namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 
 /// <summary>
-/// A deterministic <see cref="HttpMessageHandler"/> that speaks JUST enough of the Sandbox SDK's public
-/// gateway wire protocol to drive a real <c>SandboxClient</c> end-to-end from the daemon test assembly
-/// — which, unlike the SDK's own test project, has no access to the SDK's internal script/manifest
-/// helpers. It therefore builds every response from the public, documented wire markers
-/// (<c>@@LMSBX-SENTINEL@@</c> for commands, <c>@@LMSBX-XFER@@</c> for transfers) as string literals.
+/// A deterministic <see cref="HttpMessageHandler"/> that speaks JUST enough of the Sandbox SDK's
+/// direct gateway REST protocol (ADR 0031 / issue #119) to drive a real <c>SandboxClient</c>
+/// end-to-end from the daemon test assembly. Every flow the daemon adapter exercises is modelled:
+/// workspace mount-id resolution, a command via the operations API (submit → terminal snapshot →
+/// stdout/stderr artifact download), a file read/write via the files API, and a directory listing.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Each request is classified by the first line of the Bash tool's <c>command</c> script (the inert
-/// <c>#LMSBX 1 …</c> marker comment the SDK prepends): a command flow issues PROBE → RUN → RECLAIM → GC;
-/// a file read/list issues STAT → READ (→ CLEANUP for a listing); a write issues WRITE → FINALIZE
-/// (→ CLEANUP on failure). Only the small subset of each flow the daemon adapter exercises is modelled;
-/// the outputs are always small enough to inline (command manifest) or fit a single chunk (transfers).
-/// </para>
-/// <para>
-/// The handler is single-purpose per test: a command scenario only receives command markers and a file
-/// scenario only transfer markers, so the command and transfer configuration coexist without clashing.
+/// The handler is single-purpose per test — a command scenario only drives the operations + artifact
+/// routes, a file scenario only the files/directories routes — so the command and transfer
+/// configuration coexist without clashing. It returns a terminal operation snapshot directly from the
+/// <c>POST .../operations</c> submit (an idempotent-replay-shaped 200), so no poll round-trip is
+/// needed.
 /// </para>
 /// </remarks>
 internal sealed class ScriptedSandboxGateway : HttpMessageHandler
 {
-    private const string CommandMarker = "@@LMSBX-SENTINEL@@";
-    private const string TransferMarker = "@@LMSBX-XFER@@";
+    /// <summary>The workspace mount id every direct route is keyed by; surfaced by the mount-resolution route.</summary>
+    private const long WorkspaceMountId = 7;
 
-    /// <summary>A fixed non-zero mtime; the SDK only checks it is stable across a file's STAT and its chunks.</summary>
-    private const long FixedMtime = 1;
-
-    /// <summary>A well-formed 32-char lowercase-hex execution generation (the SDK validates only its shape).</summary>
-    private const string Generation = "abcdef0123456789abcdef0123456789";
+    private const string StdoutArtifactPath = ".mcp-gateway/operations/op/stdout";
+    private const string StderrArtifactPath = ".mcp-gateway/operations/op/stderr";
 
     // ── Command flow configuration ──────────────────────────────────────────────────────────────
     public int CommandExitCode { get; init; }
     public string CommandStdout { get; init; } = string.Empty;
     public string CommandStderr { get; init; } = string.Empty;
 
-    /// <summary>When true, RUN reports a gateway execution-timeout (the SDK surfaces <c>ExecutionTimeout</c>).</summary>
+    /// <summary>When true, the operation terminalizes as <c>timed_out</c> (the SDK surfaces <c>ExecutionTimeout</c>).</summary>
     public bool SimulateExecutionTimeout { get; init; }
 
     // ── Transfer flow configuration ─────────────────────────────────────────────────────────────
-    /// <summary>Bytes a STAT/READ serves (a file's content, or a directory listing's NUL-delimited artifact).</summary>
+    /// <summary>Bytes a file read serves, or (for a listing) the NUL-delimited entry names.</summary>
     public byte[]? ReadBytes { get; init; }
 
-    /// <summary>When true, STAT reports the target missing (the SDK surfaces <c>NotFound</c>).</summary>
+    /// <summary>When true, a file read reports the target missing (the SDK surfaces <c>NotFound</c>).</summary>
     public bool ReadMissing { get; init; }
 
-    /// <summary>When true, LIST reports the directory missing (the SDK surfaces <c>NotFound</c>).</summary>
+    /// <summary>When true, a directory listing reports the directory missing (the SDK surfaces <c>NotFound</c>).</summary>
     public bool ListMissing { get; init; }
 
-    /// <summary>When true, FINALIZE reports an integrity failure (the SDK surfaces <c>Integrity</c>).</summary>
+    /// <summary>When true, a write fails at the gateway (the SDK surfaces a <see cref="AchieveAi.LmDotnetTools.Sandbox.SandboxException"/>).</summary>
     public bool WriteFailsIntegrity { get; init; }
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
-        var script = ExtractCommandScript(body);
-        var firstLine = script.Split('\n', 2)[0].Trim();
+        var path = request.RequestUri!.AbsolutePath;
 
-        bool isError;
-        string text;
-        if (firstLine.StartsWith("#LMSBX 1 XFER ", StringComparison.Ordinal))
+        if (path.Contains("/operations", StringComparison.Ordinal))
         {
-            text = RespondToTransfer(firstLine, out isError);
-        }
-        else
-        {
-            text = RespondToCommand(firstLine, out isError);
+            return RespondToOperation();
         }
 
-        return Mcp(text, isError);
-    }
-
-    private string RespondToCommand(string markerLine, out bool isError)
-    {
-        isError = false;
-        var role = MarkerRole(markerLine, "#LMSBX 1 ");
-        switch (role)
+        if (path.Contains("/files/", StringComparison.Ordinal))
         {
-            case "PROBE":
-                // No artifact yet → the SDK proceeds to the single RUN.
-                return $"{CommandMarker} NONE";
-            case "RUN":
-                if (SimulateExecutionTimeout)
-                {
-                    isError = true;
-                    return "gateway timed out";
-                }
-
-                return $"{CommandMarker} MANIFEST {BuildManifestBase64(Token(markerLine, "digest="))}";
-            default:
-                // RECLAIM / GC / anything else is best-effort maintenance the SDK ignores.
-                return $"{CommandMarker} NONE";
+            return await RespondToFileAsync(request, cancellationToken).ConfigureAwait(false);
         }
-    }
 
-    private string RespondToTransfer(string markerLine, out bool isError)
-    {
-        isError = false;
-        var role = MarkerRole(markerLine, "#LMSBX 1 XFER ");
-        switch (role)
+        if (path.Contains("/directories/", StringComparison.Ordinal))
         {
-            case "STAT":
-                if (ReadMissing || ReadBytes is null)
-                {
-                    return $"{TransferMarker} NOTFOUND";
-                }
-
-                return $"{TransferMarker} META {ReadBytes.Length} {FixedMtime} {Sha256Hex(ReadBytes)}";
-            case "READ":
-                {
-                    var offset = long.Parse(Token(markerLine, "off="));
-                    var length = int.Parse(Token(markerLine, "len="));
-                    var slice = Convert.ToBase64String(ReadBytes!, (int)offset, length);
-                    return $"{TransferMarker} CHUNK {ReadBytes!.Length} {FixedMtime} {slice}";
-                }
-            case "WRITE":
-                {
-                    var offset = long.Parse(Token(markerLine, "off="));
-                    var length = long.Parse(Token(markerLine, "len="));
-                    return $"{TransferMarker} WROTE {offset + length}";
-                }
-            case "FINALIZE":
-                return WriteFailsIntegrity ? $"{TransferMarker} INTEGRITY" : $"{TransferMarker} FINALIZED";
-            case "LIST":
-                return ListMissing ? $"{TransferMarker} NOTFOUND" : $"{TransferMarker} OK";
-            default:
-                // CLEANUP and any other maintenance step.
-                return $"{TransferMarker} OK";
+            return RespondToDirectory();
         }
-    }
 
-    /// <summary>Extracts <c>params.arguments.command</c> from the MCP <c>tools/call</c> request body.</summary>
-    private static string ExtractCommandScript(string body)
-    {
-        using var doc = JsonDocument.Parse(body);
-        return doc.RootElement.GetProperty("params").GetProperty("arguments").GetProperty("command").GetString()
-            ?? string.Empty;
-    }
-
-    /// <summary>The role token (RUN/PROBE/STAT/…) immediately following a marker prefix.</summary>
-    private static string MarkerRole(string markerLine, string prefix)
-    {
-        var rest = markerLine[prefix.Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return rest.Length == 0 ? string.Empty : rest[0];
-    }
-
-    /// <summary>Reads the value of a <c>key=value</c> token from a marker line.</summary>
-    private static string Token(string markerLine, string key)
-    {
-        foreach (var token in markerLine.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        if (request.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
         {
-            if (token.StartsWith(key, StringComparison.Ordinal))
+            return ResolveWorkspaceMount();
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.NotImplemented)
+        {
+            Content = new StringContent($"No scripted route for {request.Method} {request.RequestUri}"),
+        };
+    }
+
+    /// <summary>Answers <c>GET /api/v1/sandboxes/{id}</c> with a workspace volume carrying the mount id.</summary>
+    private static HttpResponseMessage ResolveWorkspaceMount() =>
+        Json(
+            HttpStatusCode.OK,
+            JsonSerializer.Serialize(
+                new
+                {
+                    session_id = "sess-1",
+                    container_id = (string?)null,
+                    volumes = new { workspace = new { container_path = "/workspace", read_only = false, id = WorkspaceMountId } },
+                }
+            )
+        );
+
+    /// <summary>Answers <c>POST .../operations</c> with a terminal snapshot (no poll needed).</summary>
+    private HttpResponseMessage RespondToOperation()
+    {
+        if (SimulateExecutionTimeout)
+        {
+            return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { operation_id = "op", status = "timed_out" }));
+        }
+
+        var snapshot = new
+        {
+            operation_id = "op",
+            status = CommandExitCode == 0 ? "succeeded" : "failed",
+            exit_code = CommandExitCode,
+            artifacts = new
             {
-                return token[key.Length..];
+                mount_id = WorkspaceMountId,
+                stdout_path = StdoutArtifactPath,
+                stderr_path = StderrArtifactPath,
+            },
+        };
+        return Json(HttpStatusCode.OK, JsonSerializer.Serialize(snapshot));
+    }
+
+    /// <summary>Answers the files API: a <c>PUT</c> write, a stdout/stderr artifact download, or a user file read.</summary>
+    private async Task<HttpResponseMessage> RespondToFileAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var path = PathParam(request.RequestUri!);
+
+        if (request.Method == HttpMethod.Put)
+        {
+            if (WriteFailsIntegrity)
+            {
+                return Error(HttpStatusCode.Conflict, "target_locked");
+            }
+
+            var sent = request.Content is null ? 0 : (await request.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false)).Length;
+            return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { bytes_written = sent }));
+        }
+
+        // GET: an operation artifact download, or a user file read.
+        if (path.EndsWith("/stdout", StringComparison.Ordinal))
+        {
+            return Octet(Encoding.UTF8.GetBytes(CommandStdout));
+        }
+
+        if (path.EndsWith("/stderr", StringComparison.Ordinal))
+        {
+            return Octet(Encoding.UTF8.GetBytes(CommandStderr));
+        }
+
+        if (ReadMissing || ReadBytes is null)
+        {
+            return Error(HttpStatusCode.NotFound, "path_not_found");
+        }
+
+        return Octet(ReadBytes);
+    }
+
+    /// <summary>Answers <c>GET .../directories/{id}</c> with a single page of entries (NUL-split from <see cref="ReadBytes"/>).</summary>
+    private HttpResponseMessage RespondToDirectory()
+    {
+        if (ListMissing)
+        {
+            return Error(HttpStatusCode.NotFound, "path_not_found");
+        }
+
+        var names = ReadBytes is null || ReadBytes.Length == 0
+            ? []
+            : Encoding.UTF8.GetString(ReadBytes).Split('\0', StringSplitOptions.RemoveEmptyEntries);
+
+        var entries = new object[names.Length];
+        for (var i = 0; i < names.Length; i++)
+        {
+            entries[i] = new { name = names[i], type = "file" };
+        }
+
+        return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { entries }));
+    }
+
+    /// <summary>Extracts and URL-decodes the <c>path</c> query value of a files/directories request.</summary>
+    private static string PathParam(Uri uri)
+    {
+        foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (pair.StartsWith("path=", StringComparison.Ordinal))
+            {
+                return Uri.UnescapeDataString(pair["path=".Length..]);
             }
         }
 
-        throw new InvalidOperationException($"Marker line '{markerLine}' is missing token '{key}'.");
+        return string.Empty;
     }
 
-    /// <summary>Builds the base64 of a complete inline command manifest whose digest echoes the RUN request.</summary>
-    private string BuildManifestBase64(string digest)
-    {
-        var stdoutBytes = Encoding.UTF8.GetBytes(CommandStdout);
-        var stderrBytes = Encoding.UTF8.GetBytes(CommandStderr);
+    private static HttpResponseMessage Json(HttpStatusCode status, string body) =>
+        new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
-        var manifest = new
-        {
-            v = 1,
-            digest,
-            gen = Generation,
-            exit = CommandExitCode,
-            stdout = StreamManifest(stdoutBytes),
-            stderr = StreamManifest(stderrBytes),
-            lease = 0,
-            created = 0,
-        };
+    private static HttpResponseMessage Octet(byte[] bytes) =>
+        new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) };
 
-        var json = JsonSerializer.Serialize(manifest);
-        return Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
-    }
-
-    private static object StreamManifest(byte[] bytes) =>
-        new
-        {
-            len = bytes.Length,
-            sha256 = Sha256Hex(bytes),
-            inline = Convert.ToBase64String(bytes),
-        };
-
-    private static string Sha256Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-    private static HttpResponseMessage Mcp(string text, bool isError)
-    {
-        var envelope = new
-        {
-            jsonrpc = "2.0",
-            id = 1,
-            result = new
-            {
-                content = new[] { new { type = "text", text } },
-                isError,
-            },
-        };
-
-        return new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(envelope), Encoding.UTF8, "application/json"),
-        };
-    }
+    private static HttpResponseMessage Error(HttpStatusCode status, string errorCode) =>
+        Json(
+            status,
+            JsonSerializer.Serialize(new { error = errorCode, code = (int)status, error_code = errorCode, retryable = false })
+        );
 }
