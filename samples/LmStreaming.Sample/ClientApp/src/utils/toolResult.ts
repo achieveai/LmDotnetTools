@@ -13,8 +13,8 @@ import type { UnwrapResult } from '@/utils/toolTypes';
 /** MCP infrastructure errors are persisted with is_error=false but must still read as failures. */
 const MCP_ERROR_PREFIX = 'Error executing MCP tool';
 
-/** Trailing-anchored `[Exit code: N]` marker appended to shell/task stdout. */
-const EXIT_CODE_RE = /\[Exit code:\s*(\d+)\]\s*$/;
+/** Trailing-anchored `[Exit code: N]` marker (with any leading newlines) appended to shell/task streams. */
+const EXIT_CODE_RE = /\n*\[Exit code:\s*(\d+)\]\s*$/;
 
 /**
  * Progressively `JSON.parse` a raw result to see through single/double encoding.
@@ -47,12 +47,22 @@ export function unwrapResult(raw: string | null | undefined): UnwrapResult {
 }
 
 /**
+ * Match the trailing `[Exit code: N]` marker. The marker is end-anchored, so only a bounded suffix
+ * is scanned — cheap even for large TaskOutput streams. Returns the parsed code and the full match
+ * length so callers can strip the marker from the body. Single source of truth for the marker regex.
+ */
+export function matchExitMarker(text: string): { exitCode: number; markerLength: number } | null {
+  const suffix = text.length > 128 ? text.slice(-128) : text;
+  const match = EXIT_CODE_RE.exec(suffix);
+  return match ? { exitCode: Number(match[1]), markerLength: match[0].length } : null;
+}
+
+/**
  * Extract a trailing `[Exit code: N]` value, or null when the text has no trailing exit marker.
  */
 export function parseExitCode(text: string | null | undefined): number | null {
   if (text == null) return null;
-  const match = EXIT_CODE_RE.exec(String(text));
-  return match ? Number(match[1]) : null;
+  return matchExitMarker(String(text))?.exitCode ?? null;
 }
 
 /**

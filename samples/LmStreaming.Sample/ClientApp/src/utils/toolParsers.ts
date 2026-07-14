@@ -14,6 +14,7 @@ import type {
   CodeBlockModel,
   CodeBlockLine,
 } from '@/utils/toolTypes';
+import { matchExitMarker } from '@/utils/toolResult';
 
 /**
  * Split a string into logical lines. A nullish input and a genuinely-empty `''` input both yield
@@ -159,11 +160,10 @@ export function parseTerminal(
     };
   }
 
-  const trailing = text.match(/\n*\[Exit code:\s*(\d+)\]\s*$/);
-  if (trailing) {
-    const exitCode = parseInt(trailing[1], 10);
-    const stdout = text.slice(0, text.length - trailing[0].length).replace(/\n+$/, '');
-    return { stdout, stderr: '', exitCode, failed: exitCode !== 0 };
+  const marker = matchExitMarker(text);
+  if (marker) {
+    const stdout = text.slice(0, text.length - marker.markerLength).replace(/\n+$/, '');
+    return { stdout, stderr: '', exitCode: marker.exitCode, failed: marker.exitCode !== 0 };
   }
 
   return {

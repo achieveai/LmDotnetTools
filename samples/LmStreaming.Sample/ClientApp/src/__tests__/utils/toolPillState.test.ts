@@ -95,6 +95,16 @@ describe('deriveToolPillState', () => {
     });
   });
 
+  describe('structured status', () => {
+    it('status:"failed" with exit_code 0 and is_error false → error (consistent with the terminal renderer)', () => {
+      const r = JSON.stringify({ exit_code: 0, status: 'failed', stdout: 'boom', stderr: '' });
+      const v = deriveToolPillState({ functionArgs: '{}', result: r, hasResult: true, isErrorFlag: false });
+      expect(v.isError).toBe(true);
+      expect(v.state).toBe('error');
+      expect(v.errorText).toBe('Task failed');
+    });
+  });
+
   describe('isBackground (static)', () => {
     it('true when run_in_background arg is set', () => {
       const v = deriveToolPillState(noResult('{"command":"sleep 9","run_in_background":true}'));

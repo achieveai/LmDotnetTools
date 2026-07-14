@@ -69,8 +69,10 @@ export function deriveToolPillState(input: ToolPillInput): ToolPillView {
     // exit_code 0 while its captured stdout ends with a failing command's `[Exit code: N]`).
     exitCode = resolveExitCode(resultValue, unwrapped.text);
 
-    // A non-zero exit is a failure regardless of the (unreliable) is_error flag / envelope status.
-    isError = isErrorResult(result, isErrorFlag) || (exitCode !== null && exitCode !== 0);
+    // A non-zero exit OR a structured `status:"failed"` is a failure regardless of the (unreliable)
+    // is_error flag / envelope exit_code — keeps pill state consistent with the terminal renderer.
+    const statusFailed = isRecord(resultValue) && resultValue.status === 'failed';
+    isError = isErrorResult(result, isErrorFlag) || (exitCode !== null && exitCode !== 0) || statusFailed;
 
     if (isError) {
       if (isRecord(resultValue) && resultValue.error != null && resultValue.error !== false) {
@@ -79,6 +81,8 @@ export function deriveToolPillState(input: ToolPillInput): ToolPillView {
         errorText = result;
       } else if (exitCode !== null && exitCode !== 0) {
         errorText = `Exited with code ${exitCode}`;
+      } else if (statusFailed) {
+        errorText = 'Task failed';
       } else {
         errorText = resultText || (typeof result === 'string' ? result : '');
       }

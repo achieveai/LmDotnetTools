@@ -121,6 +121,10 @@ describe('parseExitCode', () => {
   it('reads the real shell.exitcode fixture as 22', () => {
     expect(parseExitCode(shellExit.result)).toBe(22);
   });
+
+  it('finds a trailing marker after a large body (bounded suffix scan)', () => {
+    expect(parseExitCode('x'.repeat(20000) + '\n\n[Exit code: 7]')).toBe(7);
+  });
 });
 
 describe('isErrorResult', () => {

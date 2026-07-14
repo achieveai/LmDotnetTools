@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { Component } from 'vue';
 import type { ToolCall } from '@/types';
+import type { ToolCallState } from '@/utils/toolTypes';
 import { resolveRenderer, deriveToolPillState } from '@/utils';
 import { useToolResult } from '@/composables/useToolResult';
 import CodeBlockRich from '@/components/tools/CodeBlockRich.vue';
@@ -58,30 +59,15 @@ const richMap: Partial<Record<string, Component>> = {
 };
 const richComponent = computed<Component | null>(() => richMap[renderer.value.family] ?? null);
 
-const statusIcon = computed(() => {
-  switch (view.value.state) {
-    case 'success':
-      return '✓';
-    case 'error':
-      return '⚠';
-    case 'awaiting-result':
-      return '◌';
-    default:
-      return '…';
-  }
-});
-const statusLabel = computed(() => {
-  switch (view.value.state) {
-    case 'success':
-      return 'succeeded';
-    case 'error':
-      return 'failed';
-    case 'awaiting-result':
-      return 'running';
-    default:
-      return 'receiving';
-  }
-});
+/** Single source of truth for the visible glyph AND the screen-reader label per state. */
+const STATUS: Record<ToolCallState, { icon: string; label: string }> = {
+  success: { icon: '✓', label: 'succeeded' },
+  error: { icon: '⚠', label: 'failed' },
+  'awaiting-result': { icon: '◌', label: 'running' },
+  'streaming-args': { icon: '…', label: 'receiving' },
+};
+const statusIcon = computed(() => STATUS[view.value.state].icon);
+const statusLabel = computed(() => STATUS[view.value.state].label);
 
 function fmtVal(v: unknown): string {
   return typeof v === 'string' ? v : JSON.stringify(v);
