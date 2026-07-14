@@ -154,6 +154,16 @@ internal sealed class CodeReviewDaemonOptions
     public int ReviewMaxTokens { get; init; } = 32000;
 
     /// <summary>
+    /// Maximum turns the primary review agent's multi-turn loop may take before it is stopped (the per-run
+    /// cap handed to the review loop). The tool-assisted path reads across the checkout, loads skills, and
+    /// dispatches sub-agents, so a large PR can exhaust the library default (50) before the loop ever writes
+    /// its review — yielding an empty review that then posts nothing. Raised so big diffs have the headroom
+    /// to finish. Applies to every loop this daemon's loop factory creates (review, judge, knowledge, and the
+    /// A/B variant arm); the review sub-agents are bounded separately by their own template cap.
+    /// </summary>
+    public int ReviewMaxTurns { get; init; } = 150;
+
+    /// <summary>
     /// Reasoning effort for the review agent's adaptive-thinking model (<c>output_config.effort</c>:
     /// <c>low</c> / <c>medium</c> / <c>high</c>). GitHub Copilot's adaptive Claude models reason before
     /// answering and, left uncapped, spend the whole token budget reasoning over a large diff and emit no

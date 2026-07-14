@@ -189,6 +189,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
                 MaxToken = _options.ReviewMaxTokens,
                 ExtraProperties = extraProperties,
             },
+            maxTurnsPerRun: _options.ReviewMaxTurns,
             store: _conversationStore,
             logger: _loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
             subAgentOptions: subAgentOptions,
