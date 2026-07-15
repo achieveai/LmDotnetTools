@@ -199,9 +199,9 @@ internal class SubAgentState
     }
 
     /// <summary>
-    /// Releases an inject send lease taken by <see cref="BeginContinuation"/> (call in a finally after
-    /// the inject SendAsync). When the last lease drains during a terminal disposal, the waiting
-    /// disposal is signalled so it can proceed.
+    /// Releases an inject send lease taken by <see cref="BeginContinuation"/> or
+    /// <see cref="TryBeginInjectLease"/> (call in a finally after the inject SendAsync). When the last
+    /// lease drains during a terminal disposal, the waiting disposal is signalled so it can proceed.
     /// </summary>
     public void EndInjectLease()
     {
@@ -212,6 +212,34 @@ internal class SubAgentState
             {
                 _ = _sendLeasesDrained.TrySetResult(true);
             }
+        }
+    }
+
+    /// <summary>
+    /// Side-effect-free inject-lease acquire for OUT-OF-BAND context delivery (a sandbox-discovered
+    /// directory <c>CLAUDE.md</c>/<c>AGENTS.md</c> routed to the sub-agent that opened the file), used by
+    /// <c>SubAgentManager.TryDeliverToRunningAsync</c>. Unlike <see cref="BeginContinuation"/>, it does NOT
+    /// mutate <see cref="NotifyParentOnCompletion"/> and does NOT claim the single-flight restart: a
+    /// context delivery must never alter the sub-agent's parent-relay preference nor race the Wait/trigger
+    /// state machine. Admits ONLY when the loop is genuinely Running and no terminal disposal has begun —
+    /// conservatively refusing the completion boundary so late context is dropped, never restarted — and
+    /// takes a send lease on the SAME counter <see cref="EndInjectLease"/> releases, so a terminal disposal
+    /// drains it before disposing the owned provider. Pair a <c>true</c> return with
+    /// <see cref="EndInjectLease"/> in a finally.
+    /// </summary>
+    /// <returns><c>true</c> if a lease was granted (caller must inject then <see cref="EndInjectLease"/>);
+    /// <c>false</c> if the target is finished or terminating (caller drops the delivery).</returns>
+    internal bool TryBeginInjectLease()
+    {
+        lock (_lifecycleLock)
+        {
+            if (_status == SubAgentStatus.Running && !_terminating)
+            {
+                _activeSendLeases++;
+                return true;
+            }
+
+            return false;
         }
     }
 

@@ -83,6 +83,14 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     public const string DefaultWorkspaceId = "default";
 
     /// <summary>
+    /// Dedup-ledger target sentinel for a discovery that is NOT routed to a specific sub-agent —
+    /// i.e. the fallback session fan-out and the boot-time root-file seed. Kept distinct from any
+    /// real <c>agent_id</c> so the primary conversation and a sub-agent that enter the SAME
+    /// directory each dedup independently (see <see cref="TryMarkDiscoverySeen(string, string, string, string)"/>).
+    /// </summary>
+    public const string SessionDiscoveryTarget = "__session__";
+
+    /// <summary>
     /// Upper bound on the gateway session-liveness probe so a wedged gateway degrades to "assume
     /// alive" quickly rather than blocking the turn for the full shared-client timeout.
     /// </summary>
@@ -1120,6 +1128,13 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             return;
         }
 
+        // Drop this thread's membership from every session it was routed to. The discovery dedup
+        // ledger is intentionally NOT cleared here: as before #198 it is cleared only on session
+        // destroy/dispose (DestroyWorkspaceSessionAsync / DisposeAsync). Removing the old
+        // clear-on-last-thread step also removes its check-then-act race against a concurrent
+        // RegisterThread. Per-target growth within a long-lived session is bounded by the session's
+        // own lifetime; per-sub-agent reclamation is deferred until the gateway can signal sub-agent
+        // teardown (tracked with the gateway dependency #187).
         foreach (var set in _sessionThreads.Values)
         {
             _ = set.TryRemove(threadId, out _);
@@ -1153,15 +1168,24 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Atomically marks <c>(kind, path)</c> as seen for <paramref name="sessionId"/>. Returns
-    /// true on the first call (caller proceeds with injection) and false on every subsequent
-    /// call for the same tuple (caller drops the duplicate). Used to defend against gateway
-    /// retry storms re-firing the same discovery event.
+    /// Atomically marks <c>(target, kind, path)</c> as seen for <paramref name="sessionId"/>.
+    /// Returns true on the first call (caller proceeds with injection) and false on every subsequent
+    /// call for the same tuple (caller drops the duplicate). Used to defend against gateway retry
+    /// storms re-firing the same discovery event.
     /// </summary>
-    public bool TryMarkDiscoverySeen(string sessionId, string kind, string path)
+    /// <remarks>
+    /// <paramref name="target"/> discriminates WHO the discovery was delivered to: a sub-agent's
+    /// <c>agent_id</c> for a routed delivery, or <see cref="SessionDiscoveryTarget"/> for the session
+    /// fan-out / root-file seed. Keying on it lets the primary and a sub-agent (or two sub-agents)
+    /// entering the same directory each receive that directory's context exactly once.
+    /// </remarks>
+    public bool TryMarkDiscoverySeen(string sessionId, string target, string kind, string path)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(kind) || string.IsNullOrWhiteSpace(path))
+        if (string.IsNullOrWhiteSpace(sessionId)
+            || string.IsNullOrWhiteSpace(target)
+            || string.IsNullOrWhiteSpace(kind)
+            || string.IsNullOrWhiteSpace(path))
         {
             return false;
         }
@@ -1169,8 +1193,50 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         var set = _discoverySeen.GetOrAdd(
             sessionId,
             _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
-        return set.TryAdd($"{kind}\0{path}", 0);
+        return set.TryAdd(DiscoverySeenKey(target, kind, path), 0);
     }
+
+    /// <summary>
+    /// Back-compat overload that marks <c>(kind, path)</c> under the session-level
+    /// <see cref="SessionDiscoveryTarget"/> sentinel — the pre-#198 signature. Preserves the
+    /// session-scoped dedup behaviour for existing/external callers that do not route to a sub-agent.
+    /// </summary>
+    public bool TryMarkDiscoverySeen(string sessionId, string kind, string path) =>
+        TryMarkDiscoverySeen(sessionId, SessionDiscoveryTarget, kind, path);
+
+    /// <summary>
+    /// Removes exactly the one <c>(target, kind, path)</c> dedup entry for <paramref name="sessionId"/>,
+    /// undoing a single <see cref="TryMarkDiscoverySeen(string, string, string, string)"/> mark. Used by
+    /// the router to roll back a routed discovery it optimistically marked but could NOT deliver to a live
+    /// sub-agent (all sinks returned <c>NotOwned</c>), so a later gateway redelivery can retry once the
+    /// sub-agent registers — healing the pre-registration race. Precise by design: it must NOT disturb a
+    /// mark a concurrent delivery placed for another path (or another target) of the same session.
+    /// Thread-safe; best-effort no-op for an unknown session/key or after disposal.
+    /// </summary>
+    public void UnmarkDiscoverySeen(string sessionId, string target, string kind, string path)
+    {
+        if (_disposed
+            || string.IsNullOrWhiteSpace(sessionId)
+            || string.IsNullOrWhiteSpace(target)
+            || string.IsNullOrWhiteSpace(kind)
+            || string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        if (_discoverySeen.TryGetValue(sessionId, out var set))
+        {
+            _ = set.TryRemove(DiscoverySeenKey(target, kind, path), out _);
+        }
+    }
+
+    /// <summary>
+    /// Builds the <see cref="_discoverySeen"/> inner-set key for a <c>(target, kind, path)</c> tuple. A
+    /// single builder keeps <see cref="TryMarkDiscoverySeen(string, string, string, string)"/> and
+    /// <see cref="UnmarkDiscoverySeen"/> on the exact same key shape.
+    /// </summary>
+    private static string DiscoverySeenKey(string target, string kind, string path) =>
+        $"{target}\0{kind}\0{path}";
 
     /// <summary>
     /// The exact URL the gateway is told to deliver context-discovery webhooks to (the auth-callback

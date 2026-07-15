@@ -19,6 +19,10 @@ public sealed class ContextDiscoveryDiagnostics
     private readonly ConcurrentDictionary<string, SessionReceived> _received =
         new(StringComparer.Ordinal);
 
+    private long _routedCount;
+    private long _droppedCount;
+    private long _fallbackCount;
+
     /// <summary>
     /// Records one authenticated, well-formed discovery webhook for <paramref name="sessionId"/>.
     /// No-op when the session id is blank (the arrival can't be attributed to a session). Thread
@@ -45,12 +49,61 @@ public sealed class ContextDiscoveryDiagnostics
     }
 
     /// <summary>
+    /// Records the routing decision the injector made for one <c>context_file</c> discovery. A
+    /// routed delivery renders no "Context loaded" pill in the primary view, so this per-outcome
+    /// counter is the operator's only signal that sub-agent routing is happening (vs. today's
+    /// session fan-out or an unresolved drop). Thread safe.
+    /// </summary>
+    public void RecordRoutingOutcome(ContextRoutingOutcome outcome)
+    {
+        switch (outcome)
+        {
+            case ContextRoutingOutcome.Routed:
+                _ = Interlocked.Increment(ref _routedCount);
+                break;
+            case ContextRoutingOutcome.Dropped:
+                _ = Interlocked.Increment(ref _droppedCount);
+                break;
+            case ContextRoutingOutcome.Fallback:
+                _ = Interlocked.Increment(ref _fallbackCount);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
     /// Point-in-time copy of every session's received-discovery state. The returned dictionary is a
     /// snapshot — safe to iterate without holding any lock.
     /// </summary>
     public IReadOnlyDictionary<string, SessionReceived> Snapshot() =>
         new Dictionary<string, SessionReceived>(_received, StringComparer.Ordinal);
+
+    /// <summary>
+    /// Point-in-time copy of the per-outcome routing counters (routed / dropped / fallback).
+    /// </summary>
+    public RoutingOutcomeCounts RoutingSnapshot() =>
+        new(
+            Interlocked.Read(ref _routedCount),
+            Interlocked.Read(ref _droppedCount),
+            Interlocked.Read(ref _fallbackCount));
 }
+
+/// <summary>
+/// Outcome of routing one <c>context_file</c> discovery: <see cref="Routed"/> = delivered to the
+/// opening sub-agent; <see cref="Dropped"/> = a routed discovery whose target could not receive it
+/// (finished/disposed/never-registered) — NOT redirected to the primary; <see cref="Fallback"/> =
+/// today's session fan-out (no/blank <c>agent_id</c> or the flag is off).
+/// </summary>
+public enum ContextRoutingOutcome
+{
+    Routed,
+    Dropped,
+    Fallback,
+}
+
+/// <summary>Per-outcome routing tally surfaced by the context-discovery diagnostics endpoint.</summary>
+public sealed record RoutingOutcomeCounts(long Routed, long Dropped, long Fallback);
 
 /// <summary>
 /// Per-session tally of received context-discovery webhooks. <see cref="LastKind"/> /

@@ -8,7 +8,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// <see cref="SandboxSessionRegistry.UnregisterThread"/>,
 /// <see cref="SandboxSessionRegistry.UnregisterThreadFromAllSessions"/>,
 /// <see cref="SandboxSessionRegistry.GetThreads"/>, and
-/// <see cref="SandboxSessionRegistry.TryMarkDiscoverySeen"/>.
+/// <see cref="SandboxSessionRegistry.TryMarkDiscoverySeen(string, string, string, string)"/>.
 /// </summary>
 public class SandboxSessionRegistryThreadTrackingTests
 {
@@ -80,33 +80,143 @@ public class SandboxSessionRegistryThreadTrackingTests
     public async Task TryMarkDiscoverySeen_FirstCallTrue_RepeatFalse()
     {
         await using var registry = CreateRegistry();
+        var target = SandboxSessionRegistry.SessionDiscoveryTarget;
 
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeTrue();
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeFalse();
     }
 
     [Fact]
-    public async Task TryMarkDiscoverySeen_ScopedByKindAndPathAndSession()
+    public async Task TryMarkDiscoverySeen_ScopedByTargetKindPathAndSession()
     {
+        await using var registry = CreateRegistry();
+        var target = SandboxSessionRegistry.SessionDiscoveryTarget;
+
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeTrue();
+        // Same path different kind: distinct entry.
+        registry.TryMarkDiscoverySeen(SessionA, target, "subagent", "CLAUDE.md").Should().BeTrue();
+        // Same kind+path, different session: distinct entry.
+        registry.TryMarkDiscoverySeen(SessionB, target, "context_file", "CLAUDE.md").Should().BeTrue();
+        // Repeat of the original — must be deduped.
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "CLAUDE.md").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TryMarkDiscoverySeen_DistinctByTarget_PrimaryVsSubAgents_SameDirectory()
+    {
+        await using var registry = CreateRegistry();
+        const string Kind = "context_file";
+        const string DirPath = "sub/CLAUDE.md";
+
+        // The primary (session sentinel) and two DISTINCT sub-agents entering the SAME directory each
+        // get their own first-sight true — dedup is per (target, kind, path).
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeTrue();
+
+        // …and each independently dedups on repeat.
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, DirPath).Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, DirPath).Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, Kind, DirPath).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TryMarkDiscoverySeen_ThreeArgOverload_DedupsUnderSessionSentinel_SharingTheBucket()
+    {
+        // SHOULD-2: the restored 3-arg (sessionId, kind, path) overload marks under the __session__
+        // sentinel, deduping identically to the 4-arg form: first true, repeat false…
         await using var registry = CreateRegistry();
 
         registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeTrue();
-        // Same path different kind: distinct entry.
-        registry.TryMarkDiscoverySeen(SessionA, "subagent", "CLAUDE.md").Should().BeTrue();
-        // Same kind+path, different session: distinct entry.
-        registry.TryMarkDiscoverySeen(SessionB, "context_file", "CLAUDE.md").Should().BeTrue();
-        // Repeat of the original — must be deduped.
         registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md").Should().BeFalse();
+
+        // …and it shares the SAME bucket as the explicit 4-arg __session__ form, so a caller mixing the
+        // two overloads still dedups the same discovery exactly once (no rogue second bucket).
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should().BeFalse("the 3-arg overload and the 4-arg __session__ form share one dedup bucket");
     }
 
     [Fact]
     public async Task TryMarkDiscoverySeen_RejectsBlankInputs()
     {
         await using var registry = CreateRegistry();
+        var target = SandboxSessionRegistry.SessionDiscoveryTarget;
 
-        registry.TryMarkDiscoverySeen("", "context_file", "CLAUDE.md").Should().BeFalse();
-        registry.TryMarkDiscoverySeen(SessionA, "", "CLAUDE.md").Should().BeFalse();
-        registry.TryMarkDiscoverySeen(SessionA, "context_file", "").Should().BeFalse();
+        registry.TryMarkDiscoverySeen("", target, "context_file", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, "", "context_file", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, target, "", "CLAUDE.md").Should().BeFalse();
+        registry.TryMarkDiscoverySeen(SessionA, target, "context_file", "").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task UnmarkDiscoverySeen_RemovesOnlyThatKey_LeavingSiblingPathsAndTargets()
+    {
+        await using var registry = CreateRegistry();
+        const string Kind = "context_file";
+        const string PathX = "sub/CLAUDE.md";
+        const string PathY = "sub/AGENTS.md";
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathX).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathY).Should().BeTrue();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, PathX).Should().BeTrue();
+
+        // Precise per-(target, kind, path) rollback — used by the injector to un-mark an undeliverable
+        // routed discovery. ONLY agent-A's PathX key clears; a sibling path of the same target and a
+        // different target are both untouched (the C5 regression this replaces used a target-wide prefix
+        // wipe that also erased a concurrent path's mark).
+        registry.UnmarkDiscoverySeen(SessionA, "agent-A", Kind, PathX);
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathX).Should().BeTrue("only agent-A's PathX key was un-marked");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", Kind, PathY).Should().BeFalse("a sibling path of the same target is untouched");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-B", Kind, PathX).Should().BeFalse("another target is untouched");
+    }
+
+    [Fact]
+    public async Task UnmarkDiscoverySeen_UnknownSessionOrKey_IsNoOp()
+    {
+        await using var registry = CreateRegistry();
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md").Should().BeTrue();
+
+        // Must not throw for an unknown session, a never-marked target, or a never-marked path, and
+        // must leave the one real mark intact.
+        registry.UnmarkDiscoverySeen("ghost-session", "agent-A", "context_file", "CLAUDE.md");
+        registry.UnmarkDiscoverySeen(SessionA, "agent-never-marked", "context_file", "CLAUDE.md");
+        registry.UnmarkDiscoverySeen(SessionA, "agent-A", "context_file", "other/path.md");
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
+            .Should().BeFalse("no-op un-marks must leave the real mark intact");
+    }
+
+    [Fact]
+    public async Task UnregisterThreadFromAllSessions_KeepsDedupLedger_UntilSessionDestroy()
+    {
+        await using var registry = CreateRegistry();
+        registry.RegisterThread(SessionA, "thread-1");
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md").Should().BeTrue();
+
+        // Removing the session's last thread must NOT clear its discovery ledger (the pre-#198
+        // behaviour, restored to drop the check-then-act race vs a concurrent RegisterThread). The
+        // ledger is cleared only on session destroy/dispose, so a redelivery still dedups.
+        registry.UnregisterThreadFromAllSessions("thread-1");
+
+        registry.TryMarkDiscoverySeen(SessionA, "agent-A", "context_file", "CLAUDE.md")
+            .Should().BeFalse("the dedup ledger persists until the session is destroyed/disposed");
+    }
+
+    [Fact]
+    public async Task UnregisterThreadFromAllSessions_KeepsDedupWhileAnotherThreadIsLive()
+    {
+        await using var registry = CreateRegistry();
+        registry.RegisterThread(SessionA, "thread-stays");
+        registry.RegisterThread(SessionA, "thread-goes");
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should().BeTrue();
+
+        registry.UnregisterThreadFromAllSessions("thread-goes");
+
+        // The session still routes thread-stays, so its dedup ledger must survive (else double-inject).
+        registry.TryMarkDiscoverySeen(SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md")
+            .Should().BeFalse();
     }
 
     [Fact]
@@ -114,7 +224,8 @@ public class SandboxSessionRegistryThreadTrackingTests
     {
         var registry = CreateRegistry();
         registry.RegisterThread(SessionA, "thread-1");
-        _ = registry.TryMarkDiscoverySeen(SessionA, "context_file", "CLAUDE.md");
+        _ = registry.TryMarkDiscoverySeen(
+            SessionA, SandboxSessionRegistry.SessionDiscoveryTarget, "context_file", "CLAUDE.md");
 
         await registry.DisposeAsync();
 
