@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
@@ -129,14 +130,39 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
-    public async Task Reviewed_retries_diff_only_when_the_tool_assisted_review_exceeds_the_context_window()
+    public async Task Reviewed_prepends_the_knowledge_base_toc_read_from_the_leased_slots_host_store()
     {
         using var fixture = Fixture.Create();
         var run = fixture.SeedRun();
 
-        // The tool-assisted attempt (non-null toolContext) is rejected by the model API with the context-window
-        // 400 the daemon saw live (the PR diff + fanned-out sub-agent results overflow the window). The diff-only
-        // retry (null toolContext) succeeds — so the run yields a leaner review instead of producing nothing.
+        // The pooled path must read KnowledgeBase/_toc.md HOST-side from the LEASED SLOT's store checkout —
+        // via _slotWorkspace.HostFileSystem + lease.Prepared.StoreRoot — not the boot-lifetime sandbox
+        // session (fixture.BootFileSystem), which the gateway never registers for a pooled run and 404s
+        // ("Session not found"). Seed the ToC on the HOST file system at the slot's store root, mirroring
+        // what a real KnowledgeExtractionCommitter run would have already committed there.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [KB-ENTRY-XYZ](system/kb-entry-xyz.md)\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("## Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
+        text.Should().Contain("KB-ENTRY-XYZ", "the seeded ToC entry is surfaced to the pooled reviewer");
+    }
+
+    [Fact]
+    public async Task Reviewed_escalates_to_the_bigger_model_then_diff_only_when_the_context_window_overflows()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // EVERY tool-assisted attempt is rejected with the context-window 400 the daemon saw live (the PR diff +
+        // fanned-out sub-agent results overflow the window). So the escalation ladder runs to the end: (1) base
+        // model tool-assisted → overflow; (2) escalate to the bigger-window model tool-assisted → overflow;
+        // (3) diff-only on the bigger model → succeeds, yielding a leaner review instead of producing nothing.
         fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
             "HTTP request failed with status BadRequest (Bad Request). Response body: "
                 + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
@@ -145,19 +171,54 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        // Two attempts: the tool-assisted one (non-null context) then the diff-only retry (null context).
-        fixture.Factory.ToolContexts.Should().HaveCount(2);
+        // Three attempts: base tool-assisted, escalation-model tool-assisted, escalation-model diff-only.
+        fixture.Factory.ToolContexts.Should().HaveCount(3);
         fixture.Factory.ToolContexts[0].Should().NotBeNull();
-        fixture.Factory.ToolContexts[1].Should().BeNull();
+        fixture.Factory.ToolContexts[1].Should().NotBeNull();
+        fixture.Factory.ToolContexts[2].Should().BeNull();
 
-        // The retry runs on a DISTINCT thread so it starts a clean conversation rather than reloading the
+        // Attempts 2 & 3 escalate to the bigger-window model (OverflowEscalationModelId default gpt-5.6-terra).
+        fixture.Factory.ModelIds[0].Should().Be(run.ModelId);
+        fixture.Factory.ModelIds[1].Should().Be("gpt-5.6-terra");
+        fixture.Factory.ModelIds[2].Should().Be("gpt-5.6-terra");
+
+        // Each attempt runs on a DISTINCT thread so it starts a clean conversation rather than reloading the
         // overflowing history that just blew the window.
-        fixture.Factory.ThreadIds[0].Should().NotBe(fixture.Factory.ThreadIds[1]);
+        fixture.Factory.ThreadIds.Distinct().Should().HaveCount(3);
 
         // The review artifact holds the diff-only review — the run produced content, not a silent nothing.
         var artifact = fixture.Store.GetArtifacts(run.Id)
             .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
         artifact.Payload.Should().Contain("diff-only");
+    }
+
+    [Fact]
+    public async Task Reviewed_escalation_to_the_bigger_model_succeeds_tool_assisted_without_dropping_to_diff_only()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun() with { ModelId = "gpt-5.6-luna" };
+
+        // ONLY the base model overflows; the bigger-window escalation model succeeds tool-assisted — so the
+        // review stays grounded (keeps its sub-agents) instead of degrading to diff-only.
+        fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+        fixture.Factory.ThrowOnlyForModel = "gpt-5.6-luna";
+        fixture.Factory.DefaultText = "## Review (grounded on the bigger model)\nShould: rename X.";
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // Two attempts, both tool-assisted: base (overflow) then escalation model (succeeds). No diff-only fallback.
+        fixture.Factory.ToolContexts.Should().HaveCount(2);
+        fixture.Factory.ToolContexts[0].Should().NotBeNull();
+        fixture.Factory.ToolContexts[1].Should().NotBeNull();
+        fixture.Factory.ModelIds[0].Should().Be("gpt-5.6-luna");
+        fixture.Factory.ModelIds[1].Should().Be("gpt-5.6-terra");
+
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        artifact.Payload.Should().Contain("grounded on the bigger model");
     }
 
     [Fact]
@@ -483,6 +544,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 BootRunner,
                 BootFileSystem,
                 _options,
+                [new FakeReviewCommentPublisher("github")],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace);

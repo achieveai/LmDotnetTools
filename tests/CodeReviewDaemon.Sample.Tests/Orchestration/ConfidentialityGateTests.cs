@@ -175,6 +175,7 @@ public sealed class ConfidentialityGateTests
             new FakeSandboxCommandRunner(),
             new FakeSandboxFileSystem(),
             options,
+            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance);
 
     private static ReviewRun SeedRun(bool isForkPr, bool isTargetRepoPublic) => new()

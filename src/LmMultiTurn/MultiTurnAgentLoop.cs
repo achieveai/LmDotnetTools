@@ -340,7 +340,29 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // Per-run error: log, notify client, but keep the loop alive
+                    // Per-run error: log, notify client, but keep the loop alive. First size the accumulated
+                    // conversation (the diff plus every fanned-out sub-agent result, folded into one history) so
+                    // a context-window overflow is debuggable. Best-effort — never masks the real error below.
+                    try
+                    {
+                        var snapshot = GetHistorySnapshot();
+                        long chars = 0;
+                        foreach (var m in snapshot)
+                        {
+                            try { chars += System.Text.Json.JsonSerializer.Serialize<IMessage>(m).Length; }
+                            catch { /* a message that won't serialize contributes 0 to the estimate */ }
+                        }
+
+                        Logger.LogWarning(
+                            "Run {RunId} failing ({ExType}): conversation = {Messages} messages, ~{Chars} serialized "
+                                + "chars (~{Tokens} tokens est).",
+                            assignment.RunId, ex.GetType().Name, snapshot.Count, chars, chars / 4);
+                    }
+                    catch
+                    {
+                        // Diagnostics must never mask the real per-run error logged below.
+                    }
+
                     Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
                     await CompleteRunAsync(
                         assignment.RunId,

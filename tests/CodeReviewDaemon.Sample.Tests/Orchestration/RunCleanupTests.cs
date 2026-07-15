@@ -53,6 +53,7 @@ public sealed class RunCleanupTests
             new FakeSandboxCommandRunner(),
             new FakeSandboxFileSystem(),
             options,
+            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             provisioner);
 

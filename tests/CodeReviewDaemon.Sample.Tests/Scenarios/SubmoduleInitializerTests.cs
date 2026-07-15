@@ -21,6 +21,11 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
     private static readonly GitRemoteUrl RepoRemote =
         GitRemoteUrl.Parse("https://github.com/acme/widgets.git");
 
+    // The reviewed ADO repo's superproject remote (modern host); its own .gitmodules below use the LEGACY
+    // {org}.visualstudio.com host, exercising the canonicalizer in SubmoduleInitializer.DecideFetch.
+    private static readonly GitRemoteUrl AdoRepoRemote =
+        GitRemoteUrl.Parse("https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbDEV");
+
     public SubmoduleInitializerTests(ITestOutputHelper output)
         : base(output)
     {
@@ -51,6 +56,38 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
             fileSystem,
             CreatePolicy(),
             "github",
+            LoggerFactory.CreateLogger<SubmoduleInitializer>());
+
+    // An ADO allow-list keyed to the MODERN dev.azure.com host+path (as BuildStoreSubmoduleAllowList emits):
+    // the reviewed repo's own first-party submodules LibProfiler + "Microsoft%20Orleans". SecretLib is a
+    // same-org repo that is deliberately NOT listed — proving the allow-list is explicit, not a same-org
+    // wildcard.
+    private static OperationPolicy CreateAdoPolicy() =>
+        new(
+            new ReviewScope(
+                Provider: "ado",
+                TargetHost: "dev.azure.com",
+                TargetRepoPath: "/mcqdbdev/MCQdb_Development/_git/MCQdbDEV",
+                ForkHost: null,
+                ForkRepoPath: null,
+                ReviewBotHost: "dev.azure.com",
+                ReviewBotRepoPath: "/mcqdbdev/MCQdb_Development/_git/MCQdbReview",
+                ApiHost: "dev.azure.com",
+                AllowedSubmodules:
+                [
+                    new SubmoduleAllowRule("dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/LibProfiler"),
+                    new SubmoduleAllowRule("dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/Microsoft%20Orleans"),
+                ]));
+
+    private SubmoduleInitializer CreateAdoInitializer(
+        ISandboxCommandRunner runner,
+        ISandboxFileSystem fileSystem
+    ) =>
+        new(
+            new GitRunner(runner),
+            fileSystem,
+            CreateAdoPolicy(),
+            "ado",
             LoggerFactory.CreateLogger<SubmoduleInitializer>());
 
     [Fact]
@@ -165,6 +202,55 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().ContainSingle();
         runner.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Ado_legacy_visualstudio_host_inits_when_allow_listed_and_denies_an_unlisted_same_org_name()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        // MCQdbDEV's own .gitmodules uses the LEGACY {org}.visualstudio.com host. LibProfiler is allow-listed
+        // (inits after canonicalization); SecretLib is the SAME org/project but not listed — still denied,
+        // proving the fix is an explicit allow-list, not a same-org/same-host wildcard.
+        fs.Files[$"{RepoRoot}/.gitmodules"] = """
+            [submodule "libs/LibProfiler"]
+            	path = libs/LibProfiler
+            	url = https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/LibProfiler
+            [submodule "libs/SecretLib"]
+            	path = libs/SecretLib
+            	url = https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/SecretLib
+            """;
+
+        var outcome = await CreateAdoInitializer(runner, fs)
+            .InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
+
+        outcome.InitializedPaths.Should().Equal("libs/LibProfiler");
+        outcome.Denied.Should().ContainSingle();
+        outcome.Denied[0].Path.Should().Be("libs/SecretLib");
+        runner
+            .Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .ContainSingle(a => a.Contains("submodule update --init -- libs/LibProfiler"));
+    }
+
+    [Fact]
+    public async Task Ado_legacy_host_matches_a_url_encoded_submodule_name()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        // The submodule's URL repo name carries a URL-encoded space (%20). GitRemoteUrl.Parse does NOT decode
+        // it, so the allow-list value keeps the exact %20 spelling and still matches.
+        fs.Files[$"{RepoRoot}/.gitmodules"] = """
+            [submodule "orleans"]
+            	path = orleans/microsoft-orleans
+            	url = https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/Microsoft%20Orleans
+            """;
+
+        var outcome = await CreateAdoInitializer(runner, fs)
+            .InitializeAsync(RepoRoot, AdoRepoRemote, CancellationToken.None);
+
+        outcome.InitializedPaths.Should().Equal("orleans/microsoft-orleans");
+        outcome.Denied.Should().BeEmpty();
     }
 
     [Fact]

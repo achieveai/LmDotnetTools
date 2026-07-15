@@ -10,7 +10,8 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// </summary>
 internal sealed class HostGitCommandRunner(
     Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> credentialsSource,
-    ILogger<HostGitCommandRunner> logger) : ISandboxCommandRunner
+    ILogger<HostGitCommandRunner> logger,
+    IReadOnlyCollection<string>? adoOrgs = null) : ISandboxCommandRunner
 {
     public async Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
     {
@@ -55,7 +56,7 @@ internal sealed class HostGitCommandRunner(
         if (string.Equals(command.Argv[0], "git", StringComparison.OrdinalIgnoreCase))
         {
             var credentials = await credentialsSource(cancellationToken).ConfigureAwait(false);
-            foreach (var (k, v) in HostGitCredentialEnv.Build(credentials))
+            foreach (var (k, v) in HostGitCredentialEnv.Build(credentials, adoOrgs))
             {
                 psi.Environment[k] = v;
             }

@@ -211,6 +211,7 @@ public sealed class ReviewToolContextBuildTests
             new FakeSandboxCommandRunner(),
             new FakeSandboxFileSystem(),
             options,
+            [new FakeReviewCommentPublisher("github")],
             NullLoggerFactory.Instance,
             provisioner,
             discoveredItemsSource,

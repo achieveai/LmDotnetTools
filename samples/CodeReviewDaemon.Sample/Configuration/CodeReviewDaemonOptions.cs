@@ -105,6 +105,16 @@ internal sealed class CodeReviewDaemonOptions
     public string SubAgentModelId { get; init; } = "";
 
     /// <summary>
+    /// Bigger-context model the <b>primary review loop</b> escalates to when a review attempt fails with a
+    /// context-window overflow (the diff + all fanned-out sub-agent results exceed <see cref="ReviewModelId"/>'s
+    /// window). On overflow the loop retries on a FRESH thread with this model (keeping the tool context), then
+    /// falls back to diff-only on it if it still overflows. Default <c>gpt-5.6-terra</c> (the largest-window
+    /// sibling of <c>gpt-5.6-luna</c>/<c>-sol</c>). Empty ⇒ no model escalation (fall straight back to diff-only
+    /// on <see cref="ReviewModelId"/>). Must be served by the same Copilot backend as the review model.
+    /// </summary>
+    public string OverflowEscalationModelId { get; init; } = "gpt-5.6-terra";
+
+    /// <summary>
     /// Maximum number of discovered <c>code-reviewer:*</c> sub-agents the review loop may run concurrently
     /// (maps to the library's <c>SubAgentOptions.MaxConcurrentSubAgents</c>). Once this many are in flight the
     /// dispatcher blocks with "Max concurrent sub-agents (N) reached" until one completes, so a higher value
@@ -261,6 +271,27 @@ internal sealed class CodeReviewDaemonOptions
     public IReadOnlyList<string> CrossRepoSiblings { get; init; } = [];
 
     /// <summary>
+    /// The reviewed repo's OWN first-party nested submodule repo names — the <c>_git/&lt;name&gt;</c> (ADO) or
+    /// <c>&lt;name&gt;</c> (GitHub) URL path segments its <c>.gitmodules</c> declares. Each is added to the run's
+    /// submodule allow-list under the same org/owner (+ project, for ADO) as the reviewed repo, so the
+    /// tool-assisted review can initialize and read the target's own dependency graph. Empty (default) ⇒ none.
+    /// <para>
+    /// Unlike <see cref="CrossRepoSiblings"/> (store-level sibling repos co-located for extra cross-repo
+    /// context), these are the <b>target's own</b> dependencies — needed to build and understand it — so they
+    /// are added <b>unconditionally</b> and are NOT gated by
+    /// <c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c>'s fork/public confidentiality check. The
+    /// allow-list stays fail-closed: only the exact names listed here are permitted; a submodule an attacker
+    /// adds — or repoints an existing path to — any other name/host is still denied.
+    /// </para>
+    /// <para>
+    /// Names are matched against the parsed request URL path, which is NOT URL-decoded, so a URL-encoded
+    /// segment must be listed exactly as it appears in the URL (e.g. <c>Microsoft%20Orleans</c>, not
+    /// <c>Microsoft Orleans</c>).
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> ReviewedRepoSubmodules { get; init; } = [];
+
+    /// <summary>
     /// Remote URL of the <c>AchieveAiReviews</c> cross-repo store to check out as the review superproject:
     /// the reviewed repo is a submodule under <c>repos/&lt;RepoName&gt;</c> alongside the shared
     /// <c>Contracts/</c> layer and sibling repos. When a tool-assisted run's reviewed repo is a submodule of
@@ -278,6 +309,16 @@ internal sealed class CodeReviewDaemonOptions
 
     /// <summary>Host root the review-checkout pool slots live under; defaults beside the binary.</summary>
     public string? ReviewPoolHostRoot { get; init; }
+
+    /// <summary>
+    /// Whether the sandbox gateway roots every workspace at <c>WORKSPACE_BASE_PATH/&lt;app-dir&gt;/&lt;workspace&gt;</c>
+    /// (SandboxedOstoolsMcpServer ADR 0028). When <c>true</c>, the daemon prepares its pooled store — and measures
+    /// slot paths — under <c>&lt;app-dir&gt;</c> (derived from <c>SandboxGateway:AppId</c>) so the app-dir-less
+    /// <c>workspace</c> field it sends re-roots to the prepared store instead of an empty gateway-created dir.
+    /// Default <c>false</c> = pre-ADR-0028 flat behavior, matching a gateway image that predates per-app rooting;
+    /// set <c>true</c> only against a gateway that does the per-app rooting.
+    /// </summary>
+    public bool PerAppWorkspaceRooting { get; init; }
 
     /// <summary>Ephemeral scratch dir name (sibling of the store clone), wiped per lease.</summary>
     public string ScratchDirName { get; init; } = "scratch";

@@ -106,6 +106,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly ISandboxCommandRunner _commandRunner;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly CodeReviewDaemonOptions _options;
+    /// <summary>Host-side review-comment publishers, keyed by <see cref="IReviewCommentPublisher.Provider"/>.
+    /// GitHub posting is agent-owned (the review agent calls the code-reviewer:post-pr-review skill), so only the
+    /// ADO publisher is registered — the <c>post-pr-review</c> skill has no Azure DevOps path, so ADO posting is
+    /// done host-side here. Empty for GitHub-only profiles.</summary>
+    private readonly IReadOnlyList<IReviewCommentPublisher> _publishers;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DaemonReviewStageExecutor> _logger;
     private readonly IReviewSessionProvisioner? _provisioner;
@@ -139,6 +144,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ISandboxCommandRunner commandRunner,
         ISandboxFileSystem fileSystem,
         CodeReviewDaemonOptions options,
+        IEnumerable<IReviewCommentPublisher> publishers,
         ILoggerFactory loggerFactory,
         IReviewSessionProvisioner? provisioner = null,
         IDiscoveredItemsSource? discoveredItemsSource = null,
@@ -155,6 +161,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _commandRunner = commandRunner ?? throw new ArgumentNullException(nameof(commandRunner));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _publishers = [.. publishers ?? throw new ArgumentNullException(nameof(publishers))];
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<DaemonReviewStageExecutor>();
         _provisioner = provisioner;
@@ -871,12 +878,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// Builds the per-run submodule allow-list for the cross-repo <c>AchieveAiReviews</c> store checkout
-    /// (Task 16). The reviewed repo itself and the shared, low-sensitivity <c>Contracts/</c> layer are
-    /// always permitted; a configured sibling repo (<see cref="CodeReviewDaemonOptions.CrossRepoSiblings"/>)
-    /// is added only when <see cref="AllowsCrossRepoCoLocation"/> confirms this run is same-trust-domain
-    /// (Task 17, design §6 Risk B) — an untrusted (fork/public/unknown-trust) PR never gets a sibling
-    /// co-located beside it, so a prompt-injected agent has nothing extra to read and exfiltrate via the
-    /// posted review. Returns empty for the diff-only path, which never walks any submodule.
+    /// (Task 16). The reviewed repo itself, the shared, low-sensitivity <c>Contracts/</c> layer, and the
+    /// reviewed repo's own first-party submodules (<see cref="CodeReviewDaemonOptions.ReviewedRepoSubmodules"/>)
+    /// are always permitted — the last unconditionally, because they are the target's own dependency graph
+    /// rather than store-level siblings. A configured sibling repo
+    /// (<see cref="CodeReviewDaemonOptions.CrossRepoSiblings"/>) is added only when
+    /// <see cref="AllowsCrossRepoCoLocation"/> confirms this run is same-trust-domain (Task 17, design §6 Risk
+    /// B) — an untrusted (fork/public/unknown-trust) PR never gets a sibling co-located beside it, so a
+    /// prompt-injected agent has nothing extra to read and exfiltrate via the posted review. Every entry stays
+    /// an exact host+path allow rule (no wildcard); returns empty for the diff-only path, which never walks any
+    /// submodule.
     /// </summary>
     internal IReadOnlyList<SubmoduleAllowRule> BuildStoreSubmoduleAllowList(ReviewRun run, RepoIdentity repo)
     {
@@ -900,6 +911,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             new(host, RepoPath(repo.RepoName)),
             new(host, RepoPath("Contracts")),
         };
+
+        // The reviewed repo's OWN first-party submodules (its direct dependencies) are allow-listed
+        // UNCONDITIONALLY — unlike CrossRepoSiblings below, these are the target's own dependency graph
+        // (needed to build/understand it), not store-level siblings, so the fork/public confidentiality gate
+        // does not apply. Still fail-closed: only the explicit configured names are permitted; a submodule an
+        // attacker adds or repoints to any other name/host is denied.
+        foreach (var submodule in _options.ReviewedRepoSubmodules)
+        {
+            rules.Add(new SubmoduleAllowRule(host, RepoPath(submodule)));
+        }
 
         if (AllowsCrossRepoCoLocation(run, repo))
         {
@@ -952,7 +973,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
-        reviewInput = await PrependPriorKnowledgeAsync(reviewInput, context.StoreRoot, cancellationToken)
+        reviewInput = await PrependPriorKnowledgeAsync(reviewInput, run.Id, context.StoreRoot, cancellationToken)
             .ConfigureAwait(false);
 
         // Primary review — collected and persisted; never posts here (the Posted stage owns posting).
@@ -1080,24 +1101,43 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// never fail the review, design §6); the review prompt still directs the agent to consult the KB itself.
     /// </summary>
     private async Task<string> PrependPriorKnowledgeAsync(
-        string reviewInput, string? storeRoot, CancellationToken cancellationToken)
+        string reviewInput, long runId, string? storeRoot, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(storeRoot))
+        // A pooled review reads KnowledgeBase/_toc.md HOST-side from its leased slot's store checkout — the same
+        // host filesystem + store root CommitPooledNotesAsync writes notes back through. The class-field
+        // _fileSystem is the boot-lifetime sandbox session, which the gateway never registered for this run and
+        // 404s ("Session not found"); every pooled retrieval through it failed silently, so reviews never saw
+        // prior knowledge even though extraction populates the KB on the store's main. Non-pooled/legacy runs
+        // (no lease) keep the original _fileSystem/storeRoot path unchanged.
+        ISandboxFileSystem fileSystem;
+        string? root;
+        if (_slotWorkspace is not null && _leasedReviews.TryGetValue(runId, out var lease))
+        {
+            fileSystem = _slotWorkspace.HostFileSystem;
+            root = lease.Prepared.StoreRoot;
+        }
+        else
+        {
+            fileSystem = _fileSystem;
+            root = storeRoot;
+        }
+
+        if (string.IsNullOrWhiteSpace(root))
         {
             return reviewInput;
         }
 
-        var tocPath = PosixJoin(storeRoot, "KnowledgeBase/_toc.md");
+        var tocPath = PosixJoin(root, "KnowledgeBase/_toc.md");
         string? toc;
         try
         {
-            toc = await _fileSystem.ReadFileAsync(tocPath, cancellationToken).ConfigureAwait(false);
+            toc = await fileSystem.ReadFileAsync(tocPath, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // A missing _toc.md returns null (handled below); but the read itself can THROW — e.g. the
-            // boot-lifetime sandbox session 404s ("Session not found") or the gateway hiccups. Design §6
-            // says the KB prepend must NEVER fail the review, so degrade to "no prior knowledge" and go on.
+            // A missing _toc.md returns null (handled below); but the read itself can THROW — e.g. a gateway
+            // hiccup or a stale session. Design §6 says the KB prepend must NEVER fail the review, so degrade to
+            // "no prior knowledge" and go on.
             _logger.LogWarning(ex, "Reading KnowledgeBase/_toc.md failed; proceeding without prior knowledge.");
             return reviewInput;
         }
@@ -1121,6 +1161,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
 
+        // Size the input the daemon controls (diff + manifest + prepended knowledge). Sub-agent results
+        // accumulate ON TOP of this inside the loop; MultiTurnAgentLoop additionally logs the FULL conversation
+        // size when a run fails (e.g. context-window overflow), so the two together show where the budget went.
+        _logger.LogInformation(
+            "Run {RunId}: review input {Chars} chars (~{Tokens} tokens est), tool-assisted={ToolAssisted}, model={Model}.",
+            run.Id, reviewInput.Length, reviewInput.Length / 4, toolContext is not null, run.ModelId ?? "(default)");
+
         ReviewAgentResult result;
         try
         {
@@ -1128,23 +1175,54 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId), cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (toolContext is not null && IsContextWindowOverflow(ex))
+        catch (Exception ex) when (IsContextWindowOverflow(ex))
         {
-            // The tool-assisted attempt accumulated more input than the model's context window — the PR diff
-            // plus the fanned-out sub-agents' full results, folded into one conversation. Rather than the run
-            // dying with no output, retry ONCE diff-only (toolContext=null → no sub-agents, no tool results to
-            // accumulate) so the PR still gets a leaner review. Config lowers the peak (MaxConcurrentSubAgents),
-            // this guarantees a result when it still overflows. A diff so large it overflows even diff-only is
-            // left to fail (RetryPending) — nothing more to shed. The retry uses a FRESH thread so it starts a
-            // clean conversation instead of reloading the overflowing history that just blew the window.
-            _logger.LogWarning(
-                ex,
-                "Run {RunId}: tool-assisted review exceeded the model's context window; retrying diff-only (no sub-agents).",
-                run.Id);
-            result = await RunReviewAttemptAsync(
-                    run, reviewInput, checkoutRoot, storeRoot,
-                    toolContext: null, ThreadId(run, run.VariantId + "-ctxretry"), cancellationToken)
-                .ConfigureAwait(false);
+            // Context window exceeded (the PR diff plus the fanned-out sub-agents' full results folded into one
+            // conversation). Escalation ladder, each on a FRESH thread so it never reloads the overflowing
+            // history: (1) escalate to the bigger-window model (OverflowEscalationModelId, e.g. gpt-5.6-terra)
+            // KEEPING the tool context so the review stays grounded; (2) if the bigger model still overflows
+            // while tool-assisted, shed the sub-agents (diff-only) on it; (3) diff-only on the base model when
+            // nothing bigger is configured. A diff-only attempt that still overflows is surfaced (RetryPending).
+            var escalation = _options.OverflowEscalationModelId;
+            var canEscalate = !string.IsNullOrWhiteSpace(escalation)
+                && !string.Equals(escalation, run.ModelId, StringComparison.OrdinalIgnoreCase);
+
+            if (canEscalate)
+            {
+                _logger.LogWarning(
+                    ex, "Run {RunId}: context window exceeded on {Model}; escalating to bigger-window {Escalation}.",
+                    run.Id, run.ModelId ?? "(default)", escalation);
+                try
+                {
+                    result = await RunReviewAttemptAsync(
+                            run, reviewInput, checkoutRoot, storeRoot, toolContext,
+                            ThreadId(run, run.VariantId + "-esc"), cancellationToken, modelOverride: escalation)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex2) when (toolContext is not null && IsContextWindowOverflow(ex2))
+                {
+                    _logger.LogWarning(
+                        ex2, "Run {RunId}: {Escalation} also exceeded the window; retrying diff-only (no sub-agents) on it.",
+                        run.Id, escalation);
+                    result = await RunReviewAttemptAsync(
+                            run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
+                            ThreadId(run, run.VariantId + "-esc-ctxretry"), cancellationToken, modelOverride: escalation)
+                        .ConfigureAwait(false);
+                }
+            }
+            else if (toolContext is not null)
+            {
+                _logger.LogWarning(
+                    ex, "Run {RunId}: context window exceeded; retrying diff-only (no sub-agents).", run.Id);
+                result = await RunReviewAttemptAsync(
+                        run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
+                        ThreadId(run, run.VariantId + "-ctxretry"), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                throw;
+            }
         }
 
         _ = _store.AddArtifact(new ReviewArtifact
@@ -1162,7 +1240,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// Runs one primary-review attempt with the given <paramref name="toolContext"/> (non-null = tool-assisted
     /// with sub-agents; null = diff-only) on its own conversation <paramref name="threadId"/>, returning the
     /// collected review. Split out of <see cref="RunPrimaryReviewAsync"/> so an attempt that overflows the
-    /// model context window can be retried diff-only on a fresh thread without re-running context assembly.
+    /// model context window can be retried — diff-only and/or on a bigger-window <paramref name="modelOverride"/>
+    /// (e.g. gpt-5.6-terra) — on a fresh thread without re-running context assembly. <paramref name="modelOverride"/>
+    /// is <c>null</c> to use the run's configured model.
     /// </summary>
     private async Task<ReviewAgentResult> RunReviewAttemptAsync(
         ReviewRun run,
@@ -1171,13 +1251,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? storeRoot,
         ReviewToolContext? toolContext,
         string threadId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? modelOverride = null)
     {
         var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
             run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
-        var (repo, _) = ResolveRepo(run);
+        var (repo, provider) = ResolveRepo(run);
+        // The daemon posts every review HOST-side (PostAsync), for GitHub AND Azure DevOps, so the agent is
+        // never told to post: should_post is always false. Agent-owned posting via code-reviewer:post-pr-review
+        // was abandoned because it never delivered a comment for either provider — the skill is GitHub-`gh`-only
+        // (so it can't target ADO), and even for GitHub the agent loaded the skill and completed without running
+        // it (unresolved in-sandbox gh auth). Host posting is exactly-once via the outbox and provider-agnostic.
+        const bool shouldPost = false;
         var variables = BuildPromptVariables(
-            _options.BotName, repo, run.PrId, _options.EnableCommentPosting, checkoutRoot, storeRoot,
+            _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
             toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
         var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
@@ -1186,7 +1273,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
         var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
         await using var loop = _loopFactory.Create(
-            profile, run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext);
+            profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
         return await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
     }
@@ -1272,6 +1359,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id);
         }
 
+        // Host-side posting for EVERY provider (GitHub and Azure DevOps). Agent-owned posting was abandoned
+        // (see should_post in ReviewAsync), so the daemon is the only thing that posts — the review reaches the
+        // PR here or nowhere. Guarded by hasContent so an empty review never claims the head_sha's idempotency
+        // slot (which would permanently suppress a later real review of the same commit). ReviewPoster enforces
+        // exactly-once via the outbox + a backstop thread scan keyed on head_sha, so a re-poll replays without
+        // double-posting, and LivePostingAuthorized=EnableCommentPosting keeps a collect-only profile from
+        // posting. Done before DestroyAsync — the publisher uses its own DI HttpClient/token, not the sandbox
+        // session, so ordering is not load-bearing; keeping it under the hasContent gate is.
+        if (hasContent)
+        {
+            await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
+        }
+
         // Terminal-stage session teardown (design §7), done BEFORE the slot is stripped/returned below: the
         // sandbox session is mounted OVER the leased slot, so a lingering sub-agent's git op inside it would
         // otherwise race the host-side StripAsync/ReturnAsync on the SAME store (the concurrency window called
@@ -1326,6 +1426,42 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Posts the persisted review to an ADO pull request host-side (GitHub posting is agent-owned via the
+    /// code-reviewer:post-pr-review skill, which is GitHub-only). Builds the head_sha-scoped idempotency key and
+    /// delegates to <see cref="ReviewPoster"/>, whose 3-tier check (outbox replay → provider backstop scan →
+    /// post) guarantees exactly-once across re-polls and restarts. The body is prefixed with the configured bot
+    /// name. Requires an ADO <see cref="IReviewCommentPublisher"/> to be registered (Program.cs, gated on
+    /// <c>EnableAdoProvider</c>); throws if none matches so a misconfiguration is loud, not a silent no-post.
+    /// </summary>
+    private async Task PostReviewCommentHostSideAsync(
+        ReviewRun run, RepoIdentity repo, string provider, string reviewText, CancellationToken cancellationToken)
+    {
+        var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal))
+            ?? throw new InvalidOperationException(
+                $"No review-comment publisher registered for provider '{provider}'; cannot post the review for run {run.Id}.");
+        var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
+        var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
+        var key = new IdempotencyKeyComponents(
+            Provider: provider,
+            OrgOrOwner: repo.OrgOrOwner,
+            Project: repo.Project,
+            RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
+            PrId: run.PrId,
+            Operation: ReviewPoster.PostReviewCommentOperation,
+            ArtifactKind: ReviewArtifactKind,
+            ArtifactSubject: "summary",
+            HeadSha: run.HeadSha,
+            VariantId: run.VariantId);
+        var request = new PostReviewRequest(
+            run.Id, key, new ReviewCommentTarget(repo, run.PrId), postedBody,
+            LivePostingAuthorized: _options.EnableCommentPosting);
+        var outcome = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation(
+            "Run {RunId}: ADO review post outcome {Outcome} (response {ResponseId}).",
+            run.Id, outcome.Kind, outcome.ProviderResponseId ?? "-");
     }
 
     /// <summary>

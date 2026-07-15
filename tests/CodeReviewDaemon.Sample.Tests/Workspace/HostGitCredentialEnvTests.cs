@@ -65,6 +65,42 @@ public class HostGitCredentialEnvTests
         env["GIT_TERMINAL_PROMPT"].Should().Be("0");
     }
 
+    [Fact]
+    public void Build_EmitsLegacyToModernInsteadOfRewrite_ForConfiguredAdoOrg()
+    {
+        var env = HostGitCredentialEnv.Build(
+            [new GitProviderToken("ado", "ado-tok")],
+            adoOrgs: ["mcqdbdev"]);
+
+        // One ADO credential header + one legacy→modern insteadOf rewrite.
+        env["GIT_CONFIG_COUNT"].Should().Be("2");
+
+        var config = ExtraHeadersByHost(env);
+        config["url.https://dev.azure.com/mcqdbdev/.insteadOf"].Should().Be(
+            "https://mcqdbdev.visualstudio.com/",
+            "a git submodule fetch against the legacy host is rewritten to dev.azure.com so the ADO credential applies");
+    }
+
+    [Fact]
+    public void Build_DeduplicatesAdoOrgs_CaseInsensitively_AndSkipsBlanks()
+    {
+        var env = HostGitCredentialEnv.Build([], adoOrgs: ["McqdbDev", "mcqdbdev", "   "]);
+
+        // Only the first distinct org contributes a rewrite; the case-variant duplicate and the blank are skipped.
+        env["GIT_CONFIG_COUNT"].Should().Be("1");
+        ExtraHeadersByHost(env).Should().ContainKey("url.https://dev.azure.com/McqdbDev/.insteadOf");
+    }
+
+    [Fact]
+    public void Build_NoAdoOrgs_EmitsNoInsteadOfRewrite()
+    {
+        // A GitHub-only daemon passes no ADO orgs, so no rewrite is emitted (only the GitHub credential).
+        var env = HostGitCredentialEnv.Build([new GitProviderToken("github", "gh")]);
+
+        env["GIT_CONFIG_COUNT"].Should().Be("1");
+        ExtraHeadersByHost(env).Keys.Should().NotContain(k => k.StartsWith("url.", StringComparison.Ordinal));
+    }
+
     private static Dictionary<string, string> ExtraHeadersByHost(IReadOnlyDictionary<string, string> env)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);

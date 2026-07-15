@@ -59,6 +59,12 @@ var daemonOptions =
     ?? new CodeReviewDaemonOptions();
 builder.Services.AddSingleton(daemonOptions);
 
+// The ADO org(s) whose legacy {org}.visualstudio.com submodule URLs the host-side git rewrites to
+// dev.azure.com (so the modern ADO credential authenticates the fetch — see HostGitCredentialEnv). Derived
+// from the configured ADO context and shared by every HostGitCommandRunner below; a GitHub-only daemon gets
+// an empty set (no rewrite emitted).
+var hostGitAdoOrgs = DeriveAdoOrgs(daemonOptions);
+
 // Opt-in structured JSONL logging: when CodeReviewDaemon:LogFilePath is set, add a Serilog file sink
 // alongside the console logger so the daemon's own logs are DuckDB-queryable. Unset ⇒ console-only.
 if (!string.IsNullOrWhiteSpace(daemonOptions.LogFilePath))
@@ -209,6 +215,13 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     AppId = daemonAppId,
     AppKey = daemonKeyMissing ? null : daemonAppKey,
 };
+// Per-app workspace rooting (gateway ADR 0028): when the adopted gateway roots workspaces at
+// WORKSPACE_BASE_PATH/<app-dir>/<workspace>, the daemon prepares its store + measures slot paths under that
+// same <app-dir> (derived from AppId) so the app-dir-less workspace field it sends re-roots to the prepared
+// store. Off by default (flat, pre-ADR-0028). sandboxGatewayOptions.WorkspaceBasePath stays the CONFIGURED
+// base (the gateway's own WORKSPACE_BASE_PATH); only the daemon-side prep/relative base gains <app-dir>.
+var effectiveWorkspaceBase = SandboxAppDir.EffectiveBase(
+    sandboxGatewayOptions.WorkspaceBasePath, daemonAppId, daemonOptions.PerAppWorkspaceRooting);
 builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
         sandboxGatewayOptions,
@@ -233,8 +246,9 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
     daemonCredential,
     // The gateway's host workspace base: a pooled run mounts its leased slot at /workspace by expressing
     // the slot's host path relative to this base (ReviewSessionProvisioner.GetOrCreateForSlotAsync). The
-    // pool root is defaulted under it below so the slot always resolves to a path inside the base.
-    sandboxGatewayOptions.WorkspaceBasePath,
+    // pool root is defaulted under it below so the slot always resolves to a path inside the base. Under
+    // per-app rooting this base already includes <app-dir> (see effectiveWorkspaceBase above).
+    effectiveWorkspaceBase,
     gatewayBaseUrl));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
@@ -278,12 +292,28 @@ builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
 
+// GitHub review posting is host-side (like ADO below). Agent-owned posting via code-reviewer:post-pr-review was
+// abandoned — the agent loaded the skill but never actually posted — so DaemonReviewStageExecutor.PostAsync posts
+// GitHub reviews through this publisher. Registered unconditionally (every profile reviews GitHub by default).
+builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
+    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
+    sp.GetRequiredService<GitHubOAuthProvider>(),
+    sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()));
+
 if (daemonOptions.EnableAdoProvider)
 {
     builder.Services.AddSingleton<IPrProvider>(sp => new AdoPrProvider(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoPrProvider>>()));
+
+    // ADO review posting is host-side (like GitHub above): DaemonReviewStageExecutor.PostAsync posts ADO
+    // reviews through this publisher. Resolve the CONCRETE AdoOAuthProvider, not IOAuthTokenProvider, which is
+    // ambiguous (both GitHub and ADO providers register against it).
+    builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
+        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
+        sp.GetRequiredService<AdoOAuthProvider>(),
+        sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
 }
 
 // Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com
@@ -291,6 +321,67 @@ if (daemonOptions.EnableAdoProvider)
 // credential just like GitHub. HostGitCommandRunner asks this source per git command; a provider that is
 // not signed in throws and is skipped, so the GitHub-only daemon and the dedicated ADO daemon each inject
 // exactly the credentials their store/target needs. Tokens never touch argv or on-disk git config.
+// Collects the ADO org(s) the daemon is configured against so the host git can key a legacy→modern
+// url.<base>.insteadOf rewrite per org (insteadOf cannot extract the org generically). Sources: the
+// 3-segment {org}/{project}/{repo} EnabledRepos entries and the resolved cross-repo store URL. GitHub-only
+// config (2-segment entries, github.com store) yields an empty set.
+static IReadOnlyList<string> DeriveAdoOrgs(CodeReviewDaemonOptions options)
+{
+    var orgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var entry in options.EnabledRepos)
+    {
+        var segments = (entry ?? string.Empty)
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 3)
+        {
+            orgs.Add(segments[0]); // {org}/{project}/{repo}
+        }
+    }
+
+    foreach (var url in new[] { options.ResolvedStoreUrl, options.CrossRepoStoreUrl })
+    {
+        if (AdoOrgFromUrl(url) is { } org)
+        {
+            orgs.Add(org);
+        }
+    }
+
+    return [.. orgs];
+}
+
+// Extracts the ADO org from an HTTPS store URL in either shape: the leading path segment of a modern
+// dev.azure.com/{org}/... URL, or the host label of a legacy {org}.visualstudio.com URL. Anything else
+// (non-HTTPS, non-ADO host) yields null.
+static string? AdoOrgFromUrl(string? url)
+{
+    if (string.IsNullOrWhiteSpace(url))
+    {
+        return null;
+    }
+
+    var parsed = GitRemoteUrl.Parse(url);
+    if (parsed.Kind != GitUrlKind.Https)
+    {
+        return null;
+    }
+
+    const string legacySuffix = ".visualstudio.com";
+    if (parsed.Host.EndsWith(legacySuffix, StringComparison.OrdinalIgnoreCase))
+    {
+        var org = parsed.Host[..^legacySuffix.Length];
+        return org.Length > 0 && !org.Contains('.', StringComparison.Ordinal) ? org : null;
+    }
+
+    if (string.Equals(parsed.Host, "dev.azure.com", StringComparison.OrdinalIgnoreCase))
+    {
+        var first = parsed.RepoPath.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return string.IsNullOrEmpty(first) ? null : first;
+    }
+
+    return null;
+}
+
 static Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> BuildHostGitCredentialsSource(IServiceProvider sp)
 {
     var providers = sp.GetServices<IOAuthTokenProvider>().ToList();
@@ -332,7 +423,8 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
             : daemonOptions.WorkspaceHostRoot;
         var runner = new HostGitCommandRunner(
             BuildHostGitCredentialsSource(sp),
-            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+            hostGitAdoOrgs);
         return new HostRetentionWorkspace(runner, new HostFileSystem(), Path.Combine(hostRoot, "reviewbot"));
     });
 }
@@ -352,17 +444,27 @@ if (daemonOptions.EnableToolAssistedReview
     // base). An explicit ReviewPoolHostRoot override wins; otherwise default under WorkspaceBasePath when
     // it is configured, falling back to a dir beside the binary only when no base path is set (the slot
     // mount then degrades to the per-run mount, which is still correct — just not slot-backed).
-    var poolRoot = !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
-        ? daemonOptions.ReviewPoolHostRoot
-        : !string.IsNullOrWhiteSpace(sandboxGatewayOptions.WorkspaceBasePath)
-            ? Path.Combine(sandboxGatewayOptions.WorkspaceBasePath, "review-pool")
-            : Path.Combine(AppContext.BaseDirectory, "review-pool");
+    // The pool root MUST resolve INSIDE effectiveWorkspaceBase so a leased slot's host path is expressible
+    // relative to that base (the workspace field the gateway re-roots under <app-dir>). Under per-app rooting
+    // the explicit ReviewPoolHostRoot's leaf (e.g. "review-pool-mcqdb") is re-based under <app-dir>; a flat
+    // path would land outside the base and the slot mount would silently degrade to the per-run mount.
+    var poolLeaf = string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
+        ? "review-pool"
+        : Path.GetFileName(daemonOptions.ReviewPoolHostRoot.TrimEnd('/', '\\'));
+    var poolRoot = daemonOptions.PerAppWorkspaceRooting && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
+        ? $"{effectiveWorkspaceBase!.TrimEnd('/', '\\')}/{poolLeaf}"
+        : !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
+            ? daemonOptions.ReviewPoolHostRoot
+            : !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
+                ? Path.Combine(effectiveWorkspaceBase, "review-pool")
+                : Path.Combine(AppContext.BaseDirectory, "review-pool");
 
     builder.Services.AddSingleton(sp =>
     {
         var hostRunner = new HostGitCommandRunner(
             BuildHostGitCredentialsSource(sp),
-            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+            hostGitAdoOrgs);
         var hostFileSystem = new HostFileSystem();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
 

@@ -19,6 +19,13 @@ internal readonly record struct GitProviderToken(string ProviderId, string Token
 /// username — the same scheme <c>AdoPrProvider</c>/<c>AdoReviewCommentPublisher</c> use for ADO REST.
 /// GIT_TERMINAL_PROMPT=0 fails fast rather than hanging on a credential prompt. A provider with no git-host
 /// mapping is skipped, so an unrelated provider (e.g. M365) never contributes a bogus header.
+/// <para>
+/// For each configured ADO org we also emit a git <c>url.&lt;base&gt;.insteadOf</c> rewrite
+/// (<c>url.https://dev.azure.com/{org}/.insteadOf = https://{org}.visualstudio.com/</c>) so an actual
+/// <c>git submodule update --init</c> against a repo's legacy <c>{org}.visualstudio.com</c> URL is fetched
+/// from <c>dev.azure.com</c> instead — where the ADO <c>extraHeader</c> above applies. <c>insteadOf</c> cannot
+/// do the org-extraction generically, so each rewrite is keyed to a known org supplied by the caller.
+/// </para>
 /// </summary>
 internal static class HostGitCredentialEnv
 {
@@ -36,7 +43,8 @@ internal static class HostGitCredentialEnv
 
     /// <summary>
     /// GitHub-only convenience for callers that hold a single GitHub token — equivalent to
-    /// <see cref="Build(IReadOnlyList{GitProviderToken})"/> with one <c>github</c> entry.
+    /// <see cref="Build(IReadOnlyList{GitProviderToken}, IReadOnlyCollection{string})"/> with one
+    /// <c>github</c> entry and no ADO orgs.
     /// </summary>
     public static IReadOnlyDictionary<string, string> Build(string token)
     {
@@ -48,9 +56,14 @@ internal static class HostGitCredentialEnv
     /// Builds the git credential env for every provider in <paramref name="tokens"/> that has a known git
     /// host, one <c>GIT_CONFIG_KEY_n/VALUE_n</c> pair each (in list order). An empty or all-unmapped list
     /// emits no credential entries — only GIT_TERMINAL_PROMPT=0 — so an unauthenticated git command fails
-    /// fast instead of prompting.
+    /// fast instead of prompting. Each org in <paramref name="adoOrgs"/> additionally contributes a
+    /// legacy→modern <c>url.&lt;base&gt;.insteadOf</c> rewrite so a <c>{org}.visualstudio.com</c> fetch is
+    /// redirected to <c>dev.azure.com</c> (reusing the ADO credential above); a <c>null</c>/empty set emits
+    /// none. Orgs are de-duplicated case-insensitively.
     /// </summary>
-    public static IReadOnlyDictionary<string, string> Build(IReadOnlyList<GitProviderToken> tokens)
+    public static IReadOnlyDictionary<string, string> Build(
+        IReadOnlyList<GitProviderToken> tokens,
+        IReadOnlyCollection<string>? adoOrgs = null)
     {
         ArgumentNullException.ThrowIfNull(tokens);
 
@@ -68,6 +81,24 @@ internal static class HostGitCredentialEnv
             env[$"GIT_CONFIG_KEY_{index}"] = $"http.https://{mapping.Host}/.extraHeader";
             env[$"GIT_CONFIG_VALUE_{index}"] = "Authorization: Basic " + basic;
             index++;
+        }
+
+        if (adoOrgs is not null)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var org in adoOrgs)
+            {
+                if (string.IsNullOrWhiteSpace(org) || !seen.Add(org))
+                {
+                    continue;
+                }
+
+                // Rewrite the legacy org host to the modern one so the dev.azure.com extraHeader authenticates
+                // the fetch. VALUE is a prefix git matches against; KEY's <base> is what it substitutes in.
+                env[$"GIT_CONFIG_KEY_{index}"] = $"url.https://dev.azure.com/{org}/.insteadOf";
+                env[$"GIT_CONFIG_VALUE_{index}"] = $"https://{org}.visualstudio.com/";
+                index++;
+            }
         }
 
         env["GIT_CONFIG_COUNT"] = index.ToString(CultureInfo.InvariantCulture);
