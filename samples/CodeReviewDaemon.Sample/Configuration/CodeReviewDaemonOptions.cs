@@ -19,6 +19,14 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public bool EnableCommentPosting { get; init; }
 
+    /// <summary>
+    /// When <c>false</c> (default) the daemon does NOT post the host-side single-summary comment: the review
+    /// agent posts its findings inline itself (line-anchored review comments + thread replies) over the egress
+    /// proxy. Enable only as a degraded fallback — it posts one PR-level summary blob instead of inline
+    /// comments, which is strictly inferior. Requires <see cref="EnableCommentPosting"/>.
+    /// </summary>
+    public bool EnableHostSummaryFallback { get; init; }
+
     /// <summary>When <c>false</c> (default) the knowledge-base agent does not run.</summary>
     public bool EnableKnowledgeAgent { get; init; }
 

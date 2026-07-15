@@ -431,7 +431,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task An_azure_devops_run_maps_to_the_ado_provider_and_publisher()
     {
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -588,7 +588,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // An ado run but only a 'github' publisher registered → the provider lookup must fail fast.
         using var fixture = Fixture.Ado(
             LoggerFactory,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true },
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true },
             publishersOverride: [new FakeReviewCommentPublisher("github")]);
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -603,7 +603,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Fact]
     public async Task Posted_does_not_post_a_comment_when_the_review_is_empty()
     {
-        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
         // The agent produces no review prose. Posting a "_No review content was produced._" placeholder would
         // claim the head_sha's idempotency slot on the provider — the backstop scan would then adopt that
         // placeholder and permanently suppress a later REAL review of the same commit (e.g. a re-run on a
@@ -621,7 +621,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     {
         using var fixture = Fixture.Ado(
             LoggerFactory,
-            new CodeReviewDaemonOptions { EnableCommentPosting = true, BotName = "GB's Revobot" });
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true, BotName = "GB's Revobot" });
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
         await RunAllStagesAsync(fixture, run);
@@ -645,8 +645,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Posted_delivers_the_review_to_the_pr_for_every_provider_when_authorized(string provider)
     {
         using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
         var expectedPublisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -664,8 +664,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The dual of the delivery guard: a collect-only profile (EnableCommentPosting=false, the safe default)
         // still produces + retains a review, but must NEVER post it to the PR.
         using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false });
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false, EnableHostSummaryFallback = true });
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
@@ -682,8 +682,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // An empty review must post NOTHING for EITHER provider — posting a placeholder would claim the
         // head_sha's idempotency slot and permanently suppress a later REAL review of the same commit.
         using var fixture = provider == "azure-devops"
-            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true })
-            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = string.Empty;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");

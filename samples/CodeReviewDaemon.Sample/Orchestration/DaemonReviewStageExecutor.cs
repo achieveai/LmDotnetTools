@@ -1028,6 +1028,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // but does NOT call the post skill.
             ["should_post"] = shouldPost,
             ["review_type"] = isRereview ? "re-review" : "initial",
+            // Provider + identity pieces the agent uses to build inline-posting REST calls (step 5). GitHub uses
+            // the pulls/reviews + review-comment-replies APIs; Azure DevOps uses the pullRequests/threads API.
+            ["is_ado"] = string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase),
+            ["gh_owner"] = repo.OrgOrOwner,
+            ["gh_repo"] = repo.RepoName,
+            ["ado_org"] = repo.OrgOrOwner,
+            ["ado_project"] = repo.Project ?? string.Empty,
+            ["ado_repo"] = repo.RepoName,
             ["checkout_root"] = checkoutRoot ?? TargetRoot,
             ["has_store"] = !string.IsNullOrWhiteSpace(storeRoot),
             ["store_root"] = storeRoot ?? string.Empty,
@@ -1257,12 +1265,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
             run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
         var (repo, provider) = ResolveRepo(run);
-        // The daemon posts every review HOST-side (PostAsync), for GitHub AND Azure DevOps, so the agent is
-        // never told to post: should_post is always false. Agent-owned posting via code-reviewer:post-pr-review
-        // was abandoned because it never delivered a comment for either provider — the skill is GitHub-`gh`-only
-        // (so it can't target ADO), and even for GitHub the agent loaded the skill and completed without running
-        // it (unresolved in-sandbox gh auth). Host posting is exactly-once via the outbox and provider-agnostic.
-        const bool shouldPost = false;
+        // Posting is AGENT-owned and INLINE: the review agent posts its findings as line-anchored comments
+        // (and replies to open threads) via the provider REST API over the sandbox's egress proxy, which
+        // injects the bot's auth on api.github.com / dev.azure.com writes (github-auth/ado-auth rules,
+        // Methods:[] = all methods). should_post drives the prompt's posting step. The host-side single-summary
+        // publisher is now an off-by-default fallback (EnableHostSummaryFallback) — the agent's inline comments
+        // are what we want, not one summary blob.
+        var shouldPost = _options.EnableCommentPosting;
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
             toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
@@ -1359,15 +1368,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id);
         }
 
-        // Host-side posting for EVERY provider (GitHub and Azure DevOps). Agent-owned posting was abandoned
-        // (see should_post in ReviewAsync), so the daemon is the only thing that posts — the review reaches the
-        // PR here or nowhere. Guarded by hasContent so an empty review never claims the head_sha's idempotency
-        // slot (which would permanently suppress a later real review of the same commit). ReviewPoster enforces
-        // exactly-once via the outbox + a backstop thread scan keyed on head_sha, so a re-poll replays without
-        // double-posting, and LivePostingAuthorized=EnableCommentPosting keeps a collect-only profile from
-        // posting. Done before DestroyAsync — the publisher uses its own DI HttpClient/token, not the sandbox
-        // session, so ordering is not load-bearing; keeping it under the hasContent gate is.
-        if (hasContent)
+        // Host-side single-summary posting is an OFF-by-default fallback now (EnableHostSummaryFallback): the
+        // review agent posts inline itself over the egress proxy (see should_post), which is what we want. This
+        // path stays only as a safety net (e.g. a run that produced review text but couldn't post inline) and
+        // posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
+        // runs BEFORE DestroyAsync but the publisher uses its own DI HttpClient/token, not the sandbox session.
+        if (hasContent && _options.EnableHostSummaryFallback)
         {
             await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
