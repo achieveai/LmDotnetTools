@@ -119,11 +119,18 @@ public sealed class ChatClientLayoutRegressionTests
 
         // Expand EVERY pill: this is where the containing-block bug was largest — an expanded pill
         // renders the most content and its two `.sr-only` labels per pill escaped furthest without the
-        // `position: relative` fix. Clicking the (collapsed) header buttons captured now toggles each
-        // pill open; the post-expansion Copy buttons are not in the static NodeList, so only headers
-        // are clicked.
-        await page.EvaluateAsync(
-            "() => { document.querySelectorAll('[data-testid=\"tool-call-pill\"] button').forEach(b => b.click()); }");
+        // `position: relative` fix. Target the pill HEADER toggle explicitly (scoped so a future
+        // collapsed control isn't swept in) and click through Playwright's actionability checks rather
+        // than a raw DOM click, asserting one header per pill so the intended interaction is explicit
+        // and fails clearly if a header is missing or not actionable.
+        var pillHeaders = page.Locator("[data-testid='tool-call-pill'] .tool-pill__header");
+        (await pillHeaders.CountAsync()).Should().Be(
+            ToolCallCount,
+            "every collapsed tool pill exposes exactly one header toggle to expand");
+        for (var i = 0; i < ToolCallCount; i++)
+        {
+            await pillHeaders.Nth(i).ClickAsync();
+        }
 
         // Wait for the expanded bodies to actually render before re-measuring (Vue renders on the next
         // tick — never assert against an un-applied state change with a fixed sleep).
