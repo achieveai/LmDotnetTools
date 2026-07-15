@@ -35,6 +35,30 @@ public sealed class SandboxLiveContractTests
         return info.SessionId;
     }
 
+    /// <summary>
+    /// Builds a live-gateway client with a caller-chosen execution timeout, from the same environment
+    /// credentials the fixture uses. The fixture's own <see cref="LiveGatewayFixture.Client"/> is fixed
+    /// at 60s, which is too long to assert a timeout against; this lets a test drive a short window while
+    /// still owning the app-scoped session the fixture client created.
+    /// </summary>
+    private SandboxClient CreateClientWithExecutionTimeout(TimeSpan executionTimeout)
+    {
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+
+        var serverAddress = new Uri(Environment.GetEnvironmentVariable("SANDBOX_BASE_URL")!.Trim());
+        var appId = Environment.GetEnvironmentVariable("SANDBOX_APP_ID")!.Trim();
+        var appKey = Environment.GetEnvironmentVariable("SANDBOX_APP_KEY")!.Trim();
+        var options = new SandboxClientOptions(
+            serverAddress,
+            appId,
+            appKey,
+            executionTimeout: executionTimeout,
+            transportTimeout: TimeSpan.FromSeconds(30),
+            allowInsecureDevelopmentTransport: string.Equals(serverAddress.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+        );
+        return new SandboxClient(options);
+    }
+
     [SkippableFact]
     public async Task Lifecycle_Create_Get_List_Delete_RoundTrips()
     {
@@ -124,6 +148,61 @@ public sealed class SandboxLiveContractTests
             var content = await Client.ReadTextFileAsync(sessionId, "opid-probe.txt");
             content.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Should().ContainSingle(line => line == marker);
+        }
+        finally
+        {
+            await Client.DeleteAsync(sessionId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Execute_ExceedingExecutionTimeout_IsExecutionTimeout()
+    {
+        var sessionId = await CreateSandboxAsync();
+        try
+        {
+            // A dedicated client with a deliberately short execution timeout so the gateway kills the
+            // operation server-side (status timed_out) — or the SDK's own poll deadline elapses first —
+            // well before the 30s sleep would finish. Both paths map to ExecutionTimeout, and the short
+            // window keeps the assertion fast without a minute-long wait.
+            using var shortTimeoutClient = CreateClientWithExecutionTimeout(TimeSpan.FromSeconds(5));
+
+            var captured = await CaptureAsync(() =>
+                shortTimeoutClient.ExecuteAsync(sessionId, new SandboxCommand(["sh", "-c", "sleep 30"]))
+            );
+
+            captured.Should().NotBeNull();
+            captured!.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
+        }
+        finally
+        {
+            await Client.DeleteAsync(sessionId);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Execute_LargeOutput_IsCapturedExactly_WithoutTruncation()
+    {
+        var sessionId = await CreateSandboxAsync();
+        try
+        {
+            // The operations API replaced the old MCP `Bash` channel, which silently truncated output at
+            // 20 KB AND 500 lines. This payload crosses BOTH thresholds — 600 lines of 49 bytes + newline
+            // = 30,000 bytes — so an exact-length, exact-line-count match proves output is captured
+            // verbatim (byte-exact, untruncated), not merely "large enough not to notice".
+            const int lineCount = 600;
+            const int lineWidth = 49;
+            var line = new string('A', lineWidth);
+            var expectedBytes = lineCount * (lineWidth + 1); // + the newline `head` emits per line
+
+            var result = await Client.ExecuteAsync(
+                sessionId,
+                new SandboxCommand(["sh", "-c", $"yes {line} | head -n {lineCount}"])
+            );
+
+            result.ExitCode.Should().Be(0);
+            result.StandardOutput.Length.Should().Be(expectedBytes);
+            result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(lineCount);
         }
         finally
         {
