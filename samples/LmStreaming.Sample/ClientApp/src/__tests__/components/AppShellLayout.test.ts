@@ -59,3 +59,36 @@ describe('Conversation-scroll containment (page-scroll regression)', () => {
     expect(messageList).toMatch(/\.message-list\s*\{[^}]*overflow-y:\s*auto/);
   });
 });
+
+/**
+ * Header-wrap regression guard (Clear-button clip).
+ *
+ * The header lays the title (`h1`, `flex: 1`) beside a right-aligned control row
+ * (`.header-actions`: workspace + provider + mode selectors, "Marketplaces", "Clear").
+ * On typical laptop widths those controls are collectively wider than the 900px content
+ * column, so with a single non-wrapping flex row the trailing "Clear" button overflowed
+ * the right edge and was clipped off-screen.
+ *
+ * The fix lets the row reflow: `.chat-header` wraps the control row below the title, and
+ * `.header-actions` wraps its own buttons, so "Clear" always stays within the viewport.
+ *
+ * This is the fast structural guard (source-text) sitting under the behavioral
+ * `ChatClientLayoutRegressionTests` Browser.E2E test, which actually renders the header at
+ * 1280px and asserts the Clear button falls inside the viewport. happy-dom computes no
+ * real layout, so the on-screen containment can only be proven in the C# Chromium suite;
+ * this keeps a cheap, always-on check that the wrap declarations are not removed.
+ */
+describe('Header wrapping (Clear-button clip regression)', () => {
+  const chatLayout = fs.readFileSync(
+    path.resolve(__dirname, '../../components/ChatLayout.vue'),
+    'utf-8'
+  ) as string;
+
+  it('lets .chat-header wrap so the control row drops below the title instead of clipping', () => {
+    expect(chatLayout).toMatch(/\.chat-header\s*\{[^}]*flex-wrap:\s*wrap/);
+  });
+
+  it('lets .header-actions wrap its own controls rather than overflowing the row', () => {
+    expect(chatLayout).toMatch(/\.header-actions\s*\{[^}]*flex-wrap:\s*wrap/);
+  });
+});
