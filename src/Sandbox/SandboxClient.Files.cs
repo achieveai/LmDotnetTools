@@ -210,8 +210,10 @@ public sealed partial class SandboxClient
             status = await PollOperationAsync(sessionId, operationId, ct).ConfigureAwait(false);
         }
 
-        // Happy path: an exit-0 mkdir -p needs no artifact download — proceed straight to the retry PUT.
-        if (string.Equals(status.Status, "succeeded", StringComparison.Ordinal) && (status.ExitCode ?? 0) == 0)
+        // Happy path: an EXPLICIT exit-0 mkdir -p needs no artifact download — proceed straight to the
+        // retry PUT. A succeeded status with a NULL exit code is malformed and falls through to
+        // ResolveResultAsync, which now surfaces it as Protocol rather than being read as a false exit 0.
+        if (string.Equals(status.Status, "succeeded", StringComparison.Ordinal) && status.ExitCode == 0)
         {
             return;
         }
@@ -278,9 +280,22 @@ public sealed partial class SandboxClient
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
         var operation = $"listing directory '{path}'";
         var names = new List<string>();
+        // Bound the cursor loop two ways so a buggy/hostile gateway cannot loop unbounded: reject a
+        // REPEATED cursor (the realistic infinite loop), and cap the total page count (distinct-forever
+        // cursors). Both surface as Protocol rather than silently truncating the listing.
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
         string? cursor = null;
+        var pageCount = 0;
         do
         {
+            if (++pageCount > MaxDirectoryListingPages)
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway paginated {operation} past the {MaxDirectoryListingPages}-page cap; refusing to loop unbounded."
+                );
+            }
+
             var relativeUri =
               $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/directories/{mountId}?path={Uri.EscapeDataString(relativePath)}";
             if (cursor is not null)
@@ -333,10 +348,24 @@ public sealed partial class SandboxClient
             );
 
             cursor = string.IsNullOrEmpty(page.NextCursor) ? null : page.NextCursor;
+            if (cursor is not null && !seenCursors.Add(cursor))
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a repeated pagination cursor for {operation}; refusing to loop."
+                );
+            }
         } while (cursor is not null);
 
         return names;
     }
+
+    /// <summary>
+    /// Defensive upper bound on directory-listing pages. The seen-cursor guard already catches a repeated
+    /// cursor; this caps a gateway that emits fresh cursors forever. Generous — a directory needing more
+    /// than this many pages far exceeds the gateway's own directory scan cap.
+    /// </summary>
+    private const int MaxDirectoryListingPages = 4096;
 
     /// <summary>Normalizes a workspace-relative FILE path, additionally rejecting the empty (workspace-root) form that cannot name a file.</summary>
     private static string NormalizeFilePath(string path)

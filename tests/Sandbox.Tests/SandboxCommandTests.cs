@@ -83,12 +83,25 @@ public class SandboxCommandTests
 
     [Theory]
     [InlineData("")]
+    [InlineData("   ")]
     [InlineData("a\nb")]
+    [InlineData("review/op-1")]
+    [InlineData("a b")]
+    [InlineData("a\\b")]
+    [InlineData("café")]
+    [InlineData(".")]
+    [InlineData("..")]
     public void Constructor_InvalidOperationId_Throws(string operationId)
     {
         var act = () => new SandboxCommand(["ls"], operationId: operationId);
 
         act.Should().Throw<ArgumentException>().WithParameterName("operationId");
+    }
+
+    [Fact]
+    public void Constructor_CanonicalizesSurroundingWhitespaceOnOperationId()
+    {
+        new SandboxCommand(["ls"], operationId: "  op-1.2_3  ").OperationId.Should().Be("op-1.2_3");
     }
 
     [Fact]

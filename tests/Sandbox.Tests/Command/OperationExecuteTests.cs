@@ -332,4 +332,54 @@ public sealed class OperationExecuteTests
 
         (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
     }
+
+    [Fact]
+    public async Task ExecuteAsync_SucceededWithNullExitCode_ThrowsProtocol()
+    {
+        const string sessionId = "sess-noexit-ok";
+        const string operationId = "op-noexit-ok";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // A `succeeded` status carrying NO exit_code is malformed — the SDK must not silently read it as a
+        // false exit 0, but surface Protocol.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CanonicalizesOperationId_SubmitsAndCorrelatesTrimmedForm()
+    {
+        const string sessionId = "sess-canon";
+        const string canonical = "op-canon";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 4);
+        // The gateway trims and echoes the canonical id; the SDK must submit AND correlate the same trimmed
+        // value (had it submitted the untrimmed "  op-canon  ", correlation against this echo would fail).
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + canonical + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":4,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "  op-canon  "));
+
+        result.OperationId.Should().Be(canonical);
+        handler
+            .Requests.Should()
+            .Contain(r =>
+                r.Method == HttpMethod.Post
+                && r.Body != null
+                && r.Body.Contains("\"operation_id\":\"" + canonical + "\"", StringComparison.Ordinal)
+                && !r.Body.Contains("  op-canon  ", StringComparison.Ordinal)
+            );
+    }
 }

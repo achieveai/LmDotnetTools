@@ -274,6 +274,41 @@ public class DirectFileTransferTests
     }
 
     [Fact]
+    public async Task WriteTextFileAsync_MkdirSucceededWithNullExit_ThrowsProtocol_AndDoesNotRetry()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+
+        var putCount = 0;
+        handler.On(
+            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ =>
+            {
+                putCount++;
+                return JsonResponse(
+                    """{"error":"path not found","code":404,"error_code":"path_not_found","retryable":false}""",
+                    HttpStatusCode.NotFound
+                );
+            }
+        );
+        // mkdir returns a MALFORMED terminal: status succeeded but no exit_code. The self-heal must NOT read
+        // that as a false exit 0 and retry the write — it must surface Protocol.
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            req => JsonResponse(
+                "{\"operation_id\":\""
+                    + OperationIdFrom(req)
+                    + "\",\"status\":\"succeeded\",\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}"
+            )
+        );
+
+        Func<Task> act = () => client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", "z");
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+        putCount.Should().Be(1); // the malformed mkdir aborted the write — no retry PUT
+    }
+
+    [Fact]
     public async Task ReadTextFileAsync_MissingFile_ThrowsNotFound()
     {
         var (client, handler) = CreateClient();
@@ -347,6 +382,40 @@ public class DirectFileTransferTests
         var exception = await act.Should().ThrowAsync<SandboxException>();
         exception.Which.Kind.Should().Be(SandboxErrorKind.Protocol);
         exception.Which.StatusCode.Should().Be(400);
+    }
+
+    [Fact]
+    public async Task ListDirectoryAsync_RepeatedCursor_ThrowsProtocol()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        // Every page hands back the SAME next_cursor — the SDK must reject the repeat rather than loop.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
+            _ => JsonResponse("""{"entries":[{"name":"a","type":"file"}],"next_cursor":"loop"}""")
+        );
+
+        Func<Task> act = () => client.ListDirectoryAsync(Session, "");
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ListDirectoryAsync_FreshCursorsPastThePageCap_ThrowsProtocol()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        // Every page hands back a DISTINCT fresh cursor forever — the seen-cursor guard never trips, so the
+        // total page cap must, rather than looping/growing unbounded.
+        var page = 0;
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/directories/{MountId}", StringComparison.Ordinal),
+            _ => JsonResponse("{\"entries\":[],\"next_cursor\":\"c" + Interlocked.Increment(ref page) + "\"}")
+        );
+
+        Func<Task> act = () => client.ListDirectoryAsync(Session, "");
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
     }
 
     [Fact]
@@ -468,8 +537,11 @@ public class DirectFileTransferTests
     [Fact]
     public async Task ReadTextFileAsync_SlowHeadersThenHangingErrorBody_BoundedByOneTransportTimeout()
     {
-        var transportTimeout = TimeSpan.FromMilliseconds(400);
-        var headerDelay = TimeSpan.FromMilliseconds(250);
+        // Wide absolute margins so CI/timer jitter never flips the assertion: the fixed one-timeout call
+        // is ~1000 ms, the old double-timeout bug would be ~1600 ms (headerDelay + a second full timeout),
+        // and the ceiling sits at 1500 ms — clearly under the ~2000 ms double budget yet above ~1000 ms.
+        var transportTimeout = TimeSpan.FromMilliseconds(1000);
+        var headerDelay = TimeSpan.FromMilliseconds(600);
         var serverAddress = TestSupport.NewLoopbackAddress();
         using var httpClient = new HttpClient(new SlowHeaderHangingBodyHandler(headerDelay)) { BaseAddress = serverAddress };
         var options = new SandboxClientOptions(serverAddress, "app-1", TestSupport.ValidSecret, TimeSpan.FromMinutes(5), transportTimeout);
@@ -483,9 +555,9 @@ public class DirectFileTransferTests
         // The slow headers consumed part of the ONE transport budget, and the error-body read shares the
         // SAME budget, so the whole call is bounded by ~1× TransportTimeout. The old double-timeout bug
         // (a fresh TransportTimeout for the error body) would have taken ~headerDelay + TransportTimeout
-        // (≈ 650 ms here) — comfortably above this 1.5× ceiling.
+        // (≈ 1600 ms here) — comfortably above this ceiling.
         exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
-        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(600));
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(1500));
     }
 
     [Fact]

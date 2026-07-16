@@ -259,7 +259,12 @@ public sealed partial class SandboxClient
     {
         var exitCode = status.Status switch
         {
-            "succeeded" => status.ExitCode ?? 0,
+            "succeeded" => status.ExitCode
+                ?? throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway reported a succeeded operation '{operationId}' with no exit code.",
+                    operationId: operationId
+                ),
             "failed" => status.ExitCode
                 ?? throw new SandboxException(
                     SandboxErrorKind.Protocol,

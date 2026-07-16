@@ -6,31 +6,49 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
 
 public class CommandOperationTests
 {
-    [Fact]
-    public void ValidateOperationId_RejectsEmptyTooLongAndControlCharacters()
+    [Theory]
+    [InlineData("")] // empty
+    [InlineData("   ")] // whitespace-only (trims to empty)
+    [InlineData(".")] // reserved
+    [InlineData("..")] // reserved
+    [InlineData("review/op-1")] // path separator
+    [InlineData("a\\b")] // backslash
+    [InlineData("a b")] // interior whitespace
+    [InlineData("a\nb")] // control char
+    [InlineData("a\0b")] // NUL
+    [InlineData("café")] // non-ASCII
+    public void ValidateAndCanonicalize_RejectsValuesOutsideTheGatewayGrammar(string operationId)
     {
-        var empty = () => CommandOperation.ValidateOperationId("", "operationId");
-        var tooLong = () =>
-            CommandOperation.ValidateOperationId(
-                new string('a', CommandOperation.MaxOperationIdLength + 1),
-                "operationId"
-            );
-        var control = () => CommandOperation.ValidateOperationId("a\nb", "operationId");
-        var nul = () => CommandOperation.ValidateOperationId("a\0b", "operationId");
+        var act = () => CommandOperation.ValidateAndCanonicalizeOperationId(operationId, "operationId");
 
-        empty.Should().Throw<ArgumentException>();
-        tooLong.Should().Throw<ArgumentException>();
-        control.Should().Throw<ArgumentException>();
-        nul.Should().Throw<ArgumentException>();
+        act.Should().Throw<ArgumentException>();
     }
 
     [Fact]
-    public void ValidateOperationId_AcceptsBoundedPrintableId()
+    public void ValidateAndCanonicalize_RejectsTooLong()
     {
         var act = () =>
-            CommandOperation.ValidateOperationId(new string('a', CommandOperation.MaxOperationIdLength), "operationId");
+            CommandOperation.ValidateAndCanonicalizeOperationId(
+                new string('a', CommandOperation.MaxOperationIdLength + 1),
+                "operationId"
+            );
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void ValidateAndCanonicalize_AcceptsBoundedGrammarId()
+    {
+        var act = () =>
+            CommandOperation.ValidateAndCanonicalizeOperationId(new string('a', CommandOperation.MaxOperationIdLength), "operationId");
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ValidateAndCanonicalize_TrimsSurroundingWhitespaceToTheCanonicalForm()
+    {
+        CommandOperation.ValidateAndCanonicalizeOperationId("  op-1.2_3  ", "operationId").Should().Be("op-1.2_3");
     }
 
     [Fact]

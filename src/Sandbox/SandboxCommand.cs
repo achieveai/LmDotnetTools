@@ -17,7 +17,8 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// byte; <see cref="WorkingDirectory"/>, when supplied, must be a workspace-relative POSIX path
 /// (rooted, drive/UNC/device-qualified, backslash-bearing, or <c>..</c>-escaping values are rejected
 /// — see <see cref="WorkspaceRelativePath"/>); and <see cref="OperationId"/>, when supplied, is
-/// length-bounded and control-character-free.
+/// validated against the gateway's grammar (ASCII <c>[A-Za-z0-9._-]</c>, bounded, not <c>.</c>/<c>..</c>)
+/// and stored trimmed/canonical.
 /// </para>
 /// <para>
 /// <see cref="OperationId"/> is optional; when it is <c>null</c> the SDK generates a
@@ -45,8 +46,11 @@ public sealed record SandboxCommand
 
     /// <summary>
     /// Optional caller-chosen operation id used to recover a result after an ambiguous transport
-    /// failure. <c>null</c> (the default) lets the SDK generate one. Length-bounded and
-    /// control-character-free when supplied. It is the gateway's idempotency key: resubmitting the
+    /// failure. <c>null</c> (the default) lets the SDK generate one. When supplied it is validated
+    /// against the gateway's grammar and stored in its CANONICAL (trimmed) form: surrounding whitespace
+    /// stripped, then non-empty, at most 128 characters, not <c>.</c> or <c>..</c>, and only ASCII
+    /// letters, digits, <c>.</c>, <c>_</c>, and <c>-</c> — so what the SDK submits equals what the gateway
+    /// returns and what the SDK correlates against. It is the gateway's idempotency key: resubmitting the
     /// same id with an identical request replays the existing operation instead of running it again.
     /// Idempotency is process-local on the gateway (a gateway restart drops the record; see
     /// <see cref="SandboxClient.ExecuteAsync"/>), so recovery is not promised across a restart.
@@ -90,11 +94,10 @@ public sealed record SandboxCommand
         NormalizedWorkingDirectory = WorkspaceRelativePath.Normalize(workingDirectory, nameof(workingDirectory));
         WorkingDirectory = workingDirectory;
 
-        if (operationId is not null)
-        {
-            CommandOperation.ValidateOperationId(operationId, nameof(operationId));
-        }
-
-        OperationId = operationId;
+        // Store the CANONICAL (validated, trimmed) id so what the SDK submits == what the gateway echoes
+        // back == what the SDK correlates against.
+        OperationId = operationId is null
+            ? null
+            : CommandOperation.ValidateAndCanonicalizeOperationId(operationId, nameof(operationId));
     }
 }
