@@ -75,11 +75,13 @@ public sealed partial class SandboxClient
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             // Our own linked token fired (the transport deadline, including a slow/never-ending body
-            // stream), not the caller's — surface it as a client-side transport timeout.
+            // stream), not the caller's — surface it as a client-side transport timeout, preserving the
+            // operationId so a timed-out artifact fetch stays recoverable by re-issuing the same command.
             throw new SandboxException(
                 SandboxErrorKind.TransportTimeout,
                 $"Sandbox gateway request to '{relativeUri}' did not complete within the configured "
-                    + $"transport timeout ({_options.TransportTimeout})."
+                    + $"transport timeout ({_options.TransportTimeout}).",
+                operationId: operationId
             );
         }
         catch (HttpRequestException ex)
@@ -88,7 +90,8 @@ public sealed partial class SandboxClient
                 SandboxErrorKind.TransportTimeout,
                 $"Could not reach the sandbox gateway at '{_options.ServerAddress}'.",
                 statusCode: null,
-                ex
+                ex,
+                operationId
             );
         }
     }
