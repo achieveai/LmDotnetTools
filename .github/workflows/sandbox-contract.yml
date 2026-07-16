@@ -22,6 +22,8 @@ on:
   pull_request:
     paths:
       - 'src/Sandbox/**'
+      - 'src/LmAgentInfra/Sandbox/**'
+      - 'samples/CodeReviewDaemon.Sample/Workspace/Sandbox/**'
       - 'tests/Sandbox.Integration.Tests/**'
       - '.github/workflows/sandbox-contract.yml'
   workflow_dispatch:
