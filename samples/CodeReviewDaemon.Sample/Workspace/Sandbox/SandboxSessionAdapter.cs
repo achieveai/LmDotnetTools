@@ -144,9 +144,10 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         }
         catch (SandboxException ex) when (ex.IsDefiniteMissingPath)
         {
-            // A genuinely missing PATH (path_not_found) or a bare/legacy 404 with no error_code degrades to
-            // the null "no file" contract. An EVICTED session/mount (session_not_found / mount_not_found)
-            // is NOT degradable — it propagates so the caller sees a real error, not an empty read.
+            // ONLY an explicit path_not_found degrades to the null "no file" contract. An evicted
+            // session/mount (session_not_found / mount_not_found) OR a code-less 404 (ambiguous — the
+            // direct API also 404s an evicted session) is NOT degradable — it propagates so the caller
+            // sees a real error, not an empty read.
             return null;
         }
     }
@@ -184,9 +185,9 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         }
         catch (SandboxException ex) when (ex.IsDefiniteMissingPath)
         {
-            // A genuinely missing DIRECTORY (path_not_found) or a bare/legacy 404 with no error_code
-            // degrades to an empty listing; an evicted session/mount (session_not_found / mount_not_found)
-            // must surface as an error rather than a fake empty dir.
+            // ONLY an explicit path_not_found degrades to an empty listing; an evicted session/mount
+            // (session_not_found / mount_not_found) OR a code-less 404 (ambiguous) must surface as an
+            // error rather than a fake empty dir.
             return [];
         }
     }

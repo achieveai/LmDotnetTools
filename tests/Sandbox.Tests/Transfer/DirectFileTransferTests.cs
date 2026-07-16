@@ -33,6 +33,18 @@ public class DirectFileTransferTests
     private static HttpResponseMessage JsonResponse(string json, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
+    /// <summary>The <c>operation_id</c> the SDK put in a submit body — the fake must echo it (the SDK generates the mkdir id) so the correlation-id check passes.</summary>
+    private static string OperationIdFrom(HttpRequestMessage request)
+    {
+        var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("operation_id").GetString()!;
+    }
+
+    /// <summary>A terminal <c>succeeded</c> exit-0 operation snapshot echoing the submitted operation id.</summary>
+    private static HttpResponseMessage MkdirSucceeded(HttpRequestMessage request) =>
+        JsonResponse("{\"operation_id\":\"" + OperationIdFrom(request) + "\",\"status\":\"succeeded\",\"exit_code\":0}");
+
     [Fact]
     public async Task WriteThenRead_Utf8RoundTrip_ReturnsExactBytes()
     {
@@ -120,7 +132,7 @@ public class DirectFileTransferTests
         );
         handler.On(
             req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
-            _ => JsonResponse("""{"operation_id":"op-mkdir","status":"succeeded","exit_code":0}""")
+            MkdirSucceeded
         );
 
         const string content = "hi\n";
@@ -169,7 +181,7 @@ public class DirectFileTransferTests
         );
         handler.On(
             req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
-            _ => JsonResponse("""{"operation_id":"op-mkdir","status":"succeeded","exit_code":0}""")
+            MkdirSucceeded
         );
 
         // The first path component begins with `-`: without a `--` operand terminator, `mkdir` would parse
@@ -189,42 +201,31 @@ public class DirectFileTransferTests
     }
 
     [Fact]
-    public async Task WriteTextFileAsync_NestedParentMissing_BareNotFound_StillMkdirsAndRetries()
+    public async Task WriteTextFileAsync_BareNotFound_Propagates_WithoutMkdir()
     {
         var (client, handler) = CreateClient();
         using var _ = client;
 
         var putCount = 0;
-        byte[]? stored = null;
         handler.On(
             req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
-            req =>
+            _ =>
             {
                 putCount++;
-                if (putCount == 1)
-                {
-                    // A legacy/older gateway 404s a missing-parent write with NO machine-readable error_code.
-                    // The self-heal must still fire on this bare 404 (a definitive missing path).
-                    return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("not found") };
-                }
-
-                stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
-                return JsonResponse("{\"bytes_written\":" + stored.Length + "}");
+                // A code-less 404 is AMBIGUOUS (the direct API also 404s an evicted session), so it is NOT
+                // a definitive missing path: the write must NOT self-heal it. The original NotFound
+                // propagates and no mkdir operation is issued.
+                return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("not found") };
             }
         );
-        handler.On(
-            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
-            _ => JsonResponse("""{"operation_id":"op-mkdir","status":"succeeded","exit_code":0}""")
-        );
 
-        const string content = "y";
-        await client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", content);
+        Func<Task> act = () => client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", "y");
 
-        stored.Should().Equal(Encoding.UTF8.GetBytes(content));
-        putCount.Should().Be(2);
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.NotFound);
+        putCount.Should().Be(1); // one PUT, no retry
         handler
             .Requests.Should()
-            .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+            .NotContain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -240,11 +241,15 @@ public class DirectFileTransferTests
                 HttpStatusCode.NotFound
             )
         );
-        // mkdir -p ran but FAILED (e.g. a read-only parent): a terminal non-zero exit with a stderr artifact.
+        // mkdir -p ran but FAILED (e.g. a read-only parent): a terminal non-zero exit with a stderr
+        // artifact. Echo the submitted operation id so the correlation check passes and we reach the
+        // artifact download / OperationFailed path.
         handler.On(
             req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
-            _ => JsonResponse(
-                """{"operation_id":"op-mkdir","status":"failed","exit_code":1,"artifacts":{"mount_id":7,"stdout_path":"out","stderr_path":"err"}}"""
+            req => JsonResponse(
+                "{\"operation_id\":\""
+                    + OperationIdFrom(req)
+                    + "\",\"status\":\"failed\",\"exit_code\":1,\"artifacts\":{\"mount_id\":7,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}"
             )
         );
         handler.On(

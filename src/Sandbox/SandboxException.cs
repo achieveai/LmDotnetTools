@@ -52,14 +52,17 @@ public sealed class SandboxException : Exception
     /// <summary>
     /// Whether this failure is a DEFINITIVE "the path is not there" signal a best-effort caller may treat
     /// as a missing file/directory: a <see cref="SandboxErrorKind.NotFound"/> whose gateway
-    /// <see cref="ErrorCode"/> is a genuine <c>path_not_found</c> OR is absent entirely (a bare/legacy 404
-    /// from a gateway that carries no machine-readable code). An explicit eviction code
-    /// (<c>session_not_found</c>/<c>mount_not_found</c>) is deliberately NOT a missing path — an evicted
-    /// session/mount must surface as an error, never be silently degraded to "no such file". This is the
-    /// single shared signal both the file/directory best-effort degrade paths and the nested-write
+    /// <see cref="ErrorCode"/> is EXPLICITLY <c>path_not_found</c>. A code-less 404 is deliberately NOT
+    /// treated as a missing path: the direct API also answers <c>404</c> for an evicted session/mount, so
+    /// inferring "missing path" from an absent <see cref="ErrorCode"/> would mask a dead session as a
+    /// silent null/empty (and could fire an unintended <c>mkdir -p</c> retry on write). The pinned gateway
+    /// always stamps <c>error_code=path_not_found</c> on a genuine miss, so requiring it is exact, not
+    /// speculative. An explicit eviction code (<c>session_not_found</c>/<c>mount_not_found</c>) or a
+    /// code-less 404 therefore surfaces as a real <see cref="SandboxErrorKind.NotFound"/> error. This is
+    /// the single shared signal both the file/directory best-effort degrade paths and the nested-write
     /// <c>mkdir -p</c> self-heal trigger on, so the two never drift.
     /// </summary>
-    public bool IsDefiniteMissingPath => Kind == SandboxErrorKind.NotFound && ErrorCode is null or "path_not_found";
+    public bool IsDefiniteMissingPath => Kind == SandboxErrorKind.NotFound && ErrorCode == "path_not_found";
 
     public SandboxException(SandboxErrorKind kind, string message, int? statusCode = null, Exception? innerException = null, string? operationId = null)
         : base(message, innerException)

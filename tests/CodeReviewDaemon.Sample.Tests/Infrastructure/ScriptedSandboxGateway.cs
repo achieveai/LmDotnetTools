@@ -69,7 +69,7 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
 
         if (path.Contains("/operations", StringComparison.Ordinal))
         {
-            return RespondToOperation();
+            return await RespondToOperationAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
         if (path.Contains("/files/", StringComparison.Ordinal))
@@ -107,17 +107,22 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             )
         );
 
-    /// <summary>Answers <c>POST .../operations</c> with a terminal snapshot (no poll needed).</summary>
-    private HttpResponseMessage RespondToOperation()
+    /// <summary>
+    /// Answers <c>POST .../operations</c> with a terminal snapshot (no poll needed), ECHOING the
+    /// submitted <c>operation_id</c> so the SDK's correlation-id check passes (the SDK generates the id).
+    /// </summary>
+    private async Task<HttpResponseMessage> RespondToOperationAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        var operationId = await ResolveOperationIdAsync(request, ct).ConfigureAwait(false);
+
         if (SimulateExecutionTimeout)
         {
-            return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { operation_id = "op", status = "timed_out" }));
+            return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { operation_id = operationId, status = "timed_out" }));
         }
 
         var snapshot = new
         {
-            operation_id = "op",
+            operation_id = operationId,
             status = CommandExitCode == 0 ? "succeeded" : "failed",
             exit_code = CommandExitCode,
             artifacts = new
@@ -128,6 +133,23 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             },
         };
         return Json(HttpStatusCode.OK, JsonSerializer.Serialize(snapshot));
+    }
+
+    /// <summary>Extracts the operation id the SDK sent — from the submit body (POST) or the poll path's last segment (GET).</summary>
+    private static async Task<string> ResolveOperationIdAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        if (request.Method == HttpMethod.Post && request.Content is not null)
+        {
+            var body = await request.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("operation_id", out var idProp) && idProp.GetString() is { } id)
+            {
+                return id;
+            }
+        }
+
+        var segments = request.RequestUri!.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length > 0 ? Uri.UnescapeDataString(segments[^1]) : "op";
     }
 
     /// <summary>Answers the files API: a <c>PUT</c> write, a stdout/stderr artifact download, or a user file read.</summary>

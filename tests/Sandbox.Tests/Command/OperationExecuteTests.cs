@@ -292,4 +292,44 @@ public sealed class OperationExecuteTests
 
         (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
     }
+
+    [Fact]
+    public async Task ExecuteAsync_SnapshotForDifferentOperation_ThrowsProtocol()
+    {
+        const string sessionId = "sess-corr";
+        const string operationId = "op-corr";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // A well-formed terminal snapshot, but for a DIFFERENT operation id than we submitted (a proxy /
+        // gateway stitching in another operation's response) — it must not be attributed to this command.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"someone-elses-op\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalSnapshotWithNullArtifactPath_ThrowsProtocol()
+    {
+        const string sessionId = "sess-art";
+        const string operationId = "op-art";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // Correlated correctly and terminal, but a null stdout_path — must map to Protocol, not throw a raw
+        // ArgumentNullException inside Uri.EscapeDataString when the artifact download is attempted.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":1,\"stdout_path\":null,\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
 }

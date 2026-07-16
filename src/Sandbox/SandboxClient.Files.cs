@@ -102,11 +102,12 @@ public sealed partial class SandboxClient
         catch (SandboxException ex) when (ex.IsDefiniteMissingPath)
         {
             // The direct files PUT does not create the target's parent (there is no directory-create
-            // endpoint), so a nested write whose parent is missing is a definitive missing path — a
-            // `path_not_found` (or a bare/legacy 404 with no error_code, via the shared
-            // SandboxException.IsDefiniteMissingPath signal the adapter degrade paths also use). A
-            // top-level file has no parent to create — surface the original failure unchanged. Otherwise
-            // self-heal the parent with a single `mkdir -p` operation and retry the PUT exactly once.
+            // endpoint), so a nested write whose parent is missing is answered with an explicit
+            // path_not_found — the shared SandboxException.IsDefiniteMissingPath signal the adapter degrade
+            // paths also use. A code-less or eviction 404 is deliberately NOT self-healed (it is ambiguous
+            // with a dead session and would fire an unwanted mkdir + retry). A top-level file has no parent
+            // to create — surface the original failure unchanged. Otherwise self-heal the parent with a
+            // single `mkdir -p` operation and retry the PUT exactly once.
             var parentDirectory = GetWorkspaceParentDirectory(relativePath);
             if (parentDirectory is null)
             {

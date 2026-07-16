@@ -142,16 +142,18 @@ public sealed class SandboxSessionAdapterTests
     }
 
     [Fact]
-    public async Task ReadFileAsync_returns_null_on_a_bare_404_without_error_code()
+    public async Task ReadFileAsync_rethrows_on_a_bare_404_without_error_code()
     {
-        // A legacy/older gateway returns a bare 404 with no machine-readable error_code. The adapter must
-        // still degrade to the null "no file" contract (a bare 404 is a definitive missing path), not throw.
+        // A code-less 404 is AMBIGUOUS — the direct API also 404s an evicted session — so it is NOT a
+        // definitive missing path. The adapter must surface it as a real error, not degrade to null.
         var gateway = new ScriptedSandboxGateway { BareNotFound = true };
         await using var adapter = CreateAdapter(gateway);
 
-        var content = await adapter.ReadFileAsync("/workspace/reviewbot/legacy.md", CancellationToken.None);
+        var act = () => adapter.ReadFileAsync("/workspace/reviewbot/legacy.md", CancellationToken.None);
 
-        content.Should().BeNull();
+        var exception = await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        exception.Which.Kind.Should().Be(AchieveAi.LmDotnetTools.Sandbox.SandboxErrorKind.NotFound);
+        exception.Which.ErrorCode.Should().BeNull();
     }
 
     [Fact]
@@ -192,16 +194,18 @@ public sealed class SandboxSessionAdapterTests
     }
 
     [Fact]
-    public async Task ListFilesAsync_returns_empty_on_a_bare_404_without_error_code()
+    public async Task ListFilesAsync_rethrows_on_a_bare_404_without_error_code()
     {
-        // A legacy/older gateway returns a bare 404 with no machine-readable error_code; the adapter must
-        // still degrade to an empty listing (a bare 404 is a definitive missing path), not throw.
+        // A code-less 404 is ambiguous (the direct API also 404s an evicted session), so it is NOT a
+        // definitive missing path; the adapter must surface it as an error rather than a fake empty listing.
         var gateway = new ScriptedSandboxGateway { BareNotFound = true };
         await using var adapter = CreateAdapter(gateway);
 
-        var names = await adapter.ListFilesAsync("/workspace/reviewbot/legacy", CancellationToken.None);
+        var act = () => adapter.ListFilesAsync("/workspace/reviewbot/legacy", CancellationToken.None);
 
-        names.Should().BeEmpty();
+        var exception = await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        exception.Which.Kind.Should().Be(AchieveAi.LmDotnetTools.Sandbox.SandboxErrorKind.NotFound);
+        exception.Which.ErrorCode.Should().BeNull();
     }
 
     [Fact]

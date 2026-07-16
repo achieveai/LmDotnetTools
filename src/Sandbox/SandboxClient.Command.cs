@@ -192,7 +192,12 @@ public sealed partial class SandboxClient
     /// <summary>Whether <paramref name="status"/> is the gateway's non-terminal <c>running</c> state.</summary>
     private static bool IsRunning(string status) => string.Equals(status, "running", StringComparison.Ordinal);
 
-    /// <summary>Deserializes a 2xx operation-status response body, mapping a malformed or empty body to <see cref="SandboxErrorKind.Protocol"/>.</summary>
+    /// <summary>
+    /// Deserializes a 2xx operation-status response body, mapping a malformed or empty body to
+    /// <see cref="SandboxErrorKind.Protocol"/> and rejecting a snapshot whose <c>operation_id</c> does not
+    /// correlate to the operation this call is tracking (a proxy/gateway returning a valid snapshot for a
+    /// DIFFERENT operation must never be attributed to this command).
+    /// </summary>
     private static async Task<OperationStatusDto> ReadOperationStatusOrThrowAsync(
         HttpResponseMessage response,
         string operation,
@@ -216,13 +221,29 @@ public sealed partial class SandboxClient
             );
         }
 
-        return status
+        var resolved =
+            status
             ?? throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 $"Sandbox gateway returned an empty response for {operation}.",
                 (int)response.StatusCode,
                 operationId: operationId
             );
+
+        // Correlate the snapshot to THIS operation — a valid-but-mismatched operation_id (e.g. a proxy
+        // stitching in another operation's response) is a protocol violation, not this command's result.
+        // The returned id is not echoed into the message (avoid surfacing unrelated response content).
+        if (!string.Equals(resolved.OperationId, operationId, StringComparison.Ordinal))
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a status snapshot for a different operation than requested for {operation}.",
+                (int)response.StatusCode,
+                operationId: operationId
+            );
+        }
+
+        return resolved;
     }
 
     /// <summary>
@@ -273,6 +294,18 @@ public sealed partial class SandboxClient
                 $"Sandbox gateway did not report artifacts for terminal operation '{operationId}'.",
                 operationId: operationId
             );
+
+        // Guard the artifact paths before they reach Uri.EscapeDataString: a JSON null/empty stdout_path
+        // or stderr_path would otherwise throw a raw ArgumentNullException that escapes the SandboxException
+        // contract. A terminal operation must always name both artifacts.
+        if (string.IsNullOrEmpty(artifacts.StdoutPath) || string.IsNullOrEmpty(artifacts.StderrPath))
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway reported terminal operation '{operationId}' with a missing stdout/stderr artifact path.",
+                operationId: operationId
+            );
+        }
 
         var standardOutput = await DownloadArtifactAsync(sessionId, artifacts.MountId, artifacts.StdoutPath, "stdout", operationId, ct)
             .ConfigureAwait(false);
