@@ -1183,14 +1183,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId), cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (IsContextWindowOverflow(ex))
+        catch (Exception ex) when (IsContextExhaustionFailure(ex))
         {
-            // Context window exceeded (the PR diff plus the fanned-out sub-agents' full results folded into one
-            // conversation). Escalation ladder, each on a FRESH thread so it never reloads the overflowing
+            // Context exhausted — the conversation (PR diff plus the fanned-out sub-agents' full results folded
+            // into one history) outgrew the model window. The endpoint surfaces this as a clean 400 OR, more
+            // often, by aborting the stream mid-response (HttpIOException "response ended prematurely"); both are
+            // handled here. Escalation ladder, each on a FRESH thread so it never reloads the overflowing
             // history: (1) escalate to the bigger-window model (OverflowEscalationModelId, e.g. gpt-5.6-terra)
-            // KEEPING the tool context so the review stays grounded; (2) if the bigger model still overflows
+            // KEEPING the tool context so the review stays grounded; (2) if the bigger model still exhausts
             // while tool-assisted, shed the sub-agents (diff-only) on it; (3) diff-only on the base model when
-            // nothing bigger is configured. A diff-only attempt that still overflows is surfaced (RetryPending).
+            // nothing bigger is configured. A diff-only attempt that still fails is surfaced (RetryPending).
             var escalation = _options.OverflowEscalationModelId;
             var canEscalate = !string.IsNullOrWhiteSpace(escalation)
                 && !string.Equals(escalation, run.ModelId, StringComparison.OrdinalIgnoreCase);
@@ -1198,8 +1200,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             if (canEscalate)
             {
                 _logger.LogWarning(
-                    ex, "Run {RunId}: context window exceeded on {Model}; escalating to bigger-window {Escalation}.",
-                    run.Id, run.ModelId ?? "(default)", escalation);
+                    ex, "Run {RunId}: context exhausted on {Model} ({ExType}); escalating to bigger-window {Escalation}.",
+                    run.Id, run.ModelId ?? "(default)", ex.GetType().Name, escalation);
                 try
                 {
                     result = await RunReviewAttemptAsync(
@@ -1207,10 +1209,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                             ThreadId(run, run.VariantId + "-esc"), cancellationToken, modelOverride: escalation)
                         .ConfigureAwait(false);
                 }
-                catch (Exception ex2) when (toolContext is not null && IsContextWindowOverflow(ex2))
+                catch (Exception ex2) when (toolContext is not null && IsContextExhaustionFailure(ex2))
                 {
                     _logger.LogWarning(
-                        ex2, "Run {RunId}: {Escalation} also exceeded the window; retrying diff-only (no sub-agents) on it.",
+                        ex2, "Run {RunId}: {Escalation} also exhausted the window; retrying diff-only (no sub-agents) on it.",
                         run.Id, escalation);
                     result = await RunReviewAttemptAsync(
                             run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
@@ -1221,7 +1223,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             else if (toolContext is not null)
             {
                 _logger.LogWarning(
-                    ex, "Run {RunId}: context window exceeded; retrying diff-only (no sub-agents).", run.Id);
+                    ex, "Run {RunId}: context exhausted ({ExType}); retrying diff-only (no sub-agents).",
+                    run.Id, ex.GetType().Name);
                 result = await RunReviewAttemptAsync(
                         run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
                         ThreadId(run, run.VariantId + "-ctxretry"), cancellationToken)
@@ -1288,16 +1291,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// True when <paramref name="ex"/> (or any exception it wraps) is the model API rejecting a request whose
-    /// input exceeded the context window ("Your input exceeds the context window of this model."). Matched on
-    /// the distinctive "context window" phrase so it fires on the provider's 400 regardless of which HTTP or
-    /// provider exception type the loop surfaces it as.
+    /// True when <paramref name="ex"/> (or any exception it wraps) indicates the model could not accept the
+    /// request because the conversation grew too large — recognized HOWEVER the endpoint surfaces it:
+    /// <list type="bullet">
+    /// <item>the clean provider 400 — "context window", "maximum context", "context_length_exceeded",
+    ///   "too many tokens";</item>
+    /// <item>the transport-level abort the endpoint often returns INSTEAD of a clean 400 when a huge
+    ///   request/response is cut off mid-stream — <see cref="System.Net.Http.HttpIOException"/>
+    ///   "The response ended prematurely" / "unexpected end of stream" (the form we actually observed on
+    ///   sub-agent conversations of 125K–232K tokens).</item>
+    /// </list>
+    /// Treating the transport abort as exhaustion lets the escalation ladder recover it (a FRESH attempt on a
+    /// bigger-window model, then diff-only) instead of failing the whole review; a genuinely transient abort is
+    /// recovered by that same fresh retry, and a persistent one still degrades to diff-only then surfaces — so
+    /// the broader match never masks a real, non-recoverable error.
     /// </summary>
-    private static bool IsContextWindowOverflow(Exception ex)
+    private static bool IsContextExhaustionFailure(Exception ex)
     {
         for (Exception? e = ex; e is not null; e = e.InnerException)
         {
-            if (e.Message.Contains("context window", StringComparison.OrdinalIgnoreCase))
+            var msg = e.Message;
+            if (msg.Contains("context window", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("maximum context", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("context_length", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("too many tokens", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("response ended prematurely", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("unexpected end of stream", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

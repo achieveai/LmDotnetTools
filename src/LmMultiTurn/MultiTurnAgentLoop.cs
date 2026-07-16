@@ -342,7 +342,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                 {
                     // Per-run error: log, notify client, but keep the loop alive. First size the accumulated
                     // conversation (the diff plus every fanned-out sub-agent result, folded into one history) so
-                    // a context-window overflow is debuggable. Best-effort — never masks the real error below.
+                    // a context-window overflow is debuggable AND so the error the CALLER receives carries WHY:
+                    // when a conversation outgrows the window the endpoint usually aborts the stream, and a bare
+                    // "response ended prematurely" tells a parent nothing about why a sub-agent dimension dropped.
+                    // Best-effort sizing — never masks the real error below.
+                    long estTokens = 0;
                     try
                     {
                         var snapshot = GetHistorySnapshot();
@@ -353,10 +357,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                             catch { /* a message that won't serialize contributes 0 to the estimate */ }
                         }
 
+                        estTokens = chars / 4;
                         Logger.LogWarning(
                             "Run {RunId} failing ({ExType}): conversation = {Messages} messages, ~{Chars} serialized "
                                 + "chars (~{Tokens} tokens est).",
-                            assignment.RunId, ex.GetType().Name, snapshot.Count, chars, chars / 4);
+                            assignment.RunId, ex.GetType().Name, snapshot.Count, chars, estTokens);
                     }
                     catch
                     {
@@ -364,13 +369,23 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
                     }
 
                     Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
+
+                    // A large conversation almost certainly failed on context exhaustion — the endpoint typically
+                    // aborts the stream (a transport error) rather than returning a clean 400. Classify it in the
+                    // error the caller sees so a dropped sub-agent reads as "context too large", not a network blip.
+                    const long largeConversationTokenEstimate = 100_000;
+                    var errorMessage = estTokens >= largeConversationTokenEstimate
+                        ? $"{ex.Message} (conversation ~{estTokens} tokens est — likely exceeded the model context "
+                            + "window; reduce scope or use a bigger-window model)"
+                        : ex.Message;
+
                     await CompleteRunAsync(
                         assignment.RunId,
                         assignment.GenerationId,
                         wasForked: isExplicitFork,
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         isError: true,
-                        errorMessage: ex.Message,
+                        errorMessage: errorMessage,
                         ct: ct);
                 }
                 finally
