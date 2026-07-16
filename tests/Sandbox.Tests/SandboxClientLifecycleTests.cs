@@ -321,6 +321,24 @@ public class SandboxClientLifecycleTests
         ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
     }
 
+    [Fact]
+    public async Task ListAsync_ChunkedOverCapControlPlaneBody_ThrowsProtocol_WhileStreaming()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        // A control-plane 2xx with NO Content-Length (chunked) whose body streams past the cap: the header
+        // precheck can't catch it, so the streamed running-byte-count cap must reject it mid-stream. The
+        // lazy zero-stream produces the bytes without allocating them up front.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new UnsizedStreamContent(SandboxClient.MaxDirectReadBytes + 1) }
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListAsync());
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
     /// <summary>An <see cref="HttpContent"/> that declares a large <c>Content-Length</c> without allocating any bytes, to exercise the pre-read size guard.</summary>
     private sealed class OversizedContent : HttpContent
     {
@@ -335,5 +353,61 @@ public class SandboxClientLifecycleTests
             length = _length;
             return true;
         }
+    }
+
+    /// <summary>
+    /// An <see cref="HttpContent"/> that reports NO <c>Content-Length</c> (chunked) and whose read stream
+    /// lazily yields a fixed number of zero bytes without allocating them — exercising the STREAMING byte
+    /// cap (not the header precheck) with negligible up-front memory.
+    /// </summary>
+    private sealed class UnsizedStreamContent : HttpContent
+    {
+        private readonly long _length;
+
+        public UnsizedStreamContent(long length) => _length = length;
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            new ZeroStream(_length).CopyToAsync(stream);
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new ZeroStream(_length));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    /// <summary>A read-only forward stream that yields <paramref name="length"/> zero bytes then EOF, without allocating them.</summary>
+    private sealed class ZeroStream(long length) : Stream
+    {
+        private long _remaining = length;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining <= 0)
+            {
+                return 0;
+            }
+
+            var produced = (int)Math.Min(count, _remaining);
+            Array.Clear(buffer, offset, produced);
+            _remaining -= produced;
+            return produced;
+        }
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

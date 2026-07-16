@@ -38,6 +38,31 @@ public sealed class SandboxSessionRegistryClientEvictionTests
     }
 
     [Fact]
+    public async Task PerCredentialClient_SharedByTwoSessions_SurvivesTheFirstDestroy_AndIsEvictedOnTheSecond()
+    {
+        var (registry, _) = CreateRegistry();
+        await using var _reg = registry;
+
+        // TWO workspaces under the SAME credential share ONE ref-counted client entry (refcount 2).
+        var cred = new SandboxCredential("app-shared", string.Empty);
+        _ = await registry.GetOrCreateSessionAsync("wsA", CancellationToken.None, cred);
+        var sessionB = await registry.GetOrCreateSessionAsync("wsB", CancellationToken.None, cred);
+        registry.PerCredentialClientCount.Should().Be(1);
+
+        // Destroy ONE session (refcount 2 → 1): the shared client entry must REMAIN.
+        await registry.DestroyWorkspaceSessionAsync("wsA");
+        registry.PerCredentialClientCount.Should().Be(1);
+
+        // The still-live second session can make a gateway call — proving the shared client was NOT disposed.
+        var stillUsable = () => registry.ListDiscoveredAsync(sessionB.SessionId);
+        await stillUsable.Should().NotThrowAsync();
+
+        // Destroy the SECOND (last) session under the credential (refcount 1 → 0): entry evicted+disposed.
+        await registry.DestroyWorkspaceSessionAsync("wsB");
+        registry.PerCredentialClientCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Create_UnderCredentialWhoseOtherSessionIsDestroyedMidCreate_DoesNotDisposeTheClient()
     {
         var createCounter = 0;
@@ -132,7 +157,15 @@ public sealed class SandboxSessionRegistryClientEvictionTests
                 };
             }
 
-            // DELETE (destroy) and any GET (liveness) succeed.
+            if (req.Method == HttpMethod.Get && path.EndsWith("/discovered", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"discovered\":[]}", Encoding.UTF8, "application/json"),
+                };
+            }
+
+            // DELETE (destroy) and any other GET (liveness) succeed.
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
 
