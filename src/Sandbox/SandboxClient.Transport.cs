@@ -55,7 +55,10 @@ public sealed partial class SandboxClient
 
             if (!response.IsSuccessStatusCode)
             {
-                throw await MapDirectErrorAsync(response, operation, sessionId).ConfigureAwait(false);
+                // Pass the CALLER's ct (not timeoutCts): MapDirectErrorAsync links its own body-read
+                // deadline and must be able to observe genuine caller cancellation to honour the plain-OCE
+                // contract.
+                throw await MapDirectErrorAsync(response, operation, sessionId, ct).ConfigureAwait(false);
             }
 
             var declaredLength = response.Content.Headers.ContentLength;
@@ -368,12 +371,21 @@ public sealed partial class SandboxClient
     /// invariant <see cref="MapErrorResponse"/> holds; the gateway's own <c>403</c> error codes like
     /// <c>mount_read_only</c> are therefore indistinguishable here, which is acceptable because the
     /// write path only ever targets the writable workspace). A <c>3xx</c> is refused, never followed.
-    /// The error body is read under a FRESH transport-timeout token, deliberately NOT the caller's: an
-    /// error response has already arrived, so a caller cancelling mid-parse must not be able to erase the
-    /// gateway's real classification. This method ALWAYS returns a <see cref="SandboxException"/> and never
-    /// throws <see cref="OperationCanceledException"/>.
     /// </summary>
-    private async Task<SandboxException> MapDirectErrorAsync(HttpResponseMessage response, string operation, string sessionId)
+    /// <remarks>
+    /// The error body is read under a token LINKED to <paramref name="ct"/> AND bounded by the SDK's own
+    /// transport deadline, and the two cancellation sources are distinguished:
+    /// <list type="bullet">
+    /// <item>A genuine CALLER cancellation propagates as a plain <see cref="OperationCanceledException"/>,
+    /// honouring this SDK's documented cancellation contract.</item>
+    /// <item>The SDK's own body-read deadline elapsing (caller NOT cancelled), or a malformed body, falls
+    /// back to status-only classification — an already-received gateway error is never lost to an
+    /// SDK-internal timeout.</item>
+    /// <item>A well-formed body yields the <c>error_code</c> classification (including the
+    /// <c>session_not_found</c> mount-cache eviction).</item>
+    /// </list>
+    /// </remarks>
+    private async Task<SandboxException> MapDirectErrorAsync(HttpResponseMessage response, string operation, string sessionId, CancellationToken ct)
     {
         var statusCode = (int)response.StatusCode;
         if (statusCode is >= 300 and < 400)
@@ -395,19 +407,24 @@ public sealed partial class SandboxClient
         string? errorCode = null;
         try
         {
-            // Bound the body read with a FRESH transport-timeout CTS, NOT linked to the caller's token: the
-            // error response has already been received, so a caller cancelling now must not turn this into
-            // an OperationCanceledException that erases the gateway's real classification (NotFound/Conflict/
-            // …). The fresh deadline still prevents an unbounded wait on a slow/streamed error body.
-            using var bodyCts = new CancellationTokenSource(_options.TransportTimeout);
+            // Link to the caller's token so a caller cancel trips IMMEDIATELY (no waiting out the deadline),
+            // and add the SDK's own transport deadline so a slow/never-ending error body is still bounded.
+            using var bodyCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bodyCts.CancelAfter(_options.TransportTimeout);
             var error = await response.Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token).ConfigureAwait(false);
             errorCode = error?.ErrorCode;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Genuine CALLER cancellation — honour the documented plain-OCE contract rather than masking it
+            // as a SandboxException.
+            throw;
+        }
         catch (Exception ex) when (ex is JsonException or OperationCanceledException)
         {
-            // No usable machine-readable body (malformed, or the bounded read elapsed) — fall back to
-            // status-only classification below. Never propagate OCE: an already-received error must always
-            // classify to a SandboxException.
+            // The caller did NOT cancel: the SDK's own body-read deadline fired, or the body was malformed
+            // — fall back to status-only classification (errorCode stays null). An already-received gateway
+            // error is never lost to an SDK-internal timeout.
         }
 
         // A definitive "this session is gone" drops the stale sessionId→mountId cache entry so a later

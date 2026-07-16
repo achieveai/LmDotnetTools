@@ -413,15 +413,15 @@ public class DirectFileTransferTests
     }
 
     [Fact]
-    public async Task ReadTextFileAsync_CallerCancelsDuringErrorBodyParse_StillClassifiesTheError()
+    public async Task ReadTextFileAsync_CallerCancelsDuringErrorBodyParse_ThrowsOperationCanceled()
     {
         var (client, handler) = CreateClient();
         using var _ = client;
         using var callerCts = new CancellationTokenSource();
-        // The gateway's error response has ALREADY arrived; the caller's token trips only once the SDK
-        // starts reading that error body (the content cancels it on first read). The gateway's real
-        // classification (Conflict) must survive — a caller cancelling mid-parse must NOT erase an
-        // already-received error into an OperationCanceledException.
+        // The gateway's error response has arrived, but the CALLER cancels as the SDK starts reading the
+        // error body (the content trips the caller's token on first read). Genuine caller cancellation must
+        // surface as a plain OperationCanceledException — the documented cancellation contract — NOT be
+        // masked as a SandboxException.
         handler.On(
             req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
             _ => new HttpResponseMessage(HttpStatusCode.Conflict)
@@ -434,6 +434,31 @@ public class DirectFileTransferTests
         );
 
         Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt", callerCts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ReadTextFileAsync_SdkBodyReadTimeout_CallerNotCancelled_ClassifiesStatusOnly()
+    {
+        // A short SDK transport deadline; the caller's token is never cancelled.
+        var (client, handler) = TestSupport.CreateBorrowedClient(transportTimeout: TimeSpan.FromMilliseconds(150));
+        using var _ = client;
+        handler.OnJson(
+            HttpMethod.Get,
+            $"/api/v1/sandboxes/{Session}",
+            """{"session_id":"s1","volumes":{"workspace":{"container_path":"/workspace","read_only":false,"id":7}}}"""
+        );
+        // The error response has arrived (409), but its body never finishes streaming. The SDK's OWN
+        // body-read deadline must fire (caller NOT cancelled) and fall back to status-only classification —
+        // an already-received gateway error is never lost to an SDK-internal timeout, and this must NOT
+        // surface as cancellation.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new NeverEndingContent() }
+        );
+
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt");
 
         var exception = await act.Should().ThrowAsync<SandboxException>();
         exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
@@ -560,6 +585,55 @@ public class DirectFileTransferTests
             length = _json.Length;
             return true;
         }
+    }
+
+    /// <summary>
+    /// A JSON <see cref="HttpContent"/> whose body stream never finishes (each read blocks until its token
+    /// is cancelled) — simulating an error response whose body hangs, so the SDK's OWN body-read deadline
+    /// must be what ends the read.
+    /// </summary>
+    private sealed class NeverEndingContent : HttpContent
+    {
+        public NeverEndingContent() => Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new NeverEndingStream());
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => Task.Delay(Timeout.Infinite);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    /// <summary>A read stream whose every read blocks until the supplied token cancels (then throws), so nothing is ever produced.</summary>
+    private sealed class NeverEndingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>

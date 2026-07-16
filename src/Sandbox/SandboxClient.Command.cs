@@ -129,7 +129,7 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"submitting operation '{operationId}'", sessionId).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"submitting operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
         }
 
         return await ReadOperationStatusOrThrowAsync(response, $"submitting operation '{operationId}'", operationId, ct)
@@ -182,7 +182,7 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"polling operation '{operationId}'", sessionId).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"polling operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
         }
 
         return await ReadOperationStatusOrThrowAsync(response, $"polling operation '{operationId}'", operationId, ct)
