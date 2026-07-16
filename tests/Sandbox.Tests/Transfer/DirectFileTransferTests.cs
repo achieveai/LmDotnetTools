@@ -413,6 +413,33 @@ public class DirectFileTransferTests
     }
 
     [Fact]
+    public async Task ReadTextFileAsync_CallerCancelsDuringErrorBodyParse_StillClassifiesTheError()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        using var callerCts = new CancellationTokenSource();
+        // The gateway's error response has ALREADY arrived; the caller's token trips only once the SDK
+        // starts reading that error body (the content cancels it on first read). The gateway's real
+        // classification (Conflict) must survive — a caller cancelling mid-parse must NOT erase an
+        // already-received error into an OperationCanceledException.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.Conflict)
+            {
+                Content = new CancelOnReadContent(
+                    """{"error":"locked","code":409,"error_code":"target_locked","retryable":false}""",
+                    callerCts
+                ),
+            }
+        );
+
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt", callerCts.Token);
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
+    }
+
+    [Fact]
     public async Task ReadTextFileAsync_ContentLengthOverCap_ThrowsProtocol_BeforeBuffering()
     {
         var (client, handler) = CreateClient();
@@ -494,6 +521,43 @@ public class DirectFileTransferTests
         protected override bool TryComputeLength(out long length)
         {
             length = _length;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// A JSON <see cref="HttpContent"/> that cancels a supplied token the instant its body starts being
+    /// read — simulating a caller that cancels AFTER the (already-received) error response, right as the
+    /// SDK reads the error body. The bytes are still delivered, so a body read that does NOT observe the
+    /// cancelled token succeeds.
+    /// </summary>
+    private sealed class CancelOnReadContent : HttpContent
+    {
+        private readonly byte[] _json;
+        private readonly CancellationTokenSource _cancelOnRead;
+
+        public CancelOnReadContent(string json, CancellationTokenSource cancelOnRead)
+        {
+            _json = Encoding.UTF8.GetBytes(json);
+            _cancelOnRead = cancelOnRead;
+            Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync()
+        {
+            _cancelOnRead.Cancel();
+            return Task.FromResult<Stream>(new MemoryStream(_json, writable: false));
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            _cancelOnRead.Cancel();
+            return new MemoryStream(_json, writable: false).CopyToAsync(stream);
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _json.Length;
             return true;
         }
     }

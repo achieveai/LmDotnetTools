@@ -149,7 +149,7 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"writing file '{displayPath}'", sessionId, ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"writing file '{displayPath}'", sessionId).ConfigureAwait(false);
         }
 
         WriteFileResponseDto? written;
@@ -293,7 +293,7 @@ public sealed partial class SandboxClient
 
             if (!response.IsSuccessStatusCode)
             {
-                throw await MapDirectErrorAsync(response, operation, sessionId, ct).ConfigureAwait(false);
+                throw await MapDirectErrorAsync(response, operation, sessionId).ConfigureAwait(false);
             }
 
             ListDirectoryResponseDto page;

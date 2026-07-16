@@ -55,7 +55,7 @@ public sealed partial class SandboxClient
 
             if (!response.IsSuccessStatusCode)
             {
-                throw await MapDirectErrorAsync(response, operation, sessionId, timeoutCts.Token).ConfigureAwait(false);
+                throw await MapDirectErrorAsync(response, operation, sessionId).ConfigureAwait(false);
             }
 
             var declaredLength = response.Content.Headers.ContentLength;
@@ -368,8 +368,12 @@ public sealed partial class SandboxClient
     /// invariant <see cref="MapErrorResponse"/> holds; the gateway's own <c>403</c> error codes like
     /// <c>mount_read_only</c> are therefore indistinguishable here, which is acceptable because the
     /// write path only ever targets the writable workspace). A <c>3xx</c> is refused, never followed.
+    /// The error body is read under a FRESH transport-timeout token, deliberately NOT the caller's: an
+    /// error response has already arrived, so a caller cancelling mid-parse must not be able to erase the
+    /// gateway's real classification. This method ALWAYS returns a <see cref="SandboxException"/> and never
+    /// throws <see cref="OperationCanceledException"/>.
     /// </summary>
-    private async Task<SandboxException> MapDirectErrorAsync(HttpResponseMessage response, string operation, string sessionId, CancellationToken ct)
+    private async Task<SandboxException> MapDirectErrorAsync(HttpResponseMessage response, string operation, string sessionId)
     {
         var statusCode = (int)response.StatusCode;
         if (statusCode is >= 300 and < 400)
@@ -391,16 +395,24 @@ public sealed partial class SandboxClient
         string? errorCode = null;
         try
         {
-            var error = await response.Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
+            // Bound the body read with a FRESH transport-timeout CTS, NOT linked to the caller's token: the
+            // error response has already been received, so a caller cancelling now must not turn this into
+            // an OperationCanceledException that erases the gateway's real classification (NotFound/Conflict/
+            // …). The fresh deadline still prevents an unbounded wait on a slow/streamed error body.
+            using var bodyCts = new CancellationTokenSource(_options.TransportTimeout);
+            var error = await response.Content.ReadFromJsonAsync<GatewayErrorDto>(SandboxJson.RestOptions, bodyCts.Token).ConfigureAwait(false);
             errorCode = error?.ErrorCode;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or OperationCanceledException)
         {
-            // No machine-readable body — fall back to status-only classification below.
+            // No usable machine-readable body (malformed, or the bounded read elapsed) — fall back to
+            // status-only classification below. Never propagate OCE: an already-received error must always
+            // classify to a SandboxException.
         }
 
         // A definitive "this session is gone" drops the stale sessionId→mountId cache entry so a later
-        // call re-resolves the mount (or fails cleanly) instead of replaying a dead mapping.
+        // call re-resolves the mount (or fails cleanly) instead of replaying a dead mapping. Skipped when
+        // the body did not parse (errorCode null) — best-effort, acceptable.
         if (string.Equals(errorCode, "session_not_found", StringComparison.Ordinal))
         {
             EvictWorkspaceMountId(sessionId);
