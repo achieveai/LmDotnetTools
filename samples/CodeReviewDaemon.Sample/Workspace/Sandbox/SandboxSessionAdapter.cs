@@ -95,6 +95,15 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var client = await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
+        // SDK OperationId is deliberately left UNSET. The daemon's SandboxCommand contract
+        // (ISandboxCommandRunner.SandboxCommand = Argv + WorkingDirectory) models no per-execution
+        // idempotency/recovery token, and no daemon caller mints one — so every RunAsync is an independent
+        // gateway execution, exactly as the pre-SDK MCP orchestrator behaved (not a regression). Recovery in
+        // the daemon is handled a level up (re-prepare the workspace and re-run the review), never by
+        // replaying a specific gateway operation id. A CONTENT-derived id would be actively unsafe: it would
+        // alias distinct re-invocations of the same command (e.g. an intentional later `git fetch`) onto a
+        // stale idempotent replay and return the earlier result instead of running — a meaningful id must be
+        // a caller-minted per-logical-execution token the daemon does not currently produce.
         var sdkCommand = new SdkSandboxCommand(command.Argv, ToWorkspaceRelativeDirectory(command.WorkingDirectory));
 
         // Bound every command with a per-command timeout (PR #121 H4): a command that runs longer than the
