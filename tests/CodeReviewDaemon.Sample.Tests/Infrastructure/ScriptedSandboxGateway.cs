@@ -53,6 +53,13 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// </summary>
     public bool SessionEvicted { get; init; }
 
+    /// <summary>
+    /// When true, a file read / directory listing reports a BARE 404 with NO machine-readable
+    /// <c>error_code</c> (a legacy/older gateway) — the SDK surfaces <c>NotFound</c> with
+    /// <c>ErrorCode == null</c>, which the adapter must still degrade to null/empty.
+    /// </summary>
+    public bool BareNotFound { get; init; }
+
     /// <summary>When true, a write fails at the gateway (the SDK surfaces a <see cref="AchieveAi.LmDotnetTools.Sandbox.SandboxException"/>).</summary>
     public bool WriteFailsIntegrity { get; init; }
 
@@ -155,6 +162,11 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             return Error(HttpStatusCode.NotFound, "session_not_found");
         }
 
+        if (BareNotFound)
+        {
+            return BareNotFoundResponse();
+        }
+
         if (ReadMissing || ReadBytes is null)
         {
             return Error(HttpStatusCode.NotFound, "path_not_found");
@@ -169,6 +181,11 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
         if (SessionEvicted)
         {
             return Error(HttpStatusCode.NotFound, "session_not_found");
+        }
+
+        if (BareNotFound)
+        {
+            return BareNotFoundResponse();
         }
 
         if (ListMissing)
@@ -214,4 +231,8 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             status,
             JsonSerializer.Serialize(new { error = errorCode, code = (int)status, error_code = errorCode, retryable = false })
         );
+
+    /// <summary>A bare 404 with a NON-JSON body — no machine-readable <c>error_code</c>, mimicking a legacy/older gateway.</summary>
+    private static HttpResponseMessage BareNotFoundResponse() =>
+        new(HttpStatusCode.NotFound) { Content = new StringContent("not found", Encoding.UTF8, "text/plain") };
 }

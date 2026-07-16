@@ -142,6 +142,19 @@ public sealed class SandboxSessionAdapterTests
     }
 
     [Fact]
+    public async Task ReadFileAsync_returns_null_on_a_bare_404_without_error_code()
+    {
+        // A legacy/older gateway returns a bare 404 with no machine-readable error_code. The adapter must
+        // still degrade to the null "no file" contract (a bare 404 is a definitive missing path), not throw.
+        var gateway = new ScriptedSandboxGateway { BareNotFound = true };
+        await using var adapter = CreateAdapter(gateway);
+
+        var content = await adapter.ReadFileAsync("/workspace/reviewbot/legacy.md", CancellationToken.None);
+
+        content.Should().BeNull();
+    }
+
+    [Fact]
     public async Task ListFilesAsync_returns_entry_names_including_dotfiles_and_embedded_spaces()
     {
         var entries = new[] { "_toc.md", ".gitkeep", "null checks.md" };
@@ -176,6 +189,19 @@ public sealed class SandboxSessionAdapterTests
 
         var exception = await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
         exception.Which.ErrorCode.Should().Be("session_not_found");
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_returns_empty_on_a_bare_404_without_error_code()
+    {
+        // A legacy/older gateway returns a bare 404 with no machine-readable error_code; the adapter must
+        // still degrade to an empty listing (a bare 404 is a definitive missing path), not throw.
+        var gateway = new ScriptedSandboxGateway { BareNotFound = true };
+        await using var adapter = CreateAdapter(gateway);
+
+        var names = await adapter.ListFilesAsync("/workspace/reviewbot/legacy", CancellationToken.None);
+
+        names.Should().BeEmpty();
     }
 
     [Fact]
