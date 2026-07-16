@@ -85,6 +85,29 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
         content.Should().BeNull();
     }
 
+    [Fact]
+    public async Task ReadWorkspaceFile_ChunkedOverCapBody_IsRejectedWhileStreaming_ReturnsNull()
+    {
+        // The 64 MiB SDK read cap (SandboxClient.MaxDirectReadBytes; internal, mirrored here).
+        const long cap = 64L * 1024 * 1024;
+        var content = new CountingChunkedContent(cap + (8L * 1024 * 1024)); // 8 MiB over the cap, no Content-Length
+
+        var (registry, _) = CreateRegistry(req =>
+            req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = content }
+                : MountResolution());
+        await using var _ = registry;
+
+        var result = await registry.ReadWorkspaceFileAsync(SessionId, "/workspace/big.bin");
+
+        // Best-effort: the over-cap body surfaces as a SandboxException the registry swallows to null.
+        result.Should().BeNull();
+        // Proves the borrowed-transport forwarding handler STREAMS (ResponseHeadersRead) rather than fully
+        // buffering the body: the SDK stopped reading just past the cap — it did NOT drain the whole
+        // 8-MiB-over body (which a buffering ResponseContentRead forward would have done).
+        content.BytesRead.Should().BeLessThan(cap + (4L * 1024 * 1024));
+    }
+
     /// <summary>Answers the SDK's mount-resolution GET with a workspace volume carrying <see cref="MountId"/>.</summary>
     private static HttpResponseMessage MountResolution() =>
         Json(
@@ -148,5 +171,64 @@ public sealed class SandboxSessionRegistryReadWorkspaceFileTests
             _requests.Add(request);
             return Task.FromResult(respond(request));
         }
+    }
+
+    /// <summary>
+    /// An <see cref="HttpContent"/> that reports NO <c>Content-Length</c> (chunked) and whose read stream
+    /// lazily yields a fixed number of zero bytes, counting how many were actually read — so a test can
+    /// prove the borrowed transport streamed (stopped at the cap) rather than fully buffering the body.
+    /// </summary>
+    private sealed class CountingChunkedContent(long length) : HttpContent
+    {
+        private long _bytesRead;
+
+        public long BytesRead => Interlocked.Read(ref _bytesRead);
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            CreateStream().CopyToAsync(stream);
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(CreateStream());
+
+        protected override bool TryComputeLength(out long length2)
+        {
+            length2 = 0;
+            return false;
+        }
+
+        private Stream CreateStream() => new CountingZeroStream(length, n => Interlocked.Add(ref _bytesRead, n));
+    }
+
+    /// <summary>A read-only forward stream that yields <c>length</c> zero bytes (never allocating them) and reports each read.</summary>
+    private sealed class CountingZeroStream(long length, Action<int> onRead) : Stream
+    {
+        private long _remaining = length;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining <= 0)
+            {
+                return 0;
+            }
+
+            var produced = (int)Math.Min(count, _remaining);
+            Array.Clear(buffer, offset, produced);
+            _remaining -= produced;
+            onRead(produced);
+            return produced;
+        }
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

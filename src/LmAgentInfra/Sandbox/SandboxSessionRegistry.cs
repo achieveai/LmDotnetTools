@@ -307,7 +307,16 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                 clone.Content = content;
             }
 
-            return await shared.SendAsync(clone, cancellationToken).ConfigureAwait(false);
+            // Forward on ResponseHeadersRead (NOT the default ResponseContentRead): buffering must defer to
+            // the OUTER per-credential HttpClient, which already picks the right completion per call — the
+            // SDK streams file/artifact downloads under its 64 MiB cap via ResponseHeadersRead, and fully
+            // buffers only the small JSON control-plane bodies. Buffering here would fully read the body
+            // before the SDK's cap could bound it, defeating the cap on the daemon's borrowed-transport
+            // path. The outer caller owns the returned response's lifetime (its `using` disposes it,
+            // releasing this shared client's pooled connection); the clone is never disposed early.
+            return await shared
+                .SendAsync(clone, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
