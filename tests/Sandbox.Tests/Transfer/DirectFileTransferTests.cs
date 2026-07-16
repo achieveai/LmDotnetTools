@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -465,6 +466,29 @@ public class DirectFileTransferTests
     }
 
     [Fact]
+    public async Task ReadTextFileAsync_SlowHeadersThenHangingErrorBody_BoundedByOneTransportTimeout()
+    {
+        var transportTimeout = TimeSpan.FromMilliseconds(400);
+        var headerDelay = TimeSpan.FromMilliseconds(250);
+        var serverAddress = TestSupport.NewLoopbackAddress();
+        using var httpClient = new HttpClient(new SlowHeaderHangingBodyHandler(headerDelay)) { BaseAddress = serverAddress };
+        var options = new SandboxClientOptions(serverAddress, "app-1", TestSupport.ValidSecret, TimeSpan.FromMinutes(5), transportTimeout);
+        using var client = new SandboxClient(options, httpClient);
+
+        var stopwatch = Stopwatch.StartNew();
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "notes.txt");
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        stopwatch.Stop();
+
+        // The slow headers consumed part of the ONE transport budget, and the error-body read shares the
+        // SAME budget, so the whole call is bounded by ~1× TransportTimeout. The old double-timeout bug
+        // (a fresh TransportTimeout for the error body) would have taken ~headerDelay + TransportTimeout
+        // (≈ 650 ms here) — comfortably above this 1.5× ceiling.
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromMilliseconds(600));
+    }
+
+    [Fact]
     public async Task ReadTextFileAsync_ContentLengthOverCap_ThrowsProtocol_BeforeBuffering()
     {
         var (client, handler) = CreateClient();
@@ -634,6 +658,34 @@ public class DirectFileTransferTests
         public override void SetLength(long value) => throw new NotSupportedException();
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// Answers mount resolution immediately, but DELAYS the (error) files-response headers by
+    /// <paramref name="headerDelay"/> — consuming part of the transport budget — then returns a non-2xx
+    /// whose error body never finishes streaming (<see cref="NeverEndingContent"/>). Used to prove the
+    /// whole download is bounded by ONE TransportTimeout across headers + error body.
+    /// </summary>
+    private sealed class SlowHeaderHangingBodyHandler(TimeSpan headerDelay) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Get && path.Contains("/files/", StringComparison.Ordinal))
+            {
+                await Task.Delay(headerDelay, cancellationToken).ConfigureAwait(false);
+                return new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new NeverEndingContent() };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"session_id":"s1","volumes":{"workspace":{"container_path":"/workspace","read_only":false,"id":7}}}""",
+                    Encoding.UTF8,
+                    "application/json"
+                ),
+            };
+        }
     }
 
     /// <summary>
