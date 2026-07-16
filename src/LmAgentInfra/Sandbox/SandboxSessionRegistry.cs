@@ -885,11 +885,12 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
     /// <summary>
     /// Reads the text content of a file inside the session's sandbox through the gateway via the
-    /// typed <see cref="SandboxClient"/> SDK's verified transfer protocol (an MCP <c>Bash</c> STAT +
-    /// chunked READ under the hood, scoped by the <c>X-Session-ID</c> header). This is the ONLY way
-    /// the (local-host) backend can obtain a workspace file's content in the Docker topology — it
-    /// cannot read the container's <c>/workspace</c> filesystem directly, and the discovery query API
-    /// is metadata-only.
+    /// typed <see cref="SandboxClient"/> SDK's direct files API (ADR 0031 / issue #119): the SDK
+    /// resolves the session's workspace mount, then issues a single
+    /// <c>GET /api/v1/sandboxes/{session_id}/files/{mount_id}?path=...</c> that returns the file's exact
+    /// bytes (scoped by the <c>X-Session-ID</c> header). This is the ONLY way the (local-host) backend
+    /// can obtain a workspace file's content in the Docker topology — it cannot read the container's
+    /// <c>/workspace</c> filesystem directly, and the discovery query API is metadata-only.
     /// </summary>
     /// <param name="sessionId">Gateway session id whose sandbox the file lives in.</param>
     /// <param name="absolutePath">Path INSIDE the sandbox — accepts a rooted

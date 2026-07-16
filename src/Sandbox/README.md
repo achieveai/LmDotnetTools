@@ -23,9 +23,9 @@ OAuth/network/discovery policy remain the caller's responsibility.
   agents that requires no sandbox session.
 - **Session discovery:** `ListDiscoveredAsync(sessionId)` — a narrow read over the existing
   session-discovery REST endpoint.
-- **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive command in a
-  Bash/POSIX-capable sandbox and get its exact output back, with recovery across an ambiguous lost
-  response. See [Command execution](#command-execution) below.
+- **Command execution:** `ExecuteAsync(sessionId, command)` — run a non-interactive native command
+  (an executable plus argv, no shell) in the sandbox via the gateway's direct operations API and get
+  its exact captured output back. See [Command execution](#command-execution) below.
 - **Exact file transfer:** `ReadTextFileAsync`, `WriteTextFileAsync`, `ListDirectoryAsync` — exact,
   integrity-verified UTF-8 file round-trips and directory listing over a workspace-relative POSIX
   path. See [File transfer](#file-transfer) below.
@@ -34,20 +34,26 @@ OAuth/network/discovery policy remain the caller's responsibility.
 
 All three take a workspace-relative POSIX `path`, validated exactly like a command's
 `WorkingDirectory` (rooted, drive/UNC/device-qualified, backslash-bearing, `..`-escaping, or
-NUL-bearing values are rejected); the gateway remains authoritative for symlink containment.
+NUL-bearing values are rejected); the gateway remains authoritative for symlink containment. The
+gateway owns byte-exactness and atomicity — the SDK speaks the direct files/directories REST API
+(ADR 0031 / issue #119) and does no chunking, digest reassembly, or temp-file bookkeeping of its own.
 
-- **`ReadTextFileAsync(sessionId, path)`** — reads a workspace file as **strict UTF-8**, returning
-  EXACTLY its bytes decoded. The file is probed for size/mtime/whole-file SHA-256, read back in
-  bounded integrity-verified chunks, and re-verified against that digest before decode. If the file
-  mutates between chunks — or the reassembled digest no longer matches, or the bytes are not valid
-  UTF-8 — the read fails `SandboxErrorKind.Integrity` rather than returning a stitched or
-  replacement-substituted result.
-- **`WriteTextFileAsync(sessionId, path, content)`** — writes `content` as UTF-8, replacing any
-  existing file **atomically**: bytes stream in bounded idempotent chunks into an exclusive sibling
-  temp in the same directory, the temp's size and SHA-256 are verified, and only then is it
-  `mv`-renamed over the target (`mkdir -p` creates the parent first). The original is always
-  preserved on failure — there is no window in which the target is half-written.
-- **`ListDirectoryAsync(sessionId, path)`** — lists the entries of a workspace directory.
+- **`ReadTextFileAsync(sessionId, path)`** — a single
+  `GET .../files/{mount_id}?path=...` that returns the file's exact current bytes as
+  `application/octet-stream`, decoded as **strict UTF-8**. There is nothing to reassemble or re-verify;
+  the SDK returns EXACTLY those bytes decoded. Bytes that are not well-formed UTF-8 fail
+  `SandboxErrorKind.Integrity` rather than being replacement-substituted. As a defensive bound the SDK
+  refuses a response whose declared `Content-Length` exceeds a 64&#160;MiB cap before buffering it.
+- **`WriteTextFileAsync(sessionId, path, content)`** — a single
+  `PUT .../files/{mount_id}?path=...` carrying the exact new bytes as the request body. The **gateway**
+  performs the atomic replace (temp write plus same-directory rename) and creates any missing parent
+  directories; the SDK does not stream chunks, verify a temp's digest, or issue a separate finalize.
+  Either the write succeeds and the target is atomically replaced, or it fails and the target is left
+  untouched — the gateway never exposes a partially-written file. The SDK's only end-to-end check is
+  that the gateway's reported `bytes_written` matches what was sent.
+- **`ListDirectoryAsync(sessionId, path)`** — one or more paginated
+  `GET .../directories/{mount_id}?path=...` pages (the gateway's opaque `next_cursor` is threaded
+  verbatim), returning the non-recursive entry names (dotfiles included, `.`/`..` excluded).
 
 ## Usage
 
@@ -90,10 +96,11 @@ finally
 To share a caller-managed `HttpClient` (e.g. from `IHttpClientFactory`) instead of letting the
 client own its own transport, use the two-argument constructor: `new SandboxClient(options,
 httpClient)`. The SDK never mutates a borrowed client's `DefaultRequestHeaders` or `Timeout`. Every
-request (REST, MCP, and the internal `/health` probe) is resolved as an absolute URI against the
-constructor-validated `SandboxClientOptions.ServerAddress` — the borrowed client's own
-`HttpClient.BaseAddress` is never consulted, so a `null` or mismatched `BaseAddress` on the borrowed
-client can neither break requests nor redirect credentials to the wrong host.
+request (the control-plane REST calls, the direct file/command/directory API, and the internal
+`/health` probe) is resolved as an absolute URI against the constructor-validated
+`SandboxClientOptions.ServerAddress` — the borrowed client's own `HttpClient.BaseAddress` is never
+consulted, so a `null` or mismatched `BaseAddress` on the borrowed client can neither break requests
+nor redirect credentials to the wrong host.
 
 > **Security precondition for a borrowed `HttpClient`:** configure its handler with
 > `AllowAutoRedirect = false`. This SDK authenticates with custom `X-Sbx-App-Id`/`X-Sbx-App-Key`
@@ -108,144 +115,93 @@ client can neither break requests nor redirect credentials to the wrong host.
 
 ## Command execution
 
-`ExecuteAsync(sessionId, command)` runs one non-interactive command in a gateway Bash/POSIX-capable
-sandbox. `SandboxCommand` is validated at construction:
+`ExecuteAsync(sessionId, command)` runs one non-interactive command in the sandbox via the gateway's
+direct operations API (ADR 0031 / issue #119). `SandboxCommand` is validated at construction:
 
-- **`Arguments`** — a non-empty, ordered argv. The SDK POSIX-quotes every token into a single
-  `/bin/sh -c` string, so a hostile argument can never break out of its token or inject a second
-  command; a NUL byte is rejected (it cannot occur in a shell word). V1 is POSIX-only and does not
-  claim native cross-platform argv semantics.
+- **`Arguments`** — a non-empty, ordered **native argv** vector: the program name first, its arguments
+  passed verbatim with **no shell involved**, so a hostile argument can never break out of its token or
+  inject a second command. A bare program name is resolved on the sandbox `PATH`; invoke a shell
+  explicitly when you want one (`["sh", "-c", "…"]`). A NUL byte in any token is rejected.
 - **`WorkingDirectory`** (optional) — a workspace-relative POSIX path. Rooted paths, Windows
   drive/UNC/device roots, backslash/mixed-separator forms, and any `..` segment are rejected,
   independent of the host OS. This is a necessary lexical guard only — the gateway remains
   authoritative for filesystem containment (e.g. symlink traversal).
-- **`OperationId`** (optional) — a bounded, control-character-free recovery key. When omitted the SDK
-  generates one and returns it on the result; it is never used directly as a filesystem path (it is
-  hashed into a fixed-length artifact directory name).
+- **`OperationId`** (optional) — a bounded, control-character-free idempotency/recovery key. When
+  omitted the SDK generates one and returns it on the result.
 
-`SandboxCommandResult` exposes `ExitCode`, the exact `StandardOutput` and `StandardError` (reassembled
-beyond the gateway's 20&#160;KB/500-line `exec` truncation — the gateway's unstable `output_*.txt`
-file is never used), and `CombinedOutput` (stdout then stderr; a convenience concatenation, not a
-real-time interleaving). Output is decoded as **strict UTF-8**: because V1 exposes output as text, bytes
-that are not well-formed UTF-8 surface as `SandboxErrorKind.Integrity` (carrying the operation id) rather
-than being silently rewritten with replacement characters. The completion signal the SDK reads back
-through that truncating `exec` is a single, deliberately small line: only a compact per-stream
-digest/length (plus a bounded inline copy of *small* streams) travels on it, and each larger stream is
-reassembled from integrity-checked chunk reads — so the signal itself stays provably under the
-truncation limit regardless of how large the command's output is.
+`SandboxCommandResult` exposes `ExitCode`, the exact `StandardOutput` and `StandardError` (each
+downloaded byte-for-byte from the operation's gateway-owned stdout/stderr artifact through the files
+API), and `CombinedOutput` (stdout then stderr; a convenience concatenation, not a real-time
+interleaving). Output is decoded as **strict UTF-8**: bytes that are not well-formed UTF-8 surface as
+`SandboxErrorKind.Integrity` (carrying the operation id) rather than being silently rewritten with
+replacement characters. Output is never truncated — the gateway terminalizes an operation that would
+exceed its output cap (`output_limit_exceeded`) rather than silently cutting it. As a defensive bound
+the SDK refuses an artifact download whose declared `Content-Length` exceeds a 64&#160;MiB cap.
+
+### Flow
+
+The SDK submits `POST .../operations` carrying the resolved operation id. A fresh submission is
+answered `202 Accepted`; an identical-request replay of an existing operation id is answered `200 OK`
+— both carry the same status-snapshot shape. While the snapshot is not yet terminal the SDK polls
+`GET .../operations/{operation_id}` with a bounded, deadline-based exponential backoff (the configured
+`ExecutionTimeout` plus a short grace) until the gateway reports a terminal status. Once terminal, the
+command's stdout/stderr artifacts are downloaded verbatim through the files API and decoded as strict
+UTF-8.
 
 ### Outcomes
 
-- **Gateway execution timeout** → `SandboxException` with `SandboxErrorKind.ExecutionTimeout`.
+- **Gateway execution timeout** (or the SDK's own poll deadline elapsing while the operation is still
+  running) → `SandboxException` with `SandboxErrorKind.ExecutionTimeout`.
+- **Output-cap violation** → `SandboxErrorKind.OutputLimitExceeded` (the output is intentionally not
+  returned, since the result would be incomplete).
 - **Client-side transport timeout / lost response** → `SandboxErrorKind.TransportTimeout`, carrying the
-  recoverable `SandboxException.OperationId`. Artifacts are retained; re-issue the same command with
-  the same operation id to recover.
+  recoverable `SandboxException.OperationId`.
 - **Caller cancellation** → a plain `OperationCanceledException`.
 
 Neither timeout claims the remote process tree was terminated — the gateway may still be running the
-command after the client stops waiting.
+command after the client stops waiting. Cancelling the token only abandons the SDK's local wait; it
+does not ask the gateway to terminate the remote command (terminating the remote process tree is out
+of scope for V1).
 
-### Single submission, recovery, and at-least-once
+### Idempotency is gateway-scoped, not durable
 
-The SDK makes exactly **one** side-effecting Bash submission per operation and never resubmits it.
-State probes, chunked output reads, and cleanup are idempotent reads. An atomic persisted claim (a
-single `mkdir`) elects one submitter; concurrent callers using the same operation id observe the claim
-and poll the persisted manifest instead of running again. Recovery from a lost response polls that
-manifest with a bounded, deadline-based backoff derived from the execution timeout — never a
-resubmission. A canonical, versioned digest (over the session id, argv, normalized working directory,
-and execution timeout) is bound to each operation: reusing an operation id with a *different* command
-fails with `SandboxErrorKind.Integrity` and never submits.
+The `OperationId` is the **gateway's** idempotency key. Reusing the same id re-submits the same
+request, and the gateway answers with the existing operation's current (or terminal) status rather
+than running it again — **but only while the gateway retains that operation's state**. A gateway
+restart drops it, so reusing an operation id after a restart may start a genuinely new execution.
+Consumers must not assume a persisted 24-hour idempotency guarantee. This SDK keeps **no** local
+manifest, digest, lease, or artifact bookkeeping of its own — the gateway is the sole source of truth
+for both idempotency and the stdout/stderr artifacts, and it (not the SDK) owns byte-exactness and
+cleanup.
 
-**Same-id reuse never re-runs — within a bounded retention window.** On a verified success the SDK
-reclaims the (unbounded) captured output immediately but retains a bounded, credential-free **completion
-marker** (the manifest plus its lease/created timestamps). The **operation-id idempotency/recovery
-retention window is 24 hours** from the operation's creation. For that window a later call with the same
-operation id is answered from the marker: the result is returned verbatim when the output was small
-enough to have been inlined, or — when a larger output had already been reclaimed — the duplicate is
-rejected as `SandboxErrorKind.Integrity` *without re-running the command*. The window is **inclusive** of
-its 24-hour boundary (a same-id retry at exactly 24 hours is still recovered, never re-run). Once the
-window elapses the bounded stale sweep may reclaim the marker, after which reusing the operation id is
-treated as a **new** operation and may re-execute. The SDK deliberately does **not** promise idempotency
-forever — retention is bounded so artifacts cannot accumulate without limit.
-
-**Abandoned claims self-recover on a same-id retry.** A submitter that crashes after claiming (leaving an
-expired lease and no manifest) is recovered in place by the next same-id call — it does **not** wait for
-the 24h sweep and does **not** depend on any unrelated command. The recovery deletes the abandoned claim
-and re-elects exactly one new claimant, but only under a sibling per-operation **GC lock** with **real
-exclusive, non-stealable ownership**: the lock is a directory elected by an atomic `mkdir`, and its sole
-owner is identified by a **unique owner token** persisted inside it. Once the `mkdir` wins, **no contender
-may ever remove or replace that lock** (a `try` that finds it present simply fails), and only the persisted
-matching owner releases it — after its entire critical section. Every destructive action (a purge, a
-self-recovery delete, an output reclaim) runs while that lock is held and re-verifies its own token
-immediately before acting, so a caller that does not hold the lock never deletes, and a purger that lost
-the election never deletes a replacement active claim. Claim creation and the stale-sweep purge both defer
-to the lock — so a purge in progress can never be raced into a double-run. A still-active or
-still-establishing (lease-less) claim is never recovered: a same-id caller there reports PENDING and polls
-the manifest rather than resubmitting.
-
-The lock is deliberately non-stealable because portable POSIX `sh` has **no atomic compare-and-delete**:
-any TTL-based "reclaim a stale lock" (check liveness, then remove, then re-create) is a racy
-read-modify-write that can delete a lock another holder just re-established, leaving two simultaneous
-owners. Removing stealing outright closes that class of race — at a narrow, honestly-stated cost. **A
-holder that crashes while holding the lock (including in the single-syscall `mkdir`→first-write window)
-orphans that one operation's lock.** A crash-orphaned cleanup lock is treated as **retained interrupted
-state**: the operation's maintenance (purge, output reclaim, abandoned-claim self-recovery) and any same-id
-re-run are frozen — favouring **no duplicate and no lost side effect over cleanup liveness** — until the
-sandbox is explicitly deleted (or a future gateway primitive resets the artifact root). The blast radius is
-exactly that one operation id: every other operation uses its own sibling lock and is unaffected, and a
-**committed operation is still recovered from its manifest fast path**, which never consults the lock — so
-an orphaned lock never blocks same-id idempotency or the 24-hour retention guarantee, only that operation's
-own cleanup.
-
-Because the gateway may rematerialize a lost container and retry the underlying invocation once,
-command execution is **at-least-once**: a non-idempotent command can run more than once even though the
-SDK submits once and returns a single result.
-
-### Artifacts
-
-Command wrapper artifacts (a manifest plus captured output) are persisted under a reserved,
-per-session path inside the workspace with **no** credentials. A restrictive `umask` applies only to
-the SDK's own artifacts — the caller's command runs under its normal inherited umask, so files the
-command itself creates are not force-hardened. The manifest is published atomically (written to a
-restrictive sibling temp file and renamed), so a concurrent probe never observes a partial manifest.
-
-A verified successful operation **reclaims its large output immediately** while retaining the bounded
-completion marker described above; an interrupted, transport-timed-out, or integrity-failed operation
-retains all of its artifacts for recovery. The reclaim is **lock- and generation-safe**: the manifest
-carries an immutable per-execution **generation** id, and the reclaim deletes the captured streams only
-while holding the GC lock and only after re-reading, under that lock, that the directory's *current*
-generation and command digest still match the ones the SDK verified. Because the lock is non-stealable it
-is held unbroken from that re-read to the delete, so the current generation cannot change under it. Because
-the artifact directory is keyed on the session and operation id (not the command), the same directory can
-be reused across executions once the window elapses — so a delayed reclaim issued by an expired *old*
-execution finds a different generation and leaves the *newer* re-execution's output intact. Each successful command also runs
-a bounded, session-scoped stale sweep that deletes only artifacts whose lease has expired and that are
-**strictly older than the 24-hour retention window** (active operations are protected, and an operation
-exactly at the boundary is still retained). The sweep re-validates each directory's *current* lease/age in
-the sandbox immediately before deleting — never from the earlier listing snapshot, so a refreshed operation
-is never deleted — and every candidate directory name is validated as fixed-length lowercase hex before
-use. Sandbox deletion remains the final cleanup boundary.
+Because the gateway may rematerialize a lost container and retry the underlying invocation, command
+execution is **at-least-once**: a non-idempotent command can run more than once even though the SDK
+returns a single result.
 
 
 ## Errors
 
 Every gateway/transport failure other than caller cancellation raises `SandboxException`, which
 carries a stable `SandboxErrorKind` (`Authorization`, `NotFound`, `TransportTimeout`, `Protocol`,
-plus `ExecutionTimeout` and `Integrity` — raised by [command execution](#command-execution) for a
-gateway execution-timeout and an output/digest verification failure respectively, and by
-[file transfer](#file-transfer) for a read/write integrity or UTF-8 failure). Caller cancellation always surfaces as a plain
-`OperationCanceledException`. `Protocol` covers every malformed-response case, and the SDK never lets
-one surface as a raw `ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
+plus `ExecutionTimeout`, `OutputLimitExceeded`, `Conflict`, `Unavailable`, `WorkspaceRequired`, and
+`Integrity` — raised by [command execution](#command-execution) for a gateway execution-timeout,
+output-cap violation, and a non-UTF-8 artifact respectively, and by [file transfer](#file-transfer)
+for a read/write conflict or UTF-8 failure). A direct-API failure also carries the gateway's stable
+machine-readable `SandboxException.ErrorCode` (e.g. `path_not_found`, `session_not_found`), so a
+caller can distinguish a genuinely missing path from an evicted session even though both classify as
+`NotFound`. Caller cancellation always surfaces as a plain `OperationCanceledException`. `Protocol`
+covers every malformed-response case, and the SDK never lets one surface as a raw
+`ArgumentException`/`NullReferenceException`/`InvalidOperationException`:
 
 - A 2xx REST body that is well-formed JSON but semantically invalid — a missing/`null` required field
   (e.g. a marketplace alias or discovered-item kind/path — a discovered item's `name` is genuinely
   optional per the gateway's contract, e.g. a `"context_file"` item never has one) or a `null`
-  collection element in any lifecycle/catalog/discovery list.
-- A 2xx MCP reply that is not a complete JSON-RPC 2.0 envelope — a non-object root, a missing/wrong
-  `jsonrpc`, an `id` that does not match the request, both or neither of `result`/`error`, or a
-  non-object `error`. A JSON-RPC `error` envelope is likewise `Protocol` — and its gateway-controlled
-  `message` (and every other error field) is never copied into the exception; only the numeric `code`,
-  when present, is surfaced (see Security below).
+  collection element in any lifecycle/catalog/discovery list; a malformed operation-status or
+  directory-listing body; or a write whose reported `bytes_written` does not match what was sent.
+- A non-success direct-API response carries the gateway's stable `{ error, code, error_code,
+  retryable }` body; only the closed-vocabulary `error_code` is mapped to a `SandboxErrorKind` and
+  surfaced on `SandboxException.ErrorCode` — the gateway-controlled free-text `error` message is never
+  copied into the exception (see Security below).
 - An observed `3xx` redirect (which the SDK refuses rather than follows).
 
 ## Security
@@ -257,8 +213,8 @@ one surface as a raw `ArgumentException`/`NullReferenceException`/`InvalidOperat
 - The owned transport disables automatic redirects; a borrowed `HttpClient` must do the same
   (`AllowAutoRedirect = false`) — see the borrowed-client note above. The SDK never follows a
   redirect itself and rejects any `3xx` it observes.
-- Non-2xx REST/MCP response bodies are never read, and a JSON-RPC `error.message` (or any other
-  error field) is never copied into a `SandboxException`: both are gateway-controlled content the
-  SDK treats as untrusted and potentially secret-bearing (e.g. echoed credential material or upstream
-  tool output). Only a `SandboxException.StatusCode` and, for MCP errors, a plain numeric JSON-RPC
-  `code` are ever surfaced.
+- A `401`/`403` response body is never read at all (an auth rejection is the response most likely to
+  echo credential material), and a direct-API error's gateway-controlled free-text `error` message is
+  never copied into a `SandboxException`: both are untrusted, potentially secret-bearing content (e.g.
+  echoed credential material or captured tool output). Only a `SandboxException.StatusCode` and the
+  closed-vocabulary `error_code` are ever surfaced.
