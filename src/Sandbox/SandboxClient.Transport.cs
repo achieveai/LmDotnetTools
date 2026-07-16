@@ -8,6 +8,45 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 public sealed partial class SandboxClient
 {
     /// <summary>
+    /// Defensive upper bound on a single direct-API read the SDK buffers whole into memory (a file body
+    /// or a command's stdout/stderr artifact). If a response declares a <c>Content-Length</c> larger than
+    /// this, the SDK rejects it BEFORE allocating rather than materializing an unbounded byte array. Set
+    /// generously at 64&#160;MiB — comfortably above the gateway's 8&#160;MiB default operation output cap,
+    /// so ordinary command output and normal workspace files are never affected; it only guards against a
+    /// pathological or malformed response declaring a huge body.
+    /// </summary>
+    internal const long MaxDirectReadBytes = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// Reads a successful direct-API response body fully into memory, but first refuses any response whose
+    /// declared <see cref="System.Net.Http.Headers.HttpContentHeaders.ContentLength"/> exceeds
+    /// <see cref="MaxDirectReadBytes"/> — throwing <see cref="SandboxErrorKind.Protocol"/> before a single
+    /// byte is allocated. A response with no declared length (chunked) is read as before; the guard is a
+    /// cheap defence against a declared-oversize body, not a streaming size meter.
+    /// </summary>
+    private static async Task<byte[]> ReadCappedBytesAsync(
+        HttpResponseMessage response,
+        string operation,
+        string? operationId,
+        CancellationToken ct
+    )
+    {
+        var declaredLength = response.Content.Headers.ContentLength;
+        if (declaredLength is > MaxDirectReadBytes)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway response for {operation} declared {declaredLength} bytes, exceeding the "
+                    + $"{MaxDirectReadBytes}-byte direct-read cap; refusing to buffer it.",
+                (int)response.StatusCode,
+                operationId: operationId
+            );
+        }
+
+        return await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Sends a REST call with the gateway's snake_case JSON body (when <paramref name="body"/> is
     /// non-null), stamping <see cref="AppIdHeader"/>/<see cref="AppKeyHeader"/> (and
     /// <see cref="SessionIdHeader"/> when <paramref name="sessionId"/> is supplied) on the OUTGOING
@@ -235,7 +274,7 @@ public sealed partial class SandboxClient
     /// <c>mount_read_only</c> are therefore indistinguishable here, which is acceptable because the
     /// write path only ever targets the writable workspace). A <c>3xx</c> is refused, never followed.
     /// </summary>
-    private async Task<SandboxException> MapDirectErrorAsync(HttpResponseMessage response, string operation, CancellationToken ct)
+    private async Task<SandboxException> MapDirectErrorAsync(HttpResponseMessage response, string operation, string sessionId, CancellationToken ct)
     {
         var statusCode = (int)response.StatusCode;
         if (statusCode is >= 300 and < 400)
@@ -265,9 +304,16 @@ public sealed partial class SandboxClient
             // No machine-readable body — fall back to status-only classification below.
         }
 
+        // A definitive "this session is gone" drops the stale sessionId→mountId cache entry so a later
+        // call re-resolves the mount (or fails cleanly) instead of replaying a dead mapping.
+        if (string.Equals(errorCode, "session_not_found", StringComparison.Ordinal))
+        {
+            EvictWorkspaceMountId(sessionId);
+        }
+
         var kind = MapDirectErrorKind(response.StatusCode, errorCode);
         var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
-        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode);
+        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode, errorCode: errorCode);
     }
 
     /// <summary>

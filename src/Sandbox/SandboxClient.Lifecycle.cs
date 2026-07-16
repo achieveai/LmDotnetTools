@@ -128,6 +128,10 @@ public sealed partial class SandboxClient
         {
             throw MapErrorResponse(response, $"deleting sandbox '{sessionId}'");
         }
+
+        // The sandbox (and its workspace mount) no longer exist — drop any cached sessionId→mountId entry
+        // so a subsequent direct call never replays a dead mapping.
+        EvictWorkspaceMountId(sessionId);
     }
 
     /// <summary>

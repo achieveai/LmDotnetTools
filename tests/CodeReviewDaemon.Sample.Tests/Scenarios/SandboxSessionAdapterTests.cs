@@ -127,6 +127,21 @@ public sealed class SandboxSessionAdapterTests
     }
 
     [Fact]
+    public async Task ReadFileAsync_rethrows_when_the_session_is_evicted()
+    {
+        // An evicted session collapses to SandboxErrorKind.NotFound just like a missing path, but its
+        // error_code is session_not_found — the adapter must surface it as an error, NOT silently degrade
+        // it to a missing file (null). Only a genuinely missing PATH degrades.
+        var gateway = new ScriptedSandboxGateway { SessionEvicted = true };
+        await using var adapter = CreateAdapter(gateway);
+
+        var act = () => adapter.ReadFileAsync("/workspace/reviewbot/_toc.md", CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        exception.Which.ErrorCode.Should().Be("session_not_found");
+    }
+
+    [Fact]
     public async Task ListFilesAsync_returns_entry_names_including_dotfiles_and_embedded_spaces()
     {
         var entries = new[] { "_toc.md", ".gitkeep", "null checks.md" };
@@ -147,6 +162,20 @@ public sealed class SandboxSessionAdapterTests
         var names = await adapter.ListFilesAsync("/workspace/reviewbot/absent", CancellationToken.None);
 
         names.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListFilesAsync_rethrows_when_the_session_is_evicted()
+    {
+        // As with a read, an evicted session must surface as an error rather than a fake empty listing:
+        // only a genuinely missing directory (path_not_found) degrades to empty.
+        var gateway = new ScriptedSandboxGateway { SessionEvicted = true };
+        await using var adapter = CreateAdapter(gateway);
+
+        var act = () => adapter.ListFilesAsync("/workspace/reviewbot/KnowledgeBase", CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
+        exception.Which.ErrorCode.Should().Be("session_not_found");
     }
 
     [Fact]

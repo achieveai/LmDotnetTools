@@ -35,11 +35,31 @@ public sealed class SandboxException : Exception
     /// </summary>
     public string? OperationId { get; }
 
-    public SandboxException(SandboxErrorKind kind, string message, int? statusCode = null, Exception? innerException = null, string? operationId = null)
+    /// <summary>
+    /// The gateway's stable, machine-readable <c>error_code</c> from the direct-API error body (e.g.
+    /// <c>path_not_found</c>, <c>session_not_found</c>, <c>mount_not_found</c>), when the failure came from
+    /// a direct file/command/directory call that carried one. <c>null</c> for control-plane failures, auth
+    /// rejections (whose body is deliberately never read), and any response with no machine-readable body.
+    /// It is a closed, gateway-defined vocabulary — safe to surface and branch on, like a JSON-RPC error
+    /// <c>code</c> — so a caller can distinguish, for example, a genuinely missing PATH from an evicted
+    /// SESSION even though both classify as <see cref="SandboxErrorKind.NotFound"/>. Never the gateway's
+    /// free-text <c>error</c> message, which is never copied into this exception.
+    /// </summary>
+    public string? ErrorCode { get; }
+
+    public SandboxException(
+        SandboxErrorKind kind,
+        string message,
+        int? statusCode = null,
+        Exception? innerException = null,
+        string? operationId = null,
+        string? errorCode = null
+    )
         : base(message, innerException)
     {
         Kind = kind;
         StatusCode = statusCode;
         OperationId = operationId;
+        ErrorCode = errorCode;
     }
 }

@@ -225,4 +225,70 @@ public class DirectFileTransferTests
 
         (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Integrity);
     }
+
+    [Fact]
+    public async Task ReadTextFileAsync_ContentLengthOverCap_ThrowsProtocol_BeforeBuffering()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        // The gateway declares a body far larger than the SDK's in-memory read cap. The SDK must refuse
+        // it by its declared Content-Length BEFORE buffering a single byte (the content below would
+        // otherwise never actually produce those bytes).
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new OversizedContent(SandboxClient.MaxDirectReadBytes + 1) }
+        );
+
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "huge.bin");
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ReadTextFileAsync_SessionNotFound_EvictsMountCache_SoNextReadReresolves()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        // Every file GET reports the session gone. The first read caches the mount (via the pre-registered
+        // GET /sandboxes/s1 route) then fails session_not_found, which must evict that cache entry; a
+        // second read therefore re-resolves the mount with a FRESH GET rather than replaying a dead mapping.
+        handler.OnJson(
+            HttpMethod.Get,
+            $"/files/{MountId}",
+            """{"error":"session gone","code":404,"error_code":"session_not_found","retryable":false}""",
+            HttpStatusCode.NotFound
+        );
+
+        await Assert.ThrowsAsync<SandboxException>(() => client.ReadTextFileAsync(Session, "a.txt"));
+        await Assert.ThrowsAsync<SandboxException>(() => client.ReadTextFileAsync(Session, "b.txt"));
+
+        handler
+            .Requests.Count(r =>
+                r.Method == HttpMethod.Get
+                && r.Uri.AbsolutePath.EndsWith($"/sandboxes/{Session}", StringComparison.Ordinal)
+            )
+            .Should()
+            .Be(2);
+    }
+
+    /// <summary>
+    /// An <see cref="HttpContent"/> that DECLARES a large <c>Content-Length</c> (via
+    /// <see cref="TryComputeLength"/>) without allocating any bytes, so the SDK's pre-read size guard can
+    /// be exercised without materializing a real oversize body.
+    /// </summary>
+    private sealed class OversizedContent : HttpContent
+    {
+        private readonly long _length;
+
+        public OversizedContent(long length) => _length = length;
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _length;
+            return true;
+        }
+    }
 }

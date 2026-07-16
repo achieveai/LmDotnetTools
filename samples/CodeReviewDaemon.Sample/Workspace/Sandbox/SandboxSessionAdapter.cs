@@ -40,6 +40,14 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
     /// <summary>The gateway container mount every absolute daemon path is rooted at; stripped to yield the SDK's workspace-relative form.</summary>
     private const string WorkspaceRoot = "/workspace";
 
+    /// <summary>
+    /// The gateway's <c>error_code</c> for a genuinely missing path — the ONLY not-found variant the file/
+    /// directory ports degrade to null/empty. The SDK collapses session_not_found / mount_not_found /
+    /// path_not_found onto <see cref="SandboxErrorKind.NotFound"/>, so the specific code is what separates a
+    /// missing file (benign) from an evicted session/mount (an error the caller must see).
+    /// </summary>
+    private const string PathNotFoundErrorCode = "path_not_found";
+
     /// <summary>Grace added to the per-command timeout for the SDK's client-side transport deadline, so a
     /// single gateway call is never aborted before a command legitimately running up to the command timeout completes.</summary>
     private static readonly TimeSpan S_transportGrace = TimeSpan.FromSeconds(30);
@@ -142,9 +150,13 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
                 .ReadTextFileAsync(_sessionId, ToWorkspaceRelativePath(path), cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.NotFound)
+        catch (SandboxException ex) when (ex.ErrorCode == PathNotFoundErrorCode)
         {
-            return null; // Missing file — the contract is null, not throw.
+            // ONLY a genuinely missing PATH degrades to the null "no file" contract. The SDK collapses
+            // session_not_found / mount_not_found / path_not_found all onto SandboxErrorKind.NotFound, so
+            // branching on Kind alone would silently mask an EVICTED session as an empty read — that must
+            // surface as an error instead, so it is left to propagate.
+            return null;
         }
     }
 
@@ -179,9 +191,11 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
                 .ListDirectoryAsync(_sessionId, ToWorkspaceRelativePath(directory), cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.NotFound)
+        catch (SandboxException ex) when (ex.ErrorCode == PathNotFoundErrorCode)
         {
-            return []; // Missing directory — the contract is an empty listing, not throw.
+            // ONLY a genuinely missing DIRECTORY degrades to an empty listing; an evicted session/mount
+            // (session_not_found / mount_not_found) must surface as an error rather than a fake empty dir.
+            return [];
         }
     }
 

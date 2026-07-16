@@ -129,7 +129,7 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"submitting operation '{operationId}'", ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"submitting operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
         }
 
         return await ReadOperationStatusOrThrowAsync(response, $"submitting operation '{operationId}'", operationId, ct)
@@ -182,7 +182,7 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"polling operation '{operationId}'", ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"polling operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
         }
 
         return await ReadOperationStatusOrThrowAsync(response, $"polling operation '{operationId}'", operationId, ct)
@@ -312,10 +312,10 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"downloading {streamName} for operation '{operationId}'", ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"downloading {streamName} for operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
         }
 
-        var bytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        var bytes = await ReadCappedBytesAsync(response, $"downloading {streamName} for operation '{operationId}'", operationId, ct).ConfigureAwait(false);
         try
         {
             return S_strictUtf8.GetString(bytes);

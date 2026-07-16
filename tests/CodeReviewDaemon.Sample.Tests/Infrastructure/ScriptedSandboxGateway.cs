@@ -46,6 +46,13 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>When true, a directory listing reports the directory missing (the SDK surfaces <c>NotFound</c>).</summary>
     public bool ListMissing { get; init; }
 
+    /// <summary>
+    /// When true, a file read / directory listing reports the SESSION gone (<c>session_not_found</c>) rather
+    /// than a missing path — the SDK surfaces <c>NotFound</c> with <c>ErrorCode == "session_not_found"</c>,
+    /// which the adapter must NOT swallow as an empty read/listing.
+    /// </summary>
+    public bool SessionEvicted { get; init; }
+
     /// <summary>When true, a write fails at the gateway (the SDK surfaces a <see cref="AchieveAi.LmDotnetTools.Sandbox.SandboxException"/>).</summary>
     public bool WriteFailsIntegrity { get; init; }
 
@@ -143,6 +150,11 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
             return Octet(Encoding.UTF8.GetBytes(CommandStderr));
         }
 
+        if (SessionEvicted)
+        {
+            return Error(HttpStatusCode.NotFound, "session_not_found");
+        }
+
         if (ReadMissing || ReadBytes is null)
         {
             return Error(HttpStatusCode.NotFound, "path_not_found");
@@ -154,6 +166,11 @@ internal sealed class ScriptedSandboxGateway : HttpMessageHandler
     /// <summary>Answers <c>GET .../directories/{id}</c> with a single page of entries (NUL-split from <see cref="ReadBytes"/>).</summary>
     private HttpResponseMessage RespondToDirectory()
     {
+        if (SessionEvicted)
+        {
+            return Error(HttpStatusCode.NotFound, "session_not_found");
+        }
+
         if (ListMissing)
         {
             return Error(HttpStatusCode.NotFound, "path_not_found");

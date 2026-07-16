@@ -94,6 +94,29 @@ public sealed class SandboxClientMountResolutionTests
         (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.NotFound);
     }
 
+    [Fact]
+    public async Task Delete_EvictsMountIdCache_SoNextResolveRefetches()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        handler.On(IsGetSession, _ => Json(CreateResponse(7)));
+        handler.OnStatus(HttpMethod.Delete, $"/api/v1/sandboxes/{SessionId}", HttpStatusCode.NoContent);
+
+        // Warm the cache, delete the sandbox, then resolve again. A stale cached mount id would let the
+        // second resolve serve a mapping for a session that no longer exists; DeleteAsync must instead
+        // evict it so this resolve issues a FRESH GET.
+        _ = await client.ResolveWorkspaceMountIdAsync(SessionId, CancellationToken.None);
+        await client.DeleteAsync(SessionId);
+        _ = await client.ResolveWorkspaceMountIdAsync(SessionId, CancellationToken.None);
+
+        handler
+            .Requests.Count(r =>
+                r.Method == HttpMethod.Get
+                && r.Uri.AbsolutePath.EndsWith($"/sandboxes/{SessionId}", StringComparison.Ordinal)
+            )
+            .Should()
+            .Be(2);
+    }
+
     private static HttpResponseMessage Json(string body) =>
         new(HttpStatusCode.OK) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
 }

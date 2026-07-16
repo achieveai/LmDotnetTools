@@ -48,10 +48,10 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"reading file '{path}'", ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"reading file '{path}'", sessionId, ct).ConfigureAwait(false);
         }
 
-        var bytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        var bytes = await ReadCappedBytesAsync(response, $"reading file '{path}'", operationId: null, ct).ConfigureAwait(false);
         return DecodeFileUtf8OrThrow(bytes, "file");
     }
 
@@ -104,7 +104,7 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"writing file '{path}'", ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"writing file '{path}'", sessionId, ct).ConfigureAwait(false);
         }
 
         WriteFileResponseDto? written;
@@ -182,7 +182,7 @@ public sealed partial class SandboxClient
 
             if (!response.IsSuccessStatusCode)
             {
-                throw await MapDirectErrorAsync(response, operation, ct).ConfigureAwait(false);
+                throw await MapDirectErrorAsync(response, operation, sessionId, ct).ConfigureAwait(false);
             }
 
             ListDirectoryResponseDto page;

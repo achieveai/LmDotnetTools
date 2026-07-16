@@ -74,4 +74,18 @@ public sealed partial class SandboxClient
         _workspaceMountIds[sessionId] = mountId;
         return mountId;
     }
+
+    /// <summary>
+    /// Drops <paramref name="sessionId"/>'s cached workspace mount id, if any. Called after a successful
+    /// <see cref="DeleteAsync"/> (the session — and its mount — no longer exist) and whenever the gateway
+    /// reports a definitive <c>session_not_found</c> on a direct call, so a stale mapping can never be
+    /// replayed against a session that has gone away. A no-op when nothing is cached for the id.
+    /// </summary>
+    internal void EvictWorkspaceMountId(string sessionId)
+    {
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            _ = _workspaceMountIds.TryRemove(sessionId, out _);
+        }
+    }
 }
