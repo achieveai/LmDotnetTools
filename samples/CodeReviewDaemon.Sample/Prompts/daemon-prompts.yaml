@@ -53,16 +53,27 @@ review:
          {"content":"<reply markdown>","parentCommentId":<last comment id in that thread>,"commentType":1}
        - SUMMARY — POST one `{base}/threads` with a single comment and NO threadContext (a PR-level thread).
        {{ else ~}}
-       This is a GitHub PR. Prefer the code-reviewer:post-pr-review skill — it posts inline review comments,
-       replies to open threads, and a top summary, and de-duplicates against existing threads. Pass prNumber
-       {{ pr_number }}, repository "{{ repository }}", botPrefix "{{ bot_name }}", your findings and questions,
-       your verdict (APPROVE / APPROVE_WITH_COMMENTS / REQUEST_CHANGES), reviewType "{{ review_type }}", your
-       finished Markdown as outputFormatMarkdown, approveAfterPosting=false, mergeAfterApproval=false. If the
-       skill fails to authenticate or post, do it directly with `curl` against https://api.github.com:
-       - INLINE — POST /repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/reviews with
-         {"event":"COMMENT","body":"<summary>","comments":[{"path":"<path>","line":<line>,"side":"RIGHT","body":"<finding>"}, …]}
-       - REPLY to an open review thread — POST
-         /repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/comments/{comment_id}/replies with {"body":"<reply>"}
+       This is a GitHub PR. Post ONE review that is SUBMITTED and carries your findings as INLINE comments, in a
+       single request (the egress proxy authenticates it):
+         POST https://api.github.com/repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/reviews
+         body: {"event":"COMMENT",
+                "body":"<ONE short overall summary line only>",
+                "comments":[
+                   {"path":"<file path from repo root>","line":<a changed line in the PR diff>,"side":"RIGHT",
+                    "body":"<severity + finding + concrete suggestion>"}
+                   /* one entry per finding, each on its exact file+line */
+                ]}
+       CRITICAL — the exact mistakes to avoid (they happened last time):
+       - "event":"COMMENT" is REQUIRED — it SUBMITS the review. Omitting "event" leaves an invisible PENDING
+         draft that nobody can see. Never leave the review as a draft.
+       - EVERY finding is an entry in comments[] anchored to its file+line. Do NOT put findings in "body" —
+         "body" is only a one-line overall summary. A body-only review is exactly what we do NOT want.
+       - "line" must be a line that appears in the PR diff on the RIGHT (added/changed) side; if a finding is
+         about a line GitHub rejects (not in the diff), attach it to the nearest changed line in that file.
+       To answer an OPEN review thread, reply IN-THREAD (not a new comment, not the summary):
+         POST /repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/comments/{comment_id}/replies  body {"body":"<reply>"}
+       You MAY use the code-reviewer:post-pr-review skill, but ONLY if it SUBMITS the review and posts inline
+       comments — last run it left an unsubmitted draft with the finding in the body, so prefer the direct call above.
        {{ end ~}}
        On a re-review, reply to or update the existing threads rather than duplicating identical comments.{{ else }}Do NOT post on this run (collect-only): produce the review as your final message, but do not
        post to the repository.{{ end }}
