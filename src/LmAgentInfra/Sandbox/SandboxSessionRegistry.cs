@@ -292,14 +292,19 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     }
 
     /// <summary>
-    /// Increments the session refcount of <paramref name="credential"/>'s client entry (creating the entry
-    /// if absent). Called once per session successfully created under a credential.
+    /// Resolves the per-credential client AND pins it by RESERVING a session refcount, atomically under
+    /// <see cref="_clientsLock"/> — so a concurrent last-session destroy cannot decrement to zero and
+    /// dispose the transport while a create is still using it. The caller MUST either commit the
+    /// reservation (on success it becomes the new session's refcount) or release it via
+    /// <see cref="DecrementSessionRefAndMaybeDispose"/> on failure.
     /// </summary>
-    private void IncrementSessionRef(SandboxCredential credential)
+    private SandboxClient AcquireClientForSession(SandboxCredential credential)
     {
         lock (_clientsLock)
         {
-            GetOrCreateClientEntryLocked(credential).SessionRefCount++;
+            var entry = GetOrCreateClientEntryLocked(credential);
+            entry.SessionRefCount++;
+            return entry.Client;
         }
     }
 
@@ -731,110 +736,127 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             );
         }
 
-        SandboxInfo info;
+        // Reserve the per-credential client's session refcount BEFORE using it for the create, so a
+        // concurrent last-session destroy under the SAME credential cannot decrement to zero and dispose
+        // the transport while this create is still in flight (two workspaces under one credential — the
+        // daemon's normal multi-workspace case). The reservation IS this session's refcount on success; on
+        // ANY failure the finally below rolls it back (evicting+disposing the client if it was the last).
+        var client = AcquireClientForSession(effectiveCredential);
+        var reservationCommitted = false;
         try
         {
-            info = await ClientFor(effectiveCredential)
-                .CreateAsync(createRequest, ct)
-                .ConfigureAwait(false);
-        }
-        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)
-        {
-            // The gateway was unreachable (down / restarting / connection refused) or the request
-            // timed out. Surface it as the same clean, handled "sandbox unavailable" signal the
-            // WebSocket and mode-switch layers already catch — not a raw exception that crashes the
-            // request with an unhandled 500. (A genuine CALLER cancellation is re-thrown by the SDK as
-            // OperationCanceledException, not a SandboxException, so it bypasses this catch.)
-            _logger.LogWarning(
-                ex,
-                "Sandbox create could not reach the gateway at {GatewayBaseUrl} for workspace {WorkspaceId}",
-                _gateway.GatewayBaseUrl,
-                workspaceId
-            );
-            throw new SandboxSessionUnavailableException(
-                workspaceId,
-                statusCode: null,
-                $"Could not reach the sandbox gateway at {_gateway.GatewayBaseUrl} to create a session "
-                    + $"for workspace '{workspaceId}'.",
-                ex
-            );
-        }
-        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Authorization)
-        {
-            // Distinct marker from the connectivity-failure path above: this is the gateway actively
-            // rejecting the presented credential (misconfigured/rotated/wrong app key), not an
-            // unreachable gateway. The SDK never reads the gateway auth-rejection body (the response
-            // most likely to echo submitted credential material), so only the app id + status code are
-            // logged — preserving the never-log-the-key invariant.
-            _logger.LogError(
-                "Sandbox create failed for workspace {WorkspaceId}: sandbox_auth_failed "
-                    + "({StatusCode}) for app {AppId}",
-                workspaceId,
-                ex.StatusCode,
-                effectiveCredential.AppId
-            );
-            throw new SandboxSessionUnavailableException(
-                workspaceId,
-                ex.StatusCode,
-                // Client-safe: names only the app id + status code, never any upstream auth output,
-                // so the controller-surfaced `detail` field can never echo secret-bearing material.
-                $"sandbox_auth_failed: sandbox gateway rejected the credential for app "
-                    + $"'{effectiveCredential.AppId}' creating a session for workspace '{workspaceId}' "
-                    + $"({ex.StatusCode})."
-            );
-        }
-        catch (SandboxException ex) when (ex.StatusCode is >= 200 and < 300)
-        {
-            // A success status with an unusable body (missing session id or malformed JSON), which the
-            // SDK classifies as Protocol. Mirrors the pre-SDK "success but no session id"
-            // InvalidOperationException.
-            throw new InvalidOperationException(
-                $"Sandbox gateway returned a success status but no session id for workspace '{workspaceId}'.",
-                ex
-            );
-        }
-        catch (SandboxException ex)
-        {
-            // Any other non-success status (e.g. a rejected network policy 4xx/5xx). The SDK never
-            // surfaces the gateway body, so the previous body-in-log/message diagnostic is dropped in
-            // favour of the status code; the observable outcome (SandboxSessionUnavailableException
-            // carrying the gateway status) is unchanged.
-            _logger.LogError(
-                "Sandbox create failed for workspace {WorkspaceId}: {StatusCode}",
-                workspaceId,
-                ex.StatusCode
-            );
-            throw new SandboxSessionUnavailableException(
-                workspaceId,
-                ex.StatusCode,
-                $"Sandbox gateway returned {ex.StatusCode} creating a session for "
-                    + $"workspace '{workspaceId}'."
-            );
-        }
+            SandboxInfo info;
+            try
+            {
+                info = await client.CreateAsync(createRequest, ct).ConfigureAwait(false);
+            }
+            catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)
+            {
+                // The gateway was unreachable (down / restarting / connection refused) or the request
+                // timed out. Surface it as the same clean, handled "sandbox unavailable" signal the
+                // WebSocket and mode-switch layers already catch — not a raw exception that crashes the
+                // request with an unhandled 500. (A genuine CALLER cancellation is re-thrown by the SDK as
+                // OperationCanceledException, not a SandboxException, so it bypasses this catch.)
+                _logger.LogWarning(
+                    ex,
+                    "Sandbox create could not reach the gateway at {GatewayBaseUrl} for workspace {WorkspaceId}",
+                    _gateway.GatewayBaseUrl,
+                    workspaceId
+                );
+                throw new SandboxSessionUnavailableException(
+                    workspaceId,
+                    statusCode: null,
+                    $"Could not reach the sandbox gateway at {_gateway.GatewayBaseUrl} to create a session "
+                        + $"for workspace '{workspaceId}'.",
+                    ex
+                );
+            }
+            catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Authorization)
+            {
+                // Distinct marker from the connectivity-failure path above: this is the gateway actively
+                // rejecting the presented credential (misconfigured/rotated/wrong app key), not an
+                // unreachable gateway. The SDK never reads the gateway auth-rejection body (the response
+                // most likely to echo submitted credential material), so only the app id + status code are
+                // logged — preserving the never-log-the-key invariant.
+                _logger.LogError(
+                    "Sandbox create failed for workspace {WorkspaceId}: sandbox_auth_failed "
+                        + "({StatusCode}) for app {AppId}",
+                    workspaceId,
+                    ex.StatusCode,
+                    effectiveCredential.AppId
+                );
+                throw new SandboxSessionUnavailableException(
+                    workspaceId,
+                    ex.StatusCode,
+                    // Client-safe: names only the app id + status code, never any upstream auth output,
+                    // so the controller-surfaced `detail` field can never echo secret-bearing material.
+                    $"sandbox_auth_failed: sandbox gateway rejected the credential for app "
+                        + $"'{effectiveCredential.AppId}' creating a session for workspace '{workspaceId}' "
+                        + $"({ex.StatusCode})."
+                );
+            }
+            catch (SandboxException ex) when (ex.StatusCode is >= 200 and < 300)
+            {
+                // A success status with an unusable body (missing session id or malformed JSON), which the
+                // SDK classifies as Protocol. Mirrors the pre-SDK "success but no session id"
+                // InvalidOperationException.
+                throw new InvalidOperationException(
+                    $"Sandbox gateway returned a success status but no session id for workspace '{workspaceId}'.",
+                    ex
+                );
+            }
+            catch (SandboxException ex)
+            {
+                // Any other non-success status (e.g. a rejected network policy 4xx/5xx). The SDK never
+                // surfaces the gateway body, so the previous body-in-log/message diagnostic is dropped in
+                // favour of the status code; the observable outcome (SandboxSessionUnavailableException
+                // carrying the gateway status) is unchanged.
+                _logger.LogError(
+                    "Sandbox create failed for workspace {WorkspaceId}: {StatusCode}",
+                    workspaceId,
+                    ex.StatusCode
+                );
+                throw new SandboxSessionUnavailableException(
+                    workspaceId,
+                    ex.StatusCode,
+                    $"Sandbox gateway returned {ex.StatusCode} creating a session for "
+                        + $"workspace '{workspaceId}'."
+                );
+            }
 
-        var hostPath = StripLongPathPrefix(info.WorkspaceContainerPath ?? string.Empty);
-        var session = new SandboxSession(workspaceId, info.SessionId, workspaceRelPath, hostPath);
+            var hostPath = StripLongPathPrefix(info.WorkspaceContainerPath ?? string.Empty);
+            var session = new SandboxSession(workspaceId, info.SessionId, workspaceRelPath, hostPath);
 
-        // Register the reverse session-id → session mapping so the context-discovery webhook can
-        // resolve back to the session. Last-write-wins is acceptable because session ids are
-        // gateway-allocated and unique per creation.
-        _sessionsById[session.SessionId] = session;
-        // Capture the credential this session was created with so contextless paths (liveness,
-        // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
-        // default (relevant once M2 lets callers create under a per-caller credential).
-        _sessionCredentials[session.SessionId] = effectiveCredential;
-        // Ref-count the per-credential client by live sessions so it is evicted+disposed when the last
-        // session under this credential is destroyed (credential rotation must not grow _clients forever).
-        IncrementSessionRef(effectiveCredential);
+            // Register the reverse session-id → session mapping so the context-discovery webhook can
+            // resolve back to the session. Last-write-wins is acceptable because session ids are
+            // gateway-allocated and unique per creation.
+            _sessionsById[session.SessionId] = session;
+            // Capture the credential this session was created with so contextless paths (liveness,
+            // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
+            // default (relevant once M2 lets callers create under a per-caller credential).
+            _sessionCredentials[session.SessionId] = effectiveCredential;
+            // The reservation acquired above IS this session's refcount — commit it (no extra increment),
+            // so the finally does not roll it back.
+            reservationCommitted = true;
 
-        _logger.LogInformation(
-            "Created sandbox session {SessionId} for workspace {WorkspaceId} at host path {HostPath}",
-            session.SessionId,
-            workspaceId,
-            session.HostPath
-        );
+            _logger.LogInformation(
+                "Created sandbox session {SessionId} for workspace {WorkspaceId} at host path {HostPath}",
+                session.SessionId,
+                workspaceId,
+                session.HostPath
+            );
 
-        return session;
+            return session;
+        }
+        finally
+        {
+            if (!reservationCommitted)
+            {
+                // Create failed (or was cancelled) — release the reservation, evicting+disposing the client
+                // if this was its last hold. A successful create keeps the reservation as the session's ref.
+                DecrementSessionRefAndMaybeDispose(effectiveCredential);
+            }
+        }
     }
 
     /// <summary>
