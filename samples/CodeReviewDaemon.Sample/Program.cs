@@ -181,12 +181,13 @@ builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
         sandboxGatewayOptions,
         sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
-        new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler() })),
+        new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = false } })),
     sandboxGatewayOptions,
     sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
     // Bounds the gateway create/destroy calls (mirrors LmStreaming.Sample's registration); the handler
-    // attaches the per-app bearer headers to every gateway REST call.
-    new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler() })
+    // attaches the per-app bearer headers to every gateway REST call. Auto-redirect is disabled so a
+    // cross-origin 3xx can never replay the X-Sbx-* credential headers to a redirect target.
+    new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = false } })
     {
         Timeout = TimeSpan.FromSeconds(30),
     },

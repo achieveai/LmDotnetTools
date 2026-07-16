@@ -37,10 +37,10 @@ concurrency:
 env:
   # Pin the gateway + agent image tag the SDK contract is verified against.
   # Bump deliberately when adopting a newer gateway contract.
-  # 1.1.3 is the first published image that includes the direct file/command REST
+  # 0.1.3 is the first published image that includes the direct file/command REST
   # APIs (ADR 0031 / issue #119) this SDK now targets; older tags return 424
   # operation_api_unavailable for ExecuteAsync.
-  IMAGE_TAG: '1.1.3'
+  IMAGE_TAG: '0.1.3'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
   GATEWAY_PORT: '3987'
