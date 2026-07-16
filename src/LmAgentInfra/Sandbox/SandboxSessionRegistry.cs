@@ -91,8 +91,29 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     private readonly ConcurrentDictionary<(string AppId, string AppKey), SandboxClientEntry> _clients =
         new();
 
-    /// <summary>A cached per-credential client plus the dedicated transport it borrows through.</summary>
-    private sealed record SandboxClientEntry(SandboxClient Client, HttpClient Transport);
+    /// <summary>
+    /// Serializes every <see cref="_clients"/> get-or-create, per-credential session refcount mutation,
+    /// and eviction, so a concurrent create can never resurrect (or keep using) an entry that a last-
+    /// session destroy is evicting/disposing. The (rare, brief) client construction happens under it too;
+    /// the actual <see cref="IDisposable.Dispose"/> is always performed OUTSIDE the lock.
+    /// </summary>
+    private readonly object _clientsLock = new();
+
+    /// <summary>
+    /// A cached per-credential client plus the dedicated transport it borrows through, REF-COUNTED by the
+    /// number of live sessions created under that credential. When the last session under an (AppId, AppKey)
+    /// is destroyed the entry is evicted and its transport disposed, so credential rotation / high-cardinality
+    /// credentials cannot grow <see cref="_clients"/> monotonically. <see cref="SessionRefCount"/> is guarded
+    /// by <see cref="_clientsLock"/>.
+    /// </summary>
+    private sealed class SandboxClientEntry(SandboxClient client, HttpClient transport)
+    {
+        public SandboxClient Client { get; } = client;
+
+        public HttpClient Transport { get; } = transport;
+
+        public int SessionRefCount { get; set; }
+    }
 
     /// <summary>
     /// Sandbox sessions, partitioned by the (workspace id, caller app id) pair — see the class
@@ -226,45 +247,101 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// </summary>
     private SandboxClient ClientFor(SandboxCredential credential)
     {
-        var entry = _clients.GetOrAdd(
-            (credential.AppId, credential.AppKey),
-            static (key, state) =>
-            {
-                var (registry, cred) = state;
-                var serverAddress = new Uri(
-                    registry._gateway.GatewayBaseUrl.TrimEnd('/') + "/",
-                    UriKind.Absolute
-                );
-                // TransportTimeout is enforced per-call by the SDK via a linked token; borrow the
-                // shared client's timeout (default 100s) so behaviour matches the pre-SDK path, and
-                // fall back to 100s when the shared client's timeout is infinite/unset.
-                var transportTimeout =
-                    registry._httpClient.Timeout > TimeSpan.Zero
-                        ? registry._httpClient.Timeout
-                        : TimeSpan.FromSeconds(100);
-                var options = new SandboxClientOptions(
-                    serverAddress,
-                    cred.AppId,
-                    clientSecret: string.Empty,
-                    executionTimeout: TimeSpan.FromMinutes(5),
-                    transportTimeout: transportTimeout,
-                    allowInsecureDevelopmentTransport: true
-                );
-                // Pipeline: GatewayAuthHandler stamps the per-caller app key verbatim (idempotent,
-                // gated on a configured key), then the forwarding handler clones the request onto the
-                // shared borrowed transport. The per-credential HttpClient owns ONLY this pipeline —
-                // disposing it never disposes the shared transport.
-                var pipeline = new GatewayAuthHandler(cred.AppId, cred.AppKey)
-                {
-                    InnerHandler = new SharedTransportForwardingHandler(registry._httpClient),
-                };
-                var transport = new HttpClient(pipeline, disposeHandler: true);
-                var client = new SandboxClient(options, transport);
-                return new SandboxClientEntry(client, transport);
-            },
-            (this, credential)
+        lock (_clientsLock)
+        {
+            return GetOrCreateClientEntryLocked(credential).Client;
+        }
+    }
+
+    /// <summary>Resolves (creating on first use) the per-credential client entry. Caller MUST hold <see cref="_clientsLock"/>.</summary>
+    private SandboxClientEntry GetOrCreateClientEntryLocked(SandboxCredential credential)
+    {
+        var key = (credential.AppId, credential.AppKey);
+        if (_clients.TryGetValue(key, out var existing))
+        {
+            return existing;
+        }
+
+        var serverAddress = new Uri(_gateway.GatewayBaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+        // TransportTimeout is enforced per-call by the SDK via a linked token; borrow the shared client's
+        // timeout (default 100s) so behaviour matches the pre-SDK path, and fall back to 100s when the
+        // shared client's timeout is infinite/unset.
+        var transportTimeout =
+            _httpClient.Timeout > TimeSpan.Zero ? _httpClient.Timeout : TimeSpan.FromSeconds(100);
+        var options = new SandboxClientOptions(
+            serverAddress,
+            credential.AppId,
+            clientSecret: string.Empty,
+            executionTimeout: TimeSpan.FromMinutes(5),
+            transportTimeout: transportTimeout,
+            allowInsecureDevelopmentTransport: true
         );
-        return entry.Client;
+        // Pipeline: GatewayAuthHandler stamps the per-caller app key verbatim (idempotent, gated on a
+        // configured key), then the forwarding handler clones the request onto the shared borrowed
+        // transport. The per-credential HttpClient owns ONLY this pipeline — disposing it never disposes
+        // the shared transport.
+        var pipeline = new GatewayAuthHandler(credential.AppId, credential.AppKey)
+        {
+            InnerHandler = new SharedTransportForwardingHandler(_httpClient),
+        };
+        var transport = new HttpClient(pipeline, disposeHandler: true);
+        var client = new SandboxClient(options, transport);
+        var entry = new SandboxClientEntry(client, transport);
+        _clients[key] = entry;
+        return entry;
+    }
+
+    /// <summary>
+    /// Increments the session refcount of <paramref name="credential"/>'s client entry (creating the entry
+    /// if absent). Called once per session successfully created under a credential.
+    /// </summary>
+    private void IncrementSessionRef(SandboxCredential credential)
+    {
+        lock (_clientsLock)
+        {
+            GetOrCreateClientEntryLocked(credential).SessionRefCount++;
+        }
+    }
+
+    /// <summary>
+    /// Decrements the session refcount of <paramref name="credential"/>'s client entry; when it reaches
+    /// zero the entry is evicted from <see cref="_clients"/> and its client + transport disposed (OUTSIDE
+    /// the lock). Called once per session that goes away (explicit destroy or gateway eviction).
+    /// </summary>
+    private void DecrementSessionRefAndMaybeDispose(SandboxCredential credential)
+    {
+        SandboxClientEntry? toDispose = null;
+        lock (_clientsLock)
+        {
+            var key = (credential.AppId, credential.AppKey);
+            if (_clients.TryGetValue(key, out var entry))
+            {
+                entry.SessionRefCount--;
+                if (entry.SessionRefCount <= 0)
+                {
+                    _ = _clients.TryRemove(key, out _);
+                    toDispose = entry;
+                }
+            }
+        }
+
+        if (toDispose is not null)
+        {
+            toDispose.Client.Dispose();
+            toDispose.Transport.Dispose();
+        }
+    }
+
+    /// <summary>Test-only: the number of live per-credential client entries currently cached. Used to assert refcount eviction.</summary>
+    internal int PerCredentialClientCount
+    {
+        get
+        {
+            lock (_clientsLock)
+            {
+                return _clients.Count;
+            }
+        }
     }
 
     /// <summary>
@@ -562,7 +639,13 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
             new KeyValuePair<string, SandboxSession>(session.SessionId, session)
         );
-        _ = _sessionCredentials.TryRemove(session.SessionId, out _);
+        // Drop the session's credential and release its client refcount (evicting+disposing the per-
+        // credential client when this was its last session). Guarded on the TryRemove so an already-
+        // invalidated session never double-decrements.
+        if (_sessionCredentials.TryRemove(session.SessionId, out var credential))
+        {
+            DecrementSessionRefAndMaybeDispose(credential);
+        }
     }
 
     /// <summary>
@@ -740,6 +823,9 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
         // default (relevant once M2 lets callers create under a per-caller credential).
         _sessionCredentials[session.SessionId] = effectiveCredential;
+        // Ref-count the per-credential client by live sessions so it is evicted+disposed when the last
+        // session under this credential is destroyed (credential rotation must not grow _clients forever).
+        IncrementSessionRef(effectiveCredential);
 
         _logger.LogInformation(
             "Created sandbox session {SessionId} for workspace {WorkspaceId} at host path {HostPath}",
@@ -790,7 +876,12 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             // creating credential via CredentialFor(sessionId), so the DELETE must carry the owner's
             // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session).
             await DestroySessionAsync(session, ct).ConfigureAwait(false);
-            _ = _sessionCredentials.TryRemove(session.SessionId, out _);
+            // Drop the credential and release its client refcount (evicting+disposing the per-credential
+            // client when this was its last session). Guarded so a concurrent invalidate never double-drops.
+            if (_sessionCredentials.TryRemove(session.SessionId, out var credential))
+            {
+                DecrementSessionRefAndMaybeDispose(credential);
+            }
         }
     }
 
@@ -825,17 +916,24 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         _discoverySeen.Clear();
         _sessionCredentials.Clear();
 
-        // Dispose the per-credential transports (each owns only its GatewayAuthHandler → forwarding
-        // pipeline; the SandboxClient over it is borrowed, so disposing the client is a no-op and the
-        // forwarding handler never disposes the shared transport). The shared transport is disposed
-        // last, below.
-        foreach (var entry in _clients.Values)
+        // Catch-all: dispose every remaining per-credential transport (refcount eviction handles the
+        // steady state; this covers any sessions still live at shutdown). Snapshot + clear under the lock,
+        // then dispose OUTSIDE it. Each entry owns only its GatewayAuthHandler → forwarding pipeline; the
+        // SandboxClient over it is borrowed, so disposing the client is a no-op and the forwarding handler
+        // never disposes the shared transport. The shared transport is disposed last, below.
+        List<SandboxClientEntry> remainingClients;
+        lock (_clientsLock)
+        {
+            remainingClients = [.. _clients.Values];
+            _clients.Clear();
+        }
+
+        foreach (var entry in remainingClients)
         {
             entry.Client.Dispose();
             entry.Transport.Dispose();
         }
 
-        _clients.Clear();
         _httpClient.Dispose();
     }
 
