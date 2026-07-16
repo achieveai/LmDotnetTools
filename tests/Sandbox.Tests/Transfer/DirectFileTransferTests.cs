@@ -126,8 +126,8 @@ public class DirectFileTransferTests
         const string content = "hi\n";
         await client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", content);
 
-        // The 404 self-healed: exactly one `mkdir -p nested/dir` operation, then the retried PUT succeeded
-        // with the exact bytes.
+        // The 404 self-healed: exactly one `mkdir -p -- nested/dir` operation, then the retried PUT
+        // succeeded with the exact bytes.
         stored.Should().Equal(Encoding.UTF8.GetBytes(content));
         putCount.Should().Be(2);
 
@@ -137,9 +137,134 @@ public class DirectFileTransferTests
             .Which;
         var op = JsonDocument.Parse(mkdirRequest.Body!).RootElement;
         op.GetProperty("executable").GetString().Should().Be("mkdir");
-        op.GetProperty("args").EnumerateArray().Select(e => e.GetString()).Should().Equal("-p", "nested/dir");
+        op.GetProperty("args").EnumerateArray().Select(e => e.GetString()).Should().Equal("-p", "--", "nested/dir");
         op.GetProperty("cwd").GetProperty("mount_id").GetInt64().Should().Be(MountId);
         op.GetProperty("cwd").GetProperty("path").GetString().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task WriteTextFileAsync_MkdirParentBeginningWithDash_TerminatesOptionParsing()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+
+        var putCount = 0;
+        byte[]? stored = null;
+        handler.On(
+            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+            {
+                putCount++;
+                if (putCount == 1)
+                {
+                    return JsonResponse(
+                        """{"error":"path not found","code":404,"error_code":"path_not_found","retryable":false}""",
+                        HttpStatusCode.NotFound
+                    );
+                }
+
+                stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                return JsonResponse("{\"bytes_written\":" + stored.Length + "}");
+            }
+        );
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            _ => JsonResponse("""{"operation_id":"op-mkdir","status":"succeeded","exit_code":0}""")
+        );
+
+        // The first path component begins with `-`: without a `--` operand terminator, `mkdir` would parse
+        // "-m" as an OPTION, not a directory. The `--` must appear before it.
+        const string content = "x";
+        await client.WriteTextFileAsync(Session, "-m/greeting.txt", content);
+
+        stored.Should().Equal(Encoding.UTF8.GetBytes(content));
+        putCount.Should().Be(2);
+
+        var mkdirRequest = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal))
+            .Which;
+        var op = JsonDocument.Parse(mkdirRequest.Body!).RootElement;
+        op.GetProperty("args").EnumerateArray().Select(e => e.GetString()).Should().Equal("-p", "--", "-m");
+    }
+
+    [Fact]
+    public async Task WriteTextFileAsync_NestedParentMissing_BareNotFound_StillMkdirsAndRetries()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+
+        var putCount = 0;
+        byte[]? stored = null;
+        handler.On(
+            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+            {
+                putCount++;
+                if (putCount == 1)
+                {
+                    // A legacy/older gateway 404s a missing-parent write with NO machine-readable error_code.
+                    // The self-heal must still fire on this bare 404 (a definitive missing path).
+                    return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("not found") };
+                }
+
+                stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                return JsonResponse("{\"bytes_written\":" + stored.Length + "}");
+            }
+        );
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            _ => JsonResponse("""{"operation_id":"op-mkdir","status":"succeeded","exit_code":0}""")
+        );
+
+        const string content = "y";
+        await client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", content);
+
+        stored.Should().Equal(Encoding.UTF8.GetBytes(content));
+        putCount.Should().Be(2);
+        handler
+            .Requests.Should()
+            .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WriteTextFileAsync_MkdirFails_ThrowsOperationFailedWithExitCodeAndStderr()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+
+        handler.On(
+            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => JsonResponse(
+                """{"error":"path not found","code":404,"error_code":"path_not_found","retryable":false}""",
+                HttpStatusCode.NotFound
+            )
+        );
+        // mkdir -p ran but FAILED (e.g. a read-only parent): a terminal non-zero exit with a stderr artifact.
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            _ => JsonResponse(
+                """{"operation_id":"op-mkdir","status":"failed","exit_code":1,"artifacts":{"mount_id":7,"stdout_path":"out","stderr_path":"err"}}"""
+            )
+        );
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains("path=out", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(string.Empty) }
+        );
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains("path=err", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("mkdir: cannot create directory: Read-only file system") }
+        );
+
+        Func<Task> act = () => client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", "z");
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        // A ran-fine-but-failed mkdir is an operational failure, NOT a malformed response (Protocol). The
+        // exception carries the real exit code, a stderr snippet, and the operation id.
+        exception.Which.Kind.Should().Be(SandboxErrorKind.OperationFailed);
+        exception.Which.Message.Should().Contain("exited 1");
+        exception.Which.Message.Should().Contain("Read-only file system");
+        exception.Which.OperationId.Should().NotBeNullOrEmpty(); // the SDK's own generated mkdir op id
     }
 
     [Fact]
@@ -302,6 +427,26 @@ public class DirectFileTransferTests
     }
 
     [Fact]
+    public async Task ReadTextFileAsync_ChunkedBodyOverCap_ThrowsProtocol_WhileStreaming()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+        // No Content-Length at all (chunked): the header pre-check cannot catch this, so only the
+        // streaming byte counter can — it must reject the body the instant it streams past the cap rather
+        // than buffering the whole thing. The stream produces zero bytes lazily, so nothing is allocated
+        // up front.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new UnsizedStreamContent(SandboxClient.MaxDirectReadBytes + 1) }
+        );
+
+        Func<Task> act = () => client.ReadTextFileAsync(Session, "huge-chunked.bin");
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
     public async Task ReadTextFileAsync_SessionNotFound_EvictsMountCache_SoNextReadReresolves()
     {
         var (client, handler) = CreateClient();
@@ -346,5 +491,62 @@ public class DirectFileTransferTests
             length = _length;
             return true;
         }
+    }
+
+    /// <summary>
+    /// An <see cref="HttpContent"/> that reports NO <c>Content-Length</c> (<see cref="TryComputeLength"/>
+    /// returns <c>false</c>, so the response looks chunked) and whose read stream lazily yields a fixed
+    /// number of zero bytes without allocating them — exercising the SDK's STREAMING byte cap (not the
+    /// header pre-check) with negligible up-front memory.
+    /// </summary>
+    private sealed class UnsizedStreamContent : HttpContent
+    {
+        private readonly long _length;
+
+        public UnsizedStreamContent(long length) => _length = length;
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            new ZeroStream(_length).CopyToAsync(stream);
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new ZeroStream(_length));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    /// <summary>A read-only forward stream that yields <paramref name="length"/> zero bytes then EOF, without allocating them.</summary>
+    private sealed class ZeroStream(long length) : Stream
+    {
+        private long _remaining = length;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining <= 0)
+            {
+                return 0;
+            }
+
+            var produced = (int)Math.Min(count, _remaining);
+            Array.Clear(buffer, offset, produced);
+            _remaining -= produced;
+            return produced;
+        }
+
+        public override void Flush() { }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

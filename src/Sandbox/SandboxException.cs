@@ -43,23 +43,29 @@ public sealed class SandboxException : Exception
     /// It is a closed, gateway-defined vocabulary — safe to surface and branch on, like a JSON-RPC error
     /// <c>code</c> — so a caller can distinguish, for example, a genuinely missing PATH from an evicted
     /// SESSION even though both classify as <see cref="SandboxErrorKind.NotFound"/>. Never the gateway's
-    /// free-text <c>error</c> message, which is never copied into this exception.
+    /// free-text <c>error</c> message, which is never copied into this exception. Set via object
+    /// initializer at the throw site (deliberately kept OFF the constructor so its 5-argument signature
+    /// stays binary-stable for already-compiled callers).
     /// </summary>
-    public string? ErrorCode { get; }
+    public string? ErrorCode { get; init; }
 
-    public SandboxException(
-        SandboxErrorKind kind,
-        string message,
-        int? statusCode = null,
-        Exception? innerException = null,
-        string? operationId = null,
-        string? errorCode = null
-    )
+    /// <summary>
+    /// Whether this failure is a DEFINITIVE "the path is not there" signal a best-effort caller may treat
+    /// as a missing file/directory: a <see cref="SandboxErrorKind.NotFound"/> whose gateway
+    /// <see cref="ErrorCode"/> is a genuine <c>path_not_found</c> OR is absent entirely (a bare/legacy 404
+    /// from a gateway that carries no machine-readable code). An explicit eviction code
+    /// (<c>session_not_found</c>/<c>mount_not_found</c>) is deliberately NOT a missing path — an evicted
+    /// session/mount must surface as an error, never be silently degraded to "no such file". This is the
+    /// single shared signal both the file/directory best-effort degrade paths and the nested-write
+    /// <c>mkdir -p</c> self-heal trigger on, so the two never drift.
+    /// </summary>
+    public bool IsDefiniteMissingPath => Kind == SandboxErrorKind.NotFound && ErrorCode is null or "path_not_found";
+
+    public SandboxException(SandboxErrorKind kind, string message, int? statusCode = null, Exception? innerException = null, string? operationId = null)
         : base(message, innerException)
     {
         Kind = kind;
         StatusCode = statusCode;
         OperationId = operationId;
-        ErrorCode = errorCode;
     }
 }

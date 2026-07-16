@@ -8,42 +8,134 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 public sealed partial class SandboxClient
 {
     /// <summary>
-    /// Defensive upper bound on a single direct-API read the SDK buffers whole into memory (a file body
-    /// or a command's stdout/stderr artifact). If a response declares a <c>Content-Length</c> larger than
-    /// this, the SDK rejects it BEFORE allocating rather than materializing an unbounded byte array. Set
-    /// generously at 64&#160;MiB — comfortably above the gateway's 8&#160;MiB default operation output cap,
-    /// so ordinary command output and normal workspace files are never affected; it only guards against a
-    /// pathological or malformed response declaring a huge body.
+    /// Defensive upper bound on a single direct-API byte download the SDK buffers whole into memory (a
+    /// file body or a command's stdout/stderr artifact). The download is streamed and rejected the instant
+    /// it declares (<c>Content-Length</c>) OR actually streams past this, so a huge, chunked, or
+    /// lying-<c>Content-Length</c> body can never force an unbounded allocation. Set generously at
+    /// 64&#160;MiB — comfortably above the gateway's 8&#160;MiB default operation output cap, so ordinary
+    /// command output and normal workspace files are never affected; it only guards against a pathological
+    /// or malformed response.
     /// </summary>
     internal const long MaxDirectReadBytes = 64L * 1024 * 1024;
 
     /// <summary>
-    /// Reads a successful direct-API response body fully into memory, but first refuses any response whose
-    /// declared <see cref="System.Net.Http.Headers.HttpContentHeaders.ContentLength"/> exceeds
-    /// <see cref="MaxDirectReadBytes"/> — throwing <see cref="SandboxErrorKind.Protocol"/> before a single
-    /// byte is allocated. A response with no declared length (chunked) is read as before; the guard is a
-    /// cheap defence against a declared-oversize body, not a streaming size meter.
+    /// Sends a session-scoped direct-API <c>GET</c> whose response body the SDK materializes whole (a file
+    /// body or a command stdout/stderr artifact) and returns those bytes, BOUNDED in both size and time.
+    /// Unlike <see cref="SendDirectAsync"/> (which buffers the whole body under
+    /// <see cref="HttpCompletionOption.ResponseContentRead"/> before the caller can inspect its size), this
+    /// completes on <see cref="HttpCompletionOption.ResponseHeadersRead"/> and streams the body under the
+    /// SAME per-call transport-timeout CTS: a declared-oversize <c>Content-Length</c> is refused before a
+    /// byte is read, and a body with no/under-reported length is capped by a running byte count that throws
+    /// the instant it exceeds <see cref="MaxDirectReadBytes"/>. Keeping the streaming read inside the
+    /// timeout scope preserves the whole-call time bound the buffered path had. This is the ONLY byte-
+    /// download seam; the small-JSON endpoints (operations submit/poll, directory listing, write response)
+    /// stay on <see cref="SendDirectAsync"/>, where the cap does not apply.
     /// </summary>
-    private static async Task<byte[]> ReadCappedBytesAsync(
+    private async Task<byte[]> DownloadCappedBytesAsync(
+        string relativeUri,
+        string sessionId,
+        string operation,
+        string? operationId,
+        CancellationToken ct
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, ResolveRequestUri(relativeUri));
+        StampAuthHeaders(request);
+        _ = request.Headers.TryAddWithoutValidation(SessionIdHeader, sessionId);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_options.TransportTimeout);
+        try
+        {
+            using var response = await Transport
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw await MapDirectErrorAsync(response, operation, sessionId, timeoutCts.Token).ConfigureAwait(false);
+            }
+
+            var declaredLength = response.Content.Headers.ContentLength;
+            if (declaredLength is > MaxDirectReadBytes)
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway response for {operation} declared {declaredLength} bytes, exceeding the "
+                        + $"{MaxDirectReadBytes}-byte direct-read cap; refusing to buffer it.",
+                    (int)response.StatusCode,
+                    operationId: operationId
+                );
+            }
+
+            return await ReadStreamCappedAsync(response, operation, operationId, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Our own linked token fired (the transport deadline, including a slow/never-ending body
+            // stream), not the caller's — surface it as a client-side transport timeout.
+            throw new SandboxException(
+                SandboxErrorKind.TransportTimeout,
+                $"Sandbox gateway request to '{relativeUri}' did not complete within the configured "
+                    + $"transport timeout ({_options.TransportTimeout})."
+            );
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.TransportTimeout,
+                $"Could not reach the sandbox gateway at '{_options.ServerAddress}'.",
+                statusCode: null,
+                ex
+            );
+        }
+    }
+
+    /// <summary>
+    /// Reads <paramref name="response"/>'s body stream into a byte array, throwing
+    /// <see cref="SandboxErrorKind.Protocol"/> the instant the running byte count exceeds
+    /// <see cref="MaxDirectReadBytes"/> — so a chunked or under-declared body that streams past the cap is
+    /// rejected mid-read rather than buffered whole. All reads run under the caller's (transport-timeout)
+    /// token, so time stays bounded too.
+    /// </summary>
+    private static async Task<byte[]> ReadStreamCappedAsync(
         HttpResponseMessage response,
         string operation,
         string? operationId,
         CancellationToken ct
     )
     {
+        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+
+        // Pre-size only when the gateway declared a sane (already-capped) length; otherwise start empty
+        // and let the buffer grow so a missing/over-declared length never drives a huge up-front alloc.
         var declaredLength = response.Content.Headers.ContentLength;
-        if (declaredLength is > MaxDirectReadBytes)
+        var initialCapacity = declaredLength is > 0 and <= MaxDirectReadBytes ? (int)declaredLength.Value : 0;
+        using var buffer = new MemoryStream(initialCapacity);
+
+        var chunk = new byte[81920];
+        long total = 0;
+        int read;
+        while ((read = await stream.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
         {
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway response for {operation} declared {declaredLength} bytes, exceeding the "
-                    + $"{MaxDirectReadBytes}-byte direct-read cap; refusing to buffer it.",
-                (int)response.StatusCode,
-                operationId: operationId
-            );
+            total += read;
+            if (total > MaxDirectReadBytes)
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway response for {operation} exceeded the {MaxDirectReadBytes}-byte "
+                        + "direct-read cap while streaming; refusing to buffer it.",
+                    (int)response.StatusCode,
+                    operationId: operationId
+                );
+            }
+
+            buffer.Write(chunk, 0, read);
         }
 
-        return await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        return buffer.ToArray();
     }
 
     /// <summary>
@@ -195,18 +287,18 @@ public sealed partial class SandboxClient
     }
 
     /// <summary>
-    /// Sends a session-scoped direct-API (ADR 0031) request and returns the RAW
-    /// <see cref="HttpResponseMessage"/> for the caller to read (an <c>application/octet-stream</c> file
-    /// body or a small JSON snapshot) — the caller owns and disposes it. Reuses the same auth-header
-    /// stamping, absolute-URI resolution (never trusting a borrowed transport's
-    /// <see cref="HttpClient.BaseAddress"/>), no-auto-redirect posture, and per-call transport-timeout
-    /// hardening as <see cref="SendRestAsync"/>. Completes on
-    /// <see cref="HttpCompletionOption.ResponseContentRead"/> so the configured
-    /// <see cref="SandboxClientOptions.TransportTimeout"/> bounds the WHOLE call — headers AND body — not
-    /// just the headers; the SDK reads each artifact/file fully into memory regardless (operation output
-    /// is gateway-capped), so buffering here costs nothing and closes the body-stall gap a
-    /// headers-only completion would leave under the caller's token alone. <paramref name="content"/>,
-    /// when supplied, is the request body (JSON for <c>operations</c>, octet bytes for a file <c>PUT</c>).
+    /// Sends a session-scoped direct-API (ADR 0031) request that returns a SMALL JSON snapshot and hands
+    /// back the RAW <see cref="HttpResponseMessage"/> for the caller to read — the caller owns and disposes
+    /// it. Used by the operations submit/poll, directory listing, and file <c>PUT</c> endpoints; the two
+    /// byte-DOWNLOAD paths (file read and command artifact) instead use <see cref="DownloadCappedBytesAsync"/>,
+    /// which streams under a size cap. Reuses the same auth-header stamping, absolute-URI resolution (never
+    /// trusting a borrowed transport's <see cref="HttpClient.BaseAddress"/>), no-auto-redirect posture, and
+    /// per-call transport-timeout hardening. Completes on <see cref="HttpCompletionOption.ResponseContentRead"/>
+    /// so the configured <see cref="SandboxClientOptions.TransportTimeout"/> bounds the WHOLE call — headers
+    /// AND the small body — not just the headers; the response bodies here are tiny gateway-shaped JSON, so
+    /// buffering costs nothing and closes the body-stall gap a headers-only completion would leave under the
+    /// caller's token alone. <paramref name="content"/>, when supplied, is the request body (JSON for
+    /// <c>operations</c>, octet bytes for a file <c>PUT</c>).
     /// </summary>
     private async Task<HttpResponseMessage> SendDirectAsync(
         HttpMethod method,
@@ -313,7 +405,10 @@ public sealed partial class SandboxClient
 
         var kind = MapDirectErrorKind(response.StatusCode, errorCode);
         var codeSuffix = string.IsNullOrEmpty(errorCode) ? string.Empty : $" (error_code {errorCode})";
-        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode, errorCode: errorCode);
+        return new SandboxException(kind, $"Sandbox gateway returned {statusCode} for {operation}{codeSuffix}.", statusCode)
+        {
+            ErrorCode = errorCode,
+        };
     }
 
     /// <summary>

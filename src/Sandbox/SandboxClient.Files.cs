@@ -37,21 +37,14 @@ public sealed partial class SandboxClient
         var relativePath = NormalizeFilePath(path);
 
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
-        using var response = await SendDirectAsync(
-                HttpMethod.Get,
+        var bytes = await DownloadCappedBytesAsync(
                 $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/files/{mountId}?path={Uri.EscapeDataString(relativePath)}",
-                content: null,
                 sessionId,
+                $"reading file '{path}'",
+                operationId: null,
                 ct
             )
             .ConfigureAwait(false);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw await MapDirectErrorAsync(response, $"reading file '{path}'", sessionId, ct).ConfigureAwait(false);
-        }
-
-        var bytes = await ReadCappedBytesAsync(response, $"reading file '{path}'", operationId: null, ct).ConfigureAwait(false);
         return DecodeFileUtf8OrThrow(bytes, "file");
     }
 
@@ -106,12 +99,14 @@ public sealed partial class SandboxClient
         {
             await PutFileBytesAsync(sessionId, mountId, relativePath, path, bytes, ct).ConfigureAwait(false);
         }
-        catch (SandboxException ex) when (ex.ErrorCode == PathNotFoundErrorCode)
+        catch (SandboxException ex) when (ex.IsDefiniteMissingPath)
         {
             // The direct files PUT does not create the target's parent (there is no directory-create
-            // endpoint), so a nested write whose parent is missing 404s path_not_found. A top-level file
-            // has no parent to create — surface the original failure unchanged. Otherwise self-heal the
-            // parent with a single `mkdir -p` operation and retry the PUT exactly once.
+            // endpoint), so a nested write whose parent is missing is a definitive missing path — a
+            // `path_not_found` (or a bare/legacy 404 with no error_code, via the shared
+            // SandboxException.IsDefiniteMissingPath signal the adapter degrade paths also use). A
+            // top-level file has no parent to create — surface the original failure unchanged. Otherwise
+            // self-heal the parent with a single `mkdir -p` operation and retry the PUT exactly once.
             var parentDirectory = GetWorkspaceParentDirectory(relativePath);
             if (parentDirectory is null)
             {
@@ -122,9 +117,6 @@ public sealed partial class SandboxClient
             await PutFileBytesAsync(sessionId, mountId, relativePath, path, bytes, ct).ConfigureAwait(false);
         }
     }
-
-    /// <summary>The gateway's direct-API <c>error_code</c> for a genuinely missing path — the only 404 the write self-heal reacts to.</summary>
-    private const string PathNotFoundErrorCode = "path_not_found";
 
     /// <summary>
     /// Issues one <c>PUT .../files/{mount_id}?path=...</c> with the exact <paramref name="bytes"/> and
@@ -191,16 +183,20 @@ public sealed partial class SandboxClient
     /// Creates <paramref name="relativeDirectory"/> (and any missing ancestors) under the workspace via a
     /// single <c>mkdir -p</c> operation, reusing the operations submit/poll path. Used only to self-heal a
     /// nested <see cref="WriteTextFileAsync"/> whose parent does not exist. <c>mkdir -p</c> is idempotent,
-    /// so a directory another writer created concurrently still exits 0; a non-zero/non-terminal outcome
-    /// surfaces as <see cref="SandboxErrorKind.Protocol"/>.
+    /// so a directory another writer created concurrently still exits 0. A terminal non-zero exit (e.g. a
+    /// read-only or non-directory parent) surfaces as <see cref="SandboxErrorKind.OperationFailed"/>
+    /// carrying the exit code + a bounded stderr snippet + the operation id; only a malformed/unrecognized
+    /// operation status stays <see cref="SandboxErrorKind.Protocol"/>.
     /// </summary>
     private async Task CreateDirectoryAsync(string sessionId, long mountId, string relativeDirectory, CancellationToken ct)
     {
         var operationId = CommandOperation.ResolveOperationId(null);
+        // `--` terminates option parsing so a parent whose first component begins with `-` (e.g. "-m",
+        // which WorkspaceRelativePath.Normalize accepts) is treated as an operand, never a mkdir option.
         var requestDto = new CreateOperationRequestDto(
             operationId,
             "mkdir",
-            ["-p", relativeDirectory],
+            ["-p", "--", relativeDirectory],
             null,
             new OperationCwdDto(mountId, string.Empty),
             GatewayExecutionTimeoutSeconds(),
@@ -213,15 +209,28 @@ public sealed partial class SandboxClient
             status = await PollOperationAsync(sessionId, operationId, ct).ConfigureAwait(false);
         }
 
-        if (!string.Equals(status.Status, "succeeded", StringComparison.Ordinal) || (status.ExitCode ?? 0) != 0)
+        // Happy path: an exit-0 mkdir -p needs no artifact download — proceed straight to the retry PUT.
+        if (string.Equals(status.Status, "succeeded", StringComparison.Ordinal) && (status.ExitCode ?? 0) == 0)
         {
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway could not create the parent directory '{relativeDirectory}' before a nested "
-                    + $"write (mkdir -p operation reported status '{status.Status}', exit code {status.ExitCode}).",
-                operationId: operationId
-            );
+            return;
         }
+
+        // Resolve through the shared result path: it classifies a malformed/unknown status as Protocol and
+        // a timed_out/output_limit/internal_failure terminal precisely, and otherwise returns the real exit
+        // code + downloaded stderr for a genuine non-zero mkdir. Reaching past it means an operational
+        // failure (a ran-fine-but-failed mkdir), NOT a malformed response — so it is OperationFailed, not
+        // Protocol.
+        var result = await ResolveResultAsync(sessionId, operationId, status, ct).ConfigureAwait(false);
+        var stderr = result.StandardError.Trim();
+        var stderrSuffix = stderr.Length == 0
+            ? string.Empty
+            : $" stderr: {(stderr.Length > 500 ? stderr[..500] : stderr)}";
+        throw new SandboxException(
+            SandboxErrorKind.OperationFailed,
+            $"Sandbox gateway could not create the parent directory '{relativeDirectory}' before a nested "
+                + $"write: mkdir -p exited {result.ExitCode}.{stderrSuffix}",
+            operationId: operationId
+        );
     }
 
     /// <summary>

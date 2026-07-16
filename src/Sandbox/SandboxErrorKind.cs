@@ -90,4 +90,16 @@ public enum SandboxErrorKind
     /// result would be incomplete.
     /// </summary>
     OutputLimitExceeded,
+
+    /// <summary>
+    /// A command/operation the SDK ran on the caller's behalf completed terminally with a non-zero exit
+    /// code — currently only the <c>mkdir -p</c> the SDK issues to create a nested write's missing parent
+    /// directory (e.g. the parent path is read-only or occupied by a non-directory). Distinct from
+    /// <see cref="Protocol"/> (reserved for a malformed/unrecognized gateway response): here the operation
+    /// ran fine and simply failed. The exception message carries the exit code and a bounded stderr
+    /// snippet, and <see cref="SandboxException.OperationId"/> is set. (<see cref="SandboxClient.ExecuteAsync"/>
+    /// itself never raises this — a user command's non-zero exit is returned on
+    /// <see cref="SandboxCommandResult.ExitCode"/>, not thrown.)
+    /// </summary>
+    OperationFailed,
 }

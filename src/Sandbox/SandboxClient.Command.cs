@@ -301,21 +301,14 @@ public sealed partial class SandboxClient
         CancellationToken ct
     )
     {
-        using var response = await SendDirectAsync(
-                HttpMethod.Get,
+        var bytes = await DownloadCappedBytesAsync(
                 $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/files/{mountId}?path={Uri.EscapeDataString(path)}",
-                null,
                 sessionId,
+                $"downloading {streamName} for operation '{operationId}'",
+                operationId,
                 ct
             )
             .ConfigureAwait(false);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw await MapDirectErrorAsync(response, $"downloading {streamName} for operation '{operationId}'", sessionId, ct).ConfigureAwait(false);
-        }
-
-        var bytes = await ReadCappedBytesAsync(response, $"downloading {streamName} for operation '{operationId}'", operationId, ct).ConfigureAwait(false);
         try
         {
             return S_strictUtf8.GetString(bytes);
