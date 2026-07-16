@@ -59,18 +59,30 @@ public sealed partial class SandboxClient
     /// Writes <paramref name="content"/> as UTF-8 to a workspace file via the gateway's direct files API
     /// (ADR 0031 / issue #119): a single <c>PUT api/v1/sandboxes/{session_id}/files/{mount_id}?path=...</c>
     /// carrying the exact new bytes as the request body. The gateway performs the atomic replace itself
-    /// (a temp write plus same-directory rename) and creates any missing parent directories, so the SDK
-    /// no longer streams chunks, verifies a temp's digest, or issues a separate finalize/rename step.
+    /// (a temp write plus same-directory rename), so the SDK no longer streams chunks, verifies a temp's
+    /// digest, or issues a separate finalize/rename step.
     /// </summary>
     /// <remarks>
-    /// The write is a single request: either the gateway reports the new byte count and the target is
+    /// <para>
+    /// The direct files API does NOT create the target's parent directory (and the direct API exposes no
+    /// directory-create endpoint), so a nested write whose parent does not yet exist is answered
+    /// <c>404 path_not_found</c>. To preserve the surface-compatible "a write creates its parents"
+    /// contract the removed MCP shell path provided (it ran <c>mkdir -p</c> before the write), this method
+    /// self-heals that one case: on a <c>path_not_found</c> for a path WITH a parent component it runs a
+    /// single <c>mkdir -p</c> operation for the parent, then retries the PUT exactly once. A top-level
+    /// (parentless) write is always a single PUT and never issues an operation.
+    /// </para>
+    /// <para>
+    /// Each PUT is a single request: either the gateway reports the new byte count and the target is
     /// atomically replaced, or the request fails and the target is left untouched (the gateway never
     /// exposes a partially-written file).
+    /// </para>
     /// </remarks>
     /// <exception cref="SandboxException">
     /// The gateway reported writing a different number of bytes than were sent
     /// (<see cref="SandboxErrorKind.Protocol"/>); the target is held by a concurrent writer
-    /// (<see cref="SandboxErrorKind.Conflict"/>); the transport deadline elapsed
+    /// (<see cref="SandboxErrorKind.Conflict"/>); the parent-directory self-heal (<c>mkdir -p</c>) did not
+    /// succeed (<see cref="SandboxErrorKind.Protocol"/>); the transport deadline elapsed
     /// (<see cref="SandboxErrorKind.TransportTimeout"/>); or the gateway otherwise rejected or malformed
     /// the request (<see cref="SandboxErrorKind.Protocol"/>).
     /// </exception>
@@ -90,6 +102,46 @@ public sealed partial class SandboxClient
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
         var bytes = S_strictUtf8.GetBytes(content);
 
+        try
+        {
+            await PutFileBytesAsync(sessionId, mountId, relativePath, path, bytes, ct).ConfigureAwait(false);
+        }
+        catch (SandboxException ex) when (ex.ErrorCode == PathNotFoundErrorCode)
+        {
+            // The direct files PUT does not create the target's parent (there is no directory-create
+            // endpoint), so a nested write whose parent is missing 404s path_not_found. A top-level file
+            // has no parent to create — surface the original failure unchanged. Otherwise self-heal the
+            // parent with a single `mkdir -p` operation and retry the PUT exactly once.
+            var parentDirectory = GetWorkspaceParentDirectory(relativePath);
+            if (parentDirectory is null)
+            {
+                throw;
+            }
+
+            await CreateDirectoryAsync(sessionId, mountId, parentDirectory, ct).ConfigureAwait(false);
+            await PutFileBytesAsync(sessionId, mountId, relativePath, path, bytes, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The gateway's direct-API <c>error_code</c> for a genuinely missing path — the only 404 the write self-heal reacts to.</summary>
+    private const string PathNotFoundErrorCode = "path_not_found";
+
+    /// <summary>
+    /// Issues one <c>PUT .../files/{mount_id}?path=...</c> with the exact <paramref name="bytes"/> and
+    /// validates the gateway's reported byte count. Extracted so <see cref="WriteTextFileAsync"/> can send
+    /// it twice (the retry after a parent-directory self-heal needs a fresh <see cref="HttpContent"/>, since
+    /// a sent one cannot be re-sent). <paramref name="displayPath"/> is the caller's original path, used only
+    /// for messages.
+    /// </summary>
+    private async Task PutFileBytesAsync(
+        string sessionId,
+        long mountId,
+        string relativePath,
+        string displayPath,
+        byte[] bytes,
+        CancellationToken ct
+    )
+    {
         using var body = new ByteArrayContent(bytes);
         body.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
 
@@ -104,7 +156,7 @@ public sealed partial class SandboxClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw await MapDirectErrorAsync(response, $"writing file '{path}'", sessionId, ct).ConfigureAwait(false);
+            throw await MapDirectErrorAsync(response, $"writing file '{displayPath}'", sessionId, ct).ConfigureAwait(false);
         }
 
         WriteFileResponseDto? written;
@@ -118,7 +170,7 @@ public sealed partial class SandboxClient
         {
             throw new SandboxException(
               SandboxErrorKind.Protocol,
-              $"Sandbox gateway returned a malformed write response for '{path}'.",
+              $"Sandbox gateway returned a malformed write response for '{displayPath}'.",
               (int)response.StatusCode,
               ex
             );
@@ -130,9 +182,58 @@ public sealed partial class SandboxClient
         {
             throw new SandboxException(
               SandboxErrorKind.Protocol,
-              $"Sandbox gateway reported an unexpected byte count writing '{path}'."
+              $"Sandbox gateway reported an unexpected byte count writing '{displayPath}'."
             );
         }
+    }
+
+    /// <summary>
+    /// Creates <paramref name="relativeDirectory"/> (and any missing ancestors) under the workspace via a
+    /// single <c>mkdir -p</c> operation, reusing the operations submit/poll path. Used only to self-heal a
+    /// nested <see cref="WriteTextFileAsync"/> whose parent does not exist. <c>mkdir -p</c> is idempotent,
+    /// so a directory another writer created concurrently still exits 0; a non-zero/non-terminal outcome
+    /// surfaces as <see cref="SandboxErrorKind.Protocol"/>.
+    /// </summary>
+    private async Task CreateDirectoryAsync(string sessionId, long mountId, string relativeDirectory, CancellationToken ct)
+    {
+        var operationId = CommandOperation.ResolveOperationId(null);
+        var requestDto = new CreateOperationRequestDto(
+            operationId,
+            "mkdir",
+            ["-p", relativeDirectory],
+            null,
+            new OperationCwdDto(mountId, string.Empty),
+            GatewayExecutionTimeoutSeconds(),
+            null
+        );
+
+        var status = await SubmitOperationAsync(sessionId, operationId, requestDto, ct).ConfigureAwait(false);
+        if (IsRunning(status.Status))
+        {
+            status = await PollOperationAsync(sessionId, operationId, ct).ConfigureAwait(false);
+        }
+
+        if (!string.Equals(status.Status, "succeeded", StringComparison.Ordinal) || (status.ExitCode ?? 0) != 0)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway could not create the parent directory '{relativeDirectory}' before a nested "
+                    + $"write (mkdir -p operation reported status '{status.Status}', exit code {status.ExitCode}).",
+                operationId: operationId
+            );
+        }
+    }
+
+    /// <summary>
+    /// The workspace-relative parent directory of a normalized workspace-relative FILE path, or
+    /// <c>null</c> when the file is top-level (has no directory component). The input is already clean
+    /// (forward slashes, no leading slash, non-empty), so the parent is simply everything before the last
+    /// <c>/</c>.
+    /// </summary>
+    private static string? GetWorkspaceParentDirectory(string relativeFilePath)
+    {
+        var lastSlash = relativeFilePath.LastIndexOf('/');
+        return lastSlash < 0 ? null : relativeFilePath[..lastSlash];
     }
 
     /// <summary>

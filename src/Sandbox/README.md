@@ -46,11 +46,15 @@ gateway owns byte-exactness and atomicity — the SDK speaks the direct files/di
   refuses a response whose declared `Content-Length` exceeds a 64&#160;MiB cap before buffering it.
 - **`WriteTextFileAsync(sessionId, path, content)`** — a single
   `PUT .../files/{mount_id}?path=...` carrying the exact new bytes as the request body. The **gateway**
-  performs the atomic replace (temp write plus same-directory rename) and creates any missing parent
-  directories; the SDK does not stream chunks, verify a temp's digest, or issue a separate finalize.
-  Either the write succeeds and the target is atomically replaced, or it fails and the target is left
-  untouched — the gateway never exposes a partially-written file. The SDK's only end-to-end check is
-  that the gateway's reported `bytes_written` matches what was sent.
+  performs the atomic replace (temp write plus same-directory rename); the SDK does not stream chunks,
+  verify a temp's digest, or issue a separate finalize. Either the write succeeds and the target is
+  atomically replaced, or it fails and the target is left untouched — the gateway never exposes a
+  partially-written file. The SDK's only end-to-end check is that the gateway's reported `bytes_written`
+  matches what was sent. The direct files API does **not** create the target's parent directory (and has
+  no directory-create endpoint), so to preserve the "a write creates its parents" behaviour of the old
+  path, a nested write whose parent is missing is self-healed: the SDK runs one `mkdir -p` operation for
+  the parent and retries the PUT once. A top-level (parentless) write is always a single PUT with no
+  operation.
 - **`ListDirectoryAsync(sessionId, path)`** — one or more paginated
   `GET .../directories/{mount_id}?path=...` pages (the gateway's opaque `next_cursor` is threaded
   verbatim), returning the non-recursive entry names (dotfiles included, `.`/`..` excluded).

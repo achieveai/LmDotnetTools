@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Xunit;
 
@@ -84,6 +85,61 @@ public class DirectFileTransferTests
         await client.WriteTextFileAsync(Session, "a.txt", content);
 
         sentBody.Should().Equal(Encoding.UTF8.GetBytes(content));
+        // A top-level (parentless) write is a single PUT — it must never trigger a mkdir operation.
+        handler
+            .Requests.Should()
+            .NotContain(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WriteTextFileAsync_NestedParentMissing_MkdirsParentThenRetriesPut()
+    {
+        var (client, handler) = CreateClient();
+        using var _ = client;
+
+        var putCount = 0;
+        byte[]? stored = null;
+        handler.On(
+            req => req.Method == HttpMethod.Put && req.RequestUri!.AbsolutePath.EndsWith($"/files/{MountId}", StringComparison.Ordinal),
+            req =>
+            {
+                putCount++;
+                if (putCount == 1)
+                {
+                    // The parent dir does not exist yet: the direct files PUT streams into a temp sibling
+                    // (create_new) without creating the parent, so it 404s path_not_found — no gateway mkdir.
+                    return JsonResponse(
+                        """{"error":"path not found","code":404,"error_code":"path_not_found","retryable":false}""",
+                        HttpStatusCode.NotFound
+                    );
+                }
+
+                stored = req.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+                return JsonResponse("{\"bytes_written\":" + stored.Length + "}");
+            }
+        );
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            _ => JsonResponse("""{"operation_id":"op-mkdir","status":"succeeded","exit_code":0}""")
+        );
+
+        const string content = "hi\n";
+        await client.WriteTextFileAsync(Session, "nested/dir/greeting.txt", content);
+
+        // The 404 self-healed: exactly one `mkdir -p nested/dir` operation, then the retried PUT succeeded
+        // with the exact bytes.
+        stored.Should().Equal(Encoding.UTF8.GetBytes(content));
+        putCount.Should().Be(2);
+
+        var mkdirRequest = handler
+            .Requests.Should()
+            .ContainSingle(r => r.Method == HttpMethod.Post && r.Uri.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal))
+            .Which;
+        var op = JsonDocument.Parse(mkdirRequest.Body!).RootElement;
+        op.GetProperty("executable").GetString().Should().Be("mkdir");
+        op.GetProperty("args").EnumerateArray().Select(e => e.GetString()).Should().Equal("-p", "nested/dir");
+        op.GetProperty("cwd").GetProperty("mount_id").GetInt64().Should().Be(MountId);
+        op.GetProperty("cwd").GetProperty("path").GetString().Should().BeEmpty();
     }
 
     [Fact]
