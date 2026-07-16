@@ -683,12 +683,22 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Check the status and recent activity of a sub-agent.
     /// </summary>
-    public string Peek(string agentId)
+    public string Peek(string agentId) =>
+        TryPeek(agentId, out var status)
+            ? status
+            : throw new ArgumentException($"Unknown agent ID '{agentId}'.", nameof(agentId));
+
+    /// <summary>
+    /// Non-throwing variant of <see cref="Peek"/>: returns <c>false</c> (with an empty status) when
+    /// <paramref name="agentId"/> is not a tracked sub-agent, so a caller (e.g. the CheckAgent tool) can
+    /// return a helpful "unknown agent" result to the model instead of surfacing a tool-execution error.
+    /// </summary>
+    public bool TryPeek(string agentId, out string status)
     {
         if (!_agents.TryGetValue(agentId, out var state))
         {
-            throw new ArgumentException(
-                $"Unknown agent ID '{agentId}'.", nameof(agentId));
+            status = string.Empty;
+            return false;
         }
 
         // Get the last 3 turns from the buffer
@@ -705,7 +715,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             })
             .ToArray();
 
-        return JsonSerializer.Serialize(new
+        status = JsonSerializer.Serialize(new
         {
             agent_id = agentId,
             name = state.Name,
@@ -717,7 +727,13 @@ public sealed class SubAgentManager : IAsyncDisposable
             send_to_parent_failed = state.SendToParentFailed,
             send_to_parent_error = state.SendToParentError,
         });
+        return true;
     }
+
+    /// <summary>The ids of the sub-agents currently tracked, so an unknown-id CheckAgent can tell the model
+    /// which ids are actually valid (the Agent tool returns short ids; a mismatched/hallucinated id is the
+    /// common cause of an "unknown agent" check).</summary>
+    public IReadOnlyCollection<string> KnownAgentIds() => [.. _agents.Keys];
 
     /// <summary>
     /// Observes a sub-agent's completion by id, returning its final text (or throwing its
