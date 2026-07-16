@@ -619,6 +619,11 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #e0e0e0;
   background: #f8f9fa;
   gap: 12px;
+  /* Let the control row drop below the title (and its own buttons wrap) instead of
+     overflowing the row — otherwise the trailing "Clear" button is clipped off the
+     right edge on typical laptop widths, since the selectors + buttons are wider
+     than the 900px content column. */
+  flex-wrap: wrap;
 }
 
 .menu-btn {
@@ -649,7 +654,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-shrink: 0;
+  /* Wrap the controls (right-aligned) rather than clipping them when the row is tight. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .marketplace-btn {
