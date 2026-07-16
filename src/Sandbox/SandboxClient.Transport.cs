@@ -194,14 +194,53 @@ public sealed partial class SandboxClient
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_options.TransportTimeout);
+        HttpResponseMessage? response = null;
         try
         {
-            return await Transport.SendAsync(request, HttpCompletionOption.ResponseContentRead, timeoutCts.Token).ConfigureAwait(false);
+            // ResponseHeadersRead + a streamed size cap so a large/chunked control-plane body is never
+            // buffered whole (the same bound as the direct downloads). On success the capped bytes are
+            // copied into an in-memory ByteArrayContent BEFORE this method returns, so the caller can still
+            // read the response after `using var request` disposes it — the request's own JsonContent was
+            // fully sent by the time the headers arrived, and the body now lives in memory, not on the
+            // connection. A non-success response is returned unread (its body is never touched — the same
+            // no-body-on-error invariant MapErrorResponse relies on).
+            response = await Transport
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token)
+                .ConfigureAwait(false);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var declaredLength = response.Content.Headers.ContentLength;
+                if (declaredLength is > MaxDirectReadBytes)
+                {
+                    throw new SandboxException(
+                        SandboxErrorKind.Protocol,
+                        $"Sandbox gateway response for '{relativeUri}' declared {declaredLength} bytes, exceeding "
+                            + $"the {MaxDirectReadBytes}-byte cap; refusing to buffer it.",
+                        (int)response.StatusCode
+                    );
+                }
+
+                var bytes = await ReadStreamCappedAsync(response, $"'{relativeUri}'", operationId: null, timeoutCts.Token)
+                    .ConfigureAwait(false);
+                var contentType = response.Content.Headers.ContentType;
+                response.Content.Dispose();
+                var capped = new ByteArrayContent(bytes);
+                if (contentType is not null)
+                {
+                    capped.Headers.ContentType = contentType;
+                }
+
+                response.Content = capped;
+            }
+
+            return response;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             // Our own linked token fired, not the caller's — this is the client-side transport
-            // deadline elapsing, not caller cancellation (which is re-thrown as-is below).
+            // deadline elapsing, not caller cancellation (which is re-thrown as-is by the bare catch below).
+            response?.Dispose();
             throw new SandboxException(
                 SandboxErrorKind.TransportTimeout,
                 $"Sandbox gateway request to '{relativeUri}' did not complete within the configured "
@@ -210,12 +249,20 @@ public sealed partial class SandboxClient
         }
         catch (HttpRequestException ex)
         {
+            response?.Dispose();
             throw new SandboxException(
                 SandboxErrorKind.TransportTimeout,
                 $"Could not reach the sandbox gateway at '{_options.ServerAddress}'.",
                 statusCode: null,
                 ex
             );
+        }
+        catch
+        {
+            // Any other failure (an over-cap Protocol throw, or genuine caller cancellation) must not leak
+            // the response — dispose it, then re-throw unchanged.
+            response?.Dispose();
+            throw;
         }
     }
 

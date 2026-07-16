@@ -303,4 +303,37 @@ public class SandboxClientLifecycleTests
         handler.Requests.Should().OnlyContain(r => r.SbxAppId == "app-1");
         handler.Requests.Should().OnlyContain(r => r.SbxAppKey == TestSupport.ValidSecret);
     }
+
+    [Fact]
+    public async Task ListAsync_OversizeDeclaredControlPlaneBody_ThrowsProtocol_BeforeBuffering()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        // A control-plane 2xx that declares a body far larger than the read cap must be refused by its
+        // declared Content-Length before it is buffered whole — the same bound as the direct downloads.
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith("/api/v1/sandboxes", StringComparison.Ordinal),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new OversizedContent(SandboxClient.MaxDirectReadBytes + 1) }
+        );
+
+        var exception = await Record.ExceptionAsync(() => client.ListAsync());
+
+        exception.Should().BeOfType<SandboxException>();
+        ((SandboxException)exception!).Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    /// <summary>An <see cref="HttpContent"/> that declares a large <c>Content-Length</c> without allocating any bytes, to exercise the pre-read size guard.</summary>
+    private sealed class OversizedContent : HttpContent
+    {
+        private readonly long _length;
+
+        public OversizedContent(long length) => _length = length;
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _length;
+            return true;
+        }
+    }
 }
