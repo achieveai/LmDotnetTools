@@ -348,6 +348,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ReleaseReviewLease_quarantines_the_slot_when_session_teardown_is_unconfirmed()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Lease a slot (ContextReady) + provision a session (Reviewed), then make the terminal DestroyAsync
+        // fail: the sandbox may still be mounted on this slot's store, so returning it would let the next
+        // lease's clean-on-entry race the surviving session (review #180). The slot must be QUARANTINED (index
+        // retired, never re-leased) rather than returned — while its permit is still released so capacity is
+        // preserved. Teardown failure must NOT propagate out of the terminal path either.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Provisioner.ThrowOnDestroyByRunId = new InvalidOperationException("gateway destroy failed");
+
+        var act = () => fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a failed teardown is contained, never masking the primary failure");
+        fixture.Pool.QuarantineCount.Should().Be(1);
+        fixture.Pool.Quarantined.Should().ContainSingle(s => s.Index == 0);
+        fixture.Pool.ReturnCount.Should().Be(0, "a possibly-live slot is quarantined, not returned to the pool");
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "quarantine");
+    }
+
+    [Fact]
     public async Task ReleaseReviewLease_returns_the_leased_slot_and_is_idempotent()
     {
         using var fixture = Fixture.Create();
@@ -545,7 +569,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
         public int RecloneCount { get; private set; }
+        public int QuarantineCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
+        public List<ReviewSlot> Quarantined { get; } = [];
 
         /// <summary>Shared cleanup-order log (with <see cref="RecordingProvisioner"/>) to assert the session is
         /// destroyed before the slot is returned.</summary>
@@ -564,6 +590,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
             ReturnCount++;
             Returned.Add(slot);
             Order?.Add("return");
+            return Task.CompletedTask;
+        }
+
+        public Task QuarantineAsync(ReviewSlot slot, CancellationToken cancellationToken)
+        {
+            QuarantineCount++;
+            Quarantined.Add(slot);
+            Order?.Add("quarantine");
             return Task.CompletedTask;
         }
 
@@ -626,6 +660,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
         public List<string>? Order { get; set; }
 
+        /// <summary>When set, the terminal <see cref="DestroyAsync(long, CancellationToken)"/> throws it, so a
+        /// test can drive the unconfirmed-teardown quarantine path.</summary>
+        public Exception? ThrowOnDestroyByRunId { get; set; }
+
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
         {
             GetOrCreateCalls++;
@@ -653,6 +691,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public Task DestroyAsync(long runId, CancellationToken ct)
         {
             Order?.Add("destroy");
+            if (ThrowOnDestroyByRunId is not null)
+            {
+                throw ThrowOnDestroyByRunId;
+            }
+
             return Task.CompletedTask;
         }
     }

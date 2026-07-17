@@ -26,6 +26,15 @@ internal interface IReviewSlotPool
     Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Retires a leased slot WITHOUT returning its index to the free list, then releases its permit. Used
+    /// when the slot's sandbox session could not be confirmed torn down: the store may still be mounted, so
+    /// reusing this index (and its store) would race the surviving session against the next lease's
+    /// clean-on-entry. Retiring the index makes the next lease allocate a FRESH slot directory + clone, so
+    /// capacity is preserved (the permit is released) while the tainted store is never handed out again.
+    /// </summary>
+    Task QuarantineAsync(ReviewSlot slot, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Discards a leased slot's store and re-clones it from scratch — the recovery escalation when the warm
     /// store is corrupt (a stale lock that survived cleaning, a broken object, a half-inited submodule). The
     /// caller keeps the same leased slot; only its store contents are replaced.
@@ -142,6 +151,27 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
             _freeIndexes.Push(slot.Index);
         }
 
+        _gate.Release();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Retires a leased slot on an unconfirmed session teardown: unlike <see cref="ReturnAsync"/> it does NOT
+    /// push the index onto the free list, so no future lease reuses this slot's directory or its
+    /// possibly-still-mounted store (which would let the next lease's clean-on-entry race the surviving
+    /// session). The permit IS released, so capacity is preserved — the next lease finds the free list empty
+    /// and allocates a fresh index (a new <c>slot-{N}</c> dir + clone). The tainted slot directory is left on
+    /// disk for a daemon restart / operator to reclaim (leaked disk, never leaked capacity).
+    /// </summary>
+    public Task QuarantineAsync(ReviewSlot slot, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(slot);
+
+        _logger.LogWarning(
+            "Quarantining review slot {Index} at {StorePath}: index retired (not reused) because its session "
+                + "teardown could not be confirmed; the next lease allocates a fresh slot.",
+            slot.Index,
+            slot.StorePath);
         _gate.Release();
         return Task.CompletedTask;
     }

@@ -359,6 +359,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(runId, out var lease))
         {
+            var teardownConfirmed = true;
             try
             {
                 // Tear the session down (terminating any lingering sub-agent git child + unmounting) BEFORE the
@@ -373,19 +374,29 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
             catch (Exception ex)
             {
-                // A teardown failure must NOT skip the slot return below — that would permanently consume a pool
-                // permit — nor propagate and mask the primary stage failure that sent us into this terminal path.
-                // Contain it, log, and fall through to the guaranteed return in the finally.
+                // Teardown could not be confirmed, so the sandbox session may still be mounted on this slot's
+                // store. Returning it to the pool would let the next lease's clean-on-entry race the surviving
+                // session on the same store (review #180). QUARANTINE instead: the slot's index is retired
+                // (never reused) while its permit is still released, so capacity is preserved (the next lease
+                // allocates a fresh slot) and the possibly-live store is never handed out again. Contain + log
+                // rather than propagate, so this never masks the primary stage failure that sent us here.
+                teardownConfirmed = false;
                 _logger.LogWarning(
                     ex,
-                    "Run {RunId}: sandbox session teardown failed on the terminal path; returning slot {Index} anyway.",
+                    "Run {RunId}: sandbox session teardown failed on the terminal path; quarantining slot {Index} "
+                        + "(index retired) instead of returning a possibly-live store to the pool.",
                     runId, lease.Slot.Index);
             }
-            finally
+
+            if (teardownConfirmed)
             {
                 await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
                 _logger.LogInformation(
                     "Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+            }
+            else
+            {
+                await _slotWorkspace.Pool.QuarantineAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
             }
         }
     }

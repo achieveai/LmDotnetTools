@@ -24,27 +24,55 @@ internal sealed class CopilotModelCatalogLogger : IHostedService
     private static readonly TimeSpan DiscoveryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ILogger<CopilotModelCatalogLogger> _logger;
+    private readonly IHostApplicationLifetime _lifetime;
+    private CancellationTokenSource? _cts;
+    private Task? _discovery;
 
-    public CopilotModelCatalogLogger(ILogger<CopilotModelCatalogLogger> logger)
+    public CopilotModelCatalogLogger(
+        ILogger<CopilotModelCatalogLogger> logger, IHostApplicationLifetime lifetime)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _lifetime = lifetime ?? throw new ArgumentNullException(nameof(lifetime));
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        // Diagnostic only — it must NOT delay host readiness. StartAsync is awaited by the host, so awaiting
+        // the (30s-bounded) /models call here would hold up the daemon becoming ready if Copilot is slow or
+        // hanging. Defer discovery until AFTER the application has finished starting, then run it detached on
+        // a background task so boot completes independently of it.
+        _lifetime.ApplicationStarted.Register(() =>
+        {
+            _cts = new CancellationTokenSource();
+            _discovery = RunDiscoveryAsync(_cts.Token);
+        });
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _cts?.Cancel();
+        var discovery = _discovery;
+        if (discovery is not null)
+        {
+            // Best-effort: let the in-flight discovery observe cancellation, but never let shutdown hang on it.
+            await Task.WhenAny(discovery, Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RunDiscoveryAsync(CancellationToken stopToken)
     {
         try
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
             cts.CancelAfter(DiscoveryTimeout);
             await LogCatalogAsync(cts.Token).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !stopToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Copilot model catalog discovery failed at startup; continuing without it.");
         }
     }
-
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     private async Task LogCatalogAsync(CancellationToken cancellationToken)
     {
