@@ -280,9 +280,9 @@ public sealed class ReviewToolContextBuildTests
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
             throw new InvalidOperationException("sandbox gateway unreachable");
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct) => Task.FromResult(true);
 
-        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(long runId, CancellationToken ct) => Task.FromResult(true);
     }
 
     /// <summary>Simulates provisioning being cancelled — must propagate, never degrade to diff-only.</summary>
@@ -294,9 +294,9 @@ public sealed class ReviewToolContextBuildTests
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
             throw new OperationCanceledException("provisioning cancelled");
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct) => Task.FromResult(true);
 
-        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(long runId, CancellationToken ct) => Task.FromResult(true);
     }
 
     private sealed class FakeReviewSessionProvisioner(string sessionId) : IReviewSessionProvisioner
@@ -317,9 +317,9 @@ public sealed class ReviewToolContextBuildTests
             return GetOrCreateAsync(run, ct);
         }
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct) => Task.FromResult(true);
 
-        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(long runId, CancellationToken ct) => Task.FromResult(true);
     }
 
     /// <summary>Scripted discovery results for the sub-agent degrade-tier tests (Task 12).</summary>

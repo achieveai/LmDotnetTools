@@ -372,6 +372,26 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ReleaseReviewLease_quarantines_when_teardown_reports_unconfirmed_without_throwing()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The real ReviewSessionProvisioner SWALLOWS a gateway-destroy failure and reports it via the return
+        // value (false), NOT by throwing. The terminal path must still quarantine on that unconfirmed teardown —
+        // otherwise the swallowed failure would silently reach ReturnAsync and reuse a possibly-live store.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Provisioner.ConfirmDestroy = false;
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Pool.QuarantineCount.Should().Be(1, "a false (unconfirmed) teardown routes to quarantine, not return");
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "quarantine");
+    }
+
+    [Fact]
     public async Task ReleaseReviewLease_returns_the_leased_slot_and_is_idempotent()
     {
         using var fixture = Fixture.Create();
@@ -664,6 +684,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// test can drive the unconfirmed-teardown quarantine path.</summary>
         public Exception? ThrowOnDestroyByRunId { get; set; }
 
+        /// <summary>When false, <see cref="DestroyAsync(long, CancellationToken)"/> returns false WITHOUT throwing
+        /// — mirroring the real provisioner that swallows a gateway-destroy failure and reports it as an
+        /// unconfirmed teardown, which must still route the caller to quarantine.</summary>
+        public bool ConfirmDestroy { get; set; } = true;
+
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
         {
             GetOrCreateCalls++;
@@ -682,13 +707,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
         }
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+        public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct)
         {
             Order?.Add("destroy");
-            return Task.CompletedTask;
+            return DestroyAsync(run.Id, ct);
         }
 
-        public Task DestroyAsync(long runId, CancellationToken ct)
+        public Task<bool> DestroyAsync(long runId, CancellationToken ct)
         {
             Order?.Add("destroy");
             if (ThrowOnDestroyByRunId is not null)
@@ -696,7 +721,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 throw ThrowOnDestroyByRunId;
             }
 
-            return Task.CompletedTask;
+            // Mirror the real provisioner, which SWALLOWS a gateway-destroy failure and reports it via the
+            // return value: an unconfirmed teardown returns false WITHOUT throwing.
+            return Task.FromResult(ConfirmDestroy);
         }
     }
 

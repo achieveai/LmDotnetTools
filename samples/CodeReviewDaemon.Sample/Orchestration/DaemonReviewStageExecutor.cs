@@ -367,25 +367,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 // terminal finally without running the Posted-stage cleanup — can't leave session-side work racing
                 // the next lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a
                 // no-op when no session was provisioned, and harmless if the Posted stage already destroyed it.
+                // DestroyAsync returns FALSE (not just throws) when the gateway teardown can't be confirmed, so a
+                // silently-swallowed destroy failure still routes to quarantine below rather than a reuse.
                 if (_options.EnableToolAssistedReview && _provisioner is not null)
                 {
-                    await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
+                    teardownConfirmed =
+                        await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
             {
-                // Teardown could not be confirmed, so the sandbox session may still be mounted on this slot's
-                // store. Returning it to the pool would let the next lease's clean-on-entry race the surviving
-                // session on the same store (review #180). QUARANTINE instead: the slot's index is retired
-                // (never reused) while its permit is still released, so capacity is preserved (the next lease
-                // allocates a fresh slot) and the possibly-live store is never handed out again. Contain + log
+                // DestroyAsync threw outright — treat identically to an unconfirmed teardown. Contain + log
                 // rather than propagate, so this never masks the primary stage failure that sent us here.
                 teardownConfirmed = false;
                 _logger.LogWarning(
-                    ex,
-                    "Run {RunId}: sandbox session teardown failed on the terminal path; quarantining slot {Index} "
-                        + "(index retired) instead of returning a possibly-live store to the pool.",
-                    runId, lease.Slot.Index);
+                    ex, "Run {RunId}: sandbox session teardown threw on the terminal path.", runId);
             }
 
             if (teardownConfirmed)
@@ -396,6 +392,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
             else
             {
+                // Teardown unconfirmed (threw, OR the provisioner reported the gateway destroy failed): the
+                // sandbox may still be mounted on this slot's store, so QUARANTINE rather than return — the slot
+                // index is retired (never reused, so no next lease races the surviving session) while its permit
+                // is still released, so capacity is preserved (the next lease allocates a fresh slot).
+                _logger.LogWarning(
+                    "Run {RunId}: sandbox session teardown unconfirmed on the terminal path; quarantining slot "
+                        + "{Index} (index retired) instead of returning a possibly-live store to the pool.",
+                    runId, lease.Slot.Index);
                 await _slotWorkspace.Pool.QuarantineAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
             }
         }
@@ -1304,10 +1308,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // otherwise race the host-side StripAsync/ReturnAsync on the SAME store (the concurrency window called
         // out in review #180 — and the mechanism behind the Posted-stage index.lock we observed). Destroying
         // the session first terminates those child processes and unmounts, so the slot is quiescent before we
-        // touch it. Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
+        // touch it. DestroyAsync returns FALSE when the gateway teardown can't be confirmed (rather than
+        // swallowing it), so the retention block below can quarantine instead of touching a possibly-live store.
+        // Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
+        var teardownConfirmed = true;
         if (_options.EnableToolAssistedReview && _provisioner is not null)
         {
-            await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+            teardownConfirmed = await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
         }
 
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
@@ -1317,34 +1324,50 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // resources; the atomic TryRemove guards against a double-return.
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(run.Id, out var lease))
         {
-            try
+            if (!teardownConfirmed)
             {
-                if (hasContent)
-                {
-                    await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken).ConfigureAwait(false);
-                }
+                // Teardown unconfirmed: the store may still be mounted, so NEITHER the host-side notes commit
+                // NOR the strip can safely run — both operate on the SAME store the live mount holds (review
+                // #180). Skip them and QUARANTINE the slot (index retired, permit released). This run's notes
+                // are not committed, but correctness beats retention on a rare unconfirmed teardown; the
+                // quarantine tombstone / clean-on-entry reclaim the slot.
+                _logger.LogWarning(
+                    "Run {RunId}: sandbox session teardown unconfirmed after review; quarantining slot {Index} "
+                        + "without committing notes or stripping (a possibly-live mount must not be touched host-side).",
+                    run.Id, lease.Slot.Index);
+                await _slotWorkspace.Pool.QuarantineAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
             }
-            finally
+            else
             {
-                // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
-                // slot's store to a pristine state so the next lease starts clean with nothing left around.
-                // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
-                // block the slot's return (which would leak pool capacity). Committed notes survive the strip
-                // (reset --hard keeps HEAD; clean removes only untracked byproduct).
                 try
                 {
-                    await SlotHygiene.StripAsync(
-                            new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None, _logger)
-                        .ConfigureAwait(false);
+                    if (hasContent)
+                    {
+                        await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken).ConfigureAwait(false);
+                    }
                 }
-                catch (Exception ex)
+                finally
                 {
-                    _logger.LogWarning(
-                        ex, "Run {RunId}: best-effort slot strip failed; the next lease's clean-on-entry covers it.",
-                        run.Id);
-                }
+                    // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
+                    // slot's store to a pristine state so the next lease starts clean with nothing left around.
+                    // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
+                    // block the slot's return (which would leak pool capacity). Committed notes survive the strip
+                    // (reset --hard keeps HEAD; clean removes only untracked byproduct).
+                    try
+                    {
+                        await SlotHygiene.StripAsync(
+                                new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None, _logger)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex, "Run {RunId}: best-effort slot strip failed; the next lease's clean-on-entry covers it.",
+                            run.Id);
+                    }
 
-                await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                    await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                }
             }
         }
         else if (hasContent)

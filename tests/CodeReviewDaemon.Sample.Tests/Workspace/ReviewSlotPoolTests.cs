@@ -146,4 +146,53 @@ public class ReviewSlotPoolTests : IDisposable
             .Should().BeFalse("the corrupt store is wiped before re-cloning");
         File.Exists(Path.Combine(slot.StorePath, ".cloned")).Should().BeTrue("the re-clone produced a fresh store");
     }
+
+    [Fact]
+    public async Task QuarantineAsync_RetiresIndexAndReleasesPermit_SoNextLeaseGetsAFreshSlot()
+    {
+        var clone = CountingCloneCallback(out var callCount);
+        var pool = CreatePool(maxSlots: 1, clone); // single permit — proves the permit is released, not leaked
+
+        var first = await pool.LeaseAsync(default);
+        first.Index.Should().Be(0);
+
+        await pool.QuarantineAsync(first, default);
+
+        // A durable tombstone is dropped so the quarantine survives a restart.
+        File.Exists(Path.Combine(first.HostPath, ".quarantined")).Should().BeTrue("a quarantine tombstone is written");
+
+        // The permit was released (else this lease blocks forever at maxSlots=1) AND the quarantined index is
+        // retired: the next lease allocates a FRESH index with its own clone rather than recycling slot-0's
+        // possibly-live store.
+        var second = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+        second.Index.Should().Be(1, "the quarantined index 0 is retired, never recycled");
+        callCount().Should().Be(2, "the fresh slot is cloned from scratch");
+    }
+
+    [Fact]
+    public async Task NewPoolOverSameHostRoot_ReapsQuarantinedSlot_SoRestartNeverReusesTheTaintedStore()
+    {
+        var cloneA = CountingCloneCallback(out _);
+        var poolA = CreatePool(maxSlots: 1, cloneA);
+
+        var slot = await poolA.LeaseAsync(default);
+        // Taint the warm store so the restart can be proven NOT to reuse it.
+        File.WriteAllText(Path.Combine(slot.StorePath, "tainted.txt"), "live-mount-residue");
+        await poolA.QuarantineAsync(slot, default);
+        File.Exists(Path.Combine(slot.HostPath, ".quarantined")).Should().BeTrue();
+
+        // Simulate a daemon RESTART: a brand-new pool over the SAME host root. Its ctor reaps the tombstoned
+        // slot dir (safe — a fresh process holds no mounts), so index 0 no longer has a warm store and the
+        // first lease re-clones from scratch. Without the reap, _nextIndex=0 would treat the non-empty
+        // slot-0/store as warm and hand back the tainted store (the exact review #180 finding).
+        var cloneB = CountingCloneCallback(out var callCountB);
+        var poolB = CreatePool(maxSlots: 1, cloneB);
+
+        var reused = await poolB.LeaseAsync(default);
+
+        reused.Index.Should().Be(0);
+        callCountB().Should().Be(1, "the quarantined store was reaped at startup, so the restart re-clones it");
+        File.Exists(Path.Combine(reused.StorePath, "tainted.txt"))
+            .Should().BeFalse("a quarantined store must never be reused after a restart");
+    }
 }

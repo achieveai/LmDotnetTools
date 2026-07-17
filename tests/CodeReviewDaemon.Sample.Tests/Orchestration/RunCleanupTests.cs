@@ -112,12 +112,12 @@ public sealed class RunCleanupTests
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct) =>
             GetOrCreateAsync(run, ct);
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+        public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct)
         {
             DestroyCalls.Add(run);
-            return Task.CompletedTask;
+            return Task.FromResult(true);
         }
 
-        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(long runId, CancellationToken ct) => Task.FromResult(true);
     }
 }

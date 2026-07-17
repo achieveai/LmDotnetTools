@@ -36,7 +36,9 @@ internal interface IReviewSessionProvisioner
     /// </summary>
     Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct);
 
-    Task DestroyAsync(ReviewRun run, CancellationToken ct);
+    /// <returns><c>true</c> when the sandbox session teardown was CONFIRMED; <c>false</c> when it could not be
+    /// (the session may still be mounted), so the caller must quarantine the slot rather than reuse it.</returns>
+    Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct);
 
     /// <summary>
     /// Tears down the session for a run identified only by its id. Used by the orchestrator's terminal
@@ -44,7 +46,11 @@ internal interface IReviewSessionProvisioner
     /// destroy the session BEFORE the slot is returned to the pool, so a lingering sub-agent git op can't race
     /// the next lease's clean-on-entry on the same store.
     /// </summary>
-    Task DestroyAsync(long runId, CancellationToken ct);
+    /// <returns><c>true</c> when the sandbox session teardown was CONFIRMED (the gateway destroy succeeded);
+    /// <c>false</c> when it could not be confirmed, so the caller must quarantine the slot rather than reuse a
+    /// possibly-still-mounted store. Secondary best-effort cleanup (host-dir removal, disposables) never flips
+    /// a confirmed teardown to unconfirmed.</returns>
+    Task<bool> DestroyAsync(long runId, CancellationToken ct);
 }
 
 /// <summary>
@@ -241,22 +247,29 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         }
     }
 
-    public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+    public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(run);
         return DestroyAsync(run.Id, ct);
     }
 
-    public async Task DestroyAsync(long runId, CancellationToken ct)
+    public async Task<bool> DestroyAsync(long runId, CancellationToken ct)
     {
         var workspaceId = WorkspaceId(runId);
+        var confirmed = true;
         try
         {
             await _sessions.DestroyWorkspaceSessionAsync(workspaceId, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Best-effort destroy of session for {WorkspaceId} failed.", workspaceId);
+            // The gateway session teardown could not be confirmed — the container/mount may still be live.
+            // REPORT it to the caller (which quarantines the slot rather than reusing a possibly-mounted store)
+            // instead of swallowing it into a normal return, which would let the slot be stripped/returned
+            // while a surviving git process still writes to it (review #180). Secondary cleanup below is still
+            // best-effort and never flips a confirmed teardown back to unconfirmed.
+            confirmed = false;
+            _logger.LogWarning(ex, "Destroy of sandbox session for {WorkspaceId} could not be confirmed.", workspaceId);
         }
 
         foreach (var (sessionId, runSession) in _bySession)
@@ -282,6 +295,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         {
             _logger.LogWarning(ex, "Best-effort host-dir cleanup failed for {HostDir}.", hostDir);
         }
+
+        return confirmed;
     }
 
     /// <summary>Recursively clears the read-only attribute so an untrusted checkout's read-only files

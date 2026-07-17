@@ -113,8 +113,8 @@ public sealed class DaemonReviewStageExecutorSessionTests
             return GetOrCreateAsync(run, ct);
         }
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct) => Task.FromResult(true);
 
-        public Task DestroyAsync(long runId, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(long runId, CancellationToken ct) => Task.FromResult(true);
     }
 }
