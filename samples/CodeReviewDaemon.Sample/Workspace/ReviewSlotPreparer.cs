@@ -103,7 +103,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         // BEFORE any git step, so a stale lock / dirty tree / half-checked-out submodule left by a crashed
         // prior lease can never wedge or contaminate this one. A structurally broken store is re-cloned by
         // the executor's recovery ladder.
-        if (await SlotHygiene.EnsureCleanAsync(_git, storeRoot, cancellationToken).ConfigureAwait(false)
+        if (await SlotHygiene.EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger).ConfigureAwait(false)
             == HygieneVerdict.NeedsReclone)
         {
             throw new SlotNeedsRecloneException(

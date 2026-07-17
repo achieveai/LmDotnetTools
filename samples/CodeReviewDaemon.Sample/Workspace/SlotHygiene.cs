@@ -23,7 +23,7 @@ internal enum HygieneVerdict
 internal static class SlotHygiene
 {
     public static async Task<HygieneVerdict> EnsureCleanAsync(
-        GitRunner git, string storePath, CancellationToken ct)
+        GitRunner git, string storePath, CancellationToken ct, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentException.ThrowIfNullOrWhiteSpace(storePath);
@@ -57,12 +57,26 @@ internal static class SlotHygiene
         }
 
         // 5. Cleanliness gate: `rev-parse --git-dir` only proves the repo STRUCTURE is intact, not that the tree
-        //    is CLEAN. A cleanup step that reported failure, or a working tree still showing tracked/untracked
-        //    changes afterwards, means stale state would cross into the next run — so force a re-clone rather
-        //    than reporting a still-dirty slot as Clean (which would let contamination survive the pool).
-        if (!reset.Succeeded || !clean.Succeeded || !submodules.Succeeded)
+        //    is CLEAN. A superproject cleanup step that reported failure, or a working tree still showing
+        //    tracked/untracked changes afterwards, means stale state would cross into the next run — so force a
+        //    re-clone rather than reporting a still-dirty slot as Clean (which would let contamination survive
+        //    the pool).
+        if (!reset.Succeeded || !clean.Succeeded)
         {
             return HygieneVerdict.NeedsReclone;
+        }
+
+        // A `git submodule foreach` failure is deliberately NOT re-clone-gated: it fatals on a committed
+        // embedded gitlink with no .gitmodules URL (an agent-left nested repo — the PR-11182 wedge), and a
+        // re-clone reproduces that same committed tree, so gating on it loops forever without ever healing. The
+        // superproject reset/clean above and the status probe below already prove the working tree is clean
+        // (an uninitialized stray gitlink shows as clean), so log the best-effort cleanup failure and continue.
+        if (!submodules.Succeeded)
+        {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: `git submodule foreach` cleanup failed (continuing — a re-clone "
+                    + "cannot fix committed content; the status probe still gates cleanliness): {Stderr}",
+                storePath, submodules.Stderr);
         }
 
         var status = await git.RunAsync(["-C", storePath, "status", "--porcelain"], storePath, ct)

@@ -133,6 +133,25 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_tolerates_submodule_cleanup_failure_when_the_tree_is_clean()
+    {
+        // A `git submodule foreach` that fatals on a committed embedded gitlink with no .gitmodules URL (the
+        // PR-11182 wedge) is NOT re-clonable corruption: a re-clone reproduces the same committed tree and
+        // loops forever. The superproject reset/clean + the status gate already prove the tree is clean, so
+        // the slot stays reusable rather than being driven into an unfixable re-clone.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(
+                1, string.Empty, "fatal: No url found for submodule path 'PRs/x-11182/repo' in .gitmodules"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean);
+    }
+
+    [Fact]
     public async Task StripAsync_issues_reset_and_clean()
     {
         var store = SeedStore();
