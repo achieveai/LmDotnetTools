@@ -77,3 +77,39 @@ foreach ($project in $extraTestProjects) {
         dotnet test $project --no-restore --verbosity minimal /p:UseSharedCompilation=false --blame-hang --blame-hang-timeout 4m
     }
 }
+
+# Package smoke: pack the publicly shipped Sandbox SDK and assert the nupkg
+# carries BOTH target frameworks. Catches packaging regressions (a dropped TFM,
+# a broken PackageReadmeFile, a NU5xxx error) on every PR without needing a
+# live gateway or Docker — the auth-enforced contract job (sandbox-contract.yml)
+# covers the runtime behavior separately.
+Invoke-CiStep "pack smoke: Sandbox SDK" {
+    $sandboxProject = "src/Sandbox/AchieveAi.LmDotnetTools.Sandbox.csproj"
+    $packOut = Join-Path ([System.IO.Path]::GetTempPath()) "sandbox-pack-smoke"
+    if (Test-Path $packOut) { Remove-Item $packOut -Recurse -Force }
+
+    dotnet pack $sandboxProject -c Release -o $packOut --no-restore /p:UseSharedCompilation=false
+    if ($LASTEXITCODE -ne 0) { throw "dotnet pack failed for $sandboxProject (exit $LASTEXITCODE)." }
+
+    $nupkg = Get-ChildItem $packOut -Filter "AchieveAi.LmDotnetTools.Sandbox.*.nupkg" |
+        Where-Object { $_.Name -notlike "*.symbols.nupkg" } |
+        Select-Object -First 1
+    if (-not $nupkg) { throw "No AchieveAi.LmDotnetTools.Sandbox nupkg produced under $packOut." }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($nupkg.FullName)
+    try {
+        $entries = $zip.Entries.FullName
+    }
+    finally {
+        $zip.Dispose()
+    }
+
+    foreach ($tfm in @("net8.0", "net9.0")) {
+        $dll = "lib/$tfm/AchieveAi.LmDotnetTools.Sandbox.dll"
+        if ($entries -notcontains $dll) {
+            throw "Sandbox nupkg $($nupkg.Name) is missing $dll. Present lib entries: $(( $entries | Where-Object { $_ -like 'lib/*' } ) -join ', ')"
+        }
+    }
+    Write-Host "Sandbox package verified: $($nupkg.Name) contains net8.0 + net9.0."
+}

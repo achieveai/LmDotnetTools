@@ -63,6 +63,8 @@ public sealed class ContextDiscoveryWebhookHttpTests
         var message = app.Agent.SentMessages.Should().ContainSingle().Which
             .Should().BeOfType<NotifyMessage>().Subject;
         message.Role.Should().Be(Role.User);
+        message.NotifyKind.Should().Be(NotifyKinds.ContextDiscovery);
+        message.Label.Should().Be("CLAUDE.md");
         message.Text.Should().Contain("<context-discovery path=\"CLAUDE.md\">");
         message.Text.Should().Contain("Be terse.");
 

@@ -138,13 +138,18 @@ async function copyResult() {
 
 <style scoped>
 /* Layout containment (re-homed from MetadataPill): min-width:0 lets the flex row shrink,
-   overflow-x:auto keeps wide expanded content from blowing out the pill (past overflow bug). */
+   overflow-x:auto keeps wide expanded content from blowing out the pill (past overflow bug).
+   position:relative makes the pill the containing block for its own absolutely-positioned
+   .sr-only accessibility labels — without it those labels resolve to the initial containing
+   block (all ancestors are position:static), escape .chat-layout's overflow clip, and lengthen
+   the document into a spurious whole-page scrollbar instead of scrolling inside .message-list. */
 .tool-pill {
   background: #fff;
   border-radius: 8px;
   padding: 2px;
   border: 1px solid transparent;
   min-width: 0;
+  position: relative;
 }
 
 .tool-pill:hover {
