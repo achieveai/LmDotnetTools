@@ -76,18 +76,31 @@ internal static class SlotHygiene
     /// Success-path strip: the caller commits + pushes the notes FIRST, then this returns the slot pristine
     /// (best-effort — if it is skipped by a crash, the next lease's <see cref="EnsureCleanAsync"/> covers it).
     /// </summary>
-    public static async Task StripAsync(GitRunner git, string storePath, CancellationToken ct)
+    public static async Task StripAsync(
+        GitRunner git, string storePath, CancellationToken ct, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentException.ThrowIfNullOrWhiteSpace(storePath);
 
         RemoveStaleLocks(Path.Combine(storePath, ".git"));
-        await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
-        await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
-        await git.RunAsync(
+        var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
+        var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
+        var submodules = await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
                 storePath, ct)
             .ConfigureAwait(false);
+
+        // Best-effort strip: a failed reset/clean/submodule cleanup does NOT throw here (that would block the
+        // slot's return and leak pool capacity — clean-on-entry is the real durability guarantee). But silently
+        // discarding the failed results would leave the next lease to find a dirty store with no breadcrumb, so
+        // surface it as a warning the operator (and the next clean-on-entry / reclone policy) can act on.
+        if (!reset.Succeeded || !clean.Succeeded || !submodules.Succeeded)
+        {
+            logger?.LogWarning(
+                "Slot strip at {StorePath} left residue (reset={Reset} clean={Clean} submodules={Submodules}); "
+                    + "the next lease's clean-on-entry re-covers it.",
+                storePath, reset.Succeeded, clean.Succeeded, submodules.Succeeded);
+        }
     }
 
     private static void RemoveStaleLocks(string gitDir)

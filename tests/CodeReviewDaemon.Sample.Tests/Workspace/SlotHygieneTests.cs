@@ -145,6 +145,24 @@ public sealed class SlotHygieneTests : IDisposable
         commands.Should().Contain(a => a.Contains("clean -ffdx"));
     }
 
+    [Fact]
+    public async Task StripAsync_stays_best_effort_when_a_cleanup_step_fails()
+    {
+        // The success-path strip must NEVER throw on a failed reset/clean — that would block the slot's return
+        // and leak pool capacity (clean-on-entry is the durability guarantee). It inspects the results and only
+        // surfaces a warning; the remaining steps still run.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "clean -ffdx", new SandboxCommandResult(1, string.Empty, "warning: failed to remove leftover.tmp"));
+
+        var act = async () => await SlotHygiene.StripAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        await act.Should().NotThrowAsync();
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains("submodule foreach --recursive"));
+    }
+
     private string SeedStore()
     {
         var store = Path.Combine(_root, "store");

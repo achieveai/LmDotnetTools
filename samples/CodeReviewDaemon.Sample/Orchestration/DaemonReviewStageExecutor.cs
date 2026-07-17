@@ -1323,7 +1323,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 try
                 {
                     await SlotHygiene.StripAsync(
-                            new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None)
+                            new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None, _logger)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)
