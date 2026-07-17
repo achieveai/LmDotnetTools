@@ -165,10 +165,29 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
-    public async Task PrepareAsync_ReviewedSubmoduleFailsToInit_ThrowsSlotCorrupt()
+    public async Task PrepareAsync_ReviewedSubmoduleCorruptInitFailure_ThrowsSlotCorrupt()
     {
         var slot = CreateSlot();
         var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --init", new SandboxCommandResult(1, string.Empty, "fatal: loose object a1b2c3 is corrupt"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotCorruptException>("a CORRUPT-classified init failure is slot corruption and drives the reclone");
+    }
+
+    [Fact]
+    public async Task PrepareAsync_ReviewedSubmoduleUnknownInitFailure_DoesNotDriveReclone()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        // An unrecognized init failure (no corrupt/transient marker) classifies as GitFailureKind.Unknown, which
+        // the enum documents as "treated as transient". It must retry the warm store, NOT drive a destructive
+        // reclone that cannot fix a non-corruption and would loop (review #180).
         runner.OnArgvContains(
             "submodule update --init", new SandboxCommandResult(1, string.Empty, "fatal: clone of submodule failed"));
         var preparer = new ReviewSlotPreparer(
@@ -177,7 +196,8 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var act = async () => await preparer.PrepareAsync(
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
 
-        await act.Should().ThrowAsync<SlotCorruptException>("a half-inited reviewed submodule is slot corruption, not a silent proceed");
+        var thrown = await act.Should().ThrowAsync<Exception>();
+        thrown.Which.Should().NotBeOfType<SlotCorruptException>();
     }
 
     [Fact]

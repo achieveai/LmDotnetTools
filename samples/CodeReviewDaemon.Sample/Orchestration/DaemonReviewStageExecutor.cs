@@ -359,18 +359,34 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(runId, out var lease))
         {
-            // Tear the session down (terminating any lingering sub-agent git child + unmounting) BEFORE the slot
-            // returns to the pool, so a cancelled/failed run — which reaches here via the orchestrator's terminal
-            // finally without running the Posted-stage cleanup — can't leave session-side work racing the next
-            // lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a no-op when no
-            // session was provisioned, and harmless if the Posted stage already destroyed it.
-            if (_options.EnableToolAssistedReview && _provisioner is not null)
+            try
             {
-                await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
+                // Tear the session down (terminating any lingering sub-agent git child + unmounting) BEFORE the
+                // slot returns to the pool, so a cancelled/failed run — which reaches here via the orchestrator's
+                // terminal finally without running the Posted-stage cleanup — can't leave session-side work racing
+                // the next lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a
+                // no-op when no session was provisioned, and harmless if the Posted stage already destroyed it.
+                if (_options.EnableToolAssistedReview && _provisioner is not null)
+                {
+                    await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
+                }
             }
-
-            await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
-            _logger.LogInformation("Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+            catch (Exception ex)
+            {
+                // A teardown failure must NOT skip the slot return below — that would permanently consume a pool
+                // permit — nor propagate and mask the primary stage failure that sent us into this terminal path.
+                // Contain it, log, and fall through to the guaranteed return in the finally.
+                _logger.LogWarning(
+                    ex,
+                    "Run {RunId}: sandbox session teardown failed on the terminal path; returning slot {Index} anyway.",
+                    runId, lease.Slot.Index);
+            }
+            finally
+            {
+                await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                _logger.LogInformation(
+                    "Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+            }
         }
     }
 
