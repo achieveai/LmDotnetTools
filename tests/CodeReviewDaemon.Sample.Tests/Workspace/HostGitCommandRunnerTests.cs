@@ -61,6 +61,28 @@ public class HostGitCommandRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_NonGitCommand_NeverResolvesCredentials()
+    {
+        // Security invariant: the write credential is injected ONLY for git (the sole remote-talking case,
+        // guarded on Argv[0] == "git"). A non-git command must never even invoke the credentials source, so a
+        // token can never leak into an unrelated child process's environment.
+        var credentialsResolved = false;
+        Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> recordingSource = _ =>
+        {
+            credentialsResolved = true;
+            return Task.FromResult<IReadOnlyList<GitProviderToken>>([new GitProviderToken("github", "secret")]);
+        };
+        var runner = new HostGitCommandRunner(recordingSource, NullLogger<HostGitCommandRunner>.Instance);
+
+        // A trivially-succeeding non-git command, portable across the Windows dev box and the Linux CI host.
+        string[] argv = OperatingSystem.IsWindows() ? ["cmd", "/c", "exit", "0"] : ["true"];
+        var result = await runner.RunAsync(new SandboxCommand(argv, _dir), default);
+
+        result.Succeeded.Should().BeTrue();
+        credentialsResolved.Should().BeFalse("a non-git command must never trigger credential resolution");
+    }
+
+    [Fact]
     public async Task HostFileSystem_WriteThenRead_RoundTrips()
     {
         var fs = new HostFileSystem();
