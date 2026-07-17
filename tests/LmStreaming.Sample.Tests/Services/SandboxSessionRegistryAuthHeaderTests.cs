@@ -6,10 +6,9 @@ namespace LmStreaming.Sample.Tests.Services;
 /// <summary>
 /// Pins issue #153 M1: every gateway-facing call the registry makes stamps the sandbox auth
 /// headers (<c>X-Sbx-App-Id</c> / <c>X-Sbx-App-Key</c>) with the configured
-/// <see cref="SandboxGatewayOptions.AppId"/>/<see cref="SandboxGatewayOptions.AppKey"/> via the
-/// single <c>SendGatewayAsync</c> seam — create, liveness probe, list-discovered,
-/// read-workspace-file, and destroy. These are exactly the 5 gated call sites the plan requires to
-/// route through one helper.
+/// <see cref="SandboxGatewayOptions.AppId"/>/<see cref="SandboxGatewayOptions.AppKey"/> — create,
+/// liveness probe, list-discovered, read-workspace-file (now the direct files REST API), and destroy.
+/// These are exactly the gated call sites the plan requires to carry the per-app credential.
 /// </summary>
 public sealed class SandboxSessionRegistryAuthHeaderTests
 {
@@ -78,10 +77,12 @@ public sealed class SandboxSessionRegistryAuthHeaderTests
 
         _ = await registry.ReadWorkspaceFileAsync(session.SessionId, "/workspace/CLAUDE.md");
 
+        // The read now speaks the direct files REST API (GET .../files/{mount_id}?path=...). The auth
+        // headers — and the X-Session-ID scoping header — must be stamped on that call.
         var request = handler
             .Requests.Should()
             .ContainSingle(r =>
-                r.Method == HttpMethod.Post && r.RequestUri!.AbsolutePath.EndsWith("/mcp", StringComparison.Ordinal)
+                r.Method == HttpMethod.Get && r.RequestUri!.AbsolutePath.Contains("/files/", StringComparison.Ordinal)
             )
             .Which;
         AssertAuthHeaders(request);
@@ -143,9 +144,11 @@ public sealed class SandboxSessionRegistryAuthHeaderTests
 
         if (req.Method == HttpMethod.Post && path.EndsWith("/sandboxes", StringComparison.Ordinal))
         {
+            // The create response carries the workspace mount id (volumes.workspace.id) so the SDK seeds
+            // its mount cache; a follow-up read then issues the direct files GET without an extra mount GET.
             const string body = """
                 { "session_id": "sess-1", "container_id": "c-1",
-                  "volumes": { "workspace": { "container_path": "/workspace", "read_only": false } } }
+                  "volumes": { "workspace": { "container_path": "/workspace", "read_only": false, "id": 7 } } }
                 """;
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -161,21 +164,20 @@ public sealed class SandboxSessionRegistryAuthHeaderTests
             };
         }
 
-        if (req.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
+        if (req.Method == HttpMethod.Get && path.Contains("/files/", StringComparison.Ordinal))
         {
-            // Liveness probe: any 2xx means "still known to the gateway".
-            return new HttpResponseMessage(HttpStatusCode.OK);
-        }
-
-        if (req.Method == HttpMethod.Post && path.EndsWith("/mcp", StringComparison.Ordinal))
-        {
-            const string mcp = """
-                {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hello"}],"isError":false}}
-                """;
+            // The direct files API returns the file's exact bytes as application/octet-stream. Checked
+            // BEFORE the generic /sandboxes/ probe below, since a files path also contains "/sandboxes/".
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(mcp, Encoding.UTF8, "application/json"),
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes("hello")),
             };
+        }
+
+        if (req.Method == HttpMethod.Get && path.Contains("/sandboxes/", StringComparison.Ordinal))
+        {
+            // Liveness / mount-resolution probe: any 2xx means "still known to the gateway".
+            return new HttpResponseMessage(HttpStatusCode.OK);
         }
 
         if (req.Method == HttpMethod.Delete)
