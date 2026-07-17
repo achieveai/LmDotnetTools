@@ -1,0 +1,9 @@
+{
+  "family": "shell",
+  "sourceThread": "thread-1780438386279-5b9immb",
+  "toolName": "sandbox-Bash",
+  "toolCallId": "tool_mPcmQ7wu5iBGmQ1ja16ngpaZ",
+  "functionArgs": "{\"command\":\"ls -la\",\"description\":\"List workspace root contents\"}",
+  "result": "total 1\ndrwxr-xr-x 1 sandbox-user 197121   0 Jun  2 14:49 .\ndrwxr-xr-x 1 sandbox-user 197121   0 Jun  2 14:49 ..\n-rw-r--r-- 1 sandbox-user 197121 480 Jun  2 14:49 README.md\n",
+  "isError": false
+}

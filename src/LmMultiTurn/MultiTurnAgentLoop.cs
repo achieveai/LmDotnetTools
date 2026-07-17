@@ -32,7 +32,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// - MessageUpdateJoinerMiddleware (joins update messages into full messages for history)
 /// - ToolCallInjectionMiddleware (injects function contracts for tool calling)
 /// </remarks>
-public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
+public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink
 {
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
@@ -41,6 +41,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase
     /// Exposed so a host-side trigger source (e.g. the sample's subagent-completion source) can observe
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
     public SubAgentManager? SubAgentManager { get; }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Delegates to <see cref="SubAgents.SubAgentManager.TryDeliverToRunningAsync"/>. A loop with no
+    /// sub-agent manager owns no sub-agents, so every id is <see cref="SubAgentContextDeliveryResult.NotOwned"/>.
+    /// </remarks>
+    public Task<SubAgentContextDeliveryResult> TryDeliverContextAsync(
+        string agentId,
+        IReadOnlyList<IMessage> messages,
+        CancellationToken cancellationToken = default) =>
+        SubAgentManager?.TryDeliverToRunningAsync(agentId, messages, cancellationToken)
+        ?? Task.FromResult(SubAgentContextDeliveryResult.NotOwned);
 
     /// <summary>
     /// The names of every tool registered on this loop after the middleware stack was built —

@@ -125,6 +125,26 @@ chat; the `hi from agent` result is the proof it executed the nested chain end t
 
 Nested-tag handling lives in `src/LmTestUtils/TestMode/InstructionChainParser.cs`.
 
+### Backgrounded sub-agent parked on a long wait (webhook-routing fixture)
+
+Fixture for the directory-context routing feature (#198): background-spawns a **named** sub-agent
+(`name: "ctx-probe"`) with `run_in_background: true`, whose nested chain immediately arms a **30s**
+`Wait`. The parent chain returns right away while `ctx-probe` stays **Running-but-parked** — a stable
+window in which a synthetic `context_discovery` webhook carrying `agent_id: "ctx-probe"` (with
+`ContextDiscovery:RouteToOpeningSubAgent=true`) can be routed into that sub-agent's own conversation
+instead of the primary. Requires `test` / `test-anthropic` mode with the `Agent` + `Wait` tools wired.
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-probe","id_message":"Background-spawn ctx-probe parked on a 30s wait","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"ctx-probe","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"probe-arm\",\"messages\":[{\"tool_call\":[{\"name\":\"Wait\",\"args\":{\"kind\":\"timer\",\"args\":{\"delay\":\"30s\"},\"timeout\":\"60s\",\"label\":\"ctx-probe-park\"}}]}]},{\"id\":\"probe-done\",\"messages\":[{\"text\":\"ctx-probe resumed after its wait\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent-ack","id_message":"Parent continues while ctx-probe is parked","messages":[{"text":"ctx-probe spawned in the background and parked on its wait — ready to receive routed directory context."}]}]}<|instruction_end|>
+
+Expected behavior:
+1. An `Agent` tool-call pill for `ctx-probe` returns immediately (background spawn); the parent's final
+   text lands while `ctx-probe` is still parked on its 30s timer.
+2. POST a synthetic `context_discovery` webhook for this session with an item carrying
+   `agent_id: "ctx-probe"` while the flag is on ⇒ the injector routes it into `ctx-probe`'s conversation
+   (the primary store gets no context turn); `GET /api/diagnostics/context-discovery` shows the
+   `routing.routed` counter increment.
+3. After ~30s the timer fires and `ctx-probe` resumes — proof it was genuinely parked, not finished.
+
 ---
 
 ## Wait / Trigger (Park-and-Wake)

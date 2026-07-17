@@ -40,4 +40,15 @@ public sealed record ContextDiscoveryPayload
     /// </summary>
     [JsonPropertyName("truncated")]
     public bool? Truncated { get; init; }
+
+    /// <summary>
+    /// Optional id (or caller-supplied name) of the sub-agent that triggered this discovery by
+    /// opening a file in the directory it carries. Stamped per-item by the gateway (cf. #187). When
+    /// present and routing is enabled, the injector delivers the context to that sub-agent instead of
+    /// the primary conversation; when null/blank it falls back to today's session fan-out. Optional +
+    /// no <c>[JsonRequired]</c> (mirrors <see cref="Truncated"/>) so older gateway builds that never
+    /// stamp it still bind.
+    /// </summary>
+    [JsonPropertyName("agent_id")]
+    public string? AgentId { get; init; }
 }

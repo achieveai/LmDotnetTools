@@ -24,8 +24,8 @@ internal sealed record SandboxCommandResult(int ExitCode, string Stdout, string 
 
 /// <summary>
 /// Runs deterministic git/filesystem commands inside the sandbox. The production implementation
-/// (<see cref="SandboxOrchestrator"/>) drives the gateway as a direct MCP client; tests use a fake
-/// that records the argv and returns scripted results, so all git-orchestration logic is verifiable
+/// (<see cref="SandboxSessionAdapter"/>) delegates to the typed <c>SandboxClient</c> SDK; tests use a
+/// fake that records the argv and returns scripted results, so all git-orchestration logic is verifiable
 /// without a live gateway.
 /// </summary>
 internal interface ISandboxCommandRunner

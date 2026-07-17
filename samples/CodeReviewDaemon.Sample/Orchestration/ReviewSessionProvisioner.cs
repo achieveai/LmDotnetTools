@@ -63,7 +63,7 @@ internal interface ISandboxSessionSource
 /// Provisions one sandbox session per review run and tears it down afterward. The session is keyed by a
 /// stable per-run workspace id, so every stage of a run resolves the SAME session (recreated only if the
 /// gateway evicted it mid-run — a retryable condition, design §7). The command runner + filesystem are
-/// cached per session id so repeated stage calls reuse one <see cref="SandboxOrchestrator"/> connection.
+/// cached per session id so repeated stage calls reuse one <see cref="SandboxSessionAdapter"/> client.
 /// </summary>
 internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
 {
@@ -179,13 +179,13 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
 
         return _bySession.GetOrAdd(session.SessionId, id =>
         {
-            var runner = new SandboxOrchestrator(
+            var adapter = new SandboxSessionAdapter(
                 _gatewayBaseUrl,
                 id,
-                _loggerFactory.CreateLogger<SandboxOrchestrator>(),
+                _loggerFactory.CreateLogger<SandboxSessionAdapter>(),
                 _credential,
                 _options.Limits);
-            return new ReviewRunSession(id, session.HostPath, runner, new SandboxFileSystem(runner));
+            return new ReviewRunSession(id, session.HostPath, adapter, adapter);
         });
     }
 

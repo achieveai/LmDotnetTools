@@ -1,0 +1,9 @@
+{
+  "family": "edit",
+  "sourceThread": "thread-1781069987023-yy3s8pu",
+  "toolName": "sandbox-Edit",
+  "toolCallId": "tool_Rjdc83ViLhseU0OkKv74rtY0",
+  "functionArgs": "{\"file_path\":\"/workspace/graph_auth.py\",\"new_string\":\"BASE_URL = \\\"https://graph.microsoft.com/v1.0\\\"\\nPROXY_CA = \\\"/usr/local/share/ca-certificates/sandbox-proxy-ca.crt\\\"\\n\\ndef make_request(url, max_attempts=30):\\n    headers = {\\\"Accept\\\": \\\"application/json\\\"}\\n    for attempt in range(1, max_attempts + 1):\\n        print(f\\\"[Attempt {attempt}] GET {url}\\\")\\n        try:\\n            resp = requests.get(url, headers=headers, timeout=30, verify=PROXY_CA)\\n            print(f\\\"Status: {resp.status_code}\\\")\\n            proxy_status = resp.headers.get(\\\"x-sandbox-proxy-status\\\", \\\"\\\")\\n            print(f\\\"x-sandbox-proxy-status: {proxy_status}\\\")\",\"old_string\":\"BASE_URL = \\\"https://graph.microsoft.com/v1.0\\\"\\n\\ndef make_request(url, max_attempts=30):\\n    headers = {\\\"Accept\\\": \\\"application/json\\\"}\\n    for attempt in range(1, max_attempts + 1):\\n        print(f\\\"[Attempt {attempt}] GET {url}\\\")\\n        try:\\n            resp = requests.get(url, headers=headers, timeout=30)\\n            print(f\\\"Status: {resp.status_code}\\\")\\n            proxy_status = resp.headers.get(\\\"x-sandbox-proxy-status\\\", \\\"\\\")\\n            print(f\\\"x-sandbox-proxy-status: {proxy_status}\\\")\"}",
+  "result": "Successfully edited /workspace/graph_auth.py\nReplaced 1 occurrence(s).\n\n--- Context (lines 4-10) ---\n     4| import sys\n     5| import os\n     6| \n     7| BASE_URL = \"https://graph.microsoft.com/v1.0\"\n     8| PROXY_CA = \"/usr/local/share/ca-certificates/sandbox-proxy-ca.crt\"\n     9| \n    10| def make_request(url, max_attempts=30):\n",
+  "isError": false
+}

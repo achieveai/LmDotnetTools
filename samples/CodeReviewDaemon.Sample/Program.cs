@@ -75,8 +75,9 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.LogFilePath))
 // ── Sandbox gateway per-app identity (ADR 0029) ─────────────────────────────────────────────────
 // The daemon authenticates to the sandbox gateway under its OWN app identity — distinct from
 // LmStreaming.Sample's default ("lmstreaming-sample") — so the shared SandboxSessionRegistry's
-// default credential (derived from sandboxGatewayOptions.AppId/AppKey below) and the daemon's two
-// direct /mcp transports (SandboxOrchestrator, LiveReviewAgentLoopFactory) all stamp the SAME
+// default credential (derived from sandboxGatewayOptions.AppId/AppKey below), the typed SandboxClient
+// the daemon's SandboxSessionAdapter binds per session, and LiveReviewAgentLoopFactory's retained
+// direct /mcp tool-discovery transport all stamp the SAME
 // X-Sbx-App-Id/X-Sbx-App-Key headers. A present-but-invalid key fails fast at boot (redacted); an
 // absent key is the keyless AUTH_ENFORCE=off dev path, logged once as a warning after the host is
 // built (never blocking startup, and never logging the key itself).
@@ -176,26 +177,30 @@ var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databa
 // Any future fan-out (parallel arms, a second poller) MUST serialize access before sharing this store.
 builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 
-// Sandbox: all deterministic git/fs work runs in the gateway, driven as a direct MCP client. The
-// connection is lazy (opened on first command), so registering it does no work at boot and the daemon
-// stays inert until a repo is allow-listed. The gateway base URL / session come from the environment.
+// Sandbox: all deterministic git/fs work runs in the gateway via the typed SandboxClient SDK, wrapped
+// by SandboxSessionAdapter. The client is lazy (built on first command), so registering it does no work
+// at boot and the daemon stays inert until a repo is allow-listed. The gateway base URL / session come
+// from the environment.
 // Per-app bearer identity for the sandbox gateway (ADR 0029): sent as X-Sbx-App-Id/X-Sbx-App-Key on every
 // gateway request when a key is configured, so an AUTH_ENFORCE gateway authenticates the daemon and scopes
 // its sessions to it. No key configured → no bearer headers (works unchanged against an unenforced gateway).
-builder.Services.AddSingleton<ISandboxCommandRunner>(sp => new SandboxOrchestrator(
-    gatewayBaseUrl,
+// One combined adapter serves BOTH ports over the typed SandboxClient SDK (issue #192): register it
+// once and alias each interface to that single instance, so the runner and filesystem share one
+// borrowed gateway session exactly as the old SandboxOrchestrator + SandboxFileSystem pair did.
+builder.Services.AddSingleton(sp => new SandboxSessionAdapter(
+    Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
-    sp.GetRequiredService<ILogger<SandboxOrchestrator>>(),
+    sp.GetRequiredService<ILogger<SandboxSessionAdapter>>(),
     daemonCredential,
     daemonOptions.Limits));
-builder.Services.AddSingleton<ISandboxFileSystem>(sp =>
-    new SandboxFileSystem(sp.GetRequiredService<ISandboxCommandRunner>()));
+builder.Services.AddSingleton<ISandboxCommandRunner>(sp => sp.GetRequiredService<SandboxSessionAdapter>());
+builder.Services.AddSingleton<ISandboxFileSystem>(sp => sp.GetRequiredService<SandboxSessionAdapter>());
 
 // Per-run session provisioning (tool-assisted path, Task 7). The diff-only path above talks to the
-// gateway directly via a boot-lifetime SandboxOrchestrator; EnableToolAssistedReview instead provisions
+// gateway via a boot-lifetime SandboxSessionAdapter; EnableToolAssistedReview instead provisions
 // one sandbox session per run (design §4) so the checkout git and the review agent's MCP tools share a
 // container. The registry needs a SandboxGatewayLifetime purely to resolve/probe the gateway base URL —
-// it is not registered as a hosted service (AutoSpawn stays false, mirroring the SandboxOrchestrator
+// it is not registered as a hosted service (AutoSpawn stays false, mirroring the SandboxSessionAdapter
 // registration above: the daemon assumes an already-running gateway and never spawns one itself).
 var sandboxGatewayOptions = new SandboxGatewayOptions
 {
@@ -226,12 +231,13 @@ builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
         sandboxGatewayOptions,
         sp.GetRequiredService<ILogger<SandboxGatewayLifetime>>(),
-        new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler() })),
+        new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = false } })),
     sandboxGatewayOptions,
     sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
     // Bounds the gateway create/destroy calls (mirrors LmStreaming.Sample's registration); the handler
-    // attaches the per-app bearer headers to every gateway REST call.
-    new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler() })
+    // attaches the per-app bearer headers to every gateway REST call. Auto-redirect is disabled so a
+    // cross-origin 3xx can never replay the X-Sbx-* credential headers to a redirect target.
+    new HttpClient(new GatewayAuthHandler(daemonAppId, daemonKeyMissing ? null : daemonAppKey) { InnerHandler = new HttpClientHandler { AllowAutoRedirect = false } })
     {
         Timeout = TimeSpan.FromSeconds(30),
     },

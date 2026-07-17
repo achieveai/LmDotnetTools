@@ -586,8 +586,233 @@ public class SubAgentManagerTests : IAsyncLifetime
             .WithMessage("*Cannot specify removeTools without enabledTools or addTools*");
     }
 
-    #region Helpers
+    [Fact]
+    public async Task TryDeliverToRunningAsync_RunningAgent_DeliversContextToSubAgentNotParent()
+    {
+        // AC2: directory context routed to a Running sub-agent lands in THAT sub-agent's conversation
+        // (its next model call), and never on the parent. The sub-agent's first turn blocks (so it stays
+        // Running while we deliver) then makes a tool call, forcing a SECOND turn whose
+        // GenerateReplyStreamingAsync argument must carry the injected context.
+        var call1Entered = new TaskCompletionSource<bool>();
+        var releaseCall1 = new TaskCompletionSource<bool>();
+        var call2Entered = new TaskCompletionSource<bool>();
+        var releaseCall2 = new TaskCompletionSource<bool>();
+        List<IMessage>? secondCallMessages = null;
+        var callCount = 0;
 
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                async (msgs, options, ct) =>
+                {
+                    var n = Interlocked.Increment(ref callCount);
+                    if (n == 1)
+                    {
+                        _ = call1Entered.TrySetResult(true);
+                        await releaseCall1.Task.WaitAsync(ct);
+                        return ToAsyncEnumerable([
+                            new ToolCallMessage
+                            {
+                                FunctionName = "noop",
+                                FunctionArgs = "{}",
+                                ToolCallId = "call_1",
+                                Role = Role.Assistant,
+                            },
+                        ]);
+                    }
+
+                    secondCallMessages = [.. msgs];
+                    _ = call2Entered.TrySetResult(true);
+                    await releaseCall2.Task.WaitAsync(ct);
+                    return ToAsyncEnumerable([
+                        new TextMessage { Text = "done", Role = Role.Assistant },
+                    ]);
+                });
+
+        _manager = CreateManager();
+        var spawnJson = await _manager.SpawnAsync("test-agent", "initial task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Wait until the first turn is in-flight (sub-agent Running).
+        (await call1Entered.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+
+        // Act: deliver directory context to the running sub-agent.
+        const string contextMarker = "CTX_MARKER directory rules";
+        var result = await _manager.TryDeliverToRunningAsync(
+            agentId,
+            [new TextMessage { Role = Role.User, Text = contextMarker }],
+            CancellationToken.None);
+
+        // Assert: accepted for the running target.
+        result.Should().Be(SubAgentContextDeliveryResult.Delivered);
+
+        // Let the first turn finish with a tool call so the loop polls the injected context and runs turn 2.
+        releaseCall1.SetResult(true);
+        (await call2Entered.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
+
+        // The injected context reached the SUB-AGENT's next model call...
+        secondCallMessages.Should().NotBeNull();
+        secondCallMessages!
+            .OfType<TextMessage>()
+            .Any(m => m.Text != null && m.Text.Contains(contextMarker))
+            .Should().BeTrue("routed context must be delivered into the sub-agent's own conversation");
+
+        // ...and NOT to the parent conversation (no fan-out / no relay for a still-running sub-agent).
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        // Cleanup: let the run finish.
+        releaseCall2.SetResult(true);
+    }
+
+    [Fact]
+    public async Task TryDeliverToRunningAsync_CompletedAgent_ReturnsTargetNotDeliverable_NoRestartNoRelay()
+    {
+        // AC3/AC5: a delivery to a completed sub-agent is dropped — the sub-agent is NOT restarted and no
+        // spurious completion is relayed to the parent.
+        SetupSubAgentResponse([
+            new TextMessage { Text = "First result", Role = Role.Assistant },
+        ]);
+
+        _manager = CreateManager();
+        var spawnJson = await _manager.SpawnAsync("test-agent", "initial task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Wait for the background completion to relay to the parent (so the run is genuinely finished).
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.IsAny<List<IMessage>>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
+        // Ignore the legitimate completion relay; assert the delivery adds none.
+        _parentMock.Invocations.Clear();
+
+        // Act
+        var result = await _manager.TryDeliverToRunningAsync(
+            agentId,
+            [new TextMessage { Role = Role.User, Text = "late context" }],
+            CancellationToken.None);
+
+        // Assert: dropped (never restarted), no spurious relay.
+        result.Should().Be(SubAgentContextDeliveryResult.TargetNotDeliverable);
+
+        _subAgentMock.Verify(
+            a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once,
+            "a completed target must not be restarted");
+
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "dropping late context must not relay a spurious completion to the parent");
+    }
+
+    [Fact]
+    public async Task TryDeliverToRunningAsync_UnknownId_ReturnsNotOwned()
+    {
+        // A discovery whose agent_id matches no sub-agent of this manager is NotOwned — the injector keeps
+        // looking / drops without marking-seen so a gateway redelivery can still route it later.
+        _manager = CreateManager();
+
+        var result = await _manager.TryDeliverToRunningAsync(
+            "no-such-agent",
+            [new TextMessage { Role = Role.User, Text = "ctx" }],
+            CancellationToken.None);
+
+        result.Should().Be(SubAgentContextDeliveryResult.NotOwned);
+    }
+
+    [Fact]
+    public async Task TryDeliverToRunningAsync_AfterCompletion_ParentRelayHappensExactlyOnce()
+    {
+        // Completion-boundary contract (blind-spot #2): a context delivery racing a just-finished
+        // background sub-agent must never spawn a second run, relay a second completion, or run against a
+        // disposed provider. Proven deterministically: after the legitimate completion relay, a delivery is
+        // refused and the total parent relay count stays exactly one, with the agent settled 'completed'.
+        SetupSubAgentResponse([
+            new TextMessage { Text = "boundary result", Role = Role.Assistant },
+        ]);
+
+        _manager = CreateManager();
+        var spawnJson = await _manager.SpawnAsync("test-agent", "boundary task", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.IsAny<List<IMessage>>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
+        var result = await _manager.TryDeliverToRunningAsync(
+            agentId,
+            [new TextMessage { Role = Role.User, Text = "boundary context" }],
+            CancellationToken.None);
+        result.Should().Be(SubAgentContextDeliveryResult.TargetNotDeliverable);
+
+        // Exactly one parent relay total (the legitimate completion) — no double relay.
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.IsAny<List<IMessage>>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // The sub-agent settled 'completed', not 'error' (no run against a disposed provider).
+        using var peekDoc = JsonDocument.Parse(_manager.Peek(agentId));
+        peekDoc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+    }
+
+    #region Helpers
     private static async Task WaitForConditionAsync(
         Func<bool> condition,
         TimeSpan timeout)

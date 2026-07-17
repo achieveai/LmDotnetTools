@@ -1,0 +1,9 @@
+{
+  "family": "task",
+  "sourceThread": "thread-1782455251301-7iomvll",
+  "toolName": "update-task",
+  "toolCallId": "tool_5xpn20ApG01h86eHIjKftwz8",
+  "functionArgs": "{\"taskId\":\"1\",\"status\":\"in progress\"}",
+  "result": "\"Updated task 1 status to \\u0027in progress\\u0027.\"",
+  "isError": false
+}

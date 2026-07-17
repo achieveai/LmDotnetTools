@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
-import MessageItem from '@/components/MessageItem.vue';
-import type { ChatMessage } from '@/composables/useChat';
+import TextMessage from '@/components/TextMessage.vue';
+import MetadataPill from '@/components/MetadataPill.vue';
 import { useMessageMerger } from '@/composables/useMessageMerger';
 import { parseSSEChunk, parseMessageFromSSE, isDoneEvent } from '@/api/sseParser';
 import {
-  type TextMessage,
+  type TextMessage as TextMessageType,
   type ReasoningMessage,
   type ReasoningUpdateMessage,
   isTextMessage,
@@ -24,7 +24,7 @@ describe('ResponseSample Full Rendering', () => {
    * Process all SSE events and return the final accumulated messages
    */
   function processAllEvents(): {
-    textMessage: TextMessage | null;
+    textMessage: TextMessageType | null;
     reasoningMessage: ReasoningMessage | null;
     doneReceived: boolean;
     eventCount: number;
@@ -32,7 +32,7 @@ describe('ResponseSample Full Rendering', () => {
     const merger = useMessageMerger();
     const events = splitSSEEvents(responseSampleRaw);
 
-    let textMessage: TextMessage | null = null;
+    let textMessage: TextMessageType | null = null;
     let reasoningMessage: ReasoningMessage | null = null;
     let doneReceived = false;
     let eventCount = 0;
@@ -98,19 +98,12 @@ describe('ResponseSample Full Rendering', () => {
   });
 
   describe('Vue component rendering with processed messages', () => {
-    it('should render final text message in MessageItem', () => {
+    it('should render final text message via TextMessage', () => {
       const { textMessage } = processAllEvents();
       expect(textMessage).not.toBeNull();
 
-      const chatMessage: ChatMessage = {
-        id: 'msg-text',
-        role: 'assistant',
-        content: textMessage!,
-        isStreaming: false,
-      };
-
-      const wrapper = mount(MessageItem, {
-        props: { message: chatMessage },
+      const wrapper = mount(TextMessage, {
+        props: { message: textMessage!, isStreaming: false },
       });
 
       expect(wrapper.find('.text-message').exists()).toBe(true);
@@ -123,24 +116,17 @@ describe('ResponseSample Full Rendering', () => {
       expect(wrapper.find('.cursor').exists()).toBe(false); // Not streaming
     });
 
-    it('should render reasoning message as ThinkingPill in MessageItem', () => {
+    it('should render reasoning message as a thinking-pill via MetadataPill', () => {
       const { reasoningMessage } = processAllEvents();
       expect(reasoningMessage).not.toBeNull();
 
-      const chatMessage: ChatMessage = {
-        id: 'msg-reasoning',
-        role: 'assistant',
-        content: reasoningMessage!,
-        isStreaming: false,
-      };
-
-      const wrapper = mount(MessageItem, {
-        props: { message: chatMessage },
+      const wrapper = mount(MetadataPill, {
+        props: { items: [reasoningMessage!] },
       });
 
-      // Reasoning is now rendered as a ThinkingPill (EventPill with thinking type)
-      expect(wrapper.find('.event-pill').exists()).toBe(true);
-      expect(wrapper.find('.event-pill').classes()).toContain('thinking');
+      const pill = wrapper.find('[data-testid="thinking-pill"]');
+      expect(pill.exists()).toBe(true);
+      expect(pill.text()).toContain('Thinking:');
     });
 
     it('should show streaming cursor during text streaming', () => {
@@ -148,7 +134,7 @@ describe('ResponseSample Full Rendering', () => {
       const events = splitSSEEvents(responseSampleRaw);
 
       // Process just the first few text updates (simulating mid-stream)
-      let textMessage: TextMessage | null = null;
+      let textMessage: TextMessageType | null = null;
       let textUpdateCount = 0;
 
       for (const chunk of events) {
@@ -169,15 +155,8 @@ describe('ResponseSample Full Rendering', () => {
 
       expect(textMessage).not.toBeNull();
 
-      const chatMessage: ChatMessage = {
-        id: 'msg-streaming',
-        role: 'assistant',
-        content: textMessage!,
-        isStreaming: true, // Simulate active streaming
-      };
-
-      const wrapper = mount(MessageItem, {
-        props: { message: chatMessage },
+      const wrapper = mount(TextMessage, {
+        props: { message: textMessage!, isStreaming: true },
       });
 
       expect(wrapper.find('.cursor').exists()).toBe(true);

@@ -98,7 +98,8 @@ $projects = @(
     "src/CopilotSdkProvider/AchieveAi.LmDotnetTools.CopilotSdkProvider.csproj",
     "src/CodexSdkProvider/AchieveAi.LmDotnetTools.CodexSdkProvider.csproj",
     "src/LmTestUtils/LmTestUtils.csproj",
-    "samples/MockProviderHost/MockProviderHost.csproj"
+    "samples/MockProviderHost/MockProviderHost.csproj",
+    "src/Sandbox/AchieveAi.LmDotnetTools.Sandbox.csproj"
 )
 
 # Get current version from Directory.Build.props

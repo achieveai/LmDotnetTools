@@ -16,7 +16,11 @@ internal sealed class TempSqliteDatabase : IDisposable
             "codereviewdaemon-db-tests",
             Guid.NewGuid().ToString("N") + ".db");
         _ = Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        ConnectionString = new SqliteConnectionStringBuilder { DataSource = Path }.ToString();
+        ConnectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = Path,
+            Pooling = false,
+        }.ToString();
     }
 
     public string Path { get; }
@@ -25,8 +29,6 @@ internal sealed class TempSqliteDatabase : IDisposable
 
     public void Dispose()
     {
-        // Pooled connections keep the file handle open; clear the pool so the file can be deleted.
-        SqliteConnection.ClearAllPools();
         foreach (var suffix in new[] { "", "-wal", "-shm" })
         {
             var file = Path + suffix;

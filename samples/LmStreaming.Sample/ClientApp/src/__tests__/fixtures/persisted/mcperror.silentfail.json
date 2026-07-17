@@ -1,0 +1,9 @@
+{
+  "family": "generic",
+  "sourceThread": "thread-1782466522534-rkf0ifi",
+  "toolName": "Bash",
+  "toolCallId": "toolu_bdrk_01X3snnQrEv1BYp8XK8di8R5",
+  "functionArgs": "{\"command\": \"python3 \\\"/skills/egress-auth/scripts/warm-github-auth.py\\\" --api\"}",
+  "result": "Error executing MCP tool Bash: Request failed (remote): Internal error: Timed out waiting for 'sandbox' user in container 72f3f918517825fb7b380d0a7db67aed06635d02f5e1f27388180be2a09a27c6",
+  "isError": false
+}

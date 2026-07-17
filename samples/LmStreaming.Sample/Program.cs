@@ -246,8 +246,16 @@ try
     // unenforced gateway is unaffected.
     HttpClient GatewayHttpClient(TimeSpan? timeout = null)
     {
+        // AllowAutoRedirect=false is a security precondition of the Sandbox SDK's borrowed-client
+        // contract: the SDK authenticates with custom X-Sbx-* headers, which .NET's auto-redirect
+        // logic would re-send to a redirect target (it only strips the standard Authorization header).
+        // The per-credential SandboxClient instances the registry builds forward onto this shared
+        // client, so disabling it here closes that leak for the whole gateway transport.
         var client = new HttpClient(
-            new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey) { InnerHandler = new HttpClientHandler() });
+            new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey)
+            {
+                InnerHandler = new HttpClientHandler { AllowAutoRedirect = false },
+            });
         if (timeout is { } t)
         {
             client.Timeout = t;
@@ -372,6 +380,13 @@ try
     // <context-discovery> wrapper tag shared by the boot-time system prompt and the mid-session
     // user-turn injection; the injector wires gateway webhook deliveries into every live agent
     // thread bound to the same sandbox session.
+    // Bind the routing options FIRST (default-off) so the injector resolves them from DI. Off ⇒
+    // discovery behaves byte-identically to today; on ⇒ a context_file carrying an agent_id is
+    // routed to the opening sub-agent (cf. #187/#198).
+    var contextDiscoveryOptions =
+        builder.Configuration.GetSection(ContextDiscoveryOptions.SectionName).Get<ContextDiscoveryOptions>()
+        ?? new ContextDiscoveryOptions();
+    _ = builder.Services.AddSingleton(contextDiscoveryOptions);
     _ = builder.Services.AddSingleton<ContextDiscoveryFormatter>();
     _ = builder.Services.AddSingleton<ContextDiscoveryInjector>();
     // Tracks received discovery webhooks per session for GET /api/diagnostics/context-discovery,
@@ -2167,9 +2182,10 @@ public partial class Program
     /// <summary>
     /// Seeds the workspace's root instruction file (AGENTS.md, else CLAUDE.md) into the system
     /// prompt at agent build, so the model has the workspace's high-priority instructions on turn 1
-    /// WITHOUT having to read any file. The content is fetched THROUGH the gateway's MCP <c>Read</c>
-    /// tool (<see cref="SandboxSessionRegistry.ReadWorkspaceFileAsync"/>): the local-host backend
-    /// cannot read the container's <c>/workspace</c> filesystem, and this path is race-free (it does
+    /// WITHOUT having to read any file. The content is fetched THROUGH the gateway via the typed
+    /// Sandbox SDK (<see cref="SandboxSessionRegistry.ReadWorkspaceFileAsync"/>, which addresses the
+    /// file by its workspace-relative path): the local-host backend cannot read the container's
+    /// <c>/workspace</c> filesystem, and this path is race-free (it does
     /// not depend on the async discovery webhook, which fires after the system prompt is built).
     /// AGENTS.md takes precedence over CLAUDE.md — the first file that exists is injected and the
     /// search stops. Returns an empty string when neither exists, the session has no host path, or
@@ -2235,8 +2251,14 @@ public partial class Program
 
             // Mark the seeded file as seen so a same-file delivery on the webhook side (the gateway
             // re-emits the root path right after session creation) is dropped by the injector —
-            // otherwise the model would see the file twice on turn 1.
-            _ = sandboxRegistry.TryMarkDiscoverySeen(sandboxSession.SessionId, ContextFileKind, path);
+            // otherwise the model would see the file twice on turn 1. Marked under the session-level
+            // sentinel (the root seed is not attributed to any sub-agent), matching the injector's
+            // fallback-path dedup target.
+            _ = sandboxRegistry.TryMarkDiscoverySeen(
+                sandboxSession.SessionId,
+                SandboxSessionRegistry.SessionDiscoveryTarget,
+                ContextFileKind,
+                path);
 
             logger.LogInformation(
                 "Seeded workspace root context file {Path} ({Length} chars) into the system prompt for session {SessionId}.",

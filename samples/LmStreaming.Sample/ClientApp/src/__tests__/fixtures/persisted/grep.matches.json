@@ -1,0 +1,10 @@
+{
+  "family": "grep",
+  "sourceThread": "thread-1782544711349-l6kkfh8",
+  "toolName": "Grep",
+  "toolCallId": "call_sXTzz5fMCsSBvEOorrtFbxk6",
+  "functionArgs": "{\"-A\":80,\"-B\":20,\"-C\":0,\"-n\":true,\"glob\":\"*.rs\",\"head_limit\":20,\"ignore_case\":false,\"max_matches\":20,\"multiline\":false,\"offset\":0,\"output_mode\":\"content\",\"path\":\"/workspace/SandboxedOsToolsMcpServer/crates/mcp-gateway/src\",\"pattern\":\"HostPath|mount_host|WORKSPACE_BASE_HOST|SANDBOX_MOUNT_HOST_REWRITES\",\"type\":\"rust\"}",
+  "result": "/workspace/SandboxedOsToolsMcpServer/crates/mcp-gateway/src/backend/local_backend.rs:\n261-    /// backend, not just Windows.\n262-    fn skill_path_style(&self) -> super::SkillPathStyle {\n263:        super::SkillPathStyle::HostPath\n264-    }\n265-\n266-    async fn create_sandbox(\n267-        &self,\n268-        _image: &str,\n269-        req: &CreateSandboxRequest,\n270-        server_mounts: &[VolumeMount],\n271-        data_base_path: Option<&Path>,\n272-        plugins_base_path: Option<&Path>,\n273-        workspace_base_path: Option<&Path>,\n274-    ) -> Result<(String, Vec<MountRecord>)> {\n275-        let (mut volume_mounts, mut records) = resolve_mounts(\n276-            req,\n\n20 matches found in 4 files (searched 48 files)",
+  "isError": false,
+  "_trimmed": true
+}

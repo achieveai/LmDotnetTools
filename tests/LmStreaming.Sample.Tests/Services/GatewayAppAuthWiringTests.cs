@@ -52,7 +52,7 @@ public class GatewayAppAuthWiringTests
     }
 
     [Fact]
-    public async Task Catalog_client_sends_no_bearer_headers_when_key_is_unset()
+    public async Task Catalog_client_sends_app_id_without_app_key_when_key_is_unset()
     {
         var capture = new CapturingHandler(EmptyCatalog);
         var http = new HttpClient(new GatewayAuthHandler("lmstreaming-sample", appKey: null) { InnerHandler = capture });
@@ -63,7 +63,8 @@ public class GatewayAppAuthWiringTests
 
         _ = await client.GetCatalogAsync();
 
-        capture.LastRequest!.Headers.Contains(GatewayAuthHeaders.AppIdHeader).Should().BeFalse();
+        capture.LastRequest!.Headers.GetValues(GatewayAuthHeaders.AppIdHeader).Should().ContainSingle()
+            .Which.Should().Be("lmstreaming-sample");
         capture.LastRequest!.Headers.Contains(GatewayAuthHeaders.AppKeyHeader).Should().BeFalse();
     }
 
