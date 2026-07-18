@@ -64,8 +64,13 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     /// <c>slot-0/store</c> as a warm clone and reuse the tainted store. The ctor scans for these and RETIRES
     /// those indexes (it does NOT delete the dirs — this daemon adopts a persistent external gateway, so a
     /// session can outlive the restart and still be mounted; deleting would race live sandbox work). A retired
-    /// index is never handed out again, so the next lease allocates a different slot.</summary>
-    private const string QuarantineMarkerName = ".quarantined";
+    /// index is never handed out again, so the next lease allocates a different slot.
+    /// <para>The name is VERSIONED (review #180): a PRIOR binary treated a bare <c>.quarantined</c> marker as
+    /// permission to DELETE the slot store on startup, whereas this binary deliberately PRESERVES a quarantined
+    /// dir. A distinct name means a rollback to that prior binary will not recognise this marker and therefore
+    /// cannot delete a possibly-still-mounted store (it simply won't reap it). Bump the suffix if the marker
+    /// semantics change again, and confirm gateway sessions are destroyed before rolling back across it.</para></summary>
+    private const string QuarantineMarkerName = ".quarantine-retained-v2";
 
     private readonly string _hostRoot;
     private readonly string _scratchDirName;

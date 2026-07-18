@@ -87,6 +87,11 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     private readonly SandboxCredential _credential;
     private readonly ConcurrentDictionary<string, ReviewRunSession> _bySession = new(StringComparer.Ordinal);
 
+    /// <summary>Maps each cached session id to the run WORKSPACE id that owns it, so <see cref="DestroyAsync(long,
+    /// CancellationToken)"/> disposes ONLY the sessions belonging to the run being torn down — never a concurrent
+    /// run's still-in-use adapter.</summary>
+    private readonly ConcurrentDictionary<string, string> _sessionWorkspace = new(StringComparer.Ordinal);
+
     /// <summary>
     /// The gateway's host workspace base directory (its <c>WORKSPACE_BASE_PATH</c>). A leased pool slot is
     /// mounted at <c>/workspace</c> by expressing its host path RELATIVE to this base (see
@@ -183,6 +188,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
                 ct)
             .ConfigureAwait(false);
 
+        // Record which run workspace owns this session id so DestroyAsync tears down only this run's sessions.
+        _sessionWorkspace[session.SessionId] = workspaceId;
         return _bySession.GetOrAdd(session.SessionId, id =>
         {
             var adapter = new SandboxSessionAdapter(
@@ -279,9 +286,19 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
             _logger.LogWarning(ex, "Destroy of sandbox session for {WorkspaceId} could not be confirmed.", workspaceId);
         }
 
-        foreach (var (sessionId, runSession) in _bySession)
+        // Dispose ONLY the adapters belonging to THIS run's workspace. Disposing every entry in _bySession
+        // (as before) would tear down command runners/filesystems still in use by concurrent reviews, causing
+        // cross-run failures once more than one run is provisioned at a time.
+        foreach (var (sessionId, ownerWorkspaceId) in _sessionWorkspace)
         {
-            if (runSession.CommandRunner is IAsyncDisposable d && _bySession.TryRemove(sessionId, out _))
+            if (!string.Equals(ownerWorkspaceId, workspaceId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            _sessionWorkspace.TryRemove(sessionId, out _);
+            if (_bySession.TryRemove(sessionId, out var runSession)
+                && runSession.CommandRunner is IAsyncDisposable d)
             {
                 await d.DisposeAsync().ConfigureAwait(false);
             }

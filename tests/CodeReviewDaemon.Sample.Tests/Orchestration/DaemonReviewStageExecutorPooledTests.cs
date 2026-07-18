@@ -493,6 +493,26 @@ public sealed class DaemonReviewStageExecutorPooledTests
         newHostCommands.Should().NotContain(a => a.Contains("clean -ffdx"), "no host-side cleanup runs on an unconfirmed teardown");
     }
 
+    [Fact]
+    public async Task Posted_tears_down_the_session_with_a_noncancelable_token()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        // Drive Posted with a CANCELABLE (not canceled) stage token. The teardown must still use a
+        // non-cancelable token — otherwise a cancellation arriving mid-DestroyAsync could abort the unmount and
+        // leave the session alive while the slot is released elsewhere (review #180).
+        using var cts = new CancellationTokenSource();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, cts.Token);
+
+        fixture.Provisioner.LastDestroyTokenCanBeCanceled.Should().BeFalse(
+            "the Posted-stage teardown must use a non-cancelable token, not the cancelable stage token");
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
@@ -713,6 +733,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// unconfirmed teardown, which must still route the caller to quarantine.</summary>
         public bool ConfirmDestroy { get; set; } = true;
 
+        /// <summary>Whether the token handed to the run-scoped <c>DestroyAsync</c> was cancelable — the Posted
+        /// path must tear down with a NON-cancelable token so a stage cancellation can't abort the unmount.</summary>
+        public bool? LastDestroyTokenCanBeCanceled { get; private set; }
+
         public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
         {
             GetOrCreateCalls++;
@@ -734,6 +758,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct)
         {
             Order?.Add("destroy");
+            LastDestroyTokenCanBeCanceled = ct.CanBeCanceled;
             return DestroyAsync(run.Id, ct);
         }
 

@@ -159,7 +159,7 @@ public class ReviewSlotPoolTests : IDisposable
         await pool.QuarantineAsync(first, default);
 
         // A durable tombstone is dropped so the quarantine survives a restart.
-        File.Exists(Path.Combine(first.HostPath, ".quarantined")).Should().BeTrue("a quarantine tombstone is written");
+        File.Exists(Path.Combine(first.HostPath, ".quarantine-retained-v2")).Should().BeTrue("a quarantine tombstone is written");
 
         // The permit was released (else this lease blocks forever at maxSlots=1) AND the quarantined index is
         // retired: the next lease allocates a FRESH index with its own clone rather than recycling slot-0's
@@ -181,7 +181,7 @@ public class ReviewSlotPoolTests : IDisposable
         // may still be mounted, so deleting it host-side would race live work — the review #180 finding).
         File.WriteAllText(Path.Combine(slot.StorePath, "tainted.txt"), "live-mount-residue");
         await poolA.QuarantineAsync(slot, default);
-        File.Exists(Path.Combine(slot.HostPath, ".quarantined")).Should().BeTrue();
+        File.Exists(Path.Combine(slot.HostPath, ".quarantine-retained-v2")).Should().BeTrue();
 
         // Simulate a daemon RESTART: a new pool over the SAME host root. Its ctor scans the tombstone and
         // RETIRES index 0 — it does not delete the dir — so the first lease allocates a DIFFERENT index and the
@@ -194,7 +194,7 @@ public class ReviewSlotPoolTests : IDisposable
         callCountB().Should().Be(1, "the fresh slot-1 is cloned");
         File.Exists(Path.Combine(slot.StorePath, "tainted.txt"))
             .Should().BeTrue("the quarantined dir is left untouched — its gateway session may still be mounted");
-        File.Exists(Path.Combine(slot.HostPath, ".quarantined"))
+        File.Exists(Path.Combine(slot.HostPath, ".quarantine-retained-v2"))
             .Should().BeTrue("the tombstone remains so the index stays retired across future restarts too");
     }
 

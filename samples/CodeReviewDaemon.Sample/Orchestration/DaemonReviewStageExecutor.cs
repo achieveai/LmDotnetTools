@@ -1310,11 +1310,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // the session first terminates those child processes and unmounts, so the slot is quiescent before we
         // touch it. DestroyAsync returns FALSE when the gateway teardown can't be confirmed (rather than
         // swallowing it), so the retention block below can quarantine instead of touching a possibly-live store.
+        // The teardown itself uses a NON-cancelable token (like the terminal ReleaseReviewLeaseAsync path): a
+        // stage-cancellation mid-DestroyAsync must not abort the unmount and leave the mount alive while the
+        // slot is released elsewhere — the stage's own cancellation is still honoured by the work above/below.
         // Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
         var teardownConfirmed = true;
         if (_options.EnableToolAssistedReview && _provisioner is not null)
         {
-            teardownConfirmed = await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+            teardownConfirmed = await _provisioner.DestroyAsync(run, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a

@@ -92,6 +92,25 @@ public class ReviewSessionProvisionerTests
     }
 
     [Fact]
+    public async Task DestroyAsync_DisposesOnlyTheTargetedRunsSession_NotConcurrentRuns()
+    {
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+
+        _ = await provisioner.GetOrCreateAsync(Run(1), default);
+        var bBefore = await provisioner.GetOrCreateAsync(Run(2), default);
+
+        await provisioner.DestroyAsync(Run(1), default);
+
+        // Run 2's session must survive run 1's teardown: re-resolving run 2 returns the SAME cached adapter
+        // instance (not a recreated one), proving DestroyAsync disposed ONLY run 1's session — the dispose-all
+        // loop would have removed + disposed run 2's still-in-use adapter (cross-run failure).
+        var bAfter = await provisioner.GetOrCreateAsync(Run(2), default);
+        bAfter!.CommandRunner.Should().BeSameAs(bBefore!.CommandRunner);
+        fake.DestroyedWorkspaceIds.Should().ContainSingle().Which.Should().Be("review-run-1");
+    }
+
+    [Fact]
     public async Task GetOrCreateForSlotAsync_MountsTheSlotRelativeToTheWorkspaceBase()
     {
         var fake = new FakeSessionSource();
