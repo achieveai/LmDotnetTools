@@ -60,9 +60,11 @@ internal interface IReviewSlotPool
 internal sealed class ReviewSlotPool : IReviewSlotPool
 {
     /// <summary>Tombstone file dropped in a quarantined slot's dir so the quarantine survives a daemon
-    /// restart: on restart <c>_nextIndex</c> resets to 0 and the pool would otherwise treat the old
-    /// non-empty <c>slot-0/store</c> as a warm clone and reuse the tainted store. The ctor reaps these and
-    /// <see cref="LeaseAsync"/> re-clones over any that survive.</summary>
+    /// restart. On restart <c>_nextIndex</c> resets to 0 and the pool would otherwise treat the old non-empty
+    /// <c>slot-0/store</c> as a warm clone and reuse the tainted store. The ctor scans for these and RETIRES
+    /// those indexes (it does NOT delete the dirs — this daemon adopts a persistent external gateway, so a
+    /// session can outlive the restart and still be mounted; deleting would race live sandbox work). A retired
+    /// index is never handed out again, so the next lease allocates a different slot.</summary>
     private const string QuarantineMarkerName = ".quarantined";
 
     private readonly string _hostRoot;
@@ -72,6 +74,10 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     private readonly SemaphoreSlim _gate;
     private readonly Lock _freeIndexesLock = new();
     private readonly Stack<int> _freeIndexes = new();
+
+    /// <summary>Slot indexes that must never be handed out: tombstoned by a prior process (found by the ctor
+    /// scan) or quarantined this process. Guarded by <see cref="_freeIndexesLock"/>.</summary>
+    private readonly HashSet<int> _retiredIndexes = [];
     private int _nextIndex;
 
     public ReviewSlotPool(
@@ -95,11 +101,13 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         _logger = logger;
         _gate = new SemaphoreSlim(maxSlots, maxSlots);
 
-        // Startup reconcile (durable-quarantine): reap any slot dirs a PRIOR process tombstoned. This is the
-        // one moment it is unconditionally safe to delete them — a fresh process holds no sandbox mounts — so
-        // it both bounds cross-restart quarantine disk AND guarantees a restarted daemon never reuses a
-        // quarantined store as warm (the dir is gone → the next lease re-clones).
-        ReapStaleQuarantinedSlots();
+        // Startup reconcile (durable quarantine): find slot dirs a PRIOR process tombstoned and RETIRE those
+        // indexes so they are never re-leased. We do NOT delete/reset the dirs here: this daemon adopts an
+        // already-running gateway (AutoSpawn=false), so a sandbox session whose teardown failed can still be
+        // mounted after the daemon restarts — touching the store would race live work and recreate the very
+        // corruption the quarantine prevents. The dirs leak until an operator (or a future liveness-gated
+        // reaper) reclaims them; capacity is unaffected because the pool allocates fresh indexes instead.
+        ReconcileQuarantinedSlots();
     }
 
     /// <summary>
@@ -117,21 +125,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
             Directory.CreateDirectory(slot.HostPath);
             Directory.CreateDirectory(slot.ScratchPath);
 
-            // A surviving tombstone (the ctor reap could not remove it) means this dir was quarantined by a
-            // prior process: its store may be the tainted one and must NEVER be reused as warm. Wipe it so the
-            // clone below rebuilds from scratch, then drop the marker. (In-process, a quarantined index is
-            // retired and never re-leased, so this only fires across a restart, where no mount survives.)
-            var quarantined = File.Exists(QuarantineMarkerPath(slot));
-            if (quarantined)
-            {
-                _logger.LogWarning(
-                    "Discarding quarantined store for review slot {Index} at {StorePath} before reuse.",
-                    slot.Index, slot.StorePath);
-                TryResetStore(slot.StorePath);
-                TryDelete(QuarantineMarkerPath(slot));
-            }
-
-            if (quarantined || !Directory.Exists(slot.StorePath) || IsDirectoryEmpty(slot.StorePath))
+            if (!Directory.Exists(slot.StorePath) || IsDirectoryEmpty(slot.StorePath))
             {
                 _logger.LogInformation("Cloning store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
                 await _ensureStoreClonedAsync(slot, cancellationToken).ConfigureAwait(false);
@@ -184,26 +178,41 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     /// <summary>
     /// Retires a leased slot on an unconfirmed session teardown: unlike <see cref="ReturnAsync"/> it does NOT
     /// push the index onto the free list, so no future lease reuses this slot's directory or its
-    /// possibly-still-mounted store (which would let the next lease's clean-on-entry race the surviving
-    /// session). The permit IS released, so capacity is preserved — the next lease finds the free list empty
-    /// and allocates a fresh index (a new <c>slot-{N}</c> dir + clone). A <see cref="QuarantineMarkerName"/>
-    /// tombstone is dropped in the slot dir so the quarantine survives a restart (the ctor reap +
-    /// <see cref="LeaseAsync"/> guard discard the tainted store rather than reusing it as warm), bounding the
-    /// leaked disk to a restart rather than leaving it indefinitely.
+    /// possibly-still-mounted store. Durable quarantine is part of the success contract: the
+    /// <see cref="QuarantineMarkerName"/> tombstone is written FIRST, and the permit is released (capacity
+    /// preserved — the next lease allocates a different index) ONLY if that write succeeds. If the tombstone
+    /// cannot be persisted the call fails CLOSED — the permit is NOT released — because after a restart the
+    /// in-memory retirement is gone and an unmarked non-empty store would be reused as warm while its session
+    /// may still be live; consuming the permit is the safe choice over that reuse.
     /// </summary>
     public Task QuarantineAsync(ReviewSlot slot, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(slot);
 
-        // Persist the tombstone BEFORE releasing the permit, so a crash between here and the next lease still
-        // leaves the durable marker. Best-effort: if the write fails, in-process index retirement still keeps
-        // this slot out of reuse for the current process (the marker only matters across a restart).
-        TryWriteQuarantineMarker(slot);
+        // Retire the index in-process regardless (so it is never handed out again this process), then persist
+        // the tombstone that carries the retirement across a restart.
+        lock (_freeIndexesLock)
+        {
+            _retiredIndexes.Add(slot.Index);
+        }
+
+        var durable = TryWriteQuarantineMarker(slot);
+        if (!durable)
+        {
+            // Fail closed: without a durable tombstone we cannot guarantee the store won't be reused as warm
+            // after a restart, so do NOT release the permit — the slot is fully retired and its capacity is
+            // consumed until a restart. A marker write failing means the pool root is unwritable (a serious
+            // disk fault), so shrinking capacity here is both rare and the safe direction.
+            _logger.LogError(
+                "Quarantine of review slot {Index} at {StorePath} could not be made durable (tombstone write "
+                    + "failed); retiring the slot AND its permit rather than risk reusing a possibly-live store.",
+                slot.Index, slot.StorePath);
+            return Task.CompletedTask;
+        }
 
         _logger.LogWarning(
             "Quarantining review slot {Index} at {StorePath}: index retired (not reused) because its session "
-                + "teardown could not be confirmed; the next lease allocates a fresh slot and the tombstone "
-                + "forces a re-clone should a restart land on this dir.",
+                + "teardown could not be confirmed; the tombstone retires it across a restart too.",
             slot.Index,
             slot.StorePath);
         _gate.Release();
@@ -229,7 +238,20 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     {
         lock (_freeIndexesLock)
         {
-            return _freeIndexes.Count > 0 ? _freeIndexes.Pop() : _nextIndex++;
+            if (_freeIndexes.Count > 0)
+            {
+                // Returned indexes had a CONFIRMED teardown, so they are never retired — safe to recycle.
+                return _freeIndexes.Pop();
+            }
+
+            // Skip any retired index (tombstoned by a prior process, or quarantined this process) so a
+            // quarantined slot dir / possibly-live store is never handed back out.
+            while (_retiredIndexes.Contains(_nextIndex))
+            {
+                _nextIndex++;
+            }
+
+            return _nextIndex++;
         }
     }
 
@@ -242,27 +264,32 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     private static string QuarantineMarkerPath(ReviewSlot slot) =>
         Path.Combine(slot.HostPath, QuarantineMarkerName);
 
-    /// <summary>Best-effort tombstone drop so a quarantine survives a restart. Failure is tolerated: the
-    /// in-process index retirement already keeps the slot out of reuse for the current process.</summary>
-    private void TryWriteQuarantineMarker(ReviewSlot slot)
+    /// <summary>Persists the quarantine tombstone. Returns <c>true</c> only when the marker is durably on disk;
+    /// the caller fails closed on <c>false</c> (does not release the permit) rather than risk a cross-restart
+    /// reuse of an unmarked tainted store.</summary>
+    private bool TryWriteQuarantineMarker(ReviewSlot slot)
     {
         try
         {
             Directory.CreateDirectory(slot.HostPath);
             File.WriteAllText(QuarantineMarkerPath(slot), string.Empty);
+            return File.Exists(QuarantineMarkerPath(slot));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(
-                ex, "Best-effort quarantine tombstone write failed for review slot {Index} at {HostPath}.",
+                ex, "Quarantine tombstone write failed for review slot {Index} at {HostPath}.",
                 slot.Index, slot.HostPath);
+            return false;
         }
     }
 
-    /// <summary>Startup reconcile: reaps every <c>slot-*</c> dir a prior process tombstoned. Safe only here —
-    /// a fresh process holds no sandbox mounts — so it both bounds cross-restart quarantine disk and prevents a
-    /// restarted daemon from reusing a quarantined store as warm.</summary>
-    private void ReapStaleQuarantinedSlots()
+    /// <summary>Startup reconcile: scans for <c>slot-*</c> dirs a prior process tombstoned and RETIRES those
+    /// indexes so they are never re-leased. It does NOT delete/reset the dirs — this daemon adopts a persistent
+    /// external gateway, so a session whose teardown failed can still be mounted after a restart, and touching
+    /// the store would race live work. The retired dirs leak on disk (bounded by an operator / future
+    /// liveness-gated reaper); capacity is unaffected because fresh indexes are allocated instead.</summary>
+    private void ReconcileQuarantinedSlots()
     {
         try
         {
@@ -278,31 +305,23 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
                     continue;
                 }
 
-                _logger.LogInformation("Reaping quarantined review slot dir left by a prior process: {Dir}", dir);
-                TryResetStore(dir);
+                var name = Path.GetFileName(dir);
+                if (int.TryParse(name.AsSpan("slot-".Length), out var index))
+                {
+                    _retiredIndexes.Add(index);
+                    _logger.LogWarning(
+                        "Retiring quarantined review slot {Index} left by a prior process: {Dir} (left on disk; "
+                            + "its gateway session may still be mounted, so it is not reclaimed here).",
+                        index, dir);
+                }
             }
         }
         catch (Exception ex)
         {
-            // Reap is best-effort — any tombstone that survives is still honoured by the LeaseAsync guard
-            // (re-clone over it), so a failed reap never causes a tainted-store reuse, only leaked disk.
-            _logger.LogWarning(ex, "Best-effort quarantined-slot reap failed under {HostRoot}.", _hostRoot);
-        }
-    }
-
-    /// <summary>Best-effort delete of a single file (the quarantine tombstone) — tolerates absence + locks.</summary>
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch
-        {
-            // Best-effort; a surviving tombstone is re-honoured on the next lease.
+            // Best-effort scan. A tombstone we fail to observe here can still be reused as warm — but the write
+            // side fails closed (a quarantine that could not be made durable never released its permit), so the
+            // common path stays safe; this only degrades a partially-unreadable pool root.
+            _logger.LogWarning(ex, "Quarantined-slot reconcile scan failed under {HostRoot}.", _hostRoot);
         }
     }
 

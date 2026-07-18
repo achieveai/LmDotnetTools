@@ -53,9 +53,42 @@ public class ReviewSessionProvisionerTests
         var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
 
         _ = await provisioner.GetOrCreateAsync(Run(), default);
-        await provisioner.DestroyAsync(Run(), default);
+        var confirmed = await provisioner.DestroyAsync(Run(), default);
 
+        confirmed.Should().BeTrue("a successful gateway destroy is a CONFIRMED teardown");
         fake.DestroyedWorkspaceIds.Should().Contain("review-run-7");
+    }
+
+    [Fact]
+    public async Task DestroyAsync_ReturnsFalse_WhenGatewayDestroyFails_WithoutPropagating()
+    {
+        // The production contract behind the pooled quarantine (review #180): a gateway destroy failure is
+        // reported as an UNCONFIRMED teardown (false) rather than swallowed into a normal return, so the caller
+        // quarantines the slot instead of reusing a possibly-still-mounted store.
+        var fake = new FakeSessionSource { DestroyThrows = new InvalidOperationException("gateway destroy failed") };
+        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+        _ = await provisioner.GetOrCreateAsync(Run(), default);
+
+        var confirmed = await provisioner.DestroyAsync(Run(), default);
+
+        confirmed.Should().BeFalse("a failed gateway destroy is an unconfirmed teardown, not a confirmed one");
+    }
+
+    [Fact]
+    public async Task DestroyAsync_PropagatesCancellation_RatherThanReportingUnconfirmed()
+    {
+        // Caller-requested cancellation is control flow, not a teardown failure: it must propagate, NOT become
+        // confirmed=false (which the Posted path would treat as a quarantine and then return normally, silently
+        // swallowing the cancellation).
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+        _ = await provisioner.GetOrCreateAsync(Run(), default);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await provisioner.DestroyAsync(Run(), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
@@ -124,6 +157,11 @@ public class ReviewSessionProvisionerTests
 
         public List<string> DestroyedWorkspaceIds { get; } = [];
 
+        /// <summary>When set, <see cref="DestroyWorkspaceSessionAsync"/> throws it — simulating a gateway
+        /// destroy failure that the provisioner must report as an unconfirmed teardown (return false), not
+        /// swallow into a normal (confirmed) return.</summary>
+        public Exception? DestroyThrows { get; set; }
+
         /// <summary>The most recent <see cref="WorkspaceRef"/> the provisioner asked to mount — lets a test
         /// assert the session key (<c>Id</c>) and the mounted directory (<c>DirectoryRelPath</c>).</summary>
         public WorkspaceRef? LastRef { get; private set; }
@@ -147,6 +185,14 @@ public class ReviewSessionProvisionerTests
 
         public Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct)
         {
+            // A cancelled destroy throws OperationCanceledException, like the real gateway client — the
+            // provisioner must propagate that rather than report an unconfirmed teardown.
+            ct.ThrowIfCancellationRequested();
+            if (DestroyThrows is not null)
+            {
+                throw DestroyThrows;
+            }
+
             DestroyedWorkspaceIds.Add(workspaceId);
             _ = _sessions.Remove(workspaceId);
             return Task.CompletedTask;

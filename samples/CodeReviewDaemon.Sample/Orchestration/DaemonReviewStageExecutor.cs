@@ -1366,7 +1366,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                             run.Id);
                     }
 
-                    await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                    // Contain the return too: if the notes commit in the try-body already threw, a ReturnAsync
+                    // failure here would REPLACE that primary exception in the finally and hide the error that
+                    // should drive retry/diagnosis. Log the secondary failure separately and let the primary
+                    // propagate. The slot's permit was acquired at lease and the run is terminal regardless.
+                    try
+                    {
+                        await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex, "Run {RunId}: pooled slot {Index} return failed during terminal cleanup.",
+                            run.Id, lease.Slot.Index);
+                    }
                 }
             }
         }

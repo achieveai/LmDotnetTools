@@ -469,6 +469,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.ReturnCount.Should().Be(1, "the slot is still returned after the strip");
     }
 
+    [Fact]
+    public async Task Posted_quarantines_and_skips_notes_and_strip_when_teardown_is_unconfirmed()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        // The real provisioner reports a gateway-destroy failure as an unconfirmed teardown (false), NOT a
+        // throw. On the Posted path that must skip BOTH the host-side notes commit and the strip (each operates
+        // on the same store a still-live mount holds) and quarantine the slot instead of returning it.
+        fixture.Provisioner.ConfirmDestroy = false;
+        var hostCommandsBefore = fixture.HostRunner.Commands.Count;
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.Pool.QuarantineCount.Should().Be(1, "an unconfirmed teardown quarantines the slot");
+        fixture.Pool.ReturnCount.Should().Be(0, "a possibly-live slot is not returned to the pool");
+        var newHostCommands = fixture.HostRunner.Commands.Skip(hostCommandsBefore).Select(Join).ToList();
+        newHostCommands.Should().NotContain(a => a.Contains("reset --hard"), "the strip must not touch a possibly-live store");
+        newHostCommands.Should().NotContain(a => a.Contains("clean -ffdx"), "no host-side cleanup runs on an unconfirmed teardown");
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)

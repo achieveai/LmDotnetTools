@@ -261,13 +261,20 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         {
             await _sessions.DestroyWorkspaceSessionAsync(workspaceId, ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Caller-requested cancellation is control flow, NOT a teardown failure — propagate it rather than
+            // reporting confirmed=false (which the Posted path would treat as a quarantine and then return
+            // normally, silently swallowing the cancellation).
+            throw;
+        }
         catch (Exception ex)
         {
-            // The gateway session teardown could not be confirmed — the container/mount may still be live.
-            // REPORT it to the caller (which quarantines the slot rather than reusing a possibly-mounted store)
-            // instead of swallowing it into a normal return, which would let the slot be stripped/returned
-            // while a surviving git process still writes to it (review #180). Secondary cleanup below is still
-            // best-effort and never flips a confirmed teardown back to unconfirmed.
+            // A genuine teardown failure — the container/mount may still be live. REPORT it to the caller
+            // (which quarantines the slot rather than reusing a possibly-mounted store) instead of swallowing
+            // it into a normal return, which would let the slot be stripped/returned while a surviving git
+            // process still writes to it (review #180). Secondary cleanup below is still best-effort and never
+            // flips a confirmed teardown back to unconfirmed.
             confirmed = false;
             _logger.LogWarning(ex, "Destroy of sandbox session for {WorkspaceId} could not be confirmed.", workspaceId);
         }

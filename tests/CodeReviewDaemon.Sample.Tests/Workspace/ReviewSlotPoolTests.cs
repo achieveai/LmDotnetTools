@@ -170,29 +170,51 @@ public class ReviewSlotPoolTests : IDisposable
     }
 
     [Fact]
-    public async Task NewPoolOverSameHostRoot_ReapsQuarantinedSlot_SoRestartNeverReusesTheTaintedStore()
+    public async Task NewPoolOverSameHostRoot_RetiresQuarantinedIndex_AndLeavesItsDirUntouched()
     {
         var cloneA = CountingCloneCallback(out _);
         var poolA = CreatePool(maxSlots: 1, cloneA);
 
         var slot = await poolA.LeaseAsync(default);
-        // Taint the warm store so the restart can be proven NOT to reuse it.
+        slot.Index.Should().Be(0);
+        // Taint the warm store; a restart must NOT reuse it AND must NOT touch it (the external gateway session
+        // may still be mounted, so deleting it host-side would race live work — the review #180 finding).
         File.WriteAllText(Path.Combine(slot.StorePath, "tainted.txt"), "live-mount-residue");
         await poolA.QuarantineAsync(slot, default);
         File.Exists(Path.Combine(slot.HostPath, ".quarantined")).Should().BeTrue();
 
-        // Simulate a daemon RESTART: a brand-new pool over the SAME host root. Its ctor reaps the tombstoned
-        // slot dir (safe — a fresh process holds no mounts), so index 0 no longer has a warm store and the
-        // first lease re-clones from scratch. Without the reap, _nextIndex=0 would treat the non-empty
-        // slot-0/store as warm and hand back the tainted store (the exact review #180 finding).
+        // Simulate a daemon RESTART: a new pool over the SAME host root. Its ctor scans the tombstone and
+        // RETIRES index 0 — it does not delete the dir — so the first lease allocates a DIFFERENT index and the
+        // quarantined store is neither reused nor touched.
         var cloneB = CountingCloneCallback(out var callCountB);
         var poolB = CreatePool(maxSlots: 1, cloneB);
+        var next = await poolB.LeaseAsync(default);
 
-        var reused = await poolB.LeaseAsync(default);
+        next.Index.Should().Be(1, "the tombstoned index 0 is retired, so a fresh index is allocated");
+        callCountB().Should().Be(1, "the fresh slot-1 is cloned");
+        File.Exists(Path.Combine(slot.StorePath, "tainted.txt"))
+            .Should().BeTrue("the quarantined dir is left untouched — its gateway session may still be mounted");
+        File.Exists(Path.Combine(slot.HostPath, ".quarantined"))
+            .Should().BeTrue("the tombstone remains so the index stays retired across future restarts too");
+    }
 
-        reused.Index.Should().Be(0);
-        callCountB().Should().Be(1, "the quarantined store was reaped at startup, so the restart re-clones it");
-        File.Exists(Path.Combine(reused.StorePath, "tainted.txt"))
-            .Should().BeFalse("a quarantined store must never be reused after a restart");
+    [Fact]
+    public async Task QuarantineAsync_WhenTombstoneWriteFails_FailsClosedAndKeepsThePermit()
+    {
+        var clone = CountingCloneCallback(out _);
+        var pool = CreatePool(maxSlots: 1, clone);
+        var slot = await pool.LeaseAsync(default);
+
+        // Force the tombstone write to fail: replace the slot's host dir with a FILE so the marker write throws.
+        Directory.Delete(slot.HostPath, recursive: true);
+        File.WriteAllText(slot.HostPath, "not a dir");
+
+        await pool.QuarantineAsync(slot, default);
+
+        // Fail-closed: a quarantine that could not be made durable must NOT release the permit — otherwise a
+        // restart (with the in-memory retirement gone and no tombstone) could reuse the unmarked tainted store.
+        // With the single permit withheld, a second lease cannot proceed.
+        var secondLease = pool.LeaseAsync(default);
+        secondLease.IsCompleted.Should().BeFalse("a non-durable quarantine keeps the permit rather than risk reuse");
     }
 }
