@@ -223,8 +223,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 [new TextMessage { Role = Role.User, Text = task }], ct: ct);
 
             _logger.LogInformation(
-                "Spawned sub-agent {AgentId} from template {Template} (background={Background}) with task: {Task}",
-                agentId, templateName, runInBackground, Truncate(task, 100));
+                "Spawned sub-agent {AgentId} from template {Template} (background={Background}) with task length {TaskLength}",
+                agentId, templateName, runInBackground, task?.Length ?? 0);
         }
         catch
         {
@@ -406,8 +406,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 }
 
                 _logger.LogInformation(
-                    "Sent message to running sub-agent {AgentId}: {Message}",
-                    agentId, Truncate(prompt, 100));
+                    "Sent message to running sub-agent {AgentId} ({MessageLength} chars)",
+                    agentId, prompt?.Length ?? 0);
 
                 wasRunning = true;
                 break;
@@ -743,8 +743,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             _ = state.TryArmRunning(runGeneration);
 
             _logger.LogInformation(
-                "Resumed sub-agent {AgentId} with message: {Message}",
-                state.AgentId, Truncate(prompt, 100));
+                "Resumed sub-agent {AgentId} ({MessageLength} chars)",
+                state.AgentId, prompt?.Length ?? 0);
         }
         catch
         {
