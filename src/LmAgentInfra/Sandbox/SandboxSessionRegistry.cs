@@ -1542,6 +1542,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
         BuildAuthProviders().Providers?.Select(p => p.Id).ToArray() ?? [];
 
+    /// <summary>
+    /// Test seam: the full <c>auth_providers</c> + <c>network</c> pair the registry would attach, so a
+    /// test can assert the security-sensitive rule shape (host, ports, auth-provider linkage) and the
+    /// webhook endpoint / cache TTL — not just the provider id.
+    /// </summary>
+    internal (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProvidersForTest() =>
+        BuildAuthProviders();
+
     private (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProviders()
     {
         var providers = new List<SandboxAuthProvider>();

@@ -152,7 +152,7 @@ public sealed class PredefinedKeyProviderTests
 
         // Updating the entry (user re-enters the credential) clears the invalid flag → mint retried.
         fail = false;
-        provider.UpdateEntry(RefreshEntry());
+        await provider.UpdateEntry(RefreshEntry());
         var token = await provider.GetAccessTokenAsync();
         token.Value.Should().Be("AT2");
         handler.Calls.Should().Be(2);

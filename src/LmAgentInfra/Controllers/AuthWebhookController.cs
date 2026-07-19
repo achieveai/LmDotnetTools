@@ -195,6 +195,11 @@ public sealed class AuthWebhookController(
                     AuthSigninUrls.BuildReason(providerId),
                     ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // The gateway aborted the call — do not swallow it as a forwarder failure.
+                throw;
+            }
             catch (Exception ex)
             {
                 logger.LogWarning(
@@ -216,6 +221,10 @@ public sealed class AuthWebhookController(
             {
                 await authWebhookForwarder.NotifyAuthCompletedAsync(target, body.SessionId, providerId, ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Auth-webhook forwarder failed on auth-completed for provider {ProviderId}.", providerId);
@@ -232,6 +241,10 @@ public sealed class AuthWebhookController(
             try
             {
                 await authWebhookForwarder.NotifyAuthDeniedAsync(target, body.SessionId, providerId, reason, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {

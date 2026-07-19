@@ -87,4 +87,33 @@ public sealed class OAuthTokenEndpointClientTests
         result.AccessToken.Should().BeNull();
         result.Error.Should().Be("unparseable_response");
     }
+
+    [Fact]
+    public async Task PostAsync_rejects_token_from_non_success_status()
+    {
+        // A 503 (transient) with a token-shaped body must NOT be accepted as a credential.
+        var (client, _) = NewClient(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent("{\"access_token\":\"should-be-ignored\"}"),
+        });
+
+        var result = await client.PostAsync("https://token.example/oauth/token", RefreshForm());
+
+        result.AccessToken.Should().BeNull();
+        result.Error.Should().Be("http_503");
+    }
+
+    [Fact]
+    public async Task PostAsync_surfaces_oauth_error_on_4xx()
+    {
+        var (client, _) = NewClient(new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("{\"error\":\"invalid_grant\"}"),
+        });
+
+        var result = await client.PostAsync("https://token.example/oauth/token", RefreshForm());
+
+        result.AccessToken.Should().BeNull();
+        result.Error.Should().Be("invalid_grant");
+    }
 }

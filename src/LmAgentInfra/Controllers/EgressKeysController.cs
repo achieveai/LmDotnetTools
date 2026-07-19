@@ -6,10 +6,16 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 /// <summary>
 /// CRUD for predefined egress keys (issue #210). Entries are created at runtime here and persisted by
 /// the <see cref="PredefinedKeyRegistry"/>; they drive the sandbox <c>auth_providers</c>/<c>network</c>
-/// blocks on the NEXT session create. SECURITY: this endpoint is same-origin/local-UI only and is not
-/// in any sandbox allow-rule (default-deny covers the app's own host); GET never returns secret values
-/// and nothing here logs them.
+/// blocks on the NEXT session create.
 /// </summary>
+/// <remarks>
+/// SECURITY / THREAT MODEL: like the rest of this local-dev sample (the OAuth sign-in controllers, the
+/// workspaces / providers / conversations endpoints — all unauthenticated) this management API assumes a
+/// trusted local user on a localhost-bound host; it is not a hardened, network-exposed service. It is
+/// deliberately NOT reachable from the sandbox: default-deny egress opens no allow-rule for the app's own
+/// host, so a sandboxed agent cannot call it. GET masks all secret values and nothing here logs them.
+/// An enforced management-auth boundary for the sample as a whole is out of scope for #210.
+/// </remarks>
 [ApiController]
 [Route("api/auth/egress-keys")]
 public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger<EgressKeysController> logger)
@@ -76,18 +82,23 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
     private static (PredefinedKeyEntry? entry, string? error) BuildCustomHeadersEntry(
         string id, string host, EgressKeyRequest request, PredefinedKeyEntry? existing)
     {
-        // Preserve existing headers when the edit omits them (e.g. changing only the host).
-        var source = request.Headers is { Count: > 0 }
-            ? [.. request.Headers.Select(h => new PredefinedHeader(h.Name, h.Value))]
-            : existing?.Headers.ToList();
-
-        if (source is null || source.Count == 0)
+        // Edit that omits the header list entirely (e.g. changing only the host) preserves the stored headers.
+        if (request.Headers is not { Count: > 0 })
         {
-            return (null, "At least one header is required.");
+            if (existing is null || existing.Headers.Count == 0)
+            {
+                return (null, "At least one header is required.");
+            }
+
+            return (existing with { Id = id, Host = host }, null);
         }
 
+        // GET masks header values, so the edit form round-trips each header NAME with a blank value.
+        // Per-header preserve: a blank value on an EXISTING header name keeps the stored secret; a
+        // blank value on a NEW header name is an error.
+        var resolved = new List<PredefinedHeader>(request.Headers.Count);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var header in source)
+        foreach (var header in request.Headers)
         {
             var nameError = EgressHostMatcher.ValidateHeaderName(header.Name);
             if (nameError is not null)
@@ -95,19 +106,29 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
                 return (null, nameError);
             }
 
-            var valueError = EgressHostMatcher.ValidateHeaderValue(header.Value);
+            if (!seen.Add(header.Name))
+            {
+                return (null, $"Duplicate header '{header.Name}'.");
+            }
+
+            var value = header.Value;
+            if (string.IsNullOrEmpty(value))
+            {
+                var stored = existing?.Headers.FirstOrDefault(
+                    h => string.Equals(h.Name, header.Name, StringComparison.OrdinalIgnoreCase));
+                value = stored?.Value ?? string.Empty;
+            }
+
+            var valueError = EgressHostMatcher.ValidateHeaderValue(value);
             if (valueError is not null)
             {
                 return (null, valueError);
             }
 
-            if (!seen.Add(header.Name))
-            {
-                return (null, $"Duplicate header '{header.Name}'.");
-            }
+            resolved.Add(new PredefinedHeader(header.Name, value));
         }
 
-        return (new PredefinedKeyEntry { Id = id, Host = host, Kind = PredefinedKeyKind.CustomHeaders, Headers = source }, null);
+        return (new PredefinedKeyEntry { Id = id, Host = host, Kind = PredefinedKeyKind.CustomHeaders, Headers = resolved }, null);
     }
 
     private static (PredefinedKeyEntry? entry, string? error) BuildOAuthEntry(

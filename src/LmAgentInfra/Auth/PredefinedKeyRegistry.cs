@@ -99,44 +99,65 @@ public sealed class PredefinedKeyRegistry
     internal PredefinedKeyEntry? Find(string id) =>
         _providers.TryGetValue(id, out var provider) ? provider.Entry : null;
 
-    /// <summary>Creates a new entry or updates an existing one in place (same id), then persists.</summary>
+    /// <summary>
+    /// Creates a new entry or updates an existing one (same id). Persists the candidate set FIRST and
+    /// only publishes the in-memory change when the write succeeds, so a failed/cancelled write never
+    /// leaves memory and disk divergent. The whole mutation is serialized under <see cref="_persistGate"/>.
+    /// </summary>
     internal async Task UpsertAsync(PredefinedKeyEntry entry, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(entry);
 
-        if (_providers.TryGetValue(entry.Id, out var existing))
+        await _persistGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            existing.UpdateEntry(entry);
-        }
-        else
-        {
-            _providers[entry.Id] = NewProvider(entry);
-        }
+            var candidate = _providers.Values
+                .Select(p => p.Entry)
+                .Where(e => !string.Equals(e.Id, entry.Id, StringComparison.Ordinal))
+                .Append(entry)
+                .ToList();
+            await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
 
-        await PersistAsync(ct).ConfigureAwait(false);
+            if (_providers.TryGetValue(entry.Id, out var existing))
+            {
+                await existing.UpdateEntry(entry, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                _providers[entry.Id] = NewProvider(entry);
+            }
+        }
+        finally
+        {
+            _ = _persistGate.Release();
+        }
     }
 
-    /// <summary>Removes an entry (and its persisted minted token), then persists. Returns false when the id is unknown.</summary>
+    /// <summary>
+    /// Removes an entry. Persists the candidate (without it) FIRST, then removes it from memory and
+    /// drops its persisted minted token — so a failed write never orphans the on-disk entry. Returns
+    /// false when the id is unknown. Serialized under <see cref="_persistGate"/>.
+    /// </summary>
     internal async Task<bool> RemoveAsync(string id, CancellationToken ct = default)
-    {
-        if (!_providers.TryRemove(id, out var provider))
-        {
-            return false;
-        }
-
-        // Best-effort: drop any minted-token record for this entry so the secret does not linger.
-        await provider.SignOutAsync(ct).ConfigureAwait(false);
-        await PersistAsync(ct).ConfigureAwait(false);
-        return true;
-    }
-
-    /// <summary>Atomically writes the full entry set to disk under the persist gate.</summary>
-    private async Task PersistAsync(CancellationToken ct)
     {
         await _persistGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await AtomicJsonFile.WriteAsync(_filePath, Entries, JsonOptions, ct).ConfigureAwait(false);
+            if (!_providers.TryGetValue(id, out var provider))
+            {
+                return false;
+            }
+
+            var candidate = _providers.Values
+                .Select(p => p.Entry)
+                .Where(e => !string.Equals(e.Id, id, StringComparison.Ordinal))
+                .ToList();
+            await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
+
+            _ = _providers.TryRemove(id, out _);
+            // Best-effort: drop the persisted minted token so the secret does not linger.
+            await provider.SignOutAsync(ct).ConfigureAwait(false);
+            return true;
         }
         finally
         {

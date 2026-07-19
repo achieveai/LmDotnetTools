@@ -109,8 +109,22 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
 
             await using var registry = CreateRegistry(new AuthOptions(), keys);
 
-            // No OAuth providers configured, so the ONLY emitted provider is the predefined entry's.
-            registry.GetAuthProviderIdsForTest().Should().ContainSingle().Which.Should().Be("predefined-e1");
+            var (providers, network) = registry.BuildAuthProvidersForTest();
+
+            // Exactly one webhook auth-provider, pointing at this entry's predefined route.
+            var provider = providers.Should().ContainSingle().Subject;
+            provider.Id.Should().Be("predefined-e1");
+            provider.Type.Should().Be("webhook");
+            provider.Endpoint.Should().EndWith("/api/auth/webhook/predefined-e1");
+            provider.CacheTtlSeconds.Should().Be(30); // custom-headers: short TTL for prompt rotation
+
+            // Exactly one allow rule, host-scoped to the entry's host on 443, linked to the provider.
+            var rule = network.Should().ContainSingle().Subject;
+            rule.Id.Should().Be("predefined-e1");
+            rule.Action.Should().Be("allow");
+            rule.Hosts.Should().Equal("api.internal.example.com");
+            rule.Ports.Should().Equal(443);
+            rule.AuthProvider.Should().Be("predefined-e1");
         }
         finally
         {

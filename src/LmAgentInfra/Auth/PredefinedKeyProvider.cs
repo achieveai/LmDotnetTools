@@ -96,19 +96,29 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
     }
 
     /// <summary>
-    /// Swaps the entry in place (edit), clears the minted-token cache, and clears the invalidated
-    /// flag so the next <see cref="GetAccessTokenAsync"/> re-mints / re-reads the updated credential.
+    /// Swaps the entry in place (edit) and makes the new credential take effect immediately:
+    /// serializes with any in-flight mint through <see cref="_refreshGate"/> (so a mint from the
+    /// PRE-edit credential can't publish a token after the swap), clears the in-memory cache + the
+    /// invalidated flag, and DROPS the persisted token record so the next acquisition re-mints with
+    /// the new credential instead of reloading the stale access/rotated-refresh token by provider id.
     /// </summary>
-    public void UpdateEntry(PredefinedKeyEntry entry)
+    public async Task UpdateEntry(PredefinedKeyEntry entry, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        _entry = entry;
-        _invalidated = false;
-        // Reference assignment is atomic; a concurrent in-flight mint under _refreshGate may briefly
-        // re-cache a token from the pre-edit credential, which expires normally — acceptable for a
-        // local-dev sample where edits are rare.
-        _cachedToken = null;
-        _status = new OAuthStatus(OAuthSignInState.NotStarted, null, entry.Scopes, null, null);
+        await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            _entry = entry;
+            _invalidated = false;
+            _cachedToken = null;
+            // ProviderId is derived from the immutable id, so this drops THIS entry's stale token.
+            await _tokenStore.RemoveAsync(ProviderId, ct).ConfigureAwait(false);
+            _status = new OAuthStatus(OAuthSignInState.NotStarted, null, entry.Scopes, null, null);
+        }
+        finally
+        {
+            _ = _refreshGate.Release();
+        }
     }
 
     /// <inheritdoc />

@@ -44,25 +44,43 @@ internal sealed class OAuthTokenEndpointClient(HttpClient http)
 
         using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        // Best-effort parse of the standard OAuth token/error fields (a structured `error` may accompany
+        // either a success or a 4xx credential rejection).
+        string? accessToken = null;
+        string? refreshToken = null;
+        var expiresIn = 0;
+        string? error = null;
         if (string.IsNullOrWhiteSpace(body))
         {
-            return new OAuthTokenEndpointResponse(null, null, 0, "empty_response");
+            error = "empty_response";
+        }
+        else
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                accessToken = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
+                refreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
+                expiresIn = root.TryGetProperty("expires_in", out var ei) && ei.TryGetInt32(out var seconds) ? seconds : 0;
+                error = root.TryGetProperty("error", out var er) ? er.GetString() : null;
+            }
+            catch (JsonException)
+            {
+                // Non-JSON body (HTML error page, etc.). Surface as a token-free error; never log the body.
+                error = "unparseable_response";
+            }
         }
 
-        try
+        // A non-success status must NEVER yield a token: return the parsed OAuth `error` when present,
+        // else a normalized `http_<status>` so the caller can tell a transient 429/5xx from a
+        // definitive credential rejection (only the latter invalidates the key).
+        if (!response.IsSuccessStatusCode)
         {
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            return new OAuthTokenEndpointResponse(
-                root.TryGetProperty("access_token", out var at) ? at.GetString() : null,
-                root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null,
-                root.TryGetProperty("expires_in", out var ei) && ei.TryGetInt32(out var seconds) ? seconds : 0,
-                root.TryGetProperty("error", out var er) ? er.GetString() : null);
+            return new OAuthTokenEndpointResponse(null, null, 0, error ?? $"http_{(int)response.StatusCode}");
         }
-        catch (JsonException)
-        {
-            // Non-JSON body (HTML error page, etc.). Surface as a token-free error; never log the body.
-            return new OAuthTokenEndpointResponse(null, null, 0, "unparseable_response");
-        }
+
+        return new OAuthTokenEndpointResponse(accessToken, refreshToken, expiresIn, error);
     }
 }

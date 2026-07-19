@@ -130,6 +130,48 @@ public sealed class EgressKeysControllerTests
     }
 
     [Fact]
+    public async Task Update_custom_headers_with_blank_value_preserves_stored_value()
+    {
+        var (controller, registry, dir) = NewController();
+        try
+        {
+            var created = (await controller.Upsert(CustomReq("api.example.com", ("X-Api-Key", "secret-abc"))))
+                .Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<EgressKeyView>().Subject;
+
+            // GET masks header values, so an edit re-sends the header NAME with a blank value. Changing
+            // only the host must preserve the stored value, not wipe/reject it.
+            var edit = new EgressKeyRequest(
+                Id: created.Id, Host: "api2.example.com", Kind: "custom-headers",
+                Headers: [new EgressHeaderInput("X-Api-Key", "")],
+                HeaderName: null, TokenEndpoint: null, ClientId: null, ClientSecret: null, RefreshToken: null, Scopes: null);
+            var updated = (await controller.Upsert(edit)).Should().BeOfType<OkObjectResult>().Which.Value
+                .Should().BeOfType<EgressKeyView>().Subject;
+
+            updated.Host.Should().Be("api2.example.com");
+            registry.Find(created.Id)!.Headers.Single().Value.Should().Be("secret-abc");
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Post_rejects_blank_value_for_a_new_header()
+    {
+        var (controller, _, dir) = NewController();
+        try
+        {
+            // No existing entry to preserve from → a blank value on a fresh header is an error.
+            (await controller.Upsert(CustomReq("api.example.com", ("X-New", "")))).Should().BeOfType<BadRequestObjectResult>();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Delete_removes_entry_and_404s_when_unknown()
     {
         var (controller, _, dir) = NewController();
