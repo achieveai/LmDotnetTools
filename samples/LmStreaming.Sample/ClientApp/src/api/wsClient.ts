@@ -106,33 +106,53 @@ export function normalizeKeys(value: unknown): unknown {
 }
 
 /**
- * Create a WebSocket connection for chat streaming.
- * The WebSocket sends raw JSON messages (not SSE format).
+ * Build the chat WebSocket URL (`/ws?threadId=..&connectionId=..[&modeId=..][&providerId=..]
+ * [&workspaceId=..][&record=1]`). Split out so `createWebSocketConnection` delegates URL construction
+ * and the socket wiring below is shared with other endpoints (e.g. the sub-agent stream).
  */
-export function createWebSocketConnection(
-  options: WebSocketClientOptions
+function buildChatWebSocketUrl(
+  options: WebSocketClientOptions,
+  effectiveThreadId: string,
+  connectionId: string
+): string {
+  const { baseUrl = '', modeId, providerId, workspaceId, record } = options;
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsHost = baseUrl || window.location.host;
+  let wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
+  if (modeId) {
+    wsUrl += `&modeId=${encodeURIComponent(modeId)}`;
+  }
+  if (providerId) {
+    wsUrl += `&providerId=${encodeURIComponent(providerId)}`;
+  }
+  if (workspaceId) {
+    wsUrl += `&workspaceId=${encodeURIComponent(workspaceId)}`;
+  }
+  if (record) {
+    wsUrl += '&record=1';
+  }
+  return wsUrl;
+}
+
+/**
+ * Open a WebSocket at `wsUrl` and wire the standard stream callbacks (auth-event → done → error →
+ * normalized message). This is the shared socket handling used by BOTH the chat stream
+ * ({@link createWebSocketConnection}) and the sub-agent stream (`connectSubAgent`), so the
+ * onmessage normalize/done/error logic lives in ONE place. The returned {@link WebSocketConnection}
+ * carries `effectiveThreadId`/`connectionId` for the caller's bookkeeping; this helper does NOT
+ * build the URL (callers do, since query strings differ per endpoint).
+ *
+ * Exported for reuse by sibling WebSocket clients; not part of the public chat API.
+ */
+export function openWebSocketConnection(
+  wsUrl: string,
+  effectiveThreadId: string,
+  connectionId: string,
+  callbacks: WebSocketClientCallbacks
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', threadId, modeId, providerId, workspaceId, record, onMessage, onDone, onError, onAuthEvent } = options;
+  const { onMessage, onDone, onError, onAuthEvent } = callbacks;
 
   return new Promise((resolve, reject) => {
-    const connectionId = generateConnectionId();
-    const effectiveThreadId = threadId || generateThreadId();
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = baseUrl || window.location.host;
-    let wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
-    if (modeId) {
-      wsUrl += `&modeId=${encodeURIComponent(modeId)}`;
-    }
-    if (providerId) {
-      wsUrl += `&providerId=${encodeURIComponent(providerId)}`;
-    }
-    if (workspaceId) {
-      wsUrl += `&workspaceId=${encodeURIComponent(workspaceId)}`;
-    }
-    if (record) {
-      wsUrl += '&record=1';
-    }
-
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
 
     const socket = new WebSocket(wsUrl);
@@ -210,6 +230,25 @@ export function createWebSocketConnection(
 }
 
 /**
+ * Create a WebSocket connection for chat streaming.
+ * The WebSocket sends raw JSON messages (not SSE format).
+ */
+export function createWebSocketConnection(
+  options: WebSocketClientOptions
+): Promise<WebSocketConnection> {
+  const { threadId, onMessage, onDone, onError, onAuthEvent } = options;
+  const connectionId = generateConnectionId();
+  const effectiveThreadId = threadId || generateThreadId();
+  const wsUrl = buildChatWebSocketUrl(options, effectiveThreadId, connectionId);
+  return openWebSocketConnection(wsUrl, effectiveThreadId, connectionId, {
+    onMessage,
+    onDone,
+    onError,
+    onAuthEvent,
+  });
+}
+
+/**
  * Send a chat message over an existing WebSocket connection.
  * The message is sent as JSON and the server streams responses back.
  */
@@ -237,9 +276,10 @@ export function closeWebSocketConnection(connection: WebSocketConnection): void 
 }
 
 /**
- * Generate a unique connection ID
+ * Generate a unique connection ID. Exported so sibling WebSocket clients (e.g. the sub-agent
+ * stream) reuse the same id scheme instead of re-deriving it.
  */
-function generateConnectionId(): string {
+export function generateConnectionId(): string {
   return `ws-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 

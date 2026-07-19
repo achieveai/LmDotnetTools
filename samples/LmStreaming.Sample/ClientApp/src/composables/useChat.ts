@@ -5,12 +5,9 @@ import type {
   UsageMessage,
   ToolCallResultMessage,
   DisplayItem,
-  NotificationDisplayData,
   MessageStatus,
-  ReasoningMessage,
   ToolsCallMessage,
   ToolCallMessage,
-  NotifyMessage,
   AuthEvent,
   AuthRequiredEvent,
 } from '@/types';
@@ -36,6 +33,8 @@ import {
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
 import { useMessageMerger } from './useMessageMerger';
+import { getMergeKey } from './messageMergeKey';
+import { buildDisplayItems } from './messageDisplay';
 import { logger } from '@/utils';
 
 const log = logger.forComponent('useChat');
@@ -89,83 +88,6 @@ export interface UseChatOptions {
    * fall back to its configured default.
    */
   getWorkspaceId?: () => string | null | undefined;
-}
-
-/**
- * Generate merge key for message updates
- */
-function getMergeKey(msg: Message, turnSeq = 0): string {
-  const runId = msg.runId || 'default';
-  const generationId = msg.generationId || 'default';
-  const messageOrderIdx = msg.messageOrderIdx ?? 0;
-  const mergeKind = getMergeKind(msg);
-
-  // A notification carries a distinct generationId ('notify:<guid>' stamped by the backend on the
-  // ONE message object), so two notifications in one run never collide on the shared
-  // runId/messageOrderIdx (both 0), and the live-published copy merges with its reload-parsed twin
-  // (same generationId). Keyed explicitly so a null/missing messageOrderIdx can't fold two distinct
-  // notifications onto one pill.
-  if (isNotifyMessage(msg)) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
-  }
-
-  // Individual tool calls — streaming OR finalized — are keyed by tool_call_id. Several concurrent
-  // tool calls in one turn share runId/generationId/messageOrderIdx and differ only by tool_call_id
-  // (e.g. GPT-5.5 via the OpenAI Responses API); without it they collapse into a single pill.
-  if (isToolCallUpdateMessage(msg) || isToolCallMessage(msg)) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
-  }
-
-  // A finalized single-call ToolsCallMessage is the same case wrapped in the aggregate type —
-  // disambiguate by its tool_call_id too. Multi-call aggregates already carry every call in one
-  // message (rendered as N pills), so they key on messageOrderIdx only.
-  if (isToolsCallMessage(msg) && msg.tool_calls?.length === 1 && msg.tool_calls[0]?.tool_call_id) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_calls[0].tool_call_id}`;
-  }
-
-  // Reasoning and text have no per-instance id (unlike tool_call_id). The server now mints a
-  // per-turn generationId (MultiTurnAgentLoop.ExecuteRunTurnsAsync), so live streams keep turns
-  // distinct on their own. But conversations PERSISTED before that fix still carry the old
-  // run-scoped shape on disk — one generationId across every turn with messageOrderIdx reset each
-  // turn — so turn N and N+1 content would collide on reload (later turns' thinking/text collapsing
-  // onto the first block, text between tool calls pinned to the top instead of interleaving). Fold
-  // in a caller-supplied turn epoch (contentTurnEpoch in useChat, bumped when content resumes after
-  // intervening non-content) so each turn stays a distinct block regardless. Defense-in-depth that
-  // also covers that on-disk legacy data. Mirrors the tool_call_id disambiguation above.
-  if (
-    isReasoningMessage(msg) || isReasoningUpdateMessage(msg) ||
-    isTextMessage(msg) || isTextUpdateMessage(msg)
-  ) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-t${turnSeq}`;
-  }
-
-  // ToolsCallUpdate accumulates tools into one array → key on messageOrderIdx only.
-  return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
-}
-
-function getMergeKind(msg: Message): 'text' | 'reasoning' | 'tools' | 'tool' | 'notify' | 'other' {
-  if (isNotifyMessage(msg)) return 'notify';
-  if (isTextMessage(msg) || isTextUpdateMessage(msg)) return 'text';
-  if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) return 'reasoning';
-  if (isToolsCallMessage(msg) || isToolsCallUpdateMessage(msg)) return 'tools';
-  if (isToolCallMessage(msg) || isToolCallUpdateMessage(msg)) return 'tool';
-  return 'other';
-}
-
-/**
- * Normalize a NotifyMessage into the shape the notification pill renders. Producing the pill data
- * here (rather than passing the raw message) lets the legacy `context_discovery` TextMessage path
- * feed the SAME pill via a hand-built {@link NotificationDisplayData}.
- */
-function notifyToDisplayData(msg: NotifyMessage): NotificationDisplayData {
-  return {
-    notifyKind: msg.notify_kind,
-    label: msg.label,
-    sourceToolName: msg.source_tool_name,
-    sourceToolCallId: msg.source_tool_call_id,
-    detail: msg.detail,
-    text: msg.text,
-  };
 }
 
 /**
@@ -329,156 +251,11 @@ export function useChat(options: UseChatOptions = {}) {
   }
 
   /**
-   * Transform messages into display items with pill grouping
+   * Transform messages into display items with pill grouping. Delegates to the shared
+   * {@link buildDisplayItems} (extracted so the sub-agent panel renders identically) — `sortMessages`
+   * already returns non-pending messages in arrival order.
    */
-  const displayItems = computed<DisplayItem[]>(() => {
-    const sortedMessages = sortMessages();
-    const items: DisplayItem[] = [];
-
-    let pillBuffer: Array<ReasoningMessage | ToolsCallMessage> = [];
-    let pillRunId: string | null = null;
-    let pillParentRunId: string | null = null;
-    let pillMessageOrderIdx: number | null = null;
-
-    function flushPill() {
-      if (pillBuffer.length > 0) {
-        items.push({
-          type: 'pill',
-          id: `pill-${items.length}`,
-          items: [...pillBuffer],
-          runId: pillRunId,
-          parentRunId: pillParentRunId,
-          messageOrderIdx: pillMessageOrderIdx,
-        });
-        pillBuffer = [];
-        pillRunId = null;
-        pillParentRunId = null;
-        pillMessageOrderIdx = null;
-      }
-    }
-
-    for (const msg of sortedMessages) {
-      const content = msg.content;
-      // Out-of-band notifications render as a distinct pill, NEVER a user bubble — so this branch
-      // must precede the `role === 'user'` catch-all (a NotifyMessage maps to Role.User, and a
-      // reload-parsed one is tagged role 'user'). The legacy pre-migration path — a context_discovery
-      // marker flattened onto a Role.User TextMessage — is folded into the SAME branch so already
-      // persisted rows render one unified context pill (no duplicate, no user bubble) too.
-      if (isNotifyMessage(content)) {
-        flushPill();
-        items.push({
-          type: 'notification',
-          id: msg.id,
-          notification: notifyToDisplayData(content),
-          runId: msg.runId,
-        });
-      } else if (isTextMessage(content) && content.context_discovery != null) {
-        flushPill();
-        items.push({
-          type: 'notification',
-          id: msg.id,
-          notification: {
-            notifyKind: 'context-discovery',
-            contextPath: content.context_discovery.path,
-            contextTruncated: content.context_discovery.truncated,
-            text: content.text,
-          },
-          runId: msg.runId,
-        });
-      } else if (msg.role === 'user') {
-        flushPill();
-        items.push({
-          type: 'user-message',
-          id: msg.id,
-          content: msg.content as TextMessage,
-          status: msg.status,
-          timestamp: msg.timestamp,
-        });
-      } else if (isReasoningMessage(msg.content)) {
-        const reasoning = msg.content as ReasoningMessage;
-        const visibility = normalizeReasoningVisibility(reasoning.visibility);
-
-        // Skip encrypted reasoning (just shows "[Encrypted reasoning hidden]" noise)
-        if (visibility === 'Encrypted') {
-          continue;
-        }
-
-        // Skip duplicate plain reasoning with same content already in pill buffer
-        // (backend stores both streamed accumulation and final complete message)
-        const isDuplicate = pillBuffer.some(
-          (item) =>
-            isReasoningMessage(item) &&
-            (item as ReasoningMessage).generationId === reasoning.generationId &&
-            (item as ReasoningMessage).reasoning === reasoning.reasoning
-        );
-        if (isDuplicate) {
-          continue;
-        }
-
-        // Add to pill buffer
-        pillBuffer.push(reasoning);
-        pillRunId = msg.runId ?? null;
-        pillParentRunId = msg.parentRunId ?? null;
-        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
-      } else if (isToolsCallMessage(msg.content)) {
-        // Split multi-tool-call messages into individual pills (one per tool call)
-        const toolsCall = msg.content as ToolsCallMessage;
-        for (const tc of toolsCall.tool_calls) {
-          const singleToolMsg: ToolsCallMessage = {
-            $type: MessageType.ToolsCall,
-            tool_calls: [tc],
-            role: toolsCall.role,
-            generationId: toolsCall.generationId,
-            runId: toolsCall.runId,
-            parentRunId: toolsCall.parentRunId,
-            threadId: toolsCall.threadId,
-            messageOrderIdx: toolsCall.messageOrderIdx,
-          };
-          pillBuffer.push(singleToolMsg);
-        }
-        pillRunId = msg.runId ?? null;
-        pillParentRunId = msg.parentRunId ?? null;
-        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
-      } else if (isToolCallMessage(msg.content)) {
-        // Wrap individual tool call as its own pill (no merging)
-        const toolCall: ToolCallMessage = msg.content as ToolCallMessage;
-        const toolsCallMsg: ToolsCallMessage = {
-          $type: MessageType.ToolsCall,
-          tool_calls: [{
-            tool_call_id: toolCall.tool_call_id,
-            function_name: toolCall.function_name,
-            function_args: toolCall.function_args,
-          }],
-          role: toolCall.role,
-          generationId: toolCall.generationId,
-          runId: toolCall.runId,
-          parentRunId: toolCall.parentRunId,
-          threadId: toolCall.threadId,
-          messageOrderIdx: toolCall.messageOrderIdx,
-        };
-        pillBuffer.push(toolsCallMsg);
-        pillRunId = msg.runId ?? null;
-        pillParentRunId = msg.parentRunId ?? null;
-        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
-      } else if (isTextMessage(msg.content)) {
-        // Text message - flush pill and add text
-        flushPill();
-        items.push({
-          type: 'assistant-message',
-          id: msg.id,
-          content: msg.content as TextMessage,
-          runId: msg.runId,
-          parentRunId: msg.parentRunId,
-          messageOrderIdx: msg.messageOrderIdx,
-        });
-      }
-    }
-
-    // Flush any remaining pill items
-    flushPill();
-
-    return items;
-  });
+  const displayItems = computed<DisplayItem[]>(() => buildDisplayItems(sortMessages()));
 
   /**
    * Handle RunAssignment message - activate pending messages
