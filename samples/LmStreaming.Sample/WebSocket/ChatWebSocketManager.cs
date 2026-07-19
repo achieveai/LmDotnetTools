@@ -549,6 +549,16 @@ public sealed class ChatWebSocketManager
                 {
                     _logger.LogWarning(ex, "Invalid JSON for sub-agent {AgentId}: {Json}", agentId, json);
                 }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // A focused child's lifetime is independent of this socket: it can finish and be
+                    // pruned (ArgumentException "Unknown sub-agent") or race a restart
+                    // (InvalidOperationException) between frames. Isolate per-frame relay failures so a
+                    // transient/terminal target never tears down the whole presentation-only view — the
+                    // sibling stream keeps serving until it closes on its own. Cancellation still exits.
+                    _logger.LogWarning(
+                        ex, "Failed to relay message to sub-agent {AgentId}; keeping the stream open", agentId);
+                }
             }
         }
         catch (OperationCanceledException)

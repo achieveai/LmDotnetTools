@@ -115,6 +115,56 @@ public sealed class ChatWebSocketManagerSubAgentTests
     }
 
     [Fact]
+    public async Task HandleSubAgentConnectionAsync_KeepsStreamOpen_WhenRelayThrows()
+    {
+        // A relay can fail per-frame after the socket is open: the focused child's lifetime is
+        // independent, so a restart can throw (e.g. its provider fails to recreate). Such a failure
+        // must be isolated to the frame — it must NOT tear down the whole presentation-only view.
+        // The child's FIRST run completes immediately; the SECOND provider creation (triggered by the
+        // relay's restart of the finished child) throws. We prove the receive loop survives by
+        // observing it goes on to read a SECOND frame after the throwing relay.
+        var creation = 0;
+        Func<IStreamingAgent> factory = () =>
+        {
+            var call = Interlocked.Increment(ref creation);
+            if (call == 1)
+            {
+                return new ScriptedSubAgentProvider((messages, ct) => OneMessageThenComplete());
+            }
+
+            throw new InvalidOperationException("provider recreation failed");
+        };
+
+        await using var loop = CreateParentLoop(factory);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        // Ensure the first run has finished so the relay takes the (throwing) restart path.
+        _ = await loop.SubAgentManager!.ObserveCompletionAsync(agentId, testCts.Token);
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-one")));
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-two")));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(
+          socket, ParentThreadId, agentId, testCts.Token);
+
+        // Both frames are read: the first relay throws (restart recreation fails) but is isolated, so
+        // the loop stays alive and reads the second frame instead of faulting the connection.
+        await socket.WaitUntilAsync(() => socket.ReceivedFrameCount >= 2, testCts.Token);
+        handlerTask.IsCompleted.Should().BeFalse("an isolated relay failure must not end the connection");
+
+        await testCts.CancelAsync();
+        await handlerTask;
+    }
+
+    [Fact]
     public async Task HandleSubAgentConnectionAsync_SendsStructuredError_WhenAgentIdUnknown()
     {
         var provider = new ScriptedSubAgentProvider((messages, ct) => EmptyStream());
@@ -192,6 +242,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
     {
         await Task.CompletedTask;
         yield break;
+    }
+
+    private static async IAsyncEnumerable<IMessage> OneMessageThenComplete()
+    {
+        await Task.CompletedTask;
+        yield return new TextMessage { Role = Role.Assistant, Text = "ack" };
     }
 
     /// <summary>
