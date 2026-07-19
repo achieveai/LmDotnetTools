@@ -128,6 +128,10 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="publicationObserver">
+    /// Optional agent-wide hook observing every message this loop publishes (see
+    /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
+    /// </param>
     public ClaudeAgentLoop(
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
@@ -141,7 +145,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null,
         string? initialSessionId = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        IAgentPublicationObserver? publicationObserver = null)
         : base(
             threadId,
             systemPrompt,
@@ -151,7 +156,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             outputChannelCapacity,
             store,
             logger,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            publicationObserver: publicationObserver)
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 
