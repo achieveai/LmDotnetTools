@@ -212,6 +212,35 @@ public class FileBrowserControllerTests
         result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>();
     }
 
+    [Theory]
+    [InlineData(42)]
+    [InlineData(true)]
+    public async Task List_ReturnsNoSession_WhenWorkspacePropertyIsNonStringJsonElement(object rawValue)
+    {
+        // A malformed persisted workspace value (a JSON number/bool/object) must NOT be reinterpreted as a
+        // workspace id via a blanket ToString() — it is ignored, yielding the no-session state (mirrors
+        // MultiTurnAgentPool's strict string normalization).
+        var element = JsonSerializer.SerializeToElement(rawValue);
+        var metadata = new ThreadMetadata
+        {
+            ThreadId = ThreadId,
+            LastUpdated = 0,
+            Properties = ImmutableDictionary<string, object>.Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, element),
+        };
+        var store = new Mock<IConversationStore>();
+        store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(metadata);
+        var browser = new FakeFileBrowser();
+        var controller = new FileBrowserController(store.Object, browser, NullLogger<FileBrowserController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+        };
+
+        var result = await controller.List(ThreadId, path: null, CancellationToken.None);
+
+        // The non-string value is ignored → no_session_yet, never a bogus "42"/"True" workspace identity.
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<NoSessionStateDto>();
+    }
+
     // -------- Listing --------
 
     [Fact]

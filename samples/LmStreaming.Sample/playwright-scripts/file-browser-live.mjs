@@ -25,6 +25,9 @@ async (page) => {
   let uploadVisible = false;
   let previewText = '';
   let deleteConfirmed = false;
+  // Every filename we ever POST (even ones whose row timed out): a server-side upload can succeed after
+  // the row-wait times out, so we must reconcile ALL of them in cleanup, not just the final uploadedName.
+  const attemptedNames = [];
 
   // 1. Load the chat UI.
   try {
@@ -104,7 +107,10 @@ async (page) => {
         tid('file-browser-list').waitFor({ state: 'visible', timeout: 8000 }).catch(() => {}),
         tid('file-browser-no-session').waitFor({ state: 'visible', timeout: 8000 }).catch(() => {}),
       ]);
-      if (await tid('file-browser-list').isVisible().catch(() => false)) {
+      if (
+        (await tid('file-browser-list').isVisible().catch(() => false)) &&
+        !(await tid('file-browser-error').isVisible().catch(() => false))
+      ) {
         opened = true;
         ok('6 file browser modal opened + listing resolved (attempt ' + attempt + ')');
         break;
@@ -131,6 +137,9 @@ async (page) => {
     const state = await page.evaluate(() => {
       const noSession = !!document.querySelector('[data-testid="file-browser-no-session"]');
       const hasList = !!document.querySelector('[data-testid="file-browser-list"]');
+      // The list can render ALONGSIDE an error (load() clears entries + sets error), so a visible list
+      // is NOT proof of success — a 500/503 must not be reported as "session OK".
+      const hasError = !!document.querySelector('[data-testid="file-browser-error"]');
       const ws = document.querySelector('[data-testid="file-browser-workspace"]');
       const entries = [...document.querySelectorAll('[data-testid^="file-entry-"]')]
         .map((n) => n.getAttribute('data-testid'))
@@ -140,17 +149,20 @@ async (page) => {
       return {
         noSession,
         hasList,
+        hasError,
         workspace: ws ? ws.textContent.replace(/\s+/g, ' ').trim() : '',
         entries,
       };
     });
-    sessionEstablished = state.hasList && !state.noSession;
+    sessionEstablished = state.hasList && !state.noSession && !state.hasError;
     workspaceLabel = state.workspace;
     initialEntryCount = state.entries.length;
     if (state.noSession) {
       fail('7 NO SESSION — file-browser-no-session present (sandbox session NOT established)');
+    } else if (state.hasError) {
+      fail('7 listing ERROR — file-browser-error visible; a failed request is not a resolved session');
     } else if (state.hasList) {
-      ok(`7 session OK (list present, ${initialEntryCount} entries, workspace="${workspaceLabel}")`);
+      ok(`7 session OK (list present, no error, ${initialEntryCount} entries, workspace="${workspaceLabel}")`);
     } else {
       fail('7 indeterminate — neither list nor no-session rendered');
     }
@@ -166,6 +178,7 @@ async (page) => {
       while (attempt < 3 && !placed) {
         attempt++;
         const name = `e2e-live-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`;
+        attemptedNames.push(name);
         // Inject the file via a browser-side DataTransfer — the Playwright runner has no Node `Buffer`
         // and no dynamic import, but the page has File/Blob/DataTransfer. Assigning input.files and
         // dispatching 'change' drives the Vue @change upload handler exactly like a real file pick.
@@ -224,20 +237,56 @@ async (page) => {
     fail('9 preview skipped — nothing uploaded');
   }
 
-  // 10. Delete the uploaded file and confirm it disappears.
+  // 10. Delete the uploaded file. Row detachment ALONE is not a reliable oracle (remove() reloads in
+  //     finally; a failed reload also clears entries and detaches the row). Require the DELETE response to
+  //     be 204, no error banner, AND the row gone.
   if (uploadVisible) {
     try {
       await tid(`file-entry-delete-${uploadedName}`).click({ timeout: 10000 });
       await tid('file-browser-delete-confirm').waitFor({ state: 'visible', timeout: 10000 });
+      const delResp = page
+        .waitForResponse(
+          (r) => r.request().method() === 'DELETE' && /\/files(\?|$)/.test(r.url()),
+          { timeout: 15000 }
+        )
+        .catch(() => null);
       await tid('file-browser-delete-confirm-btn').click({ timeout: 10000 });
-      await tid(`file-entry-${uploadedName}`).waitFor({ state: 'detached', timeout: 15000 });
-      deleteConfirmed = true;
-      ok('10 deleted ' + uploadedName + ' (row gone)');
+      const resp = await delResp;
+      const status = resp ? resp.status() : 0;
+      await tid(`file-entry-${uploadedName}`).waitFor({ state: 'detached', timeout: 15000 }).catch(() => {});
+      const rowGone = !(await tid(`file-entry-${uploadedName}`).isVisible().catch(() => false));
+      const errVisible = await tid('file-browser-error').isVisible().catch(() => false);
+      if (status === 204 && rowGone && !errVisible) {
+        deleteConfirmed = true;
+        ok('10 deleted ' + uploadedName + ' (DELETE 204, row gone, no error)');
+      } else {
+        fail(
+          `10 delete: DELETE status=${status}, rowGone=${rowGone}, errorVisible=${errVisible} — not a confirmed delete`
+        );
+      }
     } catch (e) {
       fail('10 delete: ' + (e?.message ?? e));
     }
   } else {
     fail('10 delete skipped — nothing uploaded');
+  }
+
+  // 10b. Cleanup: best-effort delete of EVERY uploaded artifact (not just the confirmed one) so retries /
+  //      row-wait timeouts never leave orphan e2e-live-* files in the real workspace.
+  try {
+    for (const name of attemptedNames) {
+      if (name === uploadedName && deleteConfirmed) {
+        continue;
+      }
+      const row = tid(`file-entry-${name}`);
+      if (await row.isVisible().catch(() => false)) {
+        await tid(`file-entry-delete-${name}`).click().catch(() => {});
+        await tid('file-browser-delete-confirm-btn').click({ timeout: 5000 }).catch(() => {});
+        await row.waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
+      }
+    }
+  } catch {
+    // best-effort cleanup — never fail the run on it
   }
 
   // 11. Close the modal.

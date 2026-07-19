@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -504,18 +505,24 @@ public sealed class FileBrowserController(
     private static string? ReadWorkspaceId(ThreadMetadata metadata)
     {
         if (metadata.Properties is null
-            || !metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value)
-            || value is null)
+            || !metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value))
         {
             return null;
         }
 
-        // The persistent FileConversationStore round-trips Properties through System.Text.Json, so each
-        // value comes back boxed as a JsonElement (ValueKind.String), NOT a System.String — a plain
-        // `value as string` would return null and make every request resolve to no_session_yet. Use
-        // ToString() (matching ConversationsController) so both the JSON-store and in-memory cases work.
-        var workspaceId = value.ToString();
-        return string.IsNullOrWhiteSpace(workspaceId) ? null : workspaceId;
+        // Accept ONLY a real string or a JSON string value — never a number/bool/object/array. The
+        // persistent FileConversationStore round-trips Properties through System.Text.Json, so the value
+        // comes back boxed as a JsonElement; a blanket ToString() would reinterpret a JSON number/bool/etc.
+        // as a bogus workspace id. This mirrors MultiTurnAgentPool's strict TryNormalizeStringValue so a
+        // malformed persisted value can never become an unintended workspace identity.
+        var workspaceId = value switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            _ => null,
+        };
+
+        return string.IsNullOrWhiteSpace(workspaceId) ? null : workspaceId.Trim();
     }
 
     private static async Task<byte[]?> ReadUploadWithinCapAsync(IFormFile file, CancellationToken ct)
