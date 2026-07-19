@@ -1190,6 +1190,15 @@ try
                         }
                     }
 
+                    // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
+                    // sample's shared conversation store so a focused child can be replayed via the
+                    // existing conversation-messages endpoint. Only fills the fallback when unset, so a
+                    // template-specified store still wins.
+                    if (subAgentOptions is not null)
+                    {
+                        subAgentOptions = ApplyDefaultSubAgentStore(subAgentOptions, conversationStore);
+                    }
+
                     agent = new MultiTurnAgentLoop(
                         providerAgent,
                         filteredRegistry,
@@ -2018,6 +2027,27 @@ public partial class Program
                 },
                 StringComparer.Ordinal),
         };
+    }
+
+    /// <summary>
+    /// Fills <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> with the sample's shared
+    /// conversation store when the options don't already specify one, so spawned sub-agents persist
+    /// their transcripts (keyed per <c>subagent-{agentId}</c> thread) and can be replayed via the
+    /// existing conversation-messages endpoint. This only supplies the FALLBACK: a template that sets
+    /// its own <see cref="SubAgentTemplate.ConversationStoreFactory"/> — or options that already carry a
+    /// <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> — still wins, so the options are
+    /// returned unchanged in that case.
+    /// </summary>
+    public static SubAgentOptions ApplyDefaultSubAgentStore(
+        SubAgentOptions options,
+        IConversationStore store)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(store);
+
+        return options.DefaultConversationStoreFactory is not null
+            ? options
+            : options with { DefaultConversationStoreFactory = _ => store };
     }
 
     internal static SubAgentSessionBinding BindConversationSubAgents(

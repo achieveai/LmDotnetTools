@@ -380,6 +380,74 @@ public sealed class ProgramSubAgentCompositionTests
         rebound.Source.Templates["explicit"].IsModelExplicitlySelected.Should().BeTrue();
     }
 
+    [Fact]
+    public void ApplyDefaultSubAgentStore_WiresSharedStore_WhenOptionsHasNoDefault()
+    {
+        var store = new Mock<IConversationStore>().Object;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["custom"] = Template("custom", () => new Mock<IStreamingAgent>().Object),
+            },
+        };
+
+        var result = global::Program.ApplyDefaultSubAgentStore(options, store);
+
+        result.DefaultConversationStoreFactory.Should().NotBeNull();
+        result.DefaultConversationStoreFactory!("subagent-a").Should().BeSameAs(store);
+        result.DefaultConversationStoreFactory!("subagent-b").Should().BeSameAs(store);
+    }
+
+    [Fact]
+    public void ApplyDefaultSubAgentStore_PreservesExistingFactory_WhenAlreadySet()
+    {
+        var templateStore = new Mock<IConversationStore>().Object;
+        var fallbackStore = new Mock<IConversationStore>().Object;
+        Func<string, IConversationStore> existingFactory = _ => templateStore;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["custom"] = Template("custom", () => new Mock<IStreamingAgent>().Object),
+            },
+            DefaultConversationStoreFactory = existingFactory,
+        };
+
+        var result = global::Program.ApplyDefaultSubAgentStore(options, fallbackStore);
+
+        result.Should().BeSameAs(options);
+        result.DefaultConversationStoreFactory.Should().BeSameAs(existingFactory);
+        result.DefaultConversationStoreFactory!("subagent-a").Should().BeSameAs(templateStore);
+    }
+
+    [Fact]
+    public async Task SpawnedSubAgent_PersistsTranscript_ViaWiredDefaultStore()
+    {
+        var fakeStore = new InMemoryConversationStore();
+        var templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+        {
+            ["worker"] = Template("worker", () => CreateRespondingAgent().Object),
+        };
+        var options = global::Program.ApplyDefaultSubAgentStore(
+            new SubAgentOptions { Templates = templates },
+            fakeStore);
+        var source = new MutableSubAgentTemplateSource(templates);
+        await using var manager = new SubAgentManager(
+            Mock.Of<IMultiTurnAgent>(),
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+
+        _ = await manager.SpawnAsync("worker", "persist my transcript");
+
+        var threadId = manager.ListAgents().Should().ContainSingle().Subject.ThreadId;
+        threadId.Should().StartWith("subagent-");
+        var persisted = await fakeStore.LoadMessagesAsync(threadId);
+        persisted.Should().NotBeEmpty();
+    }
+
     private static SandboxSessionRegistry CreateRegistry()
     {
         const string baseUrl = "http://localhost:3000";
