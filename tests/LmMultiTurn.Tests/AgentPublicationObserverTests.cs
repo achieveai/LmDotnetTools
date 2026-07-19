@@ -635,6 +635,102 @@ public class AgentPublicationObserverTests
         await publishTask;
     }
 
+    /// <summary>
+    /// WI #194 publication-observer quality finding (Must #1): models a real-world race — e.g. a
+    /// ResolveToolCall result about to be published — that is blocked, via
+    /// <c>PrePublishLockHookForTests</c>, at the exact instant BEFORE it can ever acquire the
+    /// agent's internal replay lock, while <see cref="MultiTurnAgentBase.DisposeAsync"/> starts and
+    /// runs to completion concurrently. Proves all three closed-TOCTOU guarantees at once:
+    /// (1) disposal does not hang waiting on the blocked publish — it was never appended to the
+    /// observer dispatch chain, so it is not part of disposal's tail snapshot; (2) once released,
+    /// the blocked publish fails immediately with the documented, predictable
+    /// <see cref="ObjectDisposedException"/> attributed to the agent itself — never an incidental
+    /// <see cref="ObjectDisposedException"/> from a dispatch node lazily reading
+    /// <c>CancellationTokenSource.Token</c> on an already-disposed scope; and (3) no dispatch node
+    /// was ever appended for it, so the observer never silently "misses" it — the caller gets the
+    /// documented disposal outcome instead.
+    /// </summary>
+    [Fact]
+    public async Task PublishToAllAsync_BlockedBeforeLock_RacesDisposeAsync_FailsPredictablyWithObjectDisposedException()
+    {
+        var observer = new RecordingObserver();
+        var agent = new ObserverTestAgent("thread-race-dispose", observer);
+
+        var blockedPublishReachedGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBlockedPublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        agent.PrePublishLockHookForTests = async () =>
+        {
+            blockedPublishReachedGate.TrySetResult();
+            await releaseBlockedPublish.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        };
+
+        var lateMessage = new TextMessage { Text = "late-resolve-tool-call-result", Role = Role.Assistant };
+        var blockedPublishTask = agent.PublishForTest(lateMessage).AsTask();
+
+        // Deterministically wait until the publish call is blocked BEFORE it could ever acquire
+        // `_replayLock` / mutate the replay buffer / append a dispatch node.
+        await blockedPublishReachedGate.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // DisposeAsync must run to completion WITHOUT waiting on the blocked publish: it was never
+        // appended to the dispatch chain, so it cannot be part of the tail snapshot DisposeAsync
+        // bounds its wait on.
+        var disposeTask = agent.DisposeAsync().AsTask();
+        var disposeWinner = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10)));
+        disposeWinner.Should().Be(
+            disposeTask,
+            "DisposeAsync must not hang on a publish call that is blocked before it could ever acquire the replay lock");
+        await disposeTask;
+
+        // Now release the blocked publish. It must resolve promptly (never hang) and fail with the
+        // documented, predictable outcome — not an incidental exception from a disposed CTS.
+        releaseBlockedPublish.SetResult();
+
+        var publishOutcome = await Task.WhenAny(blockedPublishTask, Task.Delay(TimeSpan.FromSeconds(5)));
+        publishOutcome.Should().Be(blockedPublishTask, "the blocked publish must resolve promptly once released, never hang");
+
+        var awaitBlockedPublish = () => blockedPublishTask;
+        var thrown = await awaitBlockedPublish.Should().ThrowAsync<ObjectDisposedException>();
+        thrown.Which.ObjectName.Should().Be(
+            typeof(ObserverTestAgent).FullName,
+            "this must be the documented agent-disposed outcome — thrown BEFORE any replay-buffer/fan-out/observer "
+                + "mutation — never an ObjectDisposedException incidentally raised by reading `.Token` on an "
+                + "already-disposed CancellationTokenSource deep inside a dispatch node");
+
+        // No dispatch node was ever appended for the blocked publication — the observer never sees it.
+        observer.Received.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// WI #194 publication-observer quality finding (Must #4): the test-only
+    /// <c>FanOutReadyDelayHookForTests</c> throws while publication A is signalling its dispatch
+    /// node "ready". That must not permanently hang the chain: the "ready" TCS must still complete
+    /// (in a `finally`) despite the hook faulting, so publication B's node — chained behind A's —
+    /// still proceeds and B still reaches the observer normally.
+    /// </summary>
+    [Fact]
+    public async Task PublishToAllAsync_FanOutReadyHookThrows_DoesNotHangChain_LaterPublicationStillReachesObserver()
+    {
+        var hookBoom = new InvalidOperationException("fan-out-ready hook boom for A");
+        var observer = new RecordingObserver();
+        await using var agent = new ObserverTestAgent("thread-hook-throws", observer);
+
+        var msgA = new TextMessage { Text = "A-hook-throws", Role = Role.Assistant };
+        var msgB = new TextMessage { Text = "B-succeeds", Role = Role.Assistant };
+
+        agent.FanOutReadyDelayHookForTests = publication =>
+            publication.Sequence == 1 ? throw hookBoom : Task.CompletedTask;
+
+        var publishA = async () => await agent.PublishForTest(msgA);
+        (await publishA.Should().ThrowAsync<InvalidOperationException>()).Which.Should().BeSameAs(hookBoom);
+
+        // Must NOT hang: A's "ready" TCS must have been completed in a `finally` despite the hook
+        // throwing, letting B's dispatch node (chained behind A's) proceed once B is published.
+        await agent.PublishForTest(msgB).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        observer.Received.Should().ContainSingle(p => ReferenceEquals(p.Message, msgB));
+    }
+
     #endregion
 
     #region Helper predicates
