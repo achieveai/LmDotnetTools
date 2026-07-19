@@ -88,11 +88,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // start should treat prior Queued/InProgress rows as dangling).
     private bool _runLedgerReconciled;
 
-    // Optional agent-wide publication observer (see IAgentPublicationObserver) — the single
-    // future authority for durable child replay (WI #194 tasks 5-6). Null by default so
-    // existing constructors/behavior are completely unaffected.
-    private readonly IAgentPublicationObserver? _publicationObserver;
-
     #endregion
 
     #region Protected Properties
@@ -234,11 +229,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// (which must then also implement <see cref="IRunLedgerStore"/>) — enables <see cref="TrySendAsync"/>
     /// and restart reconciliation. Default false preserves existing in-memory-only behavior.
     /// </param>
-    /// <param name="publicationObserver">
-    /// Optional agent-wide hook observing every message published via <see cref="PublishToAllAsync(IMessage, CancellationToken)"/>
-    /// (see <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior
-    /// exactly — v1 subscriber fan-out is completely unaffected by this parameter either way.
-    /// </param>
     protected MultiTurnAgentBase(
         string threadId,
         string? systemPrompt = null,
@@ -250,8 +240,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         ILogger? logger = null,
         int maxReplayBufferSize = 10_000,
         long maxReplayBufferBytes = 8L * 1024 * 1024,
-        bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null)
+        bool persistRunLedger = false)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -265,7 +254,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         DefaultOptions = defaultOptions ?? new GenerateReplyOptions();
         Store = store;
         Logger = logger ?? NullLogger.Instance;
-        _publicationObserver = publicationObserver;
 
         if (persistRunLedger)
         {
@@ -1042,33 +1030,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <summary>
-    /// Publish a message to all subscribers. The publication kind used for the optional
-    /// <see cref="IAgentPublicationObserver"/> is inferred purely from <paramref name="message"/>'s
-    /// type (<see cref="RunAssignmentMessage"/> → <see cref="AgentPublicationKind.RunAssignment"/>,
-    /// <see cref="RunCompletedMessage"/> → <see cref="AgentPublicationKind.RunTerminal"/>, otherwise
-    /// <see cref="AgentPublicationKind.Message"/>). Use the explicit-kind overload when the message
-    /// TYPE alone cannot disambiguate intent — e.g. a deferred tool call's resolution reuses
-    /// <see cref="ToolCallResultMessage"/>, which would otherwise infer as an ordinary message.
+    /// Publish a message to all subscribers.
     /// </summary>
     /// <param name="message">The message to publish</param>
     /// <param name="ct">Cancellation token</param>
-    protected ValueTask PublishToAllAsync(IMessage message, CancellationToken ct) =>
-        PublishToAllAsync(message, InferPublicationKind(message), ct);
-
-    /// <summary>
-    /// Publish a message to all subscribers with an explicit <see cref="AgentPublicationKind"/> for
-    /// the optional <see cref="IAgentPublicationObserver"/>. v1 subscriber fan-out (payload,
-    /// instance identity, order, non-blocking delivery) is IDENTICAL regardless of whether an
-    /// observer is configured or which kind is passed — <paramref name="kind"/> only affects what a
-    /// configured observer is told. When an observer is configured, the publishing caller AWAITS it
-    /// (see <see cref="IAgentPublicationObserver"/>); an observer exception propagates to that
-    /// caller (the run) rather than being swallowed.
-    /// </summary>
-    /// <param name="message">The message to publish</param>
-    /// <param name="kind">The publication kind to report to a configured observer.</param>
-    /// <param name="ct">Cancellation token</param>
-    protected ValueTask PublishToAllAsync(IMessage message, AgentPublicationKind kind, CancellationToken ct)
+    protected ValueTask PublishToAllAsync(IMessage message, CancellationToken ct)
     {
+        _ = ct;
         List<KeyValuePair<string, Channel<IMessage>>> targets;
         lock (_replayLock)
         {
@@ -1129,27 +1097,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             PublishToSubscriber(subscriberId, channel, message);
         }
 
-        // v1 fan-out above is already complete (non-blocking) regardless of what follows. The
-        // observer — when configured — is awaited by the publishing caller (see remarks on
-        // IAgentPublicationObserver); an exception here propagates to that caller rather than
-        // being swallowed.
-        return _publicationObserver == null
-            ? ValueTask.CompletedTask
-            : _publicationObserver.OnPublishedAsync(new AgentPublication(ThreadId, message, kind), ct);
+        return ValueTask.CompletedTask;
     }
-
-    /// <summary>
-    /// Infers the <see cref="AgentPublicationKind"/> for a publication whose caller did not
-    /// explicitly specify one — purely from <paramref name="message"/>'s type, so this never needs
-    /// updating at existing <see cref="RunAssignmentMessage"/>/<see cref="RunCompletedMessage"/>
-    /// publish call sites.
-    /// </summary>
-    private static AgentPublicationKind InferPublicationKind(IMessage message) => message switch
-    {
-        RunAssignmentMessage => AgentPublicationKind.RunAssignment,
-        RunCompletedMessage => AgentPublicationKind.RunTerminal,
-        _ => AgentPublicationKind.Message,
-    };
 
     /// <summary>
     /// Delivers <paramref name="message"/> to one subscriber WITHOUT ever blocking the publisher.
@@ -1160,7 +1109,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// the channel is full, DROP the subscriber: remove it from the fan-out and complete its channel
     /// so its <see cref="SubscribeAsync"/> enumerator ends. The client can reconnect; resume replays
     /// the in-flight run from the buffer. A reconnecting replay consumer can therefore never block
-    /// <see cref="PublishToAllAsync(IMessage, CancellationToken)"/>.
+    /// <see cref="PublishToAllAsync"/>.
     /// </summary>
     private void PublishToSubscriber(string subscriberId, Channel<IMessage> channel, IMessage message)
     {

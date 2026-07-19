@@ -111,10 +111,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     (with the built-in one-shot <c>timer</c> source plus any host registrations). When null,
     ///     no wait tools are exposed.
     /// </param>
-    /// <param name="publicationObserver">
-    ///     Optional agent-wide hook observing every message this loop publishes (see
-    ///     <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
-    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -130,19 +126,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         MutableSubAgentTemplateSource? subAgentTemplateSource = null,
         ILoggerFactory? loggerFactory = null,
         bool persistRunLedger = false,
-        TriggerOptions? triggerOptions = null,
-        IAgentPublicationObserver? publicationObserver = null)
-        : base(
-            threadId,
-            systemPrompt,
-            defaultOptions,
-            maxTurnsPerRun,
-            inputChannelCapacity,
-            outputChannelCapacity,
-            store,
-            logger,
-            persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver)
+        TriggerOptions? triggerOptions = null)
+        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger, persistRunLedger: persistRunLedger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);
@@ -1000,12 +985,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         var publishMessage = contentBlocks != null && contentBlocks.Count > 0
             ? newMessage with { ContentBlocks = contentBlocks }
             : newMessage;
-
-        // Explicitly marked Replacement (not inferred): this republishes the SAME ToolCallId that
-        // was already published once as the deferred placeholder — a durable observer must treat
-        // it as replacing that earlier entry, not appending a new one. The message TYPE alone
-        // (ToolCallResultMessage) cannot disambiguate this from an ordinary tool result.
-        await PublishToAllAsync(publishMessage, AgentPublicationKind.Replacement, ct);
+        await PublishToAllAsync(publishMessage, ct);
 
         _ = _deferred.TryRemove(toolCallId, out _);
 

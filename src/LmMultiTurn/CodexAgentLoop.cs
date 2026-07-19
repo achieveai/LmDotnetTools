@@ -48,10 +48,6 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
-    /// <param name="publicationObserver">
-    /// Optional agent-wide hook observing every message this loop publishes (see
-    /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
-    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -64,8 +60,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
-        bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null)
+        bool persistRunLedger = false)
         : this(
             options,
             mcpServers,
@@ -80,8 +75,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             logger,
             loggerFactory,
             clientFactory,
-            persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver)
+            persistRunLedger: persistRunLedger)
     {
     }
 
@@ -105,10 +99,6 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
-    /// <param name="publicationObserver">
-    /// Optional agent-wide hook observing every message this loop publishes (see
-    /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
-    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -123,8 +113,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
-        bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null)
+        bool persistRunLedger = false)
         : base(
             threadId,
             systemPrompt,
@@ -134,8 +123,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             outputChannelCapacity,
             store,
             logger,
-            persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver)
+            persistRunLedger: persistRunLedger)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>();
