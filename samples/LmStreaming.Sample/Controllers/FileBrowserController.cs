@@ -501,11 +501,22 @@ public sealed class FileBrowserController(
         return new SandboxCredential(appId, appKey);
     }
 
-    private static string? ReadWorkspaceId(ThreadMetadata metadata) =>
-        metadata.Properties is not null
-        && metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value)
-            ? value as string
-            : null;
+    private static string? ReadWorkspaceId(ThreadMetadata metadata)
+    {
+        if (metadata.Properties is null
+            || !metadata.Properties.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var value)
+            || value is null)
+        {
+            return null;
+        }
+
+        // The persistent FileConversationStore round-trips Properties through System.Text.Json, so each
+        // value comes back boxed as a JsonElement (ValueKind.String), NOT a System.String — a plain
+        // `value as string` would return null and make every request resolve to no_session_yet. Use
+        // ToString() (matching ConversationsController) so both the JSON-store and in-memory cases work.
+        var workspaceId = value.ToString();
+        return string.IsNullOrWhiteSpace(workspaceId) ? null : workspaceId;
+    }
 
     private static async Task<byte[]?> ReadUploadWithinCapAsync(IFormFile file, CancellationToken ct)
     {

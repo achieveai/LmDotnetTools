@@ -180,6 +180,38 @@ public class FileBrowserControllerTests
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
     }
 
+    [Fact]
+    public async Task List_ResolvesWorkspace_WhenPersistedPropertyIsAJsonElement()
+    {
+        // The persistent FileConversationStore round-trips ThreadMetadata.Properties through System.Text.Json,
+        // so the "workspace" value comes back boxed as a JsonElement (ValueKind.String), NOT a System.String.
+        // Regression guard for the live-E2E bug: a plain `value as string` returned null → every operation
+        // resolved to no_session_yet even for a correctly-bound conversation.
+        var stringMeta = new ThreadMetadata
+        {
+            ThreadId = ThreadId,
+            LastUpdated = 0,
+            Properties = ImmutableDictionary<string, object>.Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, "default"),
+        };
+        // Serialize + deserialize to reproduce the on-disk store's JsonElement-valued properties exactly.
+        var roundTripped = JsonSerializer.Deserialize<ThreadMetadata>(JsonSerializer.Serialize(stringMeta))!;
+        roundTripped.Properties![MultiTurnAgentPool.WorkspacePropertyKey].Should().BeOfType<JsonElement>();
+
+        var store = new Mock<IConversationStore>();
+        store.Setup(s => s.LoadMetadataAsync(ThreadId, It.IsAny<CancellationToken>())).ReturnsAsync(roundTripped);
+        var browser = new FakeFileBrowser();
+        browser.Listings[""] = [File("a.txt")];
+        var controller = new FileBrowserController(store.Object, browser, NullLogger<FileBrowserController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+        };
+
+        var result = await controller.List(ThreadId, path: null, CancellationToken.None);
+
+        // With the fix the workspace resolves and the real listing is returned — NOT a no_session_yet state.
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>();
+    }
+
     // -------- Listing --------
 
     [Fact]
