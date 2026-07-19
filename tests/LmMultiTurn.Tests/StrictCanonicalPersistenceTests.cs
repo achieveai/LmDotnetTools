@@ -192,6 +192,240 @@ public class StrictCanonicalPersistenceTests
         }
     }
 
+    /// <summary>
+    /// Polls <paramref name="condition"/> until it becomes true or <paramref name="timeout"/>
+    /// elapses. Used below to deterministically await a background auto-resumed run's
+    /// start/finish transitions (see <c>MultiTurnAgentLoop.TryScheduleAutoResume</c>) before a
+    /// test disposes its loop — disposal marks the agent disposed before draining the run task,
+    /// so letting a resumed run race disposal's publish calls would surface an unrelated
+    /// pre-existing disposal/in-flight-run ObjectDisposedException that has nothing to do with
+    /// the canonical-persistence invariant under test here.
+    /// </summary>
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        while (!condition())
+        {
+            if (cts.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            await Task.Delay(10);
+        }
+
+        return true;
+    }
+
+    [Fact]
+    public async Task ResolveToolCallAsync_StrictMode_StopDuringGatedDeferredAppend_PlaceholderLandsAndRemainsResolvable()
+    {
+        // Loop-level regression for the "orphaned deferred entry" bug: a Stop (CancelCurrentRunAsync,
+        // the run-token cancellation ExecuteAndPublishToolCallAsync's AddDeferredToHistoryAsync
+        // call is bound to) that fires WHILE the placeholder append is still gated inside the
+        // store must NOT cause ExecuteAndPublishToolCallAsync to unwind its `_deferred`
+        // registration out from under a write that is still going to land. Once the gate
+        // releases, the canonical store, the in-memory history, and `_deferred` must all agree
+        // the placeholder exists — no orphan (durable-but-unresolvable) state — and
+        // ResolveToolCallAsync must succeed exactly as if the Stop race never happened.
+        // Gate the THIRD append call specifically — the deferred placeholder's own write.
+        // Calls #1 ("go" user message) and #2 (the tool_call message itself) precede it in the
+        // same ordered chain and must run ungated first, so by the time this gate is reached,
+        // `_deferred` registration and the placeholder's own enqueue have already happened —
+        // exactly the "cancellation fires after enqueue" scenario this test targets.
+        var store = new ConfigurableCanonicalStore { GateAppendCallNumber = 3 };
+
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "long_op",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_stop_race",
+            Role = Role.Assistant,
+        };
+        var mockAgent = new Mock<IStreamingAgent>();
+        var callCount = 0;
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                // First turn defers; the auto-resume turn triggered by ResolveToolCallAsync's
+                // successful resolution below gets a plain completion instead of the SAME tool
+                // call again — otherwise the mock would defer forever and this test would race
+                // its own cleanup against an unbounded chain of auto-resumed runs.
+                IMessage[] responseMessages = Interlocked.Increment(ref callCount) == 1
+                    ? [toolCall]
+                    : [new TextMessage { Text = "done", Role = Role.Assistant }];
+                return Task.FromResult(ToAsyncEnumerable(responseMessages));
+            });
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract { Name = "long_op", Description = "test", Parameters = [] },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+
+        await using var loop = new MultiTurnAgentLoop(
+            mockAgent.Object,
+            registry,
+            "strict-loop-stop-race-thread",
+            store: store,
+            strictCanonicalPersistence: true);
+
+        using var loopCts = new CancellationTokenSource();
+        _ = loop.RunAsync(loopCts.Token);
+
+        var input = new UserInput([new TextMessage { Text = "go", Role = Role.User }]);
+        var drainTask = Task.Run(async () =>
+        {
+            await foreach (var _ in loop.ExecuteRunAsync(input, loopCts.Token))
+            {
+                // Drain until the run (which ends on the deferral) completes.
+            }
+        });
+
+        // Wait until the placeholder's append has actually reached the (still-gated) store.
+        await store.AppendGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var runId = loop.CurrentRunId;
+        runId.Should().NotBeNull("a run must be active while its deferred tool call's append is gated");
+
+        // Act: Stop fires — the exact same run-token cancellation
+        // ExecuteAndPublishToolCallAsync's AddDeferredToHistoryAsync call is bound to — while
+        // the append is still gated inside the store.
+        var cancelResult = await loop.CancelCurrentRunAsync(runId!);
+        cancelResult.Should().Be(RunCancellationResult.Accepted);
+
+        // Release the gate: the durable write must complete regardless of the Stop above.
+        store.ReleaseAppendGate();
+
+        await drainTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        store.AppendCallCount.Should().Be(3, "all three canonical appends (user message, tool_call, placeholder) must have landed despite the Stop");
+
+        // Assert: no orphan. ResolveToolCallAsync must succeed exactly as if there had been no
+        // Stop race at all — proving the canonical store write, the in-memory history
+        // placeholder, and the `_deferred` registration all landed together.
+        await loop.ResolveToolCallAsync("tc_stop_race", "final-value");
+
+        // The successful resolution auto-triggers a resume run (see TryScheduleAutoResume),
+        // which may start and finish faster than this test can observe a transient non-null
+        // CurrentRunId — settle on the terminal (no active run) state instead of requiring an
+        // intermediate observation, purely so disposal below never races an in-flight publish
+        // (see WaitUntilAsync remarks above).
+        (await WaitUntilAsync(() => loop.CurrentRunId == null, TimeSpan.FromSeconds(5))).Should().BeTrue(
+            "any auto-resumed run must settle before disposal");
+
+        await loopCts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task ResolveToolCallAsync_StrictMode_ExternalCallerCancellation_AfterReplacementEnqueue_CompletesPublishCleanup_AndRetryIsNoOp()
+    {
+        // Loop-level regression for the "skipped publish/cleanup" bug: an external caller's OWN
+        // token (e.g. a webhook-triggered ResolveToolCallAsync request whose HTTP request is
+        // itself aborted) cancelling AFTER the replacement has been enqueued into the
+        // strict-mode canonical persistence chain must NOT cause ResolveToolCallAsync to bail
+        // out mid-transition. In-memory history is already mutated to the resolved value by
+        // UpdateToolResultByCallId before ReplacePersistedAsync is even called — once the
+        // durable write is enqueued, the call must complete the full consistency path (persist,
+        // then publish + `_deferred` cleanup + auto-resume scheduling) rather than leaving the
+        // canonical store resolved while the live/`_deferred` state is stuck on the placeholder.
+        var store = new ConfigurableCanonicalStore { GateReplaceCallNumber = 1 };
+
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "long_op",
+            FunctionArgs = "{}",
+            ToolCallId = "tc_replace_stop_race",
+            Role = Role.Assistant,
+        };
+        var mockAgent = new Mock<IStreamingAgent>();
+        var callCount = 0;
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(() =>
+            {
+                // First turn defers; the auto-resume turn triggered by ResolveToolCallAsync's
+                // successful resolution below gets a plain completion instead of the SAME tool
+                // call again — otherwise the mock would defer forever and this test would race
+                // its own cleanup against an unbounded chain of auto-resumed runs.
+                IMessage[] responseMessages = Interlocked.Increment(ref callCount) == 1
+                    ? [toolCall]
+                    : [new TextMessage { Text = "done", Role = Role.Assistant }];
+                return Task.FromResult(ToAsyncEnumerable(responseMessages));
+            });
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract { Name = "long_op", Description = "test", Parameters = [] },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+
+        await using var loop = new MultiTurnAgentLoop(
+            mockAgent.Object,
+            registry,
+            "strict-loop-replace-stop-race-thread",
+            store: store,
+            strictCanonicalPersistence: true);
+
+        using var loopCts = new CancellationTokenSource();
+        _ = loop.RunAsync(loopCts.Token);
+
+        var input = new UserInput([new TextMessage { Text = "go", Role = Role.User }]);
+        await foreach (var _ in loop.ExecuteRunAsync(input, loopCts.Token))
+        {
+            // Drain until the run pauses on the deferral.
+        }
+
+        (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(
+            d => d.ToolCallId == "tc_replace_stop_race");
+
+        using var externalCts = new CancellationTokenSource();
+
+        var resolveTask = loop.ResolveToolCallAsync(
+            "tc_replace_stop_race", "final-value", ct: externalCts.Token);
+
+        await store.ReplaceGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Act: the external caller's OWN token cancels — e.g. the webhook HTTP request that
+        // triggered this ResolveToolCallAsync was itself aborted — while the replacement is
+        // still gated inside the store.
+        await externalCts.CancelAsync();
+
+        // Release the gate: the durable replacement write must complete regardless.
+        store.ReleaseReplaceGate();
+
+        // Act/Assert: the ORIGINAL call must complete normally (not throw) — the
+        // point-of-no-return invariant means this caller's own cancellation, once the write was
+        // enqueued, cannot abort the publish/cleanup that follows.
+        await resolveTask;
+
+        store.ReplaceCallCount.Should().Be(1);
+
+        // Assert: cleanup ran — the deferred entry is gone, not lingering.
+        (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty(
+            "the resolution's publish/cleanup must have completed, removing the deferred entry");
+
+        // Assert: an identical retry is a no-op (idempotent), proving the FIRST call's
+        // resolution actually landed (persisted + applied) rather than silently failing.
+        var retry = async () => await loop.ResolveToolCallAsync("tc_replace_stop_race", "final-value");
+        await retry.Should().NotThrowAsync();
+
+        // The first, successful resolution above auto-triggers a resume run (see
+        // TryScheduleAutoResume), which may start and finish faster than this test can observe
+        // a transient non-null CurrentRunId — settle on the terminal (no active run) state
+        // instead, purely so disposal below never races an in-flight publish (see WaitUntilAsync
+        // remarks above).
+        (await WaitUntilAsync(() => loop.CurrentRunId == null, TimeSpan.FromSeconds(5))).Should().BeTrue(
+            "any auto-resumed run must settle before disposal");
+
+        await loopCts.CancelAsync();
+    }
+
     [Fact]
     public async Task ReplacePersistedAsync_DefaultMode_StoreFailure_IsSwallowed_NotPropagated()
     {
@@ -372,11 +606,15 @@ public class StrictCanonicalPersistenceTests
     }
 
     [Fact]
-    public async Task AddDeferredToHistoryAsync_StrictMode_RunTokenCancellation_CancelsCallerWaitOnly_WriteLaterCompletesAndFlushSucceeds()
+    public async Task AddDeferredToHistoryAsync_StrictMode_RunTokenCancellation_AfterEnqueue_DoesNotAbortOrUnwindPlaceholder()
     {
-        // Requirement: a normal run-token cancellation (e.g. CancelCurrentRunAsync) must cancel
-        // ONLY the caller's own wait for the queued write — never the underlying store write
-        // itself (which runs under the per-agent durability token) — and must never record a
+        // Point-of-no-return requirement: a run-token cancellation (e.g. CancelCurrentRunAsync)
+        // that fires AFTER the placeholder append has already been enqueued must NEVER abort
+        // this call — doing so would let the caller (MultiTurnAgentLoop.ExecuteAndPublishToolCallAsync)
+        // unwind its `_deferred` registration while the durable write still lands, orphaning the
+        // canonical store's placeholder with no in-memory/`_deferred` counterpart. This call must
+        // complete the full consistency invariant — write, then in-memory placeholder
+        // registration — regardless of the caller token's later state, and must never record a
         // sticky canonical persistence fault or brick a later terminal flush.
         var store = new ConfigurableCanonicalStore { GateAppendCallNumber = 1 };
         await using var agent = new CanonicalPersistenceTestAgent(
@@ -398,13 +636,9 @@ public class StrictCanonicalPersistenceTests
 
         await store.AppendGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Act: cancel the caller's own (run) token while the write is still gated inside the
-        // store call.
+        // Act: cancel the caller's own (run) token AFTER the write has already been enqueued
+        // and reached the (still-gated) store — the point-of-no-return has already passed.
         await runCts.CancelAsync();
-
-        var act = async () => await appendTask;
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "the caller's own WaitAsync must observe its cancelled token");
 
         // Assert: the underlying write is UNAFFECTED by the caller's cancellation — it is still
         // gated (only one call has reached the store so far) and has not failed.
@@ -415,7 +649,13 @@ public class StrictCanonicalPersistenceTests
         // Release the gate: the write — running under the durability token, never the
         // already-cancelled caller token — completes successfully on its own.
         store.ReleaseAppendGate();
-        await agent.CanonicalPersistenceTailSnapshotForTests().WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Assert: this call completes NORMALLY (no OperationCanceledException) — the caller
+        // token's post-enqueue cancellation must never surface here — and the placeholder is
+        // actually registered in-memory, proving no orphan (durable-but-not-live) state.
+        await appendTask;
+
+        agent.GetHistorySnapshotForTest().Should().ContainSingle(m => ReferenceEquals(m, placeholder));
 
         store.AppendCallCount.Should().Be(1);
         store.OperationLog.Should().Equal("Append#1");
@@ -427,11 +667,43 @@ public class StrictCanonicalPersistenceTests
     }
 
     [Fact]
-    public async Task ReplacePersistedAsync_StrictMode_CallerCancellation_CancelsCallerWaitOnly_WriteLaterCompletesAndFlushSucceeds()
+    public async Task AddDeferredToHistoryAsync_StrictMode_AlreadyCancelledToken_ThrowsBeforeEnqueueing()
     {
-        // Mirrors the run-token test above, for ReplacePersistedAsync's caller — e.g. an external
-        // ResolveToolCallAsync request whose OWN cancellation must never abort the queued
-        // replacement write or poison the sticky canonical persistence fault.
+        // The other half of the point-of-no-return contract: a caller token that is ALREADY
+        // cancelled before the call even reaches the write must fail fast — before the
+        // placeholder ever reaches the store or the ordered chain.
+        var store = new ConfigurableCanonicalStore();
+        await using var agent = new CanonicalPersistenceTestAgent(
+            "strict-pre-enqueue-cancel-thread", store, strictCanonicalPersistence: true);
+
+        await agent.StartRunForTestAsync();
+
+        var placeholder = new ToolCallResultMessage
+        {
+            ToolCallId = "tc-pre-cancel",
+            Result = string.Empty,
+            IsDeferred = true,
+            Role = Role.User,
+        };
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await agent.AddDeferredToHistoryForTestAsync(placeholder, cts.Token);
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "cancellation must be honored BEFORE the write is enqueued");
+
+        store.AppendCallCount.Should().Be(0, "an already-cancelled caller token must never reach the store");
+        agent.GetHistorySnapshotForTest().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReplacePersistedAsync_StrictMode_CallerCancellation_AfterEnqueue_DoesNotAbort_WriteLaterCompletesAndFlushSucceeds()
+    {
+        // Mirrors the run-token test above, for ReplacePersistedAsync's caller — e.g. an
+        // external ResolveToolCallAsync request whose OWN cancellation fires AFTER the
+        // replacement has already been enqueued must never abort this call — doing so would let
+        // the caller skip publish/cleanup while the durable replacement still completes.
         var store = new ConfigurableCanonicalStore { GateReplaceCallNumber = 1 };
         await using var agent = new CanonicalPersistenceTestAgent(
             "strict-replace-caller-cancel-thread", store, strictCanonicalPersistence: true);
@@ -455,13 +727,9 @@ public class StrictCanonicalPersistenceTests
 
         await store.ReplaceGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Act: cancel the caller's own request token while the replacement is still gated
-        // inside the store call.
+        // Act: cancel the caller's own request token AFTER the replacement has already been
+        // enqueued and reached the (still-gated) store.
         await callerCts.CancelAsync();
-
-        var act = async () => await replaceTask;
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "the caller's own WaitAsync must observe its cancelled token");
 
         store.ReplaceCallCount.Should().Be(1);
         agent.HasCanonicalPersistenceFaultForTests.Should().BeFalse(
@@ -470,7 +738,10 @@ public class StrictCanonicalPersistenceTests
         // Release the gate: the write completes successfully under the (never-cancelled)
         // durability token.
         store.ReleaseReplaceGate();
-        await agent.CanonicalPersistenceTailSnapshotForTests().WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Assert: this call completes NORMALLY (no OperationCanceledException) despite the
+        // caller token's post-enqueue cancellation.
+        await replaceTask;
 
         store.ReplaceCallCount.Should().Be(1);
         store.OperationLog.Should().Equal("Append#1", "Replace#1");
@@ -478,6 +749,39 @@ public class StrictCanonicalPersistenceTests
 
         // A later terminal flush on this SAME (still-live) agent must succeed.
         await agent.CompleteRunForTestAsync(assignment.RunId, assignment.GenerationId);
+    }
+
+    [Fact]
+    public async Task ReplacePersistedAsync_StrictMode_AlreadyCancelledToken_ThrowsBeforeEnqueueing()
+    {
+        // The other half of the point-of-no-return contract for ReplacePersistedAsync: a
+        // caller token that is ALREADY cancelled before the call reaches the write must fail
+        // fast — before the replacement ever reaches the store or the ordered chain.
+        var store = new ConfigurableCanonicalStore();
+        await using var agent = new CanonicalPersistenceTestAgent(
+            "strict-replace-pre-enqueue-cancel-thread", store, strictCanonicalPersistence: true);
+
+        await agent.StartRunForTestAsync();
+
+        var placeholder = new ToolCallResultMessage
+        {
+            ToolCallId = "tc-replace-pre-cancel",
+            Result = string.Empty,
+            IsDeferred = true,
+            Role = Role.User,
+        };
+        var resolved = placeholder with { Result = "done", IsDeferred = false };
+
+        await agent.AddDeferredToHistoryForTestAsync(placeholder);
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await agent.ReplacePersistedForTestAsync(placeholder, resolved, cts.Token);
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "cancellation must be honored BEFORE the replacement is enqueued");
+
+        store.ReplaceCallCount.Should().Be(0, "an already-cancelled caller token must never reach the store");
     }
 
     [Fact]
@@ -575,6 +879,8 @@ public class StrictCanonicalPersistenceTests
         public Task ReplacePersistedForTestAsync(
             ToolCallResultMessage old, ToolCallResultMessage updated, CancellationToken ct = default) =>
             ReplacePersistedAsync(old, updated, ct);
+
+        public IReadOnlyList<IMessage> GetHistorySnapshotForTest() => GetHistorySnapshot();
 
         public Task CompleteRunForTestAsync(
             string runId,
