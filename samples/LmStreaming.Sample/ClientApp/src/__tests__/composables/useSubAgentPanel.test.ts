@@ -1006,3 +1006,148 @@ describe('useSubAgentPanel — round-3 hardening (PR #209 findings #1/#4/#5)', (
     expect(panel.isFocusedStreaming.value).toBe(true);
   });
 });
+
+describe('useSubAgentPanel — child transcript parity for provider-side frames (#307)', () => {
+  // Wire shapes for the provider-side (server-tool / citation) frames. Live copies arrive WITHOUT a
+  // runId, exactly like tool_call / text; only run_assignment carries it.
+  function serverToolUse(id: string, name = 'web_search') {
+    return { $type: MessageType.ServerToolUse, role: 'assistant', tool_use_id: id, tool_name: name, input: { query: 'q' }, generationId: GEN, messageOrderIdx: 2 };
+  }
+  function serverToolResult(id: string, result: string) {
+    return { $type: MessageType.ServerToolResult, role: 'tool', tool_use_id: id, tool_name: 'web_search', result, generationId: GEN, messageOrderIdx: 3 };
+  }
+  function textWithCitations(text: string) {
+    return { $type: MessageType.TextWithCitations, role: 'assistant', text, citations: [{ url: 'https://ex.com', title: 'Example' }], generationId: GEN, messageOrderIdx: 4 };
+  }
+
+  async function focusFirst(panel: ReturnType<typeof useSubAgentPanel>, agentId = 'a1') {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary(agentId)]);
+    await panel.refreshChildren();
+    await panel.focusChild(agentId);
+  }
+
+  it('renders LIVE server_tool_use/server_tool_result/text_with_citations at parity (grouped, resolved)', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const cb = captured[0].callbacks;
+    cb.onMessage(runAssignment());
+    cb.onMessage(serverToolUse('st_1'));
+    cb.onMessage(serverToolResult('st_1', 'search hits'));
+    cb.onMessage(textWithCitations('the answer'));
+
+    const items = panel.focusedDisplayItems.value;
+    // server_tool_use groups into the tool pill exactly like a local tool call.
+    expect(toolPills(items, 'st_1')).toHaveLength(1);
+    // server_tool_result resolves against its tool id.
+    expect(panel.getResultForToolCall('st_1')?.result).toBe('search hits');
+    // text_with_citations renders as the answer bubble with an appended Sources list.
+    const texts = assistantText(items).join('\n');
+    expect(texts).toContain('the answer');
+    expect(texts).toContain('[Example](https://ex.com)');
+  });
+
+  it('rehydrates PERSISTED server_tool_use/server_tool_result/text_with_citations at parity (exactly once, resolved)', async () => {
+    convMocks.loadConversationMessages.mockResolvedValue([
+      {
+        id: 'p-stuse', threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 2,
+        timestamp: 1002, messageType: 'server_tool_use', role: 'assistant',
+        messageJson: JSON.stringify(serverToolUse('st_9')),
+      },
+      {
+        id: 'p-stres', threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 3,
+        timestamp: 1003, messageType: 'server_tool_result', role: 'tool',
+        messageJson: JSON.stringify(serverToolResult('st_9', 'persisted hits')),
+      },
+      {
+        id: 'p-cit', threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 4,
+        timestamp: 1004, messageType: 'text_with_citations', role: 'assistant',
+        messageJson: JSON.stringify(textWithCitations('persisted answer')),
+      },
+    ]);
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const items = panel.focusedDisplayItems.value;
+    expect(toolPills(items, 'st_9')).toHaveLength(1);
+    expect(panel.getResultForToolCall('st_9')?.result).toBe('persisted hits');
+    const texts = assistantText(items).join('\n');
+    expect(texts).toContain('persisted answer');
+    expect(texts).toContain('[Example](https://ex.com)');
+  });
+
+  it('a LIVE provider-side frame merges with its REHYDRATED twin without duplicating', async () => {
+    // Persisted server_tool_use stamped with the run's real id (unresolved).
+    convMocks.loadConversationMessages.mockResolvedValue([
+      {
+        id: 'p-stuse', threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 2,
+        timestamp: 1002, messageType: 'server_tool_use', role: 'assistant',
+        messageJson: JSON.stringify(serverToolUse('st_1')),
+      },
+    ]);
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+    expect(toolPills(panel.focusedDisplayItems.value, 'st_1')).toHaveLength(1);
+    expect(panel.getResultForToolCall('st_1')).toBeNull();
+
+    // Live replay: assignment (runId) → same runId-less server_tool_use → its result.
+    const cb = captured[0].callbacks;
+    cb.onMessage(runAssignment());
+    cb.onMessage(serverToolUse('st_1'));
+    cb.onMessage(serverToolResult('st_1', 'resolved'));
+
+    expect(toolPills(panel.focusedDisplayItems.value, 'st_1')).toHaveLength(1);
+    expect(panel.getResultForToolCall('st_1')?.result).toBe('resolved');
+  });
+});
+
+describe('useSubAgentPanel — ordered polling (#148)', () => {
+  it('applies only the LATEST of two overlapping same-parent refreshes (older late response ignored)', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+
+    let resolveFirst!: (v: SubAgentSummary[]) => void;
+    let resolveSecond!: (v: SubAgentSummary[]) => void;
+    const first = new Promise<SubAgentSummary[]>((r) => { resolveFirst = r; });
+    const second = new Promise<SubAgentSummary[]>((r) => { resolveSecond = r; });
+    subAgentsMocks.listSubAgents.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+    const p1 = panel.refreshChildren();
+    const p2 = panel.refreshChildren();
+
+    // The NEWER (second) request resolves first with the fresh list.
+    resolveSecond([summary('fresh')]);
+    await p2;
+    expect(panel.children.value.map((c) => c.agentId)).toEqual(['fresh']);
+
+    // The OLDER (first) request resolves LATER with a stale list — it must be discarded.
+    resolveFirst([summary('stale')]);
+    await p1;
+    expect(panel.children.value.map((c) => c.agentId)).toEqual(['fresh']);
+  });
+
+  it('a stale error from an older overlapping refresh does not overwrite a newer success', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+
+    let rejectFirst!: (e: unknown) => void;
+    let resolveSecond!: (v: SubAgentSummary[]) => void;
+    const first = new Promise<SubAgentSummary[]>((_, rej) => { rejectFirst = rej; });
+    const second = new Promise<SubAgentSummary[]>((r) => { resolveSecond = r; });
+    subAgentsMocks.listSubAgents.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+    const p1 = panel.refreshChildren();
+    const p2 = panel.refreshChildren();
+
+    resolveSecond([summary('ok')]);
+    await p2;
+    expect(panel.error.value).toBeNull();
+    expect(panel.children.value.map((c) => c.agentId)).toEqual(['ok']);
+
+    // Older request rejects AFTER the newer success — the stale error must not surface.
+    rejectFirst(new Error('boom'));
+    await p1;
+    expect(panel.error.value).toBeNull();
+    expect(panel.children.value.map((c) => c.agentId)).toEqual(['ok']);
+  });
+});

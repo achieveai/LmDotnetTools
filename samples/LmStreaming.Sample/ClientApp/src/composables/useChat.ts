@@ -35,6 +35,11 @@ import { sendChatMessage } from '@/api/chatClient';
 import { useMessageMerger } from './useMessageMerger';
 import { getMergeKey } from './messageMergeKey';
 import { buildDisplayItems } from './messageDisplay';
+import {
+  serverToolUseToToolsCall,
+  serverToolResultToToolCallResult,
+  textWithCitationsToText,
+} from './messageConversions';
 import { logger } from '@/utils';
 
 const log = logger.forComponent('useChat');
@@ -459,41 +464,12 @@ export function useChat(options: UseChatOptions = {}) {
 
     // Handle server tool result → convert to ToolCallResultMessage and attach
     if (isServerToolResultMessage(msg)) {
-      const stResult = msg as unknown as Record<string, unknown>;
-      const toolUseId =
-        (typeof stResult.tool_use_id === 'string' ? stResult.tool_use_id : undefined)
-        ?? (typeof stResult.tool_call_id === 'string' ? stResult.tool_call_id : undefined);
-      const toolName =
-        (typeof stResult.tool_name === 'string' ? stResult.tool_name : undefined)
-        ?? (typeof stResult.function_name === 'string' ? stResult.function_name : undefined);
-      const isError =
-        (typeof stResult.is_error === 'boolean' ? stResult.is_error : undefined)
-        ?? (typeof stResult.isError === 'boolean' ? stResult.isError : undefined)
-        ?? false;
-      const errorCode =
-        (typeof stResult.error_code === 'string' ? stResult.error_code : undefined)
-        ?? (typeof stResult.errorCode === 'string' ? stResult.errorCode : undefined)
-        ?? null;
-      const rawResult = stResult.result;
-      const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? {});
-      const converted: ToolCallResultMessage = {
-        $type: MessageType.ToolCallResult,
-        tool_call_id: toolUseId,
-        tool_name: toolName,
-        result: isError ? `Error (${errorCode || 'unknown'}): ${resultStr}` : resultStr,
-        is_error: isError,
-        error_code: errorCode,
-        role: msg.role,
-        generationId: msg.generationId,
-        runId: msg.runId,
-        parentRunId: msg.parentRunId,
-        threadId: msg.threadId,
-        messageOrderIdx: msg.messageOrderIdx,
-      };
+      const converted = serverToolResultToToolCallResult(msg);
+      const toolUseId = converted.tool_call_id;
       if (toolUseId) {
         toolResults.value.set(toolUseId, converted);
       }
-      log.debug('Received server tool result', { toolName, toolUseId, isError });
+      log.debug('Received server tool result', { toolName: converted.tool_name, toolUseId, isError: converted.is_error });
 
       // Attach to matching server tool use (converted to ToolsCallMessage)
       if (toolUseId) {
@@ -509,80 +485,27 @@ export function useChat(options: UseChatOptions = {}) {
           }
         }
       } else {
-        log.warn('Server tool result missing tool id', { msg: stResult });
+        log.warn('Server tool result missing tool id', { msg });
       }
       return;
     }
 
     // Handle server tool use → convert to ToolsCallMessage for pill display
     if (isServerToolUseMessage(msg)) {
-      const stUse = msg as unknown as Record<string, unknown>;
-      const toolName =
-        (typeof stUse.tool_name === 'string' ? stUse.tool_name : undefined)
-        ?? (typeof stUse.function_name === 'string' ? stUse.function_name : undefined);
-      const toolUseId =
-        (typeof stUse.tool_use_id === 'string' ? stUse.tool_use_id : undefined)
-        ?? (typeof stUse.tool_call_id === 'string' ? stUse.tool_call_id : undefined);
-      const rawInput = stUse.input ?? stUse.function_args ?? {};
-      const executionTarget = stUse.execution_target === 'ProviderServer' || stUse.execution_target === 'LocalFunction'
-        ? stUse.execution_target
-        : undefined;
-      const inputStr = typeof rawInput === 'string' ? rawInput : JSON.stringify(rawInput ?? {});
-      const converted: ToolsCallMessage = {
-        $type: MessageType.ToolsCall,
-        tool_calls: [{
-          function_name: toolName,
-          function_args: inputStr,
-          tool_call_id: toolUseId,
-          execution_target: executionTarget,
-        }],
-        role: msg.role,
-        fromAgent: msg.fromAgent,
-        generationId: msg.generationId,
-        runId: msg.runId,
-        parentRunId: msg.parentRunId,
-        threadId: msg.threadId,
-        messageOrderIdx: msg.messageOrderIdx,
-      };
-      log.debug('Converted server tool use to ToolsCallMessage', { toolName, toolUseId });
+      const converted = serverToolUseToToolsCall(msg);
+      log.debug('Converted server tool use to ToolsCallMessage', {
+        toolName: converted.tool_calls[0]?.function_name,
+        toolUseId: converted.tool_calls[0]?.tool_call_id,
+      });
       msg = converted;
       // Fall through to normal message handling below
     }
 
     // Handle text with citations → convert to TextMessage with citations as markdown
     if (isTextWithCitationsMessage(msg)) {
-      const citMsg = msg; // narrowed to TextWithCitationsMessage
-      let text = citMsg.text;
-      if (citMsg.citations?.length) {
-        const uniqueUrls = new Map<string, { title: string; url: string }>();
-        for (const cite of citMsg.citations) {
-          if (cite.url && !uniqueUrls.has(cite.url)) {
-            uniqueUrls.set(cite.url, {
-              title: cite.title || cite.url,
-              url: cite.url,
-            });
-          }
-        }
-        if (uniqueUrls.size > 0) {
-          text += '\n\n**Sources:**\n';
-          for (const { title, url } of uniqueUrls.values()) {
-            text += `- [${title}](${url})\n`;
-          }
-        }
-      }
-      const converted: TextMessage = {
-        $type: MessageType.Text,
-        text,
-        role: citMsg.role,
-        fromAgent: citMsg.fromAgent,
-        generationId: citMsg.generationId,
-        runId: citMsg.runId,
-        parentRunId: citMsg.parentRunId,
-        threadId: citMsg.threadId,
-        messageOrderIdx: citMsg.messageOrderIdx,
-      };
-      log.debug('Converted text with citations to TextMessage', { citationCount: citMsg.citations?.length ?? 0 });
-      msg = converted;
+      const citationCount = msg.citations?.length ?? 0;
+      msg = textWithCitationsToText(msg);
+      log.debug('Converted text with citations to TextMessage', { citationCount });
       // Fall through to normal message handling below
     }
 

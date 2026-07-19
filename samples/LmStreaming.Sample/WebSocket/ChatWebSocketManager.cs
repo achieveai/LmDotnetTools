@@ -859,10 +859,10 @@ public sealed class ChatWebSocketManager
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Transient/unknown failure (e.g. an owned-provider restart race). Keep the receive loop
-            // alive — that isolation was a prior review fix — but surface a structured, correlated error
-            // frame so the client's input is not silently lost. Only a stable category and content-free
-            // identifiers are logged; the exception object is never handed to the logger (its
-            // message/ToString can echo prompt/transcript/tool content — EUII).
+            // alive so one relay fault does not tear down the whole connection — but surface a
+            // structured, correlated error frame so the client's input is not silently lost. Only a
+            // stable category and content-free identifiers are logged; the exception object is never
+            // handed to the logger (its message/ToString can echo prompt/transcript/tool content — EUII).
             LogSubAgentRelayFailure(agentId, byteCount, ex);
             await SendRelayFailedErrorAsync(connection, agentId, ct);
         }

@@ -21,6 +21,9 @@ import {
   isToolsCallUpdateMessage,
   isToolCallUpdateMessage,
   isNotifyMessage,
+  isServerToolUseMessage,
+  isServerToolResultMessage,
+  isTextWithCitationsMessage,
 } from '@/types';
 import { loadConversationMessages, type PersistedMessage } from '@/api/conversationsApi';
 import { listSubAgents, type SubAgentSummary } from '@/api/subAgentsApi';
@@ -28,6 +31,11 @@ import { connectSubAgent } from '@/api/subAgentWsClient';
 import { sendWebSocketMessage, closeWebSocketConnection, type WebSocketConnection } from '@/api/wsClient';
 import { useMessageMerger } from './useMessageMerger';
 import { getMergeKey } from './messageMergeKey';
+import {
+  serverToolUseToToolsCall,
+  serverToolResultToToolCallResult,
+  textWithCitationsToText,
+} from './messageConversions';
 import { buildDisplayItems, type DisplayableMessage } from './messageDisplay';
 import { logger } from '@/utils';
 
@@ -36,24 +44,24 @@ const log = logger.forComponent('useSubAgentPanel');
 const POLL_INTERVAL_MS = 3000;
 
 /**
- * Upper bound on the subscribe-first live buffer (FINDING B, PR #209). While a focus loads persisted
- * history it BUFFERS live frames to close the snapshot→subscribe gap. History loading is not
- * abortable, so a pathological child (or a slow history fetch) could grow this buffer without bound.
- * When the buffer reaches this many entries the composable ABANDONS the buffered-merge and instead
- * reloads history once the connection is established (see focusChild), reconciling anything persisted
- * during the overflow window. Documented tradeoff: frames that arrive after the reconcile snapshot but
- * before live handling resumes are recovered on the next refocus rather than mid-stream — the priority
- * is a bounded buffer with no silent, unbounded growth. Exported as an internal seam for testing.
+ * Upper bound on the subscribe-first live buffer. While a focus loads persisted history it BUFFERS
+ * live frames to close the snapshot→subscribe gap. History loading is not abortable, so a
+ * pathological child (or a slow history fetch) could grow this buffer without bound. When the buffer
+ * reaches this many entries the composable ABANDONS the buffered-merge and instead reloads history
+ * once the connection is established (see focusChild), reconciling anything persisted during the
+ * overflow window. Documented tradeoff: frames that arrive after the reconcile snapshot but before
+ * live handling resumes are recovered on the next refocus rather than mid-stream — the priority is a
+ * bounded buffer with no silent, unbounded growth. Exported as an internal seam for testing.
  */
 export const LIVE_BUFFER_MAX = 1000;
 
 /**
- * Upper bound on overflow→reconcile cycles for a single focus (FINDING #1, PR #209 round-3). When the
- * subscribe-first live buffer overflows we abandon it, reload persisted history to reconcile, and
- * drain a FRESH bounded buffer of frames that arrived during the reload. A pathologically fast child
- * could overflow that fresh buffer again during each reload; we retry the reconcile at most this many
- * times, then fall back to draining whatever is currently buffered (bounded) rather than looping
- * forever — a subsequent refocus fully reconciles. Exported as an internal seam for testing.
+ * Upper bound on overflow→reconcile cycles for a single focus. When the subscribe-first live buffer
+ * overflows we abandon it, reload persisted history to reconcile, and drain a FRESH bounded buffer of
+ * frames that arrived during the reload. A pathologically fast child could overflow that fresh buffer
+ * again during each reload; we retry the reconcile at most this many times, then fall back to draining
+ * whatever is currently buffered (bounded) rather than looping forever — a subsequent refocus fully
+ * reconciles. Exported as an internal seam for testing.
  */
 export const MAX_OVERFLOW_RECONCILES = 3;
 
@@ -94,8 +102,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   // in a terminal (non-streaming) state rather than looping.
   let autoResumeUsed = false;
 
-  // Lifecycle-generation model (PR #209). TWO monotonically-increasing tokens supersede stale async
-  // work so a parent switch, an unfocus (Back/unmount) or scope disposal can never let an in-flight
+  // Lifecycle-generation model. TWO monotonically-increasing tokens supersede stale async work so a
+  // parent switch, an unfocus (Back/unmount) or scope disposal can never let an in-flight
   // focus/refresh/reconnect adopt a socket or publish state after teardown:
   //   * `focusSeq` — focus-lifecycle epoch. Claimed by focusChild (AFTER its own teardown) and bumped
   //     by unfocusChild (hence also by refocus, parent-change invalidation and scope disposal, which
@@ -105,6 +113,12 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   //     or on disposal. Guards the `children.value` assignment so a late list response for a
   //     superseded parent is discarded and cannot overwrite the new parent's list.
   let parentGen = 0;
+  // Per-request sequence for refreshChildren, independent of parentGen. Two overlapping refreshes for
+  // the SAME parent share one parentGen, so parentGen alone cannot tell them apart: an older request
+  // finishing last could overwrite a newer list or surface a stale error after a newer success. Each
+  // refresh captures the next value and applies its result (or error) only if it is still the latest
+  // issued, so out-of-order completions from the same parent resolve to the newest response.
+  let refreshSeq = 0;
   // The parent thread id whose children/focus are currently applied. A refresh that observes a
   // different parent first invalidates (advance parentGen, unfocus, clear children) before loading.
   let lastAppliedParent: string | null = getParentThreadId();
@@ -142,20 +156,25 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     }
     if (!parent) return;
 
+    // Capture a per-request sequence so overlapping same-parent refreshes stay ordered: the latest
+    // issued request always wins, regardless of which one's list/error settles last.
     const requestGen = parentGen;
+    const requestSeq = ++refreshSeq;
     let list: SubAgentSummary[];
     try {
       list = await listSubAgents(parent);
     } catch (e) {
-      // Only surface the failure if it is still relevant to the current parent/epoch.
-      if (parentGen === requestGen && getParentThreadId() === parent) {
+      // Only surface the failure if this is still the latest request for the current parent/epoch, so
+      // a stale error cannot overwrite a newer success (or a newer error).
+      if (parentGen === requestGen && requestSeq === refreshSeq && getParentThreadId() === parent) {
         log.error('Failed to list sub-agents', { parent, error: e });
         error.value = `Failed to list sub-agents: ${errorMessage(e)}`;
       }
       return;
     }
-    // Discard a late response for a superseded parent/epoch so it can't overwrite the new list.
-    if (parentGen !== requestGen || getParentThreadId() !== parent) return;
+    // Discard a late response for a superseded parent/epoch or a superseded (older) same-parent
+    // request so it can't overwrite the newest list.
+    if (parentGen !== requestGen || requestSeq !== refreshSeq || getParentThreadId() !== parent) return;
     error.value = null;
     children.value = list;
   }
@@ -298,11 +317,29 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       return;
     }
 
+    // Provider-side frames (server-tool use/result, citation text) are not renderable by
+    // buildDisplayItems in their raw shape — the pill/text grouping only understands the canonical
+    // ToolsCall / ToolCallResult / Text shapes. Normalize them to those shapes here (via the shared
+    // converters) so a focused child transcript renders and merges them identically to the parent
+    // chat. A server_tool_result is a result frame: capture it like a plain tool result (it attaches
+    // to its tool-use pill and resolves via getResultForToolCall). A server_tool_use / citation text
+    // is content: normalize it, then fall through to the same stamp/merge path as any other frame.
+    if (isServerToolResultMessage(msg)) {
+      captureToolResult(serverToolResultToToolCallResult(msg));
+      return;
+    }
+    let normalized: Message = msg;
+    if (isServerToolUseMessage(msg)) {
+      normalized = serverToolUseToToolsCall(msg);
+    } else if (isTextWithCitationsMessage(msg)) {
+      normalized = textWithCitationsToText(msg);
+    }
+
     // Stamp the active run's id onto runId-less live content BEFORE keying. On the wire only
     // run_assignment carries a runId; finalized tool_call / tool_call_result / text arrive
     // runId-less. The rehydrated persisted twin carries the real run id, so without this stamp the
     // live copy keys to 'default' and duplicates instead of merging (the frozen-pill bug).
-    let stamped = msg;
+    let stamped = normalized;
     if (!stamped.runId && childCurrentRunId) {
       stamped = { ...stamped, runId: childCurrentRunId };
     }
@@ -342,6 +379,23 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         toolResults.value.set(parsed.tool_call_id, parsed);
       }
       return;
+    }
+
+    // Provider-side frames persisted from history need the same normalization the live path applies,
+    // so a rehydrated server_tool_use/result/citation renders (and merges with its live twin) exactly
+    // like the parent chat. A persisted server_tool_result is captured like a plain tool result;
+    // server_tool_use / citation text is converted in place and continues through identity stamping.
+    if (isServerToolResultMessage(parsed)) {
+      const converted = serverToolResultToToolCallResult(parsed);
+      if (converted.tool_call_id) {
+        toolResults.value.set(converted.tool_call_id, converted);
+      }
+      return;
+    }
+    if (isServerToolUseMessage(parsed)) {
+      parsed = serverToolUseToToolsCall(parsed);
+    } else if (isTextWithCitationsMessage(parsed)) {
+      parsed = textWithCitationsToText(parsed);
     }
 
     // Stamp persisted identity so the merge key matches what live streaming computes.
@@ -410,26 +464,26 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     resetFocusState();
     error.value = null;
 
-    // Live/history handoff (#7): open the subscription FIRST and BUFFER incoming live messages, THEN
+    // Live/history handoff: open the subscription FIRST and BUFFER incoming live messages, THEN
     // load persisted history, then drain the buffer on top (merge/dedup by the shared key). This
     // closes the REST-snapshot→subscribe gap — a child message emitted after the history snapshot but
     // before the subscription is buffered here rather than lost until a refocus.
     let liveBuffer: Message[] = [];
     let bufferingLive = true;
-    // FINDING B / #1: set when the live buffer overflows while history is still loading. Rather than
+    // Set when the live buffer overflows while history is still loading. Rather than
     // permanently DROPPING later frames (which lost transcript + could discard run_assignment), we
     // abandon the current buffer to a FRESH bounded one and reconcile via a post-connect history
     // reload; this flag signals that reload is needed and is re-set if the fresh buffer overflows too.
     let liveBufferOverflowed = false;
-    // FINDING A: set by THIS focus's onClose when its socket closes unexpectedly. After the
+    // Set by THIS focus's onClose when its socket closes unexpectedly. After the
     // history-load await we must not adopt a connection that already closed — even when the one-shot
     // auto-resume budget is spent, in which case onClose does NOT advance focusSeq to supersede us.
     let socketClosedDuringFocus = false;
-    // #5: set when THIS focus sees a structured application error (onError with a `code`, e.g.
+    // Set when THIS focus sees a structured application error (onError with a `code`, e.g.
     // subagent_unavailable / subagent_stream_failed / relay_failed). Such errors are terminal for
     // auto-resume purposes — a subsequent close must NOT silently retry the child and clear the error.
     let terminalErrorSeen = false;
-    // #4: set once the freshly-connected socket is registered as focusedConnection (provisional
+    // Set once the freshly-connected socket is registered as focusedConnection (provisional
     // ownership, BEFORE the non-abortable history load). Distinguishes "teardown already closed our
     // socket" (skip a redundant close) from "superseded before we owned it" (we must close it).
     let provisionalOwned = false;
@@ -440,7 +494,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         onMessage: (m: Message) => {
           // Ignore late frames for a superseded focus.
           if (focusSeq !== token) return;
-          // #1(a): preserve the active run identity INDEPENDENTLY of the content buffer. Only
+          // Preserve the active run identity INDEPENDENTLY of the content buffer. Only
           // run_assignment carries a runId on the wire; if it were lost in an overflow buffer clear,
           // later runId-less content would key under 'default' and diverge from its persisted twin.
           // Track it here so it survives any buffer reset below.
@@ -453,7 +507,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           }
           liveBuffer.push(m);
           if (liveBuffer.length > LIVE_BUFFER_MAX) {
-            // #1(b): overflow — abandon the current bounded buffer (its frames are captured by the
+            // Overflow — abandon the current bounded buffer (its frames are captured by the
             // post-connect reconciliation history reload) and START A FRESH bounded buffer so frames
             // arriving during reconciliation are NOT dropped into a gap. Repeated overflow re-sets the
             // flag and triggers another reconcile pass (bounded by MAX_OVERFLOW_RECONCILES).
@@ -472,13 +526,13 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           if (focusSeq !== token) return;
           log.error('Sub-agent stream error', { agentId, code });
           isFocusedStreaming.value = false;
-          // #5: a structured error code marks a terminal application failure — record it so a
+          // A structured error code marks a terminal application failure — record it so a
           // following close does not auto-resume (which would retry an unavailable child + clear
           // this error). Parse/socket errors arrive without a code and stay auto-resume-eligible.
           if (code) {
             terminalErrorSeen = true;
           }
-          // FINDING C: copy the failure into the public error ref so the panel's error banner shows
+          // Copy the failure into the public error ref so the panel's error banner shows
           // feedback (a relay_failed / subagent_unavailable / parse / socket error). The focus-token
           // guard above already prevents a stale focus from clobbering a newer focus's error.
           error.value = err || 'Sub-agent stream error.';
@@ -489,13 +543,13 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
             return;
           }
           // Record the close so a pending history-load await does not adopt this now-dead socket
-          // (FINDING A) even if the auto-resume budget below is already spent.
+          // even if the auto-resume budget below is already spent.
           socketClosedDuringFocus = true;
           // Drop the dead socket and stop the spinner so the view can't hang and sendToFocusedChild
           // can't post to a dead socket.
           focusedConnection = null;
           isFocusedStreaming.value = false;
-          // #5: auto-resume ONLY for a recoverable backpressure drop — a CLEAN close with NO terminal
+          // Auto-resume ONLY for a recoverable backpressure drop — a CLEAN close with NO terminal
           // application error seen this focus. A terminal error or an abnormal (!wasClean) close is
           // non-recoverable: leave the error surfaced, spinner off, connection nulled, and do NOT loop.
           if (terminalErrorSeen || !info.wasClean) {
@@ -528,7 +582,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         return;
       }
 
-      // #4: register PROVISIONAL ownership IMMEDIATELY — before the non-abortable history load — so an
+      // Register PROVISIONAL ownership IMMEDIATELY — before the non-abortable history load — so an
       // unfocus / parent-switch / scope-dispose can close this socket instead of leaking it while the
       // history request is in flight. From here on the superseding teardown owns the close, so the
       // post-await guards below must NOT close the socket again (double-close).
@@ -538,13 +592,13 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       // Load persisted history (live messages arriving now are buffered above).
       const persisted = await loadConversationMessages(summary.threadId);
       if (focusSeq !== token) {
-        // #4: we registered provisional ownership before this await, so the superseding teardown
+        // We registered provisional ownership before this await, so the superseding teardown
         // (unfocus / parent-switch / dispose) already closed the socket and nulled focusedConnection.
         // Do NOT close again (double-close) — just abandon this stale focus.
         log.debug('focusChild superseded during history load; teardown owns the socket', { agentId });
         return;
       }
-      // FINDING A: the socket may have closed terminally DURING the history-load await. Do NOT adopt
+      // The socket may have closed terminally DURING the history-load await. Do NOT adopt
       // the dead connection nor drain the buffer onto it — the onClose handler already stopped the
       // spinner and (when budget remained) started the one-shot auto-resume, so just bail without
       // double-resuming.
@@ -559,7 +613,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       attachPersistedToolResults();
       rebuildFocusedDisplayItems();
 
-      // #1(b): if the live buffer overflowed while history was loading, the buffered-merge was
+      // If the live buffer overflowed while history was loading, the buffered-merge was
       // abandoned to a FRESH bounded buffer. Reconcile by reloading history (the shared merge key
       // dedups it against what we rehydrated) then drain the fresh buffer on top. A fast child can
       // overflow the fresh buffer again during the reload, so retry the reconcile up to
@@ -571,7 +625,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         reconcileAttempts += 1;
         const reloaded = await loadConversationMessages(summary.threadId);
         if (focusSeq !== token) {
-          // Superseded — teardown owns the provisional socket (see #4 above); do not double-close.
+          // Superseded — the teardown owns the provisionally-registered socket; do not double-close.
           log.debug('focusChild superseded during reconcile reload; teardown owns the socket', { agentId });
           return;
         }
@@ -613,7 +667,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     } catch (e) {
       // A superseding focus/unfocus/parent-switch already owns the visible state — don't clobber it.
       if (focusSeq !== token) {
-        // #4: only close the socket ourselves if we never registered provisional ownership (superseded
+        // Only close the socket ourselves if we never registered provisional ownership (superseded
         // before the history await). Once provisionally owned, the superseding teardown already closed
         // it — closing again would be a double-close.
         if (openedConnection && !provisionalOwned) closeWebSocketConnection(openedConnection);
@@ -637,7 +691,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   /**
    * Close the focused child's stream and clear all per-focus state. Advances `focusSeq` so any focus
    * still in flight (history-load / socket-open) is superseded and closes its late socket instead of
-   * adopting it after this teardown (#3).
+   * adopting it after this teardown.
    */
   async function unfocusChild(): Promise<void> {
     focusSeq++;
