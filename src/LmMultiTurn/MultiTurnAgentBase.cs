@@ -169,37 +169,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // its own would have succeeded, and even across that same run's error-completion retry.
     private Exception? _canonicalPersistenceFault;
 
-    // Per-agent durability lifetime token for the canonical persistence chain's ACTUAL store
-    // writes (see `EnqueueCanonicalPersistenceOperation`/`RunCanonicalPersistenceNodeAsync`) —
-    // deliberately independent of any run/request caller token (a `CancelCurrentRunAsync`, an
-    // `AddDeferredToHistoryAsync`/`ReplacePersistedAsync` caller's own `ct`, or an external
-    // `ResolveToolCallAsync` request's `ct`). Only `DisposeAsync` ever cancels this, so a normal
-    // run cancellation or an external tool-resolution request cancellation can cancel only ITS
-    // OWN caller's wait for the queued write (via `Task.WaitAsync(ct)`) — never the underlying
-    // store write itself, and never record a sticky `_canonicalPersistenceFault` or permanently
-    // brick a future terminal completion. Mirrors `_observerLifetimeCts` above.
-    private readonly CancellationTokenSource _canonicalPersistenceLifetimeCts = new();
-
-    // Test-only seam (see StrictCanonicalPersistenceTests): when set,
-    // `EnqueueCanonicalPersistenceOperation` awaits this BEFORE acquiring
-    // `_canonicalPersistenceLock` — letting tests deterministically model an
-    // AddToHistory/AddDeferredToHistoryAsync/ReplacePersistedAsync call that is blocked at that
-    // exact instant `DisposeAsync` begins tearing down, to prove the enqueue-vs-disposal race
-    // resolves to a predictable `ObjectDisposedException` (never a node silently appended after
-    // disposal already snapshotted the chain's tail). Always null in production, so the hot
-    // (no-hook) path is unaffected. Mirrors `PrePublishLockHookForTests`.
-    internal Func<Task>? PreCanonicalPersistenceLockHookForTests;
-
-    /// <summary>
-    /// Test-only accessor for the sticky canonical-persistence fault (see
-    /// `_canonicalPersistenceFault`) — lets tests assert that a caller/run-token cancellation of
-    /// an `AddDeferredToHistoryAsync`/`ReplacePersistedAsync` wait, or a disposal-driven
-    /// durability-token cancellation, never records a fault, without needing to drive a real
-    /// `CompleteRunAsync` flush. Always <c>false</c> when strict mode is disabled. Internal —
-    /// never used by any production code path.
-    /// </summary>
-    internal bool HasCanonicalPersistenceFaultForTests => Volatile.Read(ref _canonicalPersistenceFault) != null;
-
     #endregion
 
     #region Protected Properties
@@ -474,32 +443,9 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 {
                     // Still fire-and-forget from THIS caller's point of view — the queued node
                     // itself is what gives ordering/failure tracking; CompleteRunAsync's flush
-                    // (not this call) is what observes/surfaces a failure. The write itself uses
-                    // the per-agent durability token (see `_canonicalPersistenceLifetimeCts`),
-                    // never a caller token — there IS no caller token here anyway (this overload
-                    // takes none), but strict-mode writes must never depend on one regardless of
-                    // call site.
-                    try
-                    {
-                        var node = EnqueueCanonicalPersistenceOperation(
-                            dCt => AppendCanonicalMessageAsync(message, runId, dCt));
-
-                        // Observe a hook-delayed (test-only) ObjectDisposedException so a
-                        // fire-and-forget call can never surface it as an unobserved task
-                        // exception — the production (no-hook) path already throws
-                        // synchronously below, so this continuation is a no-op there.
-                        _ = node.ContinueWith(
-                            static t => _ = t.Exception,
-                            CancellationToken.None,
-                            TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
-                            TaskScheduler.Default);
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // Disposal already began before this fire-and-forget append could
-                        // enqueue — nothing further to do; mirrors this call's fire-and-forget
-                        // nature in default mode.
-                    }
+                    // (not this call) is what observes/surfaces a failure.
+                    _ = EnqueueCanonicalPersistenceOperation(
+                        () => AppendCanonicalMessageAsync(message, runId, CancellationToken.None));
                 }
                 else
                 {
@@ -586,18 +532,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 if (_strictCanonicalPersistence)
                 {
                     // Enqueue into the SAME ordered chain used by AddToHistory/
-                    // ReplacePersistedAsync, with the write itself running under the per-agent
-                    // durability token (see `_canonicalPersistenceLifetimeCts`) — this
-                    // placeholder append's node is what a LATER ReplacePersistedAsync call for
-                    // the same ToolCallId is guaranteed to be chained (and therefore run) after.
-                    // `ct` (this call's own caller/run token) is used ONLY to bound THIS call's
-                    // own wait for that node via `WaitAsync(ct)` below — cancelling `ct` (e.g. a
-                    // CancelCurrentRunAsync) cancels only this await, never the underlying store
-                    // write, which continues running to completion (or failure) as part of the
-                    // ordered chain and remains visible to a later terminal flush.
-                    var node = EnqueueCanonicalPersistenceOperation(
-                        dCt => AppendCanonicalMessageAsync(message, runId, dCt));
-                    await node.WaitAsync(ct).ConfigureAwait(false);
+                    // ReplacePersistedAsync — this placeholder append's node is what a LATER
+                    // ReplacePersistedAsync call for the same ToolCallId is guaranteed to be
+                    // chained (and therefore run) after — then await THIS call's own node so
+                    // the failure-propagation contract above is preserved exactly.
+                    await EnqueueCanonicalPersistenceOperation(
+                        () => AppendCanonicalMessageAsync(message, runId, ct));
                 }
                 else
                 {
@@ -698,18 +638,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         if (_strictCanonicalPersistence)
         {
-            // Enqueue with the per-agent durability token (see
-            // `_canonicalPersistenceLifetimeCts`) — the underlying store write NEVER observes
-            // `ct` (this call's own caller token, e.g. an external ResolveToolCallAsync
-            // request's cancellation). `ct` is used ONLY to bound THIS call's own wait for the
-            // enqueued node via `WaitAsync(ct)`: cancelling it cancels just this await — a store
-            // failure still propagates synchronously to this call's caller when the wait itself
-            // completes (not merely enqueues first — see `EnqueueCanonicalPersistenceOperation`),
-            // per the strict-mode contract above, but a caller-side cancellation can never abort
-            // the write or record a sticky `_canonicalPersistenceFault`.
-            var node = EnqueueCanonicalPersistenceOperation(
-                dCt => ReplaceCanonicalMessageAsync(updated, runId, dCt));
-            await node.WaitAsync(ct).ConfigureAwait(false);
+            // Await THIS call's own node (not just enqueue it) so a store failure propagates
+            // synchronously to the caller, per the strict-mode contract above. Enqueuing first
+            // (rather than awaiting a freestanding call) is what guarantees ordering after the
+            // placeholder append's own node in the chain.
+            await EnqueueCanonicalPersistenceOperation(
+                () => ReplaceCanonicalMessageAsync(updated, runId, ct));
             return;
         }
 
@@ -765,58 +699,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <summary>
     /// Enqueues <paramref name="operation"/> as the next node of the per-agent ordered canonical
     /// persistence chain (see <c>_canonicalPersistenceTail</c>), active only when
-    /// <c>strictCanonicalPersistence</c> was enabled at construction. <paramref name="operation"/>
-    /// is invoked with this agent's own durability lifetime token (see
-    /// <see cref="_canonicalPersistenceLifetimeCts"/>) — NEVER a run/request caller token — so a
-    /// caller-side cancellation (of a separate <c>WaitAsync</c> bound to the returned task) can
-    /// never abort the underlying store write; only <see cref="DisposeAsync"/> ever cancels that
-    /// token. The returned task completes (or faults) when THIS operation — and every operation
-    /// enqueued before it — has run, in enqueue order, never concurrently. A failure is recorded
-    /// in <see cref="_canonicalPersistenceFault"/> (sticky; first failure wins) and always
-    /// observed via an immediate fire-and-forget continuation attached below, so a node whose
-    /// returned task nobody ever awaits (e.g. a plain <c>AddToHistory</c> append) can never
-    /// surface as an unobserved task exception — <see cref="FlushCanonicalPersistenceAsync"/> is
-    /// the sanctioned way to later observe/propagate that failure. Throws
-    /// <see cref="ObjectDisposedException"/> synchronously (in the common, test-hook-free path) —
-    /// under <see cref="_canonicalPersistenceLock"/>, before adding any node — if this agent has
-    /// been disposed. See <see cref="DisposeAsync"/> remarks: disposal marks <c>_isDisposed</c>
-    /// (under <c>_replayLock</c>) and then immediately snapshots this chain's tail (under this
-    /// SAME <see cref="_canonicalPersistenceLock"/>), with no intervening await, so an enqueue
-    /// call can never race in a node that disposal's snapshot misses.
+    /// <c>strictCanonicalPersistence</c> was enabled at construction. The returned task completes
+    /// (or faults) when THIS operation — and every operation enqueued before it — has run, in
+    /// enqueue order, never concurrently. A failure is recorded in
+    /// <see cref="_canonicalPersistenceFault"/> (sticky; first failure wins) and always observed
+    /// via an immediate fire-and-forget continuation attached below, so a node whose returned
+    /// task nobody ever awaits (e.g. a plain <c>AddToHistory</c> append) can never surface as an
+    /// unobserved task exception — <see cref="FlushCanonicalPersistenceAsync"/> is the sanctioned
+    /// way to later observe/propagate that failure.
     /// </summary>
-    private Task EnqueueCanonicalPersistenceOperation(Func<CancellationToken, Task> operation)
-    {
-        var preLockHook = PreCanonicalPersistenceLockHookForTests;
-        return preLockHook == null
-            ? EnqueueCanonicalPersistenceOperationCore(operation)
-            : AwaitPreCanonicalLockHookThenEnqueueAsync(preLockHook, operation);
-    }
-
-    /// <summary>
-    /// Test-only slow path (see <see cref="PreCanonicalPersistenceLockHookForTests"/>): awaits
-    /// the hook, then runs the exact same <see cref="EnqueueCanonicalPersistenceOperationCore"/>
-    /// a production call would run. Kept out of the common (hook-null) path so it costs nothing
-    /// in production and so the production path's <see cref="ObjectDisposedException"/> stays a
-    /// synchronous throw rather than surfacing only once this wrapper task is awaited/observed.
-    /// </summary>
-    private async Task AwaitPreCanonicalLockHookThenEnqueueAsync(
-        Func<Task> preLockHook,
-        Func<CancellationToken, Task> operation)
-    {
-        await preLockHook().ConfigureAwait(false);
-        await EnqueueCanonicalPersistenceOperationCore(operation).ConfigureAwait(false);
-    }
-
-    private Task EnqueueCanonicalPersistenceOperationCore(Func<CancellationToken, Task> operation)
+    private Task EnqueueCanonicalPersistenceOperation(Func<Task> operation)
     {
         Task node;
         lock (_canonicalPersistenceLock)
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
             var previous = _canonicalPersistenceTail;
-            var durabilityToken = _canonicalPersistenceLifetimeCts.Token;
-            node = RunCanonicalPersistenceNodeAsync(previous, operation, durabilityToken);
+            node = RunCanonicalPersistenceNodeAsync(previous, operation);
             _canonicalPersistenceTail = node;
         }
 
@@ -833,10 +731,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <summary>
     /// One node of the canonical persistence chain — see <see cref="EnqueueCanonicalPersistenceOperation"/>.
     /// </summary>
-    private async Task RunCanonicalPersistenceNodeAsync(
-        Task previous,
-        Func<CancellationToken, Task> operation,
-        CancellationToken durabilityToken)
+    private async Task RunCanonicalPersistenceNodeAsync(Task previous, Func<Task> operation)
     {
         try
         {
@@ -852,17 +747,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         try
         {
-            await operation(durabilityToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (durabilityToken.IsCancellationRequested)
-        {
-            // Disposal cancelled the durability lifetime token (see DisposeAsync) to unblock a
-            // permanently gated write — an expected shutdown signal, not a store failure, so it
-            // must NEVER poison `_canonicalPersistenceFault`: doing so would permanently brick a
-            // still-live agent's future CompleteRunAsync flush over something disposal itself
-            // caused. Still rethrown so THIS node's own await (if any, e.g. a strict-mode
-            // ReplacePersistedAsync call already unwound by its caller's own `ct`) observes it.
-            throw;
+            await operation().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1878,21 +1763,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             tailSnapshot = _observerDispatchTail;
         }
 
-        // Enqueue-vs-disposal TOCTOU fix (see EnqueueCanonicalPersistenceOperation's own
-        // `ObjectDisposedException.ThrowIf(_isDisposed, this)` remarks): snapshot the canonical
-        // persistence chain's tail immediately — no await in between — under the SAME
-        // `_canonicalPersistenceLock` every enqueue call takes. `_isDisposed` was just set above
-        // with no intervening await, so this is effectively atomic with that write: an enqueue
-        // call whose lock acquisition happens strictly before this one already finished adding
-        // its node (covered by the snapshot below); one that acquires the lock at or after this
-        // point observes `_isDisposed` already true and fails there, predictably, with
-        // ObjectDisposedException, before adding a node at all — never both, never neither.
-        Task canonicalPersistenceTailSnapshot;
-        lock (_canonicalPersistenceLock)
-        {
-            canonicalPersistenceTailSnapshot = _canonicalPersistenceTail;
-        }
-
         await StopAsync();
 
         _internalCts?.Dispose();
@@ -1916,18 +1786,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _observerLifetimeCts.Dispose();
 
         // Bound-await the strict-mode canonical persistence chain (see
-        // `_canonicalPersistenceTail`/`EnqueueCanonicalPersistenceOperation`), using the SAME
-        // cancel-first-then-drain pattern as the observer teardown above. Cancelling
-        // `_canonicalPersistenceLifetimeCts` FIRST asks any write still gated on a slow/hung
-        // store call to stop promptly (see that token's remarks: it is the ONLY thing that ever
-        // cancels a canonical store write) — a resulting `OperationCanceledException` is NOT
-        // recorded as a sticky `_canonicalPersistenceFault` (see
-        // `RunCanonicalPersistenceNodeAsync`), so disposal can never itself brick a still-live
-        // agent's durability guarantee. The tail was already snapshotted above (before
-        // `_isDisposed` could race any enqueue), so no further node can ever be appended to it.
-        // A still-running/faulted tail after the timeout is abandoned (best-effort; the
-        // cancellation above already asked a well-behaved store call to stop).
-        await _canonicalPersistenceLifetimeCts.CancelAsync();
+        // `_canonicalPersistenceTail`/`EnqueueCanonicalPersistenceOperation`) so disposal can
+        // never leak/hang on it. A no-op when strict mode was never enabled (the tail is always
+        // `Task.CompletedTask` in that case). Any failure was already recorded/observed by the
+        // chain's own per-node continuation — this is best-effort drain only, mirroring the
+        // observer-tail teardown above; a still-running/faulted tail after the timeout is
+        // abandoned rather than blocking disposal.
+        Task canonicalPersistenceTailSnapshot;
+        lock (_canonicalPersistenceLock)
+        {
+            canonicalPersistenceTailSnapshot = _canonicalPersistenceTail;
+        }
+
         try
         {
             await canonicalPersistenceTailSnapshot.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -1936,8 +1806,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         {
             // Best-effort — see remarks above.
         }
-
-        _canonicalPersistenceLifetimeCts.Dispose();
 
         await OnDisposeAsync();
 

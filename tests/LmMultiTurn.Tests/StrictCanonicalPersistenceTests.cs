@@ -86,11 +86,9 @@ public class StrictCanonicalPersistenceTests
 
         await store.AppendGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Assert: the moment the store observes the append call ARRIVE (still gated, blocked
-        // inside AppendMessagesAsync), the replacement's chain node — which strictly awaits the
-        // append's node first — cannot possibly have started its own operation yet. No sleep is
-        // needed: this is a direct consequence of the chain's ordering guarantee, not a timing
-        // race.
+        // Assert: while the placeholder append is still gated, the replacement must NOT have
+        // reached the store — it is chained strictly behind the append it replaces.
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
         store.ReplaceCallCount.Should().Be(
             0,
             "the replacement must run after the placeholder append it replaces, not concurrently with it");
@@ -343,199 +341,6 @@ public class StrictCanonicalPersistenceTests
         await disposeTask.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
-    [Fact]
-    public async Task DisposeAsync_StrictMode_DurabilityTokenCancellation_DoesNotRecordStickyFault()
-    {
-        // A permanently-gated canonical write observes the per-agent durability lifetime token
-        // (see `_canonicalPersistenceLifetimeCts`), NOT any run/request caller token. DisposeAsync
-        // cancels that token to unblock the gate. The resulting OperationCanceledException from
-        // the gated store call must be a disposal-driven shutdown signal, never a sticky
-        // `_canonicalPersistenceFault` — that fault would otherwise permanently brick a future
-        // CompleteRunAsync flush for reasons entirely of disposal's own making.
-        var store = new ConfigurableCanonicalStore { GateAppendCallNumber = 1 };
-        var agent = new CanonicalPersistenceTestAgent(
-            "strict-dispose-fault-thread", store, strictCanonicalPersistence: true);
-
-        await agent.StartRunForTestAsync();
-        agent.AddToHistoryForTest(new TextMessage { Text = "never released", Role = Role.User }, "run-1");
-
-        await store.AppendGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        agent.HasCanonicalPersistenceFaultForTests.Should().BeFalse(
-            "no failure has happened yet — the write is merely gated");
-
-        var disposeTask = agent.DisposeAsync().AsTask();
-        await disposeTask.WaitAsync(TimeSpan.FromSeconds(10));
-
-        agent.HasCanonicalPersistenceFaultForTests.Should().BeFalse(
-            "disposal cancelling its own durability token to unblock a gated write must never be recorded as a sticky canonical persistence fault");
-    }
-
-    [Fact]
-    public async Task AddDeferredToHistoryAsync_StrictMode_RunTokenCancellation_CancelsCallerWaitOnly_WriteLaterCompletesAndFlushSucceeds()
-    {
-        // Requirement: a normal run-token cancellation (e.g. CancelCurrentRunAsync) must cancel
-        // ONLY the caller's own wait for the queued write — never the underlying store write
-        // itself (which runs under the per-agent durability token) — and must never record a
-        // sticky canonical persistence fault or brick a later terminal flush.
-        var store = new ConfigurableCanonicalStore { GateAppendCallNumber = 1 };
-        await using var agent = new CanonicalPersistenceTestAgent(
-            "strict-run-token-cancel-thread", store, strictCanonicalPersistence: true);
-
-        var assignment = await agent.StartRunForTestAsync();
-
-        var placeholder = new ToolCallResultMessage
-        {
-            ToolCallId = "tc-run-cancel",
-            Result = string.Empty,
-            IsDeferred = true,
-            Role = Role.User,
-        };
-
-        using var runCts = new CancellationTokenSource();
-
-        var appendTask = agent.AddDeferredToHistoryForTestAsync(placeholder, runCts.Token);
-
-        await store.AppendGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Act: cancel the caller's own (run) token while the write is still gated inside the
-        // store call.
-        await runCts.CancelAsync();
-
-        var act = async () => await appendTask;
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "the caller's own WaitAsync must observe its cancelled token");
-
-        // Assert: the underlying write is UNAFFECTED by the caller's cancellation — it is still
-        // gated (only one call has reached the store so far) and has not failed.
-        store.AppendCallCount.Should().Be(1);
-        agent.HasCanonicalPersistenceFaultForTests.Should().BeFalse(
-            "a caller/run-token cancellation must never poison the sticky canonical persistence fault");
-
-        // Release the gate: the write — running under the durability token, never the
-        // already-cancelled caller token — completes successfully on its own.
-        store.ReleaseAppendGate();
-        await agent.CanonicalPersistenceTailSnapshotForTests().WaitAsync(TimeSpan.FromSeconds(5));
-
-        store.AppendCallCount.Should().Be(1);
-        store.OperationLog.Should().Equal("Append#1");
-        agent.HasCanonicalPersistenceFaultForTests.Should().BeFalse();
-
-        // A later terminal flush on this SAME (still-live) agent must succeed — the earlier
-        // caller-side cancellation left no trace on the chain.
-        await agent.CompleteRunForTestAsync(assignment.RunId, assignment.GenerationId);
-    }
-
-    [Fact]
-    public async Task ReplacePersistedAsync_StrictMode_CallerCancellation_CancelsCallerWaitOnly_WriteLaterCompletesAndFlushSucceeds()
-    {
-        // Mirrors the run-token test above, for ReplacePersistedAsync's caller — e.g. an external
-        // ResolveToolCallAsync request whose OWN cancellation must never abort the queued
-        // replacement write or poison the sticky canonical persistence fault.
-        var store = new ConfigurableCanonicalStore { GateReplaceCallNumber = 1 };
-        await using var agent = new CanonicalPersistenceTestAgent(
-            "strict-replace-caller-cancel-thread", store, strictCanonicalPersistence: true);
-
-        var assignment = await agent.StartRunForTestAsync();
-
-        var placeholder = new ToolCallResultMessage
-        {
-            ToolCallId = "tc-replace-cancel",
-            Result = string.Empty,
-            IsDeferred = true,
-            Role = Role.User,
-        };
-        var resolved = placeholder with { Result = "done", IsDeferred = false };
-
-        await agent.AddDeferredToHistoryForTestAsync(placeholder);
-
-        using var callerCts = new CancellationTokenSource();
-
-        var replaceTask = agent.ReplacePersistedForTestAsync(placeholder, resolved, callerCts.Token);
-
-        await store.ReplaceGateReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Act: cancel the caller's own request token while the replacement is still gated
-        // inside the store call.
-        await callerCts.CancelAsync();
-
-        var act = async () => await replaceTask;
-        await act.Should().ThrowAsync<OperationCanceledException>(
-            "the caller's own WaitAsync must observe its cancelled token");
-
-        store.ReplaceCallCount.Should().Be(1);
-        agent.HasCanonicalPersistenceFaultForTests.Should().BeFalse(
-            "a caller-token cancellation must never poison the sticky canonical persistence fault");
-
-        // Release the gate: the write completes successfully under the (never-cancelled)
-        // durability token.
-        store.ReleaseReplaceGate();
-        await agent.CanonicalPersistenceTailSnapshotForTests().WaitAsync(TimeSpan.FromSeconds(5));
-
-        store.ReplaceCallCount.Should().Be(1);
-        store.OperationLog.Should().Equal("Append#1", "Replace#1");
-        agent.HasCanonicalPersistenceFaultForTests.Should().BeFalse();
-
-        // A later terminal flush on this SAME (still-live) agent must succeed.
-        await agent.CompleteRunForTestAsync(assignment.RunId, assignment.GenerationId);
-    }
-
-    [Fact]
-    public async Task EnqueueCanonicalPersistenceOperation_BlockedBeforeLock_RacingDisposal_CannotAppendAfterSnapshot()
-    {
-        // Closes the enqueue-vs-disposal TOCTOU: an enqueue call blocked right before acquiring
-        // `_canonicalPersistenceLock` — exactly the instant DisposeAsync marks `_isDisposed` and
-        // snapshots the chain's tail — must resume into a predictable ObjectDisposedException
-        // rather than silently appending a node disposal's snapshot already missed.
-        var store = new ConfigurableCanonicalStore();
-        var agent = new CanonicalPersistenceTestAgent(
-            "strict-enqueue-dispose-race-thread", store, strictCanonicalPersistence: true);
-
-        await agent.StartRunForTestAsync();
-
-        var hookReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var hookGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        agent.PreCanonicalPersistenceLockHookForTests = () =>
-        {
-            hookReached.TrySetResult();
-            return hookGate.Task;
-        };
-
-        var message = new ToolCallResultMessage
-        {
-            ToolCallId = "tc-toctou",
-            Result = string.Empty,
-            IsDeferred = true,
-            Role = Role.User,
-        };
-
-        // Act: start the deferred append — it will suspend on the test hook BEFORE ever
-        // acquiring `_canonicalPersistenceLock` or touching the store.
-        var appendTask = agent.AddDeferredToHistoryForTestAsync(message);
-
-        await hookReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Disposal proceeds while the append is still blocked at the hook — it marks
-        // `_isDisposed` and snapshots the (still-empty) chain tail with no knowledge of the
-        // blocked call, then tears down without ever waiting on it, so this must complete
-        // promptly rather than hang for the blocked call to resume.
-        var disposeTask = agent.DisposeAsync().AsTask();
-        await disposeTask.WaitAsync(TimeSpan.FromSeconds(10));
-
-        // Now let the blocked append resume: it must observe `_isDisposed` already true when it
-        // finally acquires the lock, and fail there — before adding any node or touching the
-        // store.
-        hookGate.TrySetResult();
-
-        var act = async () => await appendTask;
-        await act.Should().ThrowAsync<ObjectDisposedException>(
-            "an enqueue call that loses the race to disposal must fail before appending a node");
-
-        store.AppendCallCount.Should().Be(
-            0,
-            "the write must never reach the store once disposal has already snapshotted the chain's tail");
-    }
-
     /// <summary>
     /// Minimal concrete <see cref="MultiTurnAgentBase"/> exposing the protected
     /// canonical-persistence primitives for direct testing without needing a full
@@ -597,8 +402,6 @@ public class StrictCanonicalPersistenceTests
         private readonly InMemoryConversationStore _inner = new();
         private readonly TaskCompletionSource _appendRelease =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _replaceRelease =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly object _logLock = new();
         private int _appendCallCount;
         private int _replaceCallCount;
@@ -606,14 +409,8 @@ public class StrictCanonicalPersistenceTests
         public TaskCompletionSource AppendGateReached { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public TaskCompletionSource ReplaceGateReached { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
         /// <summary>1-indexed AppendMessagesAsync call number to gate. 0 (default) gates none.</summary>
         public int GateAppendCallNumber { get; set; }
-
-        /// <summary>1-indexed ReplaceMessageAsync call number to gate. 0 (default) gates none.</summary>
-        public int GateReplaceCallNumber { get; set; }
 
         public bool ThrowOnAppend { get; set; }
 
@@ -626,8 +423,6 @@ public class StrictCanonicalPersistenceTests
         public int ReplaceCallCount => Volatile.Read(ref _replaceCallCount);
 
         public void ReleaseAppendGate() => _appendRelease.TrySetResult();
-
-        public void ReleaseReplaceGate() => _replaceRelease.TrySetResult();
 
         public async Task AppendMessagesAsync(
             string threadId, IReadOnlyList<PersistedMessage> messages, CancellationToken ct = default)
@@ -656,11 +451,6 @@ public class StrictCanonicalPersistenceTests
             string threadId, PersistedMessage replacement, CancellationToken ct = default)
         {
             var callNumber = Interlocked.Increment(ref _replaceCallCount);
-            if (callNumber == GateReplaceCallNumber)
-            {
-                ReplaceGateReached.TrySetResult();
-                await _replaceRelease.Task.WaitAsync(ct);
-            }
 
             lock (_logLock)
             {
