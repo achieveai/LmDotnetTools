@@ -214,3 +214,39 @@ describe('fileBrowserApi error classes', () => {
     expect(e.code).toBe('x');
   });
 });
+
+// Regression guard for the centralized session-error classification: EVERY action operation must map the
+// two structured session codes to the same typed errors (previously preview/download/delete dropped
+// caller_credential_conflict to a generic FileBrowserError).
+describe('fileBrowserApi consistent session-error classification', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const actions: Array<{ name: string; run: () => Promise<unknown> }> = [
+    { name: 'previewFile', run: () => previewFile('t', 'x') },
+    { name: 'downloadFile', run: () => downloadFile('t', 'x') },
+    { name: 'deleteEntry', run: () => deleteEntry('t', 'x') },
+  ];
+
+  it.each(actions)('$name maps 409 no_session_yet → NoSessionError', async ({ run }) => {
+    spyFetch(jsonResponse({ code: 'no_session_yet' }, 409));
+    await expect(run()).rejects.toBeInstanceOf(NoSessionError);
+  });
+
+  it.each(actions)(
+    '$name maps 409 caller_credential_conflict → CredentialConflictError',
+    async ({ run }) => {
+      spyFetch(jsonResponse({ code: 'caller_credential_conflict' }, 409));
+      await expect(run()).rejects.toBeInstanceOf(CredentialConflictError);
+    }
+  );
+
+  it('uploadFile maps both session codes consistently (session-level → throws)', async () => {
+    spyFetch(jsonResponse({ code: 'no_session_yet' }, 409));
+    await expect(uploadFile('t', '', new File(['x'], 'a.txt'))).rejects.toBeInstanceOf(NoSessionError);
+    vi.restoreAllMocks();
+    spyFetch(jsonResponse({ code: 'caller_credential_conflict' }, 409));
+    await expect(uploadFile('t', '', new File(['x'], 'a.txt'))).rejects.toBeInstanceOf(
+      CredentialConflictError
+    );
+  });
+});

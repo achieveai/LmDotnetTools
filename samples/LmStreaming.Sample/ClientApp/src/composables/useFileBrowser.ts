@@ -57,6 +57,9 @@ export function useFileBrowser(getThreadId: () => string | null) {
   // Tracks the in-flight listing fetch so a re-load cancels the previous request rather than racing
   // to write a stale result.
   let abortController: AbortController | null = null;
+  // Set on cleanup (unmount) so a late mutation's `finally` reload can't restart a listing after the
+  // composable is gone.
+  let disposed = false;
 
   /** (Re)loads the listing for `path` (defaults to the current path). */
   async function load(path: string = currentPath.value): Promise<void> {
@@ -181,9 +184,12 @@ export function useFileBrowser(getThreadId: () => string | null) {
       return [];
     }
     try {
-      const outcomes = await Promise.all(
-        files.map((file) => uploadFile(threadId, currentPath.value, file))
-      );
+      // Sequential (one request in flight at a time) so a large multi-file batch never retains multiple
+      // 64 MiB buffers concurrently (client- and server-side); each file still gets its own outcome.
+      const outcomes: UploadOutcome[] = [];
+      for (const file of files) {
+        outcomes.push(await uploadFile(threadId, currentPath.value, file));
+      }
       return outcomes;
     } catch (e) {
       if (e instanceof NoSessionError) {
@@ -198,7 +204,7 @@ export function useFileBrowser(getThreadId: () => string | null) {
         error: e instanceof Error ? e.message : 'upload_failed',
       }));
     } finally {
-      await load();
+      await reloadIfCurrent(threadId);
     }
   }
 
@@ -221,12 +227,24 @@ export function useFileBrowser(getThreadId: () => string | null) {
       }
       console.error('Failed to delete entry:', e);
     } finally {
+      await reloadIfCurrent(threadId);
+    }
+  }
+
+  /**
+   * Reloads the listing after a mutation, but ONLY if the composable is still live and the active thread
+   * is the same one the mutation ran under — a late upload/delete must not restart a listing after unmount
+   * or a conversation switch (which would overwrite newer state).
+   */
+  async function reloadIfCurrent(startThreadId: string): Promise<void> {
+    if (!disposed && getThreadId() === startThreadId) {
       await load();
     }
   }
 
   /** Cancels any in-flight listing fetch; call from the consumer's unmount hook. */
   function cleanup(): void {
+    disposed = true;
     abortController?.abort();
   }
 

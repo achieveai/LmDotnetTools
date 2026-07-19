@@ -32,20 +32,9 @@ public sealed partial class SandboxClient
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public async Task<string> ReadTextFileAsync(string sessionId, string path, CancellationToken ct = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
-        var relativePath = NormalizeFilePath(path);
-
-        var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
-        var bytes = await DownloadCappedBytesAsync(
-                $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/files/{mountId}?path={Uri.EscapeDataString(relativePath)}",
-                sessionId,
-                $"reading file '{path}'",
-                operationId: null,
-                maxBytes: null,
-                ct
-            )
-            .ConfigureAwait(false);
+        // Decode the shared byte-read pipeline so path normalization, mount resolution, URL construction,
+        // and the capped-download setup live in ONE place (ReadFileBytesAsync) and can never diverge.
+        var bytes = await ReadFileBytesAsync(sessionId, path, maxBytes: null, ct).ConfigureAwait(false);
         return DecodeFileUtf8OrThrow(bytes, "file");
     }
 

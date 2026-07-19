@@ -510,7 +510,12 @@ public sealed class FileBrowserController(
     private static async Task<byte[]?> ReadUploadWithinCapAsync(IFormFile file, CancellationToken ct)
     {
         await using var stream = file.OpenReadStream();
-        using var buffer = new MemoryStream();
+        // Pre-size to the declared length (clamped to the cap) so the buffer does not repeatedly reallocate/
+        // double while filling — a lying-small declared length just grows from a smaller start, still bounded
+        // by the observed-byte check below. The SDK's file PUT takes a byte[], so one full buffer per in-flight
+        // file is inherent (bounded at MaxFileBytes); client-side upload concurrency is what's limited.
+        var initialCapacity = file.Length is > 0 and <= FileBrowserLimits.MaxFileBytes ? (int)file.Length : 0;
+        using var buffer = new MemoryStream(initialCapacity);
         var chunk = new byte[81920];
         long total = 0;
         int read;

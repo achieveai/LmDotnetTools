@@ -51,6 +51,31 @@ function codeOf(body: Record<string, unknown> | null): string | null {
   return typeof code === 'string' ? code : null;
 }
 
+/**
+ * Maps a structured session-level failure to its typed error, consistently for EVERY operation:
+ * 409 `no_session_yet` → {@link NoSessionError}, 409 `caller_credential_conflict` →
+ * {@link CredentialConflictError}. Returns null when the response is not a session-level failure.
+ */
+function sessionError(status: number, code: string | null): Error | null {
+  if (status === 409 && code === 'no_session_yet') {
+    return new NoSessionError();
+  }
+  if (status === 409 && code === 'caller_credential_conflict') {
+    return new CredentialConflictError();
+  }
+  return null;
+}
+
+/** Reads the error body and returns the typed session error, or a generic {@link FileBrowserError}. */
+async function classifyFailure(response: Response, operation: string): Promise<Error> {
+  const body = await readBody(response);
+  const code = codeOf(body);
+  return (
+    sessionError(response.status, code) ??
+    new FileBrowserError(`Failed to ${operation} (${response.status})`, response.status, code)
+  );
+}
+
 /** Builds the `?path=` query; an empty path (root) is sent as no query for a clean URL. */
 function filesUrl(threadId: string, path: string, suffix = ''): string {
   const base = `/api/conversations/${encodeURIComponent(threadId)}/files${suffix}`;
@@ -62,8 +87,9 @@ function filesUrl(threadId: string, path: string, suffix = ''): string {
  * sandbox session yet, a {@link NoSessionState} (distinguished by its `state` field) — the caller
  * renders that as an empty state rather than an error.
  *
- * @throws {FileBrowserError} on 404 unknown_thread / path / gateway errors.
+ * @throws {NoSessionError} on 409 no_session_yet.
  * @throws {CredentialConflictError} on 409 caller_credential_conflict.
+ * @throws {FileBrowserError} on 404 unknown_thread / path / gateway errors.
  */
 export async function listFiles(
   threadId: string,
@@ -74,20 +100,13 @@ export async function listFiles(
   if (response.ok) {
     return (await response.json()) as DirectoryListing | NoSessionState;
   }
-  const body = await readBody(response);
-  if (response.status === 409 && codeOf(body) === 'caller_credential_conflict') {
-    throw new CredentialConflictError();
-  }
-  throw new FileBrowserError(
-    `Failed to list files (${response.status})`,
-    response.status,
-    codeOf(body)
-  );
+  throw await classifyFailure(response, 'list files');
 }
 
 /**
  * Fetches a text preview for a file.
  * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
  * @throws {FileBrowserError} on other non-ok statuses.
  */
 export async function previewFile(
@@ -99,34 +118,19 @@ export async function previewFile(
   if (response.ok) {
     return (await response.json()) as PreviewResult;
   }
-  const body = await readBody(response);
-  if (response.status === 409 && codeOf(body) === 'no_session_yet') {
-    throw new NoSessionError();
-  }
-  throw new FileBrowserError(
-    `Failed to preview file (${response.status})`,
-    response.status,
-    codeOf(body)
-  );
+  throw await classifyFailure(response, 'preview file');
 }
 
 /**
  * Downloads a file, triggering a browser "save" via a temporary object-URL anchor.
  * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
  * @throws {FileBrowserError} on other non-ok statuses.
  */
 export async function downloadFile(threadId: string, path: string): Promise<void> {
   const response = await fetch(filesUrl(threadId, path, '/download'));
   if (!response.ok) {
-    const body = await readBody(response);
-    if (response.status === 409 && codeOf(body) === 'no_session_yet') {
-      throw new NoSessionError();
-    }
-    throw new FileBrowserError(
-      `Failed to download file (${response.status})`,
-      response.status,
-      codeOf(body)
-    );
+    throw await classifyFailure(response, 'download file');
   }
   const blob = await response.blob();
   triggerBrowserDownload(blob, fileNameFromPath(path));
@@ -181,11 +185,10 @@ export async function uploadFile(
   }
   const body = await readBody(response);
   const code = codeOf(body);
-  if (response.status === 409 && code === 'no_session_yet') {
-    throw new NoSessionError();
-  }
-  if (response.status === 409 && code === 'caller_credential_conflict') {
-    throw new CredentialConflictError();
+  // Session-level failures abort the whole batch (thrown, mapped consistently with the other ops).
+  const session = sessionError(response.status, code);
+  if (session) {
+    throw session;
   }
   // Per-file failure: surface as a failed outcome so a batch can continue.
   const error =
@@ -200,6 +203,7 @@ export async function uploadFile(
 /**
  * Deletes an entry (file or directory — the server derives which; no flags are sent).
  * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
  * @throws {FileBrowserError} on other non-204 statuses (422 delete_failed, 400 cannot_delete_root, 404).
  */
 export async function deleteEntry(
@@ -211,14 +215,5 @@ export async function deleteEntry(
   if (response.status === 204) {
     return;
   }
-  const body = await readBody(response);
-  const code = codeOf(body);
-  if (response.status === 409 && code === 'no_session_yet') {
-    throw new NoSessionError();
-  }
-  throw new FileBrowserError(
-    `Failed to delete entry (${response.status})`,
-    response.status,
-    code
-  );
+  throw await classifyFailure(response, 'delete entry');
 }
