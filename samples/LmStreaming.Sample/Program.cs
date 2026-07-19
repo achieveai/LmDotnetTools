@@ -1442,6 +1442,72 @@ try
         }
     );
 
+    // Map a SEPARATE WebSocket endpoint for a FOCUSED sub-agent (WI #194, presentation-only). Kept
+    // distinct from "/ws" so the parent handler stays byte-compatible: this route resolves the live
+    // child through the parent conversation's SubAgentManager (never the pool, which would wrongly
+    // create a top-level agent for a "subagent-{id}" thread) and streams/relays it read-only.
+    _ = app.Map(
+        "/ws/subagent",
+        async (
+            HttpContext context,
+            ChatWebSocketManager wsManager,
+            ILogger<Program> wsLogger,
+            CancellationToken cancellationToken
+        ) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("WebSocket connection required", cancellationToken);
+                return;
+            }
+
+            var parentThreadId = context.Request.Query["parentThreadId"].FirstOrDefault();
+            var agentId = context.Request.Query["agentId"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(parentThreadId) || string.IsNullOrWhiteSpace(agentId))
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(
+                    "parentThreadId and agentId are required", cancellationToken);
+                return;
+            }
+
+            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            wsLogger.LogInformation(
+                "Sub-agent WebSocket connection established for agent {AgentId} on parent {ParentThreadId}",
+                agentId,
+                parentThreadId
+            );
+
+            try
+            {
+                await wsManager.HandleSubAgentConnectionAsync(
+                    webSocket,
+                    parentThreadId,
+                    agentId,
+                    cancellationToken
+                );
+            }
+            finally
+            {
+                if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(
+                        System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                        "Server closing",
+                        CancellationToken.None
+                    );
+                }
+
+                webSocket.Dispose();
+                wsLogger.LogInformation(
+                    "Sub-agent WebSocket connection closed for agent {AgentId}",
+                    agentId
+                );
+            }
+        }
+    );
+
     // Map controllers (conversations, chat-modes, tools, diagnostics)
     _ = app.MapControllers();
 
