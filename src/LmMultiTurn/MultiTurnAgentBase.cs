@@ -93,6 +93,34 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // existing constructors/behavior are completely unaffected.
     private readonly IAgentPublicationObserver? _publicationObserver;
 
+    // Monotonic per-agent sequence assigned to each AgentPublication under `_replayLock` (the SAME
+    // lock guarding v1 replay-buffer bookkeeping) — see AgentPublication.Sequence.
+    private long _publicationSequence;
+
+    // Bounded-lifetime ordered-dispatch chain for the optional publication observer: the tail Task
+    // of a linked list of "dispatch nodes", one per publication, each created under `_replayLock`.
+    // A node first awaits the PREVIOUS node (swallowing its exception) so observer calls start in
+    // the SAME order publications acquired `_replayLock` (Sequence order) — never concurrently —
+    // then awaits ITS OWN publication's "v1 fan-out is done, ready to observe" signal before
+    // invoking `_publicationObserver`. This never holds `_replayLock` across an await: nodes are
+    // only ever CREATED inside the lock (a call that itself suspends immediately, handing back a
+    // Task) — see PublishToAllAsync. One observer failure faults only that node/publication's own
+    // publishing caller (who awaits just that node) without poisoning later nodes, and the chain
+    // never outlives this agent — DisposeAsync cancels the observer's own cancellation scope
+    // (_observerLifetimeCts, deliberately independent of any publish caller's run/request token —
+    // see IAgentPublicationObserver remarks) and bounds its wait for the final tail, so disposal
+    // can never leak or hang on it.
+    private Task _observerDispatchTail = Task.CompletedTask;
+    private readonly CancellationTokenSource _observerLifetimeCts = new();
+
+    // Test-only seam (see AgentPublicationObserverTests): when set, PublishToAllAsync awaits this
+    // for a publication right after that call's v1 fan-out completes (lock already released) but
+    // BEFORE it signals its dispatch node "ready" — letting tests deterministically hold back one
+    // publisher there to prove the observer chain's delivery order follows `_replayLock`
+    // acquisition (Sequence) order rather than readiness/completion timing. Always null in
+    // production.
+    internal Func<AgentPublication, Task>? FanOutReadyDelayHookForTests;
+
     #endregion
 
     #region Protected Properties
@@ -1069,7 +1097,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="ct">Cancellation token</param>
     protected ValueTask PublishToAllAsync(IMessage message, AgentPublicationKind kind, CancellationToken ct)
     {
+        // Deliberately unused here — see IAgentPublicationObserver remarks: the observer's
+        // cancellation scope is this agent's own lifetime (_observerLifetimeCts), never the
+        // publishing caller's token, and v1 fan-out below has never used it either.
+        _ = ct;
+
         List<KeyValuePair<string, Channel<IMessage>>> targets;
+
+        // Populated only when an observer is configured — see the ordered-dispatch remarks on
+        // `_observerDispatchTail`. `readyTcs` is signalled by THIS call once its v1 fan-out below
+        // is done; `observerTask` is the dispatch node THIS call awaits (its own publication's
+        // observer completion) — never the whole chain, so one publication's observer failure only
+        // faults its own caller.
+        AgentPublication? publication = null;
+        TaskCompletionSource? readyTcs = null;
+        Task? observerTask = null;
+
         lock (_replayLock)
         {
             // Maintain the in-flight run's replay buffer. A RunAssignmentMessage for a NEW run opens a
@@ -1122,6 +1165,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             }
 
             targets = [.. _outputSubscribers];
+
+            // Assign this publication's monotonic Sequence and create its dispatch node HERE
+            // (still under `_replayLock`), so Sequence order == lock-acquisition order exactly.
+            // Creating the node starts DispatchToObserverAsync synchronously, but its first await
+            // (on the previous node / the not-yet-signalled `readyTcs` below) is on an incomplete
+            // Task, so it suspends and returns immediately — this never blocks while holding the
+            // lock, i.e. no monitor is held across a genuine await.
+            if (_publicationObserver != null)
+            {
+                publication = new AgentPublication(ThreadId, message, kind, ++_publicationSequence);
+                readyTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                observerTask = DispatchToObserverAsync(_observerDispatchTail, readyTcs.Task, publication);
+                _observerDispatchTail = observerTask;
+            }
         }
 
         foreach (var (subscriberId, channel) in targets)
@@ -1129,13 +1186,62 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             PublishToSubscriber(subscriberId, channel, message);
         }
 
-        // v1 fan-out above is already complete (non-blocking) regardless of what follows. The
-        // observer — when configured — is awaited by the publishing caller (see remarks on
-        // IAgentPublicationObserver); an exception here propagates to that caller rather than
-        // being swallowed.
-        return _publicationObserver == null
-            ? ValueTask.CompletedTask
-            : _publicationObserver.OnPublishedAsync(new AgentPublication(ThreadId, message, kind), ct);
+        // v1 fan-out above is already complete (non-blocking) regardless of what follows.
+        if (_publicationObserver == null)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return new ValueTask(SignalReadyAndAwaitObserverAsync(publication!, readyTcs!, observerTask!));
+    }
+
+    /// <summary>
+    /// Runs after this call's v1 fan-out is complete: optionally waits for the test-only fan-out
+    /// delay hook, then signals this publication's dispatch node "ready" (see
+    /// `_observerDispatchTail`), and finally awaits THAT node — so this method's caller (the
+    /// publisher) sees an exception if and only if ITS OWN publication's observer call failed,
+    /// never a different (earlier or later) publication's failure.
+    /// </summary>
+    private async Task SignalReadyAndAwaitObserverAsync(
+        AgentPublication publication,
+        TaskCompletionSource readyTcs,
+        Task observerTask)
+    {
+        var delayHook = FanOutReadyDelayHookForTests;
+        if (delayHook != null)
+        {
+            await delayHook(publication).ConfigureAwait(false);
+        }
+
+        readyTcs.SetResult();
+        await observerTask.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// One node in the per-agent observer dispatch chain (see `_observerDispatchTail`). Awaits the
+    /// PREVIOUS node first — swallowing its exception, since that node's own publishing caller
+    /// already observed/propagated it — so observer calls start in Sequence order and never
+    /// concurrently, then awaits THIS publication's "v1 fan-out done, ready to observe" signal
+    /// before finally invoking the observer with this agent's OWN cancellation scope
+    /// (`_observerLifetimeCts`), never the publishing caller's `ct` — see
+    /// <see cref="IAgentPublicationObserver"/> remarks.
+    /// </summary>
+    private async Task DispatchToObserverAsync(Task previousNode, Task ready, AgentPublication publication)
+    {
+        try
+        {
+            await previousNode.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Swallowed here so ONE publication's observer failure cannot poison delivery to this
+            // (later) publication — the earlier publication's own publishing caller already saw
+            // (and propagated) this exception via its own dispatch node.
+        }
+
+        await ready.ConfigureAwait(false);
+
+        await _publicationObserver!.OnPublishedAsync(publication, _observerLifetimeCts.Token).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1331,6 +1437,29 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         await StopAsync();
 
         _internalCts?.Dispose();
+
+        // End the optional publication observer's durability scope (see IAgentPublicationObserver
+        // remarks and `_observerDispatchTail`): cancel it FIRST so any observer call already in
+        // flight is asked to stop promptly, then bound-await the chain's current tail so disposal
+        // can never leak/hang on it — a still-running/faulted tail after the timeout is abandoned
+        // (best-effort; the cancellation above already asked a well-behaved observer to stop).
+        Task tailSnapshot;
+        lock (_replayLock)
+        {
+            tailSnapshot = _observerDispatchTail;
+        }
+
+        await _observerLifetimeCts.CancelAsync();
+        try
+        {
+            await tailSnapshot.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort — see remarks above.
+        }
+
+        _observerLifetimeCts.Dispose();
 
         await OnDisposeAsync();
 
