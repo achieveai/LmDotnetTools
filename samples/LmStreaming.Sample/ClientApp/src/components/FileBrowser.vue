@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue';
+import { onMounted, onBeforeUnmount, ref, watch, nextTick, computed } from 'vue';
 import { useFileBrowser } from '@/composables/useFileBrowser';
 import type { FileEntry } from '@/types/fileBrowser';
 
@@ -36,6 +36,12 @@ const isDragOver = ref(false);
 // Concise summary of the files a batch upload REJECTED (per-file 413/400/409 target_busy), shown as
 // its own notice. `null` when the last upload had no per-file failures.
 const uploadErrors = ref<string | null>(null);
+
+// True while a destructive confirmation (delete or overwrite) is open. The background file-browser
+// controls are marked `inert` so keyboard focus (BaseModal's trap skips [inert] subtrees) and pointer
+// interaction stay confined to the confirmation — otherwise Tab would reach breadcrumbs/upload/row
+// buttons behind the overlay and activating another row's Delete would retarget the confirmation.
+const isConfirmOpen = computed(() => deleteTarget.value !== null || pendingUpload.value !== null);
 
 onMounted(() => {
   void load('');
@@ -225,8 +231,11 @@ function typeIcon(entry: FileEntry): string {
 
 <template>
   <div class="file-browser" data-testid="file-browser">
-    <!-- The active workspace (shared by any conversation with the same workspace/identity). -->
-    <div v-if="workspaceId" class="fb-workspace" data-testid="file-browser-workspace">
+    <!-- Background content: made inert while a destructive confirmation is open so focus + pointer stay
+         confined to the confirmation overlay below (which sits OUTSIDE this inert subtree). -->
+    <div class="fb-main" :inert="isConfirmOpen || undefined">
+      <!-- The active workspace (shared by any conversation with the same workspace/identity). -->
+      <div v-if="workspaceId" class="fb-workspace" data-testid="file-browser-workspace">
       Workspace: <span class="fb-workspace-id">{{ workspaceId }}</span>
     </div>
 
@@ -367,6 +376,7 @@ function typeIcon(entry: FileEntry): string {
         {{ moreCount }} more item{{ moreCount === 1 ? '' : 's' }} not shown.
       </div>
     </template>
+    </div>
 
     <!-- Delete confirmation dialog -->
     <div
@@ -444,6 +454,14 @@ function typeIcon(entry: FileEntry): string {
   flex-direction: column;
   gap: 12px;
   padding: 16px 20px;
+}
+
+/* The interactive content behind any confirmation overlay. Carries the column layout so the fixed-
+   position confirmations can sit outside it (as siblings) and toggle its `inert` state. */
+.fb-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .fb-workspace {

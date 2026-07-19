@@ -225,3 +225,47 @@ describe('useFileBrowser.remove', () => {
     expect(calls[0].url).toBe('/api/conversations/thread-1/files?path=src%2Fold.txt');
   });
 });
+
+describe('useFileBrowser.preview', () => {
+  it('a stale earlier preview that resolves AFTER a newer one does not overwrite the newer selection', async () => {
+    const pending: { resolve: (r: Response) => void }[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise((resolve) => pending.push({ resolve }))
+    );
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const entryA = { name: 'a.txt', type: 'file' as const, size: 1, nameLossy: false };
+    const entryB = { name: 'b.txt', type: 'file' as const, size: 1, nameLossy: false };
+
+    const pA = fb.preview(entryA); // older request
+    const pB = fb.preview(entryB); // newer request — supersedes A
+
+    // Resolve the NEWER request first, then let the OLDER one resolve late.
+    pending[1].resolve(jsonResponse({ previewable: true, text: 'B content' }));
+    pending[0].resolve(jsonResponse({ previewable: true, text: 'A content' }));
+    await Promise.allSettled([pA, pB]);
+    await flushPromises();
+
+    // The newer selection (B) wins; the late A is dropped by the supersession guard.
+    expect(fb.previewTarget.value?.name).toBe('b.txt');
+    expect(fb.previewResult.value?.text).toBe('B content');
+  });
+
+  it('a preview that resolves after clearPreview() does not repopulate the panel', async () => {
+    const pending: { resolve: (r: Response) => void }[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise((resolve) => pending.push({ resolve }))
+    );
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const p = fb.preview({ name: 'a.txt', type: 'file', size: 1, nameLossy: false });
+    fb.clearPreview(); // user closed/navigated before the preview returned
+
+    pending[0].resolve(jsonResponse({ previewable: true, text: 'A content' }));
+    await Promise.allSettled([p]);
+    await flushPromises();
+
+    expect(fb.previewTarget.value).toBeNull();
+    expect(fb.previewResult.value).toBeNull();
+  });
+});

@@ -84,19 +84,41 @@ public class SandboxSessionRegistryResolverTests
     }
 
     [Fact]
-    public async Task NullCallerCredential_PassesGate_AndProceedsToResolveLiveSession()
+    public async Task NullCallerCredential_AgainstNonDefaultOwner_ReturnsCredentialConflict()
     {
         await using var registry = CreateRegistry();
+        // The binding is owned by an S2S caller ("owner"), NOT the process default. A credential-less
+        // (header-less) caller resolves to the process default identity, which is NOT that owner — so it
+        // must conflict, symmetric with MultiTurnAgentPool. Regression guard for the authz gap where a
+        // request carrying neither S2S marker (allowed through by [InboundS2SAuth] as the same-origin SPA)
+        // could otherwise reach another app identity's workspace.
         registry.PublishEstablishedBinding(
             "thread-null-cred",
             new SandboxEstablishedBinding(new WorkspaceRef("default"), new SandboxCredential("owner", "owner-key"))
         );
 
-        // A null/interactive caller must NOT conflict — it resolves to the process default, i.e. the
-        // binding's own identity. The resolver therefore proceeds to resolve a live session, which trips the
-        // throwing stub. Reaching the gateway is proof the credential gate passed (it did not short-circuit
-        // to NoSession/CredentialConflict).
-        var act = () => registry.ResolveThreadWorkspaceSessionAsync("thread-null-cred", "default", requestCredential: null);
+        var result = await registry.ResolveThreadWorkspaceSessionAsync("thread-null-cred", "default", requestCredential: null);
+
+        result.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
+        result.Session.Should().BeNull();
+        result.ExistingAppId.Should().Be("owner");
+        result.RequestedAppId.Should().Be(registry.DefaultCredential.AppId);
+    }
+
+    [Fact]
+    public async Task NullCallerCredential_AgainstDefaultOwnedBinding_PassesGate_AndProceedsToResolveLiveSession()
+    {
+        await using var registry = CreateRegistry();
+        // The interactive path: a binding created by the interactive UI is owned by the process default
+        // credential. A null/interactive caller resolves to that same default identity, so it passes the
+        // gate and proceeds to resolve a live session (tripping the throwing stub). Proves the security
+        // fix does NOT break the ordinary same-origin file browser.
+        registry.PublishEstablishedBinding(
+            "thread-default-owned",
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential)
+        );
+
+        var act = () => registry.ResolveThreadWorkspaceSessionAsync("thread-default-owned", "default", requestCredential: null);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
@@ -125,7 +147,9 @@ public class SandboxSessionRegistryResolverTests
     public async Task ClearingOneThreadBinding_LeavesOtherThreadsIntact()
     {
         await using var registry = CreateRegistry();
-        var binding = new SandboxEstablishedBinding(new WorkspaceRef("default"), new SandboxCredential("owner", "key"));
+        // Default-owned bindings so a null (interactive) caller passes the credential gate — this test is
+        // about binding ISOLATION on clear, not the cross-actor gate (covered separately above).
+        var binding = new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential);
         registry.PublishEstablishedBinding("thread-a", binding);
         registry.PublishEstablishedBinding("thread-b", binding);
 

@@ -34,7 +34,12 @@ function focusableElements(): HTMLElement[] {
   }
   const selector =
     'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-  return Array.from(container.querySelectorAll<HTMLElement>(selector));
+  // Exclude anything inside an [inert] subtree: a nested confirmation (e.g. the file browser's
+  // delete/overwrite dialog) marks the background content inert, and the trap must then confine Tab to
+  // the confirmation rather than cycling back through the inert controls behind it.
+  return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter(
+    (el) => !el.closest('[inert]')
+  );
 }
 
 function handleKeydown(event: KeyboardEvent): void {

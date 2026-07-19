@@ -26,6 +26,10 @@ public class FileBrowserControllerTests
 
         public Exception? ResolveThrows { get; set; }
 
+        /// <summary>The <c>persistedWorkspaceId</c> the controller passed to the last resolve call (the value
+        /// <c>ReadWorkspaceId</c> extracted from metadata) — asserted by the JsonElement regression tests.</summary>
+        public string? LastPersistedWorkspaceId { get; private set; }
+
         public Dictionary<string, IReadOnlyList<SandboxDirectoryEntry>> Listings { get; } = new(StringComparer.Ordinal);
         public byte[] FileBytes { get; set; } = [];
         public Exception? ReadThrows { get; set; }
@@ -35,8 +39,11 @@ public class FileBrowserControllerTests
         public List<SandboxCommand> Commands { get; } = [];
         public int ReadCalls { get; private set; }
 
-        public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(string threadId, string persistedWorkspaceId, SandboxCredential? requestCredential, CancellationToken ct = default) =>
-            ResolveThrows is not null ? Task.FromException<SandboxSessionResolution>(ResolveThrows) : Task.FromResult(Resolution);
+        public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(string threadId, string persistedWorkspaceId, SandboxCredential? requestCredential, CancellationToken ct = default)
+        {
+            LastPersistedWorkspaceId = persistedWorkspaceId;
+            return ResolveThrows is not null ? Task.FromException<SandboxSessionResolution>(ResolveThrows) : Task.FromResult(Resolution);
+        }
 
         public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(string sessionId, string relativePath, CancellationToken ct = default) =>
             Listings.TryGetValue(relativePath, out var entries)
@@ -208,8 +215,13 @@ public class FileBrowserControllerTests
 
         var result = await controller.List(ThreadId, path: null, CancellationToken.None);
 
-        // With the fix the workspace resolves and the real listing is returned — NOT a no_session_yet state.
-        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>();
+        // The workspace resolves and the real listing is returned — NOT a no_session_yet state.
+        var listing = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<DirectoryListingDto>().Subject;
+        // Pin the EXTRACTED value, not merely "not no-session": the id handed to the resolver and echoed on
+        // the DTO must both be exactly "default" (a loose ToString() of a non-string JsonElement, or a wrong
+        // non-empty value, would still yield a listing but a different id here).
+        browser.LastPersistedWorkspaceId.Should().Be("default");
+        listing.WorkspaceId.Should().Be("default");
     }
 
     [Theory]
@@ -239,6 +251,8 @@ public class FileBrowserControllerTests
 
         // The non-string value is ignored → no_session_yet, never a bogus "42"/"True" workspace identity.
         result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<NoSessionStateDto>();
+        // And the malformed value never even reached the resolver (short-circuited before session resolution).
+        browser.LastPersistedWorkspaceId.Should().BeNull();
     }
 
     // -------- Listing --------

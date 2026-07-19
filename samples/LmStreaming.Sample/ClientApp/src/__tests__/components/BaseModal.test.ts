@@ -117,4 +117,35 @@ describe('BaseModal focus management', () => {
 
     opener.remove();
   });
+
+  it('excludes [inert] background controls from the trap so a nested confirmation keeps focus', () => {
+    // Models the file browser's nested delete/overwrite confirmation: the background content is marked
+    // inert, and only the confirmation (plus the modal close button) should remain in the tab cycle.
+    wrapper = mount(BaseModal, {
+      props: { title: 'Files', dataTestId: 'demo-modal' },
+      slots: {
+        default:
+          '<div inert>' +
+          '<button data-testid="bg-1">bg1</button><button data-testid="bg-2">bg2</button>' +
+          '</div>' +
+          '<div data-testid="confirm">' +
+          '<button data-testid="cf-cancel">Cancel</button><button data-testid="cf-ok">OK</button>' +
+          '</div>',
+      },
+      attachTo: document.body,
+    });
+
+    const close = wrapper.find('[data-testid="demo-modal-close"]').element as HTMLElement;
+    const cfOk = wrapper.find('[data-testid="cf-ok"]').element as HTMLElement;
+
+    // cf-ok is the LAST live focusable (the inert bg-1/bg-2 are filtered out) → Tab wraps to close (first).
+    cfOk.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    expect(document.activeElement).toBe(close);
+
+    // Shift+Tab from the first (close) wraps to the last LIVE focusable — cf-ok, NOT the inert bg-2.
+    close.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(cfOk);
+  });
 });

@@ -133,6 +133,11 @@ export function useFileBrowser(getThreadId: () => string | null) {
     await load(path);
   }
 
+  // Monotonic token for preview requests. `preview()` captures the token it started under and commits its
+  // result only if it is still the latest — so when two previews overlap (click A, then click B), a slow
+  // A that resolves AFTER B can no longer overwrite B's newer selection. Bumped on clear/unmount too.
+  let previewSeq = 0;
+
   /** Loads a text preview for a file entry, populating `previewTarget`/`previewResult`. */
   async function preview(entry: FileEntry): Promise<PreviewResult | null> {
     const threadId = getThreadId();
@@ -140,16 +145,18 @@ export function useFileBrowser(getThreadId: () => string | null) {
       return null;
     }
     const path = joinPath(currentPath.value, entry.name);
+    const seq = ++previewSeq;
     try {
       const result = await previewFile(threadId, path, lifecycle.signal);
-      if (disposed) {
+      // Supersession guard: a newer preview (or a clear/unmount) has taken over — drop this stale result.
+      if (disposed || seq !== previewSeq) {
         return null;
       }
       previewTarget.value = entry;
       previewResult.value = result;
       return result;
     } catch (e) {
-      if (isCancellation(e) || disposed) {
+      if (isCancellation(e) || disposed || seq !== previewSeq) {
         return null;
       }
       if (e instanceof NoSessionError) {
@@ -162,8 +169,9 @@ export function useFileBrowser(getThreadId: () => string | null) {
     }
   }
 
-  /** Clears the inline preview panel. */
+  /** Clears the inline preview panel. Also supersedes any in-flight preview so it cannot commit late. */
   function clearPreview(): void {
+    previewSeq++;
     previewTarget.value = null;
     previewResult.value = null;
   }

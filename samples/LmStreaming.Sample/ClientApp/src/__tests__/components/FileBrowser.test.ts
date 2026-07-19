@@ -158,6 +158,23 @@ describe('FileBrowser delete confirmation', () => {
     expect(dialog.text()).toContain('Delete folder src and all its contents?');
   });
 
+  it('marks the background content inert while the confirm is open, with the dialog OUTSIDE it', async () => {
+    const { wrapper } = await mountBrowser();
+
+    // No confirmation yet → the background is interactive (no inert attribute).
+    expect(wrapper.find('.fb-main').attributes('inert')).toBeUndefined();
+
+    await wrapper.find('[data-testid="file-entry-delete-readme.md"]').trigger('click');
+    await flushPromises();
+
+    const main = wrapper.find('.fb-main');
+    // Background is inert so BaseModal's trap (which skips [inert]) and pointer input stay off it...
+    expect(main.attributes('inert')).toBeDefined();
+    // ...while the confirmation overlay is a SIBLING of the inert region, not a descendant, so it stays live.
+    expect(main.find('[data-testid="file-browser-delete-confirm"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="file-browser-delete-confirm"]').exists()).toBe(true);
+  });
+
   it('Escape inside the delete-confirm cancels it without closing the Files modal', async () => {
     const { wrapper, fetchSpy } = await mountModal();
     const callsBefore = fetchSpy.mock.calls.length;
