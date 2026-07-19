@@ -182,6 +182,101 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Predefined_custom_header_key_injected_on_its_host_and_denied_elsewhere()
+    {
+        // End-to-end for issue #210: a custom-header egress key created via the CRUD API is injected
+        // VERBATIM (no Bearer, no expiry) by the predefined webhook route on the entry's own host, and
+        // a request to any OTHER host is denied by the per-entry host gate (anti-oracle guard).
+        LogTestStart();
+        var tokenDir = Path.Combine(Path.GetTempPath(), "lm-egress-key-e2e", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(tokenDir);
+        try
+        {
+            var responder = ScriptedSseResponder.New()
+                .ForRole("noop", _ => true)
+                    .Turn(t => t.Text("ok"))
+                .Build();
+            using var factory = new E2EWebAppFactory(
+                "test",
+                new ScriptedBuilder(responder.AsAnthropicHandler()),
+                new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = tokenDir });
+            using var client = factory.CreateClient();
+            var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+
+            var createBody = JsonSerializer.Serialize(new
+            {
+                host = "api.internal.test",
+                kind = "custom-headers",
+                headers = new[] { new { name = "X-Api-Key", value = "secret-123" } },
+            });
+            using var createResponse = await client.PostAsync(
+                "/api/auth/egress-keys",
+                new StringContent(createBody, Encoding.UTF8, "application/json"));
+            createResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            string id;
+            using (var created = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync()))
+            {
+                id = created.RootElement.GetProperty("id").GetString()!;
+            }
+
+            var providerId = $"predefined-{id}";
+            Logger.LogInformation("Created custom-header egress key {ProviderId} for host api.internal.test", providerId);
+
+            using (var allow = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test"))
+            {
+                allow.RootElement.GetProperty("decision").GetString().Should().Be("allow");
+                var pair = allow.RootElement.GetProperty("headers")[0];
+                pair[0].GetString().Should().Be("X-Api-Key");
+                pair[1].GetString().Should().Be("secret-123");
+                allow.RootElement.TryGetProperty("expires_at", out _).Should().BeFalse();
+            }
+
+            using (var deny = await PostWebhookAsync(client, sharedSecret, providerId, "evil.test"))
+            {
+                deny.RootElement.GetProperty("decision").GetString().Should().Be("deny");
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tokenDir, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort temp cleanup.
+            }
+        }
+
+        LogTestEnd();
+    }
+
+    private static async Task<JsonDocument> PostWebhookAsync(
+        HttpClient client, string sharedSecret, string providerId, string destinationHost)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            session_id = "s-test",
+            app_id = "lmstreaming-sample",
+            provider_id = providerId,
+            rule_id = providerId,
+            destination_host = destinationHost,
+            destination_port = 443,
+            method = "GET",
+            path = "/",
+            required_scopes = Array.Empty<string>(),
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/auth/webhook/{providerId}")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
+        using var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task GitHub_git_host_returns_200_allow_with_injected_basic_x_access_token()
     {
         LogTestStart();

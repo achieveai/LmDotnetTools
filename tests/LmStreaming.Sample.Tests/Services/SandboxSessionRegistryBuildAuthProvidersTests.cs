@@ -92,7 +92,52 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
         registry.GetAuthProviderIdsForTest().Should().BeEmpty();
     }
 
-    private static SandboxSessionRegistry CreateRegistry(AuthOptions auth)
+    [Fact]
+    public async Task Predefined_key_entry_emits_its_own_webhook_provider()
+    {
+        var dir = Directory.CreateTempSubdirectory("egr-bap");
+        try
+        {
+            var keys = new PredefinedKeyRegistry(dir.FullName, new NoopTokenStore(), new HttpClient(), NullLoggerFactory.Instance);
+            await keys.UpsertAsync(new PredefinedKeyEntry
+            {
+                Id = "e1",
+                Host = "api.internal.example.com",
+                Kind = PredefinedKeyKind.CustomHeaders,
+                Headers = [new PredefinedHeader("X-Key", "v")],
+            });
+
+            await using var registry = CreateRegistry(new AuthOptions(), keys);
+
+            // No OAuth providers configured, so the ONLY emitted provider is the predefined entry's.
+            registry.GetAuthProviderIdsForTest().Should().ContainSingle().Which.Should().Be("predefined-e1");
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task No_predefined_registry_emits_no_predefined_providers()
+    {
+        // Fail-closed: the headless daemon (and any caller) that passes no registry gets no keys.
+        await using var registry = CreateRegistry(new AuthOptions(), predefinedKeys: null);
+
+        registry.GetAuthProviderIdsForTest().Should().BeEmpty();
+    }
+
+    private sealed class NoopTokenStore : IOAuthTokenStore
+    {
+        public Task<OAuthTokenRecord?> GetAsync(string provider, CancellationToken ct = default) =>
+            Task.FromResult<OAuthTokenRecord?>(null);
+
+        public Task SaveAsync(OAuthTokenRecord record, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task RemoveAsync(string provider, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    private static SandboxSessionRegistry CreateRegistry(AuthOptions auth, PredefinedKeyRegistry? predefinedKeys = null)
     {
         static HttpResponseMessage Unused(HttpRequestMessage _) => new(HttpStatusCode.OK);
 
@@ -107,7 +152,8 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Unused)),
             auth,
-            new AuthSharedSecret(auth));
+            new AuthSharedSecret(auth),
+            predefinedKeys);
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

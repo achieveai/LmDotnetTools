@@ -25,7 +25,8 @@ public sealed class AuthWebhookController(
     IAuthResolutionPolicy authPolicy,
     IAuthWebhookForwarder authWebhookForwarder,
     AuthOptions authOptions,
-    ILogger<AuthWebhookController> logger) : ControllerBase
+    ILogger<AuthWebhookController> logger,
+    PredefinedKeyRegistry? predefinedKeys = null) : ControllerBase
 {
     /// <summary>
     /// Gateway callback: returns an allow decision (with a <c>Bearer</c> Authorization header and the
@@ -62,8 +63,9 @@ public sealed class AuthWebhookController(
 
         // Defense-in-depth: the egress proxy already validates the destination per its rules, but a
         // rules misconfiguration must not turn this endpoint into an open token-minting oracle —
-        // only inject the provider's token toward that provider's own hosts.
-        if (!OAuthProviderHosts.IsAllowed(tokenProvider.ProviderId, body.DestinationHost))
+        // only inject the credential toward that provider's/entry's own hosts. Predefined keys carry
+        // their own (user-entered) host, so they gate on the entry's host, not the managed OAuth list.
+        if (!IsDestinationAllowed(tokenProvider, body.DestinationHost))
         {
             logger.LogWarning(
                 "Auth-webhook deny for provider {ProviderId}: destination host {DestinationHost} is not in the provider's allowlist.",
@@ -78,7 +80,7 @@ public sealed class AuthWebhookController(
         // An await inside a catch block is not protected by the sibling catches of the same try,
         // so running the policy there would let any non-OCE failure escape as a 500, breaking the
         // always-200 allow/deny contract the broad catch below exists to guarantee.
-        bool defer = false;
+        var defer = false;
         try
         {
             var token = await tokenProvider.GetAccessTokenAsync(body.RequiredScopes, ct);
@@ -86,7 +88,7 @@ public sealed class AuthWebhookController(
                 "Auth-webhook allow for provider {ProviderId} (host {DestinationHost}).",
                 tokenProvider.ProviderId,
                 body.DestinationHost);
-            return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, token));
+            return Ok(BuildAllow(tokenProvider, body.DestinationHost, token));
         }
         catch (InvalidOperationException ex)
         {
@@ -146,7 +148,7 @@ public sealed class AuthWebhookController(
                     tokenProvider.ProviderId,
                     body.DestinationHost);
                 await TryNotifyAuthCompletedAsync(capturedTarget, tokenProvider.ProviderId);
-                return Ok(AuthWebhookResponse.Allow(tokenProvider.ProviderId, body.DestinationHost, resolved));
+                return Ok(BuildAllow(tokenProvider, body.DestinationHost, resolved));
             }
 
             logger.LogInformation(
@@ -238,9 +240,32 @@ public sealed class AuthWebhookController(
         }
     }
 
-    /// <summary>Resolves a registered provider by the route id, matching <see cref="IOAuthTokenProvider.ProviderId"/> case-insensitively.</summary>
+    /// <summary>
+    /// Resolves a registered OAuth provider by the route id (case-insensitive), falling back to a
+    /// runtime predefined-key provider (<c>predefined-&lt;id&gt;</c>) from the registry.
+    /// </summary>
     private IOAuthTokenProvider? Resolve(string provider) =>
-        providers.FirstOrDefault(p => string.Equals(p.ProviderId, provider, StringComparison.OrdinalIgnoreCase));
+        providers.FirstOrDefault(p => string.Equals(p.ProviderId, provider, StringComparison.OrdinalIgnoreCase))
+        ?? predefinedKeys?.TryResolve(provider);
+
+    /// <summary>
+    /// The defense-in-depth destination-host gate. Predefined keys gate on their own user-entered
+    /// host(s); managed OAuth providers gate on their compile-time host allowlist.
+    /// </summary>
+    private static bool IsDestinationAllowed(IOAuthTokenProvider provider, string? destinationHost) =>
+        provider is PredefinedKeyProvider pk
+            ? EgressHostMatcher.IsAllowed(pk.Hosts, destinationHost)
+            : OAuthProviderHosts.IsAllowed(provider.ProviderId, destinationHost);
+
+    /// <summary>
+    /// Builds the allow decision: a predefined key injects its custom header list (or a minted
+    /// <c>Bearer</c> token, with the token's real expiry); a managed OAuth provider injects the
+    /// <c>Authorization</c> header as before.
+    /// </summary>
+    private static AuthWebhookResponse BuildAllow(IOAuthTokenProvider provider, string? destinationHost, OAuthAccessToken token) =>
+        provider is PredefinedKeyProvider pk
+            ? AuthWebhookResponse.AllowCustom(pk.BuildHeaders(token), pk.IncludeExpiry ? token.ExpiresAtUtc : null)
+            : AuthWebhookResponse.Allow(provider.ProviderId, destinationHost, token);
 }
 
 /// <summary>
@@ -313,6 +338,21 @@ public sealed record AuthWebhookResponse
         Headers = [["Authorization", BuildAuthorizationHeaderValue(providerId, destinationHost, token)]],
         ExpiresAt = token.ExpiresAtUtc,
     };
+
+    /// <summary>
+    /// Builds an allow decision that injects an explicit list of <c>[name, value]</c> headers (used by
+    /// predefined egress keys: custom headers verbatim, or a single minted <c>Bearer</c> token).
+    /// <paramref name="expiresAt"/> is null for a static value with no lifetime (the gateway then falls
+    /// back to the provider's cache TTL) and the token's real expiry for a minted OAuth token.
+    /// </summary>
+    internal static AuthWebhookResponse AllowCustom(
+        IReadOnlyList<KeyValuePair<string, string>> headers,
+        DateTimeOffset? expiresAt) => new()
+        {
+            Decision = "allow",
+            Headers = [.. headers.Select(h => new[] { h.Key, h.Value })],
+            ExpiresAt = expiresAt,
+        };
 
     /// <summary>
     /// Selects the Authorization scheme for the destination. GitHub's REST API (<c>api.github.com</c>)
