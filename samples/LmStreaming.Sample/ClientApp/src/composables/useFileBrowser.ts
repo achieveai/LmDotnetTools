@@ -137,6 +137,10 @@ export function useFileBrowser(getThreadId: () => string | null) {
   // result only if it is still the latest — so when two previews overlap (click A, then click B), a slow
   // A that resolves AFTER B can no longer overwrite B's newer selection. Bumped on clear/unmount too.
   let previewSeq = 0;
+  // The in-flight preview's AbortController. A new preview / clear / thread change / unmount aborts it so
+  // obsolete server work (path resolution, gateway read, transfer, JSON parse) is CANCELLED, not merely
+  // discarded on arrival. Separate from the listing `abortController` and the whole-composable `lifecycle`.
+  let previewAbort: AbortController | null = null;
 
   /** Loads a text preview for a file entry, populating `previewTarget`/`previewResult`. */
   async function preview(entry: FileEntry): Promise<PreviewResult | null> {
@@ -146,8 +150,13 @@ export function useFileBrowser(getThreadId: () => string | null) {
     }
     const path = joinPath(currentPath.value, entry.name);
     const seq = ++previewSeq;
+    // Supersede any in-flight preview: abort it so its server-side work stops instead of running to
+    // completion behind the newer selection.
+    previewAbort?.abort();
+    const controller = new AbortController();
+    previewAbort = controller;
     try {
-      const result = await previewFile(threadId, path, lifecycle.signal);
+      const result = await previewFile(threadId, path, controller.signal);
       // Supersession guard: a newer preview (or a clear/unmount) has taken over — drop this stale result.
       if (disposed || seq !== previewSeq) {
         return null;
@@ -166,12 +175,19 @@ export function useFileBrowser(getThreadId: () => string | null) {
       }
       console.error('Failed to preview file:', e);
       return null;
+    } finally {
+      // Only clear the handle if this call still owns it (a newer preview may have replaced it).
+      if (previewAbort === controller) {
+        previewAbort = null;
+      }
     }
   }
 
-  /** Clears the inline preview panel. Also supersedes any in-flight preview so it cannot commit late. */
+  /** Clears the inline preview panel. Also supersedes + aborts any in-flight preview so it cannot commit. */
   function clearPreview(): void {
     previewSeq++;
+    previewAbort?.abort();
+    previewAbort = null;
     previewTarget.value = null;
     previewResult.value = null;
   }
@@ -281,6 +297,9 @@ export function useFileBrowser(getThreadId: () => string | null) {
   /** Cancels any in-flight listing fetch AND in-flight mutations; call from the consumer's unmount hook. */
   function cleanup(): void {
     disposed = true;
+    previewSeq++;
+    previewAbort?.abort();
+    previewAbort = null;
     abortController?.abort();
     lifecycle.abort();
   }

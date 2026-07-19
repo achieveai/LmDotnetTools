@@ -67,9 +67,10 @@ public class SandboxSessionRegistryResolverTests
     public async Task DifferentCallerAppId_ReturnsCredentialConflict()
     {
         await using var registry = CreateRegistry();
+        var owner = new SandboxCredential("owner", "owner-key");
         registry.PublishEstablishedBinding(
             "thread-cred",
-            new SandboxEstablishedBinding(new WorkspaceRef("default"), new SandboxCredential("owner", "owner-key"))
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), owner, owner)
         );
 
         var result = await registry.ResolveThreadWorkspaceSessionAsync(
@@ -87,14 +88,14 @@ public class SandboxSessionRegistryResolverTests
     public async Task NullCallerCredential_AgainstNonDefaultOwner_ReturnsCredentialConflict()
     {
         await using var registry = CreateRegistry();
-        // The binding is owned by an S2S caller ("owner"), NOT the process default. A credential-less
-        // (header-less) caller resolves to the process default identity, which is NOT that owner — so it
-        // must conflict, symmetric with MultiTurnAgentPool. Regression guard for the authz gap where a
-        // request carrying neither S2S marker (allowed through by [InboundS2SAuth] as the same-origin SPA)
-        // could otherwise reach another app identity's workspace.
+        // The binding was created by an S2S caller ("owner"), so its provenance (CallerCredential) is that
+        // app id. A credential-less (header-less) interactive request has null provenance, which does NOT
+        // match — regression guard for the authz gap where a request carrying neither S2S marker (allowed
+        // through by [InboundS2SAuth] as the same-origin SPA) could otherwise reach another app's workspace.
+        var owner = new SandboxCredential("owner", "owner-key");
         registry.PublishEstablishedBinding(
             "thread-null-cred",
-            new SandboxEstablishedBinding(new WorkspaceRef("default"), new SandboxCredential("owner", "owner-key"))
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), owner, owner)
         );
 
         var result = await registry.ResolveThreadWorkspaceSessionAsync("thread-null-cred", "default", requestCredential: null);
@@ -102,20 +103,20 @@ public class SandboxSessionRegistryResolverTests
         result.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
         result.Session.Should().BeNull();
         result.ExistingAppId.Should().Be("owner");
-        result.RequestedAppId.Should().Be(registry.DefaultCredential.AppId);
+        result.RequestedAppId.Should().BeNull();
     }
 
     [Fact]
-    public async Task NullCallerCredential_AgainstDefaultOwnedBinding_PassesGate_AndProceedsToResolveLiveSession()
+    public async Task NullCallerCredential_AgainstInteractiveOwnedBinding_PassesGate_AndProceedsToResolveLiveSession()
     {
         await using var registry = CreateRegistry();
-        // The interactive path: a binding created by the interactive UI is owned by the process default
-        // credential. A null/interactive caller resolves to that same default identity, so it passes the
-        // gate and proceeds to resolve a live session (tripping the throwing stub). Proves the security
-        // fix does NOT break the ordinary same-origin file browser.
+        // The interactive path: a binding created by the interactive UI has NULL provenance (its effective
+        // credential is the process default). A null/interactive caller matches that null provenance, so it
+        // passes the gate and proceeds to resolve a live session (tripping the throwing stub). Proves the
+        // security fix does NOT break the ordinary same-origin file browser.
         registry.PublishEstablishedBinding(
             "thread-default-owned",
-            new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential)
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential, CallerCredential: null)
         );
 
         var act = () => registry.ResolveThreadWorkspaceSessionAsync("thread-default-owned", "default", requestCredential: null);
@@ -124,12 +125,56 @@ public class SandboxSessionRegistryResolverTests
     }
 
     [Fact]
+    public async Task ExplicitCallerUsingDefaultAppId_AgainstInteractiveOwnedBinding_ReturnsCredentialConflict()
+    {
+        await using var registry = CreateRegistry();
+        // Provenance, not just app id: an interactive-owned binding (null provenance) must NOT be accessible
+        // by an EXPLICIT caller that happens to present the configured default app id — the two are distinct
+        // origins even though the effective app ids match.
+        registry.PublishEstablishedBinding(
+            "thread-interactive",
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), registry.DefaultCredential, CallerCredential: null)
+        );
+
+        var result = await registry.ResolveThreadWorkspaceSessionAsync(
+            "thread-interactive",
+            "default",
+            new SandboxCredential(registry.DefaultCredential.AppId, "explicit-key")
+        );
+
+        result.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
+        result.ExistingAppId.Should().BeNull();
+        result.RequestedAppId.Should().Be(registry.DefaultCredential.AppId);
+    }
+
+    [Fact]
+    public async Task NullCaller_AgainstExplicitDefaultAppIdOwnedBinding_ReturnsCredentialConflict()
+    {
+        await using var registry = CreateRegistry();
+        // The mirror case: a binding created by an EXPLICIT caller using the default app id has NON-null
+        // provenance, so a null/interactive request must conflict — a headerless caller cannot inherit an
+        // explicitly-authenticated session just because the app ids coincide.
+        var explicitOwner = new SandboxCredential(registry.DefaultCredential.AppId, "owner-key");
+        registry.PublishEstablishedBinding(
+            "thread-explicit-default",
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), explicitOwner, explicitOwner)
+        );
+
+        var result = await registry.ResolveThreadWorkspaceSessionAsync("thread-explicit-default", "default", requestCredential: null);
+
+        result.Outcome.Should().Be(SandboxSessionResolutionOutcome.CredentialConflict);
+        result.ExistingAppId.Should().Be(registry.DefaultCredential.AppId);
+        result.RequestedAppId.Should().BeNull();
+    }
+
+    [Fact]
     public async Task MatchingCallerAppId_PassesGate_AndProceedsToResolveLiveSession()
     {
         await using var registry = CreateRegistry();
+        var owner = new SandboxCredential("owner", "owner-key");
         registry.PublishEstablishedBinding(
             "thread-match-cred",
-            new SandboxEstablishedBinding(new WorkspaceRef("default"), new SandboxCredential("owner", "owner-key"))
+            new SandboxEstablishedBinding(new WorkspaceRef("default"), owner, owner)
         );
 
         // Same AppId (key need not match) passes the gate and proceeds to the gateway (stub throws).

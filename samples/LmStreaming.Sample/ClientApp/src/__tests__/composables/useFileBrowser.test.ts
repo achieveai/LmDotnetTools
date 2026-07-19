@@ -268,4 +268,48 @@ describe('useFileBrowser.preview', () => {
     expect(fb.previewTarget.value).toBeNull();
     expect(fb.previewResult.value).toBeNull();
   });
+
+  it('aborts the superseded preview request so obsolete server work is cancelled', async () => {
+    const signals: AbortSignal[] = [];
+    const pending: { resolve: (r: Response) => void; reject: (e: unknown) => void }[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      signals.push((init as RequestInit).signal as AbortSignal);
+      return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    });
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const pA = fb.preview({ name: 'a.txt', type: 'file', size: 1, nameLossy: false });
+    const pB = fb.preview({ name: 'b.txt', type: 'file', size: 1, nameLossy: false });
+
+    // Starting B aborts A's in-flight request (not just ignores its result on arrival).
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+
+    pending[1].resolve(jsonResponse({ previewable: true, text: 'B content' }));
+    pending[0].reject(new DOMException('Aborted', 'AbortError'));
+    await Promise.allSettled([pA, pB]);
+    await flushPromises();
+    expect(fb.previewTarget.value?.name).toBe('b.txt');
+  });
+
+  it('a stale ERROR from a superseded preview does not surface beside the newer preview', async () => {
+    const pending: { resolve: (r: Response) => void; reject: (e: unknown) => void }[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise((resolve, reject) => pending.push({ resolve, reject }))
+    );
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const pA = fb.preview({ name: 'a.txt', type: 'file', size: 1, nameLossy: false });
+    const pB = fb.preview({ name: 'b.txt', type: 'file', size: 1, nameLossy: false });
+
+    // B succeeds; then the superseded A rejects with a NORMAL (non-abort) error. The seq guard must
+    // swallow it so an obsolete error never appears next to the newer preview. (Would fail pre-guard.)
+    pending[1].resolve(jsonResponse({ previewable: true, text: 'B content' }));
+    pending[0].reject(new Error('gateway exploded'));
+    await Promise.allSettled([pA, pB]);
+    await flushPromises();
+
+    expect(fb.error.value).toBeNull();
+    expect(fb.previewTarget.value?.name).toBe('b.txt');
+  });
 });

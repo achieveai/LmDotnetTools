@@ -61,9 +61,17 @@ public sealed record WorkspaceRef(
 /// options are present) and from the pool's private per-thread agent entry (which exists for every mode).
 /// </summary>
 /// <param name="WorkspaceRef">The workspace reference the thread's session was established for.</param>
-/// <param name="Credential">The credential the session was established under (an interactive caller's
-/// effective credential is the non-null process default, never null).</param>
-public sealed record SandboxEstablishedBinding(WorkspaceRef WorkspaceRef, SandboxCredential Credential);
+/// <param name="Credential">The EFFECTIVE credential the session was established under (used for gateway
+/// calls). An interactive caller's effective credential is the non-null process default, never null.</param>
+/// <param name="CallerCredential">The ORIGINAL caller's credential — <c>null</c> for the interactive UI,
+/// an app-id-bearing credential for an S2S caller. Provenance for the credential-conflict gate, kept
+/// separate from <paramref name="Credential"/> so an interactive caller and an S2S caller that happens to
+/// use the configured default app id are NOT conflated (mirrors <c>MultiTurnAgentPool.CallerCredential</c>).</param>
+public sealed record SandboxEstablishedBinding(
+    WorkspaceRef WorkspaceRef,
+    SandboxCredential Credential,
+    SandboxCredential? CallerCredential = null
+);
 
 /// <summary>
 /// The seam the agent pool uses to publish/clear a conversation's <see cref="SandboxEstablishedBinding"/>
@@ -342,11 +350,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// <item>Binding whose workspace id does not match the conversation's persisted workspace id ⇒
     /// <see cref="SandboxSessionResolutionOutcome.NoSession"/> (defensive; the persisted workspace is
     /// authoritative).</item>
-    /// <item>An EFFECTIVE caller identity (the request app id, or the process default for a
-    /// credential-less/interactive caller) that differs from the binding's creating app id ⇒
-    /// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/>. This is symmetric with
-    /// <c>MultiTurnAgentPool</c>'s cross-actor guard: a null caller conflicts with an S2S-owned
-    /// binding, and only a matching (or default-vs-default) identity passes.</item>
+    /// <item>A caller identity whose provenance differs from the binding's original creating caller ⇒
+    /// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/>. Provenance is compared raw and
+    /// nullable (null = interactive UI), symmetric with <c>MultiTurnAgentPool</c>: a null caller conflicts
+    /// with an S2S-owned binding (and vice versa), an interactive caller is NOT the same as an explicit
+    /// caller that reuses the default app id, and only a matching identity (or null-vs-null) passes.</item>
     /// <item>Otherwise the binding's own workspace ref + credential resolve (or recreate in-process, same
     /// identity, durable workspace) a live session ⇒ <see cref="SandboxSessionResolutionOutcome.Resolved"/>.</item>
     /// </list>
@@ -374,27 +382,26 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             return new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
         }
 
-        // Symmetric credential gate (mirrors MultiTurnAgentPool's cross-actor guard at
-        // GetOrCreateAgent): compare the EFFECTIVE caller identity — the request app id, or the process
-        // default for a credential-less/interactive caller — against the binding's creating identity.
-        // Coalescing BOTH sides to the default is what makes a null (header-less) caller conflict with an
-        // S2S-owned binding: that binding's Credential is the S2S caller's app id (Program.cs stages
-        // `callerCredential ?? DefaultCredential`), NOT the process default. An asymmetric "only reject a
-        // non-null differing id" gate would let a request carrying neither S2S marker (which
-        // [InboundS2SAuth] lets through as the same-origin SPA) resolve another app identity's workspace.
-        var effectiveCallerAppId = requestCredential?.AppId ?? _defaultCredential.AppId;
-        if (!string.Equals(effectiveCallerAppId, binding.Credential.AppId, StringComparison.Ordinal))
+        // Compare PROVENANCE, not just the effective app id: the binding remembers the ORIGINAL caller
+        // identity (null for the interactive UI; an app id for an S2S caller — even when that app id equals
+        // the configured default). A null interactive request matches only a null-owned binding; an S2S
+        // request matches only its own app-id-owned binding. This mirrors MultiTurnAgentPool's cross-actor
+        // guard exactly, so an interactive caller and an explicit caller that happens to use the default app
+        // id are never conflated. The effective binding.Credential is still what the gateway call uses.
+        var ownerAppId = binding.CallerCredential?.AppId;
+        var callerAppId = requestCredential?.AppId;
+        if (!string.Equals(ownerAppId, callerAppId, StringComparison.Ordinal))
         {
             return new SandboxSessionResolution(
                 SandboxSessionResolutionOutcome.CredentialConflict,
                 null,
-                binding.Credential.AppId,
-                effectiveCallerAppId
+                ownerAppId,
+                callerAppId
             );
         }
 
         var session = await GetOrCreateLiveSessionAsync(binding.WorkspaceRef, ct, binding.Credential).ConfigureAwait(false);
-        return new SandboxSessionResolution(SandboxSessionResolutionOutcome.Resolved, session, binding.Credential.AppId, effectiveCallerAppId);
+        return new SandboxSessionResolution(SandboxSessionResolutionOutcome.Resolved, session, ownerAppId, callerAppId);
     }
 
     /// <summary>

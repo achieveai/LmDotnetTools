@@ -655,11 +655,14 @@ try
                         .GetOrCreateLiveSessionAsync(workspaceRef, credential: callerCredential)
                         .GetAwaiter()
                         .GetResult();
-                    // The effective credential is the caller's or the process default (never null), so a
-                    // later interactive (null-credential) file-browser request still matches this identity.
+                    // The effective credential is the caller's or the process default (never null) — used for
+                    // gateway calls. The THIRD arg preserves the original caller's provenance (null for the
+                    // interactive UI) so the file-browser resolver can distinguish an interactive owner from
+                    // an S2S caller even when the S2S caller reuses the default app id.
                     stagedBinding = new SandboxEstablishedBinding(
                         workspaceRef,
-                        callerCredential ?? sandboxRegistry.DefaultCredential
+                        callerCredential ?? sandboxRegistry.DefaultCredential,
+                        callerCredential
                     );
                     var wsSuffix =
                         "\n\nYour workspace directory is: "

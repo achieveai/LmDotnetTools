@@ -121,16 +121,17 @@ describe('BaseModal focus management', () => {
   it('excludes [inert] background controls from the trap so a nested confirmation keeps focus', () => {
     // Models the file browser's nested delete/overwrite confirmation: the background content is marked
     // inert, and only the confirmation (plus the modal close button) should remain in the tab cycle.
+    // A trailing inert control sits AFTER the confirmation on purpose: without the `[inert]` filter it
+    // would be the last focusable, so these assertions fail — i.e. the test is red before the fix.
     wrapper = mount(BaseModal, {
       props: { title: 'Files', dataTestId: 'demo-modal' },
       slots: {
         default:
-          '<div inert>' +
-          '<button data-testid="bg-1">bg1</button><button data-testid="bg-2">bg2</button>' +
-          '</div>' +
+          '<div inert><button data-testid="bg-before">before</button></div>' +
           '<div data-testid="confirm">' +
           '<button data-testid="cf-cancel">Cancel</button><button data-testid="cf-ok">OK</button>' +
-          '</div>',
+          '</div>' +
+          '<div inert><button data-testid="bg-after">after</button></div>',
       },
       attachTo: document.body,
     });
@@ -138,12 +139,14 @@ describe('BaseModal focus management', () => {
     const close = wrapper.find('[data-testid="demo-modal-close"]').element as HTMLElement;
     const cfOk = wrapper.find('[data-testid="cf-ok"]').element as HTMLElement;
 
-    // cf-ok is the LAST live focusable (the inert bg-1/bg-2 are filtered out) → Tab wraps to close (first).
+    // With the filter, cf-ok is the LAST live focusable (bg-after is inert) → Tab wraps to close (first).
+    // Without the filter, bg-after would be last, so cf-ok's Tab would NOT wrap and this fails.
     cfOk.focus();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
     expect(document.activeElement).toBe(close);
 
-    // Shift+Tab from the first (close) wraps to the last LIVE focusable — cf-ok, NOT the inert bg-2.
+    // Shift+Tab from the first (close) wraps to the last LIVE focusable — cf-ok, never the trailing inert
+    // bg-after (which would be the last focusable without the filter).
     close.focus();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
     expect(document.activeElement).toBe(cfOk);
