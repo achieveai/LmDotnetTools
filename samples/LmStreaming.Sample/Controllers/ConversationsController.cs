@@ -344,6 +344,42 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// Read-only presentation listing of the sub-agents a conversation's parent agent has spawned.
+    /// The Vue client polls this to render a conversation's children; it never spawns, sends to,
+    /// stops, or otherwise mutates a sub-agent (WI #194). Returns 404 for an unknown thread, an
+    /// empty array for a conversation whose agent has no sub-agent support, otherwise the
+    /// <c>SubAgentManager.ListAgents()</c> snapshot projected to <see cref="SubAgentSummary"/>.
+    /// </summary>
+    [HttpGet("{threadId}/subagents")]
+    public IActionResult ListSubAgents(string threadId)
+    {
+        if (!agentPool.TryGet(threadId, out var agent) || agent is null)
+        {
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+        }
+
+        if (agent is not MultiTurnAgentLoop loop || loop.SubAgentManager is null)
+        {
+            return Ok(Array.Empty<SubAgentSummary>());
+        }
+
+        var summaries = loop.SubAgentManager.ListAgents()
+            .Select(s => new SubAgentSummary
+            {
+                AgentId = s.AgentId,
+                Name = s.Name,
+                Template = s.TemplateName,
+                Task = s.Task,
+                Status = s.Status.ToString().ToLowerInvariant(),
+                ThreadId = s.ThreadId,
+                LastActivityUtc = s.LastActivityUtc,
+            })
+            .ToArray();
+
+        return Ok(summaries);
+    }
+
+    /// <summary>
     /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
     /// input is durably recorded as accepted, before it is necessarily drained into a run — callers
     /// poll <see cref="GetStatus"/> by the returned <c>inputId</c> to learn when/how it resolved.
