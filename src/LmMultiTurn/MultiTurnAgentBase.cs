@@ -3,8 +3,10 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -115,6 +117,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// Optional persistence store for conversation state.
     /// </summary>
     protected IConversationStore? Store { get; }
+
+    /// <summary>
+    /// Conversation-wide usage ledger (#196). Set by a derived loop when usage accounting is enabled; it
+    /// is shared with the loop's <c>SubAgentManager</c> so the primary loop's own usage and every
+    /// descendant's usage accumulate into one root total. Null disables usage accounting.
+    /// </summary>
+    protected UsageLedger? UsageLedger { get; set; }
 
     /// <summary>
     /// Non-null only when the constructor's <c>persistRunLedger</c> flag is set, in which case
@@ -286,6 +295,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             ConversationHistory.Add(message);
         }
 
+        // Capture the primary loop's own usage into the conversation-wide ledger (#196). Descendant
+        // usage is folded in separately via the SubAgentManager relay into the same ledger instance.
+        if (UsageLedger != null && message is UsageMessage usageMessage)
+        {
+            CaptureAndPersistUsage(usageMessage);
+        }
+
         // Fire-and-forget persistence
         if (Store != null)
         {
@@ -302,6 +318,45 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             {
                 _ = PersistMessageAsync(message, runId, CancellationToken.None);
             }
+        }
+    }
+
+    /// <summary>
+    /// Records the primary loop's usage into the conversation-wide ledger and, when a store is configured,
+    /// persists the updated aggregate snapshot (fire-and-forget). The snapshot reflects both this primary
+    /// usage and any descendant usage already folded in via the SubAgentManager relay (#196).
+    /// </summary>
+    private void CaptureAndPersistUsage(UsageMessage usageMessage)
+    {
+        var ledger = UsageLedger;
+        if (ledger is null)
+        {
+            return;
+        }
+
+        var record = UsageRecordMapper.FromUsageMessage(
+            usageMessage,
+            ThreadId,
+            UsageExecutionKind.Primary,
+            DefaultOptions.ModelId);
+        ledger.RecordUsage(record);
+
+        var store = Store;
+        if (store != null)
+        {
+            _ = PersistUsageSnapshotAsync(store, ledger.Snapshot());
+        }
+    }
+
+    private async Task PersistUsageSnapshotAsync(IConversationStore store, ConversationUsageAggregate snapshot)
+    {
+        try
+        {
+            await ConversationUsageProjection.SaveAsync(store, snapshot, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId);
         }
     }
 

@@ -10,7 +10,6 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 /// </summary>
 public sealed class UsageLedger : IUsageSink
 {
-    private readonly string _rootConversationId;
     private readonly object _gate = new();
     private readonly Dictionary<string, UsageRecord> _byAttempt = new(StringComparer.Ordinal);
     private readonly RevisionWatermark _watermark = new();
@@ -24,12 +23,12 @@ public sealed class UsageLedger : IUsageSink
     /// </param>
     public UsageLedger(string rootConversationId, IPricingResolver? pricingResolver = null)
     {
-        _rootConversationId = rootConversationId;
+        RootConversationId = rootConversationId;
         _pricingResolver = pricingResolver;
     }
 
     /// <summary>The root conversation this ledger accumulates usage for.</summary>
-    public string RootConversationId => _rootConversationId;
+    public string RootConversationId { get; }
 
     /// <inheritdoc />
     public void RecordUsage(UsageRecord observation)
@@ -49,13 +48,13 @@ public sealed class UsageLedger : IUsageSink
 
         lock (_gate)
         {
-            _byAttempt.TryGetValue(observation.ProviderAttemptId, out var existing);
+            _ = _byAttempt.TryGetValue(observation.ProviderAttemptId, out var existing);
             var merged = Merge(existing, observation);
             var revision = _watermark.Allocate();
 
             // The ledger is scoped to one root conversation, so every observation it receives is
             // attributed to that root — callers (e.g. the sub-agent relay) need not know the root id.
-            merged = merged with { Revision = revision, RootConversationId = _rootConversationId };
+            merged = merged with { Revision = revision, RootConversationId = RootConversationId };
             merged = WithEstimatedCost(merged);
             _byAttempt[observation.ProviderAttemptId] = merged;
             _watermark.Commit(revision);
@@ -72,7 +71,7 @@ public sealed class UsageLedger : IUsageSink
         lock (_gate)
         {
             return ConversationUsageAggregate.Fold(
-                _rootConversationId,
+                RootConversationId,
                 _byAttempt.Values,
                 _watermark.Prefix,
                 completeness);

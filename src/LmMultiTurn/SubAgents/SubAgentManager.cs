@@ -1516,42 +1516,16 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     /// <summary>
     /// Maps a descendant's <see cref="UsageMessage"/> into a <see cref="UsageRecord"/> for the root
-    /// ledger. Token counts are captured verbatim (per-call field accuracy is tracked by #116); the model
-    /// is the sub-agent's resolved model (override, else inherited parent model). The
-    /// <c>RootConversationId</c> placeholder is re-stamped to the ledger's root by
-    /// <see cref="UsageLedger.RecordUsage"/>.
+    /// ledger via the shared <see cref="UsageRecordMapper"/>. The model is the sub-agent's resolved model
+    /// (override, else inherited parent model); the <c>RootConversationId</c> placeholder is re-stamped to
+    /// the ledger's root by <see cref="UsageLedger.RecordUsage"/>.
     /// </summary>
-    private UsageRecord BuildDescendantUsageRecord(UsageMessage message, SubAgentState state)
-    {
-        var usage = message.Usage;
-
-        // A generation is one provider call; combined with the sub-agent id it is a stable, globally
-        // unique dedup key across the conversation tree. Fall back to the run id, then a fixed token.
-        var attemptKey = message.GenerationId ?? message.RunId ?? "usage";
-        var attemptId = $"{state.AgentId}:{attemptKey}";
-        var model = state.ModelOverride ?? _parentModelId ?? "unknown";
-
-        return new UsageRecord
-        {
-            LogicalCallId = attemptId,
-            ProviderAttemptId = attemptId,
-            RootConversationId = state.AgentId,
-            ParentExecutionId = state.AgentId,
-            ExecutionKind = UsageExecutionKind.SubAgent,
-            RequestedModel = model,
-            InputTokens = usage.PromptTokens,
-            OutputTokens = usage.CompletionTokens,
-            CacheReadTokens = usage.TotalCachedTokens,
-            ReasoningTokens = usage.TotalReasoningTokens,
-            ProviderReportedCostMicros = ToMicros(usage.TotalCost),
-            Finalized = true,
-        };
-    }
-
-    private static long? ToMicros(double? cost)
-    {
-        return cost is null ? null : (long)Math.Round(cost.Value * 1_000_000d);
-    }
+    private UsageRecord BuildDescendantUsageRecord(UsageMessage message, SubAgentState state) =>
+        UsageRecordMapper.FromUsageMessage(
+            message,
+            state.AgentId,
+            UsageExecutionKind.SubAgent,
+            state.ModelOverride ?? _parentModelId);
 
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {

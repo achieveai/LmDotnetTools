@@ -40,7 +40,7 @@ public sealed class RevisionWatermark
                 return;
             }
 
-            _committedAbovePrefix.Add(revision);
+            _ = _committedAbovePrefix.Add(revision);
             while (_committedAbovePrefix.Remove(_prefix + 1))
             {
                 _prefix++;
