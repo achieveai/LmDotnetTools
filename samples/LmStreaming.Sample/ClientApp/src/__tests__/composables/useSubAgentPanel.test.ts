@@ -48,7 +48,7 @@ interface Captured {
   callbacks: {
     onMessage: (m: any) => void;
     onDone: () => void;
-    onError: (e: string) => void;
+    onError: (e: string, code?: string) => void;
     onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
   };
   connection: { socket: { readyState: number }; connectionId: string; threadId: string; isConnected: boolean };
@@ -867,6 +867,142 @@ describe('useSubAgentPanel — re-review hardening (PR #209 findings A/B/C)', ()
     // A late error from the superseded a1 focus must be ignored.
     staleCb.onError("Failed to relay the message to sub-agent 'a1'. Please retry.");
     expect(panel.error.value).toBeNull();
+    expect(panel.isFocusedStreaming.value).toBe(true);
+  });
+});
+
+describe('useSubAgentPanel — round-3 hardening (PR #209 findings #1/#4/#5)', () => {
+  function persistedToolCall(id: string) {
+    return {
+      id: `p-${id}`, threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 2,
+      timestamp: 1001, messageType: 'tool_call', role: 'assistant',
+      messageJson: JSON.stringify(toolCall(id)),
+    };
+  }
+
+  // #5 — auto-resume must fire ONLY for a recoverable backpressure drop: a CLEAN close with NO
+  // application error seen during this focus. A terminal application error (structured code) or an
+  // abnormal close must NOT auto-resume (else an unavailable child is retried and the error cleared).
+  it('does not auto-resume after a terminal application error, even on a clean close (#5)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(captured).toHaveLength(1);
+
+    // A structured terminal error (wsClient forwards the code) surfaces and stops streaming.
+    captured[0].callbacks.onError("Sub-agent 'a1' is not available.", 'subagent_unavailable');
+    expect(panel.error.value).toContain('not available');
+    expect(panel.isFocusedStreaming.value).toBe(false);
+
+    // The following CLEAN close must NOT auto-resume the unavailable child, and must keep the error.
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured, 'no auto-resume after a terminal error').toHaveLength(1);
+    expect(panel.error.value).toContain('not available');
+    expect(panel.isFocusedStreaming.value).toBe(false);
+  });
+
+  it('auto-resumes once on a CLEAN close with no error (backpressure recovery preserved) (#5)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(captured).toHaveLength(1);
+
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured, 'a clean close with no error resumes once').toHaveLength(2);
+    expect(captured[1].agentId).toBe('a1');
+  });
+
+  it('does not auto-resume on an abnormal (unclean) close (#5)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(captured).toHaveLength(1);
+
+    // An abnormal close (e.g. 1006) is not a recoverable backpressure drop → no auto-resume.
+    captured[0].callbacks.onClose!({ wasClean: false, code: 1006, reason: 'abnormal' });
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured, 'an abnormal close must not resume').toHaveLength(1);
+  });
+
+  // #4 — with subscribe-first, the freshly-connected socket must be registered as the focused
+  // connection IMMEDIATELY (before the non-abortable history load), so an unfocus/teardown can close
+  // it. Otherwise a parked history load leaks the provisional socket.
+  it('unfocus closes the provisional socket while history is parked; a late resolve does not adopt it (#4)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    let resolveHistory: (() => void) | undefined;
+    convMocks.loadConversationMessages.mockImplementation(
+      () => new Promise((r) => { resolveHistory = () => r([]); })
+    );
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(captured).toHaveLength(1); // connect resolved; socket is provisionally owned, history parked
+
+    // Unfocus MUST close the provisional socket right now (not leak it until history resolves).
+    await panel.unfocusChild();
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(captured[0].connection);
+    const closesAfterUnfocus = wsMocks.closeWebSocketConnection.mock.calls.length;
+
+    // The parked history finally resolves; the superseded focus must not adopt/reopen — and must not
+    // double-close the socket the teardown already closed.
+    resolveHistory!();
+    await p;
+    expect(wsMocks.closeWebSocketConnection.mock.calls.length, 'no double-close').toBe(closesAfterUnfocus);
+    expect(panel.focusedAgentId.value).toBeNull();
+    panel.sendToFocusedChild('nope');
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalled();
+  });
+
+  // #1 — the overflow recovery must (a) preserve the active run identity independently of the content
+  // buffer (run_assignment kept even when the buffer is cleared) and (b) drain a FRESH bounded buffer
+  // of frames that arrived during reconciliation, so nothing is silently dropped into a gap.
+  it('overflow reconciliation preserves run identity and drains the fresh buffer without loss (#1)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    let resolveFirstHistory: (() => void) | undefined;
+    let historyCall = 0;
+    convMocks.loadConversationMessages.mockImplementation(() => {
+      historyCall += 1;
+      // First load parks (buffering/overflow window); the reconcile reload returns the persisted twin.
+      if (historyCall === 1) return new Promise((r) => { resolveFirstHistory = () => r([]); });
+      return Promise.resolve([persistedToolCall('call_1')]);
+    });
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(captured).toHaveLength(1);
+
+    const cb = captured[0].callbacks;
+    // run_assignment carries the real runId; it must survive the overflow buffer clear.
+    cb.onMessage(runAssignment());
+    // Overflow the bounded buffer while history is still loading (the original buffer is abandoned).
+    for (let i = 0; i < LIVE_BUFFER_MAX + 5; i++) {
+      cb.onMessage(textUpdate(`chunk-${i}`));
+    }
+    // Two runId-less gap frames arrive AFTER overflow (fresh buffer): call_1 HAS a persisted twin,
+    // call_2 has NONE. Both must appear exactly once, keyed to the preserved runId.
+    cb.onMessage(toolCall('call_1'));
+    cb.onMessage(toolCall('call_2'));
+
+    resolveFirstHistory!();
+    await p;
+
+    // A reconcile reload happened (2 loads). call_1 merged with its persisted twin (run identity
+    // preserved → keyed to RUN, not 'default'); call_2 (no twin) was drained, not lost.
+    expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(2);
+    expect(toolPills(panel.focusedDisplayItems.value, 'call_1')).toHaveLength(1);
+    expect(toolPills(panel.focusedDisplayItems.value, 'call_2')).toHaveLength(1);
     expect(panel.isFocusedStreaming.value).toBe(true);
   });
 });

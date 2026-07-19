@@ -11,7 +11,13 @@ const log = logger.forComponent('WebSocketClient');
 export interface WebSocketClientCallbacks {
   onMessage: (message: Message) => void;
   onDone: () => void;
-  onError: (error: string) => void;
+  /**
+   * Surface a stream failure to the caller. `code` carries the structured discriminator from a
+   * server error frame (e.g. `subagent_unavailable`, `subagent_stream_failed`, `relay_failed`) when
+   * one is present, so callers can distinguish a terminal application error from a transient/parse
+   * failure. Optional and backward-compatible — existing `(error) => void` callers still bind.
+   */
+  onError: (error: string, code?: string) => void;
   /**
    * Out-of-band deferred-auth events (`auth_required` / `auth_completed`) pushed by the
    * backend while a sandbox webhook call is held awaiting an interactive sign-in.
@@ -141,6 +147,35 @@ function buildChatWebSocketUrl(
 }
 
 /**
+ * Summarize a WebSocket payload that FAILED to parse into content-free diagnostics. This handler is
+ * SHARED by the parent chat and the focused sub-agent transcript stream, so the raw payload may carry
+ * prompts / reasoning / tool content (EUII). We must therefore log ONLY metadata — never `event.data`
+ * or any payload text:
+ *   - `byteLength`  — UTF-8 byte size of a string payload (undefined for non-string frames).
+ *   - `type`        — the `$type` discriminator IF it can be lifted with a bounded regex. The
+ *                     discriminator is a fixed enum token (e.g. `text`, `tool_call`), not content.
+ *   - `errorName`   — the exception category (`err.name`), never its message/content.
+ * Exported for unit testing of the privacy contract.
+ */
+export function summarizeParseFailure(data: unknown, err: unknown): {
+  byteLength: number | undefined;
+  type: string | undefined;
+  errorName: string;
+} {
+  let byteLength: number | undefined;
+  let type: string | undefined;
+  if (typeof data === 'string') {
+    byteLength = new TextEncoder().encode(data).length;
+    // Lift ONLY the discriminator token; the capture group is bounded to a quoted enum value and
+    // never includes surrounding payload content.
+    const match = /"\$type"\s*:\s*"([^"]+)"/.exec(data);
+    type = match ? match[1] : undefined;
+  }
+  const errorName = err instanceof Error ? err.name : typeof err;
+  return { byteLength, type, errorName };
+}
+
+/**
  * Open a WebSocket at `wsUrl` and wire the standard stream callbacks (auth-event → done → error →
  * normalized message). This is the shared socket handling used by BOTH the chat stream
  * ({@link createWebSocketConnection}) and the sub-agent stream (`connectSubAgent`), so the
@@ -197,7 +232,10 @@ export function openWebSocketConnection(
         if (data.includes('"$type":"error"')) {
           const errorData = JSON.parse(data);
           log.error('Received error', { error: errorData });
-          onError(errorData.message || 'Unknown error');
+          onError(
+            errorData.message || 'Unknown error',
+            typeof errorData.code === 'string' ? errorData.code : undefined
+          );
           return;
         }
 
@@ -210,12 +248,19 @@ export function openWebSocketConnection(
           onMessage(message);
         }
       } catch (err) {
-        // Surface parse/normalize failures via onError so the UI shows a banner
-        // instead of silently hanging — same pattern as the other error paths in
-        // this connection (error signal, socket error). Without this, a bug in
-        // normalizeKeys or malformed server JSON would drop the message invisibly.
+        // Surface parse/normalize failures via onError so the UI shows a banner instead of silently
+        // hanging — same pattern as the other error paths in this connection. Log ONLY content-free
+        // metadata: this SHARED handler now carries focused sub-agent transcript frames, so logging
+        // `event.data` here would leak prompts/reasoning/tool content into client diagnostics (EUII).
         const msg = err instanceof Error ? err.message : 'Failed to parse server message';
-        log.error('Failed to parse WebSocket message', { error: err, data: event.data });
+        const { byteLength, type, errorName } = summarizeParseFailure(event.data, err);
+        log.error('Failed to parse WebSocket message', {
+          byteLength,
+          type,
+          connectionId,
+          threadId: effectiveThreadId,
+          errorName,
+        });
         onError(msg);
       }
     };

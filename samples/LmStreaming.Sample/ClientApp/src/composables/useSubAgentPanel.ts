@@ -48,6 +48,16 @@ const POLL_INTERVAL_MS = 3000;
 export const LIVE_BUFFER_MAX = 1000;
 
 /**
+ * Upper bound on overflow→reconcile cycles for a single focus (FINDING #1, PR #209 round-3). When the
+ * subscribe-first live buffer overflows we abandon it, reload persisted history to reconcile, and
+ * drain a FRESH bounded buffer of frames that arrived during the reload. A pathologically fast child
+ * could overflow that fresh buffer again during each reload; we retry the reconcile at most this many
+ * times, then fall back to draining whatever is currently buffered (bounded) rather than looping
+ * forever — a subsequent refocus fully reconciles. Exported as an internal seam for testing.
+ */
+export const MAX_OVERFLOW_RECONCILES = 3;
+
+/**
  * Presentation-only sub-agent panel: list a conversation's sub-agents, focus one to view its
  * transcript (persisted history + live stream), and send input to the focused child. Deliberately
  * decoupled from `useChat` — it maintains its OWN per-agent message index, merger, tool-result map
@@ -404,16 +414,25 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     // load persisted history, then drain the buffer on top (merge/dedup by the shared key). This
     // closes the REST-snapshot→subscribe gap — a child message emitted after the history snapshot but
     // before the subscription is buffered here rather than lost until a refocus.
-    const liveBuffer: Message[] = [];
+    let liveBuffer: Message[] = [];
     let bufferingLive = true;
-    // FINDING B: set when the live buffer overflows while history is still loading. Once true, live
-    // frames are dropped (the buffer is abandoned) until a post-connect history reload reconciles
-    // whatever was persisted; cleared when live handling resumes after adoption.
+    // FINDING B / #1: set when the live buffer overflows while history is still loading. Rather than
+    // permanently DROPPING later frames (which lost transcript + could discard run_assignment), we
+    // abandon the current buffer to a FRESH bounded one and reconcile via a post-connect history
+    // reload; this flag signals that reload is needed and is re-set if the fresh buffer overflows too.
     let liveBufferOverflowed = false;
     // FINDING A: set by THIS focus's onClose when its socket closes unexpectedly. After the
     // history-load await we must not adopt a connection that already closed — even when the one-shot
     // auto-resume budget is spent, in which case onClose does NOT advance focusSeq to supersede us.
     let socketClosedDuringFocus = false;
+    // #5: set when THIS focus sees a structured application error (onError with a `code`, e.g.
+    // subagent_unavailable / subagent_stream_failed / relay_failed). Such errors are terminal for
+    // auto-resume purposes — a subsequent close must NOT silently retry the child and clear the error.
+    let terminalErrorSeen = false;
+    // #4: set once the freshly-connected socket is registered as focusedConnection (provisional
+    // ownership, BEFORE the non-abortable history load). Distinguishes "teardown already closed our
+    // socket" (skip a redundant close) from "superseded before we owned it" (we must close it).
+    let provisionalOwned = false;
     let openedConnection: WebSocketConnection | null = null;
 
     try {
@@ -421,39 +440,50 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         onMessage: (m: Message) => {
           // Ignore late frames for a superseded focus.
           if (focusSeq !== token) return;
-          // Buffer overflowed: the buffered-merge is abandoned; drop live frames until the reconcile
-          // reload restores persisted state (FINDING B).
-          if (liveBufferOverflowed) return;
-          if (bufferingLive) {
-            if (liveBuffer.length >= LIVE_BUFFER_MAX) {
-              // Overflow — abandon the bounded buffer to avoid unbounded growth and reconcile via a
-              // post-connect history reload (FINDING B). Drop what we buffered so far to stay bounded.
-              liveBufferOverflowed = true;
-              liveBuffer.length = 0;
-              log.warn('Sub-agent live buffer overflow; reloading history after connect', {
-                agentId,
-                max: LIVE_BUFFER_MAX,
-              });
-              return;
-            }
-            liveBuffer.push(m);
+          // #1(a): preserve the active run identity INDEPENDENTLY of the content buffer. Only
+          // run_assignment carries a runId on the wire; if it were lost in an overflow buffer clear,
+          // later runId-less content would key under 'default' and diverge from its persisted twin.
+          // Track it here so it survives any buffer reset below.
+          if (isRunAssignmentMessage(m)) {
+            childCurrentRunId = (m as RunAssignmentMessage).Assignment?.runId ?? childCurrentRunId;
+          }
+          if (!bufferingLive) {
+            handleChildMessage(m);
             return;
           }
-          handleChildMessage(m);
+          liveBuffer.push(m);
+          if (liveBuffer.length > LIVE_BUFFER_MAX) {
+            // #1(b): overflow — abandon the current bounded buffer (its frames are captured by the
+            // post-connect reconciliation history reload) and START A FRESH bounded buffer so frames
+            // arriving during reconciliation are NOT dropped into a gap. Repeated overflow re-sets the
+            // flag and triggers another reconcile pass (bounded by MAX_OVERFLOW_RECONCILES).
+            liveBufferOverflowed = true;
+            liveBuffer = [];
+            log.warn('Sub-agent live buffer overflow; reconciling via history reload after connect', {
+              agentId,
+              max: LIVE_BUFFER_MAX,
+            });
+          }
         },
         onDone: () => {
           if (focusSeq === token) isFocusedStreaming.value = false;
         },
-        onError: (err: string) => {
+        onError: (err: string, code?: string) => {
           if (focusSeq !== token) return;
-          log.error('Sub-agent stream error', { agentId, error: err });
+          log.error('Sub-agent stream error', { agentId, code });
           isFocusedStreaming.value = false;
+          // #5: a structured error code marks a terminal application failure — record it so a
+          // following close does not auto-resume (which would retry an unavailable child + clear
+          // this error). Parse/socket errors arrive without a code and stay auto-resume-eligible.
+          if (code) {
+            terminalErrorSeen = true;
+          }
           // FINDING C: copy the failure into the public error ref so the panel's error banner shows
           // feedback (a relay_failed / subagent_unavailable / parse / socket error). The focus-token
           // guard above already prevents a stale focus from clobbering a newer focus's error.
           error.value = err || 'Sub-agent stream error.';
         },
-        onClose: () => {
+        onClose: (info) => {
           // Ignore closes for a superseded focus, or a close WE initiated (unfocus/refocus).
           if (focusSeq !== token || intentionalClose) {
             return;
@@ -461,11 +491,23 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           // Record the close so a pending history-load await does not adopt this now-dead socket
           // (FINDING A) even if the auto-resume budget below is already spent.
           socketClosedDuringFocus = true;
-          // Unexpected server/drop close: drop the dead socket and stop the spinner so the view can't
-          // hang and sendToFocusedChild can't post to a dead socket. The server closes after a
-          // backpressure drop expecting a reconnect+replay, so resume ONCE; a second close is terminal.
+          // Drop the dead socket and stop the spinner so the view can't hang and sendToFocusedChild
+          // can't post to a dead socket.
           focusedConnection = null;
           isFocusedStreaming.value = false;
+          // #5: auto-resume ONLY for a recoverable backpressure drop — a CLEAN close with NO terminal
+          // application error seen this focus. A terminal error or an abnormal (!wasClean) close is
+          // non-recoverable: leave the error surfaced, spinner off, connection nulled, and do NOT loop.
+          if (terminalErrorSeen || !info.wasClean) {
+            log.info('Sub-agent focus socket closed terminally; not auto-resuming', {
+              agentId,
+              wasClean: info.wasClean,
+              terminalErrorSeen,
+            });
+            return;
+          }
+          // The server closes after a backpressure drop expecting a reconnect+replay, so resume ONCE;
+          // a second close is terminal (budget spent).
           if (!autoResumeUsed) {
             autoResumeUsed = true;
             log.info('Sub-agent focus socket closed unexpectedly; resuming once', { agentId });
@@ -478,18 +520,28 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       openedConnection = connection;
 
       // Lifecycle guard: a newer focus, an unfocus, a parent switch or disposal superseded us while
-      // the socket was opening. Do NOT adopt this now-stale connection — close it and bail.
+      // the socket was opening. We do NOT yet own it (provisional assignment is below), so the
+      // superseding teardown could not have closed it — close it ourselves and bail.
       if (focusSeq !== token) {
         log.debug('focusChild superseded during connect; closing stale connection', { agentId });
         closeWebSocketConnection(connection);
         return;
       }
 
+      // #4: register PROVISIONAL ownership IMMEDIATELY — before the non-abortable history load — so an
+      // unfocus / parent-switch / scope-dispose can close this socket instead of leaking it while the
+      // history request is in flight. From here on the superseding teardown owns the close, so the
+      // post-await guards below must NOT close the socket again (double-close).
+      focusedConnection = connection;
+      provisionalOwned = true;
+
       // Load persisted history (live messages arriving now are buffered above).
       const persisted = await loadConversationMessages(summary.threadId);
       if (focusSeq !== token) {
-        log.debug('focusChild superseded during history load; closing stale connection', { agentId });
-        closeWebSocketConnection(connection);
+        // #4: we registered provisional ownership before this await, so the superseding teardown
+        // (unfocus / parent-switch / dispose) already closed the socket and nulled focusedConnection.
+        // Do NOT close again (double-close) — just abandon this stale focus.
+        log.debug('focusChild superseded during history load; teardown owns the socket', { agentId });
         return;
       }
       // FINDING A: the socket may have closed terminally DURING the history-load await. Do NOT adopt
@@ -507,14 +559,20 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       attachPersistedToolResults();
       rebuildFocusedDisplayItems();
 
-      // FINDING B: if the live buffer overflowed while history was loading, the buffered-merge was
-      // abandoned. Reload history now (post-connect) so anything persisted during the overflow window
-      // is reconciled — the shared merge key dedups it against what we already rehydrated.
-      if (liveBufferOverflowed) {
+      // #1(b): if the live buffer overflowed while history was loading, the buffered-merge was
+      // abandoned to a FRESH bounded buffer. Reconcile by reloading history (the shared merge key
+      // dedups it against what we rehydrated) then drain the fresh buffer on top. A fast child can
+      // overflow the fresh buffer again during the reload, so retry the reconcile up to
+      // MAX_OVERFLOW_RECONCILES times; each pass re-checks the flag, which onMessage re-sets on a new
+      // overflow. This closes the loss window (frames during reconciliation are buffered, not dropped).
+      let reconcileAttempts = 0;
+      while (liveBufferOverflowed && reconcileAttempts < MAX_OVERFLOW_RECONCILES) {
+        liveBufferOverflowed = false; // a fresh overflow DURING this reload will re-set it
+        reconcileAttempts += 1;
         const reloaded = await loadConversationMessages(summary.threadId);
         if (focusSeq !== token) {
-          log.debug('focusChild superseded during reconcile reload; closing stale connection', { agentId });
-          closeWebSocketConnection(connection);
+          // Superseded — teardown owns the provisional socket (see #4 above); do not double-close.
+          log.debug('focusChild superseded during reconcile reload; teardown owns the socket', { agentId });
           return;
         }
         if (socketClosedDuringFocus || connection.socket.readyState !== WebSocket.OPEN) {
@@ -527,27 +585,38 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         attachPersistedToolResults();
         rebuildFocusedDisplayItems();
       }
+      if (liveBufferOverflowed) {
+        // Fallback: the fresh buffer kept overflowing past the reconcile budget. Do NOT silently drop
+        // — keep the last reconciled snapshot and drain whatever is currently buffered (bounded) on
+        // top below; a subsequent refocus fully reconciles. Documented tradeoff (see MAX_OVERFLOW_RECONCILES).
+        log.warn('Sub-agent live buffer still overflowing after reconcile budget; draining current buffer', {
+          agentId,
+          attempts: reconcileAttempts,
+        });
+        liveBufferOverflowed = false;
+      }
 
       // Drain buffered live messages on top of history; the shared merge key dedups a buffered delta
       // against its rehydrated twin (no duplicate pills). Flip buffering off first (synchronously) so
-      // a message delivered during the drain is handled directly rather than re-buffered. Also clear
-      // the overflow flag so live handling resumes (FINDING B); the buffer is empty when overflowed.
+      // a message delivered during the drain is handled directly rather than re-buffered.
       bufferingLive = false;
-      liveBufferOverflowed = false;
       const buffered = liveBuffer.splice(0, liveBuffer.length);
       for (const m of buffered) {
         handleChildMessage(m);
       }
       rebuildFocusedDisplayItems();
 
-      // Adopt the connection now that history + gap messages are in place.
+      // Adopt the connection now that history + gap messages are in place (already provisionally
+      // owned since connect; reaffirm and start the spinner).
       focusedConnection = connection;
       isFocusedStreaming.value = true;
     } catch (e) {
-      // A superseding focus/unfocus/parent-switch already owns the visible state — don't clobber it;
-      // just ensure the socket we opened (if any) is closed.
+      // A superseding focus/unfocus/parent-switch already owns the visible state — don't clobber it.
       if (focusSeq !== token) {
-        if (openedConnection) closeWebSocketConnection(openedConnection);
+        // #4: only close the socket ourselves if we never registered provisional ownership (superseded
+        // before the history await). Once provisionally owned, the superseding teardown already closed
+        // it — closing again would be a double-close.
+        if (openedConnection && !provisionalOwned) closeWebSocketConnection(openedConnection);
         return;
       }
       // Failure for the CURRENT focus (connect/history rejected): clear the half-focused state, stop

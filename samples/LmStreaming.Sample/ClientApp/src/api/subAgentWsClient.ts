@@ -15,7 +15,14 @@ const log = logger.forComponent('SubAgentWsClient');
 export interface SubAgentWsCallbacks {
   onMessage: (message: Message) => void;
   onDone: () => void;
-  onError: (error: string) => void;
+  /**
+   * Surface a stream failure. `code` carries the structured discriminator from a server error frame
+   * (e.g. `subagent_unavailable`, `subagent_stream_failed`, `relay_failed`) when present, letting the
+   * panel treat a terminal application error differently from a transient/parse failure. Forwarded
+   * verbatim from the shared {@link openWebSocketConnection} handler; backward-compatible with
+   * `(error) => void` callers.
+   */
+  onError: (error: string, code?: string) => void;
   /**
    * Fired when the focus socket closes for any reason (clean or not). The server closes the socket
    * (NormalClosure) after a backpressure drop expecting the client to reconnect + replay; a clean

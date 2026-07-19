@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
-import { closeWebSocketConnection, normalizeKeys, type WebSocketConnection } from '@/api/wsClient';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  closeWebSocketConnection,
+  normalizeKeys,
+  openWebSocketConnection,
+  type WebSocketConnection,
+} from '@/api/wsClient';
+import { logger } from '@/utils';
 
 // BLOCKER 3: tool-call wire JSON uses snake_case identity fields (e.g. `generation_id`). The merge
 // key reads camelCase `generationId`, so without a snake_case alias these messages fall back to
@@ -77,5 +83,111 @@ describe('closeWebSocketConnection (FINDING D)', () => {
     const { connection, close } = fakeConnection(WebSocket.CLOSING);
     closeWebSocketConnection(connection);
     expect(close).not.toHaveBeenCalled();
+  });
+});
+
+// A minimal driveable WebSocket so we can exercise openWebSocketConnection's onmessage/onerror/onclose
+// handlers deterministically. happy-dom's real WebSocket would attempt a live connection.
+class MockWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  static instances: MockWebSocket[] = [];
+
+  readyState = MockWebSocket.CONNECTING;
+  onopen: ((ev?: unknown) => void) | null = null;
+  onmessage: ((ev: { data: unknown }) => void) | null = null;
+  onerror: ((ev?: unknown) => void) | null = null;
+  onclose: ((ev: { wasClean: boolean; code: number; reason: string }) => void) | null = null;
+
+  constructor(public url: string) {
+    MockWebSocket.instances.push(this);
+  }
+  close(): void {
+    this.readyState = MockWebSocket.CLOSED;
+  }
+  send(): void {}
+}
+
+// PR #209 review — #2 (EUII) + error-code plumbing. The SHARED wsClient onmessage handler now carries
+// focused sub-agent transcript frames (prompts/reasoning/tool content). A parse failure must log ONLY
+// content-free metadata (never `event.data` / payload text), and structured error frames must forward
+// their `code` to onError so callers can distinguish terminal application errors.
+describe('openWebSocketConnection onmessage sanitization + error-code plumbing (PR #209)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    MockWebSocket.instances = [];
+  });
+
+  async function open(callbacks: {
+    onMessage?: (m: unknown) => void;
+    onDone?: () => void;
+    onError?: (error: string, code?: string) => void;
+  }): Promise<{ socket: MockWebSocket; connection: WebSocketConnection }> {
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    const promise = openWebSocketConnection('ws://x/ws', 'thread-42', 'conn-7', {
+      onMessage: callbacks.onMessage ?? (() => {}),
+      onDone: callbacks.onDone ?? (() => {}),
+      onError: (callbacks.onError ?? (() => {})) as (error: string) => void,
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    const connection = await promise;
+    return { socket, connection };
+  }
+
+  it('a parse failure logs only content-free metadata, never event.data / payload text', async () => {
+    const logSpy = vi.spyOn(logger as unknown as { _logWithComponent: (...a: unknown[]) => void }, '_logWithComponent');
+    const onError = vi.fn();
+    const { socket } = await open({ onError });
+
+    // Malformed JSON whose payload carries sensitive content — must NOT be logged anywhere.
+    const secret = 'SECRET_PROMPT_AND_REASONING_CONTENT';
+    const malformed = `{"$type":"text","role":"assistant","text":"${secret}",`;
+    socket.onmessage?.({ data: malformed });
+
+    // onError still fires so the UI surfaces the failure (behavior otherwise identical).
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    // No logger call anywhere included the raw payload text.
+    for (const call of logSpy.mock.calls) {
+      const serialized = JSON.stringify(call);
+      expect(serialized).not.toContain(secret);
+      expect(serialized).not.toContain(malformed);
+    }
+
+    // The parse-failure log carries content-free metadata only.
+    const parseLog = logSpy.mock.calls.find((c) => c[1] === 'Failed to parse WebSocket message');
+    expect(parseLog).toBeTruthy();
+    const meta = parseLog![2] as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(meta, 'data')).toBe(false);
+    expect(meta.threadId).toBe('thread-42');
+    expect(meta.connectionId).toBe('conn-7');
+    expect(meta.type).toBe('text'); // the $type discriminator is safe metadata, not content
+    expect(typeof meta.byteLength).toBe('number');
+    expect(typeof meta.errorName).toBe('string');
+  });
+
+  it('forwards a structured error frame code to onError as (message, code)', async () => {
+    const onError = vi.fn();
+    const { socket } = await open({ onError });
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'error', code: 'subagent_unavailable', message: "Sub-agent 'a1' is not available." }),
+    });
+
+    expect(onError).toHaveBeenCalledWith("Sub-agent 'a1' is not available.", 'subagent_unavailable');
+  });
+
+  it('passes undefined code for an error frame without a code (backward compatible)', async () => {
+    const onError = vi.fn();
+    const { socket } = await open({ onError });
+
+    socket.onmessage?.({ data: JSON.stringify({ $type: 'error', message: 'Unstructured failure' }) });
+
+    expect(onError).toHaveBeenCalledWith('Unstructured failure', undefined);
   });
 });
