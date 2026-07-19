@@ -137,4 +137,27 @@ public class RetryGovernorTests
         g.ShouldAttempt(0).Should().BeTrue("the oldest tracked run was evicted to bound memory");
         g.ShouldAttempt(10_049).Should().BeFalse("the most recent failing run is still governed (backing off)");
     }
+
+    [Fact]
+    public void Eviction_preserves_a_parked_run_and_evicts_the_oldest_non_parked_first()
+    {
+        // A parked run must NOT be evicted: dropping its state would make ShouldAttempt return true again and
+        // revive it without a restart, violating park-until-restart. Park run 0 (the OLDEST state), then flood
+        // past the cap with non-parked runs — eviction must take the oldest NON-parked runs and leave run 0 parked.
+        var g = Create(maxAttempts: 100); // flood runs never park within a single failure
+        for (var k = 0; k < 100; k++)
+        {
+            g.RecordFailure(0, "boom"); // run 0 reaches maxAttempts → parked, and is the oldest (Seq 1)
+        }
+
+        g.ShouldAttempt(0).Should().BeFalse("run 0 is parked before the flood");
+
+        for (var i = 1; i <= 10_050; i++)
+        {
+            g.RecordFailure(i, "x");
+        }
+
+        g.ShouldAttempt(0).Should().BeFalse(
+            "a parked run is preserved through eviction — it is never revived without a restart");
+    }
 }

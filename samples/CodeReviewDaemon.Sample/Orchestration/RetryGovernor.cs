@@ -133,8 +133,11 @@ internal sealed class RetryGovernor
 
     /// <summary>
     /// Keeps the tracked set bounded by evicting the oldest entries once it exceeds <see cref="MaxTrackedRuns"/>.
-    /// Safe: a re-polled evicted run simply starts fresh (<see cref="ShouldAttempt"/> returns true), and eviction
-    /// only ever reaches the very oldest ids — long past their active retry/backoff window.
+    /// PARKED runs are preserved: evicting one would drop its state so <see cref="ShouldAttempt"/> returns true
+    /// again and revives the run WITHOUT a restart, violating the documented park-until-restart invariant. So we
+    /// evict the oldest NON-parked states first (a re-polled backing-off run harmlessly retries fresh); only if
+    /// the set is still over capacity with ONLY parked runs (a pathological flood of permanent failures) do we
+    /// evict the oldest parked ones, and each such eviction is logged so the revival can never be silent.
     /// </summary>
     private void EvictOldestOverCapacity()
     {
@@ -144,9 +147,52 @@ internal sealed class RetryGovernor
             return;
         }
 
-        foreach (var key in _states.OrderBy(kv => kv.Value.Seq).Take(overflow).Select(kv => kv.Key).ToArray())
+        var ordered = _states.OrderBy(kv => kv.Value.Seq).ToArray();
+        var evicted = 0;
+
+        // Pass 1: evict the oldest NON-parked states (safe — they simply retry fresh on a re-poll).
+        foreach (var (key, state) in ordered)
         {
-            _states.TryRemove(key, out _);
+            if (evicted >= overflow)
+            {
+                break;
+            }
+
+            bool parked;
+            lock (state)
+            {
+                parked = state.Parked;
+            }
+
+            if (!parked && _states.TryRemove(key, out _))
+            {
+                evicted++;
+            }
+        }
+
+        // Pass 2 (pathological): still over capacity with only parked runs left — evict the oldest parked ones
+        // but LOG each, so a park-until-restart revival under memory pressure is observable, never silent.
+        foreach (var (key, state) in ordered)
+        {
+            if (evicted >= overflow)
+            {
+                break;
+            }
+
+            bool parked;
+            lock (state)
+            {
+                parked = state.Parked;
+            }
+
+            if (parked && _states.TryRemove(key, out _))
+            {
+                _logger.LogWarning(
+                    "RetryGovernor evicted PARKED run {RunId} under memory pressure ({Tracked} tracked); it may be "
+                        + "revived on a re-poll before a restart.",
+                    key, _states.Count);
+                evicted++;
+            }
         }
     }
 }
