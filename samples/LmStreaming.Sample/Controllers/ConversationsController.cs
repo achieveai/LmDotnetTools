@@ -439,7 +439,7 @@ public class ConversationsController(
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or
-    /// <paramref name="inputId"/>. See <see cref="ConversationStatusResolver"/> for the 5-state
+    /// <paramref name="inputId"/>. See <see cref="ConversationStatusResolver"/> for the 6-state
     /// resolution and the tool-only-run final-response convention.
     /// </summary>
     [HttpGet("{threadId}/status")]

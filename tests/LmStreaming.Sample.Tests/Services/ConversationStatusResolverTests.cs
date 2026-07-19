@@ -10,6 +10,7 @@ public class ConversationStatusResolverTests
     [InlineData(RunStatus.Queued, ConversationRunStatus.NotStarted)]
     [InlineData(RunStatus.InProgress, ConversationRunStatus.InProgress)]
     [InlineData(RunStatus.Interrupted, ConversationRunStatus.Interrupted)]
+    [InlineData(RunStatus.Cancelled, ConversationRunStatus.Cancelled)]
     public async Task ResolveByRunIdAsync_MapsEachRunStatus_ToItsConversationRunStatus(
         RunStatus runStatus,
         ConversationRunStatus expected)
@@ -61,6 +62,20 @@ public class ConversationStatusResolverTests
 
         first!.Status.Should().Be(ConversationRunStatus.Interrupted);
         second!.Status.Should().Be(ConversationRunStatus.Interrupted);
+    }
+
+    [Fact]
+    public async Task ResolveByRunIdAsync_Cancelled_ResolvesWithoutThrowing_AndReturnsNullResponse()
+    {
+        var store = new InMemoryConversationStore();
+        await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-1", RunStatus.Cancelled, "input-1"));
+        var resolver = new ConversationStatusResolver(store, store);
+
+        var result = await resolver.ResolveByRunIdAsync(ThreadId, "run-1");
+
+        result.Should().NotBeNull();
+        result!.Status.Should().Be(ConversationRunStatus.Cancelled);
+        result.Response.Should().BeNull();
     }
 
     [Fact]
