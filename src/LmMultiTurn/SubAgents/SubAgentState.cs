@@ -52,6 +52,28 @@ internal enum ContinuationMode
 internal readonly record struct ContinuationDecision(ContinuationMode Mode, Task? RestartCompleted);
 
 /// <summary>
+/// How a presentation-only observer must proceed after the instance it was subscribed to ends its
+/// stream, as decided atomically by <see cref="SubAgentState.DecideAfterStreamEnd"/> against the
+/// replacement signal and the restart-in-progress flag. Deterministic: it never depends on elapsed time.
+/// </summary>
+internal enum ObservationContinuation
+{
+    /// <summary>
+    /// A restart/teardown has already signalled, or an owned-provider restart is in flight and WILL
+    /// complete the replacement signal: await that signal (no timeout) to pick up the new live instance
+    /// (or <c>null</c> at teardown) and either re-subscribe or end.
+    /// </summary>
+    AwaitReplacement,
+
+    /// <summary>
+    /// No restart is in flight and no replacement was signalled: the subscription was removed by a
+    /// slow-subscriber backpressure DROP while the instance stays alive. End the observation so the
+    /// focus socket closes and the client reconnects + replays.
+    /// </summary>
+    EndStream,
+}
+
+/// <summary>
 /// Mutable state tracker for a running sub-agent instance.
 /// Internal to the SubAgents module; not exposed to consumers.
 /// </summary>
@@ -79,6 +101,15 @@ internal class SubAgentState
     // signal from one restart epoch with an agent from another (torn read). Dedicated to this pair only —
     // no awaits run under it and it never nests with _lifecycleLock — so it cannot deadlock.
     private readonly object _observationLock = new();
+
+    // Restart-intent flag guarded by _observationLock: set true by SignalRestartStarting the instant an
+    // owned-provider restart has BUILT its replacement and is about to dispose the current live instance
+    // (which ends observers' streams), and cleared when the replacement is delivered
+    // (SwapLiveAgentAndSignalReplaced) or the agent is torn down (SignalAgentReplaced(null)). It lets
+    // DecideAfterStreamEnd tell a genuine restart (replacement signal guaranteed to arrive — wait for it,
+    // no timeout) apart from a backpressure DROP (no signal coming — end promptly), deterministically and
+    // WITHOUT any elapsed-time heuristic. Only ever true across a single dispose->swap window.
+    private bool _restartInProgress;
 
     /// <summary>
     /// The template and spawn inputs needed to recreate a completed owned-provider run before a
@@ -633,11 +664,66 @@ internal class SubAgentState
     }
 
     /// <summary>
+    /// Marks that an owned-provider restart has built its replacement instance and is ABOUT to dispose
+    /// the current live instance (which ends any presentation-only observer's stream). Set under
+    /// <c>_observationLock</c> BEFORE that dispose so a concurrent <see cref="DecideAfterStreamEnd"/> —
+    /// triggered when the observer's stream ends on the dispose — deterministically sees a restart is in
+    /// flight and awaits the replacement signal (which the imminent <see cref="SwapLiveAgentAndSignalReplaced"/>
+    /// will complete) rather than treating the end as a backpressure drop. Cleared exactly when the
+    /// replacement is delivered or the agent is torn down. Called ONLY on the owned-provider restart path
+    /// (the borrowed-provider path never swaps/disposes, so it must never set this flag or it would never
+    /// be cleared).
+    /// </summary>
+    public void SignalRestartStarting()
+    {
+        lock (_observationLock)
+        {
+            _restartInProgress = true;
+        }
+    }
+
+    /// <summary>
+    /// Deterministic decision an observer makes after the instance it was subscribed to ends its stream:
+    /// whether a replacement is coming (await it, no timeout) or the subscriber was dropped under
+    /// backpressure (end). Computed under <c>_observationLock</c> — the same lock the restart swap and
+    /// teardown signal use — so the read of the restart flag and the replacement signal is consistent
+    /// with any concurrent swap. It never depends on elapsed time:
+    /// <list type="bullet">
+    /// <item><see cref="ObservationContinuation.AwaitReplacement"/> when <paramref name="capturedReplaced"/>
+    /// has already completed (a restart or teardown signalled) — await it to obtain the new instance or
+    /// <c>null</c>.</item>
+    /// <item><see cref="ObservationContinuation.AwaitReplacement"/> when a restart is in flight
+    /// (<c>_restartInProgress</c>): the imminent swap WILL complete <paramref name="capturedReplaced"/>, so
+    /// wait for it with no timeout.</item>
+    /// <item><see cref="ObservationContinuation.EndStream"/> otherwise: no restart and no signal means a
+    /// genuine backpressure drop, so end so the socket closes and the client reconnects.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="capturedReplaced">The replacement awaitable the observer captured (via
+    /// <see cref="SnapshotForObservation"/>) alongside the instance whose stream just ended.</param>
+    /// <returns>Whether the observer should await the replacement or end the stream.</returns>
+    public ObservationContinuation DecideAfterStreamEnd(Task<IMultiTurnAgent?> capturedReplaced)
+    {
+        ArgumentNullException.ThrowIfNull(capturedReplaced);
+        lock (_observationLock)
+        {
+            if (capturedReplaced.IsCompleted || _restartInProgress)
+            {
+                return ObservationContinuation.AwaitReplacement;
+            }
+
+            return ObservationContinuation.EndStream;
+        }
+    }
+
+    /// <summary>
     /// Owned-provider restart swap: atomically installs <paramref name="replacement"/> as the live
     /// <see cref="Agent"/> AND signals observers of the PREVIOUS instance's replacement, both under
     /// <c>_observationLock</c>. Doing the agent-set and the signal together (rather than as two separate
     /// steps) means a concurrent <see cref="SnapshotForObservation"/> observes either the whole old epoch
     /// or the whole new one — never a torn <c>(newAgent, oldSignal)</c>/<c>(oldAgent, newSignal)</c> pair.
+    /// Also clears the restart-in-progress flag under the same lock, so it falls exactly as the
+    /// replacement is delivered.
     /// </summary>
     /// <param name="replacement">The fresh loop instance that replaces the current one.</param>
     public void SwapLiveAgentAndSignalReplaced(IMultiTurnAgent replacement)
@@ -645,6 +731,7 @@ internal class SubAgentState
         ArgumentNullException.ThrowIfNull(replacement);
         lock (_observationLock)
         {
+            _restartInProgress = false;
             Agent = replacement;
             SignalAgentReplacedLocked(replacement);
         }
@@ -665,6 +752,7 @@ internal class SubAgentState
     {
         lock (_observationLock)
         {
+            _restartInProgress = false;
             SignalAgentReplacedLocked(replacement);
         }
     }

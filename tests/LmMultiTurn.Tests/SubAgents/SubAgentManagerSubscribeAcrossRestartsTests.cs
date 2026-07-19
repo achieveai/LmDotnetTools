@@ -185,12 +185,13 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SubscribeAcrossRestarts_WhenSubscriberDroppedWithoutRestart_EndsWithinGrace()
+    public async Task SubscribeAcrossRestarts_WhenSubscriberDroppedWithoutRestart_EndsPromptly()
     {
         // Backpressure DROP path: a slow subscriber can be removed by
         // MultiTurnAgentBase.PublishToSubscriber while the instance stays alive — no restart, so no
-        // replacement signal ever fires. The observer must NOT hang dark forever; after the bounded
-        // grace it ends so the focus socket closes and the client can reconnect + replay.
+        // replacement signal ever fires AND no restart-in-progress flag is set. DecideAfterStreamEnd must
+        // therefore return EndStream and the observer must end PROMPTLY (deterministically, no timeout) so
+        // the focus socket closes and the client can reconnect + replay.
         const string attachedSentinel = "attached-sentinel";
         ObservableFakeAgent? liveAgent = null;
 
@@ -198,8 +199,6 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         {
             ["owned"] = DummyTemplate("owned"),
         });
-        // Tiny grace so the drop path resolves fast and deterministically.
-        manager.RestartSignalGrace = TimeSpan.FromMilliseconds(200);
 
         manager.TestAgentFactoryOverride = (agentId, _) =>
         {
@@ -230,13 +229,14 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
 
         await attached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // Act: drop the subscriber WITHOUT a restart/teardown (no replacement signal fires).
+        // Act: drop the subscriber WITHOUT a restart/teardown (no replacement signal fires, no restart flag).
         liveAgent!.SimulateSubscriberDrop();
 
-        // The observer must end via the bounded grace (not hang), and NOT because its own token cancelled.
+        // The observer must end promptly via the deterministic EndStream decision (not hang), and NOT
+        // because its own token cancelled.
         var completed = await Task.WhenAny(observerTask, Task.Delay(TimeSpan.FromSeconds(10)));
         completed.Should().BeSameAs(
-            observerTask, "a dropped subscriber with no replacement signal must end within the grace");
+            observerTask, "a dropped subscriber with no replacement signal and no restart in flight must end");
         await observerTask;
         observeCts.IsCancellationRequested.Should().BeFalse();
 
@@ -381,6 +381,208 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
             0, "an atomic snapshot never pairs an agent with a signal that already resolved to that same agent");
     }
 
+    [Fact]
+    public void DecideAfterStreamEnd_WhenNoRestartAndReplacementPending_ReturnsEndStream()
+    {
+        // A backpressure DROP: the subscribed instance's stream ended, no restart is in flight, and no
+        // replacement was signalled. The decision must be EndStream — deterministically, with no timeout.
+        var state = NewObservationState(ObservableAgent());
+        var (_, replaced) = state.SnapshotForObservation();
+        replaced.IsCompleted.Should().BeFalse();
+
+        state.DecideAfterStreamEnd(replaced).Should().Be(ObservationContinuation.EndStream);
+    }
+
+    [Fact]
+    public void DecideAfterStreamEnd_WhenRestartInProgress_ReturnsAwaitReplacement()
+    {
+        // A restart is in flight (SignalRestartStarting set BEFORE the dispose that ends the observer's
+        // stream) but the swap has NOT delivered the replacement yet, so `replaced` is still pending. The
+        // decision must be AwaitReplacement so the observer waits for the imminent signal with no timeout,
+        // regardless of how long the dispose + cleanup takes.
+        var state = NewObservationState(ObservableAgent());
+        var (_, replaced) = state.SnapshotForObservation();
+
+        state.SignalRestartStarting();
+        replaced.IsCompleted.Should().BeFalse("the swap has not delivered the replacement yet");
+
+        state.DecideAfterStreamEnd(replaced).Should().Be(ObservationContinuation.AwaitReplacement);
+    }
+
+    [Fact]
+    public async Task DecideAfterStreamEnd_WhenReplacementAlreadySignalled_ReturnsAwaitReplacement()
+    {
+        // The replacement (or teardown null) already fired before the observer decided: await it to pick
+        // up the new instance (or end on null).
+        var state = NewObservationState(ObservableAgent());
+        var (_, replaced) = state.SnapshotForObservation();
+
+        var a1 = ObservableAgent();
+        state.SwapLiveAgentAndSignalReplaced(a1);
+        replaced.IsCompleted.Should().BeTrue();
+
+        state.DecideAfterStreamEnd(replaced).Should().Be(ObservationContinuation.AwaitReplacement);
+        (await replaced).Should().BeSameAs(a1);
+    }
+
+    [Fact]
+    public void DecideAfterStreamEnd_AfterSwapDeliversReplacement_ClearsRestartFlagForNextEpoch()
+    {
+        // The restart-in-progress flag must fall exactly when the replacement is delivered, so the NEXT
+        // epoch's stream end (with no new restart) is correctly treated as a drop (EndStream), not a
+        // lingering "await forever".
+        var state = NewObservationState(ObservableAgent());
+        state.SignalRestartStarting();
+        state.SwapLiveAgentAndSignalReplaced(ObservableAgent());
+
+        var (_, nextReplaced) = state.SnapshotForObservation();
+        nextReplaced.IsCompleted.Should().BeFalse("a fresh signal is installed for the new epoch");
+
+        state.DecideAfterStreamEnd(nextReplaced).Should().Be(
+            ObservationContinuation.EndStream, "the swap cleared the restart flag");
+    }
+
+    [Fact]
+    public void DecideAfterStreamEnd_AfterTeardownSignal_ClearsRestartFlag()
+    {
+        // Teardown (SignalAgentReplaced(null)) must also clear the restart flag, so a stale flag can never
+        // strand a later epoch's observer awaiting a signal that will never come.
+        var state = NewObservationState(ObservableAgent());
+        state.SignalRestartStarting();
+        state.SignalAgentReplaced(null);
+
+        var (_, nextReplaced) = state.SnapshotForObservation();
+        state.DecideAfterStreamEnd(nextReplaced).Should().Be(
+            ObservationContinuation.EndStream, "teardown cleared the restart flag");
+    }
+
+    [Fact]
+    public async Task SubscribeAcrossRestarts_SlowOwnedProviderRestart_DoesNotTerminateAndYieldsSecondRun()
+    {
+        // Round-3 BLOCKER #3: a legitimate owned-provider restart whose old-instance dispose + cleanup is
+        // SLOW must NOT terminate a valid focus stream. The old timing heuristic (2s grace) would have
+        // expired and wrongly ended the stream. With the explicit restart-intent signal the observer
+        // deterministically waits for the definitive replacement signal — however long the dispose takes —
+        // with NO wall-clock timeout. Proven with a TCS gate holding the dispose OPEN between the point it
+        // ends the observer's old stream and the swap that delivers the replacement.
+        const string firstText = "first-run-answer";
+        const string secondText = "second-run-answer";
+
+        var createdAgents = new List<ObservableFakeAgent>();
+        var agentCallCount = 0;
+
+        // Gate the FIRST instance's dispose: it ends the observer's run-1 stream, then blocks here (before
+        // the swap) until the test releases it.
+        var disposeGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        });
+
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+        {
+            var idx = Interlocked.Increment(ref agentCallCount);
+            var agent = new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                RunMessages = idx == 1
+                    ?
+                    [
+                        new TextMessage { Text = firstText, Role = Role.Assistant },
+                        new RunCompletedMessage { CompletedRunId = "run-1" },
+                    ]
+                    :
+                    [
+                        new TextMessage { Text = secondText, Role = Role.Assistant },
+                        new RunCompletedMessage { CompletedRunId = "run-2" },
+                    ],
+                // Only the first instance's dispose is gated (it is the one the restart disposes).
+                DisposeGate = idx == 1 ? disposeGate : null,
+            };
+            lock (createdAgents)
+            {
+                createdAgents.Add(agent);
+            }
+
+            return agent;
+        };
+
+        manager.TestOwnedProviderOverride = (_, _) => new Mock<IStreamingAgent>().Object;
+
+        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        await WaitForConditionAsync(
+            () =>
+            {
+                try { return manager.Peek(agentId).Contains("\"completed\"", StringComparison.Ordinal); }
+                catch { return false; }
+            },
+            TimeSpan.FromSeconds(10));
+
+        using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var sawFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sawSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var observerTask = Task.Run(async () =>
+        {
+            await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
+            {
+                if (msg is TextMessage tm && tm.Text == firstText)
+                {
+                    _ = sawFirst.TrySetResult();
+                }
+
+                if (msg is TextMessage tm2 && tm2.Text == secondText)
+                {
+                    _ = sawSecond.TrySetResult();
+                    return;
+                }
+            }
+        }, observeCts.Token);
+
+        await sawFirst.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Act: relay a follow-up -> owned-provider restart. SendMessageAsync awaits RestartRunAsync, which
+        // BLOCKS on the gated dispose, so run it off the test thread and drive the gate here.
+        var sendTask = Task.Run(() => manager.SendMessageAsync(agentId, "continue", runInBackground: true));
+
+        ObservableFakeAgent firstAgent;
+        lock (createdAgents)
+        {
+            firstAgent = createdAgents[0];
+        }
+
+        // The restart has built the replacement, set the restart-in-progress flag, and entered the gated
+        // dispose that ended the observer's run-1 stream — but the swap (which completes `replaced`) has
+        // NOT happened yet.
+        await firstAgent.DisposeEnteredTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The observer's run-1 stream has ended and no replacement has arrived, yet — because a restart is
+        // in flight — it must be AWAITING the replacement, not ended. The old 2s grace would eventually
+        // have ended it here; the explicit signal never does.
+        observerTask.IsCompleted.Should().BeFalse(
+            "a restart in flight must keep the observer awaiting the replacement, not terminate the stream");
+        sawSecond.Task.IsCompleted.Should().BeFalse("the swap has not delivered the second run yet");
+
+        // Release the gated dispose -> restart proceeds to the swap -> `replaced` completes -> the observer
+        // re-subscribes to the replacement and streams run 2.
+        disposeGate.SetResult();
+
+        await sawSecond.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await observerTask.WaitAsync(TimeSpan.FromSeconds(10));
+        await sendTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+        lock (createdAgents)
+        {
+            createdAgents.Should().HaveCount(2, "the restart created exactly one replacement instance");
+        }
+
+        observeCts.IsCancellationRequested.Should().BeFalse(
+            "the observer followed the slow restart via the signal, not via cancellation");
+    }
+
     #region Helpers
 
     private static ObservableFakeAgent ObservableAgent() => new() { RunMessages = [] };
@@ -471,9 +673,29 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
     private readonly TaskCompletionSource _dropped =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    // Completes the instant DisposeAsync is entered and has already ended open subscriptions (set
+    // _disposed) — before it awaits DisposeGate. Lets a test know the observer's OLD stream has been
+    // closed (so the restart-in-progress flag is already set and the observer is about to decide) before
+    // it releases the gate, WITHOUT any wall-clock delay.
+    private readonly TaskCompletionSource _disposeEntered =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public required IReadOnlyList<IMessage> RunMessages { get; init; }
 
     public string ThreadId { get; init; } = "fake-thread";
+
+    /// <summary>
+    /// Optional gate: when set, <see cref="DisposeAsync"/> ends open subscriptions (mirroring a restart
+    /// disposing the previous loop) and THEN awaits this gate before returning. Lets a test hold an
+    /// owned-provider restart between the dispose that ends the observer's old stream and the swap that
+    /// delivers the replacement — proving a SLOW restart never terminates the stream, deterministically
+    /// and without wall-clock delay.
+    /// </summary>
+    public TaskCompletionSource? DisposeGate { get; init; }
+
+    /// <summary>Completes once <see cref="DisposeAsync"/> has ended open subscriptions and is about to
+    /// await <see cref="DisposeGate"/>.</summary>
+    public Task DisposeEnteredTask => _disposeEntered.Task;
 
     /// <summary>Simulate a backpressure drop: ends open subscriptions while the instance stays alive.</summary>
     public void SimulateSubscriberDrop() => _dropped.TrySetResult();
@@ -544,9 +766,13 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
         return Task.CompletedTask;
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         _ = _disposed.TrySetResult();
-        return ValueTask.CompletedTask;
+        _ = _disposeEntered.TrySetResult();
+        if (DisposeGate is not null)
+        {
+            await DisposeGate.Task;
+        }
     }
 }
