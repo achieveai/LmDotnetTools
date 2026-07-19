@@ -62,6 +62,13 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   // agent) and must abandon its rebuild / close its late connection. Keyed on the token, not the
   // agentId, so two overlapping focusChild(sameAgent) calls can't both pass the guard.
   let focusSeq = 0;
+  // Suppresses the onClose auto-resume when WE close the socket (unfocus / refocus), so only an
+  // UNEXPECTED server/drop close triggers a resume.
+  let intentionalClose = false;
+  // One-shot auto-resume budget per user-initiated focus: the server closes the socket after a
+  // backpressure drop expecting a reconnect+replay. We resume once; a second unexpected close ends
+  // in a terminal (non-streaming) state rather than looping.
+  let autoResumeUsed = false;
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -266,10 +273,20 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
    * Focus a sub-agent: tear down any prior focus, load the child's persisted transcript, then open a
    * live stream. History merges with the live stream by the shared merge key (runId-stamped), so a
    * still-running child resumes without duplicating pills.
+   *
+   * @param agentId the child to focus.
+   * @param isAutoResume internal: true when invoked by the onClose auto-resume (a backpressure-drop
+   *   reconnect), so it does NOT reset the one-shot resume budget. User-initiated focus omits it.
    */
-  async function focusChild(agentId: string): Promise<void> {
+  async function focusChild(agentId: string, isAutoResume = false): Promise<void> {
     const token = ++focusSeq;
+    if (!isAutoResume) {
+      autoResumeUsed = false;
+    }
     await unfocusChild();
+    // unfocusChild set intentionalClose to close the prior socket; clear it so the NEW connection's
+    // close is treated as unexpected (and can auto-resume) rather than suppressed.
+    intentionalClose = false;
 
     const summary = children.value.find((c) => c.agentId === agentId);
     if (!summary) {
@@ -325,6 +342,22 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         log.error('Sub-agent stream error', { agentId, error: err });
         isFocusedStreaming.value = false;
       },
+      onClose: () => {
+        // Ignore closes for a superseded focus, or a close WE initiated (unfocus/refocus).
+        if (focusSeq !== token || intentionalClose) {
+          return;
+        }
+        // Unexpected server/drop close: drop the dead socket and stop the spinner so the view can't
+        // hang and sendToFocusedChild can't post to a dead socket. The server closes after a
+        // backpressure drop expecting a reconnect+replay, so resume ONCE; a second close is terminal.
+        focusedConnection = null;
+        isFocusedStreaming.value = false;
+        if (!autoResumeUsed) {
+          autoResumeUsed = true;
+          log.info('Sub-agent focus socket closed unexpectedly; resuming once', { agentId });
+          void focusChild(agentId, true);
+        }
+      },
     });
     // Concurrent-focus guard: a newer focusChild superseded us while the socket was opening. Do not
     // adopt this now-stale connection (that would clobber the newer focus); close it and bail.
@@ -340,6 +373,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   /** Close the focused child's stream and clear all per-focus state. */
   async function unfocusChild(): Promise<void> {
     if (focusedConnection) {
+      // Mark the close intentional so its onClose does not trigger an auto-resume.
+      intentionalClose = true;
       closeWebSocketConnection(focusedConnection);
       focusedConnection = null;
     }
@@ -350,8 +385,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
 
   /** Send text input to the focused child over its live stream. */
   function sendToFocusedChild(text: string): void {
-    if (!focusedConnection) {
-      log.warn('sendToFocusedChild: no focused child connection');
+    if (!focusedConnection || focusedConnection.socket.readyState !== WebSocket.OPEN) {
+      log.warn('sendToFocusedChild: no open focused child connection');
       return;
     }
     sendWebSocketMessage(focusedConnection, text);

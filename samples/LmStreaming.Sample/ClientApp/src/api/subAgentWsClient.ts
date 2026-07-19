@@ -16,6 +16,12 @@ export interface SubAgentWsCallbacks {
   onMessage: (message: Message) => void;
   onDone: () => void;
   onError: (error: string) => void;
+  /**
+   * Fired when the focus socket closes for any reason (clean or not). The server closes the socket
+   * (NormalClosure) after a backpressure drop expecting the client to reconnect + replay; a clean
+   * close fires neither `onDone` nor `onError`, so callers rely on this to avoid a frozen view.
+   */
+  onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
 }
 
 /**

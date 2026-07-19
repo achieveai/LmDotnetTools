@@ -17,6 +17,12 @@ export interface WebSocketClientCallbacks {
    * backend while a sandbox webhook call is held awaiting an interactive sign-in.
    */
   onAuthEvent?: (event: AuthEvent) => void;
+  /**
+   * Fired when the socket closes for ANY reason (clean or not) — after the `!wasClean` error
+   * surfacing below. Lets a caller react to a server-initiated NormalClosure (which fires neither
+   * `onDone` nor `onError`), e.g. the sub-agent focus view resuming after a backpressure drop.
+   */
+  onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
 }
 
 /**
@@ -150,7 +156,7 @@ export function openWebSocketConnection(
   connectionId: string,
   callbacks: WebSocketClientCallbacks
 ): Promise<WebSocketConnection> {
-  const { onMessage, onDone, onError, onAuthEvent } = callbacks;
+  const { onMessage, onDone, onError, onAuthEvent, onClose } = callbacks;
 
   return new Promise((resolve, reject) => {
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
@@ -225,6 +231,7 @@ export function openWebSocketConnection(
       if (!event.wasClean) {
         onError(`WebSocket closed unexpectedly: ${event.reason || 'Unknown reason'}`);
       }
+      onClose?.({ wasClean: event.wasClean, code: event.code, reason: event.reason });
     };
   });
 }

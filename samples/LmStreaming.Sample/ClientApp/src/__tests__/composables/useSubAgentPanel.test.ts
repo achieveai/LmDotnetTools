@@ -44,7 +44,12 @@ vi.mock('@/api/conversationsApi', () => ({
 interface Captured {
   parentThreadId: string;
   agentId: string;
-  callbacks: { onMessage: (m: any) => void; onDone: () => void; onError: (e: string) => void };
+  callbacks: {
+    onMessage: (m: any) => void;
+    onDone: () => void;
+    onError: (e: string) => void;
+    onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
+  };
   connection: { socket: { readyState: number }; connectionId: string; threadId: string; isConnected: boolean };
 }
 
@@ -427,6 +432,58 @@ describe('useSubAgentPanel — hardening', () => {
     // Sending routes to the SECOND connection, proving the stale one never clobbered focusedConnection.
     panel.sendToFocusedChild('hi');
     expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(secondConn, 'hi');
+  });
+
+  it('onClose (unexpected): stops streaming, resumes once, and a second close is terminal (no loop)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    await panel.focusChild('a1');
+    expect(captured).toHaveLength(1);
+    expect(panel.isFocusedStreaming.value).toBe(true);
+
+    // An UNEXPECTED (clean) server close — the backpressure-drop path fires neither onDone nor onError.
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    // The spinner must stop immediately (view can't hang).
+    expect(panel.isFocusedStreaming.value).toBe(false);
+
+    // One automatic resume: a fresh connection is opened for the same agent.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(captured, 'exactly one resume reconnect').toHaveLength(2);
+    expect(captured[1].agentId).toBe('a1');
+
+    // Sends route to the resumed connection, not the dead one.
+    panel.sendToFocusedChild('after resume');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(captured[1].connection, 'after resume');
+
+    // A SECOND unexpected close must NOT loop — resume budget is spent, so it ends terminal.
+    wsMocks.sendWebSocketMessage.mockClear();
+    captured[1].connection.socket.readyState = WebSocket.CLOSED;
+    captured[1].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(captured, 'no third reconnect after the one-shot budget is spent').toHaveLength(2);
+
+    // The now-dead socket rejects sends instead of throwing on a closed socket.
+    panel.sendToFocusedChild('to dead socket');
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalled();
+  });
+
+  it('onClose after an intentional unfocus does not auto-resume', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    await panel.focusChild('a1');
+    expect(captured).toHaveLength(1);
+
+    await panel.unfocusChild();
+    // A late onClose from the socket WE closed must be ignored (no resume).
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(captured, 'an intentional unfocus must not trigger a reconnect').toHaveLength(1);
+    expect(panel.focusedAgentId.value).toBeNull();
   });
 
   it('onScopeDispose stops polling and unfocuses the child when the host scope is disposed', async () => {
