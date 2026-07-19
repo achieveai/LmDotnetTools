@@ -791,9 +791,6 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Check the status and recent activity of a sub-agent.
-    /// </summary>
-    /// <summary>
     /// Returns a read-only, point-in-time snapshot of every registered sub-agent. Presentation-only:
     /// it reads the live registry without mutating any state, never blocks, and is safe to call
     /// concurrently with spawn/send/dispose. A sub-agent added or removed after the snapshot is taken
@@ -865,6 +862,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         return false;
     }
 
+    /// <summary>
+    /// Check the status and recent activity of a sub-agent.
+    /// </summary>
     public string Peek(string agentId)
     {
         if (!_agents.TryGetValue(agentId, out var state))
