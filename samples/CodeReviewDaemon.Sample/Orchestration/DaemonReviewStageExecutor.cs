@@ -975,6 +975,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
         reviewInput = await PrependPriorKnowledgeAsync(reviewInput, run.Id, context.StoreRoot, cancellationToken)
             .ConfigureAwait(false);
+        reviewInput = await PrependRepoGuidanceAsync(reviewInput, run.Id, cancellationToken)
+            .ConfigureAwait(false);
 
         // Primary review — collected and persisted; never posts here (the Posted stage owns posting).
         await RunPrimaryReviewAsync(run, provider, reviewInput, context.CheckoutRoot, context.StoreRoot, cancellationToken)
@@ -1179,6 +1181,65 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         _logger.LogInformation("Prepending KnowledgeBase/_toc.md ({Length} chars) to the review input.", toc.Length);
         return $"## Prior knowledge (KnowledgeBase/_toc.md)\n\n{toc}\n\n{reviewInput}";
+    }
+
+    /// <summary>The reviewed repo's own root guidance files, in read-first order: project conventions
+    /// (<c>CLAUDE.md</c>) before agent instructions (<c>AGENTS.md</c>).</summary>
+    private static readonly string[] RepoGuidanceFileNames = ["CLAUDE.md", "AGENTS.md"];
+
+    /// <summary>
+    /// Best-effort prepends the reviewed repo's own root guidance (<c>CLAUDE.md</c>, <c>AGENTS.md</c>) to
+    /// the review input so the reviewer starts with the project's coding conventions and build/test commands
+    /// — the same files a human reviewer reads first, and exactly the "context discovery" the sandbox gateway
+    /// surfaces. The daemon reads them HOST-side from the leased checkout (<c>lease.Prepared.TargetDir</c> via
+    /// <c>_slotWorkspace.HostFileSystem</c> — the same host filesystem the KB / prior-notes reads use) rather
+    /// than consuming the gateway's discovery webhook: injecting a discovery mid-run into the headless,
+    /// collect-only review loop would restart the collector's generation and could discard the real review
+    /// (and re-touch the boot session). Only a pooled run with a lease reads them; a non-pooled/diff-only run
+    /// (no lease) is unchanged. A missing file is the common case and silently leaves the input untouched; a
+    /// read that throws degrades to skipping that file (design §6: this enrichment must never fail the review).
+    /// </summary>
+    private async Task<string> PrependRepoGuidanceAsync(
+        string reviewInput, long runId, CancellationToken cancellationToken)
+    {
+        if (_slotWorkspace is null || !_leasedReviews.TryGetValue(runId, out var lease))
+        {
+            // Non-pooled / diff-only runs have no leased checkout to read the repo's own files from.
+            return reviewInput;
+        }
+
+        var fileSystem = _slotWorkspace.HostFileSystem;
+        var targetDir = lease.Prepared.TargetDir;
+
+        List<string> blocks = [];
+        foreach (var name in RepoGuidanceFileNames)
+        {
+            string? content;
+            try
+            {
+                content = await fileSystem.ReadFileAsync(PosixJoin(targetDir, name), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A missing file returns null (skipped below); a real read failure (gateway hiccup / stale
+                // session) must NEVER fail the review, so degrade to skipping this one file and continue.
+                _logger.LogWarning(ex, "Reading reviewed-repo guidance '{Name}' failed; proceeding without it.", name);
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                blocks.Add($"### {name}\n\n{content}");
+            }
+        }
+
+        if (blocks.Count == 0)
+        {
+            return reviewInput;
+        }
+
+        _logger.LogInformation("Prepending reviewed-repo guidance ({Count} file(s)) to the review input.", blocks.Count);
+        return $"## Repository guidance (the reviewed repo's own CLAUDE.md / AGENTS.md)\n\n{string.Join("\n\n", blocks)}\n\n{reviewInput}";
     }
 
     private async Task RunPrimaryReviewAsync(

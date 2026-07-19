@@ -154,6 +154,51 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_prepends_the_reviewed_repos_root_guidance_read_from_the_leased_checkout()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The reviewed repo's own CLAUDE.md/AGENTS.md live in the LEASED SLOT's target checkout
+        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be read HOST-side via
+        // _slotWorkspace.HostFileSystem — the same host filesystem the KB / prior-notes reads use, NOT the
+        // boot-lifetime sandbox session (which the gateway never registers for a pooled run). A headless,
+        // collect-only reviewer must fold the repo's own guidance into the review INPUT up front; injecting
+        // it mid-run (the interactive chat path) would restart the collector and could discard the review.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
+            "# LmDotnetTools\nUse CSharpier. REPO-GUIDANCE-MARKER.");
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/repos/LmDotnetTools/AGENTS.md",
+            "Agents must read AGENTS-MARKER before reviewing.");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("Repository guidance", "the reviewed repo's own guidance is prepended as a labelled block");
+        text.Should().Contain("REPO-GUIDANCE-MARKER", "the reviewed repo's CLAUDE.md is surfaced to the reviewer");
+        text.Should().Contain("AGENTS-MARKER", "the reviewed repo's AGENTS.md is surfaced to the reviewer");
+    }
+
+    [Fact]
+    public async Task Reviewed_skips_the_repo_guidance_block_when_neither_file_exists()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // No CLAUDE.md / AGENTS.md seeded in the checkout — the block must be silently omitted (design §6:
+        // the enrichment must never fail or pollute the review), leaving the review input clean.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Repository guidance", "an absent CLAUDE.md/AGENTS.md must not add an empty block");
+    }
+
+    [Fact]
     public async Task Reviewed_escalates_to_the_bigger_model_then_diff_only_when_the_context_window_overflows()
     {
         using var fixture = Fixture.Create();

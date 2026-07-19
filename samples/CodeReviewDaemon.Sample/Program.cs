@@ -692,20 +692,29 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sweepAsync: sp.GetService<PrLifecycleSweeper>() is { } sweeper ? sweeper.SweepAsync : null));
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
-// The daemon exposes exactly ONE route: POST /api/auth/webhook/{provider} (the gateway's post-auth
-// callback). MVC discovery is restricted to AuthWebhookController so no other route can leak in.
+// The daemon exposes exactly TWO routes, both gateway callbacks authenticated by the same shared
+// secret: POST /api/auth/webhook/{provider} (post-auth callback) and POST /api/discovery/context_discovery
+// (context-discovery callback — returns 200 accept-and-ignore so a non-2xx never tears down the sandbox
+// session). MVC discovery is filtered to exactly those two controllers so no other route can leak in.
 builder.Services
     .AddControllers()
     .ConfigureApplicationPartManager(apm =>
     {
-        // AuthWebhookController lives in LmAgentInfra, a referenced library — not auto-discovered as
-        // an application part — so add it explicitly, then filter discovery to that one controller.
+        // AuthWebhookController lives in LmAgentInfra (a referenced library, not auto-discovered), and
+        // DiscoveryController lives in this daemon assembly; add both parts explicitly (the daemon
+        // assembly may already be present via default population — guard against a duplicate), then
+        // filter discovery to those two controllers.
         apm.ApplicationParts.Add(new AssemblyPart(typeof(AuthWebhookController).Assembly));
+        var daemonAssembly = typeof(CodeReviewDaemon.Sample.Controllers.DiscoveryController).Assembly;
+        if (!apm.ApplicationParts.OfType<AssemblyPart>().Any(p => p.Assembly == daemonAssembly))
+        {
+            apm.ApplicationParts.Add(new AssemblyPart(daemonAssembly));
+        }
         foreach (var existing in apm.FeatureProviders.OfType<Microsoft.AspNetCore.Mvc.Controllers.ControllerFeatureProvider>().ToList())
         {
             _ = apm.FeatureProviders.Remove(existing);
         }
-        apm.FeatureProviders.Add(new WebhookOnlyControllerFeatureProvider());
+        apm.FeatureProviders.Add(new DaemonControllerFeatureProvider());
     });
 
 var app = builder.Build();
