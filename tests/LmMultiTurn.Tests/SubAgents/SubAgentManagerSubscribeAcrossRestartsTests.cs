@@ -301,7 +301,104 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
         observeCts.IsCancellationRequested.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task SnapshotForObservation_PairsCapturedAgentWithItsOwnReplacementSignal()
+    {
+        // The atomic read seam the observer uses: SnapshotForObservation returns the live Agent AND the
+        // awaitable that fires when THAT agent is replaced, captured together. Prove the pairing is by
+        // epoch — the signal captured alongside a0 resolves to a0's replacement (a1), never to a0 — and
+        // that each swap installs a fresh signal for the next epoch.
+        var a0 = ObservableAgent();
+        var a1 = ObservableAgent();
+        var a2 = ObservableAgent();
+        var state = NewObservationState(a0);
+
+        var s0 = state.SnapshotForObservation();
+        s0.Agent.Should().BeSameAs(a0);
+        s0.AgentReplaced.IsCompleted.Should().BeFalse("no swap has happened yet");
+
+        // Restart swap 1: a0 -> a1, atomically (Agent-set + signal under one lock).
+        state.SwapLiveAgentAndSignalReplaced(a1);
+
+        s0.AgentReplaced.IsCompletedSuccessfully.Should().BeTrue();
+        (await s0.AgentReplaced).Should().BeSameAs(
+            a1, "the signal captured with a0 resolves to a0's replacement, never to a0 itself");
+
+        var s1 = state.SnapshotForObservation();
+        s1.Agent.Should().BeSameAs(a1);
+        s1.AgentReplaced.Should().NotBeSameAs(s0.AgentReplaced, "a fresh signal is installed per epoch");
+        s1.AgentReplaced.IsCompleted.Should().BeFalse("the a1 epoch has not been replaced yet");
+
+        // Restart swap 2: a1 -> a2.
+        state.SwapLiveAgentAndSignalReplaced(a2);
+        (await s1.AgentReplaced).Should().BeSameAs(a2);
+    }
+
+    [Fact]
+    public async Task SnapshotForObservation_UnderConcurrentSwaps_NeverPairsAgentWithASignalThatResolvedToIt()
+    {
+        // Drive many restart swaps concurrently with many snapshots. A consistent pair (agentN, signalN)
+        // ALWAYS resolves to agent(N+1) != agentN, so the captured signal can never resolve to the SAME
+        // agent it was captured with. A torn two-read pair — (newAgent, oldSignal) where oldSignal already
+        // fired with newAgent — WOULD. The dedicated lock makes the snapshot and the swap mutually atomic,
+        // so no torn pair can ever be observed.
+        const int iterations = 5000;
+        var agents = new ObservableFakeAgent[iterations + 1];
+        for (var i = 0; i <= iterations; i++)
+        {
+            agents[i] = ObservableAgent();
+        }
+
+        var state = NewObservationState(agents[0]);
+        using var gate = new Barrier(2);
+        var tornPairs = 0;
+
+        var swapper = Task.Run(() =>
+        {
+            gate.SignalAndWait();
+            for (var i = 1; i <= iterations; i++)
+            {
+                state.SwapLiveAgentAndSignalReplaced(agents[i]);
+            }
+        });
+
+        var observer = Task.Run(() =>
+        {
+            gate.SignalAndWait();
+            for (var i = 0; i < iterations; i++)
+            {
+                var (agent, replaced) = state.SnapshotForObservation();
+                if (replaced.IsCompletedSuccessfully && ReferenceEquals(replaced.Result, agent))
+                {
+                    _ = Interlocked.Increment(ref tornPairs);
+                }
+            }
+        });
+
+        await Task.WhenAll(swapper, observer);
+
+        tornPairs.Should().Be(
+            0, "an atomic snapshot never pairs an agent with a signal that already resolved to that same agent");
+    }
+
     #region Helpers
+
+    private static ObservableFakeAgent ObservableAgent() => new() { RunMessages = [] };
+
+    private static SubAgentState NewObservationState(IMultiTurnAgent agent) =>
+        new()
+        {
+            AgentId = "agent-obs",
+            TemplateName = "tmpl",
+            Task = "observe",
+            Agent = agent,
+            Template = new SubAgentTemplate
+            {
+                Name = "tmpl",
+                SystemPrompt = "You are a test agent.",
+                AgentFactory = () => new Mock<IStreamingAgent>().Object,
+            },
+        };
 
     private SubAgentManager CreateManager(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,

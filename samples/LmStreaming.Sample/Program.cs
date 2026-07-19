@@ -2103,6 +2103,12 @@ public partial class Program
     /// its own <see cref="SubAgentTemplate.ConversationStoreFactory"/> — or options that already carry a
     /// <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> — still wins, so the options are
     /// returned unchanged in that case.
+    /// <para>
+    /// The shared store is handed to children through a
+    /// <see cref="LmStreaming.Sample.Persistence.NonOwningConversationStore"/> decorator so a child can
+    /// never dispose it: <see cref="SubAgentManager"/> disposes a child store that is
+    /// <see cref="IAsyncDisposable"/>, and every child shares this one application-wide store.
+    /// </para>
     /// </summary>
     public static SubAgentOptions ApplyDefaultSubAgentStore(
         SubAgentOptions options,
@@ -2111,9 +2117,17 @@ public partial class Program
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(store);
 
+        // Wrap the shared store in a non-owning decorator so a child can NEVER dispose it: SubAgentManager
+        // disposes a child store that is IAsyncDisposable during spawn-cleanup/restart/completion/rollback,
+        // and every child shares this one application-wide store. The wrapper implements neither
+        // IDisposable nor IAsyncDisposable, so those ownership checks all skip it.
         return options.DefaultConversationStoreFactory is not null
             ? options
-            : options with { DefaultConversationStoreFactory = _ => store };
+            : options with
+            {
+                DefaultConversationStoreFactory = _ =>
+                    new LmStreaming.Sample.Persistence.NonOwningConversationStore(store),
+            };
     }
 
     internal static SubAgentSessionBinding BindConversationSubAgents(

@@ -381,7 +381,7 @@ public sealed class ProgramSubAgentCompositionTests
     }
 
     [Fact]
-    public void ApplyDefaultSubAgentStore_WiresSharedStore_WhenOptionsHasNoDefault()
+    public void ApplyDefaultSubAgentStore_WiresNonOwningWrapper_WhenOptionsHasNoDefault()
     {
         var store = new Mock<IConversationStore>().Object;
         var options = new SubAgentOptions
@@ -395,8 +395,21 @@ public sealed class ProgramSubAgentCompositionTests
         var result = global::Program.ApplyDefaultSubAgentStore(options, store);
 
         result.DefaultConversationStoreFactory.Should().NotBeNull();
-        result.DefaultConversationStoreFactory!("subagent-a").Should().BeSameAs(store);
-        result.DefaultConversationStoreFactory!("subagent-b").Should().BeSameAs(store);
+
+        // Every child gets a NON-OWNING decorator over the shared store, never the store itself, so a
+        // child that tears down cannot dispose storage the parent/other conversations still use.
+        var wrappedA = result.DefaultConversationStoreFactory!("subagent-a");
+        var wrappedB = result.DefaultConversationStoreFactory!("subagent-b");
+
+        wrappedA.Should().BeOfType<NonOwningConversationStore>();
+        wrappedB.Should().BeOfType<NonOwningConversationStore>();
+        wrappedA.Should().NotBeSameAs(store);
+
+        // The whole point: SubAgentManager only disposes a child store when `store is IAsyncDisposable`.
+        (wrappedA is IAsyncDisposable).Should().BeFalse(
+            "a child must never be able to dispose the shared conversation store");
+        (wrappedA is IDisposable).Should().BeFalse(
+            "a child must never be able to dispose the shared conversation store");
     }
 
     [Fact]

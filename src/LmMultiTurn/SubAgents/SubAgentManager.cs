@@ -698,14 +698,16 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
                 }
 
-                state.Agent = replacementAgent;
                 state.Store = replacementStore;
                 state.SetOwnedProviderAgent(replacementOwnedProviderAgent);
 
-                // Presentation-only: wake any external observer whose subscription was bound to the
-                // now-disposed previous instance so it can re-subscribe to this replacement and keep
-                // following the child across the swap. Never awaited by the run/monitor/restart logic.
-                state.SignalAgentReplaced(replacementAgent);
+                // Presentation-only: atomically install the replacement as the live Agent AND wake any
+                // external observer whose subscription was bound to the now-disposed previous instance so
+                // it can re-subscribe to this replacement and keep following the child across the swap.
+                // Setting Agent and signalling together (SwapLiveAgentAndSignalReplaced) means an observer's
+                // SnapshotForObservation can never see a torn (agent, replaced-signal) pair. Never awaited
+                // by the run/monitor/restart logic.
+                state.SwapLiveAgentAndSignalReplaced(replacementAgent);
             }
 
             // Recover conversation history after replacing a completed owned-provider loop, so a
@@ -907,10 +909,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 yield break;
             }
 
-            // Capture the replacement signal BEFORE subscribing so a swap that lands between this capture
-            // and the SubscribeAsync below is delivered via `replaced` rather than lost.
-            var replaced = state.AgentReplacedTask;
-            var current = state.Agent;
+            // Capture the live instance AND its replacement signal in ONE atomic snapshot so a swap that
+            // lands between the two reads can never pair a signal from one restart epoch with an agent from
+            // another (torn read). The signal is captured BEFORE subscribing so a swap between snapshot and
+            // the SubscribeAsync below is delivered via `replaced` rather than lost.
+            var (current, replaced) = state.SnapshotForObservation();
 
             await foreach (var msg in current.SubscribeAsync(ct))
             {

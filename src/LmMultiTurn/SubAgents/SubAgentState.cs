@@ -65,13 +65,20 @@ internal class SubAgentState
     // Presentation-only "agent replaced" signal. An owned-provider restart disposes the old loop
     // instance and swaps in a fresh one (SubAgentManager.RestartRunAsync); an external observer whose
     // subscription is bound to the OLD instance sees its stream end on that dispose. This awaitable lets
-    // such an observer follow the swap: it captures AgentReplacedTask BEFORE subscribing, and when the
-    // old stream ends it awaits this task to obtain the replacement instance (or null at teardown) and
-    // re-subscribe. It is set with RunContinuationsAsynchronously so completing it never runs an
+    // such an observer follow the swap: it captures (Agent, AgentReplacedTask) together via
+    // SnapshotForObservation BEFORE subscribing, and when the old stream ends it awaits this task to obtain
+    // the replacement instance (or null at teardown) and re-subscribe. It is set with RunContinuationsAsynchronously so completing it never runs an
     // observer's continuation inline under a restart/dispose path. It does NOT participate in execution
     // and is never awaited by the run/monitor/restart machinery.
     private volatile TaskCompletionSource<IMultiTurnAgent?> _agentReplaced =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // Guards the (Agent, _agentReplaced) pair so a presentation-only observer can capture BOTH under one
+    // critical section (SnapshotForObservation) while an owned-provider restart swaps BOTH atomically
+    // (SwapLiveAgentAndSignalReplaced). Without this an observer's two independent reads could pair a
+    // signal from one restart epoch with an agent from another (torn read). Dedicated to this pair only —
+    // no awaits run under it and it never nests with _lifecycleLock — so it cannot deadlock.
+    private readonly object _observationLock = new();
 
     /// <summary>
     /// The template and spawn inputs needed to recreate a completed owned-provider run before a
@@ -607,16 +614,65 @@ internal class SubAgentState
     public Task<IMultiTurnAgent?> AgentReplacedTask => _agentReplaced.Task;
 
     /// <summary>
+    /// Atomically captures the CURRENT live loop instance and its replacement awaitable together, under
+    /// the same lock that <see cref="SwapLiveAgentAndSignalReplaced"/> uses for the restart swap. This is
+    /// the read seam a presentation-only observer uses instead of two separate reads of <see cref="Agent"/>
+    /// and <see cref="AgentReplacedTask"/>: because both are captured under one critical section, a restart
+    /// racing the observer can never hand back a torn pair (an agent from one epoch with a signal from
+    /// another). The returned <c>AgentReplaced</c> is precisely the signal that completes when the returned
+    /// <c>Agent</c> is replaced (with the replacement) or torn down (with <c>null</c>). Reading never
+    /// mutates state and never blocks the run/restart machinery.
+    /// </summary>
+    /// <returns>A consistent snapshot of the live agent and the awaitable for its next replacement.</returns>
+    public (IMultiTurnAgent Agent, Task<IMultiTurnAgent?> AgentReplaced) SnapshotForObservation()
+    {
+        lock (_observationLock)
+        {
+            return (Agent, _agentReplaced.Task);
+        }
+    }
+
+    /// <summary>
+    /// Owned-provider restart swap: atomically installs <paramref name="replacement"/> as the live
+    /// <see cref="Agent"/> AND signals observers of the PREVIOUS instance's replacement, both under
+    /// <c>_observationLock</c>. Doing the agent-set and the signal together (rather than as two separate
+    /// steps) means a concurrent <see cref="SnapshotForObservation"/> observes either the whole old epoch
+    /// or the whole new one — never a torn <c>(newAgent, oldSignal)</c>/<c>(oldAgent, newSignal)</c> pair.
+    /// </summary>
+    /// <param name="replacement">The fresh loop instance that replaces the current one.</param>
+    public void SwapLiveAgentAndSignalReplaced(IMultiTurnAgent replacement)
+    {
+        ArgumentNullException.ThrowIfNull(replacement);
+        lock (_observationLock)
+        {
+            Agent = replacement;
+            SignalAgentReplacedLocked(replacement);
+        }
+    }
+
+    /// <summary>
     /// Notifies observers waiting on <see cref="AgentReplacedTask"/> that the live loop instance changed.
-    /// Called by the owned-provider restart path immediately AFTER <see cref="Agent"/> is swapped (with
-    /// the replacement), and by manager teardown (with <c>null</c>) so any active observer unblocks and
-    /// ends cleanly. Atomically installs a FRESH awaitable for the NEXT swap before completing the
-    /// previous one (Interlocked.Exchange then TrySetResult), so a swap can never be lost or double-set,
-    /// and takes no lock — it cannot deadlock with the lifecycle lock.
+    /// Called by manager teardown (with <c>null</c>) so any active observer unblocks and ends cleanly; the
+    /// owned-provider restart path instead uses <see cref="SwapLiveAgentAndSignalReplaced"/> so the swap and
+    /// the signal are atomic. Atomically installs a FRESH awaitable for the NEXT swap before completing the
+    /// previous one, so a swap can never be lost or double-set. Runs under <c>_observationLock</c> — the
+    /// same lock <see cref="SnapshotForObservation"/> reads under — and never nests another lock, so it
+    /// cannot deadlock with the lifecycle lock.
     /// </summary>
     /// <param name="replacement">The replacement instance to hand active observers, or <c>null</c> to
     /// signal "no replacement / teardown" so observers unblock and stop.</param>
     public void SignalAgentReplaced(IMultiTurnAgent? replacement)
+    {
+        lock (_observationLock)
+        {
+            SignalAgentReplacedLocked(replacement);
+        }
+    }
+
+    // Assumes _observationLock is held. Installs a fresh awaitable for the NEXT swap, then completes the
+    // previous one with the given replacement (RunContinuationsAsynchronously so no observer continuation
+    // runs inline under a restart/dispose path).
+    private void SignalAgentReplacedLocked(IMultiTurnAgent? replacement)
     {
         var previous = Interlocked.Exchange(
             ref _agentReplaced,
