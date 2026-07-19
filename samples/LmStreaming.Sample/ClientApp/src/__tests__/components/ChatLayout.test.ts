@@ -170,6 +170,27 @@ vi.mock('@/api/conversationsApi', () => ({
   updateConversationMetadata: vi.fn(async () => {}),
 }));
 
+// The sub-agent panel is wired into ChatLayout but exercised by its own tests. Mock the composable so
+// mounting ChatLayout doesn't fire real fetch/WebSocket polling (which would reject in jsdom).
+vi.mock('@/composables/useSubAgentPanel', async () => {
+  const { ref } = await import('vue');
+  return {
+    useSubAgentPanel: () => ({
+      children: ref([]),
+      focusedAgentId: ref<string | null>(null),
+      focusedDisplayItems: ref([]),
+      isFocusedStreaming: ref(false),
+      startPolling: vi.fn(),
+      stopPolling: vi.fn(),
+      refreshChildren: vi.fn(async () => {}),
+      focusChild: vi.fn(async () => {}),
+      unfocusChild: vi.fn(async () => {}),
+      sendToFocusedChild: vi.fn(),
+      getResultForToolCall: vi.fn(() => null),
+    }),
+  };
+});
+
 describe('ChatLayout mode switching', () => {
   beforeEach(() => {
     sharedMocks.chatLoading = false;

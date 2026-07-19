@@ -12,6 +12,7 @@ import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
+import SubAgentListPanel from './SubAgentListPanel.vue';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -584,6 +585,8 @@ onBeforeUnmount(() => {
         />
       </div>
     </main>
+
+    <SubAgentListPanel :parent-thread-id="currentThreadId" />
   </div>
 </template>
 

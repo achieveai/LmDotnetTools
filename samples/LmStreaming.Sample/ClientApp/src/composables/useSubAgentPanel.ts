@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { ref, onScopeDispose } from 'vue';
 import type {
   Message,
   DisplayItem,
@@ -283,6 +283,12 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
 
     // Load persisted history first so live deltas merge in place with their rehydrated twins.
     const persisted = await loadConversationMessages(summary.threadId);
+    // Concurrent-focus guard: a newer focusChild superseded us while history loaded. Abandon this
+    // stale rebuild — its state now belongs to the newer focus and must not be clobbered.
+    if (focusedAgentId.value !== agentId) {
+      log.debug('focusChild superseded during history load; abandoning stale rebuild', { agentId });
+      return;
+    }
     for (const pm of persisted) {
       rehydratePersisted(pm);
     }
@@ -304,7 +310,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     rebuildFocusedDisplayItems();
 
     // Open the live child stream.
-    focusedConnection = await connectSubAgent(parent, agentId, {
+    const connection = await connectSubAgent(parent, agentId, {
       onMessage: handleChildMessage,
       onDone: () => {
         isFocusedStreaming.value = false;
@@ -314,6 +320,14 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         isFocusedStreaming.value = false;
       },
     });
+    // Concurrent-focus guard: a newer focusChild superseded us while the socket was opening. Do not
+    // adopt this now-stale connection (that would clobber the newer focus); close it and bail.
+    if (focusedAgentId.value !== agentId) {
+      log.debug('focusChild superseded during connect; closing stale connection', { agentId });
+      closeWebSocketConnection(connection);
+      return;
+    }
+    focusedConnection = connection;
     isFocusedStreaming.value = true;
   }
 
@@ -342,6 +356,14 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     if (!toolCallId) return null;
     return toolResults.value.get(toolCallId) || null;
   }
+
+  // Auto-cleanup: when the host component/effect-scope unmounts, tear down the poll interval and the
+  // focused child's WebSocket so no timers or sockets leak. `failSilently` avoids a dev warning when
+  // the composable is invoked outside an active scope (e.g. in unit tests that call it directly).
+  onScopeDispose(() => {
+    stopPolling();
+    void unfocusChild();
+  }, true);
 
   return {
     children,

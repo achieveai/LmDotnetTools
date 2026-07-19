@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { effectScope } from 'vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
 // Import the composable's own source text to assert it never couples to useChat.
 import panelSource from '@/composables/useSubAgentPanel.ts?raw';
@@ -339,5 +340,77 @@ describe('useSubAgentPanel — decoupling', () => {
     // it keeps its OWN index/merger/tool-results so focusing a child cannot perturb the parent chat.
     expect(panelSource).not.toMatch(/from\s+['"][^'"]*useChat['"]/);
     expect(panelSource).not.toMatch(/import\(['"][^'"]*useChat['"]\)/);
+  });
+});
+
+describe('useSubAgentPanel — hardening', () => {
+  it('focusChild concurrent-guard: a later focus wins; the stale focus closes its late connection without clobbering state', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1'), summary('a2')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    // a1's connection opens LAZILY (deferred) so a2 can supersede a1 while a1 is still awaiting connect.
+    const a1Conn = { socket: { readyState: WebSocket.OPEN }, connectionId: 'sa-a1', threadId: 'subagent-a1', isConnected: true };
+    const a2Conn = { socket: { readyState: WebSocket.OPEN }, connectionId: 'sa-a2', threadId: 'subagent-a2', isConnected: true };
+    let openA1: (() => void) | undefined;
+    wsSubMocks.connectSubAgent.mockImplementation((parentThreadId: string, agentId: string, callbacks: any) => {
+      if (agentId === 'a1') {
+        return new Promise((resolve) => {
+          openA1 = () => {
+            captured.push({ parentThreadId, agentId, callbacks, connection: a1Conn });
+            resolve(a1Conn);
+          };
+        });
+      }
+      captured.push({ parentThreadId, agentId, callbacks, connection: a2Conn });
+      return Promise.resolve(a2Conn);
+    });
+
+    // Start focusing a1 — it parks awaiting connectSubAgent's deferred promise.
+    const p1 = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(openA1, 'a1 focus should be parked inside connectSubAgent').toBeTypeOf('function');
+
+    // a2 fully focuses and wins while a1 is still parked.
+    await panel.focusChild('a2');
+    expect(panel.focusedAgentId.value).toBe('a2');
+
+    // a1's socket finally opens; the superseded focus must CLOSE it and not adopt it.
+    openA1!();
+    await p1;
+
+    expect(panel.focusedAgentId.value).toBe('a2');
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(a1Conn);
+    // Sending routes to a2's connection, proving a1's late connection never clobbered focusedConnection.
+    panel.sendToFocusedChild('to a2');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(a2Conn, 'to a2');
+  });
+
+  it('onScopeDispose stops polling and unfocuses the child when the host scope is disposed', async () => {
+    vi.useFakeTimers();
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+
+    const scope = effectScope();
+    let panel!: ReturnType<typeof useSubAgentPanel>;
+    scope.run(() => {
+      panel = useSubAgentPanel(() => 'parent-1');
+    });
+
+    panel.startPolling();
+    expect(subAgentsMocks.listSubAgents).toHaveBeenCalledTimes(1);
+
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(panel.focusedAgentId.value).toBe('a1');
+
+    // Disposing the host scope must tear down the interval AND the focused child connection.
+    scope.stop();
+
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(captured[0].connection);
+    expect(panel.focusedAgentId.value).toBeNull();
+
+    const callsBefore = subAgentsMocks.listSubAgents.mock.calls.length;
+    vi.advanceTimersByTime(9000);
+    expect(subAgentsMocks.listSubAgents).toHaveBeenCalledTimes(callsBefore);
   });
 });
