@@ -7,8 +7,10 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -27,6 +29,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly SubAgentOptions _options;
     private readonly MutableSubAgentTemplateSource _source;
     private readonly ILogger _logger;
+
+    // Optional root-conversation usage sink. When set, every UsageMessage a sub-agent (or workflow
+    // task — same relay path) emits is folded into the root conversation's usage total (issue #196).
+    // Null keeps the historical behaviour (descendant usage not aggregated).
+    private readonly IUsageSink? _usageSink;
 
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
@@ -70,7 +77,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         SubAgentOptions options,
         MutableSubAgentTemplateSource source,
         ILogger? logger = null,
-        string? parentModelId = null)
+        string? parentModelId = null,
+        IUsageSink? usageSink = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -84,6 +92,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         _options = options;
         _source = source;
         _logger = logger ?? NullLogger.Instance;
+        _usageSink = usageSink;
         // The parent's model, inherited by sub-agents whose template/override sets none (see
         // ResolveSubAgentOptions). Null when the parent has no model (e.g. CLI-backed parents).
         _parentModelId = parentModelId;
@@ -1248,6 +1257,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
                 }
 
+                // Fold this descendant's usage into the root conversation total (issue #196). Without
+                // this, a sub-agent's (and workflow task's — same relay path) token spend was dropped.
+                if (_usageSink is not null && msg is UsageMessage usageMessage)
+                {
+                    _usageSink.RecordUsage(BuildDescendantUsageRecord(usageMessage, state));
+                }
+
                 // Track the last assistant text for the completion result. Subscribers
                 // receive raw deltas, so accumulate TextUpdateMessage deltas per
                 // generation; a consolidated TextMessage (non-streaming mock) is taken as-is.
@@ -1498,6 +1514,45 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Creates a lightweight turn summary from a message for the peek buffer.
     /// Returns null for internal/control messages that should be skipped.
     /// </summary>
+    /// <summary>
+    /// Maps a descendant's <see cref="UsageMessage"/> into a <see cref="UsageRecord"/> for the root
+    /// ledger. Token counts are captured verbatim (per-call field accuracy is tracked by #116); the model
+    /// is the sub-agent's resolved model (override, else inherited parent model). The
+    /// <c>RootConversationId</c> placeholder is re-stamped to the ledger's root by
+    /// <see cref="UsageLedger.RecordUsage"/>.
+    /// </summary>
+    private UsageRecord BuildDescendantUsageRecord(UsageMessage message, SubAgentState state)
+    {
+        var usage = message.Usage;
+
+        // A generation is one provider call; combined with the sub-agent id it is a stable, globally
+        // unique dedup key across the conversation tree. Fall back to the run id, then a fixed token.
+        var attemptKey = message.GenerationId ?? message.RunId ?? "usage";
+        var attemptId = $"{state.AgentId}:{attemptKey}";
+        var model = state.ModelOverride ?? _parentModelId ?? "unknown";
+
+        return new UsageRecord
+        {
+            LogicalCallId = attemptId,
+            ProviderAttemptId = attemptId,
+            RootConversationId = state.AgentId,
+            ParentExecutionId = state.AgentId,
+            ExecutionKind = UsageExecutionKind.SubAgent,
+            RequestedModel = model,
+            InputTokens = usage.PromptTokens,
+            OutputTokens = usage.CompletionTokens,
+            CacheReadTokens = usage.TotalCachedTokens,
+            ReasoningTokens = usage.TotalReasoningTokens,
+            ProviderReportedCostMicros = ToMicros(usage.TotalCost),
+            Finalized = true,
+        };
+    }
+
+    private static long? ToMicros(double? cost)
+    {
+        return cost is null ? null : (long)Math.Round(cost.Value * 1_000_000d);
+    }
+
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {
         return msg switch

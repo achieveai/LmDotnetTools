@@ -8,7 +8,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 ///     with a complete-prefix watermark. Additive across the whole conversation tree (issue #196): the
 ///     root conversation creates one ledger and every descendant relays its observations into it.
 /// </summary>
-public sealed class UsageLedger
+public sealed class UsageLedger : IUsageSink
 {
     private readonly string _rootConversationId;
     private readonly object _gate = new();
@@ -23,6 +23,12 @@ public sealed class UsageLedger
 
     /// <summary>The root conversation this ledger accumulates usage for.</summary>
     public string RootConversationId => _rootConversationId;
+
+    /// <inheritdoc />
+    public void RecordUsage(UsageRecord observation)
+    {
+        _ = UpsertAttempt(observation);
+    }
 
     /// <summary>
     ///     Merges an observation into the record for its <see cref="UsageRecord.ProviderAttemptId" /> —
@@ -39,7 +45,10 @@ public sealed class UsageLedger
             _byAttempt.TryGetValue(observation.ProviderAttemptId, out var existing);
             var merged = Merge(existing, observation);
             var revision = _watermark.Allocate();
-            merged = merged with { Revision = revision };
+
+            // The ledger is scoped to one root conversation, so every observation it receives is
+            // attributed to that root — callers (e.g. the sub-agent relay) need not know the root id.
+            merged = merged with { Revision = revision, RootConversationId = _rootConversationId };
             _byAttempt[observation.ProviderAttemptId] = merged;
             _watermark.Commit(revision);
             return merged;
