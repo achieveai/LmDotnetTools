@@ -18,6 +18,39 @@ async (page) => {
   };
   const tid = (id) => page.locator(`[data-testid="${id}"]`);
 
+  // --- exact network correlation (predicates run in the Playwright/Node scope) ---
+  // The file endpoints are /api/conversations/{threadId}/files[?path=<rel>] (upload POST + reload GET at
+  // root carry NO ?path; delete carries ?path=<name>). We capture the live threadId from the first files
+  // request and match uploads/deletes/reloads to the EXACT conversation + path so a stray request can
+  // never be mistaken for this test's mutation.
+  let threadId = null;
+  const parseFilesUrl = (url) => {
+    try {
+      const u = new URL(url);
+      const m = u.pathname.match(/\/api\/conversations\/([^/]+)\/files$/);
+      return m ? { convId: decodeURIComponent(m[1]), path: u.searchParams.get('path') } : null;
+    } catch {
+      return null;
+    }
+  };
+  page.on('response', (resp) => {
+    const p = parseFilesUrl(resp.url());
+    if (p && !threadId) {
+      threadId = p.convId;
+    }
+  });
+  // expectPath: undefined = any files request; null = root (no ?path); string = that exact ?path value.
+  const isFilesReq = (url, expectPath) => {
+    const p = parseFilesUrl(url);
+    if (!p || (threadId && p.convId !== threadId)) {
+      return false;
+    }
+    if (expectPath === undefined) {
+      return true;
+    }
+    return expectPath === null ? p.path === null : p.path === expectPath;
+  };
+
   let sessionEstablished = false;
   let workspaceLabel = '';
   let initialEntryCount = 0;
@@ -28,6 +61,8 @@ async (page) => {
   // Every filename we ever POST (even ones whose row timed out): a server-side upload can succeed after
   // the row-wait times out, so we must reconcile ALL of them in cleanup, not just the final uploadedName.
   const attemptedNames = [];
+  // {name, status} for each awaited upload POST — proves each POST resolved before cleanup runs.
+  const uploadResults = [];
 
   // 1. Load the chat UI.
   try {
@@ -170,15 +205,22 @@ async (page) => {
     fail('7 capture state: ' + (e?.message ?? e));
   }
 
-  // 8. Upload a fresh file (only meaningful if the session established).
+  // 8. Upload a fresh file. Await the EXACT upload POST each attempt so NO POST is still in flight when
+  //    the step ends (an unawaited POST can complete during cleanup and orphan a file). Record every POST
+  //    + its status so a server-side success is reconciled in cleanup even if its row never rendered.
   if (sessionEstablished) {
     try {
       let attempt = 0;
-      let placed = false;
-      while (attempt < 3 && !placed) {
+      while (attempt < 3 && !uploadVisible) {
         attempt++;
         const name = `e2e-live-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`;
         attemptedNames.push(name);
+        // Arm the exact upload-POST matcher BEFORE dispatching change so we never miss it.
+        const postP = page
+          .waitForResponse((r) => r.request().method() === 'POST' && isFilesReq(r.url(), null), {
+            timeout: 20000,
+          })
+          .catch(() => null);
         // Inject the file via a browser-side DataTransfer — the Playwright runner has no Node `Buffer`
         // and no dynamic import, but the page has File/Blob/DataTransfer. Assigning input.files and
         // dispatching 'change' drives the Vue @change upload handler exactly like a real file pick.
@@ -192,25 +234,34 @@ async (page) => {
           input.files = dt.files;
           input.dispatchEvent(new Event('change', { bubbles: true }));
         }, name);
-        // Name collision -> overwrite confirm; skip existing and retry with a new random name.
+        // Name collision -> overwrite confirm; no POST fires, so skip existing and retry a new name.
         const overwrite = tid('file-browser-overwrite-confirm');
         if (await overwrite.isVisible().catch(() => false)) {
           await tid('file-browser-overwrite-cancel').click().catch(() => {});
           continue;
         }
-        try {
-          await tid(`file-entry-${name}`).waitFor({ state: 'visible', timeout: 15000 });
+        // Await the POST so it is fully resolved before we proceed (closes the in-flight-upload race).
+        const postResp = await postP;
+        const status = postResp ? postResp.status() : 0;
+        uploadResults.push({ name, status });
+        if (status === 200 || status === 201) {
+          // The file exists server-side now; its row may still be settling. Record it either way so
+          // cleanup reconciles it, and only flip uploadVisible once the row actually renders.
           uploadedName = name;
-          uploadVisible = true;
-          placed = true;
-        } catch {
-          // Row didn't appear; loop will retry with a new name.
+          try {
+            await tid(`file-entry-${name}`).waitFor({ state: 'visible', timeout: 15000 });
+            uploadVisible = true;
+          } catch {
+            // POST succeeded but the row didn't render in time; cleanup still reconciles it.
+          }
         }
       }
       if (uploadVisible) {
-        ok('8 uploaded ' + uploadedName + ' (row visible)');
+        ok('8 uploaded ' + uploadedName + ' (POST 2xx + row visible)');
+      } else if (uploadedName) {
+        fail('8 upload: POST succeeded for ' + uploadedName + ' but its row never rendered');
       } else {
-        fail('8 upload: new file row never appeared after ' + attempt + ' attempt(s)');
+        fail('8 upload: no successful upload POST after ' + attempt + ' attempt(s)');
       }
     } catch (e) {
       fail('8 upload: ' + (e?.message ?? e));
@@ -237,31 +288,45 @@ async (page) => {
     fail('9 preview skipped — nothing uploaded');
   }
 
-  // 10. Delete the uploaded file. Row detachment ALONE is not a reliable oracle (remove() reloads in
-  //     finally; a failed reload also clears entries and detaches the row). Require the DELETE response to
-  //     be 204, no error banner, AND the row gone.
+  // 10. Delete via the UI. Row detachment ALONE is not an oracle: remove() reloads the listing in its
+  //     finally, and while that GET is loading the list unmounts (v-if="isLoading"), so the row vanishes
+  //     BEFORE the reload's fate is known — a failed reload would then read as a passing delete. Require:
+  //     the EXACT DELETE == 204, the post-delete root reload GET == ok, loading cleared + list re-mounted,
+  //     no error banner, and the target absent from the RE-RENDERED listing.
   if (uploadVisible) {
     try {
       await tid(`file-entry-delete-${uploadedName}`).click({ timeout: 10000 });
       await tid('file-browser-delete-confirm').waitFor({ state: 'visible', timeout: 10000 });
-      const delResp = page
+      // Arm both matchers before confirming: the exact DELETE for THIS file, and the reload GET that
+      // remove()'s finally fires immediately after the DELETE resolves.
+      const delP = page
         .waitForResponse(
-          (r) => r.request().method() === 'DELETE' && /\/files(\?|$)/.test(r.url()),
+          (r) => r.request().method() === 'DELETE' && isFilesReq(r.url(), uploadedName),
           { timeout: 15000 }
         )
         .catch(() => null);
+      const reloadP = page
+        .waitForResponse((r) => r.request().method() === 'GET' && isFilesReq(r.url(), null), {
+          timeout: 15000,
+        })
+        .catch(() => null);
       await tid('file-browser-delete-confirm-btn').click({ timeout: 10000 });
-      const resp = await delResp;
-      const status = resp ? resp.status() : 0;
-      await tid(`file-entry-${uploadedName}`).waitFor({ state: 'detached', timeout: 15000 }).catch(() => {});
+      const delResp = await delP;
+      const reloadResp = await reloadP;
+      const delStatus = delResp ? delResp.status() : 0;
+      const reloadOk = !!(reloadResp && reloadResp.ok());
+      // Wait for the reload to finish RENDERING (loading gone + list back) so the row check runs against
+      // the completed listing, not the momentarily-unmounted one.
+      await tid('file-browser-loading').waitFor({ state: 'detached', timeout: 15000 }).catch(() => {});
+      await tid('file-browser-list').waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
       const rowGone = !(await tid(`file-entry-${uploadedName}`).isVisible().catch(() => false));
       const errVisible = await tid('file-browser-error').isVisible().catch(() => false);
-      if (status === 204 && rowGone && !errVisible) {
+      if (delStatus === 204 && reloadOk && rowGone && !errVisible) {
         deleteConfirmed = true;
-        ok('10 deleted ' + uploadedName + ' (DELETE 204, row gone, no error)');
+        ok('10 deleted ' + uploadedName + ' (DELETE 204, reload ok, row gone, no error)');
       } else {
         fail(
-          `10 delete: DELETE status=${status}, rowGone=${rowGone}, errorVisible=${errVisible} — not a confirmed delete`
+          `10 delete: delStatus=${delStatus} reloadOk=${reloadOk} rowGone=${rowGone} errorVisible=${errVisible} — not a confirmed delete`
         );
       }
     } catch (e) {
@@ -271,22 +336,35 @@ async (page) => {
     fail('10 delete skipped — nothing uploaded');
   }
 
-  // 10b. Cleanup: best-effort delete of EVERY uploaded artifact (not just the confirmed one) so retries /
-  //      row-wait timeouts never leave orphan e2e-live-* files in the real workspace.
+  // 10b. Cleanup: reconcile EVERY uploaded artifact regardless of row visibility (a POST can succeed
+  //      server-side after its row-wait timed out, and the UI delete above only touches the one row).
+  //      Issue an exact-path DELETE via fetch for each attempted name (skipping the primary already
+  //      confirmed-deleted); 204 (deleted) and 404 (never existed / already gone) are both resolved.
+  //      Anything else is an unresolved orphan and is pushed to failures so pass:true can't hide a leak.
   try {
-    for (const name of attemptedNames) {
-      if (name === uploadedName && deleteConfirmed) {
-        continue;
-      }
-      const row = tid(`file-entry-${name}`);
-      if (await row.isVisible().catch(() => false)) {
-        await tid(`file-entry-delete-${name}`).click().catch(() => {});
-        await tid('file-browser-delete-confirm-btn').click({ timeout: 5000 }).catch(() => {});
-        await row.waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
+    const toClean = attemptedNames.filter((n) => !(n === uploadedName && deleteConfirmed));
+    if (toClean.length > 0 && !threadId) {
+      fail('10b cleanup: threadId never captured — cannot reconcile ' + toClean.join(', '));
+    } else {
+      for (const name of toClean) {
+        const status = await page.evaluate(
+          async ({ t, nm }) => {
+            const url = `/api/conversations/${encodeURIComponent(t)}/files?path=${encodeURIComponent(nm)}`;
+            try {
+              return (await fetch(url, { method: 'DELETE' })).status;
+            } catch {
+              return -1;
+            }
+          },
+          { t: threadId, nm: name }
+        );
+        if (status !== 204 && status !== 404) {
+          fail(`10b cleanup: ${name} not reconciled (DELETE status ${status}) — possible orphan in workspace`);
+        }
       }
     }
-  } catch {
-    // best-effort cleanup — never fail the run on it
+  } catch (e) {
+    fail('10b cleanup: ' + (e?.message ?? e));
   }
 
   // 11. Close the modal.
@@ -303,8 +381,10 @@ async (page) => {
     sessionEstablished,
     workspaceLabel,
     initialEntryCount,
+    threadId,
     uploadedName,
     uploadVisible,
+    uploadResults,
     previewText,
     deleteConfirmed,
     steps,
