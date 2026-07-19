@@ -62,9 +62,18 @@ export function useFileBrowser(getThreadId: () => string | null) {
   async function load(path: string = currentPath.value): Promise<void> {
     const threadId = getThreadId();
     if (!threadId) {
+      // The conversation went away: abort any in-flight listing so it can't resolve later and
+      // repopulate state for a thread that no longer exists, then reset to the empty state.
+      abortController?.abort();
+      abortController = null;
       entries.value = [];
+      moreCount.value = 0;
+      workspaceId.value = null;
+      previewTarget.value = null;
+      previewResult.value = null;
       noSession.value = false;
       error.value = null;
+      isLoading.value = false;
       return;
     }
 

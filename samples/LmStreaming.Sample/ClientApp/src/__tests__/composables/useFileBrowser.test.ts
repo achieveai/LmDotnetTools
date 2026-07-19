@@ -43,6 +43,50 @@ describe('useFileBrowser.load', () => {
     expect(fb.entries.value).toEqual([]);
   });
 
+  it('aborts a prior in-flight load and resets state when the thread becomes null', async () => {
+    const signals: AbortSignal[] = [];
+    const pending: { resolve: (r: Response) => void; reject: (e: unknown) => void }[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      signals.push((init as RequestInit).signal as AbortSignal);
+      return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    });
+
+    let threadId: string | null = 'thread-1';
+    const fb = useFileBrowser(() => threadId);
+    // Seed state as if a prior thread had been listed, so we can assert it gets cleared.
+    fb.entries.value = [{ name: 'x', type: 'file', size: 1, nameLossy: false }];
+    fb.moreCount.value = 4;
+    fb.workspaceId.value = 'ws-old';
+    fb.previewTarget.value = { name: 'x', type: 'file', size: 1, nameLossy: false };
+    fb.noSession.value = true;
+    fb.error.value = 'stale error';
+
+    const first = fb.load('a'); // in-flight fetch while a thread is present
+    expect(signals[0].aborted).toBe(false);
+    expect(fb.isLoading.value).toBe(true);
+
+    // The conversation goes away: a load with a null thread must abort the in-flight request and reset.
+    threadId = null;
+    await fb.load('');
+
+    expect(signals[0].aborted).toBe(true);
+    expect(fb.entries.value).toEqual([]);
+    expect(fb.moreCount.value).toBe(0);
+    expect(fb.workspaceId.value).toBeNull();
+    expect(fb.previewTarget.value).toBeNull();
+    expect(fb.previewResult.value).toBeNull();
+    expect(fb.noSession.value).toBe(false);
+    expect(fb.error.value).toBeNull();
+    expect(fb.isLoading.value).toBe(false);
+
+    // If the aborted listing rejects late (as a real aborted fetch does), it must not repopulate.
+    pending[0].reject(new DOMException('Aborted', 'AbortError'));
+    await Promise.allSettled([first]);
+    await flushPromises();
+
+    expect(fb.entries.value).toEqual([]);
+  });
+
   it('aborts a superseded in-flight load (identity-gated result)', async () => {
     const signals: AbortSignal[] = [];
     const pending: { resolve: (r: Response) => void; reject: (e: unknown) => void }[] = [];

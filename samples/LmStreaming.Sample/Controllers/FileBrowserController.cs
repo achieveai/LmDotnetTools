@@ -33,11 +33,11 @@ public sealed class FileBrowserController(
         InvalidPath,
     }
 
-    private readonly record struct ResolvedTarget(bool Success, string ServerPath, SandboxEntryType Type, ResolveFailure Failure)
+    private readonly record struct ResolvedTarget(bool Success, string ServerPath, SandboxEntryType Type, long? Size, ResolveFailure Failure)
     {
-        public static ResolvedTarget Ok(string serverPath, SandboxEntryType type) => new(true, serverPath, type, ResolveFailure.None);
+        public static ResolvedTarget Ok(string serverPath, SandboxEntryType type, long? size) => new(true, serverPath, type, size, ResolveFailure.None);
 
-        public static ResolvedTarget Fail(ResolveFailure failure) => new(false, string.Empty, default, failure);
+        public static ResolvedTarget Fail(ResolveFailure failure) => new(false, string.Empty, default, null, failure);
     }
 
     private readonly record struct SessionContext(bool Ok, SandboxSession? Session, string? WorkspaceId, IActionResult? Error, bool NoSession);
@@ -110,8 +110,7 @@ public sealed class FileBrowserController(
 
             // Deterministic 413 from the authoritative listed size — refuse an over-cap file without
             // reading a byte, so an oversize download is rejected without truncation.
-            var size = await ResolveFileSizeAsync(session.SessionId, target.ServerPath, ct);
-            if (size is > FileBrowserLimits.MaxDownloadBytes)
+            if (target.Size is > FileBrowserLimits.MaxDownloadBytes)
             {
                 return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "file_too_large", code = "file_too_large", threadId });
             }
@@ -163,8 +162,7 @@ public sealed class FileBrowserController(
             }
 
             // Refuse an over-large file by its listed size WITHOUT reading a byte.
-            var size = await ResolveFileSizeAsync(session.SessionId, target.ServerPath, ct);
-            if (size is > FileBrowserLimits.PreviewByteCap)
+            if (target.Size is > FileBrowserLimits.PreviewByteCap)
             {
                 return Ok(new PreviewResultDto(false, "too_large", null, null));
             }
@@ -192,6 +190,12 @@ public sealed class FileBrowserController(
             }
 
             return Ok(new PreviewResultDto(true, null, text, lineCount));
+        }
+        catch (SandboxException ex) when (IsOverCap(ex))
+        {
+            // A file whose listed size was absent but whose bytes streamed past the preview cap: surface the
+            // graceful non-previewable reason (mirrors Download's 413), not an opaque gateway error.
+            return Ok(new PreviewResultDto(false, "too_large", null, null));
         }
         catch (SandboxException ex)
         {
@@ -337,7 +341,30 @@ public sealed class FileBrowserController(
         }
 
         var credential = TryBuildCallerCredential();
-        var resolution = await fileBrowser.ResolveThreadWorkspaceSessionAsync(threadId, workspaceId, credential, ct);
+        SandboxSessionResolution resolution;
+        try
+        {
+            resolution = await fileBrowser.ResolveThreadWorkspaceSessionAsync(threadId, workspaceId, credential, ct);
+        }
+        catch (SandboxSessionUnavailableException ex)
+        {
+            // Resolution can recreate an idle-evicted session in-process; if the gateway is unreachable that
+            // recreate throws (NOT a SandboxException). Map it to 503 like every other sandbox surface rather
+            // than letting it escape as an unmapped 500 with no body.
+            logger.LogWarning(ex, "File browser session resolution unavailable for thread {ThreadId}", threadId);
+            return new SessionContext(
+                false,
+                null,
+                workspaceId,
+                StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "sandbox_unavailable", code = "sandbox_unavailable", threadId }),
+                false
+            );
+        }
+        catch (SandboxException ex)
+        {
+            return new SessionContext(false, null, workspaceId, MapSandbox(ex, threadId), false);
+        }
+
         switch (resolution.Outcome)
         {
             case SandboxSessionResolutionOutcome.CredentialConflict:
@@ -394,6 +421,7 @@ public sealed class FileBrowserController(
         var serverParts = new List<string>(components.Length);
         var currentDir = string.Empty;
         var currentType = SandboxEntryType.Directory;
+        long? currentSize = null;
 
         for (var i = 0; i < components.Length; i++)
         {
@@ -427,18 +455,10 @@ public sealed class FileBrowserController(
             serverParts.Add(matched.Name);
             currentDir = string.Join('/', serverParts);
             currentType = matched.Type;
+            currentSize = matched.Size;
         }
 
-        return ResolvedTarget.Ok(currentDir, currentType);
-    }
-
-    private async Task<long?> ResolveFileSizeAsync(string sessionId, string serverPath, CancellationToken ct)
-    {
-        var parent = ParentPath(serverPath);
-        var name = LastComponent(serverPath);
-        var entries = await fileBrowser.ListWorkspaceDirectoryAsync(sessionId, parent, ct);
-        var entry = entries.FirstOrDefault(e => !e.NameLossy && string.Equals(e.Name, name, StringComparison.Ordinal));
-        return entry?.Size;
+        return ResolvedTarget.Ok(currentDir, currentType, currentSize);
     }
 
     // -------- Helpers --------
@@ -467,8 +487,7 @@ public sealed class FileBrowserController(
         };
     }
 
-    private static bool IsOverCap(SandboxException ex) =>
-        ex.Kind == SandboxErrorKind.Protocol && ex.Message.Contains("direct-read cap", StringComparison.Ordinal);
+    private static bool IsOverCap(SandboxException ex) => ex.IsDirectReadCapExceeded;
 
     private SandboxCredential? TryBuildCallerCredential()
     {
@@ -558,11 +577,5 @@ public sealed class FileBrowserController(
     {
         var slash = serverPath.LastIndexOf('/');
         return slash < 0 ? serverPath : serverPath[(slash + 1)..];
-    }
-
-    private static string ParentPath(string serverPath)
-    {
-        var slash = serverPath.LastIndexOf('/');
-        return slash < 0 ? string.Empty : serverPath[..slash];
     }
 }

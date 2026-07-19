@@ -894,9 +894,20 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             finally
             {
                 // Clear the conversation's sandbox binding even if agent disposal threw: the pooled agent
-                // is already removed, so the browse binding must not outlive it. Clearing never destroys
-                // the shared (workspaceId, appId) gateway session another conversation may still use.
-                _bindingSink?.ClearEstablishedBinding(threadId);
+                // is already removed, so the browse binding must not outlive it. Compare-and-clear under the
+                // SAME per-thread lock the publish uses (CreateAgentEntry commit): if a concurrent
+                // GetOrCreate/swap re-created the agent for this thread while we were disposing, _agents holds
+                // the new entry and its freshly-published binding — leave it intact rather than clobbering it.
+                // Clearing never destroys the shared (workspaceId, appId) gateway session another conversation
+                // may still use. ClearEstablishedBinding is a lock-free dictionary remove, safe under the lock.
+                var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+                lock (lockObj)
+                {
+                    if (!_agents.ContainsKey(threadId))
+                    {
+                        _bindingSink?.ClearEstablishedBinding(threadId);
+                    }
+                }
             }
 
             RaiseThreadRemoved(threadId);

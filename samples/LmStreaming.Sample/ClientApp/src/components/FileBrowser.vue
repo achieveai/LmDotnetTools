@@ -29,6 +29,9 @@ const deleteTarget = ref<FileEntry | null>(null);
 const cancelBtnRef = ref<HTMLButtonElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const isDragOver = ref(false);
+// Concise summary of the files a batch upload REJECTED (per-file 413/400/409 target_busy), shown as
+// its own notice. `null` when the last upload had no per-file failures.
+const uploadErrors = ref<string | null>(null);
 
 onMounted(() => {
   void load('');
@@ -113,7 +116,7 @@ function onFilesPicked(event: Event): void {
   const input = event.target as HTMLInputElement;
   const files = input.files ? Array.from(input.files) : [];
   if (files.length > 0) {
-    void upload(files);
+    void handleUpload(files);
   }
   // Reset so picking the same file again re-triggers change.
   input.value = '';
@@ -123,7 +126,25 @@ function onDrop(event: DragEvent): void {
   isDragOver.value = false;
   const files = event.dataTransfer?.files ? Array.from(event.dataTransfer.files) : [];
   if (files.length > 0) {
-    void upload(files);
+    void handleUpload(files);
+  }
+}
+
+/**
+ * Uploads a batch and surfaces the per-file failures. `upload()` already sets `error` for
+ * session-level rejections and reloads the listing; here we additionally report the individual
+ * files the server rejected (413 file_too_large, 400 invalid_file_name, 409 target_busy) so a
+ * rejected file no longer vanishes silently.
+ */
+async function handleUpload(files: File[]): Promise<void> {
+  uploadErrors.value = null;
+  const outcomes = await upload(files);
+  const failed = outcomes.filter((outcome) => !outcome.success);
+  if (failed.length > 0) {
+    const detail = failed
+      .map((outcome) => `${outcome.name} (${outcome.error ?? 'upload_failed'})`)
+      .join(', ');
+    uploadErrors.value = `${failed.length} file(s) failed: ${detail}`;
   }
 }
 
@@ -197,6 +218,14 @@ function typeIcon(entry: FileEntry): string {
       </div>
 
       <div v-if="error" class="fb-error" data-testid="file-browser-error">{{ error }}</div>
+
+      <div
+        v-if="uploadErrors"
+        class="fb-error"
+        data-testid="file-browser-upload-errors"
+      >
+        {{ uploadErrors }}
+      </div>
 
       <div v-if="isLoading" class="fb-loading" data-testid="file-browser-loading">Loading…</div>
 
@@ -289,6 +318,7 @@ function typeIcon(entry: FileEntry): string {
       class="fb-confirm-backdrop"
       data-testid="file-browser-delete-confirm"
       @click.self="cancelDelete"
+      @keydown.esc.stop.prevent="cancelDelete"
     >
       <div class="fb-confirm" role="dialog" aria-modal="true" aria-labelledby="fb-confirm-title">
         <p id="fb-confirm-title" class="fb-confirm-text">

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import FileBrowser from '@/components/FileBrowser.vue';
+import FileBrowserModal from '@/components/FileBrowserModal.vue';
 import {
   sampleListing,
   noSessionState,
@@ -16,6 +17,18 @@ async function mountBrowser(initial = sampleListing) {
   const fetchSpy = vi.spyOn(globalThis, 'fetch');
   fetchSpy.mockResolvedValueOnce(jsonResponse(initial));
   const wrapper = mount(FileBrowser, {
+    props: { threadId: 'thread-1' },
+    attachTo: document.body,
+  });
+  await flushPromises();
+  return { wrapper, fetchSpy };
+}
+
+/** Mounts the real Files modal (FileBrowser inside BaseModal) with an initial listing loaded. */
+async function mountModal(initial = sampleListing) {
+  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  fetchSpy.mockResolvedValueOnce(jsonResponse(initial));
+  const wrapper = mount(FileBrowserModal, {
     props: { threadId: 'thread-1' },
     attachTo: document.body,
   });
@@ -143,5 +156,52 @@ describe('FileBrowser delete confirmation', () => {
 
     const dialog = wrapper.find('[data-testid="file-browser-delete-confirm"]');
     expect(dialog.text()).toContain('Delete folder src and all its contents?');
+  });
+
+  it('Escape inside the delete-confirm cancels it without closing the Files modal', async () => {
+    const { wrapper, fetchSpy } = await mountModal();
+    const callsBefore = fetchSpy.mock.calls.length;
+
+    await wrapper.find('[data-testid="file-entry-delete-readme.md"]').trigger('click');
+    await flushPromises();
+
+    const confirmEl = wrapper.find('[data-testid="file-browser-delete-confirm"]').element;
+    // A bubbling Escape from inside the confirm: without scoping it would reach BaseModal's
+    // document-level handler and close the WHOLE modal.
+    confirmEl.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    await flushPromises();
+
+    // The confirm is cancelled, no DELETE was issued, and the Files modal did NOT close.
+    expect(wrapper.find('[data-testid="file-browser-delete-confirm"]').exists()).toBe(false);
+    expect(fetchSpy.mock.calls.length).toBe(callsBefore);
+    expect(wrapper.emitted('close')).toBeUndefined();
+  });
+});
+
+describe('FileBrowser upload failures', () => {
+  it('surfaces per-file failures for a mixed batch (1 ok + 1 rejected)', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ name: 'ok.txt', size: 2 })) // upload ok.txt: 200
+      .mockResolvedValueOnce(jsonResponse({ code: 'file_too_large' }, 413)) // upload big.bin: rejected
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload listing after upload
+
+    const inputWrapper = wrapper.find('[data-testid="file-browser-file-input"]');
+    const inputEl = inputWrapper.element as HTMLInputElement;
+    Object.defineProperty(inputEl, 'files', {
+      configurable: true,
+      value: [new File(['ok'], 'ok.txt'), new File(['x'.repeat(10)], 'big.bin')],
+    });
+    await inputWrapper.trigger('change');
+    await flushPromises();
+
+    const notice = wrapper.find('[data-testid="file-browser-upload-errors"]');
+    expect(notice.exists()).toBe(true);
+    expect(notice.text()).toContain('1 file(s) failed');
+    expect(notice.text()).toContain('big.bin (file_too_large)');
+    // The successful file's reload still ran (2 uploads + 1 reload after the initial listing).
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
   });
 });

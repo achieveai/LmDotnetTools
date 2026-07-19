@@ -189,4 +189,47 @@ public class MultiTurnAgentPoolBindingTests
         sink.Published[0].Binding.Should().BeSameAs(first);
         sink.Published[1].Binding.Should().BeSameAs(second);
     }
+
+    [Fact]
+    public async Task FailedModeSwitch_PreservesPriorBinding_NeitherClearedNorRepublished()
+    {
+        var sink = new RecordingBindingSink();
+        var owner = new SandboxCredential("owner", "key");
+        var first = new SandboxEstablishedBinding(new WorkspaceRef("default"), owner);
+        var call = 0;
+        await using var pool = new MultiTurnAgentPool(
+            MultiTurnAgentPool.AgentCreationResult (MultiTurnAgentPool.AgentCreationContext context) =>
+            {
+                // First creation succeeds and publishes; the mode-switch recreation throws (construct-before-
+                // evict), so the swap never commits.
+                if (Interlocked.Increment(ref call) == 1)
+                {
+                    return new MultiTurnAgentPool.AgentCreationResult(new FakeMultiTurnAgent(context.ThreadId)) { StagedBinding = first };
+                }
+
+                throw new InvalidOperationException("switch construction failed");
+            },
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance,
+            bindingSink: sink
+        );
+
+        _ = pool.GetOrCreateAgent(
+            "thread-failed-switch",
+            Mode,
+            requestedProviderId: null,
+            requestResponseDumpFileName: null,
+            requestedWorkspaceId: null,
+            callerCredential: owner
+        );
+
+        var newMode = SystemChatModes.All[0];
+        var act = () => pool.RecreateAgentWithModeAsync("thread-failed-switch", newMode, owner);
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        // The prior binding stays published exactly once and is never cleared — a failed switch preserves it.
+        sink.Published.Should().ContainSingle().Which.Binding.Should().BeSameAs(first);
+        sink.Cleared.Should().BeEmpty();
+    }
 }

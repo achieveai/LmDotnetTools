@@ -146,8 +146,12 @@ function triggerBrowserDownload(blob: Blob, fileName: string): void {
   anchor.download = fileName;
   document.body.appendChild(anchor);
   anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
+  // Defer anchor removal + URL revoke to a later tick: revoking synchronously right after click()
+  // can cancel the in-progress download of larger blobs in some browsers.
+  setTimeout(() => {
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }, 0);
 }
 
 /**

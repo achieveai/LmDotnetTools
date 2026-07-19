@@ -187,6 +187,10 @@ describe('fileBrowserApi.downloadFile', () => {
         '/api/conversations/thread-1/files/download?path=dir%2Freport.csv'
       );
       expect(createSpy).toHaveBeenCalledTimes(1);
+      // The revoke is deferred (so a larger blob's download isn't cancelled); it hasn't run yet.
+      expect(revokeSpy).not.toHaveBeenCalled();
+      // Flush the macrotask queue: the deferred cleanup then revokes the object URL.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(revokeSpy).toHaveBeenCalledWith('blob:mock');
     } finally {
       URL.createObjectURL = origCreate;

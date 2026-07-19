@@ -77,7 +77,10 @@ public sealed partial class SandboxClient
                         + $"{cap}-byte direct-read cap; refusing to buffer it.",
                     (int)response.StatusCode,
                     operationId: operationId
-                );
+                )
+                {
+                    IsDirectReadCapExceeded = true,
+                };
             }
 
             return await ReadStreamCappedAsync(response, operation, operationId, cap, timeoutCts.Token).ConfigureAwait(false);
@@ -143,7 +146,10 @@ public sealed partial class SandboxClient
                         + "direct-read cap while streaming; refusing to buffer it.",
                     (int)response.StatusCode,
                     operationId: operationId
-                );
+                )
+                {
+                    IsDirectReadCapExceeded = true,
+                };
             }
 
             buffer.Write(chunk, 0, read);

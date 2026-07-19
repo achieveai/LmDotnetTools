@@ -24,6 +24,8 @@ public class FileBrowserControllerTests
         public SandboxSessionResolution Resolution { get; set; } =
             new(SandboxSessionResolutionOutcome.Resolved, LiveSession, "app", null);
 
+        public Exception? ResolveThrows { get; set; }
+
         public Dictionary<string, IReadOnlyList<SandboxDirectoryEntry>> Listings { get; } = new(StringComparer.Ordinal);
         public byte[] FileBytes { get; set; } = [];
         public Exception? ReadThrows { get; set; }
@@ -34,7 +36,7 @@ public class FileBrowserControllerTests
         public int ReadCalls { get; private set; }
 
         public Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(string threadId, string persistedWorkspaceId, SandboxCredential? requestCredential, CancellationToken ct = default) =>
-            Task.FromResult(Resolution);
+            ResolveThrows is not null ? Task.FromException<SandboxSessionResolution>(ResolveThrows) : Task.FromResult(Resolution);
 
         public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(string sessionId, string relativePath, CancellationToken ct = default) =>
             Listings.TryGetValue(relativePath, out var entries)
@@ -165,6 +167,17 @@ public class FileBrowserControllerTests
         browser.Resolution = new SandboxSessionResolution(SandboxSessionResolutionOutcome.CredentialConflict, null, "owner", "intruder");
         var result = await controller.List(ThreadId, path: null, CancellationToken.None);
         result.Should().BeOfType<ConflictObjectResult>();
+    }
+
+    [Fact]
+    public async Task List_GatewayUnavailableDuringResolve_Returns503()
+    {
+        var (controller, browser) = Build();
+        // Resolution can recreate an idle-evicted session; a gateway blip throws SandboxSessionUnavailableException
+        // (NOT a SandboxException). It must map to 503, not escape as an unmapped 500.
+        browser.ResolveThrows = new SandboxSessionUnavailableException("default", null, "gateway down");
+        var result = await controller.List(ThreadId, path: null, CancellationToken.None);
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
     }
 
     // -------- Listing --------
@@ -413,5 +426,106 @@ public class FileBrowserControllerTests
         var result = await controller.Delete(ThreadId, "", CancellationToken.None);
         result.Should().BeOfType<BadRequestObjectResult>();
         browser.Commands.Should().BeEmpty();
+    }
+
+    // -------- Review-driven boundary tests --------
+
+    [Fact]
+    public async Task Upload_ObservedBytesExceedCap_Returns413_EvenWhenDeclaredLengthIsSmall()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        // A LYING declared length (small) must not smuggle an over-cap body: the observed streaming count
+        // trips independently. The stream yields MaxFileBytes+1 bytes lazily (no source allocation).
+        var file = new LazyLargeFormFile("sneaky.bin", streamLength: FileBrowserLimits.MaxFileBytes + 1, declaredLength: 10);
+        var result = await controller.Upload(ThreadId, "", file, CancellationToken.None);
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
+        browser.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Preview_BytesExceedCapAfterRead_ReturnsTooLarge_WhenListedSizeAbsent()
+    {
+        var (controller, browser) = Build();
+        // Listed size is null (under-reported), so the pre-read gate passes and the read happens once; the
+        // post-read length guard then rejects the cap+1 payload.
+        browser.Listings[""] = [File("a.txt", size: null)];
+        browser.FileBytes = new byte[FileBrowserLimits.PreviewByteCap + 1];
+        var result = await controller.Preview(ThreadId, "a.txt", CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which.Reason.Should().Be("too_large");
+        browser.ReadCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Download_StreamedOverCap_MapsTypedSignalTo413()
+    {
+        var (controller, browser) = Build();
+        // Listed size null so the deterministic pre-check passes; the SDK then refuses the over-cap body and
+        // the typed IsDirectReadCapExceeded signal maps to 413 (not an opaque 502).
+        browser.Listings[""] = [File("a.bin", size: null)];
+        browser.ReadThrows = new SandboxException(SandboxErrorKind.Protocol, "exceeded the direct-read cap") { IsDirectReadCapExceeded = true };
+        var result = await controller.Download(ThreadId, "a.bin", CancellationToken.None);
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
+    }
+
+    [Fact]
+    public async Task Preview_ExceedsLineCap_ReturnsTooLarge()
+    {
+        var (controller, browser) = Build();
+        var text = string.Concat(Enumerable.Repeat("x\n", FileBrowserLimits.PreviewLineCap + 1));
+        var bytes = Encoding.UTF8.GetBytes(text);
+        browser.Listings[""] = [File("many.txt", size: bytes.Length)];
+        browser.FileBytes = bytes;
+        var result = await controller.Preview(ThreadId, "many.txt", CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<PreviewResultDto>().Which.Reason.Should().Be("too_large");
+    }
+
+    /// <summary>An IFormFile whose stream lazily yields <c>streamLength</c> zero bytes (no source allocation), with a caller-set declared <c>Length</c> — exercises the observed-vs-declared upload cap.</summary>
+    private sealed class LazyLargeFormFile(string fileName, long streamLength, long declaredLength) : IFormFile
+    {
+        public string ContentType { get; set; } = "application/octet-stream";
+        public string ContentDisposition { get; set; } = string.Empty;
+        public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
+        public long Length { get; } = declaredLength;
+        public string Name { get; set; } = "file";
+        public string FileName { get; } = fileName;
+
+        public void CopyTo(Stream target) => throw new NotSupportedException();
+
+        public Task CopyToAsync(Stream target, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Stream OpenReadStream() => new ZeroStream(streamLength);
+
+        private sealed class ZeroStream(long length) : Stream
+        {
+            private long _remaining = length;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_remaining <= 0)
+                {
+                    return 0;
+                }
+
+                var produced = (int)Math.Min(count, _remaining);
+                Array.Clear(buffer, offset, produced);
+                _remaining -= produced;
+                return produced;
+            }
+
+            public override void Flush() { }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
     }
 }
