@@ -61,6 +61,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     // here for a best-effort final dispose at manager teardown rather than being silently abandoned.
     private readonly ConcurrentBag<IStreamingAgent> _abandonedProviders = [];
 
+    // Upper bound on how long SubscribeToAgentAcrossRestartsAsync waits, after a subscribed instance's
+    // stream ends, for a restart/teardown replacement signal before concluding the subscriber was
+    // dropped under backpressure (and ending so the focus socket closes for a reconnect). A restart's
+    // dispose→swap→signal window is short and I/O-free (the replacement is built before the old dispose),
+    // so this is generous. Overridable via an internal seam so tests can exercise the drop path fast.
+    internal TimeSpan RestartSignalGrace { get; set; } = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// Test-only seam: when set, <see cref="CreateSubAgentAsync"/> returns this factory's
     /// <see cref="IMultiTurnAgent"/> instead of building a real <see cref="MultiTurnAgentLoop"/>,
@@ -915,20 +922,24 @@ public sealed class SubAgentManager : IAsyncDisposable
                 yield break;
             }
 
-            // The current instance's stream ended without cancellation — either an owned-provider restart
-            // disposed it (then completes `replaced` with the new instance) or the manager tore it down
-            // (completes `replaced` with null). Await the swap signal (guarded by ct) and re-subscribe, or
-            // end when there is no replacement.
-            IMultiTurnAgent? next;
-            try
+            // The current instance's stream ended without cancellation. Three causes:
+            //  (a) an owned-provider restart disposed it (then completes `replaced` with the new
+            //      instance), (b) the manager tore it down (completes `replaced` with null), or
+            //  (c) a slow-subscriber backpressure DROP removed our subscriber while the instance is
+            //      still alive (MultiTurnAgentBase.PublishToSubscriber) — which never fires `replaced`.
+            // (a)/(b) complete `replaced` within a short, I/O-free window (the replacement is built
+            // BEFORE the old dispose, so dispose→swap→signal is just a couple of synchronous awaits).
+            // Bound the wait so a DROP does not hang the stream dark forever: on timeout, end the
+            // enumeration so the socket closes and the client reconnects + replays (the recovery the
+            // drop path assumes). A restart whose signal is merely slow degrades to the same reconnect.
+            var winner = await Task.WhenAny(replaced, Task.Delay(RestartSignalGrace, ct));
+            if (winner != replaced)
             {
-                next = await replaced.WaitAsync(ct);
-            }
-            catch (OperationCanceledException)
-            {
+                // Grace elapsed (backpressure drop) or ct cancelled via the Delay — end the stream.
                 yield break;
             }
 
+            var next = await replaced;
             if (next is null)
             {
                 yield break;

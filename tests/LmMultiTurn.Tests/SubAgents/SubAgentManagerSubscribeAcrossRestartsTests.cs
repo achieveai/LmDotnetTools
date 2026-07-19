@@ -185,6 +185,67 @@ public class SubAgentManagerSubscribeAcrossRestartsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SubscribeAcrossRestarts_WhenSubscriberDroppedWithoutRestart_EndsWithinGrace()
+    {
+        // Backpressure DROP path: a slow subscriber can be removed by
+        // MultiTurnAgentBase.PublishToSubscriber while the instance stays alive — no restart, so no
+        // replacement signal ever fires. The observer must NOT hang dark forever; after the bounded
+        // grace it ends so the focus socket closes and the client can reconnect + replay.
+        const string attachedSentinel = "attached-sentinel";
+        ObservableFakeAgent? liveAgent = null;
+
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
+        {
+            ["owned"] = DummyTemplate("owned"),
+        });
+        // Tiny grace so the drop path resolves fast and deterministically.
+        manager.RestartSignalGrace = TimeSpan.FromMilliseconds(200);
+
+        manager.TestAgentFactoryOverride = (agentId, _) =>
+        {
+            liveAgent = new ObservableFakeAgent
+            {
+                ThreadId = $"subagent-{agentId}",
+                RunMessages = [new TextMessage { Text = attachedSentinel, Role = Role.Assistant }],
+            };
+            return liveAgent;
+        };
+
+        var spawnJson = await manager.SpawnAsync("owned", "task", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        using var observeCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var attached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var observerTask = Task.Run(async () =>
+        {
+            await foreach (var msg in manager.SubscribeToAgentAcrossRestartsAsync(agentId, observeCts.Token))
+            {
+                if (msg is TextMessage tm && tm.Text == attachedSentinel)
+                {
+                    _ = attached.TrySetResult();
+                }
+            }
+        }, observeCts.Token);
+
+        await attached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Act: drop the subscriber WITHOUT a restart/teardown (no replacement signal fires).
+        liveAgent!.SimulateSubscriberDrop();
+
+        // The observer must end via the bounded grace (not hang), and NOT because its own token cancelled.
+        var completed = await Task.WhenAny(observerTask, Task.Delay(TimeSpan.FromSeconds(10)));
+        completed.Should().BeSameAs(
+            observerTask, "a dropped subscriber with no replacement signal must end within the grace");
+        await observerTask;
+        observeCts.IsCancellationRequested.Should().BeFalse();
+
+        // The child instance is still alive/registered — the drop did not tear it down.
+        manager.TryGetAgent(agentId, out var still).Should().BeTrue();
+        still.Should().BeSameAs(liveAgent);
+    }
+
+    [Fact]
     public async Task SubscribeAcrossRestarts_WhenManagerDisposes_EndsCleanly()
     {
         // Teardown path: DisposeAsync signals every state's replacement awaitable with null, so an
@@ -307,9 +368,18 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
     private readonly TaskCompletionSource _disposed =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    // Ends an active subscription WITHOUT disposing the instance — simulates
+    // MultiTurnAgentBase.PublishToSubscriber dropping a slow subscriber under backpressure (the
+    // instance stays alive/registered and no replacement is signalled).
+    private readonly TaskCompletionSource _dropped =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public required IReadOnlyList<IMessage> RunMessages { get; init; }
 
     public string ThreadId { get; init; } = "fake-thread";
+
+    /// <summary>Simulate a backpressure drop: ends open subscriptions while the instance stays alive.</summary>
+    public void SimulateSubscriberDrop() => _dropped.TrySetResult();
 
     public string? CurrentRunId => null;
 
@@ -352,10 +422,11 @@ internal sealed class ObservableFakeAgent : IMultiTurnAgent
         }
 
         // Keep the subscription open until this instance is disposed (a restart disposes the previous
-        // loop) or the subscriber cancels — then end, just as a real agent's channel closes on dispose.
+        // loop), the subscriber is dropped under backpressure, or the subscriber cancels — then end,
+        // just as a real agent's channel closes on dispose/drop.
         var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var reg = ct.Register(() => cancelled.TrySetResult());
-        _ = await Task.WhenAny(_disposed.Task, cancelled.Task);
+        _ = await Task.WhenAny(_disposed.Task, _dropped.Task, cancelled.Task);
     }
 
     public async Task RunAsync(CancellationToken ct = default)
