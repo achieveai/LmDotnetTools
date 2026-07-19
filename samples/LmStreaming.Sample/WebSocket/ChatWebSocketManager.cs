@@ -22,11 +22,35 @@ namespace LmStreaming.Sample.WebSocket;
 /// </summary>
 public sealed class ChatWebSocketManager
 {
+    /// <summary>
+    /// Strict UTF-8 decoder: throws <see cref="DecoderFallbackException"/> on invalid byte sequences
+    /// instead of silently substituting replacement characters, so malformed inbound frames are
+    /// detected and skipped rather than corrupting a relayed prompt.
+    /// </summary>
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     private readonly MultiTurnAgentPool _agentPool;
     private readonly WebSocketConnectionRegistry _connectionRegistry;
     private readonly PendingAuthCoordinator _pendingAuth;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<ChatWebSocketManager> _logger;
+
+    /// <summary>
+    /// Maximum size, in bytes, of a single assembled inbound text message. A message whose accumulated
+    /// payload exceeds this bound is rejected and the socket is closed with
+    /// <see cref="WebSocketCloseStatus.MessageTooBig"/>. Chosen comfortably above any legitimate chat
+    /// prompt while capping the memory a single connection can pin while assembling fragments. Settable
+    /// as a test seam.
+    /// </summary>
+    internal int MaxInboundMessageBytes { get; set; } = 1 * 1024 * 1024;
+
+    /// <summary>
+    /// Upper bound on how long a single MULTI-FRAGMENT message may take to fully assemble, measured from
+    /// the first fragment until <c>EndOfMessage</c>. The deadline runs ONLY while a partial message is
+    /// being assembled — an idle connection simply waiting for the user's next message is never closed.
+    /// Settable as a test seam.
+    /// </summary>
+    internal TimeSpan InboundAssemblyDeadline { get; set; } = TimeSpan.FromSeconds(30);
 
     public ChatWebSocketManager(
         MultiTurnAgentPool agentPool,
@@ -265,7 +289,7 @@ public sealed class ChatWebSocketManager
                 connectionCts.Token);
 
             var receiveTask = ReceiveSubAgentMessagesFromClientAsync(
-                webSocket, subAgentManager, agentId, connectionCts.Token);
+                webSocket, connection, subAgentManager, agentId, connectionCts.Token);
 
             try
             {
@@ -399,58 +423,232 @@ public sealed class ChatWebSocketManager
     }
 
     /// <summary>
-    /// Receives messages from the WebSocket client and sends them to the agent.
+    /// Receives messages from the WebSocket client and sends them to the agent, via the shared bounded
+    /// receive pump (<see cref="ReceiveTextMessagesAsync"/>).
     /// </summary>
-    private async Task ReceiveMessagesFromClientAsync(
+    private Task ReceiveMessagesFromClientAsync(
         System.Net.WebSockets.WebSocket webSocket,
         IMultiTurnAgent agent,
         string threadId,
         CancellationToken ct)
+        => ReceiveTextMessagesAsync(
+            webSocket,
+            $"thread {threadId}",
+            (message, token) => ProcessClientMessageAsync(agent, threadId, message, token),
+            ct);
+
+    /// <summary>
+    /// Shared bounded receive pump used by BOTH the parent <c>/ws</c> and the <c>/ws/subagent</c>
+    /// endpoints. It reads inbound WebSocket frames, enforces a text-only, size-bounded,
+    /// assembly-deadline-bounded policy, and delivers each fully-assembled UTF-8 message to
+    /// <paramref name="onMessage"/>. Protecting properties:
+    /// <list type="bullet">
+    /// <item>Raw bytes are accumulated across fragments and decoded to UTF-8 exactly ONCE at
+    /// <c>EndOfMessage</c>, so a multi-byte character split across a fragment boundary is never
+    /// corrupted.</item>
+    /// <item>An assembled payload exceeding <see cref="MaxInboundMessageBytes"/> closes the socket with
+    /// <see cref="WebSocketCloseStatus.MessageTooBig"/>.</item>
+    /// <item>The <see cref="InboundAssemblyDeadline"/> applies only while assembling a partial
+    /// (multi-fragment) message; an idle connection awaiting the next message is never closed. A breach
+    /// closes with <see cref="WebSocketCloseStatus.PolicyViolation"/>.</item>
+    /// <item>Close frames close normally; binary frames are rejected
+    /// (<see cref="WebSocketCloseStatus.InvalidMessageType"/>) — this endpoint family is text-only.</item>
+    /// <item>Invalid UTF-8 is detected (throwing decoder) and the message is skipped (metadata logged),
+    /// keeping the connection alive.</item>
+    /// </list>
+    /// The pump itself never logs message bodies; each <paramref name="onMessage"/> delivery callback
+    /// owns its own logging policy.
+    /// </summary>
+    private async Task ReceiveTextMessagesAsync(
+        System.Net.WebSockets.WebSocket webSocket,
+        string logLabel,
+        Func<string, CancellationToken, Task> onMessage,
+        CancellationToken ct)
     {
         var buffer = new byte[4096];
-        var messageBuilder = new StringBuilder();
+        var assembled = new byte[4096];
 
         try
         {
             while (webSocket.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
-                WebSocketReceiveResult result;
-                _ = messageBuilder.Clear();
+                var length = 0;
 
-                do
+                // First fragment: a plain idle wait with NO assembly deadline, so a connection waiting
+                // for the user's next message is never torn down.
+                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+
+                if (await TryHandleNonTextFrameAsync(webSocket, result, logLabel))
                 {
-                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                    return;
+                }
 
-                    if (result.MessageType == WebSocketMessageType.Close)
+                if (!AppendFragment(ref assembled, ref length, buffer, result.Count))
+                {
+                    await CloseAsync(webSocket, WebSocketCloseStatus.MessageTooBig, "Message too big", logLabel, "oversized", length);
+                    return;
+                }
+
+                if (!result.EndOfMessage)
+                {
+                    // A partial message is now assembling: bound the rest with the assembly deadline.
+                    using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    deadlineCts.CancelAfter(InboundAssemblyDeadline);
+
+                    try
                     {
-                        _logger.LogInformation("Client requested close for thread {ThreadId}", threadId);
-                        await webSocket.CloseAsync(
-                            WebSocketCloseStatus.NormalClosure,
-                            "Closed by client",
-                            CancellationToken.None);
+                        do
+                        {
+                            result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), deadlineCts.Token);
+
+                            if (await TryHandleNonTextFrameAsync(webSocket, result, logLabel))
+                            {
+                                return;
+                            }
+
+                            if (!AppendFragment(ref assembled, ref length, buffer, result.Count))
+                            {
+                                await CloseAsync(webSocket, WebSocketCloseStatus.MessageTooBig, "Message too big", logLabel, "oversized", length);
+                                return;
+                            }
+                        } while (!result.EndOfMessage);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        _logger.LogWarning(
+                            "Inbound assembly deadline exceeded for {ConnectionLabel} after {ByteCount} bytes; category {RejectCategory}",
+                            logLabel,
+                            length,
+                            "assembly_timeout");
+                        await CloseAsync(webSocket, WebSocketCloseStatus.PolicyViolation, "Assembly deadline exceeded", logLabel, "assembly_timeout", length);
                         return;
                     }
-
-                    if (result.MessageType == WebSocketMessageType.Text)
-                    {
-                        var chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        _ = messageBuilder.Append(chunk);
-                    }
-                } while (!result.EndOfMessage);
-
-                if (messageBuilder.Length > 0)
-                {
-                    await ProcessClientMessageAsync(agent, threadId, messageBuilder.ToString(), ct);
                 }
+
+                // Decode ONCE, over the fully-assembled byte payload.
+                string message;
+                try
+                {
+                    message = StrictUtf8.GetString(assembled, 0, length);
+                }
+                catch (DecoderFallbackException)
+                {
+                    _logger.LogWarning(
+                        "Skipped invalid UTF-8 message ({ByteCount} bytes) for {ConnectionLabel}; category {RejectCategory}",
+                        length,
+                        logLabel,
+                        "invalid_utf8");
+                    continue;
+                }
+
+                if (message.Length == 0)
+                {
+                    continue;
+                }
+
+                await onMessage(message, ct);
             }
         }
         catch (OperationCanceledException)
         {
-            _logger.LogDebug("Receive cancelled for thread {ThreadId}", threadId);
+            _logger.LogDebug("Receive cancelled for {ConnectionLabel}", logLabel);
         }
         catch (WebSocketException ex)
         {
-            _logger.LogWarning(ex, "WebSocket error during receive for thread {ThreadId}", threadId);
+            _logger.LogWarning(ex, "WebSocket error during receive for {ConnectionLabel}", logLabel);
+        }
+    }
+
+    /// <summary>
+    /// Handles a non-text frame during receive: a close frame closes the socket normally; a binary frame
+    /// is rejected (this endpoint family is text-only). Returns <c>true</c> when the pump must stop.
+    /// </summary>
+    private async Task<bool> TryHandleNonTextFrameAsync(
+        System.Net.WebSockets.WebSocket webSocket,
+        WebSocketReceiveResult result,
+        string logLabel)
+    {
+        if (result.MessageType == WebSocketMessageType.Close)
+        {
+            _logger.LogInformation("Client requested close for {ConnectionLabel}", logLabel);
+            await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closed by client", CancellationToken.None);
+            return true;
+        }
+
+        if (result.MessageType == WebSocketMessageType.Binary)
+        {
+            _logger.LogWarning(
+                "Rejected binary frame ({ByteCount} bytes) for {ConnectionLabel}; category {RejectCategory}",
+                result.Count,
+                logLabel,
+                "binary_frame");
+            await webSocket.CloseAsync(
+                WebSocketCloseStatus.InvalidMessageType, "Binary frames are not supported", CancellationToken.None);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Appends a received fragment to the growing assembly buffer, growing it as needed. Returns
+    /// <c>false</c> when appending would exceed <see cref="MaxInboundMessageBytes"/> (the message must
+    /// then be rejected as oversized).
+    /// </summary>
+    private bool AppendFragment(ref byte[] assembled, ref int length, byte[] buffer, int count)
+    {
+        if (count <= 0)
+        {
+            return true;
+        }
+
+        if ((long)length + count > MaxInboundMessageBytes)
+        {
+            length += count;
+            return false;
+        }
+
+        if (length + count > assembled.Length)
+        {
+            var newSize = Math.Min(Math.Max(assembled.Length * 2, length + count), MaxInboundMessageBytes);
+            Array.Resize(ref assembled, newSize);
+        }
+
+        Buffer.BlockCopy(buffer, 0, assembled, length, count);
+        length += count;
+        return true;
+    }
+
+    /// <summary>
+    /// Closes the socket with the given status, logging content-free rejection metadata (never the body).
+    /// </summary>
+    private async Task CloseAsync(
+        System.Net.WebSockets.WebSocket webSocket,
+        WebSocketCloseStatus status,
+        string description,
+        string logLabel,
+        string category,
+        int byteCount)
+    {
+        _logger.LogWarning(
+            "Closing {ConnectionLabel} ({ByteCount} bytes); category {RejectCategory}, status {CloseStatus}",
+            logLabel,
+            byteCount,
+            category,
+            status);
+
+        try
+        {
+            await webSocket.CloseAsync(status, description, CancellationToken.None);
+        }
+        catch (WebSocketException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 
@@ -502,100 +700,127 @@ public sealed class ChatWebSocketManager
     }
 
     /// <summary>
-    /// Receives frames from the sub-agent WebSocket client and relays their text to the focused
-    /// child sub-agent. This mirrors <see cref="ReceiveMessagesFromClientAsync"/> (frame assembly,
-    /// close handling, cancellation/WebSocket catches) rather than sharing it, because delivery goes
-    /// through <see cref="SubAgentManager.SendMessageAsync"/> (not <c>IMultiTurnAgent.SendAsync</c>)
-    /// — a different, deliberately minimal sink. Kept intentionally small for that reason.
+    /// Receives frames from the sub-agent WebSocket client and relays their text to the focused child
+    /// sub-agent, via the shared bounded receive pump (<see cref="ReceiveTextMessagesAsync"/>). Delivery
+    /// goes through <see cref="RelaySubAgentMessageAsync"/> (using <see cref="SubAgentManager.SendMessageAsync"/>
+    /// in background mode) rather than <c>IMultiTurnAgent.SendAsync</c> — the sub-agent sink.
     /// </summary>
-    private async Task ReceiveSubAgentMessagesFromClientAsync(
+    private Task ReceiveSubAgentMessagesFromClientAsync(
         System.Net.WebSockets.WebSocket webSocket,
+        RegisteredWebSocketConnection connection,
         SubAgentManager subAgentManager,
         string agentId,
         CancellationToken ct)
+        => ReceiveTextMessagesAsync(
+            webSocket,
+            $"sub-agent {agentId}",
+            (message, token) => RelaySubAgentMessageAsync(connection, subAgentManager, agentId, message, token),
+            ct);
+
+    /// <summary>
+    /// Relays one already-assembled client frame to the focused child sub-agent. Never logs the message
+    /// body or prompt (EUII) — only content-free metadata (agent id, byte count, a stable category). On a
+    /// transient/unknown relay failure the receive loop is kept alive and a structured, correlated
+    /// <c>relay_failed</c> error frame is sent so the client's input is not silently lost; a clearly
+    /// terminal target (the child is gone) surfaces the <c>subagent_unavailable</c> error and closes.
+    /// </summary>
+    private async Task RelaySubAgentMessageAsync(
+        RegisteredWebSocketConnection connection,
+        SubAgentManager subAgentManager,
+        string agentId,
+        string json,
+        CancellationToken ct)
     {
-        var buffer = new byte[4096];
-        var messageBuilder = new StringBuilder();
+        var byteCount = Encoding.UTF8.GetByteCount(json);
+
+        ChatRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize<ChatRequest>(json, _jsonOptions);
+        }
+        catch (JsonException)
+        {
+            // EUII: never log the payload — only content-free metadata.
+            _logger.LogWarning(
+                "Discarded invalid JSON ({ByteCount} bytes) for sub-agent {AgentId}; category {RejectCategory}",
+                byteCount,
+                agentId,
+                "invalid_json");
+            return;
+        }
+
+        if (request?.Message is null)
+        {
+            _logger.LogWarning(
+                "Discarded chat request with no message ({ByteCount} bytes) for sub-agent {AgentId}; category {RejectCategory}",
+                byteCount,
+                agentId,
+                "invalid_json");
+            return;
+        }
+
+        _logger.LogDebug(
+            "Relaying message ({ByteCount} bytes) to sub-agent {AgentId}",
+            byteCount,
+            agentId);
 
         try
         {
-            while (webSocket.State == WebSocketState.Open && !ct.IsCancellationRequested)
-            {
-                WebSocketReceiveResult result;
-                _ = messageBuilder.Clear();
-
-                do
-                {
-                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        _logger.LogInformation("Client requested close for sub-agent {AgentId}", agentId);
-                        await webSocket.CloseAsync(
-                            WebSocketCloseStatus.NormalClosure,
-                            "Closed by client",
-                            CancellationToken.None);
-                        return;
-                    }
-
-                    if (result.MessageType == WebSocketMessageType.Text)
-                    {
-                        var chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        _ = messageBuilder.Append(chunk);
-                    }
-                } while (!result.EndOfMessage);
-
-                if (messageBuilder.Length == 0)
-                {
-                    continue;
-                }
-
-                var json = messageBuilder.ToString();
-                try
-                {
-                    var request = JsonSerializer.Deserialize<ChatRequest>(json, _jsonOptions);
-                    if (request?.Message is null)
-                    {
-                        _logger.LogWarning("Invalid chat request for sub-agent {AgentId}: {Json}", agentId, json);
-                        continue;
-                    }
-
-                    _logger.LogInformation(
-                        "Relaying message to sub-agent {AgentId}: {Message}",
-                        agentId,
-                        request.Message);
-
-                    // Background mode is REQUIRED: a synchronous send blocks until the child's whole
-                    // run completes, which would stall this receive loop. Background returns a JSON
-                    // receipt immediately (discarded) while the sibling StreamMessagesToClientAsync
-                    // task carries the child's live deltas back to the client.
-                    _ = await subAgentManager.SendMessageAsync(
-                        agentId, request.Message, runInBackground: true, ct);
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogWarning(ex, "Invalid JSON for sub-agent {AgentId}: {Json}", agentId, json);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // A focused child's lifetime is independent of this socket: it can finish and be
-                    // pruned (ArgumentException "Unknown sub-agent") or race a restart
-                    // (InvalidOperationException) between frames. Isolate per-frame relay failures so a
-                    // transient/terminal target never tears down the whole presentation-only view — the
-                    // sibling stream keeps serving until it closes on its own. Cancellation still exits.
-                    _logger.LogWarning(
-                        ex, "Failed to relay message to sub-agent {AgentId}; keeping the stream open", agentId);
-                }
-            }
+            // Background mode is REQUIRED: a synchronous send blocks until the child's whole run
+            // completes, which would stall this receive loop. Background returns a JSON receipt
+            // immediately (discarded) while the sibling StreamMessagesToClientAsync task carries the
+            // child's live deltas back to the client.
+            _ = await subAgentManager.SendMessageAsync(
+                agentId, request.Message, runInBackground: true, ct);
         }
-        catch (OperationCanceledException)
+        catch (ArgumentException)
         {
-            _logger.LogDebug("Receive cancelled for sub-agent {AgentId}", agentId);
+            // Terminal target: the focused child is gone (finished and pruned — "Unknown sub-agent").
+            // There is nothing left to relay to, so surface the structured subagent_unavailable error
+            // and close. No body logged.
+            _logger.LogWarning(
+                "Sub-agent {AgentId} is gone ({ByteCount} bytes discarded); category {RejectCategory}",
+                agentId,
+                byteCount,
+                "subagent_unavailable");
+            await SendSubAgentUnavailableErrorAsync(connection, agentId, ct);
         }
-        catch (WebSocketException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "WebSocket error during receive for sub-agent {AgentId}", agentId);
+            // Transient/unknown failure (e.g. an owned-provider restart race). Keep the receive loop
+            // alive — that isolation was a prior review fix — but surface a structured, correlated error
+            // frame so the client's input is not silently lost. Only metadata is logged, never the body.
+            _logger.LogWarning(
+                ex,
+                "Failed to relay message ({ByteCount} bytes) to sub-agent {AgentId}; category {RejectCategory}, keeping the stream open",
+                byteCount,
+                agentId,
+                "relay_failed");
+            await SendRelayFailedErrorAsync(connection, agentId, ct);
         }
+    }
+
+    /// <summary>
+    /// Sends a structured, correlated <c>relay_failed</c> error frame to the client without closing the
+    /// connection — a transient relay failure must not silently drop the client's input nor tear down the
+    /// presentation-only view. The frame carries no message body (EUII).
+    /// </summary>
+    private async Task SendRelayFailedErrorAsync(
+        RegisteredWebSocketConnection connection,
+        string agentId,
+        CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = "relay_failed",
+            ["agentId"] = agentId,
+            ["message"] = $"Failed to relay the message to sub-agent '{agentId}'. Please retry.",
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        // Best-effort: a dying connection turns this into a quiet false. No close (transient failure).
+        _ = await connection.TrySendTextAsync(json, ct);
     }
 
     private async Task SendSubAgentUnavailableErrorAsync(

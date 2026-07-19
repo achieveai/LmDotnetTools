@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.WebSocket;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.WebSocket;
 
@@ -186,16 +187,318 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.CloseAsyncCalled.Should().BeTrue("the socket must be closed after the structured error");
     }
 
+    // ----- shared bounded receive pump (PR #209 findings #4/#5/#9/#10) -----
+
+    [Fact]
+    public async Task ReceivePump_AssemblesMessageSplitAcrossFragments()
+    {
+        // A single logical message delivered as two text fragments must be assembled and relayed whole.
+        var firstRunGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new RecordingSubAgentProvider(firstRunGate.Task, blockOnPromptText: "seed-task");
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "seed-task", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+        await provider.WaitUntilAsync(() => provider.ReceivedContains("seed-task"), TimeSpan.FromSeconds(30));
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new ChatRequest("split-message")));
+        var mid = bytes.Length / 2;
+        socket.EnqueueTextFragment(bytes[..mid], endOfMessage: false);
+        socket.EnqueueTextFragment(bytes[mid..], endOfMessage: true);
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        firstRunGate.SetResult();
+        await provider.WaitUntilAsync(() => provider.ReceivedContains("split-message"), TimeSpan.FromSeconds(30));
+
+        await testCts.CancelAsync();
+        await handlerTask;
+
+        provider.ReceivedPrompts.Should().Contain("split-message");
+    }
+
+    [Fact]
+    public async Task ReceivePump_DoesNotCorruptMultiByteChar_SplitAcrossFragmentBoundary()
+    {
+        // A 4-byte UTF-8 char (🚀) split mid-sequence across a fragment boundary must survive: the pump
+        // must accumulate raw bytes and decode ONCE at end-of-message (per-fragment decode corrupts it).
+        var firstRunGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new RecordingSubAgentProvider(firstRunGate.Task, blockOnPromptText: "seed-task");
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "seed-task", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+        await provider.WaitUntilAsync(() => provider.ReceivedContains("seed-task"), TimeSpan.FromSeconds(30));
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        const string payload = "AB🚀CD";
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new ChatRequest(payload)));
+        var rocketStart = Array.IndexOf(bytes, (byte)0xF0);
+        var split = rocketStart + 2; // Split INSIDE the 4-byte 🚀 sequence.
+        socket.EnqueueTextFragment(bytes[..split], endOfMessage: false);
+        socket.EnqueueTextFragment(bytes[split..], endOfMessage: true);
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        firstRunGate.SetResult();
+        await provider.WaitUntilAsync(() => provider.ReceivedContains(payload), TimeSpan.FromSeconds(30));
+
+        await testCts.CancelAsync();
+        await handlerTask;
+
+        provider.ReceivedPrompts.Should().Contain(payload);
+    }
+
+    [Fact]
+    public async Task ReceivePump_ClosesWithMessageTooBig_WhenMessageExceedsLimit()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(gate.Task, ct));
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        var manager = CreateManager(pool);
+        manager.MaxInboundMessageBytes = 16;
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(
+          JsonSerializer.Serialize(new ChatRequest("this-message-is-far-larger-than-the-configured-limit")));
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        await handlerTask;
+
+        socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.MessageTooBig);
+        gate.SetResult();
+    }
+
+    [Fact]
+    public async Task ReceivePump_RejectsBinaryFrame_WithInvalidMessageType()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(gate.Task, ct));
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        socket.EnqueueBinaryFrame([0x01, 0x02, 0x03, 0x04]);
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        await handlerTask;
+
+        socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.InvalidMessageType);
+        gate.SetResult();
+    }
+
+    [Fact]
+    public async Task ReceivePump_ClosesOnAssemblyDeadline_WhenPartialMessageStalls()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(gate.Task, ct));
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        var manager = CreateManager(pool);
+        manager.InboundAssemblyDeadline = TimeSpan.FromMilliseconds(200);
+        var socket = new FakeWebSocket();
+        // A partial fragment that never completes (no EndOfMessage) must trip the assembly deadline.
+        socket.EnqueueTextFragment(Encoding.UTF8.GetBytes("{\"message\":\"partial"), endOfMessage: false);
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        await handlerTask;
+
+        socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.PolicyViolation);
+        gate.SetResult();
+    }
+
+    [Fact]
+    public async Task ReceivePump_DoesNotCloseIdleConnection_WhenNoFragmentArrives()
+    {
+        // The assembly deadline must apply ONLY while assembling a partial message — an idle connection
+        // simply waiting for the user's next message must never be closed.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(gate.Task, ct));
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        var manager = CreateManager(pool);
+        manager.InboundAssemblyDeadline = TimeSpan.FromMilliseconds(200);
+        var socket = new FakeWebSocket(); // No frames enqueued: the connection stays idle.
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+
+        // Wait well past the assembly deadline; an idle wait must NOT close the socket.
+        await Task.Delay(TimeSpan.FromMilliseconds(700), testCts.Token);
+        socket.CloseAsyncCalled.Should().BeFalse("an idle connection must not be closed by the assembly deadline");
+        handlerTask.IsCompleted.Should().BeFalse("an idle connection must stay open");
+
+        await testCts.CancelAsync();
+        await handlerTask;
+        gate.SetResult();
+    }
+
+    [Fact]
+    public async Task ReceivePump_NeverLogsPromptBody_OnSubAgentRelayPath()
+    {
+        // EUII: the sub-agent relay path must log only content-free metadata, never the prompt body.
+        const string sentinel = "SENTINEL-SECRET-9f83c2a1-prompt-body";
+        var firstRunGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new RecordingSubAgentProvider(firstRunGate.Task, blockOnPromptText: "seed-task");
+
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "seed-task", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+        await provider.WaitUntilAsync(() => provider.ReceivedContains("seed-task"), TimeSpan.FromSeconds(30));
+
+        var capture = new CapturingLogger<ChatWebSocketManager>();
+        var manager = CreateManager(pool, capture);
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest(sentinel)));
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+        firstRunGate.SetResult();
+        await provider.WaitUntilAsync(() => provider.ReceivedContains(sentinel), TimeSpan.FromSeconds(30));
+
+        await testCts.CancelAsync();
+        await handlerTask;
+
+        capture.Entries.Should().NotContain(e => e.Contains(sentinel, StringComparison.Ordinal),
+          "the relay path must never log the prompt body");
+    }
+
+    [Fact]
+    public async Task ReceivePump_SendsStructuredRelayError_WhenRelayFailsTransiently_AndKeepsLoopAlive()
+    {
+        // A transient relay failure must surface a structured, correlated error frame to the client
+        // (input is not silently lost) while the receive loop stays alive for subsequent frames.
+        // Deterministic transient failure: with a SINGLE concurrency slot, restarting a FINISHED child
+        // cannot acquire a slot (held by a second, still-running child), so SendMessageAsync throws
+        // InvalidOperationException synchronously — a transient failure the relay must not swallow.
+        var betaGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var creation = 0;
+        Func<IStreamingAgent> factory = () =>
+        {
+            var call = Interlocked.Increment(ref creation);
+            return call == 1
+              ? new ScriptedSubAgentProvider((messages, ct) => OneMessageThenComplete())
+              : new ScriptedSubAgentProvider((messages, ct) => TwoMessagesThenBlock(betaGate.Task, ct));
+        };
+
+        await using var loop = CreateParentLoop(factory, maxConcurrent: 1);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+        _ = await loop.SubAgentManager!.ObserveCompletionAsync(agentId, testCts.Token);
+
+        // A second child holds the single concurrency slot so alpha's restart cannot acquire one.
+        _ = await loop.SubAgentManager!.SpawnAsync(
+          TemplateName, "hold-slot", name: "beta", runInBackground: true);
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        socket.EnqueueTextFrame(JsonSerializer.Serialize(new ChatRequest("relayed-one")));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+
+        // A structured relay_failed error frame must reach the client (not silent) ...
+        await socket.WaitUntilAsync(() => socket.SentContains("\"code\":\"relay_failed\""), testCts.Token);
+        // ... and the connection must stay open (the receive loop was not torn down).
+        handlerTask.IsCompleted.Should().BeFalse("a transient relay failure must not end the connection");
+
+        var frame = socket.SentFrames.First(f => f.Contains("\"code\":\"relay_failed\"", StringComparison.Ordinal));
+        frame.Should().Contain("\"$type\":\"error\"");
+        frame.Should().Contain(agentId);
+
+        await testCts.CancelAsync();
+        betaGate.SetResult();
+        await handlerTask;
+    }
+
     // ----- helpers -----
 
-    private static ChatWebSocketManager CreateManager(MultiTurnAgentPool pool) =>
+    private static ChatWebSocketManager CreateManager(
+      MultiTurnAgentPool pool, ILogger<ChatWebSocketManager>? logger = null) =>
       new(
         pool,
         new WebSocketConnectionRegistry(),
         new PendingAuthCoordinator(Mock.Of<IAuthEventNotifier>(), new AuthOptions(), NullLogger<PendingAuthCoordinator>.Instance),
-        NullLogger<ChatWebSocketManager>.Instance);
+        logger ?? NullLogger<ChatWebSocketManager>.Instance);
 
-    private static MultiTurnAgentLoop CreateParentLoop(Func<IStreamingAgent> childFactory)
+    /// <summary>Captures every formatted log message so tests can assert on (the absence of) content.</summary>
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _entries = [];
+        private readonly Lock _lock = new();
+
+        public IReadOnlyList<string> Entries
+        {
+            get { lock (_lock) { return [.. _entries]; } }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+          LogLevel logLevel,
+          EventId eventId,
+          TState state,
+          Exception? exception,
+          Func<TState, Exception?, string> formatter)
+        {
+            var message = formatter(state, exception);
+            lock (_lock) { _entries.Add(message); }
+        }
+    }
+
+    private static MultiTurnAgentLoop CreateParentLoop(Func<IStreamingAgent> childFactory, int maxConcurrent = 5)
     {
         var options = new SubAgentOptions
         {
@@ -208,7 +511,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
                     AgentFactory = childFactory,
                 },
             },
-            MaxConcurrentSubAgents = 5,
+            MaxConcurrentSubAgents = maxConcurrent,
         };
 
         return new MultiTurnAgentLoop(
@@ -368,10 +671,14 @@ public sealed class ChatWebSocketManagerSubAgentTests
         private readonly SemaphoreSlim _activity = new(0);
         private WebSocketState _state = WebSocketState.Open;
         private int _receivedFrameCount;
+        private InboundFrame? _current;
+        private int _currentOffset;
 
-        private readonly record struct InboundFrame(byte[] Payload, WebSocketMessageType Type);
+        private readonly record struct InboundFrame(byte[] Payload, WebSocketMessageType Type, bool EndOfMessage);
 
         public bool CloseAsyncCalled { get; private set; }
+
+        public WebSocketCloseStatus? LastCloseStatus { get; private set; }
 
         public int ReceivedFrameCount => Volatile.Read(ref _receivedFrameCount);
 
@@ -386,7 +693,16 @@ public sealed class ChatWebSocketManagerSubAgentTests
         }
 
         public void EnqueueTextFrame(string text) =>
-          _inbound.Writer.TryWrite(new InboundFrame(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text));
+          _inbound.Writer.TryWrite(
+            new InboundFrame(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, EndOfMessage: true));
+
+        /// <summary>Enqueues a text fragment; set <paramref name="endOfMessage"/> false to split a message.</summary>
+        public void EnqueueTextFragment(byte[] payload, bool endOfMessage) =>
+          _inbound.Writer.TryWrite(new InboundFrame(payload, WebSocketMessageType.Text, endOfMessage));
+
+        /// <summary>Enqueues a single binary frame (rejected by the text-only receive pump).</summary>
+        public void EnqueueBinaryFrame(byte[] payload) =>
+          _inbound.Writer.TryWrite(new InboundFrame(payload, WebSocketMessageType.Binary, EndOfMessage: true));
 
         public async Task WaitUntilAsync(Func<bool> condition, CancellationToken ct)
         {
@@ -416,25 +732,51 @@ public sealed class ChatWebSocketManagerSubAgentTests
         public override async Task<WebSocketReceiveResult> ReceiveAsync(
           ArraySegment<byte> buffer, CancellationToken cancellationToken)
         {
-            var frame = await _inbound.Reader.ReadAsync(cancellationToken);
+            if (_current is null)
+            {
+                _current = await _inbound.Reader.ReadAsync(cancellationToken);
+                _currentOffset = 0;
+            }
+
             _ = Interlocked.Increment(ref _receivedFrameCount);
             _ = _activity.Release();
 
+            var frame = _current.Value;
+
             if (frame.Type == WebSocketMessageType.Close)
             {
+                _current = null;
                 _state = WebSocketState.CloseReceived;
                 return new WebSocketReceiveResult(0, WebSocketMessageType.Close, endOfMessage: true);
             }
 
-            var count = Math.Min(frame.Payload.Length, buffer.Count);
-            Array.Copy(frame.Payload, 0, buffer.Array!, buffer.Offset, count);
-            return new WebSocketReceiveResult(count, frame.Type, endOfMessage: true);
+            var remaining = frame.Payload.Length - _currentOffset;
+            var count = Math.Min(remaining, buffer.Count);
+            Array.Copy(frame.Payload, _currentOffset, buffer.Array!, buffer.Offset, count);
+            _currentOffset += count;
+
+            bool endOfMessage;
+            if (_currentOffset >= frame.Payload.Length)
+            {
+                // This frame is fully delivered: honor its own end-of-message marker (false when the
+                // caller split a single logical message into multiple fragments).
+                endOfMessage = frame.EndOfMessage;
+                _current = null;
+            }
+            else
+            {
+                // The frame was larger than the receive buffer, so more chunks of it remain.
+                endOfMessage = false;
+            }
+
+            return new WebSocketReceiveResult(count, frame.Type, endOfMessage);
         }
 
         public override Task CloseAsync(
-          WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+            WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
         {
             CloseAsyncCalled = true;
+            LastCloseStatus = closeStatus;
             _state = WebSocketState.Closed;
             return Task.CompletedTask;
         }
