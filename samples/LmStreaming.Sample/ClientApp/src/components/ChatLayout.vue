@@ -17,6 +17,7 @@ import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
 import AuthRequiredBanner from './AuthRequiredBanner.vue';
 import MarketplaceModal from './MarketplaceModal.vue';
+import FileBrowserModal from './FileBrowserModal.vue';
 
 const {
   conversations,
@@ -105,6 +106,7 @@ const sidebarCollapsed = ref(false);
 const isSwitchingMode = ref(false);
 const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
+const fileBrowserModalOpen = ref(false);
 const modeSwitchDisabled = computed(
   () => modesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
 );
@@ -539,6 +541,15 @@ onBeforeUnmount(() => {
               Marketplaces
             </button>
             <button
+              class="file-browser-btn"
+              data-testid="file-browser-button"
+              title="Browse workspace files"
+              :disabled="!currentThreadId"
+              @click="fileBrowserModalOpen = true"
+            >
+              Files
+            </button>
+            <button
               class="clear-btn"
               data-testid="clear-button"
               @click="clearMessages"
@@ -552,6 +563,12 @@ onBeforeUnmount(() => {
         <MarketplaceModal
           v-if="marketplaceModalOpen"
           @close="marketplaceModalOpen = false"
+        />
+
+        <FileBrowserModal
+          v-if="fileBrowserModalOpen"
+          :thread-id="currentThreadId"
+          @close="fileBrowserModalOpen = false"
         />
 
         <MessageList :display-items="displayItems" :is-loading="chatLoading" />
@@ -672,6 +689,26 @@ onBeforeUnmount(() => {
 
 .marketplace-btn:hover {
   background: #2057bd;
+}
+
+.file-browser-btn {
+  padding: 8px 16px;
+  background: #2d6cdf;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.file-browser-btn:hover:not(:disabled) {
+  background: #2057bd;
+}
+
+.file-browser-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
 }
 
 .clear-btn {

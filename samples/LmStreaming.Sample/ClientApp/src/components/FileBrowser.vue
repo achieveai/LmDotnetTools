@@ -1,0 +1,559 @@
+<script setup lang="ts">
+import { onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue';
+import { useFileBrowser } from '@/composables/useFileBrowser';
+import type { FileEntry } from '@/types/fileBrowser';
+
+const props = defineProps<{ threadId: string | null }>();
+
+const {
+  entries,
+  breadcrumbs,
+  moreCount,
+  isLoading,
+  error,
+  noSession,
+  previewTarget,
+  previewResult,
+  load,
+  navigateTo,
+  preview,
+  clearPreview,
+  download,
+  upload,
+  remove,
+  cleanup,
+} = useFileBrowser(() => props.threadId);
+
+// The entry pending delete confirmation (null when no dialog is open).
+const deleteTarget = ref<FileEntry | null>(null);
+const cancelBtnRef = ref<HTMLButtonElement | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const isDragOver = ref(false);
+
+onMounted(() => {
+  void load('');
+});
+
+onBeforeUnmount(() => cleanup());
+
+// Re-load from the root whenever the conversation changes.
+watch(
+  () => props.threadId,
+  () => {
+    clearPreview();
+    void load('');
+  }
+);
+
+function isNavigable(entry: FileEntry): boolean {
+  return entry.type === 'directory' && !entry.nameLossy;
+}
+
+function canPreview(entry: FileEntry): boolean {
+  return entry.type === 'file' && !entry.nameLossy;
+}
+
+function canDownload(entry: FileEntry): boolean {
+  return entry.type === 'file' && !entry.nameLossy;
+}
+
+function canDelete(entry: FileEntry): boolean {
+  return entry.type !== 'symlink' && !entry.nameLossy;
+}
+
+function onRowClick(entry: FileEntry): void {
+  if (isNavigable(entry)) {
+    void navigateTo(joinCurrent(entry.name));
+  }
+}
+
+/** Directory navigation target: the entry name joined onto the current breadcrumb path. */
+function joinCurrent(name: string): string {
+  const current = breadcrumbs.value[breadcrumbs.value.length - 1]?.path ?? '';
+  return current ? `${current}/${name}` : name;
+}
+
+function onPreview(entry: FileEntry): void {
+  if (previewTarget.value?.name === entry.name) {
+    clearPreview();
+    return;
+  }
+  void preview(entry);
+}
+
+function onDownload(entry: FileEntry): void {
+  void download(entry);
+}
+
+function askDelete(entry: FileEntry): void {
+  deleteTarget.value = entry;
+}
+
+function cancelDelete(): void {
+  deleteTarget.value = null;
+}
+
+async function confirmDelete(): Promise<void> {
+  const target = deleteTarget.value;
+  deleteTarget.value = null;
+  if (target) {
+    await remove(target);
+  }
+}
+
+// When the confirm dialog opens, move focus to the (safe) Cancel button.
+watch(deleteTarget, async (target) => {
+  if (target) {
+    await nextTick();
+    cancelBtnRef.value?.focus();
+  }
+});
+
+function onFilesPicked(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const files = input.files ? Array.from(input.files) : [];
+  if (files.length > 0) {
+    void upload(files);
+  }
+  // Reset so picking the same file again re-triggers change.
+  input.value = '';
+}
+
+function onDrop(event: DragEvent): void {
+  isDragOver.value = false;
+  const files = event.dataTransfer?.files ? Array.from(event.dataTransfer.files) : [];
+  if (files.length > 0) {
+    void upload(files);
+  }
+}
+
+function formatSize(size: number | null): string {
+  if (size === null) {
+    return '';
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function typeIcon(entry: FileEntry): string {
+  if (entry.type === 'directory') {
+    return '📁';
+  }
+  if (entry.type === 'symlink') {
+    return '🔗';
+  }
+  return '📄';
+}
+</script>
+
+<template>
+  <div class="file-browser" data-testid="file-browser">
+    <!-- No sandbox session yet: the conversation hasn't provisioned a workspace. -->
+    <div v-if="noSession" class="fb-empty" data-testid="file-browser-no-session">
+      No sandbox session yet. Send a message that uses the sandbox to create one.
+    </div>
+
+    <template v-else>
+      <!-- Breadcrumbs -->
+      <nav class="fb-breadcrumbs" data-testid="file-browser-breadcrumb" aria-label="Breadcrumb">
+        <template v-for="(crumb, idx) in breadcrumbs" :key="crumb.path">
+          <button
+            class="fb-crumb"
+            :data-testid="`file-browser-crumb-${idx}`"
+            @click="navigateTo(crumb.path)"
+          >
+            {{ crumb.name }}
+          </button>
+          <span v-if="idx < breadcrumbs.length - 1" class="fb-crumb-sep" aria-hidden="true">/</span>
+        </template>
+      </nav>
+
+      <!-- Upload: drag-and-drop zone + file picker (both call upload()) -->
+      <div
+        class="fb-dropzone"
+        :class="{ 'fb-dropzone-active': isDragOver }"
+        data-testid="file-browser-dropzone"
+        @dragover.prevent="isDragOver = true"
+        @dragleave.prevent="isDragOver = false"
+        @drop.prevent="onDrop"
+      >
+        <span>Drag files here to upload, or</span>
+        <button class="fb-upload-btn" data-testid="file-browser-upload" @click="fileInputRef?.click()">
+          Choose files
+        </button>
+        <input
+          ref="fileInputRef"
+          class="fb-file-input"
+          type="file"
+          multiple
+          data-testid="file-browser-file-input"
+          @change="onFilesPicked"
+        />
+      </div>
+
+      <div v-if="error" class="fb-error" data-testid="file-browser-error">{{ error }}</div>
+
+      <div v-if="isLoading" class="fb-loading" data-testid="file-browser-loading">Loading…</div>
+
+      <ul v-else class="fb-list" data-testid="file-browser-list">
+        <li v-if="entries.length === 0" class="fb-empty" data-testid="file-browser-empty">
+          This directory is empty.
+        </li>
+        <li
+          v-for="entry in entries"
+          :key="entry.name"
+          class="fb-row"
+          :class="{ 'fb-row-symlink': entry.type === 'symlink', 'fb-row-lossy': entry.nameLossy }"
+          :data-testid="`file-entry-${entry.name}`"
+        >
+          <button
+            class="fb-name"
+            :class="{ 'fb-name-dir': isNavigable(entry) }"
+            :disabled="!isNavigable(entry)"
+            :data-testid="`file-entry-name-${entry.name}`"
+            @click="onRowClick(entry)"
+          >
+            <span class="fb-icon" aria-hidden="true">{{ typeIcon(entry) }}</span>
+            <span class="fb-label">{{ entry.name }}</span>
+          </button>
+
+          <span
+            v-if="entry.nameLossy"
+            class="fb-badge"
+            :data-testid="`file-entry-lossy-${entry.name}`"
+            title="Name could not be decoded as UTF-8; actions are disabled."
+          >
+            unreadable name
+          </span>
+          <span v-else-if="entry.type === 'symlink'" class="fb-badge fb-badge-symlink">symlink</span>
+
+          <span class="fb-size">{{ formatSize(entry.size) }}</span>
+
+          <span class="fb-actions">
+            <button
+              v-if="canPreview(entry)"
+              class="fb-action"
+              :data-testid="`file-entry-preview-${entry.name}`"
+              @click="onPreview(entry)"
+            >
+              Preview
+            </button>
+            <button
+              v-if="canDownload(entry)"
+              class="fb-action"
+              :data-testid="`file-entry-download-${entry.name}`"
+              @click="onDownload(entry)"
+            >
+              Download
+            </button>
+            <button
+              v-if="canDelete(entry)"
+              class="fb-action fb-action-danger"
+              :data-testid="`file-entry-delete-${entry.name}`"
+              @click="askDelete(entry)"
+            >
+              Delete
+            </button>
+          </span>
+
+          <!-- Inline preview panel for this entry -->
+          <div
+            v-if="previewTarget?.name === entry.name && previewResult"
+            class="fb-preview"
+            :data-testid="`file-preview-${entry.name}`"
+          >
+            <div v-if="previewResult.previewable && previewResult.text !== undefined" class="fb-preview-body">
+              <pre class="file-preview" data-testid="file-preview-text">{{ previewResult.text }}</pre>
+            </div>
+            <div v-else class="fb-preview-unavailable" data-testid="file-preview-unavailable">
+              Preview unavailable<span v-if="previewResult.reason"> ({{ previewResult.reason }})</span>.
+            </div>
+          </div>
+        </li>
+      </ul>
+
+      <!-- Row-cap notice: entries beyond the server cap were not returned. -->
+      <div v-if="moreCount > 0" class="fb-more" data-testid="file-browser-more">
+        {{ moreCount }} more item{{ moreCount === 1 ? '' : 's' }} not shown.
+      </div>
+    </template>
+
+    <!-- Delete confirmation dialog -->
+    <div
+      v-if="deleteTarget"
+      class="fb-confirm-backdrop"
+      data-testid="file-browser-delete-confirm"
+      @click.self="cancelDelete"
+    >
+      <div class="fb-confirm" role="dialog" aria-modal="true" aria-labelledby="fb-confirm-title">
+        <p id="fb-confirm-title" class="fb-confirm-text">
+          <template v-if="deleteTarget.type === 'directory'">
+            Delete folder {{ deleteTarget.name }} and all its contents?
+          </template>
+          <template v-else> Delete file {{ deleteTarget.name }}? </template>
+        </p>
+        <div class="fb-confirm-actions">
+          <button
+            ref="cancelBtnRef"
+            class="fb-action"
+            data-testid="file-browser-delete-cancel"
+            @click="cancelDelete"
+          >
+            Cancel
+          </button>
+          <button
+            class="fb-action fb-action-danger"
+            data-testid="file-browser-delete-confirm-btn"
+            @click="confirmDelete"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.file-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.fb-breadcrumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.fb-crumb {
+  background: none;
+  border: none;
+  color: #2d6cdf;
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 14px;
+}
+
+.fb-crumb:hover {
+  text-decoration: underline;
+}
+
+.fb-crumb-sep {
+  color: #999;
+}
+
+.fb-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed #ccc;
+  border-radius: 8px;
+  color: #666;
+  font-size: 13px;
+}
+
+.fb-dropzone-active {
+  border-color: #2d6cdf;
+  background: #f0f6ff;
+}
+
+.fb-upload-btn {
+  padding: 4px 12px;
+  background: #2d6cdf;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.fb-file-input {
+  display: none;
+}
+
+.fb-error {
+  padding: 8px 12px;
+  background: #f8d7da;
+  color: #721c24;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.fb-loading,
+.fb-empty {
+  color: #666;
+  font-size: 14px;
+  padding: 8px 0;
+}
+
+.fb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fb-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.fb-row-symlink {
+  font-style: italic;
+  color: #777;
+}
+
+.fb-row-lossy {
+  opacity: 0.7;
+}
+
+.fb-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 14px;
+  color: #333;
+  cursor: default;
+  text-align: left;
+}
+
+.fb-name-dir {
+  color: #2d6cdf;
+  cursor: pointer;
+}
+
+.fb-name-dir:hover {
+  text-decoration: underline;
+}
+
+.fb-name:disabled {
+  cursor: default;
+}
+
+.fb-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #ffe0b2;
+  color: #8a5a00;
+}
+
+.fb-badge-symlink {
+  background: #e0e0e0;
+  color: #555;
+}
+
+.fb-size {
+  margin-left: auto;
+  color: #999;
+  font-size: 12px;
+  min-width: 60px;
+  text-align: right;
+}
+
+.fb-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.fb-action {
+  padding: 2px 8px;
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fb-action:hover {
+  background: #e6e6e6;
+}
+
+.fb-action-danger {
+  color: #c82333;
+  border-color: #f1b0b7;
+}
+
+.fb-preview {
+  flex-basis: 100%;
+  width: 100%;
+}
+
+.file-preview {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  background: #1e1e1e;
+  color: #e6e6e6;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.fb-preview-unavailable {
+  margin-top: 6px;
+  color: #999;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.fb-more {
+  color: #888;
+  font-size: 13px;
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.fb-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+}
+
+.fb-confirm {
+  background: white;
+  border-radius: 10px;
+  padding: 20px;
+  max-width: 380px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+}
+
+.fb-confirm-text {
+  margin: 0 0 16px;
+  font-size: 15px;
+  color: #333;
+}
+
+.fb-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+</style>
