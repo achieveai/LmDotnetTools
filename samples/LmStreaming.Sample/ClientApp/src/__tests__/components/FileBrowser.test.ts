@@ -205,3 +205,66 @@ describe('FileBrowser upload failures', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(4);
   });
 });
+
+describe('FileBrowser workspace display', () => {
+  it('shows the active workspace id', async () => {
+    const { wrapper } = await mountBrowser();
+
+    const ws = wrapper.find('[data-testid="file-browser-workspace"]');
+    expect(ws.exists()).toBe(true);
+    expect(ws.text()).toContain('ws-1');
+  });
+});
+
+describe('FileBrowser overwrite confirmation', () => {
+  function setFiles(wrapper: ReturnType<typeof mount>, names: string[]): HTMLInputElement {
+    const inputEl = wrapper.find('[data-testid="file-browser-file-input"]').element as HTMLInputElement;
+    Object.defineProperty(inputEl, 'files', {
+      configurable: true,
+      value: names.map((name) => new File(['x'], name)),
+    });
+    return inputEl;
+  }
+
+  it('shows an advisory confirm BEFORE upload when a name collides; Overwrite uploads the batch', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    setFiles(wrapper, ['readme.md']); // collides with the existing readme.md
+    await wrapper.find('[data-testid="file-browser-file-input"]').trigger('change');
+    await flushPromises();
+
+    const confirm = wrapper.find('[data-testid="file-browser-overwrite-confirm"]');
+    expect(confirm.exists()).toBe(true);
+    expect(confirm.text()).toContain('readme.md');
+    // No upload was issued yet — only the initial listing fetch.
+    expect(fetchSpy.mock.calls.length).toBe(1);
+
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ name: 'readme.md', size: 1 })) // upload
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+    await wrapper.find('[data-testid="file-browser-overwrite-confirm-btn"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="file-browser-overwrite-confirm"]').exists()).toBe(false);
+    const uploads = fetchSpy.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+    expect(uploads.length).toBe(1);
+  });
+
+  it('Skip existing uploads only the non-colliding files', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    setFiles(wrapper, ['readme.md', 'new.txt']); // one collides, one is new
+    await wrapper.find('[data-testid="file-browser-file-input"]').trigger('change');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="file-browser-overwrite-confirm"]').exists()).toBe(true);
+
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ name: 'new.txt', size: 1 })) // upload new.txt only
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+    await wrapper.find('[data-testid="file-browser-overwrite-cancel"]').trigger('click');
+    await flushPromises();
+
+    // Only the non-colliding file uploaded (readme.md was skipped).
+    const uploads = fetchSpy.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+    expect(uploads.length).toBe(1);
+  });
+});

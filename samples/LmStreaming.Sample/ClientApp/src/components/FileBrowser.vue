@@ -9,6 +9,7 @@ const {
   entries,
   breadcrumbs,
   moreCount,
+  workspaceId,
   isLoading,
   error,
   noSession,
@@ -27,6 +28,9 @@ const {
 // The entry pending delete confirmation (null when no dialog is open).
 const deleteTarget = ref<FileEntry | null>(null);
 const cancelBtnRef = ref<HTMLButtonElement | null>(null);
+// Files awaiting an advisory overwrite confirmation (their names collide with existing files).
+const pendingUpload = ref<{ files: File[]; colliding: string[] } | null>(null);
+const overwriteKeepBtnRef = ref<HTMLButtonElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const isDragOver = ref(false);
 // Concise summary of the files a batch upload REJECTED (per-file 413/400/409 target_busy), shown as
@@ -112,11 +116,19 @@ watch(deleteTarget, async (target) => {
   }
 });
 
+// When the overwrite-confirm opens, move focus to its (safe) "Skip existing" button.
+watch(pendingUpload, async (pending) => {
+  if (pending) {
+    await nextTick();
+    overwriteKeepBtnRef.value?.focus();
+  }
+});
+
 function onFilesPicked(event: Event): void {
   const input = event.target as HTMLInputElement;
   const files = input.files ? Array.from(input.files) : [];
   if (files.length > 0) {
-    void handleUpload(files);
+    handleUpload(files);
   }
   // Reset so picking the same file again re-triggers change.
   input.value = '';
@@ -126,7 +138,46 @@ function onDrop(event: DragEvent): void {
   isDragOver.value = false;
   const files = event.dataTransfer?.files ? Array.from(event.dataTransfer.files) : [];
   if (files.length > 0) {
-    void handleUpload(files);
+    handleUpload(files);
+  }
+}
+
+/**
+ * Entry point for an upload batch. If any picked file's basename collides with an existing (non-lossy)
+ * file in the current directory, an advisory overwrite confirmation is shown FIRST; otherwise the batch
+ * uploads immediately. The server performs an atomic last-writer-wins replacement on confirm.
+ */
+function handleUpload(files: File[]): void {
+  const existing = new Set(
+    entries.value.filter((entry) => entry.type === 'file' && !entry.nameLossy).map((entry) => entry.name)
+  );
+  const colliding = files.filter((file) => existing.has(file.name)).map((file) => file.name);
+  if (colliding.length > 0) {
+    pendingUpload.value = { files, colliding };
+    return;
+  }
+  void doUpload(files);
+}
+
+/** Overwrite confirmed: upload the whole batch (colliding files are replaced, last-writer-wins). */
+async function confirmOverwrite(): Promise<void> {
+  const pending = pendingUpload.value;
+  pendingUpload.value = null;
+  if (pending) {
+    await doUpload(pending.files);
+  }
+}
+
+/** Overwrite declined: skip the colliding files and upload only the non-colliding ones (per-file independence). */
+function cancelOverwrite(): void {
+  const pending = pendingUpload.value;
+  pendingUpload.value = null;
+  if (pending) {
+    const collidingSet = new Set(pending.colliding);
+    const safe = pending.files.filter((file) => !collidingSet.has(file.name));
+    if (safe.length > 0) {
+      void doUpload(safe);
+    }
   }
 }
 
@@ -136,7 +187,7 @@ function onDrop(event: DragEvent): void {
  * files the server rejected (413 file_too_large, 400 invalid_file_name, 409 target_busy) so a
  * rejected file no longer vanishes silently.
  */
-async function handleUpload(files: File[]): Promise<void> {
+async function doUpload(files: File[]): Promise<void> {
   uploadErrors.value = null;
   const outcomes = await upload(files);
   const failed = outcomes.filter((outcome) => !outcome.success);
@@ -174,6 +225,11 @@ function typeIcon(entry: FileEntry): string {
 
 <template>
   <div class="file-browser" data-testid="file-browser">
+    <!-- The active workspace (shared by any conversation with the same workspace/identity). -->
+    <div v-if="workspaceId" class="fb-workspace" data-testid="file-browser-workspace">
+      Workspace: <span class="fb-workspace-id">{{ workspaceId }}</span>
+    </div>
+
     <!-- No sandbox session yet: the conversation hasn't provisioned a workspace. -->
     <div v-if="noSession" class="fb-empty" data-testid="file-browser-no-session">
       No sandbox session yet. Send a message that uses the sandbox to create one.
@@ -346,6 +402,39 @@ function typeIcon(entry: FileEntry): string {
         </div>
       </div>
     </div>
+
+    <!-- Advisory overwrite confirmation: one or more uploaded names collide with existing files. -->
+    <div
+      v-if="pendingUpload"
+      class="fb-confirm-backdrop"
+      data-testid="file-browser-overwrite-confirm"
+      @click.self="cancelOverwrite"
+      @keydown.esc.stop.prevent="cancelOverwrite"
+    >
+      <div class="fb-confirm" role="dialog" aria-modal="true" aria-labelledby="fb-overwrite-title">
+        <p id="fb-overwrite-title" class="fb-confirm-text">
+          {{ pendingUpload.colliding.length }} file{{ pendingUpload.colliding.length === 1 ? '' : 's' }}
+          already exist and will be overwritten: {{ pendingUpload.colliding.join(', ') }}. Continue?
+        </p>
+        <div class="fb-confirm-actions">
+          <button
+            ref="overwriteKeepBtnRef"
+            class="fb-action"
+            data-testid="file-browser-overwrite-cancel"
+            @click="cancelOverwrite"
+          >
+            Skip existing
+          </button>
+          <button
+            class="fb-action fb-action-danger"
+            data-testid="file-browser-overwrite-confirm-btn"
+            @click="confirmOverwrite"
+          >
+            Overwrite
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -355,6 +444,16 @@ function typeIcon(entry: FileEntry): string {
   flex-direction: column;
   gap: 12px;
   padding: 16px 20px;
+}
+
+.fb-workspace {
+  font-size: 12px;
+  color: #666;
+}
+
+.fb-workspace-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #333;
 }
 
 .fb-breadcrumbs {
