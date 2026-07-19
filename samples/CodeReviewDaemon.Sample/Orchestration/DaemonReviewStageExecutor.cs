@@ -1070,16 +1070,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return (summary.PrevHeadSha, reviewRound, []);
         }
 
+        // A pooled review lists its prior notes HOST-side from the leased slot's store checkout — the same
+        // host filesystem CommitPooledNotesAsync writes them through — NOT the boot-lifetime _fileSystem
+        // sandbox session (mirrors PrependPriorKnowledgeAsync). That boot session is one the gateway never
+        // registered for this run, so it 404s ("Session not found"); worse, its FIRST use binds a boot gateway
+        // session under the daemon's shared app id that then COLLIDES with the per-run review MCP session — the
+        // per-run /mcp connect 404s and the whole review fails (observed live: list-prior-notes was the first
+        // boot-adapter touch of a pooled review, so it triggered the bind that broke every review). Reading
+        // host-side keeps the boot adapter untouched on the pooled path. The returned paths stay CONTAINER-
+        // rooted (notesDir) so the review agent Reads them through its own sandbox tools; a non-pooled/legacy
+        // run (no lease) keeps the original _fileSystem path.
+        ISandboxFileSystem fileSystem;
+        string listDir;
+        if (_slotWorkspace is not null && _leasedReviews.TryGetValue(run.Id, out var lease))
+        {
+            fileSystem = _slotWorkspace.HostFileSystem;
+            listDir = lease.Prepared.NotesDir;
+        }
+        else
+        {
+            fileSystem = _fileSystem;
+            listDir = notesDir;
+        }
+
         IReadOnlyList<string> entries;
         try
         {
-            entries = await _fileSystem.ListFilesAsync(notesDir, cancellationToken).ConfigureAwait(false);
+            entries = await fileSystem.ListFilesAsync(listDir, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Listing the notes dir goes through the boot-lifetime sandbox session, which can 404/hiccup;
-            // design §6 says re-review context must never fail the review, so degrade to no prior files.
-            _logger.LogWarning(ex, "Listing prior notes files in '{NotesDir}' failed; proceeding without them.", notesDir);
+            // Re-review context must never fail the review (design §6), so degrade to no prior files.
+            _logger.LogWarning(ex, "Listing prior notes files in '{NotesDir}' failed; proceeding without them.", listDir);
             return (summary.PrevHeadSha, reviewRound, []);
         }
 

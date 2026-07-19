@@ -269,9 +269,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
         });
         var run = fixture.SeedRun(); // head-sha "head-sha" — this round's head
 
-        // The prior round's own notes are already on the notes dir the reviewer's tools address.
-        fixture.BootFileSystem.Seed(
-            "/workspace/store/PRs/lmdotnettools-118/PR_Findings_01.md", "prior findings");
+        // The prior round's own notes live on the LEASED SLOT's host store checkout (where
+        // CommitPooledNotesAsync wrote them) and MUST be listed HOST-side via _slotWorkspace.HostFileSystem +
+        // lease.Prepared.NotesDir — NOT the boot-lifetime sandbox session (fixture.BootFileSystem), which the
+        // gateway never registers for a pooled run (so it 404s) and whose first use would bind a boot gateway
+        // session that collides with the per-run review MCP session, failing the whole review. Seeding host-side
+        // (not boot) is the regression guard: reading prior notes through the boot fs would find nothing here.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/PRs/lmdotnettools-118/PR_Findings_01.md", "prior findings");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
