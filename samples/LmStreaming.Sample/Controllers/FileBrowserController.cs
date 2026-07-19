@@ -417,8 +417,16 @@ public sealed class FileBrowserController(
     /// </summary>
     private async Task<ResolvedTarget> ResolveTargetAsync(string sessionId, string requestedPath, CancellationToken ct)
     {
-        var normalized = requestedPath.Replace('\\', '/');
-        var components = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        // Do NOT treat '\' as a separator. On the POSIX sandbox a backslash is a LEGAL filename character,
+        // so rewriting it to '/' would split a literal name like `a\b` into `a`/`b` and resolve a DIFFERENT
+        // object (or make the real `a\b` unreachable). The wire path separator is '/' only, so any backslash
+        // is an invalid path rather than a separator.
+        if (requestedPath.Contains('\\', StringComparison.Ordinal))
+        {
+            return ResolvedTarget.Fail(ResolveFailure.InvalidPath);
+        }
+
+        var components = requestedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var serverParts = new List<string>(components.Length);
         var currentDir = string.Empty;
         var currentType = SandboxEntryType.Directory;

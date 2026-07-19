@@ -355,6 +355,22 @@ public class FileBrowserControllerTests
         result.Should().BeOfType<BadRequestObjectResult>();
     }
 
+    [Fact]
+    public async Task Resolve_RejectsBackslashPath_AsInvalidPath_NotAsSeparator()
+    {
+        var (controller, browser) = Build();
+        // A literal POSIX file named "a\b" at root, alongside a real "a" directory with a "b" child. The
+        // backslash must be rejected (invalid_path), NOT rewritten to '/', which would misresolve the
+        // literal "a\b" onto the a/b directory entry (wrong-object identity).
+        browser.Listings[""] = [File("a\\b"), Dir("a")];
+        browser.Listings["a"] = [File("b")];
+
+        var result = await controller.List(ThreadId, path: "a\\b", CancellationToken.None);
+
+        var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        bad.Value.Should().BeEquivalentTo(new { error = "invalid_path", code = "invalid_path", threadId = ThreadId });
+    }
+
     // -------- Preview --------
 
     [Fact]
