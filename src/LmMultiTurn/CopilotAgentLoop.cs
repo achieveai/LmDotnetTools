@@ -53,11 +53,6 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
     /// Optional agent-wide hook observing every message this loop publishes (see
     /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
     /// </param>
-    /// <param name="strictCanonicalPersistence">
-    /// When true, enables strict ordered canonical-history durability (see
-    /// <see cref="MultiTurnAgentBase"/>'s constructor remarks). Default false preserves existing
-    /// fire-and-forget append / best-effort-swallowed replacement behavior.
-    /// </param>
     public CopilotAgentLoop(
         CopilotSdkOptions options,
         string threadId,
@@ -70,8 +65,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null,
-        bool strictCanonicalPersistence = false)
+        IAgentPublicationObserver? publicationObserver = null)
         : this(
             options,
             functionRegistry: null,
@@ -86,8 +80,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             loggerFactory,
             clientFactory,
             persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver,
-            strictCanonicalPersistence: strictCanonicalPersistence)
+            publicationObserver: publicationObserver)
     {
     }
 
@@ -114,11 +107,6 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
     /// Optional agent-wide hook observing every message this loop publishes (see
     /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
     /// </param>
-    /// <param name="strictCanonicalPersistence">
-    /// When true, enables strict ordered canonical-history durability (see
-    /// <see cref="MultiTurnAgentBase"/>'s constructor remarks). Default false preserves existing
-    /// fire-and-forget append / best-effort-swallowed replacement behavior.
-    /// </param>
     public CopilotAgentLoop(
         CopilotSdkOptions options,
         FunctionRegistry? functionRegistry,
@@ -133,8 +121,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null,
-        bool strictCanonicalPersistence = false)
+        IAgentPublicationObserver? publicationObserver = null)
         : base(
             threadId,
             systemPrompt,
@@ -145,8 +132,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             store,
             logger,
             persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver,
-            strictCanonicalPersistence: strictCanonicalPersistence)
+            publicationObserver: publicationObserver)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory;
