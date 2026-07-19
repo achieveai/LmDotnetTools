@@ -491,6 +491,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
                 var assignment = await StartRunAsync(batch, batchParent, ct);
 
+                // Use this run's own token (linked to, but independently cancellable from, the
+                // loop's ct) for turn execution — a matching CancelCurrentRunAsync(RunId) call
+                // signals only this token, so it never looks like outer loop-shutdown below.
+                var runToken = CurrentRunToken;
+
                 // Track each input for correlation with enqueue/dequeue events
                 foreach (var input in batch)
                 {
@@ -512,15 +517,29 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     }
                 }
 
+                var runCancelled = false;
                 try
                 {
-                    if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
+                    try
                     {
-                        await ExecuteInteractiveModeAsync(assignment, messagesToSend, ct);
+                        if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
+                        {
+                            await ExecuteInteractiveModeAsync(assignment, messagesToSend, runToken);
+                        }
+                        else
+                        {
+                            await ExecuteOneShotModeAsync(assignment, messagesToSend, runToken);
+                        }
                     }
-                    else
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
-                        await ExecuteOneShotModeAsync(assignment, messagesToSend, ct);
+                        // The loop's own token (ct) is NOT cancelled, so this OperationCanceledException
+                        // can only have come from runToken — a matching CancelCurrentRunAsync(RunId)
+                        // call for THIS run via expected-run Stop. Swallow it here (recorded via
+                        // runCancelled below) so the outer while loop continues to the next input
+                        // instead of reaching the loop-shutdown/unexpected-error handling below.
+                        Logger.LogInformation("Run {RunId} cancelled via expected-run Stop", assignment.RunId);
+                        runCancelled = true;
                     }
                 }
                 finally
@@ -540,6 +559,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                         wasForked: isExplicitFork,
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         pendingMessageCount: _localMessageQueue.Count,
+                        isCancelled: runCancelled,
                         ct: ct);
                 }
             }
@@ -797,6 +817,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         var (mergedParent, isExplicitFork) = ResolveBatchParent(mergedInputs);
         var assignment = await StartRunAsync(mergedInputs, mergedParent, ct);
 
+        // Use this run's own token (linked to, but independently cancellable from, the loop's
+        // ct) for turn execution — a matching CancelCurrentRunAsync(RunId) call signals only
+        // this token. Without this, an expected-run Stop's OperationCanceledException would
+        // escape this method (ct is NOT cancelled) straight to RunLoopAsync's top-level "Unexpected
+        // error in run loop" catch, which rethrows and tears down the whole loop.
+        var runToken = CurrentRunToken;
+
         // Track ALL inputs for dequeue correlation with the SAME assignment
         foreach (var input in mergedInputs)
         {
@@ -812,10 +839,19 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             }
         }
 
+        var runCancelled = false;
         try
         {
-            // Execute the merged batch as a full interactive run (waits for ResultEvent)
-            await ExecuteInteractiveModeAsync(assignment, mergedMessages, ct);
+            try
+            {
+                // Execute the merged batch as a full interactive run (waits for ResultEvent)
+                await ExecuteInteractiveModeAsync(assignment, mergedMessages, runToken);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Logger.LogInformation("Run {RunId} cancelled via expected-run Stop", assignment.RunId);
+                runCancelled = true;
+            }
         }
         finally
         {
@@ -826,6 +862,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
                 pendingMessageCount: 0,
+                isCancelled: runCancelled,
                 ct: ct);
         }
     }
