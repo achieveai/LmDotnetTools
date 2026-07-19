@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
@@ -204,6 +205,89 @@ public sealed class ChatWebSocketManager
     }
 
     /// <summary>
+    /// Handles a WebSocket connection focused on a single FOCUSED child sub-agent: streams that
+    /// child's live + replayed output to the client (reusing <see cref="StreamMessagesToClientAsync"/>)
+    /// and relays inbound text frames to it in background mode. Presentation-only — it never mutates
+    /// the parent connection or drives agent execution.
+    /// </summary>
+    /// <param name="webSocket">The WebSocket connection.</param>
+    /// <param name="parentThreadId">Thread id of the parent agent that owns the sub-agent.</param>
+    /// <param name="agentId">Id (or caller-supplied name) of the focused child sub-agent.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task HandleSubAgentConnectionAsync(
+        System.Net.WebSockets.WebSocket webSocket,
+        string parentThreadId,
+        string agentId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(webSocket);
+
+        _logger.LogInformation(
+            "Sub-agent WebSocket connection started for parent thread {ParentThreadId} sub-agent {AgentId}",
+            parentThreadId,
+            agentId);
+
+        // Register before resolution so every outbound frame (including the subagent_unavailable
+        // error below) flows through the connection's single gated write path, mirroring
+        // HandleConnectionAsync which registers before agent resolution.
+        var connection = _connectionRegistry.Register($"subagent-{agentId}", webSocket);
+        try
+        {
+            if (!_agentPool.TryGet(parentThreadId, out var parentAgent)
+                || parentAgent is not MultiTurnAgentLoop loop
+                || loop.SubAgentManager is not { } subAgentManager
+                || !subAgentManager.TryGetAgent(agentId, out var childAgent)
+                || childAgent is null)
+            {
+                _logger.LogWarning(
+                    "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId}",
+                    agentId,
+                    parentThreadId);
+
+                await SendSubAgentUnavailableErrorAsync(connection, agentId, cancellationToken);
+                return;
+            }
+
+            using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            // Reuse the parent's stream loop verbatim — it already emits the {"$type":"done"}
+            // sentinel after RunCompletedMessage. This is a presentation-only view, so no recording.
+            var subscriptionTask = StreamMessagesToClientAsync(
+                connection, childAgent, $"subagent-{agentId}", recordWriter: null, connectionCts.Token);
+
+            var receiveTask = ReceiveSubAgentMessagesFromClientAsync(
+                webSocket, subAgentManager, agentId, connectionCts.Token);
+
+            try
+            {
+                _ = await Task.WhenAny(subscriptionTask, receiveTask);
+            }
+            finally
+            {
+                await connectionCts.CancelAsync();
+
+                try
+                {
+                    await Task.WhenAll(subscriptionTask, receiveTask);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected on cancellation.
+                }
+            }
+        }
+        finally
+        {
+            _connectionRegistry.Unregister(connection.ConnectionId);
+        }
+
+        _logger.LogInformation(
+            "Sub-agent WebSocket connection ended for parent thread {ParentThreadId} sub-agent {AgentId}",
+            parentThreadId,
+            agentId);
+    }
+
+    /// <summary>
     /// Subscribes to agent messages and streams them to the WebSocket client.
     /// </summary>
     private async Task StreamMessagesToClientAsync(
@@ -388,6 +472,119 @@ public sealed class ChatWebSocketManager
         {
             _logger.LogWarning(ex, "Invalid JSON from thread {ThreadId}: {Json}", threadId, json);
         }
+    }
+
+    /// <summary>
+    /// Receives frames from the sub-agent WebSocket client and relays their text to the focused
+    /// child sub-agent. This mirrors <see cref="ReceiveMessagesFromClientAsync"/> (frame assembly,
+    /// close handling, cancellation/WebSocket catches) rather than sharing it, because delivery goes
+    /// through <see cref="SubAgentManager.SendMessageAsync"/> (not <c>IMultiTurnAgent.SendAsync</c>)
+    /// — a different, deliberately minimal sink. Kept intentionally small for that reason.
+    /// </summary>
+    private async Task ReceiveSubAgentMessagesFromClientAsync(
+        System.Net.WebSockets.WebSocket webSocket,
+        SubAgentManager subAgentManager,
+        string agentId,
+        CancellationToken ct)
+    {
+        var buffer = new byte[4096];
+        var messageBuilder = new StringBuilder();
+
+        try
+        {
+            while (webSocket.State == WebSocketState.Open && !ct.IsCancellationRequested)
+            {
+                WebSocketReceiveResult result;
+                _ = messageBuilder.Clear();
+
+                do
+                {
+                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        _logger.LogInformation("Client requested close for sub-agent {AgentId}", agentId);
+                        await webSocket.CloseAsync(
+                            WebSocketCloseStatus.NormalClosure,
+                            "Closed by client",
+                            CancellationToken.None);
+                        return;
+                    }
+
+                    if (result.MessageType == WebSocketMessageType.Text)
+                    {
+                        var chunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                        _ = messageBuilder.Append(chunk);
+                    }
+                } while (!result.EndOfMessage);
+
+                if (messageBuilder.Length == 0)
+                {
+                    continue;
+                }
+
+                var json = messageBuilder.ToString();
+                try
+                {
+                    var request = JsonSerializer.Deserialize<ChatRequest>(json, _jsonOptions);
+                    if (request?.Message is null)
+                    {
+                        _logger.LogWarning("Invalid chat request for sub-agent {AgentId}: {Json}", agentId, json);
+                        continue;
+                    }
+
+                    _logger.LogInformation(
+                        "Relaying message to sub-agent {AgentId}: {Message}",
+                        agentId,
+                        request.Message);
+
+                    // Background mode is REQUIRED: a synchronous send blocks until the child's whole
+                    // run completes, which would stall this receive loop. Background returns a JSON
+                    // receipt immediately (discarded) while the sibling StreamMessagesToClientAsync
+                    // task carries the child's live deltas back to the client.
+                    _ = await subAgentManager.SendMessageAsync(
+                        agentId, request.Message, runInBackground: true, ct);
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogWarning(ex, "Invalid JSON for sub-agent {AgentId}: {Json}", agentId, json);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogDebug("Receive cancelled for sub-agent {AgentId}", agentId);
+        }
+        catch (WebSocketException ex)
+        {
+            _logger.LogWarning(ex, "WebSocket error during receive for sub-agent {AgentId}", agentId);
+        }
+    }
+
+    private async Task SendSubAgentUnavailableErrorAsync(
+        RegisteredWebSocketConnection connection,
+        string agentId,
+        CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = "subagent_unavailable",
+            ["agentId"] = agentId,
+            ["message"] = $"Sub-agent '{agentId}' is not available.",
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        if (!await connection.TrySendTextAsync(json, ct))
+        {
+            return;
+        }
+
+        // Close through the wrapper so the single-write-path contract holds (closing is outbound).
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.NormalClosure,
+            "Sub-agent unavailable",
+            CancellationToken.None);
     }
 
     private async Task SendProviderUnavailableErrorAsync(
