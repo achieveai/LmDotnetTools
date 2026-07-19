@@ -444,8 +444,31 @@ public sealed class ProgramSubAgentCompositionTests
 
         var threadId = manager.ListAgents().Should().ContainSingle().Subject.ThreadId;
         threadId.Should().StartWith("subagent-");
-        var persisted = await fakeStore.LoadMessagesAsync(threadId);
+
+        // Canonical persistence via AddToHistory is fire-and-forget on the child's background run
+        // (MultiTurnAgentBase), so there is no happens-before edge between SpawnAsync returning and
+        // the store write landing. Poll deterministically (bounded) until the transcript appears
+        // instead of asserting on a single race-prone read.
+        var persisted = await WaitForPersistedMessagesAsync(fakeStore, threadId);
         persisted.Should().NotBeEmpty();
+    }
+
+    private static async Task<IReadOnlyList<PersistedMessage>> WaitForPersistedMessagesAsync(
+        InMemoryConversationStore store,
+        string threadId,
+        int timeoutMs = 5000)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
+        while (true)
+        {
+            var messages = await store.LoadMessagesAsync(threadId);
+            if (messages.Count > 0 || cts.IsCancellationRequested)
+            {
+                return messages;
+            }
+
+            await Task.Delay(10, cts.Token).ContinueWith(_ => { }, TaskScheduler.Default);
+        }
     }
 
     private static SandboxSessionRegistry CreateRegistry()
