@@ -37,11 +37,16 @@ export class FileBrowserError extends Error {
   }
 }
 
-/** Best-effort parse of a JSON error body; returns null when unreadable. */
+/** Best-effort parse of a JSON error body; returns null when unreadable. Cancellation is re-thrown. */
 async function readBody(response: Response): Promise<Record<string, unknown> | null> {
   try {
     return (await response.json()) as Record<string, unknown>;
-  } catch {
+  } catch (e) {
+    // A read aborted mid-body is CANCELLATION, not a malformed body — propagate it so the caller can
+    // treat it as cancellation rather than masking it as a generic failure.
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw e;
+    }
     return null;
   }
 }
@@ -127,8 +132,8 @@ export async function previewFile(
  * @throws {CredentialConflictError} on 409 caller_credential_conflict.
  * @throws {FileBrowserError} on other non-ok statuses.
  */
-export async function downloadFile(threadId: string, path: string): Promise<void> {
-  const response = await fetch(filesUrl(threadId, path, '/download'));
+export async function downloadFile(threadId: string, path: string, signal?: AbortSignal): Promise<void> {
+  const response = await fetch(filesUrl(threadId, path, '/download'), { signal });
   if (!response.ok) {
     throw await classifyFailure(response, 'download file');
   }

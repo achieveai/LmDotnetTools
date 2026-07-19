@@ -184,7 +184,8 @@ describe('fileBrowserApi.downloadFile', () => {
       await downloadFile('thread-1', 'dir/report.csv');
 
       expect(fetchSpy).toHaveBeenCalledWith(
-        '/api/conversations/thread-1/files/download?path=dir%2Freport.csv'
+        '/api/conversations/thread-1/files/download?path=dir%2Freport.csv',
+        { signal: undefined }
       );
       expect(createSpy).toHaveBeenCalledTimes(1);
       // The revoke is deferred (so a larger blob's download isn't cancelled); it hasn't run yet.
@@ -248,5 +249,18 @@ describe('fileBrowserApi consistent session-error classification', () => {
     await expect(uploadFile('t', '', new File(['x'], 'a.txt'))).rejects.toBeInstanceOf(
       CredentialConflictError
     );
+  });
+
+  it('re-throws an AbortError raised while reading the error body (not masked as a generic failure)', async () => {
+    // A non-OK response whose body read is aborted mid-stream: classification must propagate the
+    // cancellation, not turn it into a FileBrowserError.
+    const aborted = {
+      ok: false,
+      status: 409,
+      json: () => Promise.reject(new DOMException('Aborted', 'AbortError')),
+    } as unknown as Response;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(aborted);
+
+    await expect(previewFile('t', 'x')).rejects.toHaveProperty('name', 'AbortError');
   });
 });

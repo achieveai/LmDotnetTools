@@ -136,6 +136,51 @@ describe('useFileBrowser.upload', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(fb.entries.value).toHaveLength(sampleListing.entries.length);
   });
+
+  it('sends every file to the directory the batch STARTED in, even if the user navigates mid-batch', async () => {
+    const fb = useFileBrowser(() => 'thread-1');
+    fb.currentPath.value = 'start';
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url, init) => {
+      urls.push(url as string);
+      if ((init as RequestInit)?.method === 'POST') {
+        // Simulate the user navigating away while the batch is uploading.
+        fb.currentPath.value = 'elsewhere';
+        return Promise.resolve(jsonResponse({ name: 'f', size: 1 }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing));
+    });
+
+    await fb.upload([new File(['a'], 'a.txt'), new File(['b'], 'b.txt')]);
+
+    const uploadUrls = urls.filter((u) => u.includes('?path='));
+    expect(uploadUrls).toHaveLength(2);
+    // Both files targeted the STARTING directory; navigation mid-batch never re-targeted them.
+    expect(uploadUrls.every((u) => u.includes('path=start'))).toBe(true);
+    expect(urls.some((u) => u.includes('elsewhere'))).toBe(false);
+  });
+
+  it('cleanup aborts an in-flight upload and swallows the cancellation (no error committed)', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const pending: { resolve: (r: Response) => void; reject: (e: unknown) => void }[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      capturedSignal = (init as RequestInit)?.signal ?? undefined;
+      return new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    });
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const p = fb.upload([new File(['a'], 'a.txt')]);
+    expect(capturedSignal?.aborted).toBe(false);
+
+    fb.cleanup(); // unmount aborts the mutation's lifecycle signal
+    expect(capturedSignal?.aborted).toBe(true);
+
+    // A real aborted fetch rejects; the composable must swallow it (cancellation, not a failure).
+    pending[0].reject(new DOMException('Aborted', 'AbortError'));
+    await p;
+    await flushPromises();
+    expect(fb.error.value).toBeNull();
+  });
 });
 
 describe('useFileBrowser.remove', () => {
@@ -156,5 +201,27 @@ describe('useFileBrowser.remove', () => {
     const [reloadUrl, reloadInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
     expect(reloadInit.method).toBeUndefined();
     expect(reloadUrl).toContain('/api/conversations/thread-1/files');
+  });
+
+  it('does NOT reload after a mutation if the user navigated to a different directory meanwhile', async () => {
+    const calls: Array<{ url: string; method?: string }> = [];
+    const fb = useFileBrowser(() => 'thread-1');
+    fb.currentPath.value = 'src';
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url, init) => {
+      const method = (init as RequestInit)?.method;
+      calls.push({ url: url as string, method });
+      if (method === 'DELETE') {
+        fb.currentPath.value = 'docs'; // user navigated away while the delete was in flight
+        return Promise.resolve(noContentResponse());
+      }
+      return Promise.resolve(jsonResponse(sampleListing));
+    });
+
+    await fb.remove({ name: 'old.txt', type: 'file', size: 1, nameLossy: false });
+
+    // The DELETE targeted the START path; NO reload GET was issued (it would have aborted the newer nav).
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+    expect(calls.filter((c) => c.method === undefined)).toHaveLength(0);
+    expect(calls[0].url).toBe('/api/conversations/thread-1/files?path=src%2Fold.txt');
   });
 });

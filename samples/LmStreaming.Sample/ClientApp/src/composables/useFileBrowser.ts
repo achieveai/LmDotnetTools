@@ -57,9 +57,16 @@ export function useFileBrowser(getThreadId: () => string | null) {
   // Tracks the in-flight listing fetch so a re-load cancels the previous request rather than racing
   // to write a stale result.
   let abortController: AbortController | null = null;
-  // Set on cleanup (unmount) so a late mutation's `finally` reload can't restart a listing after the
-  // composable is gone.
+  // Aborted on cleanup (unmount): its signal is passed to EVERY mutation/read request so an in-flight
+  // upload/delete/preview/download stops sending (up to 64 MiB) and never commits state after the
+  // composable is gone. `disposed` gates any state write that could still fire after cleanup.
+  const lifecycle = new AbortController();
   let disposed = false;
+
+  /** True for an aborted-request error, which must be swallowed silently (it is cancellation, not a failure). */
+  function isCancellation(e: unknown): boolean {
+    return e instanceof DOMException && e.name === 'AbortError';
+  }
 
   /** (Re)loads the listing for `path` (defaults to the current path). */
   async function load(path: string = currentPath.value): Promise<void> {
@@ -134,11 +141,17 @@ export function useFileBrowser(getThreadId: () => string | null) {
     }
     const path = joinPath(currentPath.value, entry.name);
     try {
-      const result = await previewFile(threadId, path);
+      const result = await previewFile(threadId, path, lifecycle.signal);
+      if (disposed) {
+        return null;
+      }
       previewTarget.value = entry;
       previewResult.value = result;
       return result;
     } catch (e) {
+      if (isCancellation(e) || disposed) {
+        return null;
+      }
       if (e instanceof NoSessionError) {
         noSession.value = true;
       } else {
@@ -162,8 +175,11 @@ export function useFileBrowser(getThreadId: () => string | null) {
       return;
     }
     try {
-      await downloadFile(threadId, joinPath(currentPath.value, entry.name));
+      await downloadFile(threadId, joinPath(currentPath.value, entry.name), lifecycle.signal);
     } catch (e) {
+      if (isCancellation(e) || disposed) {
+        return;
+      }
       if (e instanceof NoSessionError) {
         noSession.value = true;
       } else {
@@ -174,24 +190,31 @@ export function useFileBrowser(getThreadId: () => string | null) {
   }
 
   /**
-   * Uploads N files into the current directory as N INDEPENDENT requests, preserving each file's
-   * success/failure, then reloads the listing. A session-level failure (no session / credential
-   * conflict) rejects the whole batch.
+   * Uploads N files into the directory the batch STARTED in, as N INDEPENDENT sequential requests
+   * (one in flight at a time so a large batch never retains multiple 64 MiB buffers). The destination is
+   * snapshotted before the loop, so navigating mid-batch never re-targets later files; the loop also stops
+   * if the composable is disposed or the conversation switches.
    */
   async function upload(files: File[]): Promise<UploadOutcome[]> {
     const threadId = getThreadId();
     if (!threadId || files.length === 0) {
       return [];
     }
+    const startPath = currentPath.value;
     try {
-      // Sequential (one request in flight at a time) so a large multi-file batch never retains multiple
-      // 64 MiB buffers concurrently (client- and server-side); each file still gets its own outcome.
       const outcomes: UploadOutcome[] = [];
       for (const file of files) {
-        outcomes.push(await uploadFile(threadId, currentPath.value, file));
+        // Stop the batch if the browser was torn down or the conversation changed mid-upload.
+        if (disposed || getThreadId() !== threadId) {
+          break;
+        }
+        outcomes.push(await uploadFile(threadId, startPath, file, lifecycle.signal));
       }
       return outcomes;
     } catch (e) {
+      if (isCancellation(e) || disposed) {
+        return files.map((file) => ({ name: file.name, success: false, error: 'cancelled' }));
+      }
       if (e instanceof NoSessionError) {
         noSession.value = true;
       } else {
@@ -204,22 +227,26 @@ export function useFileBrowser(getThreadId: () => string | null) {
         error: e instanceof Error ? e.message : 'upload_failed',
       }));
     } finally {
-      await reloadIfCurrent(threadId);
+      await reloadIfCurrent(threadId, startPath);
     }
   }
 
-  /** Deletes an entry then reloads the listing. */
+  /** Deletes an entry (from the directory the mutation started in) then reloads the listing. */
   async function remove(entry: FileEntry): Promise<void> {
     const threadId = getThreadId();
     if (!threadId) {
       return;
     }
+    const startPath = currentPath.value;
     try {
-      await deleteEntry(threadId, joinPath(currentPath.value, entry.name));
-      if (previewTarget.value?.name === entry.name) {
+      await deleteEntry(threadId, joinPath(startPath, entry.name), lifecycle.signal);
+      if (!disposed && previewTarget.value?.name === entry.name) {
         clearPreview();
       }
     } catch (e) {
+      if (isCancellation(e) || disposed) {
+        return;
+      }
       if (e instanceof NoSessionError) {
         noSession.value = true;
       } else {
@@ -227,25 +254,27 @@ export function useFileBrowser(getThreadId: () => string | null) {
       }
       console.error('Failed to delete entry:', e);
     } finally {
-      await reloadIfCurrent(threadId);
+      await reloadIfCurrent(threadId, startPath);
     }
   }
 
   /**
-   * Reloads the listing after a mutation, but ONLY if the composable is still live and the active thread
-   * is the same one the mutation ran under — a late upload/delete must not restart a listing after unmount
-   * or a conversation switch (which would overwrite newer state).
+   * Reloads the listing after a mutation, but ONLY if the composable is still live AND both the active
+   * thread and the current directory still match the ones the mutation ran under. A late upload/delete
+   * must not restart a listing after unmount, a conversation switch, OR an in-thread navigation to a
+   * different directory (which would abort the newer navigation and pull the user back to the old path).
    */
-  async function reloadIfCurrent(startThreadId: string): Promise<void> {
-    if (!disposed && getThreadId() === startThreadId) {
-      await load();
+  async function reloadIfCurrent(startThreadId: string, startPath: string): Promise<void> {
+    if (!disposed && getThreadId() === startThreadId && currentPath.value === startPath) {
+      await load(startPath);
     }
   }
 
-  /** Cancels any in-flight listing fetch; call from the consumer's unmount hook. */
+  /** Cancels any in-flight listing fetch AND in-flight mutations; call from the consumer's unmount hook. */
   function cleanup(): void {
     disposed = true;
     abortController?.abort();
+    lifecycle.abort();
   }
 
   return {
