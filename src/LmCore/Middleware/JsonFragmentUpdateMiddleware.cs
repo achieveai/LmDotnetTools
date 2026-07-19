@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -23,7 +24,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     {
         ArgumentNullException.ThrowIfNull(agent);
         var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
-        return ProcessAsync(stream);
+        return ProcessAsync(stream, cancellationToken);
     }
 
     public Task<IEnumerable<IMessage>> InvokeAsync(
@@ -40,11 +41,19 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage and ToolCallUpdateMessage instances.
     /// </summary>
     /// <param name="messageStream">The input stream of messages</param>
+    /// <param name="cancellationToken">
+    /// Cancellation token for the enumeration. Marked <see cref="EnumeratorCancellationAttribute"/> so a
+    /// caller's <c>WithCancellation(token)</c> on the RETURNED stream overrides whatever token was in
+    /// scope when this method was called — without this, a downstream consumer cancelling mid-turn
+    /// (e.g. a matching <c>CancelCurrentRunAsync</c> Stop) would never reach <paramref name="messageStream"/>.
+    /// </param>
     /// <returns>The processed stream of messages with JsonFragmentUpdates added</returns>
-    public async IAsyncEnumerable<IMessage> ProcessAsync(IAsyncEnumerable<IMessage> messageStream)
+    public async IAsyncEnumerable<IMessage> ProcessAsync(
+        IAsyncEnumerable<IMessage> messageStream,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(messageStream);
-        await foreach (var message in messageStream)
+        await foreach (var message in messageStream.WithCancellation(cancellationToken))
         {
             yield return message switch
             {

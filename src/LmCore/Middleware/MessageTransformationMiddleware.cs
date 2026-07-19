@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
@@ -120,7 +121,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to streaming replies
-        return AssignMessageOrderingStreaming(streamingResponse, _logger);
+        return AssignMessageOrderingStreaming(streamingResponse, _logger, cancellationToken);
     }
 
     #region Downstream: Assign Message Ordering
@@ -441,14 +442,23 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Assigns messageOrderIdx and chunkIdx to streaming messages on the fly
     /// </summary>
+    /// <param name="messages">The source stream of provider messages to annotate.</param>
+    /// <param name="logger">Logger for ordering-decision diagnostics.</param>
+    /// <param name="cancellationToken">
+    /// Marked <see cref="EnumeratorCancellationAttribute"/> so a caller's <c>WithCancellation(token)</c>
+    /// on the RETURNED stream overrides whatever token was captured when this method was called —
+    /// without this, cancelling mid-turn (e.g. a matching <c>CancelCurrentRunAsync</c> Stop) would
+    /// never reach <paramref name="messages"/>.
+    /// </param>
     private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
         IAsyncEnumerable<IMessage> messages,
-        ILogger logger
+        ILogger logger,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
     )
     {
         var state = new OrderingState();
 
-        await foreach (var message in messages)
+        await foreach (var message in messages.WithCancellation(cancellationToken))
         {
             foreach (var processedMessage in ProcessMessageForOrdering(message, state, logger))
             {

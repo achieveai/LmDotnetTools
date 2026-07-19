@@ -95,6 +95,9 @@ internal sealed class RecordingMultiTurnAgent : IMultiTurnAgent
         return Task.CompletedTask;
     }
 
+    public Task<RunCancellationResult> CancelCurrentRunAsync(string expectedRunId, CancellationToken ct = default) =>
+        Task.FromResult(RunCancellationResult.NoActiveRun);
+
     public ValueTask DisposeAsync()
     {
         return ValueTask.CompletedTask;

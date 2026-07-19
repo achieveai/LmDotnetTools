@@ -22,6 +22,15 @@ public enum RunStatus
     /// status. Terminal forever once observed — polling never transitions back out of it.
     /// </summary>
     Interrupted,
+
+    /// <summary>
+    /// The run was cancelled via a matching expected-run <c>Stop</c> request (see
+    /// <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.IMultiTurnAgent.CancelCurrentRunAsync"/>)
+    /// rather than completing naturally, erroring, or being interrupted by a process restart.
+    /// Distinct from <see cref="Interrupted"/>: this is a caller-initiated outcome for a run that
+    /// WAS observed reaching a terminal state, not a dangling row discovered on restart.
+    /// </summary>
+    Cancelled,
 }
 
 /// <summary>

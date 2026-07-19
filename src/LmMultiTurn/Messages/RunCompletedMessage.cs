@@ -56,6 +56,14 @@ public record RunCompletedMessage : IMessage
     /// </summary>
     public string? ErrorMessage { get; init; }
 
+    /// <summary>
+    /// Indicates the run ended because a matching <c>CancelCurrentRunAsync</c> Stop request was
+    /// accepted for it, rather than completing naturally or erroring. Mutually exclusive with
+    /// <see cref="IsError"/>. Defaults to <c>false</c> so existing v1 payloads/clients that predate
+    /// this field are unaffected.
+    /// </summary>
+    public bool IsCancelled { get; init; }
+
     public string? FromAgent { get; init; }
     public Role Role => Role.System;
     public ImmutableDictionary<string, object>? Metadata { get; init; }

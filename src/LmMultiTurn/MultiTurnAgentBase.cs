@@ -55,6 +55,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private readonly object _stateLock = new();
     private readonly object _historyLock = new();
 
+    // Cancellation token source for the run currently identified by _currentRunId, linked to (but
+    // independently cancellable from) the loop's own lifetime token — see StartRunAsync/
+    // CurrentRunToken/CancelCurrentRunAsync/CompleteRunAsync. Guarded by _stateLock alongside
+    // _currentRunId so a reader always observes a consistent (runId, cts) pair.
+    private CancellationTokenSource? _currentRunCts;
+
+    // Exactly-once terminal arbiter (see CompleteRunAsync): claims the right to persist/publish a
+    // given runId's terminal outcome. A matching CancelCurrentRunAsync racing the run's own
+    // natural/error completion must produce exactly one durable status and one
+    // RunCompletedMessage — the first CompleteRunAsync call for a runId wins, any later call for
+    // the same runId is a no-op.
+    private readonly ConcurrentDictionary<string, byte> _terminalClaims = new();
+
     // Lifecycle
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
@@ -131,6 +144,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// receipt-correlated assignment. Override in tests to keep them fast.
     /// </summary>
     protected virtual TimeSpan FallbackGracePeriod => TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The cancellation token for the run most recently started by <see cref="StartRunAsync"/>,
+    /// linked to (but independently cancellable from) the loop's lifetime token. A concrete
+    /// <c>RunLoopAsync</c> implementation should read this immediately after <see
+    /// cref="StartRunAsync"/> returns and pass it (instead of the loop's own token) to turn
+    /// execution, so a matching <see cref="CancelCurrentRunAsync"/> call cancels only that run —
+    /// never the outer loop. Returns <see cref="CancellationToken.None"/> if no run is active.
+    /// </summary>
+    protected CancellationToken CurrentRunToken
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _currentRunCts?.Token ?? CancellationToken.None;
+            }
+        }
+    }
 
     #endregion
 
@@ -1346,11 +1378,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         var generationId = Guid.NewGuid().ToString("N");
         var inputIds = inputs.Select(i => i.ReceiptId).ToList();
 
+        // Each run gets its own CTS, linked to (but independently cancellable from) the loop
+        // token passed in here — see CurrentRunToken/CancelCurrentRunAsync. Created under the
+        // same lock as _currentRunId so CancelCurrentRunAsync always observes a matching pair.
+        // Defensively dispose any leftover CTS from a prior run that a caller failed to clear
+        // via CompleteRunAsync (should not happen in practice — RunLoopAsync is single-threaded
+        // per agent — but avoids leaking a CTS if it ever does).
+        var runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        CancellationTokenSource? staleRunCts;
         lock (_stateLock)
         {
             parentRunId ??= _latestRunId;
             _currentRunId = runId;
+            staleRunCts = _currentRunCts;
+            _currentRunCts = runCts;
         }
+
+        staleRunCts?.Dispose();
 
         if (RunLedgerStore != null)
         {
@@ -1431,10 +1475,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// status API treats the ledger as the source of truth, so a subscriber must never observe a
     /// <see cref="RunCompletedMessage"/> for a run whose terminal status failed to persist (which
     /// would otherwise let <c>GET /status</c> keep reporting <see cref="RunStatus.InProgress"/>
-    /// after completion was broadcast). Propagating also means a persistence failure here is
-    /// caught by the caller's per-run try/catch as a run failure, so at most one terminal outcome
-    /// is ever published for a given run — not a Completed publish followed by a later Errored one.
+    /// after completion was broadcast).
     /// </summary>
+    /// <remarks>
+    /// Exactly-once terminal arbiter: the FIRST call for a given <paramref name="runId"/> claims
+    /// it (via <c>_terminalClaims</c>) and proceeds; any later call for the SAME
+    /// <paramref name="runId"/> — e.g. a matching <c>CancelCurrentRunAsync</c> racing this run's
+    /// own natural/error completion — is a no-op that touches neither the ledger nor
+    /// subscribers. Combined with each <c>RunLoopAsync</c> calling this at most once per run
+    /// per code path, at most one terminal outcome is ever durably recorded or published for a
+    /// given run.
+    /// </remarks>
     /// <param name="runId">The run ID that completed</param>
     /// <param name="generationId">The generation ID</param>
     /// <param name="wasForked">Whether the run was forked due to new input</param>
@@ -1442,6 +1493,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="pendingMessageCount">Number of pending message batches waiting to be processed</param>
     /// <param name="isError">Whether the run completed due to an error</param>
     /// <param name="errorMessage">Error message when isError is true</param>
+    /// <param name="isCancelled">
+    /// Whether the run ended because a matching <see cref="CancelCurrentRunAsync"/> request was
+    /// accepted for it. Mutually exclusive with <paramref name="isError"/> in practice (a run's
+    /// per-run wrapper picks exactly one terminal branch).
+    /// </param>
     /// <param name="ct">Cancellation token</param>
     protected async Task CompleteRunAsync(
         string runId,
@@ -1451,14 +1507,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         int pendingMessageCount = 0,
         bool isError = false,
         string? errorMessage = null,
+        bool isCancelled = false,
         CancellationToken ct = default)
     {
+        if (!_terminalClaims.TryAdd(runId, 0))
+        {
+            Logger.LogWarning(
+                "Duplicate terminal completion attempt for run {RunId} (isCancelled: {IsCancelled}, isError: {IsError}); ignoring — exactly-once terminal arbiter already resolved this run",
+                runId,
+                isCancelled,
+                isError);
+            return;
+        }
+
         if (RunLedgerStore != null)
         {
             var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);
             if (existing != null)
             {
-                var status = isError ? RunStatus.Errored : RunStatus.Completed;
+                var status = isCancelled ? RunStatus.Cancelled : isError ? RunStatus.Errored : RunStatus.Completed;
                 await RunLedgerStore.UpsertRunLedgerAsync(
                     existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
                     ct);
@@ -1482,15 +1549,26 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             PendingMessageCount = pendingMessageCount,
             IsError = isError,
             ErrorMessage = errorMessage,
+            IsCancelled = isCancelled,
         }, ct);
 
+        CancellationTokenSource? runCtsToDispose;
         lock (_stateLock)
         {
             _latestRunId = runId;
             _currentRunId = null;
+            runCtsToDispose = _currentRunCts;
+            _currentRunCts = null;
         }
 
-        if (isError)
+        // Dispose OUTSIDE the lock — Dispose() can run registered callbacks synchronously.
+        runCtsToDispose?.Dispose();
+
+        if (isCancelled)
+        {
+            Logger.LogInformation("Run {RunId} cancelled via expected-run Stop", runId);
+        }
+        else if (isError)
         {
             Logger.LogWarning("Run {RunId} completed with error: {ErrorMessage}", runId, errorMessage);
         }
@@ -1501,6 +1579,46 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         // Persist metadata after run completes
         await UpdateMetadataAsync(ct);
+    }
+
+    /// <inheritdoc />
+    public Task<RunCancellationResult> CancelCurrentRunAsync(string expectedRunId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(expectedRunId);
+
+        CancellationTokenSource cts;
+        lock (_stateLock)
+        {
+            if (_currentRunId == null || _currentRunCts == null)
+            {
+                return Task.FromResult(RunCancellationResult.NoActiveRun);
+            }
+
+            if (!string.Equals(_currentRunId, expectedRunId, StringComparison.Ordinal))
+            {
+                Logger.LogInformation(
+                    "CancelCurrentRunAsync: expected run {ExpectedRunId} is stale — current run is {CurrentRunId}",
+                    expectedRunId,
+                    _currentRunId);
+                return Task.FromResult(RunCancellationResult.StaleRun);
+            }
+
+            cts = _currentRunCts;
+        }
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The run reached its terminal outcome (and disposed its CTS in CompleteRunAsync)
+            // between the lock above and this call — treat as "already gone", not an error.
+            return Task.FromResult(RunCancellationResult.NoActiveRun);
+        }
+
+        Logger.LogInformation("CancelCurrentRunAsync: cancelled run {RunId}", expectedRunId);
+        return Task.FromResult(RunCancellationResult.Accepted);
     }
 
     /// <summary>

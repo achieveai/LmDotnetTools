@@ -35,6 +35,9 @@ internal sealed class ToolScopedReviewLoop(IMultiTurnAgent inner, IReadOnlyList<
 
     public Task StopAsync(TimeSpan? timeout = null) => inner.StopAsync(timeout);
 
+    public Task<RunCancellationResult> CancelCurrentRunAsync(string expectedRunId, CancellationToken ct = default)
+        => inner.CancelCurrentRunAsync(expectedRunId, ct);
+
     public async ValueTask DisposeAsync()
     {
         await inner.DisposeAsync().ConfigureAwait(false);
