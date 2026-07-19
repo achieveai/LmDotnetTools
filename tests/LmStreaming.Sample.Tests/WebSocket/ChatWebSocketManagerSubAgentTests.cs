@@ -461,6 +461,83 @@ public sealed class ChatWebSocketManagerSubAgentTests
         await handlerTask;
     }
 
+    [Fact]
+    public async Task PumpSubAgentStream_OnNonCancellationSourceFault_SendsStructuredError_AndClosesAbnormally()
+    {
+        // Finding #6: a NON-cancellation fault from the sub-agent message source (or serialization)
+        // must surface a content-free structured `subagent_stream_failed` frame and close with an
+        // ABNORMAL status, so the client can tell a hard failure apart from a clean backpressure close.
+        const string secret = "SENTINEL-STREAM-FAULT-7c19-do-not-leak";
+        const string agentId = "alpha";
+
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register($"subagent-{agentId}", socket);
+        var manager = CreateManager(EmptyPool());
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await manager.PumpSubAgentStreamAsync(
+          connection, OneMessageThenThrow(secret), agentId, testCts.Token);
+
+        socket.SentContains("\"code\":\"subagent_stream_failed\"").Should()
+          .BeTrue("a hard sub-agent stream failure must surface a structured error frame");
+
+        var frame = socket.SentFrames.First(
+          f => f.Contains("\"code\":\"subagent_stream_failed\"", StringComparison.Ordinal));
+        frame.Should().Contain("\"$type\":\"error\"");
+        frame.Should().Contain(agentId);
+        frame.Should().NotContain(secret, "the error frame must be content-free (no exception detail)");
+
+        socket.LastCloseStatus.Should().Be(WebSocketCloseStatus.InternalServerError,
+          "a hard failure must close abnormally, not with NormalClosure");
+        socket.LastCloseStatus.Should().NotBe(WebSocketCloseStatus.NormalClosure);
+    }
+
+    [Fact]
+    public async Task PumpSubAgentStream_OnCancellation_ClosesCleanly_WithoutErrorFrame()
+    {
+        // Finding #6: caller cancellation is the NORMAL teardown path — it must NOT be treated as a
+        // stream failure. No `subagent_stream_failed` frame and no abnormal close from the pump wrapper
+        // (the route performs the clean NormalClosure).
+        const string agentId = "alpha";
+
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register($"subagent-{agentId}", socket);
+        var manager = CreateManager(EmptyPool());
+        using var cts = new CancellationTokenSource();
+
+        var pumpTask = manager.PumpSubAgentStreamAsync(
+          connection, BlockUntilCancelled(cts.Token), agentId, cts.Token);
+
+        await cts.CancelAsync();
+        await pumpTask;
+
+        socket.SentContains("subagent_stream_failed").Should()
+          .BeFalse("cancellation is normal teardown, not a stream failure");
+        socket.CloseAsyncCalled.Should().BeFalse("the pump wrapper must not close on cancellation");
+        socket.LastCloseStatus.Should().NotBe(WebSocketCloseStatus.InternalServerError);
+    }
+
+    [Fact]
+    public void LogSubAgentRelayFailure_NeverLeaksExceptionText_WhenExceptionMessageCarriesSecret()
+    {
+        // Finding #793 (EUII): the relay-failure log must record only a stable category + content-free
+        // identifiers, never the exception (its Message/ToString can echo prompt/transcript/tool
+        // content). The capturing logger now inspects BOTH the formatted state AND exception text.
+        const string sentinel = "SENTINEL-SECRET-relay-transcript-4d2a";
+        var capture = new CapturingLogger<ChatWebSocketManager>();
+        var manager = CreateManager(EmptyPool(), capture);
+
+        // The exception message carries the secret (as a downstream provider/store fault would); the
+        // type name is content-free.
+        manager.LogSubAgentRelayFailure("alpha", byteCount: 42, new InvalidOperationException(sentinel));
+
+        capture.Entries.Should().NotBeEmpty("the relay failure must still be logged (category only)");
+        capture.Entries.Should().Contain(e => e.Contains("relay_failed", StringComparison.Ordinal),
+          "the stable category must be logged");
+        capture.Entries.Should().NotContain(e => e.Contains(sentinel, StringComparison.Ordinal),
+          "no captured entry (state OR exception text) may contain the secret");
+    }
+
     // ----- helpers -----
 
     private static ChatWebSocketManager CreateManager(
@@ -471,7 +548,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
         new PendingAuthCoordinator(Mock.Of<IAuthEventNotifier>(), new AuthOptions(), NullLogger<PendingAuthCoordinator>.Instance),
         logger ?? NullLogger<ChatWebSocketManager>.Instance);
 
-    /// <summary>Captures every formatted log message so tests can assert on (the absence of) content.</summary>
+    /// <summary>
+    /// Captures every formatted log message AND the exception text (<c>exception?.ToString()</c>) so
+    /// tests can assert on the ABSENCE of content across BOTH the message template state and any
+    /// exception handed to the logger — a real logging provider serializes the exception, so a leak via
+    /// the exception object (not the formatted state) must be caught too.
+    /// </summary>
     private sealed class CapturingLogger<T> : ILogger<T>
     {
         private readonly List<string> _entries = [];
@@ -494,7 +576,14 @@ public sealed class ChatWebSocketManagerSubAgentTests
           Func<TState, Exception?, string> formatter)
         {
             var message = formatter(state, exception);
-            lock (_lock) { _entries.Add(message); }
+            lock (_lock)
+            {
+                _entries.Add(message);
+                if (exception is not null)
+                {
+                    _entries.Add(exception.ToString());
+                }
+            }
         }
     }
 
@@ -524,6 +613,12 @@ public sealed class ChatWebSocketManagerSubAgentTests
     private static MultiTurnAgentPool CreatePoolReturning(IMultiTurnAgent agent) =>
       new((_, _, _) => new MultiTurnAgentPool.AgentCreationResult(agent), NullLogger<MultiTurnAgentPool>.Instance);
 
+    /// <summary>A pool whose creation factory is never invoked — for tests exercising only the seam
+    /// methods (pump/relay logging) that do not resolve an agent.</summary>
+    private static MultiTurnAgentPool EmptyPool() =>
+      new((_, _, _) => throw new InvalidOperationException("agent creation is unused in this test"),
+        NullLogger<MultiTurnAgentPool>.Instance);
+
     private static void RegisterParent(MultiTurnAgentPool pool) =>
       _ = pool.GetOrCreateAgent(ParentThreadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
@@ -551,6 +646,23 @@ public sealed class ChatWebSocketManagerSubAgentTests
     {
         await Task.CompletedTask;
         yield return new TextMessage { Role = Role.Assistant, Text = "ack" };
+    }
+
+    /// <summary>Yields one frame, then faults with a NON-cancellation exception whose message carries a
+    /// secret — models a source-enumeration/serialization fault that must NOT reach the client frame.</summary>
+    private static async IAsyncEnumerable<IMessage> OneMessageThenThrow(string secret)
+    {
+        await Task.CompletedTask;
+        yield return new TextMessage { Role = Role.Assistant, Text = "chunk-one" };
+        throw new InvalidOperationException(secret);
+    }
+
+    /// <summary>Blocks until the enumeration is cancelled (the normal-teardown path).</summary>
+    private static async IAsyncEnumerable<IMessage> BlockUntilCancelled(
+      [EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Delay(Timeout.Infinite, ct);
+        yield break;
     }
 
     /// <summary>

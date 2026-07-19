@@ -278,14 +278,14 @@ public sealed class ChatWebSocketManager
             // Stream via the manager's restart-spanning enumerable rather than a single captured
             // instance: relaying a follow-up to a FINISHED owned-provider child restarts it (disposing
             // the old loop and swapping in a fresh one), and this enumerable re-resolves + re-subscribes
-            // internally so the focused client keeps receiving the restarted turn's frames. Reuses the
-            // shared frame pump (the {"$type":"done"} sentinel after RunCompletedMessage). This is a
-            // presentation-only view, so no recording.
-            var subscriptionTask = PumpMessagesToClientAsync(
+            // internally so the focused client keeps receiving the restarted turn's frames. The sub-agent
+            // wrapper reuses the shared frame pump (the {"$type":"done"} sentinel after
+            // RunCompletedMessage) but adds failure-to-structured-error handling scoped to this path.
+            // This is a presentation-only view, so no recording.
+            var subscriptionTask = PumpSubAgentStreamAsync(
                 connection,
                 subAgentManager.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token),
-                $"subagent-{agentId}",
-                recordWriter: null,
+                agentId,
                 connectionCts.Token);
 
             var receiveTask = ReceiveSubAgentMessagesFromClientAsync(
@@ -331,6 +331,77 @@ public sealed class ChatWebSocketManager
         CancellationToken ct)
     {
         return PumpMessagesToClientAsync(connection, agent.SubscribeAsync(ct), threadId, recordWriter, ct);
+    }
+
+    /// <summary>
+    /// Drives the shared frame pump for the FOCUSED sub-agent view, translating a NON-cancellation
+    /// fault from the message source (the restart-spanning subscription enumeration) or from
+    /// serialization into a structured, content-free <c>subagent_stream_failed</c> error frame plus an
+    /// ABNORMAL WebSocket close, so the client can tell a hard failure apart from a clean backpressure
+    /// close. Caller cancellation stays the normal teardown path: the shared pump swallows
+    /// <see cref="OperationCanceledException"/> internally and returns, so this wrapper emits no error
+    /// frame and performs no close on cancellation (the route's normal close applies). Scoped to the
+    /// sub-agent call site so the parent <c>/ws</c> pump behavior is unchanged.
+    /// </summary>
+    internal async Task PumpSubAgentStreamAsync(
+        RegisteredWebSocketConnection connection,
+        IAsyncEnumerable<IMessage> source,
+        string agentId,
+        CancellationToken ct)
+    {
+        try
+        {
+            await PumpMessagesToClientAsync(connection, source, $"subagent-{agentId}", recordWriter: null, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal teardown: the connection (or the caller) was cancelled. No error frame; the clean
+            // close is the caller/route's responsibility.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Content-free: log ONLY the agent id and a stable exception category/type, never the
+            // exception message or stack (provider/restart/store faults can echo prompt/transcript/tool
+            // content — EUII).
+            _logger.LogError(
+                "Sub-agent {AgentId} focus stream failed; category {FailureCategory}, exceptionType {ExceptionType}",
+                agentId,
+                "subagent_stream_failed",
+                ex.GetType().Name);
+
+            await SendSubAgentStreamFailedErrorAsync(connection, agentId);
+        }
+    }
+
+    /// <summary>
+    /// Best-effort sends a content-free, structured <c>subagent_stream_failed</c> error frame and then
+    /// closes the connection with an ABNORMAL status
+    /// (<see cref="WebSocketCloseStatus.InternalServerError"/>) so the client distinguishes a hard
+    /// sub-agent stream failure from a clean backpressure/normal close. The frame carries NO exception
+    /// detail or message body (EUII). Uses <see cref="CancellationToken.None"/> for the send+close: the
+    /// stream already faulted, and a cancelled connection token would suppress the very frame that tells
+    /// the client what happened.
+    /// </summary>
+    private async Task SendSubAgentStreamFailedErrorAsync(
+        RegisteredWebSocketConnection connection,
+        string agentId)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "error",
+            ["code"] = "subagent_stream_failed",
+            ["agentId"] = agentId,
+            ["message"] = "The sub-agent stream failed.",
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+
+        _ = await connection.TrySendTextAsync(json, CancellationToken.None);
+
+        await connection.TryCloseAsync(
+            WebSocketCloseStatus.InternalServerError,
+            "Sub-agent stream failed",
+            CancellationToken.None);
     }
 
     /// <summary>
@@ -789,16 +860,27 @@ public sealed class ChatWebSocketManager
         {
             // Transient/unknown failure (e.g. an owned-provider restart race). Keep the receive loop
             // alive — that isolation was a prior review fix — but surface a structured, correlated error
-            // frame so the client's input is not silently lost. Only metadata is logged, never the body.
-            _logger.LogWarning(
-                ex,
-                "Failed to relay message ({ByteCount} bytes) to sub-agent {AgentId}; category {RejectCategory}, keeping the stream open",
-                byteCount,
-                agentId,
-                "relay_failed");
+            // frame so the client's input is not silently lost. Only a stable category and content-free
+            // identifiers are logged; the exception object is never handed to the logger (its
+            // message/ToString can echo prompt/transcript/tool content — EUII).
+            LogSubAgentRelayFailure(agentId, byteCount, ex);
             await SendRelayFailedErrorAsync(connection, agentId, ct);
         }
     }
+
+    /// <summary>
+    /// Logs a sub-agent relay failure with a STABLE category plus content-free identifiers only
+    /// (agent id, byte count, and <c>exception.GetType().Name</c>). The exception object is never
+    /// passed to the logger and neither <c>ex.Message</c> nor <c>ex.ToString()</c> is logged, because a
+    /// downstream provider/restart/store fault can carry prompt/transcript/tool content (EUII).
+    /// </summary>
+    internal void LogSubAgentRelayFailure(string agentId, int byteCount, Exception ex) =>
+        _logger.LogWarning(
+            "Failed to relay message ({ByteCount} bytes) to sub-agent {AgentId}; category {RejectCategory}, exceptionType {ExceptionType}, keeping the stream open",
+            byteCount,
+            agentId,
+            "relay_failed",
+            ex.GetType().Name);
 
     /// <summary>
     /// Sends a structured, correlated <c>relay_failed</c> error frame to the client without closing the
