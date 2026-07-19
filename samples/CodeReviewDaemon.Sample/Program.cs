@@ -188,11 +188,7 @@ builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 // once and alias each interface to that single instance, so the runner and filesystem share one
 // borrowed gateway session exactly as the old SandboxOrchestrator + SandboxFileSystem pair did.
 builder.Services.AddSingleton(sp => new SandboxSessionAdapter(
-    // Share the single resolved gateway URL (env → SandboxGateway:BaseUrl → :3000) with the per-run
-    // registry below, so a profile that only sets SandboxGateway:BaseUrl can never split the boot adapter
-    // and the per-run sessions across two gateways (the old inline `?? :8080` ignored the config knob and
-    // defaulted to the wrong port).
-    gatewayBaseUrl,
+    Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:8080",
     Environment.GetEnvironmentVariable("CRD_SANDBOX_SESSION") ?? Guid.NewGuid().ToString("N"),
     sp.GetRequiredService<ILogger<SandboxSessionAdapter>>(),
     daemonCredential,
