@@ -57,6 +57,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   let childCurrentRunId: string | null = null;
   let focusedConnection: WebSocketConnection | null = null;
   let merger = useMessageMerger();
+  // Monotonic supersession token. Each focusChild invocation claims the next value; a call whose
+  // token is no longer the latest has been superseded (even by a concurrent re-focus of the SAME
+  // agent) and must abandon its rebuild / close its late connection. Keyed on the token, not the
+  // agentId, so two overlapping focusChild(sameAgent) calls can't both pass the guard.
+  let focusSeq = 0;
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -263,6 +268,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
    * still-running child resumes without duplicating pills.
    */
   async function focusChild(agentId: string): Promise<void> {
+    const token = ++focusSeq;
     await unfocusChild();
 
     const summary = children.value.find((c) => c.agentId === agentId);
@@ -285,7 +291,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     const persisted = await loadConversationMessages(summary.threadId);
     // Concurrent-focus guard: a newer focusChild superseded us while history loaded. Abandon this
     // stale rebuild — its state now belongs to the newer focus and must not be clobbered.
-    if (focusedAgentId.value !== agentId) {
+    if (focusSeq !== token) {
       log.debug('focusChild superseded during history load; abandoning stale rebuild', { agentId });
       return;
     }
@@ -322,7 +328,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     });
     // Concurrent-focus guard: a newer focusChild superseded us while the socket was opening. Do not
     // adopt this now-stale connection (that would clobber the newer focus); close it and bail.
-    if (focusedAgentId.value !== agentId) {
+    if (focusSeq !== token) {
       log.debug('focusChild superseded during connect; closing stale connection', { agentId });
       closeWebSocketConnection(connection);
       return;

@@ -386,6 +386,49 @@ describe('useSubAgentPanel — hardening', () => {
     expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(a2Conn, 'to a2');
   });
 
+  it('focusChild same-agent concurrent-guard: a superseding re-focus of the SAME agent closes the stale connection', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    // Two connections for the SAME agent; the first opens lazily so the second can supersede it.
+    const firstConn = { socket: { readyState: WebSocket.OPEN }, connectionId: 'sa-a1-1', threadId: 'subagent-a1', isConnected: true };
+    const secondConn = { socket: { readyState: WebSocket.OPEN }, connectionId: 'sa-a1-2', threadId: 'subagent-a1', isConnected: true };
+    let openFirst: (() => void) | undefined;
+    let call = 0;
+    wsSubMocks.connectSubAgent.mockImplementation((parentThreadId: string, agentId: string, callbacks: any) => {
+      call += 1;
+      if (call === 1) {
+        return new Promise((resolve) => {
+          openFirst = () => {
+            captured.push({ parentThreadId, agentId, callbacks, connection: firstConn });
+            resolve(firstConn);
+          };
+        });
+      }
+      captured.push({ parentThreadId, agentId, callbacks, connection: secondConn });
+      return Promise.resolve(secondConn);
+    });
+
+    // First focus of a1 parks awaiting connect.
+    const p1 = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(openFirst, 'first a1 focus should be parked inside connectSubAgent').toBeTypeOf('function');
+
+    // A SECOND focus of the SAME agent supersedes the first via the monotonic token.
+    await panel.focusChild('a1');
+    expect(panel.focusedAgentId.value).toBe('a1');
+
+    // The first (stale) connection finally opens; it must be CLOSED, not adopted.
+    openFirst!();
+    await p1;
+
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(firstConn);
+    // Sending routes to the SECOND connection, proving the stale one never clobbered focusedConnection.
+    panel.sendToFocusedChild('hi');
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledWith(secondConn, 'hi');
+  });
+
   it('onScopeDispose stops polling and unfocuses the child when the host scope is disposed', async () => {
     vi.useFakeTimers();
     subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
