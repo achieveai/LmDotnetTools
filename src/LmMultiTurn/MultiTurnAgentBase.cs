@@ -173,14 +173,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // writes (see `EnqueueCanonicalPersistenceOperation`/`RunCanonicalPersistenceNodeAsync`) —
     // deliberately independent of any run/request caller token (a `CancelCurrentRunAsync`, an
     // `AddDeferredToHistoryAsync`/`ReplacePersistedAsync` caller's own `ct`, or an external
-    // `ResolveToolCallAsync` request's `ct`). Only `DisposeAsync` ever cancels this. A caller's
-    // own `ct` is honored ONLY before its write is enqueued (see the point-of-no-return checks
-    // in `AddDeferredToHistoryAsync`/`ReplacePersistedAsync`) — once enqueued, that caller
-    // awaits the node UNCONDITIONALLY (never a caller-token `Task.WaitAsync(ct)`), so a normal
-    // run cancellation or an external tool-resolution request cancellation firing AFTER enqueue
-    // can never abort the underlying store write, never make the caller unwind/skip the
-    // in-memory consistency step that follows it (placeholder registration or
-    // publish/cleanup), and never record a sticky `_canonicalPersistenceFault` or permanently
+    // `ResolveToolCallAsync` request's `ct`). Only `DisposeAsync` ever cancels this, so a normal
+    // run cancellation or an external tool-resolution request cancellation can cancel only ITS
+    // OWN caller's wait for the queued write (via `Task.WaitAsync(ct)`) — never the underlying
+    // store write itself, and never record a sticky `_canonicalPersistenceFault` or permanently
     // brick a future terminal completion. Mirrors `_observerLifetimeCts` above.
     private readonly CancellationTokenSource _canonicalPersistenceLifetimeCts = new();
 
@@ -589,29 +585,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 // the deferred-tool guarantee is load-bearing for webhook resolution.
                 if (_strictCanonicalPersistence)
                 {
-                    // Point of no return: `ct` (this call's own caller/run token, e.g. a
-                    // CancelCurrentRunAsync-cancelled run token) is honored ONLY up to here —
-                    // before the write is enqueued. Enqueue into the SAME ordered chain used by
-                    // AddToHistory/ReplacePersistedAsync, with the write itself running under
-                    // the per-agent durability token (see `_canonicalPersistenceLifetimeCts`) —
-                    // this placeholder append's node is what a LATER ReplacePersistedAsync call
-                    // for the same ToolCallId is guaranteed to be chained (and therefore run)
-                    // after. Once enqueued, this call awaits the node UNCONDITIONALLY — never
-                    // via a caller-token `WaitAsync(ct)` — so a `ct` cancellation that fires
-                    // AFTER enqueue (e.g. a Stop landing mid-write) can never make this method
-                    // return/throw before the append has actually landed. Doing so would let the
-                    // caller (MultiTurnAgentLoop.ExecuteAndPublishToolCallAsync) unwind its
-                    // `_deferred` registration — and skip the in-memory append below — while the
-                    // durable write still completes, orphaning the canonical store's placeholder
-                    // with no in-memory/`_deferred` counterpart. A genuine store failure still
-                    // propagates normally from the `await` below (the operation's own exception,
-                    // never a caller-cancellation `OperationCanceledException` manufactured by a
-                    // `WaitAsync` wrapper), so callers that unwind `_deferred` on failure keep
-                    // working exactly as before.
-                    ct.ThrowIfCancellationRequested();
+                    // Enqueue into the SAME ordered chain used by AddToHistory/
+                    // ReplacePersistedAsync, with the write itself running under the per-agent
+                    // durability token (see `_canonicalPersistenceLifetimeCts`) — this
+                    // placeholder append's node is what a LATER ReplacePersistedAsync call for
+                    // the same ToolCallId is guaranteed to be chained (and therefore run) after.
+                    // `ct` (this call's own caller/run token) is used ONLY to bound THIS call's
+                    // own wait for that node via `WaitAsync(ct)` below — cancelling `ct` (e.g. a
+                    // CancelCurrentRunAsync) cancels only this await, never the underlying store
+                    // write, which continues running to completion (or failure) as part of the
+                    // ordered chain and remains visible to a later terminal flush.
                     var node = EnqueueCanonicalPersistenceOperation(
                         dCt => AppendCanonicalMessageAsync(message, runId, dCt));
-                    await node.ConfigureAwait(false);
+                    await node.WaitAsync(ct).ConfigureAwait(false);
                 }
                 else
                 {
@@ -712,25 +698,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         if (_strictCanonicalPersistence)
         {
-            // Point of no return: `ct` (this call's own caller token, e.g. an external
-            // ResolveToolCallAsync request's own cancellation) is honored ONLY up to here —
-            // before the replacement is enqueued. Enqueue with the per-agent durability token
-            // (see `_canonicalPersistenceLifetimeCts`) — the underlying store write NEVER
-            // observes `ct`. Once enqueued, this call awaits the node UNCONDITIONALLY — never
-            // via a caller-token `WaitAsync(ct)` — so a `ct` cancellation that fires AFTER
-            // enqueue can never make this method return/throw before the replacement has
-            // actually landed. Doing so would let the caller
-            // (MultiTurnAgentLoop.ResolveToolCallAsync) skip publishing the resolved message
-            // and cleaning up `_deferred`/scheduling auto-resume while the durable replacement
-            // still completes, leaving the canonical store resolved but the live/subscriber
-            // state stuck on the placeholder. A genuine store failure still propagates normally
-            // from the `await` below (the operation's own exception, never a manufactured
-            // caller-cancellation `OperationCanceledException`), per the strict-mode contract
-            // above.
-            ct.ThrowIfCancellationRequested();
+            // Enqueue with the per-agent durability token (see
+            // `_canonicalPersistenceLifetimeCts`) — the underlying store write NEVER observes
+            // `ct` (this call's own caller token, e.g. an external ResolveToolCallAsync
+            // request's cancellation). `ct` is used ONLY to bound THIS call's own wait for the
+            // enqueued node via `WaitAsync(ct)`: cancelling it cancels just this await — a store
+            // failure still propagates synchronously to this call's caller when the wait itself
+            // completes (not merely enqueues first — see `EnqueueCanonicalPersistenceOperation`),
+            // per the strict-mode contract above, but a caller-side cancellation can never abort
+            // the write or record a sticky `_canonicalPersistenceFault`.
             var node = EnqueueCanonicalPersistenceOperation(
                 dCt => ReplaceCanonicalMessageAsync(updated, runId, dCt));
-            await node.ConfigureAwait(false);
+            await node.WaitAsync(ct).ConfigureAwait(false);
             return;
         }
 
