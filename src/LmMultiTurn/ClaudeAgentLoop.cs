@@ -132,6 +132,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// Optional agent-wide hook observing every message this loop publishes (see
     /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
     /// </param>
+    /// <param name="strictCanonicalPersistence">
+    /// When true, enables strict ordered canonical-history durability (see
+    /// <see cref="MultiTurnAgentBase"/>'s constructor remarks). Default false preserves existing
+    /// fire-and-forget append / best-effort-swallowed replacement behavior.
+    /// </param>
     public ClaudeAgentLoop(
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
@@ -146,7 +151,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null,
         string? initialSessionId = null,
         bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null)
+        IAgentPublicationObserver? publicationObserver = null,
+        bool strictCanonicalPersistence = false)
         : base(
             threadId,
             systemPrompt,
@@ -157,7 +163,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             store,
             logger,
             persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver)
+            publicationObserver: publicationObserver,
+            strictCanonicalPersistence: strictCanonicalPersistence)
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 

@@ -52,6 +52,11 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// Optional agent-wide hook observing every message this loop publishes (see
     /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
     /// </param>
+    /// <param name="strictCanonicalPersistence">
+    /// When true, enables strict ordered canonical-history durability (see
+    /// <see cref="MultiTurnAgentBase"/>'s constructor remarks). Default false preserves existing
+    /// fire-and-forget append / best-effort-swallowed replacement behavior.
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -65,7 +70,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null)
+        IAgentPublicationObserver? publicationObserver = null,
+        bool strictCanonicalPersistence = false)
         : this(
             options,
             mcpServers,
@@ -81,7 +87,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             loggerFactory,
             clientFactory,
             persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver)
+            publicationObserver: publicationObserver,
+            strictCanonicalPersistence: strictCanonicalPersistence)
     {
     }
 
@@ -109,6 +116,11 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// Optional agent-wide hook observing every message this loop publishes (see
     /// <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
     /// </param>
+    /// <param name="strictCanonicalPersistence">
+    /// When true, enables strict ordered canonical-history durability (see
+    /// <see cref="MultiTurnAgentBase"/>'s constructor remarks). Default false preserves existing
+    /// fire-and-forget append / best-effort-swallowed replacement behavior.
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -124,7 +136,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
         bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null)
+        IAgentPublicationObserver? publicationObserver = null,
+        bool strictCanonicalPersistence = false)
         : base(
             threadId,
             systemPrompt,
@@ -135,7 +148,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             store,
             logger,
             persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver)
+            publicationObserver: publicationObserver,
+            strictCanonicalPersistence: strictCanonicalPersistence)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>();

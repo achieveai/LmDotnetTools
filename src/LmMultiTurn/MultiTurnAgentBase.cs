@@ -130,6 +130,45 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // tail snapshot. Always null in production, so the hot path below is unaffected.
     internal Func<Task>? PrePublishLockHookForTests;
 
+    /// <summary>
+    /// Test-only snapshot of the canonical persistence chain's current tail (see
+    /// `_canonicalPersistenceTail`), letting tests await "everything enqueued so far has
+    /// finished" deterministically without driving a real <see cref="CompleteRunAsync"/> flush.
+    /// Always <see cref="Task.CompletedTask"/> when strict mode is disabled. Internal — never
+    /// used by any production code path.
+    /// </summary>
+    internal Task CanonicalPersistenceTailSnapshotForTests()
+    {
+        lock (_canonicalPersistenceLock)
+        {
+            return _canonicalPersistenceTail;
+        }
+    }
+
+    // Opt-in strict canonical persistence (WI #194 tasks 7-8) — see `strictCanonicalPersistence`
+    // constructor parameter. False for every existing caller/behavior.
+    private readonly bool _strictCanonicalPersistence;
+
+    // Per-agent ordered persistence chain, active only when `_strictCanonicalPersistence` is
+    // true. Every `AddToHistory` canonical append and every `ReplacePersistedAsync` replacement
+    // is enqueued here (see `EnqueueCanonicalPersistenceOperation`), one node per operation,
+    // guarded by `_canonicalPersistenceLock`. A node awaits the PREVIOUS node first (swallowing
+    // its exception — that node's own failure is separately recorded below and, for a direct
+    // caller such as `ReplacePersistedAsync`, already propagated to ITS OWN caller) so operations
+    // run strictly in enqueue order and never concurrently — in particular, a deferred-tool
+    // placeholder append is always enqueued (and therefore always runs) before the
+    // `ReplacePersistedAsync` call that later replaces it. Mirrors the existing
+    // `_observerDispatchTail` chain pattern above.
+    private readonly object _canonicalPersistenceLock = new();
+    private Task _canonicalPersistenceTail = Task.CompletedTask;
+
+    // Sticky first failure from any node in the chain above. Once set, it never clears — a
+    // canonical-history write failure durably breaks this agent's terminal replayability
+    // guarantee, so `FlushCanonicalPersistenceAsync` (awaited by `CompleteRunAsync` before any
+    // terminal ledger write/publication) must keep failing, even if a LATER queued operation on
+    // its own would have succeeded, and even across that same run's error-completion retry.
+    private Exception? _canonicalPersistenceFault;
+
     #endregion
 
     #region Protected Properties
@@ -276,6 +315,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// (see <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior
     /// exactly — v1 subscriber fan-out is completely unaffected by this parameter either way.
     /// </param>
+    /// <param name="strictCanonicalPersistence">
+    /// When true, enables strict ordered canonical-history durability, intended for captured
+    /// child loops (e.g. a subagent whose durable replay/terminal outcome another component
+    /// depends on): every <see cref="AddToHistory(IMessage)"/> canonical append and every
+    /// <see cref="ReplacePersistedAsync"/> replacement enters one per-agent ordered persistence
+    /// queue (so a replacement always runs after the placeholder append it replaces), a
+    /// replacement failure propagates to its caller instead of being logged/swallowed, and
+    /// <see cref="CompleteRunAsync"/> awaits that queue's flush — failing closed, with no terminal
+    /// success or <see cref="Messages.RunCompletedMessage"/> — when any queued write failed.
+    /// Default false preserves today's fire-and-forget append / best-effort-swallowed replacement
+    /// behavior and existing call timing exactly.
+    /// </param>
     protected MultiTurnAgentBase(
         string threadId,
         string? systemPrompt = null,
@@ -288,7 +339,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         int maxReplayBufferSize = 10_000,
         long maxReplayBufferBytes = 8L * 1024 * 1024,
         bool persistRunLedger = false,
-        IAgentPublicationObserver? publicationObserver = null)
+        IAgentPublicationObserver? publicationObserver = null,
+        bool strictCanonicalPersistence = false)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -303,6 +355,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         Store = store;
         Logger = logger ?? NullLogger.Instance;
         _publicationObserver = publicationObserver;
+        _strictCanonicalPersistence = strictCanonicalPersistence;
 
         if (persistRunLedger)
         {
@@ -386,7 +439,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
             if (runId != null)
             {
-                _ = PersistMessageAsync(message, runId, CancellationToken.None);
+                if (_strictCanonicalPersistence)
+                {
+                    // Still fire-and-forget from THIS caller's point of view — the queued node
+                    // itself is what gives ordering/failure tracking; CompleteRunAsync's flush
+                    // (not this call) is what observes/surfaces a failure.
+                    _ = EnqueueCanonicalPersistenceOperation(
+                        () => AppendCanonicalMessageAsync(message, runId, CancellationToken.None));
+                }
+                else
+                {
+                    _ = PersistMessageAsync(message, runId, CancellationToken.None);
+                }
             }
         }
     }
@@ -465,8 +529,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 // Persist BEFORE the in-memory append so a failure leaves no orphaned entry
                 // in ConversationHistory. Letting the exception propagate is intentional —
                 // the deferred-tool guarantee is load-bearing for webhook resolution.
-                var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
-                await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
+                if (_strictCanonicalPersistence)
+                {
+                    // Enqueue into the SAME ordered chain used by AddToHistory/
+                    // ReplacePersistedAsync — this placeholder append's node is what a LATER
+                    // ReplacePersistedAsync call for the same ToolCallId is guaranteed to be
+                    // chained (and therefore run) after — then await THIS call's own node so
+                    // the failure-propagation contract above is preserved exactly.
+                    await EnqueueCanonicalPersistenceOperation(
+                        () => AppendCanonicalMessageAsync(message, runId, ct));
+                }
+                else
+                {
+                    var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
+                    await Store.AppendMessagesAsync(ThreadId, [persisted], ct);
+                }
             }
         }
 
@@ -517,9 +594,19 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <summary>
     /// Persists the replacement of a previously-appended <see cref="ToolCallResultMessage"/>
     /// in the store, addressing it by its deterministic Id (<c>tcr:{threadId}:{toolCallId}</c>).
-    /// Failures are logged and swallowed — in-memory mutation is the source of truth for the
-    /// running loop; persistence becomes eventually consistent.
     /// </summary>
+    /// <remarks>
+    /// Default mode (<c>strictCanonicalPersistence: false</c>, the vast majority of callers):
+    /// failures are logged and swallowed — in-memory mutation is the source of truth for the
+    /// running loop; persistence becomes eventually consistent. Call timing is unchanged from
+    /// before strict mode existed.
+    /// Strict mode: the replacement is enqueued into the SAME per-agent ordered persistence
+    /// chain used by <see cref="AddToHistory(IMessage)"/> and <see cref="AddDeferredToHistoryAsync"/>
+    /// — so it always runs after the placeholder append it replaces — and a store failure
+    /// propagates to this call's caller (e.g. <c>MultiTurnAgentLoop.ResolveToolCallAsync</c>)
+    /// instead of being swallowed, while also remaining visible to <see cref="CompleteRunAsync"/>'s
+    /// terminal flush barrier via the sticky queue fault.
+    /// </remarks>
     protected async Task ReplacePersistedAsync(
         ToolCallResultMessage old,
         ToolCallResultMessage updated,
@@ -549,6 +636,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         runId ??= old.RunId ?? updated.RunId ?? string.Empty;
 
+        if (_strictCanonicalPersistence)
+        {
+            // Await THIS call's own node (not just enqueue it) so a store failure propagates
+            // synchronously to the caller, per the strict-mode contract above. Enqueuing first
+            // (rather than awaiting a freestanding call) is what guarantees ordering after the
+            // placeholder append's own node in the chain.
+            await EnqueueCanonicalPersistenceOperation(
+                () => ReplaceCanonicalMessageAsync(updated, runId, ct));
+            return;
+        }
+
         try
         {
             var persisted = MessagePersistenceConverter.ToPersistedMessage(updated, ThreadId, runId);
@@ -560,6 +658,147 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 ex,
                 "Failed to persist deferred-tool resolution for ToolCallId={ToolCallId}",
                 updated.ToolCallId);
+        }
+    }
+
+    /// <summary>
+    /// Raw (non-swallowing) canonical append used by the strict-mode persistence chain — see
+    /// <see cref="EnqueueCanonicalPersistenceOperation"/>. Unlike <see cref="PersistMessageAsync"/>,
+    /// exceptions propagate so the chain node (and the sticky <see cref="_canonicalPersistenceFault"/>
+    /// it records) can see them.
+    /// </summary>
+    private async Task AppendCanonicalMessageAsync(IMessage message, string runId, CancellationToken ct)
+    {
+        if (Store == null)
+        {
+            return;
+        }
+
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(message, ThreadId, runId);
+        await Store.AppendMessagesAsync(ThreadId, [persisted], ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Raw (non-swallowing) canonical replacement used by the strict-mode persistence chain —
+    /// see <see cref="EnqueueCanonicalPersistenceOperation"/> and <see cref="ReplacePersistedAsync"/>.
+    /// </summary>
+    private async Task ReplaceCanonicalMessageAsync(
+        ToolCallResultMessage updated,
+        string runId,
+        CancellationToken ct)
+    {
+        if (Store == null)
+        {
+            return;
+        }
+
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(updated, ThreadId, runId);
+        await Store.ReplaceMessageAsync(ThreadId, persisted, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Enqueues <paramref name="operation"/> as the next node of the per-agent ordered canonical
+    /// persistence chain (see <c>_canonicalPersistenceTail</c>), active only when
+    /// <c>strictCanonicalPersistence</c> was enabled at construction. The returned task completes
+    /// (or faults) when THIS operation — and every operation enqueued before it — has run, in
+    /// enqueue order, never concurrently. A failure is recorded in
+    /// <see cref="_canonicalPersistenceFault"/> (sticky; first failure wins) and always observed
+    /// via an immediate fire-and-forget continuation attached below, so a node whose returned
+    /// task nobody ever awaits (e.g. a plain <c>AddToHistory</c> append) can never surface as an
+    /// unobserved task exception — <see cref="FlushCanonicalPersistenceAsync"/> is the sanctioned
+    /// way to later observe/propagate that failure.
+    /// </summary>
+    private Task EnqueueCanonicalPersistenceOperation(Func<Task> operation)
+    {
+        Task node;
+        lock (_canonicalPersistenceLock)
+        {
+            var previous = _canonicalPersistenceTail;
+            node = RunCanonicalPersistenceNodeAsync(previous, operation);
+            _canonicalPersistenceTail = node;
+        }
+
+        _ = node.ContinueWith(
+            static (t, _) => _ = t.Exception,
+            null,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+
+        return node;
+    }
+
+    /// <summary>
+    /// One node of the canonical persistence chain — see <see cref="EnqueueCanonicalPersistenceOperation"/>.
+    /// </summary>
+    private async Task RunCanonicalPersistenceNodeAsync(Task previous, Func<Task> operation)
+    {
+        try
+        {
+            await previous.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Swallowed here purely for sequencing — the previous node's own failure was
+            // already recorded in `_canonicalPersistenceFault` and observed by ITS OWN
+            // continuation (and, for a directly-awaited node such as a strict-mode
+            // ReplacePersistedAsync call, already propagated to that call's caller too).
+        }
+
+        try
+        {
+            await operation().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _ = Interlocked.CompareExchange(ref _canonicalPersistenceFault, ex, null);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Awaits every canonical append/replacement enqueued so far on the strict-mode persistence
+    /// chain, then throws if any of them (or any earlier one already folded into the sticky
+    /// fault) failed. A no-op when strict mode is disabled. Called by <see cref="CompleteRunAsync"/>
+    /// BEFORE its terminal run-ledger write/<see cref="Messages.RunCompletedMessage"/> publication —
+    /// see that method's remarks — so a canonical-history durability failure fails closed: no
+    /// terminal success and no terminal message, on either the natural or the error-completion path.
+    /// </summary>
+    private async Task FlushCanonicalPersistenceAsync(CancellationToken ct)
+    {
+        if (!_strictCanonicalPersistence)
+        {
+            return;
+        }
+
+        Task tail;
+        lock (_canonicalPersistenceLock)
+        {
+            tail = _canonicalPersistenceTail;
+        }
+
+        try
+        {
+            await tail.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // The specific failing operation's exception is surfaced via the sticky fault
+            // below (which may differ from `tail`'s own exception if a LATER node in the
+            // chain happened to succeed on its own operation after an earlier one failed).
+        }
+
+        var fault = Volatile.Read(ref _canonicalPersistenceFault);
+        if (fault != null)
+        {
+            throw new InvalidOperationException(
+                "Canonical child persistence failed for one or more queued appends/replacements; "
+                    + "terminal run visibility cannot be published while durability is broken.",
+                fault);
         }
     }
 
@@ -1546,6 +1785,28 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         _observerLifetimeCts.Dispose();
 
+        // Bound-await the strict-mode canonical persistence chain (see
+        // `_canonicalPersistenceTail`/`EnqueueCanonicalPersistenceOperation`) so disposal can
+        // never leak/hang on it. A no-op when strict mode was never enabled (the tail is always
+        // `Task.CompletedTask` in that case). Any failure was already recorded/observed by the
+        // chain's own per-node continuation — this is best-effort drain only, mirroring the
+        // observer-tail teardown above; a still-running/faulted tail after the timeout is
+        // abandoned rather than blocking disposal.
+        Task canonicalPersistenceTailSnapshot;
+        lock (_canonicalPersistenceLock)
+        {
+            canonicalPersistenceTailSnapshot = _canonicalPersistenceTail;
+        }
+
+        try
+        {
+            await canonicalPersistenceTailSnapshot.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort — see remarks above.
+        }
+
         await OnDisposeAsync();
 
         // Complete input channel on disposal (final cleanup - no restart possible)
@@ -1774,6 +2035,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// per-run wrapper picks exactly one terminal branch).
     /// </param>
     /// <param name="ct">Cancellation token</param>
+    /// <remarks>
+    /// When this agent was constructed with <c>strictCanonicalPersistence: true</c>, this method
+    /// first awaits <see cref="FlushCanonicalPersistenceAsync"/> — every queued canonical
+    /// append/replacement — before the terminal run-ledger write or
+    /// <see cref="Messages.RunCompletedMessage"/> publication below. A queued-write failure makes
+    /// the flush throw, which this method's own <c>catch</c> below treats exactly like a
+    /// ledger-write or publish failure: the terminal claim is released (so a caller's
+    /// error-completion retry — e.g. <c>MultiTurnAgentLoop.RunLoopAsync</c>'s natural-then-error
+    /// fallback — can still attempt its own terminal outcome) and the exception propagates,
+    /// meaning this call durably persists/publishes NEITHER the run-ledger terminal status NOR a
+    /// terminal message. That failing flush check is unconditional on this same broken agent —
+    /// a subsequent error-completion retry for the same run flushes (and fails) again, so an
+    /// error terminal can never claim durable success while canonical persistence remains broken.
+    /// Default (<c>strictCanonicalPersistence: false</c>) mode is unaffected — the flush is a
+    /// no-op and this method's existing best-effort behavior/timing is unchanged.
+    /// </remarks>
     protected async Task CompleteRunAsync(
         string runId,
         string generationId,
@@ -1802,6 +2079,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         try
         {
+            // Canonical durability comes first: no terminal ledger write or RunCompletedMessage
+            // is ever published while a queued canonical append/replacement has failed — see
+            // this method's remarks and FlushCanonicalPersistenceAsync.
+            await FlushCanonicalPersistenceAsync(ct);
+
             if (RunLedgerStore != null)
             {
                 var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);

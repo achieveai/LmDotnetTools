@@ -115,6 +115,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional agent-wide hook observing every message this loop publishes (see
     ///     <see cref="IAgentPublicationObserver"/>). Null (default) preserves existing behavior.
     /// </param>
+    /// <param name="strictCanonicalPersistence">
+    ///     When true, enables strict ordered canonical-history durability (see
+    ///     <see cref="MultiTurnAgentBase"/>'s constructor remarks). Default false preserves
+    ///     existing fire-and-forget append / best-effort-swallowed replacement behavior.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -131,7 +136,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ILoggerFactory? loggerFactory = null,
         bool persistRunLedger = false,
         TriggerOptions? triggerOptions = null,
-        IAgentPublicationObserver? publicationObserver = null)
+        IAgentPublicationObserver? publicationObserver = null,
+        bool strictCanonicalPersistence = false)
         : base(
             threadId,
             systemPrompt,
@@ -142,7 +148,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             store,
             logger,
             persistRunLedger: persistRunLedger,
-            publicationObserver: publicationObserver)
+            publicationObserver: publicationObserver,
+            strictCanonicalPersistence: strictCanonicalPersistence)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);
@@ -992,7 +999,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             return;
         }
 
-        // Persist the replacement (best-effort; failures are logged inside).
+        // Persist the replacement. Best-effort (logged, swallowed) unless this loop was
+        // constructed with strictCanonicalPersistence: true, in which case a store failure
+        // propagates from here to this call's caller — see ReplacePersistedAsync's remarks.
         await ReplacePersistedAsync(oldMessage, newMessage, ct);
 
         // Publish the full message (including ContentBlocks) to subscribers so UIs can
