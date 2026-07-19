@@ -807,11 +807,6 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         return Task.CompletedTask;
     }
 
-    public Task<RunCancellationResult> CancelCurrentRunAsync(string expectedRunId, CancellationToken ct = default)
-    {
-        return Task.FromResult(RunCancellationResult.NoActiveRun);
-    }
-
     public ValueTask DisposeAsync()
     {
         return ValueTask.CompletedTask;

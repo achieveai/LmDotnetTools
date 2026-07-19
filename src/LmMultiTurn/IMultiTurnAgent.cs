@@ -4,30 +4,6 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 
 /// <summary>
-/// Outcome of an expected-run <see cref="IMultiTurnAgent.CancelCurrentRunAsync"/> request.
-/// </summary>
-public enum RunCancellationResult
-{
-    /// <summary>
-    /// <c>expectedRunId</c> matched the run that was active at the time of the call; its
-    /// run-local cancellation token was signalled. The run's terminal outcome (durable
-    /// <c>Cancelled</c> status and a matching <c>RunCompletedMessage</c>) follows asynchronously
-    /// once the run's own per-run wrapper observes the cancellation.
-    /// </summary>
-    Accepted,
-
-    /// <summary>
-    /// A run is currently active, but <c>expectedRunId</c> does not match it — e.g. a delayed
-    /// Stop for a run that has already finished and been superseded by a newer one. No
-    /// cancellation was signalled; the actually-active run is unaffected.
-    /// </summary>
-    StaleRun,
-
-    /// <summary>No run is currently active for this agent, so there is nothing to cancel.</summary>
-    NoActiveRun,
-}
-
-/// <summary>
 /// Interface for multi-turn conversational agents that support background processing,
 /// subscription-based message streaming, and run management.
 /// </summary>
@@ -123,28 +99,4 @@ public interface IMultiTurnAgent : IAsyncDisposable
     /// </summary>
     /// <param name="timeout">Timeout for graceful shutdown. Defaults to 30 seconds.</param>
     Task StopAsync(TimeSpan? timeout = null);
-
-    /// <summary>
-    /// Requests cancellation of the currently active run, IFF <paramref name="expectedRunId"/>
-    /// still matches it. This is an expected-run "Stop": a caller (e.g. a UI Stop button or a
-    /// parent delegating a child sub-agent's Stop) names the run it observed as current, so a
-    /// delayed/stale request against a run that has since finished and been superseded by a
-    /// newer one is rejected rather than cancelling the wrong run.
-    /// </summary>
-    /// <remarks>
-    /// Cancels only that run's own cancellation token — linked to, but independently
-    /// cancellable from, the background loop's lifetime token — so the loop itself keeps running
-    /// and remains able to accept and process subsequent input. Applies uniformly to a primary
-    /// agent and to a sub-agent owned by a <c>SubAgentManager</c>, since both are
-    /// <see cref="IMultiTurnAgent"/> implementations.
-    /// </remarks>
-    /// <param name="expectedRunId">The run id the caller last observed as current.</param>
-    /// <param name="ct">Cancellation token for the request itself (not the run being cancelled).</param>
-    /// <returns>
-    /// <see cref="RunCancellationResult.Accepted"/> if <paramref name="expectedRunId"/> matched
-    /// the active run and cancellation was signalled;
-    /// <see cref="RunCancellationResult.StaleRun"/> if a different run is active;
-    /// <see cref="RunCancellationResult.NoActiveRun"/> if no run is active.
-    /// </returns>
-    Task<RunCancellationResult> CancelCurrentRunAsync(string expectedRunId, CancellationToken ct = default);
 }

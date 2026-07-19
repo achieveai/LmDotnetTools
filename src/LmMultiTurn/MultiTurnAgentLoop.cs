@@ -336,15 +336,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     _runActive = true;
                 }
 
-                // Use this run's own token (linked to, but independently cancellable from, the
-                // loop's ct) for turn execution — a matching CancelCurrentRunAsync(RunId) call
-                // signals only this token, so it never looks like outer loop-shutdown below.
-                var runToken = CurrentRunToken;
-
                 try
                 {
                     // Execute turns - poll for new input between turns
-                    await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, runToken);
+                    await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
 
                     // Complete run - simple loop has no pending messages
                     await CompleteRunAsync(
@@ -353,23 +348,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                         wasForked: isExplicitFork,
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         pendingMessageCount: 0,
-                        ct: ct);
-                }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-                {
-                    // The loop's own token (ct) is NOT cancelled, so this OperationCanceledException
-                    // can only have come from runToken — a matching CancelCurrentRunAsync(RunId)
-                    // call for THIS run. Handled entirely here: persist/publish the Cancelled
-                    // terminal outcome on the (still-live) loop token, then fall through to the
-                    // same while loop so the next input is processed normally. This deliberately
-                    // never reaches the outer loop-cancellation catch below.
-                    Logger.LogInformation("Run {RunId} cancelled via expected-run Stop", assignment.RunId);
-                    await CompleteRunAsync(
-                        assignment.RunId,
-                        assignment.GenerationId,
-                        wasForked: isExplicitFork,
-                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                        isCancelled: true,
                         ct: ct);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)

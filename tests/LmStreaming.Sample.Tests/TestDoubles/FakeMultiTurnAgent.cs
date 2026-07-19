@@ -87,9 +87,6 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         return Task.CompletedTask;
     }
 
-    public Task<RunCancellationResult> CancelCurrentRunAsync(string expectedRunId, CancellationToken ct = default) =>
-        Task.FromResult(RunCancellationResult.NoActiveRun);
-
     public ValueTask DisposeAsync()
     {
         if (ThrowOnDispose)
