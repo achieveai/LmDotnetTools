@@ -42,6 +42,9 @@ public static class UsageRecordMapper
             InputTokens = usage.PromptTokens,
             OutputTokens = usage.CompletionTokens,
             CacheReadTokens = usage.TotalCachedTokens,
+            // Cache-creation tokens are billed separately (additive to the total). Anthropic and related
+            // providers surface them via Usage.ExtraProperties; 0 when absent.
+            CacheWriteTokens = usage.GetExtraProperty<int>("cache_creation_input_tokens"),
             ReasoningTokens = usage.TotalReasoningTokens,
             ProviderReportedCostMicros = ToMicros(usage.TotalCost),
             Finalized = true,

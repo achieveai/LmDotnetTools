@@ -100,6 +100,21 @@ public class ConversationUsageProjectionTests
         ConversationUsageProjection.FromMetadata(empty).Should().BeNull();
     }
 
+    [Fact]
+    public async Task SaveAsync_DoesNotReplaceNewerAggregate_WithStaleLowerWatermarkWrite()
+    {
+        var store = new InMemoryConversationStore();
+        var newer = SampleAggregate() with { FoldedRevision = 50, TotalTokens = 900 };
+        var stale = SampleAggregate() with { FoldedRevision = 5, TotalTokens = 100 };
+
+        await ConversationUsageProjection.SaveAsync(store, newer);
+        await ConversationUsageProjection.SaveAsync(store, stale); // out-of-order / post-restart write
+
+        var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
+        loaded!.FoldedRevision.Should().Be(50);
+        loaded.TotalTokens.Should().Be(900);
+    }
+
     private static void TryDelete(string path)
     {
         try

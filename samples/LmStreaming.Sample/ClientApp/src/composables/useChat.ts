@@ -1419,7 +1419,8 @@ export function useChat(options: UseChatOptions = {}) {
         const cacheCreation = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheWriteTokens, 0);
         cumulativeUsage.value = {
           promptTokens: input,
-          uncachedInputTokens: input - cached,
+          // Clamp: some providers report cached >= input, which must not render a negative banner value.
+          uncachedInputTokens: Math.max(0, input - cached),
           completionTokens: output,
           totalTokens: usageAggregate.totalTokens,
           cachedTokens: cached,
