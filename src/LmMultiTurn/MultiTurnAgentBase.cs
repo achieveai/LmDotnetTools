@@ -65,6 +65,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // startup recovery and any explicit RecoverAsync call never double-restore (RestoreHistory
     // appends). Guards the "recover persisted history on (re)create" path used by the agent pool.
     private bool _historyRecovered;
+    private bool _usageHydrated;
     private volatile bool _isDisposed;
 
     // Set once run-ledger reconciliation has run for this process instance, so RunAsync never
@@ -344,15 +345,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         var store = Store;
         if (store != null)
         {
-            _ = PersistUsageSnapshotAsync(store, ledger.Snapshot());
+            _ = PersistUsageSnapshotAsync(store, ledger.Snapshot(), ledger.SnapshotRecords());
         }
     }
 
-    private async Task PersistUsageSnapshotAsync(IConversationStore store, ConversationUsageAggregate snapshot)
+    private async Task PersistUsageSnapshotAsync(
+        IConversationStore store,
+        ConversationUsageAggregate snapshot,
+        IReadOnlyList<UsageRecord> records)
     {
         try
         {
-            await ConversationUsageProjection.SaveAsync(store, snapshot, CancellationToken.None);
+            await ConversationUsageProjection.SaveAsync(store, snapshot, records, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -1233,6 +1237,31 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         {
             _runLedgerReconciled = true;
             await ReconcileRunLedgerAsync(ct);
+        }
+
+        // Rebuild conversation usage accounting from durable per-attempt records before processing input,
+        // so an agent recreated after a restart continues the running total (and dedups already-counted
+        // attempts) instead of overwriting the persisted aggregate with only post-restart usage (#196).
+        if (UsageLedger != null && Store != null && !_usageHydrated)
+        {
+            _usageHydrated = true;
+            try
+            {
+                var records = await ConversationUsageProjection.LoadRecordsAsync(Store, ThreadId, ct);
+                if (records.Count > 0)
+                {
+                    var aggregate = await ConversationUsageProjection.LoadAsync(Store, ThreadId, ct);
+                    UsageLedger.SeedFromRecords(records, aggregate?.FoldedRevision ?? 0);
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Usage rebuild failed for thread {ThreadId}; starting usage empty", ThreadId);
+            }
         }
 
         await OnBeforeRunAsync();

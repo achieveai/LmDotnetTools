@@ -78,6 +78,38 @@ public sealed class UsageLedger : IUsageSink
         }
     }
 
+    /// <summary>
+    ///     Returns the current deduped canonical records (one per provider attempt) under the lock, so a
+    ///     caller can persist them durably. These are the source of truth the aggregate is folded from.
+    /// </summary>
+    public IReadOnlyList<UsageRecord> SnapshotRecords()
+    {
+        lock (_gate)
+        {
+            return [.. _byAttempt.Values];
+        }
+    }
+
+    /// <summary>
+    ///     Rebuilds ledger state from durable records (e.g. after a process/agent restart), restoring the
+    ///     watermark to <paramref name="foldedRevision" /> so subsequent usage continues strictly above the
+    ///     persisted baseline. A live in-memory observation for an attempt is never overwritten by a seed.
+    /// </summary>
+    public void SeedFromRecords(IEnumerable<UsageRecord> records, long foldedRevision)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+
+        lock (_gate)
+        {
+            foreach (var record in records)
+            {
+                _ = _byAttempt.TryAdd(record.ProviderAttemptId, record);
+            }
+
+            _watermark.SeedPrefix(foldedRevision);
+        }
+    }
+
     private UsageRecord WithEstimatedCost(UsageRecord record)
     {
         // Only fill an estimate the observation didn't already carry — a provider-reported estimate wins.

@@ -101,6 +101,29 @@ public class ConversationUsageProjectionTests
     }
 
     [Fact]
+    public async Task SaveAsync_PersistsRecords_LoadableForRebuild()
+    {
+        var store = new InMemoryConversationStore();
+        var ledger = new UsageLedger("conv-1");
+        ledger.UpsertAttempt(new UsageRecord
+        {
+            LogicalCallId = "a1",
+            ProviderAttemptId = "a1",
+            RootConversationId = "conv-1",
+            RequestedModel = "model-A",
+            InputTokens = 100,
+            OutputTokens = 40,
+        });
+
+        await ConversationUsageProjection.SaveAsync(store, ledger.Snapshot(), ledger.SnapshotRecords());
+
+        var records = await ConversationUsageProjection.LoadRecordsAsync(store, "conv-1");
+        records.Should().ContainSingle();
+        records[0].ProviderAttemptId.Should().Be("a1");
+        records[0].InputTokens.Should().Be(100);
+    }
+
+    [Fact]
     public async Task SaveAsync_DoesNotReplaceNewerAggregate_WithStaleLowerWatermarkWrite()
     {
         var store = new InMemoryConversationStore();

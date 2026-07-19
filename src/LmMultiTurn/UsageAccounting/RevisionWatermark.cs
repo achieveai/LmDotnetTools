@@ -18,6 +18,31 @@ public sealed class RevisionWatermark
     private long _allocated;
     private long _prefix;
 
+    /// <summary>
+    ///     Restores the watermark to a durable baseline on rebuild (e.g. after a restart): every revision
+    ///     up to <paramref name="prefix" /> is treated as already committed, so new allocations continue
+    ///     strictly above it and a post-restart projection write cannot regress below the persisted
+    ///     watermark. No-op if the current prefix already meets or exceeds <paramref name="prefix" />.
+    /// </summary>
+    public void SeedPrefix(long prefix)
+    {
+        lock (_gate)
+        {
+            if (prefix <= _prefix)
+            {
+                return;
+            }
+
+            _prefix = prefix;
+            if (_allocated < prefix)
+            {
+                _allocated = prefix;
+            }
+
+            _ = _committedAbovePrefix.RemoveWhere(r => r <= prefix);
+        }
+    }
+
     /// <summary>Reserves the next revision. It does not count toward the prefix until committed.</summary>
     public long Allocate()
     {

@@ -100,6 +100,32 @@ public class UsageLedgerTests
         snap.ProviderReportedCostMicros.Should().BeNull();
     }
 
+    [Fact]
+    public void SeedFromRecords_RestoresTotals_DedupsSeededAttempts_AndContinuesWatermark()
+    {
+        var original = new UsageLedger("conv-1");
+        original.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 40));
+        original.UpsertAttempt(Obs("a2", "model-B", input: 10, output: 5));
+        var records = original.SnapshotRecords();
+        var originalSnapshot = original.Snapshot();
+
+        // A recreated ledger (e.g. after restart) rebuilds from the durable records.
+        var rebuilt = new UsageLedger("conv-1");
+        rebuilt.SeedFromRecords(records, originalSnapshot.FoldedRevision);
+
+        rebuilt.Snapshot().TotalTokens.Should().Be(155);
+        rebuilt.Snapshot().FoldedRevision.Should().Be(originalSnapshot.FoldedRevision);
+
+        // Re-observing a seeded attempt does not double-count.
+        rebuilt.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 40));
+        rebuilt.Snapshot().TotalTokens.Should().Be(155);
+
+        // A genuinely new attempt adds and advances the watermark above the seeded baseline.
+        rebuilt.UpsertAttempt(Obs("a3", "model-A", input: 20, output: 10));
+        rebuilt.Snapshot().TotalTokens.Should().Be(185);
+        rebuilt.Snapshot().FoldedRevision.Should().BeGreaterThan(originalSnapshot.FoldedRevision);
+    }
+
     private sealed class StubResolver(string model, decimal promptPerMillion, decimal completionPerMillion)
         : IPricingResolver
     {
