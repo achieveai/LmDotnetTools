@@ -344,6 +344,7 @@ public sealed partial class SandboxClient
                 sessionId,
                 $"downloading {streamName} for operation '{operationId}'",
                 operationId,
+                maxBytes: null,
                 ct
             )
             .ConfigureAwait(false);
