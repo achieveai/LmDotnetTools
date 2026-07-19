@@ -585,6 +585,129 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
     }
 
+    // ── Host-side posting (Option A): the daemon posts the review through ReviewPoster + the review_outbox ──
+    // The review AGENT is collect-only; this terminal stage delivers the review idempotently. EnableCommentPosting
+    // gates live-post vs collect-only.
+
+    [Fact]
+    public async Task An_azure_devops_run_maps_to_the_ado_provider_and_publisher()
+    {
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.Store.GetArtifacts(run.Id)
+            .Should().OnlyContain(a => a.Provider == "ado", "azure-devops is mapped to the 'ado' provider string");
+        fixture.AdoPublisher!.PostCount.Should().Be(1);
+        fixture.GitHubPublisher.PostCount.Should().Be(0, "the ado run must not select the github publisher");
+    }
+
+    [Fact]
+    public async Task Posted_throws_when_no_publisher_matches_the_provider_and_posting_is_authorized()
+    {
+        // An ado run but only a 'github' publisher registered, with live posting on → the provider lookup must
+        // fail fast rather than silently drop the review.
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true },
+            publishersOverride: [new FakeReviewCommentPublisher("github")]);
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*ado*");
+    }
+
+    [Fact]
+    public async Task Posted_prefixes_the_posted_comment_with_the_configured_bot_name()
+    {
+        using var fixture = Fixture.Ado(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { EnableCommentPosting = true, BotName = "GB's Revobot" });
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.AdoPublisher!.PostedBodies.Should().ContainSingle()
+            .Which.Should().StartWith("[GB's Revobot]\n\n");
+    }
+
+    [Fact]
+    public async Task Posted_posts_the_review_exactly_once_across_a_replay()
+    {
+        // The review_outbox makes delivery exactly-once: re-running the Posted stage on the same head must not
+        // post a second comment (the terminal-replay guard).
+        using var fixture = Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.GitHubPublisher.PostCount.Should().Be(1, "the outbox idempotency key collapses a replay to a no-op");
+    }
+
+    // ── Regression guards: "reviewed but not delivered" ──────────────────────────────────────────────
+    // Pin the invariant that an authorized, non-empty review is delivered exactly once via the run's provider
+    // publisher (the silent no-post outages this design prevents), and its duals (collect-only + empty review).
+
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_delivers_the_review_to_the_pr_for_every_provider_when_authorized(string provider)
+    {
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        var expectedPublisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        expectedPublisher.PostCount.Should().Be(
+            1, $"a completed, authorized, non-empty review must be delivered to the {provider} PR — never silently dropped");
+    }
+
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_does_not_post_when_comment_posting_is_disabled(string provider)
+    {
+        // A collect-only profile (EnableCommentPosting=false, the safe default) still produces + retains a
+        // review, but must NEVER post it to the PR.
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = false });
+        var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        publisher.PostCount.Should().Be(0, "a collect-only profile must not post to the PR");
+    }
+
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_does_not_post_an_empty_review_for_any_provider(string provider)
+    {
+        // An empty review must post NOTHING for EITHER provider — posting a placeholder would claim the
+        // head_sha's idempotency slot and permanently suppress a later REAL review of the same commit.
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true })
+            : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true });
+        var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = string.Empty;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        publisher.PostedBodies.Should().BeEmpty("an empty review must not claim the head's dedup slot");
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _db;
@@ -594,7 +717,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ILoggerFactory loggerFactory,
             string repoProvider,
             CodeReviewDaemonOptions? options,
-            SandboxCommandResult? diffResult)
+            SandboxCommandResult? diffResult,
+            IReviewCommentPublisher[]? publishersOverride)
         {
             _db = new TempSqliteDatabase();
             _repoProvider = repoProvider;
@@ -608,13 +732,22 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
             options ??= new CodeReviewDaemonOptions();
 
+            // Host-side posting (Option A): a github publisher is always wired, plus an ado publisher for ado
+            // runs; a test can substitute publishersOverride (e.g. to omit the matching provider). In the
+            // default collect-only options these are exercised as a no-op (nothing posted).
+            GitHubPublisher = new FakeReviewCommentPublisher("github");
+            AdoPublisher = repoProvider == "azure-devops" ? new FakeReviewCommentPublisher("ado") : null;
+            IReviewCommentPublisher[] publishers = publishersOverride
+                ?? (AdoPublisher is null ? [GitHubPublisher] : [GitHubPublisher, AdoPublisher]);
+
             Executor = new DaemonReviewStageExecutor(
                 Store,
                 Factory,
                 Runner,
                 FileSystem,
                 options,
-                loggerFactory);
+                loggerFactory,
+                publishers: publishers);
         }
 
         public ReviewStore Store { get; }
@@ -622,15 +755,21 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         public FakeSandboxCommandRunner Runner { get; }
         public FakeSandboxFileSystem FileSystem { get; }
         public DaemonReviewStageExecutor Executor { get; }
+        public FakeReviewCommentPublisher GitHubPublisher { get; }
+        public FakeReviewCommentPublisher? AdoPublisher { get; }
 
         public static Fixture GitHub(
             ILoggerFactory loggerFactory,
             CodeReviewDaemonOptions? options = null,
-            SandboxCommandResult? diffResult = null) =>
-            new(loggerFactory, "github", options, diffResult);
+            SandboxCommandResult? diffResult = null,
+            IReviewCommentPublisher[]? publishersOverride = null) =>
+            new(loggerFactory, "github", options, diffResult, publishersOverride);
 
-        public static Fixture Ado(ILoggerFactory loggerFactory, CodeReviewDaemonOptions? options = null) =>
-            new(loggerFactory, "azure-devops", options, diffResult: null);
+        public static Fixture Ado(
+            ILoggerFactory loggerFactory,
+            CodeReviewDaemonOptions? options = null,
+            IReviewCommentPublisher[]? publishersOverride = null) =>
+            new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride);
 
         public ReviewRun SeedRun(string watermark = "wm-1")
         {

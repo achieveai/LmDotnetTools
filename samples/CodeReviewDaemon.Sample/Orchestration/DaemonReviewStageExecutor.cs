@@ -116,6 +116,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly SandboxCredential _credential;
     private readonly ReviewSlotWorkspace? _slotWorkspace;
 
+    /// <summary>Host-side review-comment publishers (one per provider), used by <see cref="PostAsync"/> to
+    /// post the review through the durable <see cref="ReviewPoster"/> outbox (Option A: host-owned, idempotent
+    /// posting — the agent is collect-only). Empty when none is registered (e.g. a diff-only unit test);
+    /// production always registers at least the GitHub publisher.</summary>
+    private readonly IReadOnlyList<IReviewCommentPublisher> _publishers;
+
     /// <summary>The already-running gateway's base URL, threaded from Program.cs (config/env-resolved) so the
     /// tool-assisted review agent's MCP transport addresses the same gateway the pool/provisioner use. Null ⇒
     /// falls back to CRD_SANDBOX_GATEWAY then the 3000 default.</summary>
@@ -148,7 +154,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
         Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
-        string? gatewayBaseUrl = null)
+        string? gatewayBaseUrl = null,
+        IEnumerable<IReviewCommentPublisher>? publishers = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -166,6 +173,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _slotWorkspace = slotWorkspace;
         _appLifetime = appLifetime;
         _gatewayBaseUrl = gatewayBaseUrl;
+        _publishers = publishers is null ? [] : [.. publishers];
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -1288,19 +1296,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
-        // Posting is owned by the review AGENT: it calls the code-reviewer:post-pr-review skill from inside
-        // its sandbox session (see the review prompt's step 5). This terminal stage no longer posts to the
-        // provider — it reads the persisted review only to gate RETENTION (commit/push the notes) and to free
-        // the pooled slot + sandbox session. An empty review retains nothing; the run row still prevents
-        // re-review, and the slot/session are still freed below, so nothing is leaked or looped.
+        // Posting is HOST-OWNED and idempotent (Option A): the review AGENT is collect-only (it produces the
+        // review as its final message and never posts, see the review prompt), and THIS terminal stage delivers
+        // it to the PR through the durable review_outbox via ReviewPoster + the provider publisher.
+        // EnableCommentPosting gates live-post vs collect-only; the outbox row plus a provider-side backstop
+        // scan make delivery exactly-once (a skipped/duplicate post can't happen). The stage then reads the same
+        // review to gate RETENTION (commit/push notes) and to free the pooled slot + sandbox session. An empty
+        // review posts + retains nothing; the run row still prevents re-review and the slot is still freed.
         var reviewText = ReadReviewText(run.Id);
         var hasContent = !string.IsNullOrWhiteSpace(reviewText);
         if (!hasContent)
         {
-            _logger.LogWarning(
-                "Run {RunId}: review produced no content; nothing to retain (the agent posts via "
-                    + "code-reviewer:post-pr-review, so an empty review means it posted nothing either).",
-                run.Id);
+            _logger.LogWarning("Run {RunId}: review produced no content; nothing to post or retain.", run.Id);
+        }
+        else
+        {
+            await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Terminal-stage session teardown (design §7), done BEFORE the slot is stripped/returned below: the
@@ -1392,6 +1404,59 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Host-owned, idempotent review posting (Option A). Resolves the publisher for the run's provider and
+    /// delivers the review through <see cref="ReviewPoster"/> + the <c>review_outbox</c>: the outbox row makes
+    /// it exactly-once, and <see cref="CodeReviewDaemonOptions.EnableCommentPosting"/> selects live-post vs
+    /// collect-only (recorded as <see cref="OutboxStatus.Collected"/>). The idempotency key carries the full
+    /// ADO <c>org/project/repo</c> identity via <see cref="RepoIdentity.Project"/>, and the ADO publisher's
+    /// REST target is likewise <c>org/project/repo</c>-scoped — so an ADO PR can never resolve an ambiguous
+    /// target. Throws only when live posting is authorized but no publisher is registered for the provider (a
+    /// real misconfiguration); a collect-only run with no publisher wired (e.g. a diff-only unit test) is a
+    /// logged no-op.
+    /// </summary>
+    private async Task PostReviewCommentHostSideAsync(
+        ReviewRun run, RepoIdentity repo, string provider, string reviewText, CancellationToken cancellationToken)
+    {
+        var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal));
+        if (publisher is null)
+        {
+            if (_options.EnableCommentPosting)
+            {
+                throw new InvalidOperationException(
+                    $"No review-comment publisher registered for provider '{provider}'; cannot post the review "
+                        + $"for run {run.Id} (EnableCommentPosting is on).");
+            }
+
+            _logger.LogDebug(
+                "Run {RunId}: collect-only and no '{Provider}' publisher registered; nothing to post.",
+                run.Id, provider);
+            return;
+        }
+
+        var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
+        var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
+        var key = new IdempotencyKeyComponents(
+            Provider: provider,
+            OrgOrOwner: repo.OrgOrOwner,
+            Project: repo.Project,
+            RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
+            PrId: run.PrId,
+            Operation: ReviewPoster.PostReviewCommentOperation,
+            ArtifactKind: ReviewArtifactKind,
+            ArtifactSubject: "summary",
+            HeadSha: run.HeadSha,
+            VariantId: run.VariantId);
+        var request = new PostReviewRequest(
+            run.Id, key, new ReviewCommentTarget(repo, run.PrId), postedBody,
+            LivePostingAuthorized: _options.EnableCommentPosting);
+
+        var outcome = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation(
+            "Run {RunId}: {Provider} review post outcome {Outcome} (response {ResponseId}).",
+            run.Id, provider, outcome.Kind, outcome.ProviderResponseId ?? "-");
     }
 
     /// <summary>

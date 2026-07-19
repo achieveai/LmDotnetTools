@@ -296,6 +296,27 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<ILogger<AdoPrProvider>>()));
 }
 
+// Host-side review-comment publishers (Option A: host-owned, idempotent posting via ReviewPoster + the
+// review_outbox; the review AGENT is collect-only). They POST through the same policy-enforced HttpClient as
+// the PR providers above — every provider-API call is classified + validated against the per-run policy, so
+// posting can never be coaxed off-repo/off-scope. GitHub is registered unconditionally (every profile reviews
+// GitHub); ADO only when the provider is enabled. DaemonReviewStageExecutor takes IEnumerable<IReviewCommentPublisher>
+// and selects the one matching each run's provider.
+builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
+    sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
+    sp.GetRequiredService<GitHubOAuthProvider>(),
+    sp.GetRequiredService<ILogger<GitHubReviewCommentPublisher>>()));
+
+if (daemonOptions.EnableAdoProvider)
+{
+    // Resolve the CONCRETE AdoOAuthProvider (not IOAuthTokenProvider, which is ambiguous — both the GitHub and
+    // ADO providers register against it).
+    builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
+        sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
+        sp.GetRequiredService<AdoOAuthProvider>(),
+        sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
+}
+
 // Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com
 // clones, Azure DevOps for dev.azure.com clones — so a private ADO store/submodule checkout gets a
 // credential just like GitHub. HostGitCommandRunner asks this source per git command; a provider that is
