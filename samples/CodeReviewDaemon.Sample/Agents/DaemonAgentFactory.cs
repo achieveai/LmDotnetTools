@@ -65,6 +65,20 @@ internal static class DaemonAgentFactory
     }
 
     /// <summary>
+    /// Renders the post-enforcement follow-up prompt (the <c>post-enforcement</c> template) from the same
+    /// <paramref name="variables"/> the review profile uses. The daemon drives this as one extra conversation
+    /// turn AFTER the review when posting is authorized: the review agent reliably WRITES the review but often
+    /// SKIPS posting it (observed live), so this turn tells it "you have not posted — do it now". Provider-aware
+    /// via <c>is_ado</c> (GitHub → post-pr-review skill / reviews API; ADO → threads REST API).
+    /// </summary>
+    public static string CreatePostEnforcementPrompt(IReadOnlyDictionary<string, object> variables)
+    {
+        ArgumentNullException.ThrowIfNull(variables);
+
+        return Prompts.GetPrompt("post-enforcement").PromptText(new Dictionary<string, object>(variables));
+    }
+
+    /// <summary>
     /// Builds the review profile for one A/B <paramref name="variant"/>. The variant's
     /// <see cref="ReviewVariant.SystemPrompt"/> becomes the profile's prompt — the prompt/skill axis of
     /// the comparison — while tool gating stays identical to <see cref="CreateReviewProfile()"/> (no

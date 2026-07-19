@@ -1352,11 +1352,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
         var (repo, provider) = ResolveRepo(run);
         // Posting is AGENT-owned and INLINE: the review agent posts its findings as line-anchored comments
-        // (and replies to open threads) via the provider REST API over the sandbox's egress proxy, which
-        // injects the bot's auth on api.github.com / dev.azure.com writes (github-auth/ado-auth rules,
-        // Methods:[] = all methods). should_post drives the prompt's posting step. The host-side single-summary
-        // publisher is now an off-by-default fallback (EnableHostSummaryFallback) — the agent's inline comments
-        // are what we want, not one summary blob.
+        // (and replies to open threads) via the provider REST API / the code-reviewer:post-pr-review skill over
+        // the sandbox's egress proxy, which injects the bot's auth on api.github.com / dev.azure.com writes
+        // (github-auth/ado-auth rules, Methods:[] = all methods). should_post drives the prompt's posting step.
+        // Because the agent reliably WRITES the review but frequently SKIPS posting it (observed live: run 81
+        // emitted its review + notes at 17/150 turns and never posted), when posting is authorized we ALSO drive
+        // one post-enforcement turn AFTER the review (ReviewAgent) that makes it actually post. The host-side
+        // single-summary publisher stays an off-by-default fallback (EnableHostSummaryFallback).
         var shouldPost = _options.EnableCommentPosting;
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
@@ -1370,7 +1372,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
-        return await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
+        // Only when authorized to post: the follow-up turn that forces the agent to actually deliver its review.
+        var postEnforcement = shouldPost ? DaemonAgentFactory.CreatePostEnforcementPrompt(variables) : null;
+        return await agent.ReviewAsync(reviewInput, postEnforcement, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

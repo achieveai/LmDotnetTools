@@ -22,9 +22,22 @@ internal sealed class ReviewAgent
     }
 
     /// <summary>
-    /// Sends <paramref name="reviewInput"/> as one user turn and collects the assistant's review text.
+    /// Sends <paramref name="reviewInput"/> as one user turn and collects the assistant's review text. When
+    /// <paramref name="postEnforcementPrompt"/> is supplied (posting is authorized for this run), drives ONE
+    /// more turn afterwards that makes the agent actually POST its review to the PR before we finish.
+    /// <para>
+    /// Why the extra turn: the review agent reliably WRITES the review but frequently SKIPS the posting step
+    /// even though the prompt marks it required — observed live, run 81 (PR #208) emitted its review + notes at
+    /// 17 of 150 turns and never posted. Emphatic prompt text alone did not fix it; a follow-up "you have not
+    /// posted — do it now" turn does. The persisted review ARTIFACT stays the FIRST turn's text (this turn is
+    /// only for the posting side-effect), and it is BEST-EFFORT: a failed enforcement turn (e.g. a
+    /// context-window overflow on the larger conversation) must never discard the review we already collected.
+    /// </para>
     /// </summary>
-    public async Task<ReviewAgentResult> ReviewAsync(string reviewInput, CancellationToken cancellationToken)
+    public async Task<ReviewAgentResult> ReviewAsync(
+        string reviewInput,
+        string? postEnforcementPrompt,
+        CancellationToken cancellationToken)
     {
         var collected = await AgentTextCollector
             .CollectAsync(_agent, reviewInput, cancellationToken)
@@ -36,6 +49,31 @@ internal sealed class ReviewAgent
             collected.AssistantMessageCount,
             collected.Text.Length
         );
+
+        if (!string.IsNullOrWhiteSpace(postEnforcementPrompt))
+        {
+            try
+            {
+                var enforced = await AgentTextCollector
+                    .CollectAsync(_agent, postEnforcementPrompt, cancellationToken)
+                    .ConfigureAwait(false);
+                _logger.LogInformation(
+                    "Post-enforcement turn for run {RunId} completed ({Length} chars).",
+                    enforced.RunId ?? collected.RunId,
+                    enforced.Text.Length
+                );
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The review (turn 1) is the valuable artifact and is already collected; a failed enforcement
+                // turn must not lose it. Log and continue — the run still persists/judges/retains the review.
+                _logger.LogWarning(
+                    ex,
+                    "Post-enforcement turn for run {RunId} failed; keeping the review, but the agent may not have posted.",
+                    collected.RunId
+                );
+            }
+        }
 
         return new ReviewAgentResult(collected.Text, collected.RunId);
     }
