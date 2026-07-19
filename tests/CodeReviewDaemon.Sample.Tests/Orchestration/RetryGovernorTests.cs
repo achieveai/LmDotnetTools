@@ -160,4 +160,23 @@ public class RetryGovernorTests
         g.ShouldAttempt(0).Should().BeFalse(
             "a parked run is preserved through eviction — it is never revived without a restart");
     }
+
+    [Fact]
+    public void Eviction_never_revives_a_parked_run_even_when_the_tracked_set_is_all_parked()
+    {
+        // The pathological case the second eviction pass used to mishandle: a flood of permanent failures parks
+        // FAR more runs than the cap, so there are NO non-parked entries to evict. Parked state must still never
+        // be dropped — evicting one would make ShouldAttempt return true and revive a park-until-restart run
+        // (and churn, reviving one only to re-park + evict the next). So every parked run stays parked; the set
+        // is simply left over the cap (a restart clears it) rather than reviving work.
+        var g = Create(maxAttempts: 1); // every first failure parks the run immediately
+        for (var i = 0; i < 10_050; i++)
+        {
+            g.RecordFailure(i, "boom").Should().Be(RetryDecision.Parked);
+        }
+
+        g.ShouldAttempt(0).Should().BeFalse("the oldest parked run must not be revived to bound memory");
+        g.ShouldAttempt(5_000).Should().BeFalse();
+        g.ShouldAttempt(10_049).Should().BeFalse("the newest parked run is still parked too");
+    }
 }

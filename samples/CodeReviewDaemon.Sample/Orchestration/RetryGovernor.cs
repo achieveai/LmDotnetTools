@@ -73,6 +73,11 @@ internal sealed class RetryGovernor
     private const int MaxTrackedRuns = 10_000;
     private long _seq;
 
+    // Latches once the tracked set can no longer be trimmed below the cap because the remainder is all parked
+    // (a pathological flood of permanent failures). Kept so the restart-worthy saturation alert fires ONCE per
+    // process rather than on every subsequent RecordFailure while saturated.
+    private int _parkedSaturationWarned;
+
     private readonly System.Collections.Concurrent.ConcurrentDictionary<long, State> _states = new();
 
     /// <summary>True unless the run is currently backing off or has been parked.</summary>
@@ -132,12 +137,16 @@ internal sealed class RetryGovernor
     public void RecordSuccess(long runId) => _states.TryRemove(runId, out _);
 
     /// <summary>
-    /// Keeps the tracked set bounded by evicting the oldest entries once it exceeds <see cref="MaxTrackedRuns"/>.
-    /// PARKED runs are preserved: evicting one would drop its state so <see cref="ShouldAttempt"/> returns true
-    /// again and revives the run WITHOUT a restart, violating the documented park-until-restart invariant. So we
-    /// evict the oldest NON-parked states first (a re-polled backing-off run harmlessly retries fresh); only if
-    /// the set is still over capacity with ONLY parked runs (a pathological flood of permanent failures) do we
-    /// evict the oldest parked ones, and each such eviction is logged so the revival can never be silent.
+    /// Keeps the tracked set bounded by evicting the oldest NON-parked entries once it exceeds
+    /// <see cref="MaxTrackedRuns"/>. PARKED runs are NEVER evicted: dropping a parked run's state would make
+    /// <see cref="ShouldAttempt"/> return true again and revive it WITHOUT a restart, violating the documented
+    /// park-until-restart invariant — and under a flood of permanent failures it would churn, reviving one
+    /// parked run only to re-park and evict the next. A re-polled backing-off run harmlessly retries fresh, so
+    /// evicting non-parked state is always safe. If the set is over capacity with ONLY parked runs left — a
+    /// pathological flood of thousands of permanently-failing runs within one process lifetime — we deliberately
+    /// do NOT trim further; instead a one-shot, restart-worthy saturation alert is emitted and the operator
+    /// restarts (which clears the map and retries everything). Bounding memory must never come at the cost of
+    /// reviving parked work.
     /// </summary>
     private void EvictOldestOverCapacity()
     {
@@ -147,11 +156,10 @@ internal sealed class RetryGovernor
             return;
         }
 
-        var ordered = _states.OrderBy(kv => kv.Value.Seq).ToArray();
         var evicted = 0;
 
-        // Pass 1: evict the oldest NON-parked states (safe — they simply retry fresh on a re-poll).
-        foreach (var (key, state) in ordered)
+        // Evict the oldest NON-parked states only (safe — they simply retry fresh on a re-poll).
+        foreach (var (key, state) in _states.OrderBy(kv => kv.Value.Seq))
         {
             if (evicted >= overflow)
             {
@@ -170,29 +178,15 @@ internal sealed class RetryGovernor
             }
         }
 
-        // Pass 2 (pathological): still over capacity with only parked runs left — evict the oldest parked ones
-        // but LOG each, so a park-until-restart revival under memory pressure is observable, never silent.
-        foreach (var (key, state) in ordered)
+        // Still over capacity ⇒ the remainder is all parked. Do NOT evict parked state (that would revive a
+        // park-until-restart run). Surface the saturation once so the operator can restart to clear + retry.
+        if (evicted < overflow
+            && System.Threading.Interlocked.Exchange(ref _parkedSaturationWarned, 1) == 0)
         {
-            if (evicted >= overflow)
-            {
-                break;
-            }
-
-            bool parked;
-            lock (state)
-            {
-                parked = state.Parked;
-            }
-
-            if (parked && _states.TryRemove(key, out _))
-            {
-                _logger.LogWarning(
-                    "RetryGovernor evicted PARKED run {RunId} under memory pressure ({Tracked} tracked); it may be "
-                        + "revived on a re-poll before a restart.",
-                    key, _states.Count);
-                evicted++;
-            }
+            _logger.LogError(
+                "RetryGovernor tracked-set saturated with parked runs ({Tracked} tracked, cap {Cap}); refusing to "
+                    + "evict parked state (would revive park-until-restart). A restart is required to clear and retry.",
+                _states.Count, MaxTrackedRuns);
         }
     }
 }

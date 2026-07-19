@@ -48,6 +48,13 @@ client id, `common` tenant, and the ADO resource `.default` scope). See
 Comment posting stays **off** (`EnableCommentPosting` inherited `false`) until you explicitly enable it —
 a freshly-onboarded repo is collect-only.
 
+> **Activation is future-only.** Enabling `EnableCommentPosting` posts reviews of commits reviewed **from
+> then on**. It does **not** backfill heads already reviewed while collect-only: a completed run is reused by
+> its `(repo, pr, head, base, kind, variant)` identity and its outbox row is terminal `Collected`, so
+> `ReviewPoster` replays a no-op for that head. A new commit (new head) always posts fresh. To (re)post an
+> already-collected head, push a new commit or re-review it — a supported requeue/promotion operation for
+> collected artifacts is a deliberate future enhancement, not an implicit effect of the flip.
+
 ## One-time setup
 
 Run these once, in order. The daemon has **no `auth` subcommand** — it restores tokens at boot from the

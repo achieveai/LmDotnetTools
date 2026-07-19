@@ -28,10 +28,17 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <summary>Caches a commit's last-push date by its immutable commit id, so a PR whose head does not change
     /// is not re-fetched on every poll (the recency filter's per-old-PR commit call was otherwise a serial
     /// request waterfall repeated each poll). Only SUCCESSFUL resolutions are cached — a failed/absent date is
-    /// never cached, so a transient hiccup is retried rather than stuck. Bounded: cleared wholesale past a cap
-    /// (commit ids are immutable, so the cache is naturally bounded by the active-PR set on a healthy repo).</summary>
+    /// never cached, so a transient hiccup is retried rather than stuck. Bounded by FIFO eviction (see
+    /// <see cref="_cacheOrder"/>): at capacity, admitting a new id evicts only the OLDEST entry, so the hot set
+    /// of recently-resolved dates survives — a wholesale clear would drop every hot entry and turn the next poll
+    /// back into a full serial re-fetch waterfall under commit churn. Commit ids are immutable, so an id is
+    /// admitted at most once (a cache hit short-circuits before the fetch).</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _lastPushDateByCommit =
         new(StringComparer.Ordinal);
+    /// <summary>Insertion order of <see cref="_lastPushDateByCommit"/> admissions, enabling O(1) FIFO eviction of
+    /// the oldest entry at capacity (a ConcurrentDictionary has no ordering of its own). Enqueued 1:1 with a
+    /// successful <c>TryAdd</c>, so its length tracks the admitted set.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _cacheOrder = new();
     private const int MaxCachedCommitDates = 4096;
 
     public AdoPrProvider(HttpClient httpClient, IOAuthTokenProvider tokenProvider, ILogger<AdoPrProvider> logger)
@@ -248,14 +255,21 @@ internal sealed class AdoPrProvider : IPrProvider
                     var date = ParseTimestamp(gitUserDate, "date");
                     if (date is not null)
                     {
-                        // Cache only successful resolutions (a null/failure is retried next poll). Bound the
-                        // cache: past the cap, clear it wholesale rather than grow unbounded on a churny repo.
-                        if (_lastPushDateByCommit.Count >= MaxCachedCommitDates)
+                        // Cache only successful resolutions (a null/failure is retried next poll). Bound with
+                        // FIFO eviction: admit the new id, then evict only the OLDEST entry while over the cap —
+                        // clearing wholesale would drop the hot set and turn the next poll into a full serial
+                        // re-fetch waterfall under commit churn. Commit ids are immutable and a cache hit
+                        // short-circuits above, so TryAdd succeeds at most once per id (queue stays 1:1 with the
+                        // admitted set).
+                        if (_lastPushDateByCommit.TryAdd(commitId, date.Value))
                         {
-                            _lastPushDateByCommit.Clear();
+                            _cacheOrder.Enqueue(commitId);
+                            while (_cacheOrder.Count > MaxCachedCommitDates && _cacheOrder.TryDequeue(out var oldest))
+                            {
+                                _ = _lastPushDateByCommit.TryRemove(oldest, out _);
+                            }
                         }
 
-                        _lastPushDateByCommit[commitId] = date.Value;
                         return date;
                     }
                 }

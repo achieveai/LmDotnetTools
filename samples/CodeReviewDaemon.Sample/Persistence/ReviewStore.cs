@@ -163,6 +163,14 @@ internal sealed class ReviewStore : IDisposable
     /// variant)</c>, mode/watermark-agnostic (see <see cref="CreateOrGetReviewRun"/>). When more than one
     /// row exists for the identity (e.g. rows left by an earlier build that keyed identity on mode or
     /// watermark), the furthest-progressed one wins so a completed review is not needlessly re-run.
+    /// <para>
+    /// Posting-transition semantics (deliberate): because identity excludes mode/watermark, a completed
+    /// collect-only run of a head is reused rather than re-created when posting is later enabled — so, together
+    /// with the outbox row's terminal <c>Collected</c> status being a replay no-op in <c>ReviewPoster</c>,
+    /// enabling <c>EnableCommentPosting</c> applies to FUTURE commits only and does NOT backfill already-collected
+    /// heads. A new head is a new identity → a fresh run + outbox key that posts normally. Retroactively promoting
+    /// collected heads is a not-yet-built requeue operation, documented in the profiles + ADO-ONBOARDING.md.
+    /// </para>
     /// </summary>
     private ReviewRun? FindReviewRunByIdentity(ReviewRun run)
     {
