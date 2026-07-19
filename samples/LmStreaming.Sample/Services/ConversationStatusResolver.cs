@@ -6,7 +6,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 namespace LmStreaming.Sample.Services;
 
 /// <summary>
-/// The 6 top-level states a headless REST caller can observe for a run, distinct from the
+/// The 5 top-level states a headless REST caller can observe for a run, distinct from the
 /// internal <see cref="RunStatus"/> ledger enum: <see cref="RunStatus.Queued"/> is surfaced as
 /// <see cref="NotStarted"/> (an external caller has no use for the internal mint-vs-start
 /// distinction, and "queued" also covers an accepted input that has no ledger row yet).
@@ -18,7 +18,6 @@ public enum ConversationRunStatus
     Completed,
     Errored,
     Interrupted,
-    Cancelled,
 }
 
 /// <summary>
@@ -180,7 +179,6 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
         RunStatus.Completed => ConversationRunStatus.Completed,
         RunStatus.Errored => ConversationRunStatus.Errored,
         RunStatus.Interrupted => ConversationRunStatus.Interrupted,
-        RunStatus.Cancelled => ConversationRunStatus.Cancelled,
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown RunStatus value."),
     };
 }

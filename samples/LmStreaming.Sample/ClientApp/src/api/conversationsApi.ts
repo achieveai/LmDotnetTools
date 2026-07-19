@@ -125,7 +125,7 @@ export interface SendMessageResponse {
 }
 
 /**
- * The 6 top-level states a headless REST caller can observe for a run (mirrors the backend's
+ * The 5 top-level states a headless REST caller can observe for a run (mirrors the backend's
  * `ConversationRunStatus` enum, serialized as its plain member name).
  */
 export type ConversationRunStatusValue =
@@ -133,8 +133,7 @@ export type ConversationRunStatusValue =
   | 'InProgress'
   | 'Completed'
   | 'Errored'
-  | 'Interrupted'
-  | 'Cancelled';
+  | 'Interrupted';
 
 /**
  * Resolved status of a conversation run, polled by either `runId` or `inputId`.
