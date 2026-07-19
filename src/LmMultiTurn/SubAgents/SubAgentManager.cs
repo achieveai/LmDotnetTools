@@ -15,6 +15,28 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
 /// <summary>
+/// Read-only, point-in-time snapshot of a single registered sub-agent, for presentation seams
+/// (e.g. a UI listing children before resolving one for subscription). Carries no live handles and
+/// is safe to hand to callers outside the SubAgents module.
+/// </summary>
+/// <param name="AgentId">Stable id of the sub-agent.</param>
+/// <param name="Name">Optional caller-supplied name, or null if none was provided at spawn.</param>
+/// <param name="TemplateName">Name of the template the sub-agent was spawned from.</param>
+/// <param name="Task">The task the sub-agent was spawned with.</param>
+/// <param name="Status">Lifecycle status at the moment the snapshot was taken.</param>
+/// <param name="ThreadId">The sub-agent's conversation thread id.</param>
+/// <param name="LastActivityUtc">Timestamp of the newest buffered turn, or null when no turn has
+/// been recorded yet.</param>
+public sealed record SubAgentSnapshot(
+    string AgentId,
+    string? Name,
+    string TemplateName,
+    string Task,
+    SubAgentStatus Status,
+    string ThreadId,
+    DateTimeOffset? LastActivityUtc);
+
+/// <summary>
 /// Manages sub-agent lifecycle: spawning, monitoring, resuming, and disposal.
 /// Coordinates concurrency and relays completion results back to the parent agent.
 /// </summary>
@@ -771,6 +793,78 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Check the status and recent activity of a sub-agent.
     /// </summary>
+    /// <summary>
+    /// Returns a read-only, point-in-time snapshot of every registered sub-agent. Presentation-only:
+    /// it reads the live registry without mutating any state, never blocks, and is safe to call
+    /// concurrently with spawn/send/dispose. A sub-agent added or removed after the snapshot is taken
+    /// is simply not reflected in the returned list.
+    /// </summary>
+    public IReadOnlyList<SubAgentSnapshot> ListAgents()
+    {
+        var snapshots = new List<SubAgentSnapshot>(_agents.Count);
+        foreach (var state in _agents.Values)
+        {
+            snapshots.Add(new SubAgentSnapshot(
+                AgentId: state.AgentId,
+                Name: state.Name,
+                TemplateName: state.TemplateName,
+                Task: state.Task,
+                Status: state.Status,
+                ThreadId: state.Agent.ThreadId,
+                LastActivityUtc: GetLastActivityUtc(state)));
+        }
+
+        return snapshots;
+    }
+
+    /// <summary>
+    /// Derives the timestamp of the newest buffered turn for <paramref name="state"/>, or null when
+    /// the buffer is empty. The buffer is a lock-free <see cref="System.Collections.Concurrent.ConcurrentQueue{T}"/>;
+    /// snapshotting it with <c>ToArray</c> gives a consistent view even while the monitor enqueues.
+    /// </summary>
+    private static DateTimeOffset? GetLastActivityUtc(SubAgentState state)
+    {
+        var turns = state.TurnBuffer.ToArray();
+        if (turns.Length == 0)
+        {
+            return null;
+        }
+
+        var newest = turns[0].Timestamp;
+        for (var i = 1; i < turns.Length; i++)
+        {
+            if (turns[i].Timestamp > newest)
+            {
+                newest = turns[i].Timestamp;
+            }
+        }
+
+        return newest;
+    }
+
+    /// <summary>
+    /// Non-throwing resolve of a single sub-agent by its id or caller-supplied name, for a
+    /// presentation seam that needs the live instance (e.g. to subscribe to its output). Returns
+    /// false (with <paramref name="agent"/> set to null) when the target matches no registered
+    /// sub-agent, so a caller can distinguish "not ours" without catching exceptions. Read-only: it
+    /// does not alter any sub-agent state.
+    /// </summary>
+    /// <param name="target">The sub-agent id or its caller-supplied name.</param>
+    /// <param name="agent">The resolved live instance on success; null otherwise.</param>
+    /// <returns>True if a registered sub-agent was resolved; false otherwise.</returns>
+    public bool TryGetAgent(string target, out IMultiTurnAgent? agent)
+    {
+        if (TryResolveAgentId(target, out var agentId)
+            && _agents.TryGetValue(agentId, out var state))
+        {
+            agent = state.Agent;
+            return true;
+        }
+
+        agent = null;
+        return false;
+    }
+
     public string Peek(string agentId)
     {
         if (!_agents.TryGetValue(agentId, out var state))
