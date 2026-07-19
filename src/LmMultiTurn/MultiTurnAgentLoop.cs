@@ -181,7 +181,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // built-in template doesn't fall back to the provider's stale hardcoded default.
                 parentModelId: DefaultOptions.ModelId,
                 // Share the root ledger so descendant usage folds into the same conversation total (#196).
-                usageSink: UsageLedger);
+                usageSink: UsageLedger,
+                // Persist immediately on each descendant observation (covers late/background descendants).
+                persistUsageAsync: PersistCurrentUsageAsync);
 
             var toolProvider = new SubAgentToolProvider(
                 SubAgentManager,

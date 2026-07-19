@@ -35,6 +35,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     // Null keeps the historical behaviour (descendant usage not aggregated).
     private readonly IUsageSink? _usageSink;
 
+    // Optional durable-persist callback invoked after a descendant observation, so late/background
+    // descendant usage is persisted immediately instead of waiting for a future primary usage event.
+    private readonly Func<Task>? _persistUsageAsync;
+
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
@@ -78,7 +82,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         MutableSubAgentTemplateSource source,
         ILogger? logger = null,
         string? parentModelId = null,
-        IUsageSink? usageSink = null)
+        IUsageSink? usageSink = null,
+        Func<Task>? persistUsageAsync = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -93,6 +98,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         _source = source;
         _logger = logger ?? NullLogger.Instance;
         _usageSink = usageSink;
+        _persistUsageAsync = persistUsageAsync;
         // The parent's model, inherited by sub-agents whose template/override sets none (see
         // ResolveSubAgentOptions). Null when the parent has no model (e.g. CLI-backed parents).
         _parentModelId = parentModelId;
@@ -1262,6 +1268,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                 if (_usageSink is not null && msg is UsageMessage usageMessage)
                 {
                     _usageSink.RecordUsage(BuildDescendantUsageRecord(usageMessage, state));
+
+                    // Persist immediately so a late/background descendant's spend is durable even if no
+                    // further primary usage event follows to flush it (#196).
+                    if (_persistUsageAsync is not null)
+                    {
+                        _ = _persistUsageAsync();
+                    }
                 }
 
                 // Track the last assistant text for the completion result. Subscribers

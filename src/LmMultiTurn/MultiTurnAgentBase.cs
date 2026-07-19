@@ -365,6 +365,24 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <summary>
+    /// Persists the current usage ledger snapshot + records for the root conversation. Handed to the
+    /// SubAgentManager so a descendant's usage is made durable when it is observed — including a
+    /// late/background descendant that finishes after the root's last provider call — rather than waiting
+    /// for a future primary usage event to flush it (#196).
+    /// </summary>
+    protected Task PersistCurrentUsageAsync()
+    {
+        var ledger = UsageLedger;
+        var store = Store;
+        if (ledger is null || store is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return PersistUsageSnapshotAsync(store, ledger.Snapshot(), ledger.SnapshotRecords());
+    }
+
+    /// <summary>
     /// Gets a snapshot of the conversation history in a thread-safe manner.
     /// </summary>
     /// <returns>A read-only list containing the current conversation history</returns>

@@ -80,9 +80,33 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
         result.Should().Be("done");
     }
 
-    private async Task<string> SpawnAsync(IUsageSink? usageSink)
+    [Fact]
+    public async Task DescendantUsage_TriggersDurablePersist()
     {
-        var manager = CreateManager(usageSink);
+        var ledger = new UsageLedger("root-conv");
+        var persistCount = 0;
+        SetupSubAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                GenerationId = "gen-1",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+
+        var agentId = await SpawnAsync(ledger, () =>
+        {
+            _ = Interlocked.Increment(ref persistCount);
+            return Task.CompletedTask;
+        });
+        _ = await _manager!.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        persistCount.Should().BeGreaterThan(0);
+    }
+
+    private async Task<string> SpawnAsync(IUsageSink? usageSink, Func<Task>? persistUsageAsync = null)
+    {
+        var manager = CreateManager(usageSink, persistUsageAsync);
         _manager = manager;
 
         var spawnJson = await manager.SpawnAsync("test-agent", "Do some work", runInBackground: true);
@@ -90,7 +114,7 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
         return spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
     }
 
-    private SubAgentManager CreateManager(IUsageSink? usageSink)
+    private SubAgentManager CreateManager(IUsageSink? usageSink, Func<Task>? persistUsageAsync = null)
     {
         var options = CreateOptions();
         return new SubAgentManager(
@@ -99,7 +123,8 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
             parentHandlers: new Dictionary<string, ToolHandler>(),
             options: options,
             source: new MutableSubAgentTemplateSource(options.Templates),
-            usageSink: usageSink);
+            usageSink: usageSink,
+            persistUsageAsync: persistUsageAsync);
     }
 
     private SubAgentOptions CreateOptions()
