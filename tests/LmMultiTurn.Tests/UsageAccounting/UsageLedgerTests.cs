@@ -85,4 +85,32 @@ public class UsageLedgerTests
         snap.FoldedRevision.Should().Be(3); // three committed, gap-free
         snap.Completeness.Should().Be(UsageCompleteness.Complete);
     }
+
+    [Fact]
+    public void UpsertAttempt_FillsEstimatedPublicCost_FromResolver()
+    {
+        var ledger = new UsageLedger(
+            "conv-1",
+            new StubResolver("model-A", promptPerMillion: 2m, completionPerMillion: 8m));
+
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 1000, output: 500));
+
+        var snap = ledger.Snapshot();
+        snap.EstimatedPublicCostMicros.Should().Be(6000); // 1000*$2/M + 500*$8/M => $0.006
+        snap.ProviderReportedCostMicros.Should().BeNull();
+    }
+
+    private sealed class StubResolver(string model, decimal promptPerMillion, decimal completionPerMillion)
+        : IPricingResolver
+    {
+        private readonly ModelPricing _pricing = new()
+        {
+            ModelId = model,
+            PromptPerMillion = promptPerMillion,
+            CompletionPerMillion = completionPerMillion,
+        };
+
+        public ModelPricing? Resolve(string modelId) =>
+            string.Equals(modelId, model, StringComparison.Ordinal) ? _pricing : null;
+    }
 }
