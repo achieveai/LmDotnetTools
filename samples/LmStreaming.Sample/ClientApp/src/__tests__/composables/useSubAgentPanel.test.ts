@@ -514,3 +514,193 @@ describe('useSubAgentPanel — hardening', () => {
     expect(subAgentsMocks.listSubAgents).toHaveBeenCalledTimes(callsBefore);
   });
 });
+
+describe('useSubAgentPanel — lifecycle invalidation & handoff (PR #209)', () => {
+  // Finding #2 — conversation isolation: switching the parent conversation must invalidate any
+  // focused child (close its socket, clear the transcript) before the NEW parent's list is applied,
+  // and a late list response for a superseded parent must be dropped.
+  it('parent change invalidates the focused child: closes the old socket, clears focus, loads the new list', async () => {
+    let parent = 'parent-A';
+    subAgentsMocks.listSubAgents.mockImplementation(async (p: string) =>
+      p === 'parent-A' ? [summary('a1')] : [summary('b1')]);
+
+    const panel = useSubAgentPanel(() => parent);
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(panel.focusedAgentId.value).toBe('a1');
+    expect(captured).toHaveLength(1);
+
+    // User switches the main conversation to parent B, then a poll refreshes.
+    parent = 'parent-B';
+    await panel.refreshChildren();
+
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(captured[0].connection);
+    expect(panel.focusedAgentId.value).toBeNull();
+    expect(panel.focusedDisplayItems.value).toEqual([]);
+    expect(panel.children.value).toEqual([summary('b1')]);
+  });
+
+  it('discards a late list response for a superseded parent (#2)', async () => {
+    let parent = 'parent-A';
+    let resolveA: (() => void) | undefined;
+    subAgentsMocks.listSubAgents.mockImplementation((p: string) => {
+      if (p === 'parent-A') {
+        return new Promise<SubAgentSummary[]>((r) => {
+          resolveA = () => r([summary('a-late')]);
+        });
+      }
+      return Promise.resolve([summary('b1')]);
+    });
+
+    const panel = useSubAgentPanel(() => parent);
+    // Kick off an in-flight refresh for A (parked inside listSubAgents).
+    const pA = panel.refreshChildren();
+    // Switch to B and refresh: invalidates (advances the parent epoch) and loads B.
+    parent = 'parent-B';
+    await panel.refreshChildren();
+    expect(panel.children.value).toEqual([summary('b1')]);
+
+    // The late A response resolves AFTER B was applied → it must be discarded.
+    resolveA!();
+    await pA;
+    expect(panel.children.value).toEqual([summary('b1')]);
+  });
+
+  // Finding #3 — async lifecycle race: an unfocus (Back/unmount) during a pending focus must
+  // supersede it so the late socket is closed, never adopted.
+  it('a pending focus superseded by unfocus closes its late socket instead of adopting it (#3)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    let resolveHistory: (() => void) | undefined;
+    convMocks.loadConversationMessages.mockImplementation(
+      () => new Promise((r) => { resolveHistory = () => r([]); })
+    );
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    // Focus parks mid history-load (the socket is already opened by the connect-first handoff).
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(captured).toHaveLength(1);
+
+    // Unfocus (Back/unmount) supersedes the pending focus.
+    await panel.unfocusChild();
+
+    // History finally resolves; the superseded focus must CLOSE the socket, not adopt it.
+    resolveHistory!();
+    await p;
+
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(captured[0].connection);
+    expect(panel.focusedAgentId.value).toBeNull();
+    panel.sendToFocusedChild('nope');
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalled();
+  });
+
+  // Finding #8 — failure handling: HTTP/connect failures must be caught (no unhandled rejection),
+  // surface an error, and leave no half-focused child.
+  it('surfaces an error and does not throw when listSubAgents rejects; a later poll recovers (#8)', async () => {
+    subAgentsMocks.listSubAgents.mockRejectedValueOnce(new Error('boom'));
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await expect(panel.refreshChildren()).resolves.toBeUndefined();
+    expect(panel.error.value).toBeTruthy();
+
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    await panel.refreshChildren();
+    expect(panel.error.value).toBeNull();
+    expect(panel.children.value).toEqual([summary('a1')]);
+  });
+
+  it('clears focus state and surfaces an error when history load fails, closing the opened socket (#8)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    convMocks.loadConversationMessages.mockRejectedValueOnce(new Error('load fail'));
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+
+    expect(panel.focusedAgentId.value).toBeNull();
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    expect(panel.error.value).toBeTruthy();
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledWith(captured[0].connection);
+  });
+
+  it('clears focus state and surfaces an error when the connect fails (#8)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    wsSubMocks.connectSubAgent.mockRejectedValueOnce(new Error('connect fail'));
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+
+    expect(panel.focusedAgentId.value).toBeNull();
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    expect(panel.error.value).toBeTruthy();
+  });
+
+  // Finding #7 — live/history handoff: open the subscription FIRST, then load history, then merge
+  // buffered live messages on top so nothing emitted in the gap is lost or duplicated.
+  it('opens the live subscription BEFORE loading history (#7 handoff order)', async () => {
+    const order: string[] = [];
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    convMocks.loadConversationMessages.mockImplementation(async () => {
+      order.push('history');
+      return [];
+    });
+    wsSubMocks.connectSubAgent.mockImplementation(
+      async (parentThreadId: string, agentId: string, callbacks: any) => {
+        order.push('connect');
+        const connection = {
+          socket: { readyState: WebSocket.OPEN },
+          connectionId: `sa-${captured.length + 1}`,
+          threadId: `subagent-${agentId}`,
+          isConnected: true,
+        };
+        captured.push({ parentThreadId, agentId, callbacks, connection });
+        return connection;
+      }
+    );
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+
+    expect(order).toEqual(['connect', 'history']);
+    expect(panel.focusedAgentId.value).toBe('a1');
+    expect(panel.isFocusedStreaming.value).toBe(true);
+  });
+
+  it('buffers a live message that arrives during history load and applies it exactly once (#7)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    let resolveHistory: (() => void) | undefined;
+    convMocks.loadConversationMessages.mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolveHistory = () =>
+            r([
+              {
+                id: 'p-call', threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 2,
+                timestamp: 1001, messageType: 'tool_call', role: 'assistant',
+                messageJson: JSON.stringify(toolCall('call_1')),
+              },
+            ]);
+        })
+    );
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    const p = panel.focusChild('a1');
+    // Socket is open (connect-first); history is still pending → a live tool call arrives in the gap.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(captured).toHaveLength(1);
+    captured[0].callbacks.onMessage(runAssignment());
+    captured[0].callbacks.onMessage(toolCall('call_1'));
+    captured[0].callbacks.onMessage(toolResult('call_1', 'resolved'));
+
+    // History resolves with the SAME tool call persisted (twin, real runId).
+    resolveHistory!();
+    await p;
+
+    // The gap message is present exactly once (merged with its rehydrated twin), and resolved.
+    expect(toolPills(panel.focusedDisplayItems.value, 'call_1')).toHaveLength(1);
+    expect(panel.getResultForToolCall('call_1')?.result).toBe('resolved');
+  });
+});

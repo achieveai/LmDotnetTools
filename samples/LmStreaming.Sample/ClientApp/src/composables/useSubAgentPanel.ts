@@ -1,4 +1,4 @@
-import { ref, onScopeDispose } from 'vue';
+import { ref, watch, onScopeDispose } from 'vue';
 import type {
   Message,
   DisplayItem,
@@ -49,6 +49,8 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   const focusedAgentId = ref<string | null>(null);
   const focusedDisplayItems = ref<DisplayItem[]>([]);
   const isFocusedStreaming = ref(false);
+  // Last HTTP/connect failure surfaced to the view; cleared on the next successful refresh/focus.
+  const error = ref<string | null>(null);
 
   // Per-focus state (rebuilt on every focusChild; never shared with useChat).
   let focusedIndex = new Map<string, DisplayableMessage>();
@@ -70,16 +72,70 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   // in a terminal (non-streaming) state rather than looping.
   let autoResumeUsed = false;
 
+  // Lifecycle-generation model (PR #209). TWO monotonically-increasing tokens supersede stale async
+  // work so a parent switch, an unfocus (Back/unmount) or scope disposal can never let an in-flight
+  // focus/refresh/reconnect adopt a socket or publish state after teardown:
+  //   * `focusSeq` — focus-lifecycle epoch. Claimed by focusChild (AFTER its own teardown) and bumped
+  //     by unfocusChild (hence also by refocus, parent-change invalidation and scope disposal, which
+  //     all unfocus). Every await in focusChild re-checks it and, if superseded, closes any socket it
+  //     just opened instead of adopting it.
+  //   * `parentGen` — parent-list epoch. Bumped only when the observed parent changes (invalidation)
+  //     or on disposal. Guards the `children.value` assignment so a late list response for a
+  //     superseded parent is discarded and cannot overwrite the new parent's list.
+  let parentGen = 0;
+  // The parent thread id whose children/focus are currently applied. A refresh that observes a
+  // different parent first invalidates (advance parentGen, unfocus, clear children) before loading.
+  let lastAppliedParent: string | null = getParentThreadId();
+
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+  function errorMessage(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
+
   /**
-   * Refresh the sub-agent list for the active parent conversation. No-op when there is no parent
-   * (nothing to enumerate yet).
+   * Invalidate everything tied to the previous parent conversation before switching to `newParent`:
+   * advance the parent epoch (so a late list response for the old parent is dropped), tear down any
+   * focused child (close its socket, clear the transcript — this also bumps `focusSeq`, superseding a
+   * pending focus), and clear the stale child list.
+   */
+  async function invalidateForParentChange(newParent: string | null): Promise<void> {
+    parentGen++;
+    lastAppliedParent = newParent;
+    await unfocusChild();
+    children.value = [];
+  }
+
+  /**
+   * Refresh the sub-agent list for the active parent conversation. If the observed parent differs
+   * from the last-applied one (the user switched the main conversation), first INVALIDATE so the
+   * transcript/socket/input never stay attached to the old parent's child. No-op when there is no
+   * parent (nothing to enumerate yet). Failures surface via {@link error} instead of rejecting, and a
+   * response that returns after the parent changed again is discarded.
    */
   async function refreshChildren(): Promise<void> {
     const parent = getParentThreadId();
+    if (parent !== lastAppliedParent) {
+      await invalidateForParentChange(parent);
+    }
     if (!parent) return;
-    children.value = await listSubAgents(parent);
+
+    const requestGen = parentGen;
+    let list: SubAgentSummary[];
+    try {
+      list = await listSubAgents(parent);
+    } catch (e) {
+      // Only surface the failure if it is still relevant to the current parent/epoch.
+      if (parentGen === requestGen && getParentThreadId() === parent) {
+        log.error('Failed to list sub-agents', { parent, error: e });
+        error.value = `Failed to list sub-agents: ${errorMessage(e)}`;
+      }
+      return;
+    }
+    // Discard a late response for a superseded parent/epoch so it can't overwrite the new list.
+    if (parentGen !== requestGen || getParentThreadId() !== parent) return;
+    error.value = null;
+    children.value = list;
   }
 
   /** Begin polling the sub-agent list every 3s (fires an immediate refresh on start). */
@@ -270,20 +326,26 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   }
 
   /**
-   * Focus a sub-agent: tear down any prior focus, load the child's persisted transcript, then open a
-   * live stream. History merges with the live stream by the shared merge key (runId-stamped), so a
-   * still-running child resumes without duplicating pills.
+   * Focus a sub-agent: tear down any prior focus, open the live stream (buffering), load the child's
+   * persisted transcript, then drain the buffered live messages on top. Opening the socket BEFORE the
+   * history fetch closes the snapshot→subscribe gap; history merges with the live stream by the shared
+   * merge key (runId-stamped), so a still-running child resumes without duplicating pills. Any await
+   * re-checks the focus token: a supersession (refocus / unfocus / parent switch / disposal) closes a
+   * just-opened socket instead of adopting it, and a connect/history failure clears the focus state
+   * and surfaces {@link error}.
    *
    * @param agentId the child to focus.
    * @param isAutoResume internal: true when invoked by the onClose auto-resume (a backpressure-drop
    *   reconnect), so it does NOT reset the one-shot resume budget. User-initiated focus omits it.
    */
   async function focusChild(agentId: string, isAutoResume = false): Promise<void> {
-    const token = ++focusSeq;
     if (!isAutoResume) {
       autoResumeUsed = false;
     }
+    // Tear down any prior focus FIRST; unfocusChild bumps focusSeq, so claim our token AFTER it so we
+    // don't immediately supersede ourselves.
     await unfocusChild();
+    const token = ++focusSeq;
     // unfocusChild set intentionalClose to close the prior socket; clear it so the NEW connection's
     // close is treated as unexpected (and can auto-resume) rather than suppressed.
     intentionalClose = false;
@@ -303,75 +365,133 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     focusedAgentId.value = agentId;
     merger = useMessageMerger();
     resetFocusState();
+    error.value = null;
 
-    // Load persisted history first so live deltas merge in place with their rehydrated twins.
-    const persisted = await loadConversationMessages(summary.threadId);
-    // Concurrent-focus guard: a newer focusChild superseded us while history loaded. Abandon this
-    // stale rebuild — its state now belongs to the newer focus and must not be clobbered.
-    if (focusSeq !== token) {
-      log.debug('focusChild superseded during history load; abandoning stale rebuild', { agentId });
-      return;
-    }
-    for (const pm of persisted) {
-      rehydratePersisted(pm);
-    }
-    // Attach any persisted tool results to their tool calls.
-    for (const [id, result] of toolResults.value.entries()) {
-      for (const chatMsg of focusedIndex.values()) {
-        if (isToolCallMessage(chatMsg.content) && (chatMsg.content as ToolCallMessage).tool_call_id === id) {
-          (chatMsg.content as ToolCallMessage).result = result.result;
-          break;
-        } else if (isToolsCallMessage(chatMsg.content)) {
-          const match = (chatMsg.content as ToolsCallMessage).tool_calls?.find((tc) => tc.tool_call_id === id);
-          if (match) {
-            match.result = result.result;
+    // Live/history handoff (#7): open the subscription FIRST and BUFFER incoming live messages, THEN
+    // load persisted history, then drain the buffer on top (merge/dedup by the shared key). This
+    // closes the REST-snapshot→subscribe gap — a child message emitted after the history snapshot but
+    // before the subscription is buffered here rather than lost until a refocus.
+    const liveBuffer: Message[] = [];
+    let bufferingLive = true;
+    let openedConnection: WebSocketConnection | null = null;
+
+    try {
+      const connection = await connectSubAgent(parent, agentId, {
+        onMessage: (m: Message) => {
+          // Ignore late frames for a superseded focus.
+          if (focusSeq !== token) return;
+          if (bufferingLive) {
+            liveBuffer.push(m);
+            return;
+          }
+          handleChildMessage(m);
+        },
+        onDone: () => {
+          if (focusSeq === token) isFocusedStreaming.value = false;
+        },
+        onError: (err: string) => {
+          if (focusSeq !== token) return;
+          log.error('Sub-agent stream error', { agentId, error: err });
+          isFocusedStreaming.value = false;
+        },
+        onClose: () => {
+          // Ignore closes for a superseded focus, or a close WE initiated (unfocus/refocus).
+          if (focusSeq !== token || intentionalClose) {
+            return;
+          }
+          // Unexpected server/drop close: drop the dead socket and stop the spinner so the view can't
+          // hang and sendToFocusedChild can't post to a dead socket. The server closes after a
+          // backpressure drop expecting a reconnect+replay, so resume ONCE; a second close is terminal.
+          focusedConnection = null;
+          isFocusedStreaming.value = false;
+          if (!autoResumeUsed) {
+            autoResumeUsed = true;
+            log.info('Sub-agent focus socket closed unexpectedly; resuming once', { agentId });
+            void focusChild(agentId, true).catch((e) => {
+              log.error('Sub-agent auto-resume failed', { agentId, error: e });
+            });
+          }
+        },
+      });
+      openedConnection = connection;
+
+      // Lifecycle guard: a newer focus, an unfocus, a parent switch or disposal superseded us while
+      // the socket was opening. Do NOT adopt this now-stale connection — close it and bail.
+      if (focusSeq !== token) {
+        log.debug('focusChild superseded during connect; closing stale connection', { agentId });
+        closeWebSocketConnection(connection);
+        return;
+      }
+
+      // Load persisted history (live messages arriving now are buffered above).
+      const persisted = await loadConversationMessages(summary.threadId);
+      if (focusSeq !== token) {
+        log.debug('focusChild superseded during history load; closing stale connection', { agentId });
+        closeWebSocketConnection(connection);
+        return;
+      }
+      for (const pm of persisted) {
+        rehydratePersisted(pm);
+      }
+      // Attach any persisted tool results to their tool calls.
+      for (const [id, result] of toolResults.value.entries()) {
+        for (const chatMsg of focusedIndex.values()) {
+          if (isToolCallMessage(chatMsg.content) && (chatMsg.content as ToolCallMessage).tool_call_id === id) {
+            (chatMsg.content as ToolCallMessage).result = result.result;
             break;
+          } else if (isToolsCallMessage(chatMsg.content)) {
+            const match = (chatMsg.content as ToolsCallMessage).tool_calls?.find((tc) => tc.tool_call_id === id);
+            if (match) {
+              match.result = result.result;
+              break;
+            }
           }
         }
       }
-    }
-    rebuildFocusedDisplayItems();
+      rebuildFocusedDisplayItems();
 
-    // Open the live child stream.
-    const connection = await connectSubAgent(parent, agentId, {
-      onMessage: handleChildMessage,
-      onDone: () => {
-        isFocusedStreaming.value = false;
-      },
-      onError: (err: string) => {
-        log.error('Sub-agent stream error', { agentId, error: err });
-        isFocusedStreaming.value = false;
-      },
-      onClose: () => {
-        // Ignore closes for a superseded focus, or a close WE initiated (unfocus/refocus).
-        if (focusSeq !== token || intentionalClose) {
-          return;
-        }
-        // Unexpected server/drop close: drop the dead socket and stop the spinner so the view can't
-        // hang and sendToFocusedChild can't post to a dead socket. The server closes after a
-        // backpressure drop expecting a reconnect+replay, so resume ONCE; a second close is terminal.
-        focusedConnection = null;
-        isFocusedStreaming.value = false;
-        if (!autoResumeUsed) {
-          autoResumeUsed = true;
-          log.info('Sub-agent focus socket closed unexpectedly; resuming once', { agentId });
-          void focusChild(agentId, true);
-        }
-      },
-    });
-    // Concurrent-focus guard: a newer focusChild superseded us while the socket was opening. Do not
-    // adopt this now-stale connection (that would clobber the newer focus); close it and bail.
-    if (focusSeq !== token) {
-      log.debug('focusChild superseded during connect; closing stale connection', { agentId });
-      closeWebSocketConnection(connection);
-      return;
+      // Drain buffered live messages on top of history; the shared merge key dedups a buffered delta
+      // against its rehydrated twin (no duplicate pills). Flip buffering off first (synchronously) so
+      // a message delivered during the drain is handled directly rather than re-buffered.
+      bufferingLive = false;
+      const buffered = liveBuffer.splice(0, liveBuffer.length);
+      for (const m of buffered) {
+        handleChildMessage(m);
+      }
+      rebuildFocusedDisplayItems();
+
+      // Adopt the connection now that history + gap messages are in place.
+      focusedConnection = connection;
+      isFocusedStreaming.value = true;
+    } catch (e) {
+      // A superseding focus/unfocus/parent-switch already owns the visible state — don't clobber it;
+      // just ensure the socket we opened (if any) is closed.
+      if (focusSeq !== token) {
+        if (openedConnection) closeWebSocketConnection(openedConnection);
+        return;
+      }
+      // Failure for the CURRENT focus (connect/history rejected): clear the half-focused state, stop
+      // the spinner, close any opened socket, and surface the error.
+      log.error('focusChild failed', { agentId, error: e });
+      if (openedConnection) {
+        intentionalClose = true;
+        closeWebSocketConnection(openedConnection);
+      }
+      focusedConnection = null;
+      focusedAgentId.value = null;
+      isFocusedStreaming.value = false;
+      resetFocusState();
+      error.value = `Failed to focus sub-agent: ${errorMessage(e)}`;
     }
-    focusedConnection = connection;
-    isFocusedStreaming.value = true;
   }
 
-  /** Close the focused child's stream and clear all per-focus state. */
+  /**
+   * Close the focused child's stream and clear all per-focus state. Advances `focusSeq` so any focus
+   * still in flight (history-load / socket-open) is superseded and closes its late socket instead of
+   * adopting it after this teardown (#3).
+   */
   async function unfocusChild(): Promise<void> {
+    focusSeq++;
     if (focusedConnection) {
       // Mark the close intentional so its onClose does not trigger an auto-resume.
       intentionalClose = true;
@@ -398,10 +518,25 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     return toolResults.value.get(toolCallId) || null;
   }
 
+  // Immediate parent-change invalidation for reactive callers (the panel passes `() => props
+  // .parentThreadId`): when the observed parent id changes, refresh (which detects the change and
+  // invalidates) without waiting for the next 3s poll. Constant/non-reactive getters (unit tests)
+  // never trigger this. `refreshChildren` swallows its own failures, so this is safe fire-and-forget.
+  const stopParentWatch = watch(
+    () => getParentThreadId(),
+    () => {
+      void refreshChildren();
+    }
+  );
+
   // Auto-cleanup: when the host component/effect-scope unmounts, tear down the poll interval and the
-  // focused child's WebSocket so no timers or sockets leak. `failSilently` avoids a dev warning when
-  // the composable is invoked outside an active scope (e.g. in unit tests that call it directly).
+  // focused child's WebSocket so no timers or sockets leak, and advance the epochs so any in-flight
+  // focus/refresh becomes a no-op that closes (not adopts) its socket. `failSilently` avoids a dev
+  // warning when the composable is invoked outside an active scope (e.g. unit tests calling it
+  // directly).
   onScopeDispose(() => {
+    stopParentWatch();
+    parentGen++;
     stopPolling();
     void unfocusChild();
   }, true);
@@ -411,6 +546,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     focusedAgentId,
     focusedDisplayItems,
     isFocusedStreaming,
+    error,
     startPolling,
     stopPolling,
     refreshChildren,

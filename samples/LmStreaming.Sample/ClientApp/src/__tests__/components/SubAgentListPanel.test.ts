@@ -16,6 +16,7 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
     focusedAgentId: ref<string | null>(null),
     focusedDisplayItems: ref([]),
     isFocusedStreaming: ref(false),
+    error: ref<string | null>(null),
     startPolling: vi.fn(),
     stopPolling: vi.fn(),
     refreshChildren: vi.fn(),
@@ -70,6 +71,7 @@ beforeEach(() => {
   api.focusedAgentId.value = null;
   api.focusedDisplayItems.value = [];
   api.isFocusedStreaming.value = false;
+  api.error.value = null;
   api.startPolling.mockClear();
   api.stopPolling.mockClear();
   api.focusChild.mockClear();
@@ -175,5 +177,17 @@ describe('SubAgentListPanel', () => {
     await nextTick();
 
     expect(wrapper.html()).not.toContain('data-testid="stop-button"');
+  });
+
+  it('surfaces the composable error when present', async () => {
+    const wrapper = mountPanel();
+    await wrapper.get('[data-testid="subagent-panel-toggle"]').trigger('click');
+    expect(wrapper.find('[data-testid="subagent-error"]').exists()).toBe(false);
+
+    panelState.api.error.value = 'Failed to list sub-agents: boom';
+    await nextTick();
+
+    const banner = wrapper.get('[data-testid="subagent-error"]');
+    expect(banner.text()).toContain('Failed to list sub-agents: boom');
   });
 });

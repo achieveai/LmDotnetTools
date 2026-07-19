@@ -13,6 +13,7 @@ const {
   focusedAgentId,
   focusedDisplayItems,
   isFocusedStreaming,
+  error,
   startPolling,
   focusChild,
   unfocusChild,
@@ -60,6 +61,9 @@ onMounted(() => {
     </button>
 
     <div v-if="expanded" class="subagent-panel" data-testid="subagent-panel">
+      <div v-if="error" class="subagent-error" data-testid="subagent-error" role="alert">
+        {{ error }}
+      </div>
       <ul class="subagent-list" data-testid="subagent-list">
         <li v-if="children.length === 0" class="subagent-empty">
           No sub-agents yet.
@@ -164,6 +168,14 @@ onMounted(() => {
   text-align: center;
   color: #666;
   font-size: 13px;
+}
+
+.subagent-error {
+  padding: 10px 14px;
+  background: #fdecea;
+  color: #b3261e;
+  font-size: 12px;
+  border-bottom: 1px solid #f5c6cb;
 }
 
 .subagent-item {
