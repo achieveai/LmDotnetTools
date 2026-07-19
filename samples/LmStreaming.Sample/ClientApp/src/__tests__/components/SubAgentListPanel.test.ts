@@ -190,4 +190,17 @@ describe('SubAgentListPanel', () => {
     const banner = wrapper.get('[data-testid="subagent-error"]');
     expect(banner.text()).toContain('Failed to list sub-agents: boom');
   });
+
+  it('surfaces a relay_failed stream error in the banner (FINDING C)', async () => {
+    const wrapper = mountPanel();
+    await wrapper.get('[data-testid="subagent-panel-toggle"]').trigger('click');
+    expect(wrapper.find('[data-testid="subagent-error"]').exists()).toBe(false);
+
+    // The composable copies a relay_failed stream error into its public `error` ref.
+    panelState.api.error.value = "Failed to relay the message to sub-agent 'a1'. Please retry.";
+    await nextTick();
+
+    const banner = wrapper.get('[data-testid="subagent-error"]');
+    expect(banner.text()).toContain('Failed to relay the message');
+  });
 });

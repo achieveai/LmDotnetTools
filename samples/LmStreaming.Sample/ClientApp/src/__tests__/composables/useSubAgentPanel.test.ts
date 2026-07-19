@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { effectScope } from 'vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
+import { LIVE_BUFFER_MAX } from '@/composables/useSubAgentPanel';
 // Import the composable's own source text to assert it never couples to useChat.
 import panelSource from '@/composables/useSubAgentPanel.ts?raw';
 import { MessageType } from '@/types';
@@ -702,5 +703,170 @@ describe('useSubAgentPanel — lifecycle invalidation & handoff (PR #209)', () =
     // The gap message is present exactly once (merged with its rehydrated twin), and resolved.
     expect(toolPills(panel.focusedDisplayItems.value, 'call_1')).toHaveLength(1);
     expect(panel.getResultForToolCall('call_1')?.result).toBe('resolved');
+  });
+});
+
+describe('useSubAgentPanel — re-review hardening (PR #209 findings A/B/C)', () => {
+  function persistedToolCall(id: string) {
+    return {
+      id: `p-${id}`, threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 2,
+      timestamp: 1001, messageType: 'tool_call', role: 'assistant',
+      messageJson: JSON.stringify(toolCall(id)),
+    };
+  }
+
+  // FINDING A — a terminal socket close DURING the pending history-load await must not let the focus
+  // adopt the now-dead connection. The dangerous case is the SECOND (terminal) close: the one-shot
+  // auto-resume budget is already spent, so onClose does NOT bump focusSeq — the plain focus-token
+  // guard still matches and (pre-fix) the focus would adopt a CLOSED socket, freezing the spinner.
+  it('does not adopt a connection that closed terminally during history load (budget spent) (#A)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    // First focus loads instantly; the resume focus parks on a deferred history load.
+    let resolveResumeHistory: (() => void) | undefined;
+    let historyCall = 0;
+    convMocks.loadConversationMessages.mockImplementation(() => {
+      historyCall += 1;
+      if (historyCall === 1) return Promise.resolve([]);
+      return new Promise((r) => { resolveResumeHistory = () => r([]); });
+    });
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(captured).toHaveLength(1);
+    expect(panel.isFocusedStreaming.value).toBe(true);
+
+    // First unexpected close: spends the one-shot resume → opens a SECOND connection (captured[1]),
+    // which parks on the deferred history load with its socket open.
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured).toHaveLength(2);
+
+    // The resume connection now closes TERMINALLY while its history is still loading. Budget is spent,
+    // so no third resume fires and focusSeq is NOT advanced.
+    captured[1].connection.socket.readyState = WebSocket.CLOSED;
+    captured[1].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    expect(panel.isFocusedStreaming.value).toBe(false);
+
+    // History finally resolves for the resume focus. The dead socket must NOT be adopted.
+    resolveResumeHistory!();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+
+    // No third reconnect, spinner stays off, and sends never route to the dead socket.
+    expect(captured, 'no extra resume after the budget is spent').toHaveLength(2);
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    wsMocks.sendWebSocketMessage.mockClear();
+    panel.sendToFocusedChild('to dead socket');
+    expect(wsMocks.sendWebSocketMessage).not.toHaveBeenCalled();
+  });
+
+  // FINDING B — the subscribe-first live buffer must be bounded. When it overflows while history is
+  // still loading, the composable abandons the buffered-merge and reloads history AFTER the connection
+  // is established, so a message that arrived in the gap (and is persisted) is reconciled — appearing
+  // exactly once — instead of being lost or growing the buffer without bound.
+  it('bounds the live buffer and reloads history on overflow so a gap message appears exactly once (#B)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    let resolveFirstHistory: (() => void) | undefined;
+    let historyCall = 0;
+    convMocks.loadConversationMessages.mockImplementation(() => {
+      historyCall += 1;
+      // First load parks (buffering window); the reconcile reload returns the persisted gap message.
+      if (historyCall === 1) return new Promise((r) => { resolveFirstHistory = () => r([]); });
+      return Promise.resolve([persistedToolCall('call_1')]);
+    });
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(captured).toHaveLength(1);
+
+    const cb = captured[0].callbacks;
+    cb.onMessage(runAssignment());
+    // Overflow the bounded buffer while history is still loading.
+    for (let i = 0; i < LIVE_BUFFER_MAX + 5; i++) {
+      cb.onMessage(textUpdate(`chunk-${i}`));
+    }
+    // The gap tool call also arrives live; it is dropped by the overflow but is persisted server-side.
+    cb.onMessage(toolCall('call_1'));
+
+    resolveFirstHistory!();
+    await p;
+
+    // A reconcile reload happened (2 history loads total) and the gap message appears exactly once.
+    expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(2);
+    expect(toolPills(panel.focusedDisplayItems.value, 'call_1')).toHaveLength(1);
+    expect(panel.isFocusedStreaming.value).toBe(true);
+  });
+
+  it('does not reload history when the live buffer stays within bounds (#B)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    let resolveHistory: (() => void) | undefined;
+    convMocks.loadConversationMessages.mockImplementation(
+      () => new Promise((r) => { resolveHistory = () => r([]); })
+    );
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    const cb = captured[0].callbacks;
+    cb.onMessage(runAssignment());
+    // Well under the bound — no reload should be triggered.
+    cb.onMessage(textUpdate('just a little'));
+
+    resolveHistory!();
+    await p;
+
+    expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(1);
+    expect(assistantText(panel.focusedDisplayItems.value)).toContain('just a little');
+  });
+
+  // FINDING C — a stream error (relay_failed / subagent_unavailable / other) must be copied into the
+  // public `error` ref so the panel's error banner surfaces feedback, while streaming stops.
+  it('surfaces a relay_failed stream error in the public error ref and stops streaming (#C)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+    expect(panel.isFocusedStreaming.value).toBe(true);
+    expect(panel.error.value).toBeNull();
+
+    // wsClient turns a {"$type":"error","code":"relay_failed",...} frame into onError(message).
+    captured[0].callbacks.onError("Failed to relay the message to sub-agent 'a1'. Please retry.");
+
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    expect(panel.error.value).toBeTruthy();
+    expect(panel.error.value).toContain('relay');
+  });
+
+  it('surfaces a subagent_unavailable stream error in the public error ref (#C)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+
+    captured[0].callbacks.onError("Sub-agent 'a1' is not available.");
+
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    expect(panel.error.value).toContain('not available');
+  });
+
+  it('a stale focus stream error does not clobber a newer focus (#C generation-guard)', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1'), summary('a2')]);
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    await panel.focusChild('a1');
+    const staleCb = captured[0].callbacks;
+    await panel.focusChild('a2');
+    expect(panel.error.value).toBeNull();
+
+    // A late error from the superseded a1 focus must be ignored.
+    staleCb.onError("Failed to relay the message to sub-agent 'a1'. Please retry.");
+    expect(panel.error.value).toBeNull();
+    expect(panel.isFocusedStreaming.value).toBe(true);
   });
 });

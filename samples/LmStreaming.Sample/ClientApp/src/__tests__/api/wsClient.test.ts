@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { normalizeKeys } from '@/api/wsClient';
+import { describe, expect, it, vi } from 'vitest';
+import { closeWebSocketConnection, normalizeKeys, type WebSocketConnection } from '@/api/wsClient';
 
 // BLOCKER 3: tool-call wire JSON uses snake_case identity fields (e.g. `generation_id`). The merge
 // key reads camelCase `generationId`, so without a snake_case alias these messages fall back to
@@ -40,5 +40,42 @@ describe('normalizeKeys snake_case identity aliasing (BLOCKER 3)', () => {
     }) as { tool_calls: Array<Record<string, unknown>> };
 
     expect(out.tool_calls[0].generationId).toBe('g');
+  });
+});
+
+// FINDING D (PR #209): closeWebSocketConnection is the teardown helper the sub-agent panel relies on
+// to close a focused child's socket (unfocus / refocus / parent-switch / dispose). It must ONLY call
+// socket.close when the socket is OPEN — closing an already CLOSED/CLOSING socket is redundant and, on
+// some runtimes, throws. Cover it directly with a fake WebSocket instead of a live connection.
+describe('closeWebSocketConnection (FINDING D)', () => {
+  function fakeConnection(readyState: number): { connection: WebSocketConnection; close: ReturnType<typeof vi.fn> } {
+    const close = vi.fn();
+    const socket = { readyState, close } as unknown as WebSocket;
+    const connection: WebSocketConnection = {
+      socket,
+      connectionId: 'conn-1',
+      threadId: 'thread-1',
+      isConnected: true,
+    };
+    return { connection, close };
+  }
+
+  it('closes an OPEN socket with a normal-closure code and reason', () => {
+    const { connection, close } = fakeConnection(WebSocket.OPEN);
+    closeWebSocketConnection(connection);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledWith(1000, 'Client closing');
+  });
+
+  it('is a no-op when the socket is already CLOSED', () => {
+    const { connection, close } = fakeConnection(WebSocket.CLOSED);
+    closeWebSocketConnection(connection);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when the socket is CLOSING', () => {
+    const { connection, close } = fakeConnection(WebSocket.CLOSING);
+    closeWebSocketConnection(connection);
+    expect(close).not.toHaveBeenCalled();
   });
 });
