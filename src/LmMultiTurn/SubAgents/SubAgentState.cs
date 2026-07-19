@@ -62,6 +62,17 @@ internal class SubAgentState
     public required string Task { get; init; }
     public required IMultiTurnAgent Agent { get; set; }
 
+    // Presentation-only "agent replaced" signal. An owned-provider restart disposes the old loop
+    // instance and swaps in a fresh one (SubAgentManager.RestartRunAsync); an external observer whose
+    // subscription is bound to the OLD instance sees its stream end on that dispose. This awaitable lets
+    // such an observer follow the swap: it captures AgentReplacedTask BEFORE subscribing, and when the
+    // old stream ends it awaits this task to obtain the replacement instance (or null at teardown) and
+    // re-subscribe. It is set with RunContinuationsAsynchronously so completing it never runs an
+    // observer's continuation inline under a restart/dispose path. It does NOT participate in execution
+    // and is never awaited by the run/monitor/restart machinery.
+    private volatile TaskCompletionSource<IMultiTurnAgent?> _agentReplaced =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>
     /// The template and spawn inputs needed to recreate a completed owned-provider run before a
     /// continuation. Borrowed providers retain the existing loop.
@@ -583,6 +594,34 @@ internal class SubAgentState
         // running waiter continuations inline would execute tool-handler code on
         // the monitor's subscription thread.
         return new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    /// <summary>
+    /// Awaitable that completes when this sub-agent's live loop instance is replaced by an
+    /// owned-provider restart (with the replacement instance) or when the manager tears the agent down
+    /// (with <c>null</c>). Presentation-only: an external observer captures this BEFORE subscribing to
+    /// <see cref="Agent"/>, so a swap that happens between the capture and the subscribe is not lost —
+    /// when the old instance's stream ends the observer awaits this to pick up the new instance (or ends
+    /// on <c>null</c>). Reading it never mutates state and never blocks the run/restart machinery.
+    /// </summary>
+    public Task<IMultiTurnAgent?> AgentReplacedTask => _agentReplaced.Task;
+
+    /// <summary>
+    /// Notifies observers waiting on <see cref="AgentReplacedTask"/> that the live loop instance changed.
+    /// Called by the owned-provider restart path immediately AFTER <see cref="Agent"/> is swapped (with
+    /// the replacement), and by manager teardown (with <c>null</c>) so any active observer unblocks and
+    /// ends cleanly. Atomically installs a FRESH awaitable for the NEXT swap before completing the
+    /// previous one (Interlocked.Exchange then TrySetResult), so a swap can never be lost or double-set,
+    /// and takes no lock — it cannot deadlock with the lifecycle lock.
+    /// </summary>
+    /// <param name="replacement">The replacement instance to hand active observers, or <c>null</c> to
+    /// signal "no replacement / teardown" so observers unblock and stop.</param>
+    public void SignalAgentReplaced(IMultiTurnAgent? replacement)
+    {
+        var previous = Interlocked.Exchange(
+            ref _agentReplaced,
+            new TaskCompletionSource<IMultiTurnAgent?>(TaskCreationOptions.RunContinuationsAsynchronously));
+        _ = previous.TrySetResult(replacement);
     }
 }
 

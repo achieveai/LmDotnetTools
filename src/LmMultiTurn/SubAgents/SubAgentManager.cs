@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -693,6 +694,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 state.Agent = replacementAgent;
                 state.Store = replacementStore;
                 state.SetOwnedProviderAgent(replacementOwnedProviderAgent);
+
+                // Presentation-only: wake any external observer whose subscription was bound to the
+                // now-disposed previous instance so it can re-subscribe to this replacement and keep
+                // following the child across the swap. Never awaited by the run/monitor/restart logic.
+                state.SignalAgentReplaced(replacementAgent);
             }
 
             // Recover conversation history after replacing a completed owned-provider loop, so a
@@ -863,6 +869,74 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Presentation-only observation seam that streams a single sub-agent's output and transparently
+    /// follows the child across an owned-provider restart's instance swap — so a focused viewer keeps
+    /// receiving frames when a finished child is relayed a follow-up (which disposes the old loop and
+    /// installs a fresh one). It NEVER drives, restarts, or otherwise mutates execution: it only
+    /// subscribes to whatever the child's CURRENT live instance is and re-subscribes when that instance
+    /// is replaced.
+    /// <para>
+    /// Each iteration captures the state's replacement signal BEFORE subscribing to the current instance
+    /// (order matters: capturing the signal first means a swap racing between capture and subscribe is
+    /// not lost), yields that instance's messages until its stream ends (an owned-provider restart
+    /// disposes it, or cancellation), then awaits the replacement — re-subscribing to the new instance,
+    /// or ending when the child was torn down (<c>null</c>), pruned, or the caller cancelled. A borrowed-
+    /// provider child never swaps instances, so it simply streams the one loop until cancellation.
+    /// </para>
+    /// </summary>
+    /// <param name="target">The sub-agent id or its caller-supplied name.</param>
+    /// <param name="ct">Cancellation token; cancelling ends the enumeration.</param>
+    /// <returns>An async stream of the child's messages spanning any owned-provider restart swaps.</returns>
+    public async IAsyncEnumerable<IMessage> SubscribeToAgentAcrossRestartsAsync(
+        string target,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            // Re-resolve at the loop top so a swap (or teardown) between iterations is observed against
+            // the live registry rather than a stale handle.
+            if (!TryResolveAgentId(target, out var id) || !_agents.TryGetValue(id, out var state))
+            {
+                yield break;
+            }
+
+            // Capture the replacement signal BEFORE subscribing so a swap that lands between this capture
+            // and the SubscribeAsync below is delivered via `replaced` rather than lost.
+            var replaced = state.AgentReplacedTask;
+            var current = state.Agent;
+
+            await foreach (var msg in current.SubscribeAsync(ct))
+            {
+                yield return msg;
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                yield break;
+            }
+
+            // The current instance's stream ended without cancellation — either an owned-provider restart
+            // disposed it (then completes `replaced` with the new instance) or the manager tore it down
+            // (completes `replaced` with null). Await the swap signal (guarded by ct) and re-subscribe, or
+            // end when there is no replacement.
+            IMultiTurnAgent? next;
+            try
+            {
+                next = await replaced.WaitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                yield break;
+            }
+
+            if (next is null)
+            {
+                yield break;
+            }
+        }
+    }
+
+    /// <summary>
     /// Check the status and recent activity of a sub-agent.
     /// </summary>
     public string Peek(string agentId)
@@ -999,6 +1073,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 _logger.LogWarning(ex, "DisposeAsync failed for sub-agent {AgentId}", state.AgentId);
             }
+
+            // Presentation-only: the agent's dispose above ends any external observer's current
+            // subscription; signal null so an observer that then awaits the replacement unblocks and
+            // ends cleanly instead of hanging for a swap that will never come. Never affects execution.
+            state.SignalAgentReplaced(null);
 
             try { await state.DisposeOwnedProviderAgentAsync(); }
             catch (Exception ex)

@@ -206,9 +206,10 @@ public sealed class ChatWebSocketManager
 
     /// <summary>
     /// Handles a WebSocket connection focused on a single FOCUSED child sub-agent: streams that
-    /// child's live + replayed output to the client (reusing <see cref="StreamMessagesToClientAsync"/>)
-    /// and relays inbound text frames to it in background mode. Presentation-only — it never mutates
-    /// the parent connection or drives agent execution.
+    /// child's live + replayed output to the client (via the manager's restart-spanning
+    /// <see cref="SubAgentManager.SubscribeToAgentAcrossRestartsAsync"/> fed through
+    /// <see cref="PumpMessagesToClientAsync"/>) and relays inbound text frames to it in background mode.
+    /// Presentation-only — it never mutates the parent connection or drives agent execution.
     /// </summary>
     /// <param name="webSocket">The WebSocket connection.</param>
     /// <param name="parentThreadId">Thread id of the parent agent that owns the sub-agent.</param>
@@ -250,10 +251,18 @@ public sealed class ChatWebSocketManager
 
             using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-            // Reuse the parent's stream loop verbatim — it already emits the {"$type":"done"}
-            // sentinel after RunCompletedMessage. This is a presentation-only view, so no recording.
-            var subscriptionTask = StreamMessagesToClientAsync(
-                connection, childAgent, $"subagent-{agentId}", recordWriter: null, connectionCts.Token);
+            // Stream via the manager's restart-spanning enumerable rather than a single captured
+            // instance: relaying a follow-up to a FINISHED owned-provider child restarts it (disposing
+            // the old loop and swapping in a fresh one), and this enumerable re-resolves + re-subscribes
+            // internally so the focused client keeps receiving the restarted turn's frames. Reuses the
+            // shared frame pump (the {"$type":"done"} sentinel after RunCompletedMessage). This is a
+            // presentation-only view, so no recording.
+            var subscriptionTask = PumpMessagesToClientAsync(
+                connection,
+                subAgentManager.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token),
+                $"subagent-{agentId}",
+                recordWriter: null,
+                connectionCts.Token);
 
             var receiveTask = ReceiveSubAgentMessagesFromClientAsync(
                 webSocket, subAgentManager, agentId, connectionCts.Token);
@@ -290,16 +299,34 @@ public sealed class ChatWebSocketManager
     /// <summary>
     /// Subscribes to agent messages and streams them to the WebSocket client.
     /// </summary>
-    private async Task StreamMessagesToClientAsync(
+    private Task StreamMessagesToClientAsync(
         RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
         StreamWriter? recordWriter,
         CancellationToken ct)
     {
+        return PumpMessagesToClientAsync(connection, agent.SubscribeAsync(ct), threadId, recordWriter, ct);
+    }
+
+    /// <summary>
+    /// Serializes each message from <paramref name="source"/> to the client, mirrors it to the optional
+    /// recording writer, logs usage/cache metrics, and emits the <c>{"$type":"done"}</c> sentinel after a
+    /// <see cref="RunCompletedMessage"/> — the shared frame body reused by both the parent <c>/ws</c>
+    /// stream (fed <c>agent.SubscribeAsync</c>) and the sub-agent focus view (fed a restart-spanning
+    /// enumerable). Pulling this out of the subscription source keeps the wire behavior byte-identical
+    /// while letting the focus path substitute a source that follows the child across instance swaps.
+    /// </summary>
+    private async Task PumpMessagesToClientAsync(
+        RegisteredWebSocketConnection connection,
+        IAsyncEnumerable<IMessage> source,
+        string threadId,
+        StreamWriter? recordWriter,
+        CancellationToken ct)
+    {
         try
         {
-            await foreach (var message in agent.SubscribeAsync(ct))
+            await foreach (var message in source.WithCancellation(ct))
             {
                 var messageJson = JsonSerializer.Serialize(message, _jsonOptions);
                 if (!await connection.TrySendTextAsync(messageJson, ct))
