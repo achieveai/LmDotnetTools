@@ -1406,6 +1406,30 @@ export function useChat(options: UseChatOptions = {}) {
       }
     }
 
+    // Restore the persisted usage banner (#196): the loop above skips UsageMessages, so read the
+    // conversation's persisted aggregate — which includes sub-agent/workflow usage — and populate the
+    // banner from it instead of leaving it at zero on reload.
+    try {
+      const { getConversationUsage } = await import('@/api/conversationsApi');
+      const usageAggregate = await getConversationUsage(existingThreadId);
+      if (usageAggregate) {
+        const input = usageAggregate.perModel.reduce((sum, m) => sum + m.inputTokens, 0);
+        const output = usageAggregate.perModel.reduce((sum, m) => sum + m.outputTokens, 0);
+        const cached = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheReadTokens, 0);
+        const cacheCreation = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheWriteTokens, 0);
+        cumulativeUsage.value = {
+          promptTokens: input,
+          uncachedInputTokens: input - cached,
+          completionTokens: output,
+          totalTokens: usageAggregate.totalTokens,
+          cachedTokens: cached,
+          cacheCreationTokens: cacheCreation,
+        };
+      }
+    } catch (e) {
+      log.warn('Failed to restore persisted usage banner', { error: String(e) });
+    }
+
     log.info('Loaded messages into chat', {
       messageCount: messageIndex.value.size,
       toolResultCount: toolResults.value.size
