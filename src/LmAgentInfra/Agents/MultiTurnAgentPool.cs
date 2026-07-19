@@ -49,6 +49,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     private readonly Func<AgentCreationContext, AgentCreationResult> _agentFactory;
     private readonly IProviderResolver? _providerRegistry;
     private readonly IConversationStore? _conversationStore;
+    private readonly ISandboxBindingSink? _bindingSink;
     private readonly ILogger<MultiTurnAgentPool> _logger;
     private readonly CancellationTokenSource _poolCts = new();
     private bool _disposed;
@@ -84,11 +85,21 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// <summary>
     /// Result from the agent factory, including the agent and any owned resources
     /// (e.g., MCP clients) that should be disposed with the agent.
+    /// <para>
+    /// <c>StagedBinding</c> is the conversation's <see cref="SandboxEstablishedBinding"/> when this is a
+    /// workspace-mode creation whose sandbox session was established — <c>null</c> otherwise. The pool
+    /// publishes it (via the injected <see cref="ISandboxBindingSink"/>) ONLY as part of a successful
+    /// agent-entry commit under the per-thread lock, so a failed construction publishes nothing.
+    /// </para>
     /// </summary>
     public sealed record AgentCreationResult(
         IMultiTurnAgent Agent,
         IReadOnlyList<IAsyncDisposable>? OwnedResources = null
-    );
+    )
+    {
+        /// <summary>The sandbox binding to publish on a successful commit, or null for a non-workspace agent.</summary>
+        public SandboxEstablishedBinding? StagedBinding { get; init; }
+    }
 
     /// <summary>
     /// Wrapper to track agent and its background task.
@@ -113,6 +124,15 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         /// replacement entry so a mode/provider switch never changes the frozen caller identity.
         /// </summary>
         public SandboxCredential? CallerCredential { get; init; }
+
+        /// <summary>
+        /// The conversation's sandbox-established binding for this (workspace-mode) entry, or <c>null</c>
+        /// for a non-workspace entry. Carried from the factory's <see cref="AgentCreationResult.StagedBinding"/>
+        /// and published to the <see cref="ISandboxBindingSink"/> right after this entry commits under the
+        /// per-thread lock. A mode switch either restages a fresh binding (workspace target) or stages none
+        /// (non-workspace target, leaving the prior binding untouched).
+        /// </summary>
+        public SandboxEstablishedBinding? EstablishedBinding { get; init; }
 
         public async ValueTask DisposeAsync()
         {
@@ -166,17 +186,23 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// persisted and the pool falls back to caller-supplied / default values only.
     /// </param>
     /// <param name="logger">Logger for pool operations.</param>
+    /// <param name="bindingSink">
+    /// Optional sink the pool uses to publish/clear a conversation's sandbox-established binding as part of
+    /// the agent-entry commit/removal. Null in legacy/test scenarios that do not wire the sandbox registry.
+    /// </param>
     public MultiTurnAgentPool(
         Func<AgentCreationContext, AgentCreationResult> agentFactory,
         IProviderResolver? providerRegistry,
         IConversationStore? conversationStore,
-        ILogger<MultiTurnAgentPool> logger
+        ILogger<MultiTurnAgentPool> logger,
+        ISandboxBindingSink? bindingSink = null
     )
     {
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
         _providerRegistry = providerRegistry;
         _conversationStore = conversationStore;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _bindingSink = bindingSink;
     }
 
     /// <summary>
@@ -333,6 +359,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                     callerCredential
                 );
                 _agents[threadId] = entry;
+                PublishBindingIfStaged(threadId, entry);
                 created = true;
             }
             else
@@ -860,8 +887,34 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         if (_agents.TryRemove(threadId, out var entry))
         {
             _logger.LogInformation("Removing agent for thread {ThreadId}", threadId);
-            await entry.DisposeAsync();
+            try
+            {
+                await entry.DisposeAsync();
+            }
+            finally
+            {
+                // Clear the conversation's sandbox binding even if agent disposal threw: the pooled agent
+                // is already removed, so the browse binding must not outlive it. Clearing never destroys
+                // the shared (workspaceId, appId) gateway session another conversation may still use.
+                _bindingSink?.ClearEstablishedBinding(threadId);
+            }
+
             RaiseThreadRemoved(threadId);
+        }
+    }
+
+    /// <summary>
+    /// Publishes <paramref name="entry"/>'s sandbox binding, if it carries one, to the injected
+    /// <see cref="ISandboxBindingSink"/>. MUST be called under the per-thread lock, immediately after the
+    /// entry is committed to <see cref="_agents"/>, so the binding is published atomically with the commit
+    /// (a construction that threw never reaches here, so it publishes nothing). A non-workspace entry
+    /// carries no binding and leaves any prior binding untouched.
+    /// </summary>
+    private void PublishBindingIfStaged(string threadId, AgentEntry entry)
+    {
+        if (entry.EstablishedBinding is { } binding)
+        {
+            _bindingSink?.PublishEstablishedBinding(threadId, binding);
         }
     }
 
@@ -1066,6 +1119,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             );
             _ = _agents.TryRemove(threadId, out oldEntry);
             _agents[threadId] = entry;
+            PublishBindingIfStaged(threadId, entry);
         }
 
         // Dispose old entry outside the lock to avoid blocking concurrent operations. The new agent is
@@ -1156,6 +1210,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             RequestResponseDumpFileName = requestResponseDumpFileName,
             OwnedResources = result.OwnedResources,
             CallerCredential = callerCredential,
+            EstablishedBinding = result.StagedBinding,
         };
     }
 
