@@ -803,5 +803,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) =>
             _inner.ReleaseReviewLeaseAsync(runId, cancellationToken);
+
+        public Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken) =>
+            _inner.ReconcilePendingRetentionAsync(cancellationToken);
     }
 }

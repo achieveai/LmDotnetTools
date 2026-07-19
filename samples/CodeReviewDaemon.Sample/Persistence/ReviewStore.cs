@@ -448,6 +448,32 @@ internal sealed class ReviewStore : IDisposable
         return results;
     }
 
+    /// <summary>
+    /// Returns every <see cref="OutboxStatus.Pending"/> row for a given operation, in id order. This is the
+    /// retention reconciler's scan: a <c>push-reviewbot</c> row is left non-terminal (Pending) whenever a
+    /// notes push fails (<see cref="Models.ReviewArtifact"/> body is persisted separately and durably), and a
+    /// background consumer drains this list to rebuild + retry the push. Only Pending rows are returned —
+    /// Posted/Collected rows are terminal and never reconciled.
+    /// </summary>
+    public IReadOnlyList<OutboxEntry> GetPendingOutboxByOperation(string operation)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(operation);
+
+        var results = new List<OutboxEntry>();
+        using var command = _connection.CreateCommand();
+        command.CommandText =
+            "SELECT * FROM review_outbox WHERE status = $status AND operation = $operation ORDER BY id;";
+        _ = command.Parameters.AddWithValue("$status", OutboxStatus.Pending.ToString());
+        _ = command.Parameters.AddWithValue("$operation", operation);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(MapOutbox(reader));
+        }
+
+        return results;
+    }
+
     private OutboxEntry? GetOutboxByKey(string idempotencyKey)
     {
         using var command = _connection.CreateCommand();

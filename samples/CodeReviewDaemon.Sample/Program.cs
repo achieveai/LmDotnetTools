@@ -596,7 +596,11 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetRequiredService<ILogger<PrPollingService>>(),
     // The PR-lifecycle sweep runs on the poller cadence when the pooled path registered a sweeper; the
     // GetService is null otherwise, so the poller keeps polling with no sweep (design §4.5).
-    sweepAsync: sp.GetService<PrLifecycleSweeper>() is { } sweeper ? sweeper.SweepAsync : null));
+    sweepAsync: sp.GetService<PrLifecycleSweeper>() is { } sweeper ? sweeper.SweepAsync : null,
+    // The retention reconciler drains any Pending push-reviewbot outbox rows on the same cadence, rebuilding
+    // + retrying a failed notes push from the persisted review artifact (thread RtEzw). Inert (a fast no-op)
+    // when no ReviewBot remote is configured, so it is wired unconditionally.
+    retentionReconcileAsync: sp.GetRequiredService<IReviewStageExecutor>().ReconcilePendingRetentionAsync));
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 // The daemon exposes exactly ONE route: POST /api/auth/webhook/{provider} (the gateway's post-auth

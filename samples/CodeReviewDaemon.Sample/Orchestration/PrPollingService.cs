@@ -22,6 +22,7 @@ internal sealed class PrPollingService : BackgroundService
     private readonly ILogger<PrPollingService> _logger;
     private readonly TimeSpan _pollInterval;
     private readonly Func<CancellationToken, Task>? _sweepAsync;
+    private readonly Func<CancellationToken, Task>? _retentionReconcileAsync;
     private readonly TimeProvider _timeProvider;
 
     public PrPollingService(
@@ -32,7 +33,8 @@ internal sealed class PrPollingService : BackgroundService
         ILogger<PrPollingService> logger,
         TimeSpan? pollInterval = null,
         Func<CancellationToken, Task>? sweepAsync = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Func<CancellationToken, Task>? retentionReconcileAsync = null)
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -42,6 +44,7 @@ internal sealed class PrPollingService : BackgroundService
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(30);
         _sweepAsync = sweepAsync;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _retentionReconcileAsync = retentionReconcileAsync;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -77,6 +80,26 @@ internal sealed class PrPollingService : BackgroundService
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "PR-lifecycle sweep failed; continuing after the interval.");
+                }
+            }
+
+            // Retention reconcile (thread RtEzw): drain any Pending push-reviewbot outbox rows left by a failed
+            // notes push, rebuilding + retrying the push from the persisted review artifact. On the poller
+            // cadence and isolated exactly like the sweep — a reconcile failure never stops the poller, and it
+            // is a no-op when no ReviewBot remote is configured.
+            if (_retentionReconcileAsync is not null)
+            {
+                try
+                {
+                    await _retentionReconcileAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Retention reconcile failed; continuing after the interval.");
                 }
             }
 

@@ -122,6 +122,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// production always registers at least the GitHub publisher.</summary>
     private readonly IReadOnlyList<IReviewCommentPublisher> _publishers;
 
+    /// <summary>
+    /// Bounded, in-memory retry for the background retention reconciler (<see cref="ReconcilePendingRetentionAsync"/>),
+    /// keyed by OUTBOX-ROW id — a separate keyspace from the orchestrator's per-run governor, since a run id and
+    /// an outbox id are both <c>long</c> and must never collide. Gives a failed <c>push-reviewbot</c> row
+    /// exponential backoff + park-after-K on the sweep cadence instead of hammering the remote every poll. It is
+    /// in-memory by design: a restart clears it, so a restart retries every still-Pending row — matching the
+    /// daemon's "restart = retry" philosophy (see <see cref="RetryGovernor"/>).
+    /// </summary>
+    private readonly RetryGovernor _retentionRetry;
+
     /// <summary>The already-running gateway's base URL, threaded from Program.cs (config/env-resolved) so the
     /// tool-assisted review agent's MCP transport addresses the same gateway the pool/provisioner use. Null ⇒
     /// falls back to CRD_SANDBOX_GATEWAY then the 3000 default.</summary>
@@ -174,6 +184,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _appLifetime = appLifetime;
         _gatewayBaseUrl = gatewayBaseUrl;
         _publishers = publishers is null ? [] : [.. publishers];
+        _retentionRetry = new RetryGovernor(
+            _options.MaxContextRetries,
+            TimeSpan.FromSeconds(_options.RetryBackoffBaseSeconds),
+            TimeSpan.FromSeconds(_options.RetryBackoffCapSeconds),
+            static () => DateTimeOffset.UtcNow,
+            loggerFactory.CreateLogger<RetryGovernor>());
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -1522,9 +1538,56 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task PublishToReviewBotAsync(
         ReviewRun run, RepoIdentity repo, string provider, string reviewBody, CancellationToken cancellationToken)
     {
+        var result = await PushReviewBotNotesCoreAsync(repo, run, reviewBody, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+        {
+            // Retention is skipped (and nothing is pushed) when ReviewBotRepoUrl is unset — the inert default.
+            return;
+        }
+
+        var outbox = _store.EnqueueOutbox(new OutboxEntry
+        {
+            IdempotencyKey = BuildPushKey(run, repo, provider),
+            Provider = provider,
+            ReviewRunId = run.Id,
+            Operation = PushReviewBotOperation,
+            ArtifactKind = ReviewArtifactKind,
+            Status = OutboxStatus.Pending,
+        });
+
+        if (result.Outcome == ReviewBotPublishOutcome.Pushed)
+        {
+            _ = _store.TryTransitionOutbox(outbox.Id, outbox.Status, OutboxStatus.Posted, result.PushedSha);
+            _logger.LogInformation(
+                "Run {RunId}: ReviewBot notes pushed {Sha} onto review branch '{Branch}' (kept for later re-reviews).",
+                run.Id, result.PushedSha, result.ReviewBranch);
+        }
+        else
+        {
+            // GitSyncFailed — leave the outbox row non-terminal (Pending) so the retention reconciler
+            // (ReconcilePendingRetentionAsync, on the sweep cadence) rebuilds + retries the push from the
+            // durably-persisted review artifact. The manager kept the review branch, so no artifacts are lost.
+            _logger.LogWarning(
+                "Run {RunId}: ReviewBot retention failed to push; review branch '{Branch}' kept for reconcile.",
+                run.Id, result.ReviewBranch);
+        }
+    }
+
+    /// <summary>
+    /// The pure ReviewBot notes-push mechanics shared by the Posted stage (<see cref="PublishToReviewBotAsync"/>)
+    /// and the retention reconciler (<see cref="ReconcilePendingRetentionAsync"/>): ensure the host-side ReviewBot
+    /// checkout, commit the review body onto the PR's review branch, and push. Returns the push
+    /// <see cref="ReviewBotPublishResult"/>, or <c>null</c> when no ReviewBot remote is configured (the inert
+    /// default). This method is deliberately free of <c>review_outbox</c> side effects so it is safe to
+    /// re-invoke for a retry — the caller owns the bookkeeping: the stage ENQUEUES a fresh Pending row then
+    /// terminalizes it; the reconciler TRANSITIONS the pre-existing Pending row.
+    /// </summary>
+    private async Task<ReviewBotPublishResult?> PushReviewBotNotesCoreAsync(
+        RepoIdentity repo, ReviewRun run, string reviewBody, CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(_options.ReviewBotRepoUrl))
         {
-            return;
+            return null;
         }
 
         // Retention must run against the HOST-side workspace when one is configured (design §6 Risk A) —
@@ -1557,32 +1620,88 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             DefaultBranch: ReviewBotDefaultBranch,
             Files: [new ReviewArtifactFile(prArtifactPath, reviewBody)]);
 
-        var result = await manager.CommitNotesAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
+        return await manager.CommitNotesAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
+    }
 
-        var outbox = _store.EnqueueOutbox(new OutboxEntry
+    /// <summary>
+    /// Background retention reconciler (thread PRRT_kwDOOPysWM6RtEzw): drains every <see cref="OutboxStatus.Pending"/>
+    /// <c>push-reviewbot</c> row — left non-terminal whenever a notes push failed — and rebuilds + retries the
+    /// push from the durably-persisted review artifact (SQLite <c>review_artifact</c>, independent of the pooled
+    /// slot, which is stripped/returned before this runs). A pooled-notes push failure is reconciled through the
+    /// HOST-side push here because the pooled slot is gone by now and both paths target the SAME ReviewBot remote
+    /// (<c>CrossRepoStoreUrl == ReviewBotRepoUrl</c>). Runs on the sweep cadence (an isolated, degrade-not-throw
+    /// step in <see cref="PrPollingService"/>), so it must NOT throw — a per-row failure is logged and left
+    /// Pending for the next pass. Each row is bounded by <see cref="_retentionRetry"/> (backoff + park-after-K,
+    /// keyed by outbox-row id) so a permanently-broken remote or an unreconstructable row backs off and parks
+    /// instead of hammering the remote every pass. This is why the Posted stage does NOT throw on a retention
+    /// push failure (which — being outside the orchestrator's ContextReady-only <see cref="RetryGovernor"/> —
+    /// would hot-loop): delivery of the review to the PR already succeeded; retention self-heals out-of-band.
+    /// </summary>
+    public async Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken)
+    {
+        // No ReviewBot remote ⇒ nothing to push to (and no push-reviewbot rows are ever produced). Skip the
+        // query entirely so the diff-only default does no per-poll work.
+        if (string.IsNullOrWhiteSpace(_options.ReviewBotRepoUrl))
         {
-            IdempotencyKey = BuildPushKey(run, repo, provider),
-            Provider = provider,
-            ReviewRunId = run.Id,
-            Operation = PushReviewBotOperation,
-            ArtifactKind = ReviewArtifactKind,
-            Status = OutboxStatus.Pending,
-        });
-
-        if (result.Outcome == ReviewBotPublishOutcome.Pushed)
-        {
-            _ = _store.TryTransitionOutbox(outbox.Id, outbox.Status, OutboxStatus.Posted, result.PushedSha);
-            _logger.LogInformation(
-                "Run {RunId}: ReviewBot notes pushed {Sha} onto review branch '{Branch}' (kept for later re-reviews).",
-                run.Id, result.PushedSha, result.ReviewBranch);
+            return;
         }
-        else
+
+        var pending = _store.GetPendingOutboxByOperation(PushReviewBotOperation);
+        foreach (var row in pending)
         {
-            // GitSyncFailed — leave the outbox row non-terminal (Pending) so reconcile retries. The
-            // manager kept the review branch, so no artifacts are lost.
-            _logger.LogWarning(
-                "Run {RunId}: ReviewBot retention failed to push; review branch '{Branch}' kept for reconcile.",
-                run.Id, result.ReviewBranch);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Backing off or parked (K attempts exhausted) — skip this pass; a restart clears the state.
+            if (!_retentionRetry.ShouldAttempt(row.Id))
+            {
+                continue;
+            }
+
+            try
+            {
+                var run = _store.GetReviewRun(row.ReviewRunId);
+                if (run is null)
+                {
+                    // An outbox row whose run row is gone can never be reconstructed. Count it as a failure so
+                    // it backs off + parks rather than being re-queried forever.
+                    _logger.LogWarning(
+                        "Retention reconcile: outbox row {OutboxId} references missing run {RunId}; leaving Pending.",
+                        row.Id, row.ReviewRunId);
+                    _ = _retentionRetry.RecordFailure(row.Id, "review run not found");
+                    continue;
+                }
+
+                var (repo, provider) = ResolveRepo(run);
+                var reviewText = ReadReviewText(run.Id); // durable artifact — survives the slot strip/return
+                var result = await PushReviewBotNotesCoreAsync(repo, run, reviewText, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (result?.Outcome == ReviewBotPublishOutcome.Pushed)
+                {
+                    _ = _store.TryTransitionOutbox(row.Id, OutboxStatus.Pending, OutboxStatus.Posted, result.PushedSha);
+                    _retentionRetry.RecordSuccess(row.Id);
+                    _logger.LogInformation(
+                        "Retention reconcile: outbox row {OutboxId} (run {RunId}) pushed {Sha}; marked Posted.",
+                        row.Id, run.Id, result.PushedSha);
+                }
+                else
+                {
+                    // Still failing (or config was removed mid-flight ⇒ null). Back off and retry next pass.
+                    _ = _retentionRetry.RecordFailure(row.Id, "reviewbot push still failing");
+                    _logger.LogWarning(
+                        "Retention reconcile: outbox row {OutboxId} (run {RunId}) push still failing; backing off.",
+                        row.Id, run.Id);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Degrade-not-throw per row: a bad row (e.g. a missing/undeserializable artifact) must not stop
+                // the rest of the drain, and the reconcile itself is a best-effort step. Count it as a failure
+                // so it backs off + parks rather than throwing every pass.
+                _ = _retentionRetry.RecordFailure(row.Id, ex.Message);
+                _logger.LogWarning(
+                    ex, "Retention reconcile: outbox row {OutboxId} threw; leaving Pending for the next pass.", row.Id);
+            }
         }
     }
 

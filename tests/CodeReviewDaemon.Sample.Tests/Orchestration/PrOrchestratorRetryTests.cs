@@ -129,6 +129,8 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         }
 
         public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     /// <summary>Succeeds every stage except <paramref name="failAt"/>, where it throws; counts those failures.</summary>
@@ -148,5 +150,7 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         }
 
         public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

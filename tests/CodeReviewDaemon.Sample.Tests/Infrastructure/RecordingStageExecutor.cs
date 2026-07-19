@@ -51,4 +51,6 @@ internal sealed class RecordingStageExecutor : IReviewStageExecutor
         ReleaseCount++;
         return Task.CompletedTask;
     }
+
+    public Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
