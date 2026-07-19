@@ -124,7 +124,7 @@ public sealed record SandboxSessionResolution(
 /// or a caller and the interactive UI default) never collide on one shared session.
 /// </para>
 /// </remarks>
-public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSink
+public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSink, IWorkspaceFileBrowser
 {
     /// <summary>
     /// Logical id of the default workspace, which maps to the configured
