@@ -61,17 +61,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // _currentRunId so a reader always observes a consistent (runId, cts) pair.
     private CancellationTokenSource? _currentRunCts;
 
-    // Exactly-once terminal arbiter (see CompleteRunAsync/CancelCurrentRunAsync): claims the
-    // right to persist/publish the CURRENT run's (_currentRunId) terminal outcome. Bounded to at
-    // most one in-flight claim (unlike a per-runId dictionary that would grow for the lifetime of
-    // the process) because at most one run is ever "current" at a time. Guarded by _stateLock
-    // alongside _currentRunId/_currentRunCts so CancelCurrentRunAsync and CompleteRunAsync race
-    // deterministically: whichever acquires the lock first — Stop claiming NoActiveRun/StaleRun,
-    // or natural/error completion claiming the terminal outcome — wins. Reset to false whenever a
-    // claim attempt fails (e.g. a terminal-ledger write throws) so a subsequent retry for the SAME
-    // still-current run (e.g. the caller's error-completion fallback) is not permanently
-    // suppressed, and whenever a claim succeeds and the run is cleared (ready for the next run).
-    private bool _currentRunTerminalClaimed;
+    // Exactly-once terminal arbiter (see CompleteRunAsync): claims the right to persist/publish a
+    // given runId's terminal outcome. A matching CancelCurrentRunAsync racing the run's own
+    // natural/error completion must produce exactly one durable status and one
+    // RunCompletedMessage — the first CompleteRunAsync call for a runId wins, any later call for
+    // the same runId is a no-op.
+    private readonly ConcurrentDictionary<string, byte> _terminalClaims = new();
 
     // Lifecycle
     private Task? _runTask;
@@ -1483,18 +1478,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// after completion was broadcast).
     /// </summary>
     /// <remarks>
-    /// Exactly-once terminal arbiter, bounded to the CURRENT run only (<c>_currentRunTerminalClaimed</c>
-    /// under <c>_stateLock</c> — see the field comment): the FIRST call for the still-current
-    /// <paramref name="runId"/> claims it and proceeds; a later call for a <paramref name="runId"/>
-    /// that is no longer current (already resolved and cleared) — e.g. a matching
-    /// <c>CancelCurrentRunAsync</c> racing this run's own natural/error completion — is a no-op
-    /// that touches neither the ledger nor subscribers. If the claiming call's own terminal-ledger
-    /// write throws, the claim is released (while the run is still current) before the exception
-    /// propagates, so a caller's retry (e.g. an error-completion fallback after a failed natural
-    /// completion) is NOT permanently suppressed and can still durably persist/publish exactly one
-    /// terminal outcome. Combined with <see cref="CancelCurrentRunAsync"/> checking the same claim
-    /// under the same lock before accepting a Stop, at most one terminal outcome is ever durably
-    /// recorded or published for a given run.
+    /// Exactly-once terminal arbiter: the FIRST call for a given <paramref name="runId"/> claims
+    /// it (via <c>_terminalClaims</c>) and proceeds; any later call for the SAME
+    /// <paramref name="runId"/> — e.g. a matching <c>CancelCurrentRunAsync</c> racing this run's
+    /// own natural/error completion — is a no-op that touches neither the ledger nor
+    /// subscribers. Combined with each <c>RunLoopAsync</c> calling this at most once per run
+    /// per code path, at most one terminal outcome is ever durably recorded or published for a
+    /// given run.
     /// </remarks>
     /// <param name="runId">The run ID that completed</param>
     /// <param name="generationId">The generation ID</param>
@@ -1520,79 +1510,53 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         bool isCancelled = false,
         CancellationToken ct = default)
     {
-        lock (_stateLock)
+        if (!_terminalClaims.TryAdd(runId, 0))
         {
-            if (!string.Equals(_currentRunId, runId, StringComparison.Ordinal) || _currentRunTerminalClaimed)
+            Logger.LogWarning(
+                "Duplicate terminal completion attempt for run {RunId} (isCancelled: {IsCancelled}, isError: {IsError}); ignoring — exactly-once terminal arbiter already resolved this run",
+                runId,
+                isCancelled,
+                isError);
+            return;
+        }
+
+        if (RunLedgerStore != null)
+        {
+            var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);
+            if (existing != null)
+            {
+                var status = isCancelled ? RunStatus.Cancelled : isError ? RunStatus.Errored : RunStatus.Completed;
+                await RunLedgerStore.UpsertRunLedgerAsync(
+                    existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
+                    ct);
+            }
+            else
             {
                 Logger.LogWarning(
-                    "Duplicate terminal completion attempt for run {RunId} (isCancelled: {IsCancelled}, isError: {IsError}); ignoring — exactly-once terminal arbiter already resolved this run",
-                    runId,
-                    isCancelled,
-                    isError);
-                return;
+                    "No run ledger entry found for RunId {RunId} at completion; skipping terminal ledger write",
+                    runId);
             }
-
-            _currentRunTerminalClaimed = true;
         }
 
-        try
+        await PublishToAllAsync(new RunCompletedMessage
         {
-            if (RunLedgerStore != null)
-            {
-                var existing = await RunLedgerStore.LoadRunLedgerAsync(runId, ct);
-                if (existing != null)
-                {
-                    var status = isCancelled ? RunStatus.Cancelled : isError ? RunStatus.Errored : RunStatus.Completed;
-                    await RunLedgerStore.UpsertRunLedgerAsync(
-                        existing with { Status = status, UpdatedAt = DateTimeOffset.UtcNow },
-                        ct);
-                }
-                else
-                {
-                    Logger.LogWarning(
-                        "No run ledger entry found for RunId {RunId} at completion; skipping terminal ledger write",
-                        runId);
-                }
-            }
-
-            await PublishToAllAsync(new RunCompletedMessage
-            {
-                CompletedRunId = runId,
-                WasForked = wasForked,
-                ForkedToRunId = forkedToRunId,
-                ThreadId = ThreadId,
-                GenerationId = generationId,
-                HasPendingMessages = pendingMessageCount > 0,
-                PendingMessageCount = pendingMessageCount,
-                IsError = isError,
-                ErrorMessage = errorMessage,
-                IsCancelled = isCancelled,
-            }, ct);
-        }
-        catch
-        {
-            // Release the claim (only if this run is still the current one — a concurrent
-            // successful completion may already have cleared it) so a retry for the SAME run —
-            // e.g. the caller's error-completion fallback after this failed natural/error
-            // completion attempt — is not permanently orphaned by a claim nothing will ever
-            // release.
-            lock (_stateLock)
-            {
-                if (string.Equals(_currentRunId, runId, StringComparison.Ordinal))
-                {
-                    _currentRunTerminalClaimed = false;
-                }
-            }
-
-            throw;
-        }
+            CompletedRunId = runId,
+            WasForked = wasForked,
+            ForkedToRunId = forkedToRunId,
+            ThreadId = ThreadId,
+            GenerationId = generationId,
+            HasPendingMessages = pendingMessageCount > 0,
+            PendingMessageCount = pendingMessageCount,
+            IsError = isError,
+            ErrorMessage = errorMessage,
+            IsCancelled = isCancelled,
+        }, ct);
 
         CancellationTokenSource? runCtsToDispose;
         lock (_stateLock)
         {
             _latestRunId = runId;
             _currentRunId = null;
-            _currentRunTerminalClaimed = false;
             runCtsToDispose = _currentRunCts;
             _currentRunCts = null;
         }
@@ -1637,20 +1601,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     expectedRunId,
                     _currentRunId);
                 return Task.FromResult(RunCancellationResult.StaleRun);
-            }
-
-            if (_currentRunTerminalClaimed)
-            {
-                // Natural/error completion has already claimed this run's terminal outcome
-                // (CompleteRunAsync acquired _stateLock first) — it is terminalizing right now
-                // and Stop can no longer influence the outcome. Reporting Accepted here would be
-                // a lie: the durable/published outcome will NOT be Cancelled. Report NoActiveRun
-                // instead, exactly as if the run had already finished (which, from the caller's
-                // perspective, it effectively has).
-                Logger.LogInformation(
-                    "CancelCurrentRunAsync: run {RunId} is already terminalizing via natural/error completion; rejecting Stop",
-                    expectedRunId);
-                return Task.FromResult(RunCancellationResult.NoActiveRun);
             }
 
             cts = _currentRunCts;

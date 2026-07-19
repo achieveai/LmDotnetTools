@@ -322,11 +322,6 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
 
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
             var assignment = await StartRunAsync(batch, batchParent, ct);
-
-            // Use this run's own token (linked to, but independently cancellable from, the
-            // loop's ct) for turn execution — a matching CancelCurrentRunAsync(RunId) call
-            // signals only this token, so it never looks like outer loop-shutdown below.
-            var runToken = CurrentRunToken;
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {
@@ -370,7 +365,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             try
             {
                 await OnBeforeRunAsync();
-                await ExecuteRunAsync(batch, assignment.RunId, assignment.GenerationId, streamMetrics, runToken);
+                await ExecuteRunAsync(batch, assignment.RunId, assignment.GenerationId, streamMetrics, ct);
 
                 await CompleteRunAsync(
                     assignment.RunId,
@@ -404,33 +399,6 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                     assignment.RunId,
                     assignment.GenerationId,
                     runTimer.ElapsedMilliseconds);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                // The loop's own token (ct) is NOT cancelled, so this OperationCanceledException
-                // can only have come from runToken — a matching CancelCurrentRunAsync(RunId) call
-                // for THIS run via expected-run Stop (ExecuteRunAsync already interrupted the
-                // bridge client on this token — see its own catch). Complete as Cancelled and let
-                // the outer while loop continue to the next input instead of propagating past this
-                // catch, which has no ct.IsCancellationRequested guard and would otherwise let the
-                // exception escape RunLoopAsync entirely.
-                Logger.LogInformation(
-                    "{event_type} {event_status} {provider} {provider_mode} {thread_id} {run_id} {generation_id}",
-                    "codex.turn.cancelled",
-                    "cancelled",
-                    _options.Provider,
-                    _options.ProviderMode,
-                    ThreadId,
-                    assignment.RunId,
-                    assignment.GenerationId);
-
-                await CompleteRunAsync(
-                    assignment.RunId,
-                    assignment.GenerationId,
-                    wasForked: isExplicitFork,
-                    forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                    isCancelled: true,
-                    ct: ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
