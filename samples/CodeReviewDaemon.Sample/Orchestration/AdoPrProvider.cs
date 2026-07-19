@@ -25,6 +25,15 @@ internal sealed class AdoPrProvider : IPrProvider
     private readonly IOAuthTokenProvider _tokenProvider;
     private readonly ILogger<AdoPrProvider> _logger;
 
+    /// <summary>Caches a commit's last-push date by its immutable commit id, so a PR whose head does not change
+    /// is not re-fetched on every poll (the recency filter's per-old-PR commit call was otherwise a serial
+    /// request waterfall repeated each poll). Only SUCCESSFUL resolutions are cached — a failed/absent date is
+    /// never cached, so a transient hiccup is retried rather than stuck. Bounded: cleared wholesale past a cap
+    /// (commit ids are immutable, so the cache is naturally bounded by the active-PR set on a healthy repo).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _lastPushDateByCommit =
+        new(StringComparer.Ordinal);
+    private const int MaxCachedCommitDates = 4096;
+
     public AdoPrProvider(HttpClient httpClient, IOAuthTokenProvider tokenProvider, ILogger<AdoPrProvider> logger)
     {
         _httpClient = httpClient;
@@ -129,6 +138,19 @@ internal sealed class AdoPrProvider : IPrProvider
         }
         while (!string.IsNullOrEmpty(continuationToken) && pages < MaxPages);
 
+        // Make the page cap OBSERVABLE rather than silently truncating: if we stopped at MaxPages with a
+        // continuation token still pending, active PRs beyond the cap were NOT observed this poll. (A stateful
+        // cross-poll resume is unsafe here — ADO continuation tokens are scoped to a query snapshot and go
+        // stale as the active-PR set changes — so the correct fix is a bounded backlog reconciliation, tracked
+        // separately; surfacing the drop is the minimum so it can never read as full coverage.)
+        if (pages >= MaxPages && !string.IsNullOrEmpty(continuationToken))
+        {
+            _logger.LogWarning(
+                "ADO poll of {Org}/{Project}/{Repo} hit the {MaxPages}-page cap with more active PRs pending; "
+                    + "PRs beyond the cap were not observed this poll.",
+                org, project, repo, MaxPages);
+        }
+
         _logger.LogDebug(
             "ADO poll of {Org}/{Project}/{Repo} returned {Count} active PR(s) across {Pages} page(s).",
             org, project, repo, pullRequests.Count, pages);
@@ -183,6 +205,13 @@ internal sealed class AdoPrProvider : IPrProvider
         string commitId,
         CancellationToken cancellationToken)
     {
+        // A commit id is immutable, so its push date never changes — serve a prior successful resolution from
+        // the cache instead of re-fetching it every poll (the recency waterfall this thread flagged).
+        if (_lastPushDateByCommit.TryGetValue(commitId, out var cached))
+        {
+            return cached;
+        }
+
         try
         {
             var url =
@@ -219,6 +248,14 @@ internal sealed class AdoPrProvider : IPrProvider
                     var date = ParseTimestamp(gitUserDate, "date");
                     if (date is not null)
                     {
+                        // Cache only successful resolutions (a null/failure is retried next poll). Bound the
+                        // cache: past the cap, clear it wholesale rather than grow unbounded on a churny repo.
+                        if (_lastPushDateByCommit.Count >= MaxCachedCommitDates)
+                        {
+                            _lastPushDateByCommit.Clear();
+                        }
+
+                        _lastPushDateByCommit[commitId] = date.Value;
                         return date;
                     }
                 }

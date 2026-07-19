@@ -19,6 +19,15 @@ internal enum HygieneVerdict
 /// process — any <c>*.lock</c> in it is stale by definition and safe to remove. Lock/abort steps are host
 /// filesystem operations (the pooled store lives on the daemon host); reset/clean run through the host
 /// <see cref="GitRunner"/>. See the design doc §3–§4.
+/// <para>
+/// <b>Cross-process safety (review #180).</b> Deleting a lock is only safe when no process still holds it.
+/// The single-process daemon's in-process semaphore covers the live case (one owner per leased slot), and the
+/// crash/restart case is covered by the pool's QUARANTINE mechanism: a slot whose sandbox-session teardown
+/// could not be CONFIRMED gone (a possibly-still-mounted gateway session) is retired and never re-leased, so
+/// clean-on-entry here only ever runs on a slot whose session is confirmed dead — where a surviving
+/// <c>*.lock</c> is genuinely orphaned. A truly out-of-band writer (a second daemon sharing the same pool
+/// root, unsupported) is outside this contract.
+/// </para>
 /// </summary>
 internal static class SlotHygiene
 {

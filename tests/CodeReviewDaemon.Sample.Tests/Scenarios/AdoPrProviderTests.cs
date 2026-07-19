@@ -314,4 +314,40 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         page.PullRequests.Should().OnlyContain(p => p.UpdatedAt == null, "with no window ADO never fetches push dates");
         handler.CountRequests("/commits/").Should().Be(0);
     }
+
+    [Fact]
+    public async Task RecencyCutoff_caches_the_last_push_date_by_commit_across_polls()
+    {
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/commits/head-42", """{ "committer": { "date": "2026-07-10T12:00:00Z" } }""")
+            .OnJson(HttpMethod.Get, "/pullrequests", DatedPrs);
+        // ONE provider instance polled twice — the commit's immutable push date must be served from cache the
+        // second time instead of re-fetched (the per-poll recency waterfall this thread flagged).
+        var provider = Provider(handler);
+
+        var first = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+        var second = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        first.PullRequests[0].UpdatedAt.Should().Be(new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
+        second.PullRequests[0].UpdatedAt.Should().Be(new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
+        handler.CountRequests("/commits/head-42").Should().Be(1, "the second poll serves the push date from cache");
+    }
+
+    [Fact]
+    public async Task RecencyCutoff_does_not_cache_an_unresolved_push_date_and_retries_it()
+    {
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/commits/head-42", """{"message":"nope"}""", HttpStatusCode.NotFound)
+            .OnJson(HttpMethod.Get, "/pullrequests", OneOldPr);
+        var provider = Provider(handler);
+
+        _ = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+        _ = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        // A failed resolution is NOT cached, so a transient hiccup is retried on the next poll rather than
+        // stuck at the keep-on-uncertainty fallback forever.
+        handler.CountRequests("/commits/head-42").Should().Be(2, "an unresolved push date is retried, not cached");
+    }
 }
