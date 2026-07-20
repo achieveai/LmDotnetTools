@@ -72,6 +72,48 @@ public class MultiTurnAgentLoopUsageActivationTests
         await cts.CancelAsync();
     }
 
+    [Fact]
+    public async Task Dispose_FlushesUsage_MakingItDurableWithoutPolling()
+    {
+        // The awaited flush at disposal is the durability boundary: a run's final usage must be persisted
+        // synchronously by DisposeAsync, not left to a fire-and-forget write that may be lost at shutdown.
+        SetupMockAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                GenerationId = "gen-1",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+
+        var store = new InMemoryConversationStore();
+        var registry = new FunctionRegistry();
+        var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "usage-thread",
+            store: store);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        _ = loop.RunAsync(cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "Hi", Role = Role.User }],
+            InputId: "input-1");
+
+        await foreach (var _ in loop.ExecuteRunAsync(userInput, cts.Token))
+        {
+            // drain the run to completion
+        }
+
+        await loop.DisposeAsync();
+
+        // No polling: if the disposal flush works, usage is durable the instant DisposeAsync returns.
+        var aggregate = await ConversationUsageProjection.LoadAsync(store, "usage-thread");
+        aggregate.Should().NotBeNull();
+        aggregate!.TotalTokens.Should().Be(140);
+    }
+
     private void SetupMockAgentResponse(List<IMessage> messages)
     {
         _mockAgent

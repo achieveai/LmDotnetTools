@@ -66,6 +66,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // appends). Guards the "recover persisted history on (re)create" path used by the agent pool.
     private bool _historyRecovered;
     private bool _usageHydrated;
+
+    // Serialized/coalesced durable-usage writer, created lazily once both a ledger and store exist. Both
+    // the primary loop's own usage and every descendant relay route through it, so writes never interleave
+    // and run completion / disposal can await a final flush (#196).
+    private UsagePersistenceWriter? _usageWriter;
+    private readonly object _usageWriterLock = new();
     private volatile bool _isDisposed;
 
     // Set once run-ledger reconciliation has run for this process instance, so RunAsync never
@@ -342,11 +348,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             DefaultOptions.ModelId);
         ledger.RecordUsage(record);
 
-        var store = Store;
-        if (store != null)
-        {
-            _ = PersistUsageSnapshotAsync(store, ledger.Snapshot(), ledger.SnapshotRecords());
-        }
+        EnsureUsageWriter()?.Schedule();
     }
 
     private async Task PersistUsageSnapshotAsync(
@@ -365,21 +367,65 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <summary>
-    /// Persists the current usage ledger snapshot + records for the root conversation. Handed to the
-    /// SubAgentManager so a descendant's usage is made durable when it is observed — including a
-    /// late/background descendant that finishes after the root's last provider call — rather than waiting
-    /// for a future primary usage event to flush it (#196).
+    /// Schedules a durable write of the current usage ledger snapshot + records for the root conversation
+    /// through the serialized writer. Handed to the SubAgentManager so a descendant's usage is made durable
+    /// when it is observed — including a late/background descendant that finishes after the root's last
+    /// provider call — rather than waiting for a future primary usage event to flush it. Coalesced with the
+    /// primary loop's own writes so the two paths cannot interleave or race an older snapshot (#196).
     /// </summary>
     protected Task PersistCurrentUsageAsync()
     {
+        EnsureUsageWriter()?.Schedule();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Lazily creates the per-conversation serialized usage writer once both a ledger and store exist. The
+    /// persist delegate reads the ledger's latest snapshot at write time, so coalesced writes always persist
+    /// the newest state. Returns null when usage accounting is not configured for this agent.
+    /// </summary>
+    private UsagePersistenceWriter? EnsureUsageWriter()
+    {
+        var existing = _usageWriter;
+        if (existing != null)
+        {
+            return existing;
+        }
+
         var ledger = UsageLedger;
         var store = Store;
         if (ledger is null || store is null)
         {
-            return Task.CompletedTask;
+            return null;
         }
 
-        return PersistUsageSnapshotAsync(store, ledger.Snapshot(), ledger.SnapshotRecords());
+        lock (_usageWriterLock)
+        {
+            return _usageWriter ??= new UsagePersistenceWriter(
+                _ => PersistUsageSnapshotAsync(store, ledger.Snapshot(), ledger.SnapshotRecords()));
+        }
+    }
+
+    /// <summary>
+    /// Awaits any pending/in-flight usage write so the latest snapshot is durable before run completion or
+    /// disposal proceeds. Best-effort: a persistence fault must not fault the caller's lifecycle (#196).
+    /// </summary>
+    private async Task FlushUsageAsync()
+    {
+        var writer = _usageWriter;
+        if (writer is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await writer.FlushAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Usage flush failed for thread {ThreadId}", ThreadId);
+        }
     }
 
     /// <summary>
@@ -1289,7 +1335,16 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         Logger.LogInformation("{AgentType} started. ThreadId: {ThreadId}", GetType().Name, ThreadId);
 
-        await _runTask;
+        try
+        {
+            await _runTask;
+        }
+        finally
+        {
+            // Guarantee the conversation's final usage snapshot is durable before the run returns — a
+            // completed/cancelled run must not leave the latest aggregate only in memory (#196).
+            await FlushUsageAsync();
+        }
     }
 
     /// <inheritdoc />
@@ -1343,6 +1398,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _isDisposed = true;
 
         await StopAsync();
+
+        // Final durability boundary: flush any usage write scheduled by a late/background descendant that
+        // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).
+        await FlushUsageAsync();
 
         _internalCts?.Dispose();
 
