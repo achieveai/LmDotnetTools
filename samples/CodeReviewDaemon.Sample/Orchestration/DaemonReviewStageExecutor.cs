@@ -30,8 +30,9 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 ///   PR-close from the <see cref="PrLifecycleSweeper"/> (Layer-2, design §1).</item>
 ///   <item><see cref="ReviewStage.Judged"/> — if <c>EnableJudgeAgent</c>, grade the review with the
 ///   <see cref="JudgeAgent"/>.</item>
-///   <item><see cref="ReviewStage.Posted"/> — post the review via <see cref="ReviewPoster"/> with
-///   <c>LivePostingAuthorized = EnableCommentPosting</c> (collect-only by default).</item>
+///   <item><see cref="ReviewStage.Posted"/> — retention + cleanup only. The review AGENT posts to the PR
+///   itself via the <c>code-reviewer:post-pr-review</c> skill during the Reviewed stage; this terminal
+///   stage commits/pushes the notes and frees the pooled slot + sandbox session.</item>
 /// </list>
 /// </summary>
 internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
@@ -105,7 +106,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly ISandboxCommandRunner _commandRunner;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly CodeReviewDaemonOptions _options;
-    private readonly IReadOnlyList<IReviewCommentPublisher> _publishers;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<DaemonReviewStageExecutor> _logger;
     private readonly IReviewSessionProvisioner? _provisioner;
@@ -116,6 +116,26 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly SandboxCredential _credential;
     private readonly ReviewSlotWorkspace? _slotWorkspace;
 
+    /// <summary>Host-side review-comment publishers (one per provider), used by <see cref="PostAsync"/> to
+    /// post the review through the durable <see cref="ReviewPoster"/> outbox (Option A: host-owned, idempotent
+    /// posting — the agent is collect-only). Empty when none is registered (e.g. a diff-only unit test);
+    /// production always registers at least the GitHub publisher.</summary>
+    private readonly IReadOnlyList<IReviewCommentPublisher> _publishers;
+
+    /// <summary>
+    /// Bounded, in-memory retry for the background retention reconciler (<see cref="ReconcilePendingRetentionAsync"/>),
+    /// keyed by OUTBOX-ROW id — a separate keyspace from the orchestrator's per-run governor, since a run id and
+    /// an outbox id are both <c>long</c> and must never collide. Gives a failed <c>push-reviewbot</c> row
+    /// exponential backoff + park-after-K on the sweep cadence instead of hammering the remote every poll. It is
+    /// in-memory by design: a restart clears it, so a restart retries every still-Pending row — matching the
+    /// daemon's "restart = retry" philosophy (see <see cref="RetryGovernor"/>).
+    /// </summary>
+    private readonly RetryGovernor _retentionRetry;
+
+    /// <summary>The already-running gateway's base URL, threaded from Program.cs (config/env-resolved) so the
+    /// tool-assisted review agent's MCP transport addresses the same gateway the pool/provisioner use. Null ⇒
+    /// falls back to CRD_SANDBOX_GATEWAY then the 3000 default.</summary>
+    private readonly string? _gatewayBaseUrl;
     /// <summary>
     /// The per-run pooled lease, populated by <see cref="FetchContextAsync"/> when the pooled
     /// scoped-writable path handled a run and consumed by <see cref="ReviewAsync"/> (scoped tool context)
@@ -135,7 +155,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ISandboxCommandRunner commandRunner,
         ISandboxFileSystem fileSystem,
         CodeReviewDaemonOptions options,
-        IEnumerable<IReviewCommentPublisher> publishers,
         ILoggerFactory loggerFactory,
         IReviewSessionProvisioner? provisioner = null,
         IDiscoveredItemsSource? discoveredItemsSource = null,
@@ -144,14 +163,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         HostRetentionWorkspace? hostRetention = null,
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
-        Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null)
+        Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
+        string? gatewayBaseUrl = null,
+        IEnumerable<IReviewCommentPublisher>? publishers = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
         _commandRunner = commandRunner ?? throw new ArgumentNullException(nameof(commandRunner));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _publishers = [.. publishers ?? throw new ArgumentNullException(nameof(publishers))];
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<DaemonReviewStageExecutor>();
         _provisioner = provisioner;
@@ -162,6 +182,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _credential = credential;
         _slotWorkspace = slotWorkspace;
         _appLifetime = appLifetime;
+        _gatewayBaseUrl = gatewayBaseUrl;
+        _publishers = publishers is null ? [] : [.. publishers];
+        _retentionRetry = new RetryGovernor(
+            _options.MaxContextRetries,
+            TimeSpan.FromSeconds(_options.RetryBackoffBaseSeconds),
+            TimeSpan.FromSeconds(_options.RetryBackoffCapSeconds),
+            static () => DateTimeOffset.UtcNow,
+            loggerFactory.CreateLogger<RetryGovernor>());
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -249,7 +277,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
 
             return new ReviewToolContext(
-                GatewayBaseUrl: Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
+                GatewayBaseUrl: _gatewayBaseUrl
+                    ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+                    ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
                 SubAgentOptions: subAgentOptions,
@@ -302,10 +332,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 sessionId,
                 subagentCount,
                 string.Join(",", discovered.Select(d => d.Kind).Distinct()));
-            var templates = _subAgentTemplateBuilder.Build(discovered, _options.SubAgentMarketplaces, _providerAgentFactory);
+            var templates = _subAgentTemplateBuilder.Build(
+                discovered, _options.SubAgentMarketplaces, _providerAgentFactory, _options.SubAgentModelId);
             if (templates.Count > 0)
             {
-                return new SubAgentOptions { Templates = templates };
+                return new SubAgentOptions
+                {
+                    Templates = templates,
+                    MaxConcurrentSubAgents = _options.MaxConcurrentSubAgents,
+                };
             }
 
             _logger.LogInformation(
@@ -348,8 +383,49 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(runId, out var lease))
         {
-            await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
-            _logger.LogInformation("Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+            var teardownConfirmed = true;
+            try
+            {
+                // Tear the session down (terminating any lingering sub-agent git child + unmounting) BEFORE the
+                // slot returns to the pool, so a cancelled/failed run — which reaches here via the orchestrator's
+                // terminal finally without running the Posted-stage cleanup — can't leave session-side work racing
+                // the next lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a
+                // no-op when no session was provisioned, and harmless if the Posted stage already destroyed it.
+                // DestroyAsync returns FALSE (not just throws) when the gateway teardown can't be confirmed, so a
+                // silently-swallowed destroy failure still routes to quarantine below rather than a reuse.
+                if (_options.EnableToolAssistedReview && _provisioner is not null)
+                {
+                    teardownConfirmed =
+                        await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                // DestroyAsync threw outright — treat identically to an unconfirmed teardown. Contain + log
+                // rather than propagate, so this never masks the primary stage failure that sent us here.
+                teardownConfirmed = false;
+                _logger.LogWarning(
+                    ex, "Run {RunId}: sandbox session teardown threw on the terminal path.", runId);
+            }
+
+            if (teardownConfirmed)
+            {
+                await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                _logger.LogInformation(
+                    "Run {RunId}: returned pooled slot {Index} on the terminal path.", runId, lease.Slot.Index);
+            }
+            else
+            {
+                // Teardown unconfirmed (threw, OR the provisioner reported the gateway destroy failed): the
+                // sandbox may still be mounted on this slot's store, so QUARANTINE rather than return — the slot
+                // index is retired (never reused, so no next lease races the surviving session) while its permit
+                // is still released, so capacity is preserved (the next lease allocates a fresh slot).
+                _logger.LogWarning(
+                    "Run {RunId}: sandbox session teardown unconfirmed on the terminal path; quarantining slot "
+                        + "{Index} (index retired) instead of returning a possibly-live store to the pool.",
+                    runId, lease.Slot.Index);
+                await _slotWorkspace.Pool.QuarantineAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+            }
         }
     }
 
@@ -458,9 +534,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
                 allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
 
-            var prepared = await _slotWorkspace.Preparer.PrepareAsync(
-                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
-                    cancellationToken)
+            var prepared = await PrepareWithRecoveryAsync(
+                slot, run, storeUrl, submoduleRelPath, branch, notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
 
             // Diff + manifest run HOST-side against the prepared submodule working tree (privileged daemon
@@ -522,6 +597,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             {
                 await _slotWorkspace.Pool.ReturnAsync(slot, CancellationToken.None).ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// Prepares the leased slot, escalating to a re-clone on corruption. <see cref="ReviewSlotPreparer"/>'s
+    /// clean-on-entry self-heals stale locks / dirty trees in place; when it instead reports the store is
+    /// structurally unusable (<see cref="SlotNeedsRecloneException"/>) or a git step fails corrupt
+    /// (<see cref="SlotCorruptException"/>), the slot's store is re-cloned from scratch and prepare is
+    /// retried ONCE. A second failure surfaces so the stage retries and the retry governor bounds it.
+    /// </summary>
+    private async Task<PreparedCheckout> PrepareWithRecoveryAsync(
+        ReviewSlot slot, ReviewRun run, string storeUrl, string submoduleRelPath, string branch,
+        string notesRelPath, OperationPolicy policy, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _slotWorkspace!.Preparer.PrepareAsync(
+                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SlotNeedsRecloneException or SlotCorruptException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: pooled slot {Index} store is corrupt; re-cloning and retrying prepare once.",
+                run.Id, slot.Index);
+            await _slotWorkspace!.Pool.RecloneStoreAsync(slot, cancellationToken).ConfigureAwait(false);
+            return await _slotWorkspace.Preparer.PrepareAsync(
+                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
@@ -833,17 +940,29 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return [];
         }
 
+        // The reviewed repo's own submodule + the shared Contracts layer are always allow-listed. The host
+        // and repo-path shape are provider-specific — GitHub is /{owner}/{repo} on github.com, Azure DevOps
+        // is /{org}/{project}/_git/{repo} on dev.azure.com — mirroring TargetRemoteUrl so the rule matches the
+        // exact URL SubmoduleTargetsRepo resolves.
+        var isAdo = string.Equals(repo.Provider, "azure-devops", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(repo.Provider, "ado", StringComparison.OrdinalIgnoreCase);
+        var host = isAdo ? "dev.azure.com" : "github.com";
+        string RepoPath(string name) =>
+            isAdo ? $"/{repo.OrgOrOwner}/{repo.Project}/_git/{name}" : $"/{repo.OrgOrOwner}/{name}";
+
         var rules = new List<SubmoduleAllowRule>
         {
-            new("github.com", $"/{repo.OrgOrOwner}/{repo.RepoName}"),
-            new("github.com", $"/{repo.OrgOrOwner}/Contracts"),
+            new(host, RepoPath(repo.RepoName)),
+            new(host, RepoPath("Contracts")),
         };
 
         if (AllowsCrossRepoCoLocation(run, repo))
         {
             foreach (var sibling in _options.CrossRepoSiblings)
             {
-                rules.Add(new SubmoduleAllowRule("github.com", $"/{sibling}"));
+                // GitHub siblings are configured as owner/repo (absolute path); ADO siblings resolve under
+                // the same org/project as the reviewed repo.
+                rules.Add(new SubmoduleAllowRule(host, isAdo ? RepoPath(sibling) : $"/{sibling}"));
             }
         }
 
@@ -871,6 +990,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task ReviewAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
+
+        // Resume-safety for the pooled path: the slot lease recorded by ContextReady lives ONLY in the
+        // in-memory _leasedReviews, so a run that persisted Stage=ContextReady in an earlier process (a daemon
+        // restart, or a resume after a RetryPending) arrives here with no lease. Without one, BuildToolContextAsync
+        // would fall back to the per-run review-run-{id} mount — a directory that does not exist under the
+        // gateway's read-only workspace base, so the gateway 400s and the review silently degrades to diff-only
+        // with no sub-agents. Re-lease + re-prepare a slot here so the resumed review still runs tool-assisted;
+        // the persisted context's container paths (/workspace/...) are slot-index-independent, so a freshly
+        // leased slot is interchangeable. TryPooledFetchContextAsync returns false for a non-store-submodule
+        // repo, which leaves the existing per-run/diff-only path unchanged.
+        if (UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
+        {
+            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        }
+
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
         reviewInput = await PrependPriorKnowledgeAsync(reviewInput, context.StoreRoot, cancellationToken)
@@ -902,6 +1036,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private static Dictionary<string, object> BuildPromptVariables(
         string botName,
+        RepoIdentity repo,
+        string prId,
+        bool shouldPost,
         string? checkoutRoot,
         string? storeRoot,
         ReviewToolContext? toolContext,
@@ -911,17 +1048,26 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         IReadOnlyList<string> priorNotesFiles)
     {
         var notesDir = toolContext?.NotesDir;
+        var isRereview = !string.IsNullOrWhiteSpace(prevHeadSha);
         return new Dictionary<string, object>
         {
-            // The daemon prepends "[BotName]" to the POSTED comment; injecting it here too lets the review
-            // BODY self-identify with the same name instead of a name the model invents ad-hoc.
+            // Injected so the review BODY self-identifies with the same name; also passed to the
+            // code-reviewer:post-pr-review skill as its botPrefix (step 5).
             ["bot_name"] = botName,
+            // The reviewed repo + PR the agent posts to via code-reviewer:post-pr-review (step 5). GitHub
+            // "owner/repo"; the skill also re-resolves the provider from the checkout's git remote.
+            ["repository"] = $"{repo.OrgOrOwner}/{repo.RepoName}",
+            ["pr_number"] = prId,
+            // Whether this run posts (EnableCommentPosting). Collect-only => the agent produces the review
+            // but does NOT call the post skill.
+            ["should_post"] = shouldPost,
+            ["review_type"] = isRereview ? "re-review" : "initial",
             ["checkout_root"] = checkoutRoot ?? TargetRoot,
             ["has_store"] = !string.IsNullOrWhiteSpace(storeRoot),
             ["store_root"] = storeRoot ?? string.Empty,
             ["has_notes"] = !string.IsNullOrWhiteSpace(notesDir),
             ["notes_dir"] = notesDir ?? string.Empty,
-            ["is_rereview"] = !string.IsNullOrWhiteSpace(prevHeadSha),
+            ["is_rereview"] = isRereview,
             ["prev_commit"] = prevHeadSha ?? string.Empty,
             ["new_commit"] = headSha,
             ["review_round"] = reviewRound.ToString("D2", CultureInfo.InvariantCulture),
@@ -1029,20 +1175,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         CancellationToken cancellationToken)
     {
         var toolContext = await BuildToolContextAsync(run, cancellationToken).ConfigureAwait(false);
-        var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
-            run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
-        var variables = BuildPromptVariables(
-            _options.BotName, checkoutRoot, storeRoot, toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
-        var profile = DaemonAgentFactory.CreateReviewProfile(variables);
-        // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
-        // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
-        // fabricates a "no files found / couldn't read the repo" caveat) rather than doing the multi-step
-        // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
-        var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
-        await using var loop = _loopFactory.Create(
-            profile, run.ModelId, ThreadId(run, run.VariantId), reasoningEffort: effort, toolContext: toolContext);
-        var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
-        var result = await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
+
+        ReviewAgentResult result;
+        try
+        {
+            result = await RunReviewAttemptAsync(
+                    run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (toolContext is not null && IsContextWindowOverflow(ex))
+        {
+            // The tool-assisted attempt accumulated more input than the model's context window — the PR diff
+            // plus the fanned-out sub-agents' full results, folded into one conversation. Rather than the run
+            // dying with no output, retry ONCE diff-only (toolContext=null → no sub-agents, no tool results to
+            // accumulate) so the PR still gets a leaner review. Config lowers the peak (MaxConcurrentSubAgents),
+            // this guarantees a result when it still overflows. A diff so large it overflows even diff-only is
+            // left to fail (RetryPending) — nothing more to shed. The retry uses a FRESH thread so it starts a
+            // clean conversation instead of reloading the overflowing history that just blew the window.
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: tool-assisted review exceeded the model's context window; retrying diff-only (no sub-agents).",
+                run.Id);
+            result = await RunReviewAttemptAsync(
+                    run, reviewInput, checkoutRoot, storeRoot,
+                    toolContext: null, ThreadId(run, run.VariantId + "-ctxretry"), cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         _ = _store.AddArtifact(new ReviewArtifact
         {
@@ -1053,6 +1211,58 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Payload = JsonSerializer.Serialize(
                 new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId)),
         });
+    }
+
+    /// <summary>
+    /// Runs one primary-review attempt with the given <paramref name="toolContext"/> (non-null = tool-assisted
+    /// with sub-agents; null = diff-only) on its own conversation <paramref name="threadId"/>, returning the
+    /// collected review. Split out of <see cref="RunPrimaryReviewAsync"/> so an attempt that overflows the
+    /// model context window can be retried diff-only on a fresh thread without re-running context assembly.
+    /// </summary>
+    private async Task<ReviewAgentResult> RunReviewAttemptAsync(
+        ReviewRun run,
+        string reviewInput,
+        string? checkoutRoot,
+        string? storeRoot,
+        ReviewToolContext? toolContext,
+        string threadId,
+        CancellationToken cancellationToken)
+    {
+        var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
+            run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
+        var (repo, _) = ResolveRepo(run);
+        var variables = BuildPromptVariables(
+            _options.BotName, repo, run.PrId, _options.EnableCommentPosting, checkoutRoot, storeRoot,
+            toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
+        var profile = DaemonAgentFactory.CreateReviewProfile(variables);
+        // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
+        // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
+        // fabricates a "no files found / couldn't read the repo" caveat) rather than doing the multi-step
+        // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
+        var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
+        await using var loop = _loopFactory.Create(
+            profile, run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext);
+        var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
+        return await agent.ReviewAsync(reviewInput, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// True when <paramref name="ex"/> (or any exception it wraps) is the model API rejecting a request whose
+    /// input exceeded the context window ("Your input exceeds the context window of this model."). Matched on
+    /// the distinctive "context window" phrase so it fires on the provider's 400 regardless of which HTTP or
+    /// provider exception type the loop surfaces it as.
+    /// </summary>
+    private static bool IsContextWindowOverflow(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e.Message.Contains("context window", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task RunVariantArmAsync(
@@ -1067,8 +1277,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // and no prior-files listing — but it is still told the same round/commit facts as the primary.
         var (prevHeadSha, reviewRound, _) = await ComputeRereviewContextAsync(run, notesDir: null, cancellationToken)
             .ConfigureAwait(false);
+        var (repo, _) = ResolveRepo(run);
         var variables = BuildPromptVariables(
-            _options.BotName, checkoutRoot, storeRoot, toolContext: null, run.HeadSha, prevHeadSha, reviewRound, []);
+            _options.BotName, repo, run.PrId, false, checkoutRoot, storeRoot,
+            null, run.HeadSha, prevHeadSha, reviewRound, []);
         var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);
@@ -1099,78 +1311,107 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task PostAsync(ReviewRun run, CancellationToken cancellationToken)
     {
         var (repo, provider) = ResolveRepo(run);
-        var publisher = _publishers.FirstOrDefault(p =>
-            string.Equals(p.Provider, provider, StringComparison.Ordinal))
-            ?? throw new InvalidOperationException($"No review-comment publisher registered for provider '{provider}'.");
 
-        var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
-
-        // A review that produced NO content must post NOTHING. A "_No review content was produced._"
-        // placeholder would go through the full idempotency path and leave a marked comment on the provider;
-        // the backstop scan (ReviewPoster.FindPostedCommentAsync) later ADOPTS that placeholder and
-        // permanently suppresses a real review of the same head_sha — e.g. a re-run on a model that does
-        // produce content. So skip both the post and the retention when the review is empty. The run still
-        // reaches its terminal stage below (and its review_run row prevents re-review), and the slot/session
-        // are still freed, so nothing is leaked or looped.
+        // Posting is HOST-OWNED and idempotent (Option A): the review AGENT is collect-only (it produces the
+        // review as its final message and never posts, see the review prompt), and THIS terminal stage delivers
+        // it to the PR through the durable review_outbox via ReviewPoster + the provider publisher.
+        // EnableCommentPosting gates live-post vs collect-only; the outbox row plus a provider-side backstop
+        // scan make delivery exactly-once (a skipped/duplicate post can't happen). The stage then reads the same
+        // review to gate RETENTION (commit/push notes) and to free the pooled slot + sandbox session. An empty
+        // review posts + retains nothing; the run row still prevents re-review and the slot is still freed.
         var reviewText = ReadReviewText(run.Id);
         var hasContent = !string.IsNullOrWhiteSpace(reviewText);
-        if (hasContent)
+        if (!hasContent)
         {
-            // The POSTED comment is prefixed with "[BotName]" so a reader knows the content was authored by
-            // the bot on behalf of whichever OAuth app/person's credential actually posted it — the retained
-            // artifact (CommitPooledNotesAsync / PublishToReviewBotAsync below) keeps the raw, unprefixed body.
-            var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
-
-            var key = new IdempotencyKeyComponents(
-                Provider: provider,
-                OrgOrOwner: repo.OrgOrOwner,
-                Project: repo.Project,
-                // RepoStableId must be non-blank and ':'-free; fall back to the colon-free normalized key.
-                RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
-                PrId: run.PrId,
-                Operation: ReviewPoster.PostReviewCommentOperation,
-                ArtifactKind: ReviewArtifactKind,
-                ArtifactSubject: "summary",
-                // Scope the key to the reviewed COMMIT. head_sha is stable across re-polls and — unlike the PR
-                // updated_at — is not mutated by posting the comment, so a re-poll of the same commit resolves
-                // to the same key and the backstop scan recognizes the already-posted comment (no duplicate).
-                HeadSha: run.HeadSha,
-                VariantId: run.VariantId);
-
-            var request = new PostReviewRequest(
-                run.Id,
-                key,
-                new ReviewCommentTarget(repo, run.PrId),
-                postedBody,
-                LivePostingAuthorized: _options.EnableCommentPosting);
-
-            _ = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
+            _logger.LogWarning("Run {RunId}: review produced no content; nothing to post or retain.", run.Id);
         }
         else
         {
-            _logger.LogWarning(
-                "Run {RunId}: review produced no content; not posting a comment or claiming the head's dedup "
-                    + "slot (a placeholder would block a later real review of the same commit).",
-                run.Id);
+            await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        // Terminal-stage session teardown (design §7), done BEFORE the slot is stripped/returned below: the
+        // sandbox session is mounted OVER the leased slot, so a lingering sub-agent's git op inside it would
+        // otherwise race the host-side StripAsync/ReturnAsync on the SAME store (the concurrency window called
+        // out in review #180 — and the mechanism behind the Posted-stage index.lock we observed). Destroying
+        // the session first terminates those child processes and unmounts, so the slot is quiescent before we
+        // touch it. DestroyAsync returns FALSE when the gateway teardown can't be confirmed (rather than
+        // swallowing it), so the retention block below can quarantine instead of touching a possibly-live store.
+        // The teardown itself uses a NON-cancelable token (like the terminal ReleaseReviewLeaseAsync path): a
+        // stage-cancellation mid-DestroyAsync must not abort the unmount and leave the mount alive while the
+        // slot is released elsewhere — the stage's own cancellation is still honoured by the work above/below.
+        // Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
+        var teardownConfirmed = true;
+        if (_options.EnableToolAssistedReview && _provisioner is not null)
+        {
+            teardownConfirmed = await _provisioner.DestroyAsync(run, CancellationToken.None).ConfigureAwait(false);
         }
 
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
         // pooled slot commits its notes onto the slot's store checkout scoped to ONLY the PR notes dir, then
         // returns the slot; every other run uses the host ReviewBot retention checkout. The slot is ALWAYS
-        // returned (finally) and the session ALWAYS torn down (below), so an empty review still frees its
+        // returned (finally) and the session is torn down just ABOVE, so an empty review still frees its
         // resources; the atomic TryRemove guards against a double-return.
         if (_slotWorkspace is not null && _leasedReviews.TryRemove(run.Id, out var lease))
         {
-            try
+            if (!teardownConfirmed)
             {
-                if (hasContent)
-                {
-                    await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken).ConfigureAwait(false);
-                }
+                // Teardown unconfirmed: the store may still be mounted, so NEITHER the host-side notes commit
+                // NOR the strip can safely run — both operate on the SAME store the live mount holds (review
+                // #180). Skip them and QUARANTINE the slot (index retired, permit released). This run's notes
+                // are not committed, but correctness beats retention on a rare unconfirmed teardown; the
+                // quarantine tombstone / clean-on-entry reclaim the slot.
+                _logger.LogWarning(
+                    "Run {RunId}: sandbox session teardown unconfirmed after review; quarantining slot {Index} "
+                        + "without committing notes or stripping (a possibly-live mount must not be touched host-side).",
+                    run.Id, lease.Slot.Index);
+                await _slotWorkspace.Pool.QuarantineAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
             }
-            finally
+            else
             {
-                await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                try
+                {
+                    if (hasContent)
+                    {
+                        await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
+                    // slot's store to a pristine state so the next lease starts clean with nothing left around.
+                    // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
+                    // block the slot's return (which would leak pool capacity). Committed notes survive the strip
+                    // (reset --hard keeps HEAD; clean removes only untracked byproduct).
+                    try
+                    {
+                        await SlotHygiene.StripAsync(
+                                new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None, _logger)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex, "Run {RunId}: best-effort slot strip failed; the next lease's clean-on-entry covers it.",
+                            run.Id);
+                    }
+
+                    // Contain the return too: if the notes commit in the try-body already threw, a ReturnAsync
+                    // failure here would REPLACE that primary exception in the finally and hide the error that
+                    // should drive retry/diagnosis. Log the secondary failure separately and let the primary
+                    // propagate. The slot's permit was acquired at lease and the run is terminal regardless.
+                    try
+                    {
+                        await _slotWorkspace.Pool.ReturnAsync(lease.Slot, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex, "Run {RunId}: pooled slot {Index} return failed during terminal cleanup.",
+                            run.Id, lease.Slot.Index);
+                    }
+                }
             }
         }
         else if (hasContent)
@@ -1179,14 +1420,59 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
+    }
 
-        // Terminal-stage cleanup (Task 18, design §7): tear down the run's per-run sandbox session (and
-        // its host workspace dir, best-effort) now that the run has reached its terminal stage. The
-        // diff-only path never provisioned a session, so there is nothing to consult.
-        if (_options.EnableToolAssistedReview && _provisioner is not null)
+    /// <summary>
+    /// Host-owned, idempotent review posting (Option A). Resolves the publisher for the run's provider and
+    /// delivers the review through <see cref="ReviewPoster"/> + the <c>review_outbox</c>: the outbox row makes
+    /// it exactly-once, and <see cref="CodeReviewDaemonOptions.EnableCommentPosting"/> selects live-post vs
+    /// collect-only (recorded as <see cref="OutboxStatus.Collected"/>). The idempotency key carries the full
+    /// ADO <c>org/project/repo</c> identity via <see cref="RepoIdentity.Project"/>, and the ADO publisher's
+    /// REST target is likewise <c>org/project/repo</c>-scoped — so an ADO PR can never resolve an ambiguous
+    /// target. Throws only when live posting is authorized but no publisher is registered for the provider (a
+    /// real misconfiguration); a collect-only run with no publisher wired (e.g. a diff-only unit test) is a
+    /// logged no-op.
+    /// </summary>
+    private async Task PostReviewCommentHostSideAsync(
+        ReviewRun run, RepoIdentity repo, string provider, string reviewText, CancellationToken cancellationToken)
+    {
+        var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal));
+        if (publisher is null)
         {
-            await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
+            if (_options.EnableCommentPosting)
+            {
+                throw new InvalidOperationException(
+                    $"No review-comment publisher registered for provider '{provider}'; cannot post the review "
+                        + $"for run {run.Id} (EnableCommentPosting is on).");
+            }
+
+            _logger.LogDebug(
+                "Run {RunId}: collect-only and no '{Provider}' publisher registered; nothing to post.",
+                run.Id, provider);
+            return;
         }
+
+        var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
+        var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
+        var key = new IdempotencyKeyComponents(
+            Provider: provider,
+            OrgOrOwner: repo.OrgOrOwner,
+            Project: repo.Project,
+            RepoStableId: string.IsNullOrWhiteSpace(repo.RepoStableId) ? repo.NormalizedKey : repo.RepoStableId,
+            PrId: run.PrId,
+            Operation: ReviewPoster.PostReviewCommentOperation,
+            ArtifactKind: ReviewArtifactKind,
+            ArtifactSubject: "summary",
+            HeadSha: run.HeadSha,
+            VariantId: run.VariantId);
+        var request = new PostReviewRequest(
+            run.Id, key, new ReviewCommentTarget(repo, run.PrId), postedBody,
+            LivePostingAuthorized: _options.EnableCommentPosting);
+
+        var outcome = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation(
+            "Run {RunId}: {Provider} review post outcome {Outcome} (response {ResponseId}).",
+            run.Id, provider, outcome.Kind, outcome.ProviderResponseId ?? "-");
     }
 
     /// <summary>
@@ -1252,9 +1538,56 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task PublishToReviewBotAsync(
         ReviewRun run, RepoIdentity repo, string provider, string reviewBody, CancellationToken cancellationToken)
     {
+        var result = await PushReviewBotNotesCoreAsync(repo, run, reviewBody, cancellationToken).ConfigureAwait(false);
+        if (result is null)
+        {
+            // Retention is skipped (and nothing is pushed) when ReviewBotRepoUrl is unset — the inert default.
+            return;
+        }
+
+        var outbox = _store.EnqueueOutbox(new OutboxEntry
+        {
+            IdempotencyKey = BuildPushKey(run, repo, provider),
+            Provider = provider,
+            ReviewRunId = run.Id,
+            Operation = PushReviewBotOperation,
+            ArtifactKind = ReviewArtifactKind,
+            Status = OutboxStatus.Pending,
+        });
+
+        if (result.Outcome == ReviewBotPublishOutcome.Pushed)
+        {
+            _ = _store.TryTransitionOutbox(outbox.Id, outbox.Status, OutboxStatus.Posted, result.PushedSha);
+            _logger.LogInformation(
+                "Run {RunId}: ReviewBot notes pushed {Sha} onto review branch '{Branch}' (kept for later re-reviews).",
+                run.Id, result.PushedSha, result.ReviewBranch);
+        }
+        else
+        {
+            // GitSyncFailed — leave the outbox row non-terminal (Pending) so the retention reconciler
+            // (ReconcilePendingRetentionAsync, on the sweep cadence) rebuilds + retries the push from the
+            // durably-persisted review artifact. The manager kept the review branch, so no artifacts are lost.
+            _logger.LogWarning(
+                "Run {RunId}: ReviewBot retention failed to push; review branch '{Branch}' kept for reconcile.",
+                run.Id, result.ReviewBranch);
+        }
+    }
+
+    /// <summary>
+    /// The pure ReviewBot notes-push mechanics shared by the Posted stage (<see cref="PublishToReviewBotAsync"/>)
+    /// and the retention reconciler (<see cref="ReconcilePendingRetentionAsync"/>): ensure the host-side ReviewBot
+    /// checkout, commit the review body onto the PR's review branch, and push. Returns the push
+    /// <see cref="ReviewBotPublishResult"/>, or <c>null</c> when no ReviewBot remote is configured (the inert
+    /// default). This method is deliberately free of <c>review_outbox</c> side effects so it is safe to
+    /// re-invoke for a retry — the caller owns the bookkeeping: the stage ENQUEUES a fresh Pending row then
+    /// terminalizes it; the reconciler TRANSITIONS the pre-existing Pending row.
+    /// </summary>
+    private async Task<ReviewBotPublishResult?> PushReviewBotNotesCoreAsync(
+        RepoIdentity repo, ReviewRun run, string reviewBody, CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(_options.ReviewBotRepoUrl))
         {
-            return;
+            return null;
         }
 
         // Retention must run against the HOST-side workspace when one is configured (design §6 Risk A) —
@@ -1287,32 +1620,88 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             DefaultBranch: ReviewBotDefaultBranch,
             Files: [new ReviewArtifactFile(prArtifactPath, reviewBody)]);
 
-        var result = await manager.CommitNotesAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
+        return await manager.CommitNotesAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
+    }
 
-        var outbox = _store.EnqueueOutbox(new OutboxEntry
+    /// <summary>
+    /// Background retention reconciler (thread PRRT_kwDOOPysWM6RtEzw): drains every <see cref="OutboxStatus.Pending"/>
+    /// <c>push-reviewbot</c> row — left non-terminal whenever a notes push failed — and rebuilds + retries the
+    /// push from the durably-persisted review artifact (SQLite <c>review_artifact</c>, independent of the pooled
+    /// slot, which is stripped/returned before this runs). A pooled-notes push failure is reconciled through the
+    /// HOST-side push here because the pooled slot is gone by now and both paths target the SAME ReviewBot remote
+    /// (<c>CrossRepoStoreUrl == ReviewBotRepoUrl</c>). Runs on the sweep cadence (an isolated, degrade-not-throw
+    /// step in <see cref="PrPollingService"/>), so it must NOT throw — a per-row failure is logged and left
+    /// Pending for the next pass. Each row is bounded by <see cref="_retentionRetry"/> (backoff + park-after-K,
+    /// keyed by outbox-row id) so a permanently-broken remote or an unreconstructable row backs off and parks
+    /// instead of hammering the remote every pass. This is why the Posted stage does NOT throw on a retention
+    /// push failure (which — being outside the orchestrator's ContextReady-only <see cref="RetryGovernor"/> —
+    /// would hot-loop): delivery of the review to the PR already succeeded; retention self-heals out-of-band.
+    /// </summary>
+    public async Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken)
+    {
+        // No ReviewBot remote ⇒ nothing to push to (and no push-reviewbot rows are ever produced). Skip the
+        // query entirely so the diff-only default does no per-poll work.
+        if (string.IsNullOrWhiteSpace(_options.ReviewBotRepoUrl))
         {
-            IdempotencyKey = BuildPushKey(run, repo, provider),
-            Provider = provider,
-            ReviewRunId = run.Id,
-            Operation = PushReviewBotOperation,
-            ArtifactKind = ReviewArtifactKind,
-            Status = OutboxStatus.Pending,
-        });
-
-        if (result.Outcome == ReviewBotPublishOutcome.Pushed)
-        {
-            _ = _store.TryTransitionOutbox(outbox.Id, outbox.Status, OutboxStatus.Posted, result.PushedSha);
-            _logger.LogInformation(
-                "Run {RunId}: ReviewBot notes pushed {Sha} onto review branch '{Branch}' (kept for later re-reviews).",
-                run.Id, result.PushedSha, result.ReviewBranch);
+            return;
         }
-        else
+
+        var pending = _store.GetPendingOutboxByOperation(PushReviewBotOperation);
+        foreach (var row in pending)
         {
-            // GitSyncFailed — leave the outbox row non-terminal (Pending) so reconcile retries. The
-            // manager kept the review branch, so no artifacts are lost.
-            _logger.LogWarning(
-                "Run {RunId}: ReviewBot retention failed to push; review branch '{Branch}' kept for reconcile.",
-                run.Id, result.ReviewBranch);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Backing off or parked (K attempts exhausted) — skip this pass; a restart clears the state.
+            if (!_retentionRetry.ShouldAttempt(row.Id))
+            {
+                continue;
+            }
+
+            try
+            {
+                var run = _store.GetReviewRun(row.ReviewRunId);
+                if (run is null)
+                {
+                    // An outbox row whose run row is gone can never be reconstructed. Count it as a failure so
+                    // it backs off + parks rather than being re-queried forever.
+                    _logger.LogWarning(
+                        "Retention reconcile: outbox row {OutboxId} references missing run {RunId}; leaving Pending.",
+                        row.Id, row.ReviewRunId);
+                    _ = _retentionRetry.RecordFailure(row.Id, "review run not found");
+                    continue;
+                }
+
+                var (repo, provider) = ResolveRepo(run);
+                var reviewText = ReadReviewText(run.Id); // durable artifact — survives the slot strip/return
+                var result = await PushReviewBotNotesCoreAsync(repo, run, reviewText, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (result?.Outcome == ReviewBotPublishOutcome.Pushed)
+                {
+                    _ = _store.TryTransitionOutbox(row.Id, OutboxStatus.Pending, OutboxStatus.Posted, result.PushedSha);
+                    _retentionRetry.RecordSuccess(row.Id);
+                    _logger.LogInformation(
+                        "Retention reconcile: outbox row {OutboxId} (run {RunId}) pushed {Sha}; marked Posted.",
+                        row.Id, run.Id, result.PushedSha);
+                }
+                else
+                {
+                    // Still failing (or config was removed mid-flight ⇒ null). Back off and retry next pass.
+                    _ = _retentionRetry.RecordFailure(row.Id, "reviewbot push still failing");
+                    _logger.LogWarning(
+                        "Retention reconcile: outbox row {OutboxId} (run {RunId}) push still failing; backing off.",
+                        row.Id, run.Id);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Degrade-not-throw per row: a bad row (e.g. a missing/undeserializable artifact) must not stop
+                // the rest of the drain, and the reconcile itself is a best-effort step. Count it as a failure
+                // so it backs off + parks rather than throwing every pass.
+                _ = _retentionRetry.RecordFailure(row.Id, ex.Message);
+                _logger.LogWarning(
+                    ex, "Retention reconcile: outbox row {OutboxId} threw; leaving Pending for the next pass.", row.Id);
+            }
         }
     }
 

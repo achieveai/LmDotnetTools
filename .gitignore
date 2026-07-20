@@ -64,3 +64,8 @@ scratchPad/*
 # Git worktrees (isolated workspaces — never track their contents)
 worktrees/
 .worktrees/
+
+# Ad-hoc GitHub review-thread / API JSON dumps at the repo root (diagnostic scratch, never committed)
+/threads*.json
+/th*.json
+/t[0-9]*.json

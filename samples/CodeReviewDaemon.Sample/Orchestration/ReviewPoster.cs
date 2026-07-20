@@ -52,7 +52,12 @@ internal sealed class ReviewPoster
             Status = OutboxStatus.Pending,
         });
 
-        // Terminal replay — the side effect (or the deliberate decision not to act) already happened.
+        // Terminal replay — the side effect (or the deliberate decision not to act) already happened. NOTE the
+        // activation semantics this encodes (see appsettings *_comment_posting + ADO-ONBOARDING.md): a run
+        // recorded Collected while posting was off stays terminal, so turning EnableCommentPosting on later does
+        // NOT retroactively post that already-collected head — enabling posting applies to FUTURE commits only
+        // (a new head is a new run + a fresh outbox key that posts normally). Promoting/requeuing already-
+        // collected artifacts is a deliberate, not-yet-built operation, not an accidental side effect of the flip.
         if (entry.Status is OutboxStatus.Posted or OutboxStatus.Collected)
         {
             _logger.LogInformation(

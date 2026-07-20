@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
@@ -77,6 +78,10 @@ internal sealed class GitHubPrProvider : IPrProvider
                         BaseSha = pr.GetProperty("base").GetProperty("sha").GetString() ?? string.Empty,
                         TriggerWatermark = updatedAt,
                         LifecycleState = MapLifecycle(pr),
+                        // Recency-filter signals: GitHub exposes both, so the filter uses updated_at (true
+                        // last activity) with created_at as the fallback.
+                        CreatedAt = ParseTimestamp(pr, "created_at"),
+                        UpdatedAt = ParseTimestamp(pr, "updated_at"),
                     });
 
                     if (string.CompareOrdinal(updatedAt, highWaterMark) > 0)
@@ -195,4 +200,15 @@ internal sealed class GitHubPrProvider : IPrProvider
             ? PrLifecycleState.Open
             : PrLifecycleState.Closed;
     }
+
+    /// <summary>Parses an ISO-8601 timestamp property (e.g. <c>created_at</c>/<c>updated_at</c>) to a
+    /// <see cref="DateTimeOffset"/>, or null when the property is absent or unparseable — a missing date
+    /// leaves the PR unfiltered by the recency window rather than silently dropping it.</summary>
+    private static DateTimeOffset? ParseTimestamp(JsonElement pr, string property) =>
+        pr.TryGetProperty(property, out var value)
+        && value.ValueKind is JsonValueKind.String
+        && DateTimeOffset.TryParse(
+            value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+            ? parsed
+            : null;
 }

@@ -77,6 +77,41 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ContextReady_reclones_and_retries_prepare_once_when_the_slot_is_corrupt()
+    {
+        using var fixture = Fixture.Create();
+        // The warm store is corrupt: the first prepare reports it, the executor re-clones and retries once.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("stale lock survived"));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        fixture.Pool.RecloneCount.Should().Be(1, "a corrupt store is re-cloned before the retry");
+        fixture.Preparer.PrepareCount.Should().Be(2, "prepare is retried exactly once after the re-clone");
+        fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind,
+                "the retried prepare succeeded, so the stage completed with a context artifact");
+    }
+
+    [Fact]
+    public async Task ContextReady_surfaces_and_returns_the_slot_when_prepare_still_fails_after_reclone()
+    {
+        using var fixture = Fixture.Create();
+        // Corrupt twice: re-clone + retry does not help, so the failure surfaces (the retry governor bounds it)
+        // and the slot must be returned so it cannot leak pool capacity.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("corrupt 1"));
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("corrupt 2"));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotCorruptException>();
+        fixture.Pool.RecloneCount.Should().Be(1, "re-clone is attempted once");
+        fixture.Preparer.PrepareCount.Should().Be(2, "prepare is attempted once, then once more after the re-clone");
+        fixture.Pool.ReturnCount.Should().Be(1, "the failed lease is returned so it cannot leak pool capacity");
+    }
+
+    [Fact]
     public async Task Reviewed_builds_a_scoped_write_tool_context_with_the_notes_and_scratch_roots()
     {
         using var fixture = Fixture.Create();
@@ -91,6 +126,38 @@ public sealed class DaemonReviewStageExecutorPooledTests
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
         toolContext.NotesDir.Should().Be("/workspace/store/PRs/lmdotnettools-118");
         toolContext.ScratchDir.Should().Be("/workspace/scratch");
+    }
+
+    [Fact]
+    public async Task Reviewed_retries_diff_only_when_the_tool_assisted_review_exceeds_the_context_window()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The tool-assisted attempt (non-null toolContext) is rejected by the model API with the context-window
+        // 400 the daemon saw live (the PR diff + fanned-out sub-agent results overflow the window). The diff-only
+        // retry (null toolContext) succeeds — so the run yields a leaner review instead of producing nothing.
+        fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+        fixture.Factory.DefaultText = "## Review (diff-only)\nMust: null check missing in Foo.cs:10.";
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // Two attempts: the tool-assisted one (non-null context) then the diff-only retry (null context).
+        fixture.Factory.ToolContexts.Should().HaveCount(2);
+        fixture.Factory.ToolContexts[0].Should().NotBeNull();
+        fixture.Factory.ToolContexts[1].Should().BeNull();
+
+        // The retry runs on a DISTINCT thread so it starts a clean conversation rather than reloading the
+        // overflowing history that just blew the window.
+        fixture.Factory.ThreadIds[0].Should().NotBe(fixture.Factory.ThreadIds[1]);
+
+        // The review artifact holds the diff-only review — the run produced content, not a silent nothing.
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        artifact.Payload.Should().Contain("diff-only");
     }
 
     [Fact]
@@ -174,6 +241,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_re_leases_a_slot_when_resuming_after_a_restart_dropped_the_in_memory_lease()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Process A: ContextReady leases slot 0 and persists the context artifact to the shared store.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        fixture.Pool.LeaseCount.Should().Be(1);
+
+        // A restart drops the in-memory _leasedReviews (the persisted context + Stage survive in the store),
+        // so the NEXT process resumes straight into Reviewed with NO recorded lease. Seed the gitmodules for
+        // the slot the resumed run will lease next (slot-1), mirroring slot-0.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-1/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The resumed review must RE-LEASE a slot and mount the agent session OVER it — never the per-run
+        // review-run-{id} mount, which does not exist under the gateway's read-only workspace base and 400s
+        // (the silent degrade-to-diff-only these resumed runs were stuck in).
+        fixture.Pool.LeaseCount.Should().Be(2, "the resumed review re-leases a slot because the prior lease was lost on restart");
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(1, "the resumed review mounts over the re-leased slot");
+        fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
+    }
+
+    [Fact]
     public async Task Posted_commits_only_the_pr_notes_dir_onto_the_notes_branch_and_never_merges()
     {
         using var fixture = Fixture.Create();
@@ -219,6 +314,81 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         fixture.Pool.ReturnCount.Should().Be(1);
         fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
+    }
+
+    [Fact]
+    public async Task Posted_destroys_the_session_before_returning_the_slot()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // The sandbox session is mounted OVER the slot, so it must be torn down BEFORE the slot is returned to
+        // the pool — otherwise a lingering sub-agent git op could race the next lease's clean-on-entry on the
+        // same store (the concurrency window flagged in review #180).
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
+    }
+
+    [Fact]
+    public async Task ReleaseReviewLease_destroys_the_session_before_returning_the_slot()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Lease a slot (ContextReady) and provision the session (Reviewed), then simulate a cancel/fail before
+        // Posted: the orchestrator's terminal ReleaseReviewLeaseAsync must tear the session down before returning
+        // the slot, so no session-side work races the next lease's clean-on-entry (review #180).
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
+    }
+
+    [Fact]
+    public async Task ReleaseReviewLease_quarantines_the_slot_when_session_teardown_is_unconfirmed()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Lease a slot (ContextReady) + provision a session (Reviewed), then make the terminal DestroyAsync
+        // fail: the sandbox may still be mounted on this slot's store, so returning it would let the next
+        // lease's clean-on-entry race the surviving session (review #180). The slot must be QUARANTINED (index
+        // retired, never re-leased) rather than returned — while its permit is still released so capacity is
+        // preserved. Teardown failure must NOT propagate out of the terminal path either.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Provisioner.ThrowOnDestroyByRunId = new InvalidOperationException("gateway destroy failed");
+
+        var act = () => fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        await act.Should().NotThrowAsync("a failed teardown is contained, never masking the primary failure");
+        fixture.Pool.QuarantineCount.Should().Be(1);
+        fixture.Pool.Quarantined.Should().ContainSingle(s => s.Index == 0);
+        fixture.Pool.ReturnCount.Should().Be(0, "a possibly-live slot is quarantined, not returned to the pool");
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "quarantine");
+    }
+
+    [Fact]
+    public async Task ReleaseReviewLease_quarantines_when_teardown_reports_unconfirmed_without_throwing()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The real ReviewSessionProvisioner SWALLOWS a gateway-destroy failure and reports it via the return
+        // value (false), NOT by throwing. The terminal path must still quarantine on that unconfirmed teardown —
+        // otherwise the swallowed failure would silently reach ReturnAsync and reuse a possibly-live store.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        fixture.Provisioner.ConfirmDestroy = false;
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.Pool.QuarantineCount.Should().Be(1, "a false (unconfirmed) teardown routes to quarantine, not return");
+        fixture.Pool.ReturnCount.Should().Be(0);
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "quarantine");
     }
 
     [Fact]
@@ -283,6 +453,66 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
     }
 
+    [Fact]
+    public async Task Posted_strips_the_slot_store_to_pristine_after_committing_the_notes()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // Commit-then-strip: after the notes are committed, the store working tree is reset + cleaned so the
+        // next lease starts clean with nothing left around (the user's durability requirement).
+        var commands = fixture.HostRunner.Commands.Select(Join).ToList();
+        commands.Should().Contain(a => a.Contains("reset --hard"), "the slot store is reset on terminal return");
+        commands.Should().Contain(a => a.Contains("clean -ffdx"), "untracked review byproduct is cleaned on return");
+        fixture.Pool.ReturnCount.Should().Be(1, "the slot is still returned after the strip");
+    }
+
+    [Fact]
+    public async Task Posted_quarantines_and_skips_notes_and_strip_when_teardown_is_unconfirmed()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        // The real provisioner reports a gateway-destroy failure as an unconfirmed teardown (false), NOT a
+        // throw. On the Posted path that must skip BOTH the host-side notes commit and the strip (each operates
+        // on the same store a still-live mount holds) and quarantine the slot instead of returning it.
+        fixture.Provisioner.ConfirmDestroy = false;
+        var hostCommandsBefore = fixture.HostRunner.Commands.Count;
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        fixture.Pool.QuarantineCount.Should().Be(1, "an unconfirmed teardown quarantines the slot");
+        fixture.Pool.ReturnCount.Should().Be(0, "a possibly-live slot is not returned to the pool");
+        var newHostCommands = fixture.HostRunner.Commands.Skip(hostCommandsBefore).Select(Join).ToList();
+        newHostCommands.Should().NotContain(a => a.Contains("reset --hard"), "the strip must not touch a possibly-live store");
+        newHostCommands.Should().NotContain(a => a.Contains("clean -ffdx"), "no host-side cleanup runs on an unconfirmed teardown");
+    }
+
+    [Fact]
+    public async Task Posted_tears_down_the_session_with_a_noncancelable_token()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        // Drive Posted with a CANCELABLE (not canceled) stage token. The teardown must still use a
+        // non-cancelable token — otherwise a cancellation arriving mid-DestroyAsync could abort the unmount and
+        // leave the session alive while the slot is released elsewhere (review #180).
+        using var cts = new CancellationTokenSource();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, cts.Token);
+
+        fixture.Provisioner.LastDestroyTokenCanBeCanceled.Should().BeFalse(
+            "the Posted-stage teardown must use a non-cancelable token, not the cancelable stage token");
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
@@ -296,6 +526,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _db;
+        private readonly CodeReviewDaemonOptions _options;
+        private readonly ReviewSlotWorkspace _slotWorkspace;
 
         private Fixture()
         {
@@ -312,29 +544,41 @@ public sealed class DaemonReviewStageExecutorPooledTests
             Pool = new FakeReviewSlotPool("/pool");
             Preparer = new FakeReviewSlotPreparer();
 
-            var options = new CodeReviewDaemonOptions
+            // Shared cleanup-order log so a test can assert the session is destroyed before the slot is returned.
+            Pool.Order = CleanupOrder;
+            Provisioner.Order = CleanupOrder;
+
+            _options = new CodeReviewDaemonOptions
             {
                 EnableToolAssistedReview = true,
                 EnableReviewerWrites = true,
                 CrossRepoStoreUrl = StoreUrl,
             };
-            var slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
+            _slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
 
-            Executor = new DaemonReviewStageExecutor(
+            Executor = BuildExecutor();
+        }
+
+        /// <summary>
+        /// Builds an executor over the fixture's SHARED store/pool/preparer/provisioner. Each executor has its
+        /// own in-memory <c>_leasedReviews</c>, so calling this a second time simulates a daemon RESTART: the
+        /// persisted context artifact survives (shared store) while the process-local pooled lease does not.
+        /// </summary>
+        public DaemonReviewStageExecutor BuildExecutor() =>
+            new(
                 Store,
                 Factory,
                 BootRunner,
                 BootFileSystem,
-                options,
-                [new FakeReviewCommentPublisher("github")],
+                _options,
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
-                slotWorkspace: slotWorkspace);
-        }
+                slotWorkspace: _slotWorkspace);
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
         public RecordingProvisioner Provisioner { get; } = new();
+        public List<string> CleanupOrder { get; } = [];
         public FakeSandboxCommandRunner BootRunner { get; }
         public FakeSandboxCommandRunner HostRunner { get; }
         public FakeSandboxFileSystem HostFileSystem { get; }
@@ -388,7 +632,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
+        public int RecloneCount { get; private set; }
+        public int QuarantineCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
+        public List<ReviewSlot> Quarantined { get; } = [];
+
+        /// <summary>Shared cleanup-order log (with <see cref="RecordingProvisioner"/>) to assert the session is
+        /// destroyed before the slot is returned.</summary>
+        public List<string>? Order { get; set; }
 
         public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
         {
@@ -402,6 +653,21 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             ReturnCount++;
             Returned.Add(slot);
+            Order?.Add("return");
+            return Task.CompletedTask;
+        }
+
+        public Task QuarantineAsync(ReviewSlot slot, CancellationToken cancellationToken)
+        {
+            QuarantineCount++;
+            Quarantined.Add(slot);
+            Order?.Add("quarantine");
+            return Task.CompletedTask;
+        }
+
+        public Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
+        {
+            RecloneCount++;
             return Task.CompletedTask;
         }
     }
@@ -416,6 +682,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public string? LastNotesRelPath { get; private set; }
         public string? LastDefaultBranch { get; private set; }
 
+        /// <summary>Exceptions to throw on the first N prepare calls (then succeed) — drives the re-clone ladder.</summary>
+        public Queue<Exception> ThrowThenSucceed { get; } = new();
+
         public Task<PreparedCheckout> PrepareAsync(
             ReviewSlot slot,
             ReviewRun run,
@@ -428,6 +697,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
             CancellationToken cancellationToken)
         {
             PrepareCount++;
+            if (ThrowThenSucceed.Count > 0)
+            {
+                throw ThrowThenSucceed.Dequeue();
+            }
+
             LastSubmoduleRelPath = submoduleRelPath;
             LastBranch = branch;
             LastNotesRelPath = notesRelPath;
@@ -444,12 +718,32 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class RecordingProvisioner : IReviewSessionProvisioner
     {
         public int GetOrCreateForSlotCalls { get; private set; }
+        public int GetOrCreateCalls { get; private set; }
         public ReviewSlot? LastSlot { get; private set; }
 
-        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+        /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
+        public List<string>? Order { get; set; }
+
+        /// <summary>When set, the terminal <see cref="DestroyAsync(long, CancellationToken)"/> throws it, so a
+        /// test can drive the unconfirmed-teardown quarantine path.</summary>
+        public Exception? ThrowOnDestroyByRunId { get; set; }
+
+        /// <summary>When false, <see cref="DestroyAsync(long, CancellationToken)"/> returns false WITHOUT throwing
+        /// — mirroring the real provisioner that swallows a gateway-destroy failure and reports it as an
+        /// unconfirmed teardown, which must still route the caller to quarantine.</summary>
+        public bool ConfirmDestroy { get; set; } = true;
+
+        /// <summary>Whether the token handed to the run-scoped <c>DestroyAsync</c> was cancelable — the Posted
+        /// path must tear down with a NON-cancelable token so a stage cancellation can't abort the unmount.</summary>
+        public bool? LastDestroyTokenCanBeCanceled { get; private set; }
+
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
+        {
+            GetOrCreateCalls++;
+            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 $"session-{run.Id}", $"/workspace/review-run-{run.Id}",
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+        }
 
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
         {
@@ -461,7 +755,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
         }
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct)
+        {
+            Order?.Add("destroy");
+            LastDestroyTokenCanBeCanceled = ct.CanBeCanceled;
+            return DestroyAsync(run.Id, ct);
+        }
+
+        public Task<bool> DestroyAsync(long runId, CancellationToken ct)
+        {
+            Order?.Add("destroy");
+            if (ThrowOnDestroyByRunId is not null)
+            {
+                throw ThrowOnDestroyByRunId;
+            }
+
+            // Mirror the real provisioner, which SWALLOWS a gateway-destroy failure and reports it via the
+            // return value: an unconfirmed teardown returns false WITHOUT throwing.
+            return Task.FromResult(ConfirmDestroy);
+        }
     }
 
     /// <summary>Delegates every stage to a real executor but throws at a chosen stage, so a run driven
@@ -491,5 +803,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) =>
             _inner.ReleaseReviewLeaseAsync(runId, cancellationToken);
+
+        public Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken) =>
+            _inner.ReconcilePendingRetentionAsync(cancellationToken);
     }
 }

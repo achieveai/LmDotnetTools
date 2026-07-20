@@ -20,4 +20,13 @@ internal interface IReviewStageExecutor
     /// diff-only path, or a run whose Posted stage already returned it).
     /// </summary>
     Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Drains the <c>push-reviewbot</c> retention outbox: every <see cref="OutboxStatus.Pending"/> row (a
+    /// notes push that failed and was left non-terminal) is rebuilt from the durably-persisted review artifact
+    /// and its push retried, terminalizing the row on success. Called on the PR-lifecycle sweep cadence as an
+    /// isolated, degrade-not-throw step; a no-op when no ReviewBot remote is configured. This is the consumer
+    /// that makes the "left non-terminal so reconcile retries" retention contract real.
+    /// </summary>
+    Task ReconcilePendingRetentionAsync(CancellationToken cancellationToken);
 }

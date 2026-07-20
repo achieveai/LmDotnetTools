@@ -172,7 +172,7 @@ public sealed class DaemonAgentFactoryTests
         prompt.Should().Contain("Skill"); // via the Skill tool
         prompt.Should().Contain("Contracts/"); // cross-repo reading
         prompt.Should().MatchRegex("(?i)injection|untrusted"); // injection framing
-        prompt.Should().MatchRegex("(?i)daemon.*post"); // daemon owns posting
+        prompt.Should().Contain("code-reviewer:post-pr-review"); // the agent posts via the post-pr-review skill
     }
 
     [Fact]

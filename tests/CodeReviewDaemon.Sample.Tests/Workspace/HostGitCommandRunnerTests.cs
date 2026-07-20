@@ -10,10 +10,13 @@ public class HostGitCommandRunnerTests : IDisposable
     public HostGitCommandRunnerTests() => Directory.CreateDirectory(_dir);
     public void Dispose() { try { Directory.Delete(_dir, true); } catch { } }
 
+    private static Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> GithubOnly(string token) =>
+        _ => Task.FromResult<IReadOnlyList<GitProviderToken>>([new GitProviderToken("github", token)]);
+
     [Fact]
     public async Task RunAsync_GitInit_CreatesRepo()
     {
-        var runner = new HostGitCommandRunner(_ => Task.FromResult<string?>("t"), NullLogger<HostGitCommandRunner>.Instance);
+        var runner = new HostGitCommandRunner(GithubOnly("t"), NullLogger<HostGitCommandRunner>.Instance);
 
         var result = await runner.RunAsync(new SandboxCommand(["git", "init"], _dir), default);
 
@@ -27,7 +30,7 @@ public class HostGitCommandRunnerTests : IDisposable
         // Reproduces the sweeper's first-run probe: the checkout dir doesn't exist yet, so
         // Process.Start (which requires an existing WorkingDirectory) must never be reached.
         var missingDir = Path.Combine(_dir, "not-yet-cloned");
-        var runner = new HostGitCommandRunner(_ => Task.FromResult<string?>("t"), NullLogger<HostGitCommandRunner>.Instance);
+        var runner = new HostGitCommandRunner(GithubOnly("t"), NullLogger<HostGitCommandRunner>.Instance);
 
         var result = await runner.RunAsync(
             new SandboxCommand(["git", "rev-parse", "--is-inside-work-tree"], missingDir),
@@ -35,6 +38,48 @@ public class HostGitCommandRunnerTests : IDisposable
 
         result.Succeeded.Should().BeFalse();
         result.Stderr.Should().Contain(missingDir);
+    }
+
+    [Fact]
+    public async Task RunAsync_InjectsProviderExtraHeaders_ForEachSignedInProvider()
+    {
+        // Both GitHub and ADO signed in ⇒ git sees an extraHeader for each host (the ad-hoc GIT_CONFIG_*
+        // env the runner injects), so a private clone on either host can authenticate.
+        var runner = new HostGitCommandRunner(
+            _ => Task.FromResult<IReadOnlyList<GitProviderToken>>(
+                [new GitProviderToken("github", "gh"), new GitProviderToken("ado", "ado-tok")]),
+            NullLogger<HostGitCommandRunner>.Instance);
+
+        (await runner.RunAsync(new SandboxCommand(["git", "init"], _dir), default)).Succeeded.Should().BeTrue();
+
+        var listed = await runner.RunAsync(
+            new SandboxCommand(["git", "config", "--get-regexp", "extraheader"], _dir), default);
+
+        listed.Succeeded.Should().BeTrue();
+        listed.Stdout.Should().Contain("github.com");
+        listed.Stdout.Should().Contain("dev.azure.com");
+    }
+
+    [Fact]
+    public async Task RunAsync_NonGitCommand_NeverResolvesCredentials()
+    {
+        // Security invariant: the write credential is injected ONLY for git (the sole remote-talking case,
+        // guarded on Argv[0] == "git"). A non-git command must never even invoke the credentials source, so a
+        // token can never leak into an unrelated child process's environment.
+        var credentialsResolved = false;
+        Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> recordingSource = _ =>
+        {
+            credentialsResolved = true;
+            return Task.FromResult<IReadOnlyList<GitProviderToken>>([new GitProviderToken("github", "secret")]);
+        };
+        var runner = new HostGitCommandRunner(recordingSource, NullLogger<HostGitCommandRunner>.Instance);
+
+        // A trivially-succeeding non-git command, portable across the Windows dev box and the Linux CI host.
+        string[] argv = OperatingSystem.IsWindows() ? ["cmd", "/c", "exit", "0"] : ["true"];
+        var result = await runner.RunAsync(new SandboxCommand(argv, _dir), default);
+
+        result.Succeeded.Should().BeTrue();
+        credentialsResolved.Should().BeFalse("a non-git command must never trigger credential resolution");
     }
 
     [Fact]

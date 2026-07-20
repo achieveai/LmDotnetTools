@@ -118,4 +118,50 @@ public class LiveReviewAgentRoutingTests
         reasoning.Effort.Should().BeNull();
         reasoning.Summary.Should().Be("auto");
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveRequestModelId_NoPerCallModel_FallsBackToConfiguredModel(string? modelId)
+    {
+        // The knowledge-extraction loop passes modelId: null ("use the daemon default"). The request model
+        // must then be the configured ReviewModelId — never an empty string, which the Copilot backend
+        // rejects with model_not_supported (the achieveai Knowledge Base never populated because of this).
+        LiveReviewAgentLoopFactory.ResolveRequestModelId(modelId, configuredModelId: "gpt-5.6-luna")
+            .Should().Be("gpt-5.6-luna");
+    }
+
+    [Fact]
+    public void ResolveRequestModelId_PerCallModel_WinsOverConfigured()
+    {
+        LiveReviewAgentLoopFactory.ResolveRequestModelId("claude-haiku-4.5", configuredModelId: "gpt-5.6-luna")
+            .Should().Be("claude-haiku-4.5");
+    }
+
+    [Fact]
+    public void ResolveRequestModelId_NoModelAndNoConfigured_IsEmptyNotNull()
+    {
+        // Degenerate (no model anywhere): return empty rather than null so GenerateReplyOptions.ModelId is
+        // never null — the daemon has bigger problems, but this must not NRE.
+        LiveReviewAgentLoopFactory.ResolveRequestModelId(null, configuredModelId: null).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void KnowledgeModel_ClaudeOpus_UnderGptDispatcher_RoutesToAnthropicAndSendsOpus()
+    {
+        // The at-close knowledge-extraction loop is created with KnowledgeModelId (claude-opus-4.8) while the
+        // primary dispatcher is gpt-5.6-luna. The EFFECTIVE per-call model must win: extraction routes through
+        // the Copilot Anthropic Messages shape and POSTs model=claude-opus-4.8 — NOT the gpt dispatcher's id,
+        // and NOT an empty model (which the backend rejects with model_not_supported, the bug this fixes).
+        var (isOpenAi, extra) = LiveReviewAgentLoopFactory.ResolveReasoning(
+            modelId: "claude-opus-4.8", configuredModelId: "gpt-5.6-luna", effort: "medium");
+
+        isOpenAi.Should().BeFalse("claude-* routes through Anthropic Messages, not OpenAI Responses");
+        extra.Should().NotContainKey("Reasoning");
+        extra.Should().ContainKey("OutputConfig");
+
+        LiveReviewAgentLoopFactory.ResolveRequestModelId("claude-opus-4.8", configuredModelId: "gpt-5.6-luna")
+            .Should().Be("claude-opus-4.8");
+    }
 }

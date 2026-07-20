@@ -133,12 +133,145 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         result.Branch.Should().Be(Branch);
     }
 
-    private ReviewSlot CreateSlot()
+    [Fact]
+    public async Task PrepareAsync_ClearsAStaleLockLeftInTheStoreByAPriorLease()
+    {
+        // The 2026-07-12 incident, at the prepare seam: a stale index.lock in the warm store's .git must be
+        // cleared on entry so the prepare succeeds instead of wedging on "index.lock: File exists".
+        var slot = CreateSlot();
+        var staleLock = Path.Combine(slot.StorePath, ".git", "index.lock");
+        File.WriteAllText(staleLock, string.Empty);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        _ = await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        File.Exists(staleLock).Should().BeFalse("clean-on-entry clears the stale lock before the git steps");
+    }
+
+    [Fact]
+    public async Task PrepareAsync_StoreWithoutGitDir_ThrowsSlotNeedsReclone()
+    {
+        var slot = CreateSlot(withGitDir: false);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(new FakeSandboxCommandRunner()), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotNeedsRecloneException>("a structurally broken store must escalate to re-clone");
+    }
+
+    [Fact]
+    public async Task PrepareAsync_ReviewedSubmoduleCorruptInitFailure_ThrowsSlotCorrupt()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --init", new SandboxCommandResult(1, string.Empty, "fatal: loose object a1b2c3 is corrupt"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotCorruptException>("a CORRUPT-classified init failure is slot corruption and drives the reclone");
+    }
+
+    [Fact]
+    public async Task PrepareAsync_ReviewedSubmoduleUnknownInitFailure_DoesNotDriveReclone()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        // An unrecognized init failure (no corrupt/transient marker) classifies as GitFailureKind.Unknown, which
+        // the enum documents as "treated as transient". It must retry the warm store, NOT drive a destructive
+        // reclone that cannot fix a non-corruption and would loop (review #180).
+        runner.OnArgvContains(
+            "submodule update --init", new SandboxCommandResult(1, string.Empty, "fatal: clone of submodule failed"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<Exception>();
+        thrown.Which.Should().NotBeOfType<SlotCorruptException>();
+    }
+
+    [Fact]
+    public async Task PrepareAsync_ReviewedSubmoduleTransientInitFailure_DoesNotDriveReclone()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --init",
+            new SandboxCommandResult(
+                1, string.Empty, "fatal: unable to access 'https://github.com/x': Could not resolve host: github.com"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        // A transient auth/network init failure must retry the warm store, NOT trigger a destructive reclone
+        // (which cannot fix it and would loop) — so it throws, but not the reclone-driving SlotCorruptException.
+        var thrown = await act.Should().ThrowAsync<Exception>();
+        thrown.Which.Should().NotBeOfType<SlotCorruptException>();
+    }
+
+    [Fact]
+    public async Task PrepareAsync_CorruptStderrOnAGitStep_ThrowsSlotCorrupt()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"checkout --force {run.HeadSha}",
+            new SandboxCommandResult(128, string.Empty, "fatal: Unable to create '.git/index.lock': File exists."));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotCorruptException>("a corrupt-classified git failure drives the re-clone ladder");
+    }
+
+    [Fact]
+    public async Task PrepareAsync_TransientStderrOnAGitStep_ThrowsInvalidOperation_NotCorrupt()
+    {
+        var slot = CreateSlot();
+        var run = CreateRun();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"fetch origin {run.BaseSha} {run.HeadSha}",
+            new SandboxCommandResult(128, string.Empty, "fatal: unable to access 'https://x': Could not resolve host: github.com"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, run, StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        // A transient network fault is a normal retry (keep the warm store), NOT a re-clone trigger.
+        // SlotCorruptException derives from Exception (not InvalidOperationException), so asserting the exact
+        // InvalidOperationException type proves the failure was classified transient, not corrupt.
+        await act.Should().ThrowExactlyAsync<InvalidOperationException>();
+    }
+
+    private ReviewSlot CreateSlot(bool withGitDir = true)
     {
         var hostPath = Path.Combine(_hostRoot, "slot-0");
         var slot = new ReviewSlot(0, hostPath, Path.Combine(hostPath, "store"), Path.Combine(hostPath, "scratch"));
         Directory.CreateDirectory(slot.StorePath);
         Directory.CreateDirectory(slot.ScratchPath);
+        if (withGitDir)
+        {
+            // A real leased slot always has a cloned store; SlotHygiene.EnsureCleanAsync needs the .git dir.
+            Directory.CreateDirectory(Path.Combine(slot.StorePath, ".git"));
+        }
+
         return slot;
     }
 

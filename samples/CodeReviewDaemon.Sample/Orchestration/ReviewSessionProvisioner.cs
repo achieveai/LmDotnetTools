@@ -36,7 +36,21 @@ internal interface IReviewSessionProvisioner
     /// </summary>
     Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct);
 
-    Task DestroyAsync(ReviewRun run, CancellationToken ct);
+    /// <returns><c>true</c> when the sandbox session teardown was CONFIRMED; <c>false</c> when it could not be
+    /// (the session may still be mounted), so the caller must quarantine the slot rather than reuse it.</returns>
+    Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct);
+
+    /// <summary>
+    /// Tears down the session for a run identified only by its id. Used by the orchestrator's terminal
+    /// <c>ReleaseReviewLeaseAsync</c> (the cancel/fail path, which has no <see cref="ReviewRun"/> in hand) to
+    /// destroy the session BEFORE the slot is returned to the pool, so a lingering sub-agent git op can't race
+    /// the next lease's clean-on-entry on the same store.
+    /// </summary>
+    /// <returns><c>true</c> when the sandbox session teardown was CONFIRMED (the gateway destroy succeeded);
+    /// <c>false</c> when it could not be confirmed, so the caller must quarantine the slot rather than reuse a
+    /// possibly-still-mounted store. Secondary best-effort cleanup (host-dir removal, disposables) never flips
+    /// a confirmed teardown to unconfirmed.</returns>
+    Task<bool> DestroyAsync(long runId, CancellationToken ct);
 }
 
 /// <summary>
@@ -73,6 +87,11 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     private readonly SandboxCredential _credential;
     private readonly ConcurrentDictionary<string, ReviewRunSession> _bySession = new(StringComparer.Ordinal);
 
+    /// <summary>Maps each cached session id to the run WORKSPACE id that owns it, so <see cref="DestroyAsync(long,
+    /// CancellationToken)"/> disposes ONLY the sessions belonging to the run being torn down — never a concurrent
+    /// run's still-in-use adapter.</summary>
+    private readonly ConcurrentDictionary<string, string> _sessionWorkspace = new(StringComparer.Ordinal);
+
     /// <summary>
     /// The gateway's host workspace base directory (its <c>WORKSPACE_BASE_PATH</c>). A leased pool slot is
     /// mounted at <c>/workspace</c> by expressing its host path RELATIVE to this base (see
@@ -81,15 +100,15 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     /// </summary>
     private readonly string? _workspaceBasePath;
 
-    private readonly string _gatewayBaseUrl =
-        Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000";
+    private readonly string _gatewayBaseUrl;
 
     public ReviewSessionProvisioner(
         ISandboxSessionSource sessions,
         CodeReviewDaemonOptions options,
         ILoggerFactory loggerFactory,
         SandboxCredential credential = default,
-        string? workspaceBasePath = null)
+        string? workspaceBasePath = null,
+        string? gatewayBaseUrl = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -97,9 +116,14 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         _logger = loggerFactory.CreateLogger<ReviewSessionProvisioner>();
         _credential = credential;
         _workspaceBasePath = workspaceBasePath;
+        _gatewayBaseUrl = gatewayBaseUrl
+            ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+            ?? "http://127.0.0.1:3000";
     }
 
-    public static string WorkspaceId(ReviewRun run) => $"review-run-{run.Id}";
+    public static string WorkspaceId(ReviewRun run) => WorkspaceId(run.Id);
+
+    public static string WorkspaceId(long runId) => $"review-run-{runId}";
 
     /// <summary>
     /// Host directory that per-run sandbox workspaces are created under (<see
@@ -143,7 +167,7 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     /// <summary>
     /// The shared session-provisioning tail: applies the host-dir disk guard, then resolves (creating once)
     /// the run's sandbox session mounting <paramref name="directoryRelPath"/> under the gateway base, and
-    /// caches the runner/filesystem per session id. The session is always keyed by <see cref="WorkspaceId"/>
+    /// caches the runner/filesystem per session id. The session is always keyed by <see cref="WorkspaceId(ReviewRun)"/>
     /// so every stage of a run resolves the SAME session regardless of the mounted directory.
     /// </summary>
     private async Task<ReviewRunSession?> ProvisionAsync(ReviewRun run, string directoryRelPath, CancellationToken ct)
@@ -164,6 +188,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
                 ct)
             .ConfigureAwait(false);
 
+        // Record which run workspace owns this session id so DestroyAsync tears down only this run's sessions.
+        _sessionWorkspace[session.SessionId] = workspaceId;
         return _bySession.GetOrAdd(session.SessionId, id =>
         {
             var adapter = new SandboxSessionAdapter(
@@ -228,23 +254,51 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         }
     }
 
-    public async Task DestroyAsync(ReviewRun run, CancellationToken ct)
+    public Task<bool> DestroyAsync(ReviewRun run, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(run);
+        return DestroyAsync(run.Id, ct);
+    }
 
-        var workspaceId = WorkspaceId(run);
+    public async Task<bool> DestroyAsync(long runId, CancellationToken ct)
+    {
+        var workspaceId = WorkspaceId(runId);
+        var confirmed = true;
         try
         {
             await _sessions.DestroyWorkspaceSessionAsync(workspaceId, ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Caller-requested cancellation is control flow, NOT a teardown failure — propagate it rather than
+            // reporting confirmed=false (which the Posted path would treat as a quarantine and then return
+            // normally, silently swallowing the cancellation).
+            throw;
+        }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Best-effort destroy of session for {WorkspaceId} failed.", workspaceId);
+            // A genuine teardown failure — the container/mount may still be live. REPORT it to the caller
+            // (which quarantines the slot rather than reusing a possibly-mounted store) instead of swallowing
+            // it into a normal return, which would let the slot be stripped/returned while a surviving git
+            // process still writes to it (review #180). Secondary cleanup below is still best-effort and never
+            // flips a confirmed teardown back to unconfirmed.
+            confirmed = false;
+            _logger.LogWarning(ex, "Destroy of sandbox session for {WorkspaceId} could not be confirmed.", workspaceId);
         }
 
-        foreach (var (sessionId, runSession) in _bySession)
+        // Dispose ONLY the adapters belonging to THIS run's workspace. Disposing every entry in _bySession
+        // (as before) would tear down command runners/filesystems still in use by concurrent reviews, causing
+        // cross-run failures once more than one run is provisioned at a time.
+        foreach (var (sessionId, ownerWorkspaceId) in _sessionWorkspace)
         {
-            if (runSession.CommandRunner is IAsyncDisposable d && _bySession.TryRemove(sessionId, out _))
+            if (!string.Equals(ownerWorkspaceId, workspaceId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            _sessionWorkspace.TryRemove(sessionId, out _);
+            if (_bySession.TryRemove(sessionId, out var runSession)
+                && runSession.CommandRunner is IAsyncDisposable d)
             {
                 await d.DisposeAsync().ConfigureAwait(false);
             }
@@ -265,6 +319,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         {
             _logger.LogWarning(ex, "Best-effort host-dir cleanup failed for {HostDir}.", hostDir);
         }
+
+        return confirmed;
     }
 
     /// <summary>Recursively clears the read-only attribute so an untrusted checkout's read-only files
