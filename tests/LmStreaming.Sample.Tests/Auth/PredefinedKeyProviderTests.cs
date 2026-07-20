@@ -152,7 +152,7 @@ public sealed class PredefinedKeyProviderTests
 
         // Updating the entry (user re-enters the credential) clears the invalid flag → mint retried.
         fail = false;
-        await provider.UpdateEntry(RefreshEntry(), credentialChanged: true);
+        await provider.ApplyUpdateAsync(RefreshEntry(), credentialChanged: true, () => Task.CompletedTask);
         var token = await provider.GetAccessTokenAsync();
         token.Value.Should().Be("AT2");
         handler.Calls.Should().Be(2);
@@ -167,7 +167,7 @@ public sealed class PredefinedKeyProviderTests
         // A host-only edit (credentialChanged: false) keeps the still-valid cached token → no re-mint.
         // (The credential-change re-mint path — where the registry removes the persisted token — is
         // covered by PredefinedKeyRegistryTests.Update_changing_credential_invalidates_the_persisted_token.)
-        await provider.UpdateEntry(RefreshEntry() with { Host = "api2.example.com" }, credentialChanged: false);
+        await provider.ApplyUpdateAsync(RefreshEntry() with { Host = "api2.example.com" }, credentialChanged: false, () => Task.CompletedTask);
 
         _ = await provider.GetAccessTokenAsync();
         handler.Calls.Should().Be(1);

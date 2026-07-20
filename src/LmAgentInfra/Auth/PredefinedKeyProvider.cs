@@ -2,7 +2,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 
 /// <summary>
 /// An <see cref="IOAuthTokenProvider"/> for ONE predefined egress key. A single instance is kept per
-/// entry id for its whole lifetime (the registry mutates it in place via <see cref="UpdateEntry"/> on
+/// entry id for its whole lifetime (the registry mutates it in place via <see cref="ApplyUpdateAsync"/> on
 /// edit) so a held deferred-auth prompt polling <see cref="GetAccessTokenAsync"/> observes an update
 /// the moment the user saves it. Resolves through <c>AuthWebhookController</c> exactly like the OAuth
 /// providers, but the controller reads <see cref="Hosts"/> / <see cref="BuildHeaders"/> /
@@ -102,18 +102,31 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
     /// invalidated flag, and DROPS the persisted token record so the next acquisition re-mints with
     /// the new credential instead of reloading the stale access/rotated-refresh token by provider id.
     /// </summary>
-    public async Task UpdateEntry(PredefinedKeyEntry entry, bool credentialChanged, CancellationToken ct = default)
+    public async Task ApplyUpdateAsync(PredefinedKeyEntry entry, bool credentialChanged, Func<Task> persistDefinition)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(persistDefinition);
+
+        // The ENTIRE edit runs under the refresh gate, serialized with any in-flight mint, so no concurrent
+        // GetAccessTokenAsync can interleave and observe (or re-persist) a torn definition/token pair.
+        // CancellationToken.None everywhere past this point: a request cancel must never half-apply the edit
+        // and leave the definition, persisted token, and live provider diverged.
+        await _refreshGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
+            // 1. Invalidate the stale token FIRST (reliable — a failure throws before anything is published).
+            if (credentialChanged)
+            {
+                await _tokenStore.RemoveAsync(ProviderId, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            // 2. Make the new definition durable while still holding the gate (atomic with the swap below).
+            await persistDefinition().ConfigureAwait(false);
+
+            // 3. Publish the new entry in-memory. A pure host/header edit keeps the still-valid cached token;
+            //    a credential change already dropped it in step 1, so clear the in-memory copy too.
             _entry = entry;
             _invalidated = false;
-            // Only drop the in-memory minted token when the credential changed; a pure host/header edit
-            // keeps the still-valid cached token (re-injected under the new host/header). Invalidating the
-            // PERSISTED token — and its ordering relative to the durable definition write — is the
-            // registry's job (see PredefinedKeyRegistry.UpsertAsync), so a partial failure degrades safely.
             if (credentialChanged)
             {
                 _cachedToken = null;

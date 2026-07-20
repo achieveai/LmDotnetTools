@@ -108,6 +108,9 @@ public sealed class PredefinedKeyRegistry
     {
         ArgumentNullException.ThrowIfNull(entry);
 
+        // Serialize registry mutations. Only the gate wait observes the request token — once we start
+        // mutating (invalidate token / persist definition / publish) we run to completion uncancellably so
+        // the definition, persisted token, and live provider can never diverge on a mid-operation cancel.
         await _persistGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -120,24 +123,18 @@ public sealed class PredefinedKeyRegistry
                 .Append(entry)
                 .ToList();
 
-            // Invalidate the stale minted token BEFORE the new definition is made durable. This is a
-            // RELIABLE (not best-effort) step: if removal fails the whole upsert throws before anything is
-            // persisted or published, so we never leave the new definition live with the old access/rotated
-            // token reloadable under the unchanged provider id. CancellationToken.None so a disconnecting
-            // caller can't strand it mid-invalidation.
-            if (existing is not null && credentialChanged)
-            {
-                await _tokenStore.RemoveAsync($"{ProviderIdPrefix}{entry.Id}", CancellationToken.None).ConfigureAwait(false);
-            }
-
-            await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
+            Task Persist() => AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, CancellationToken.None);
 
             if (existing is not null)
             {
-                await existing.UpdateEntry(entry, credentialChanged, ct).ConfigureAwait(false);
+                // Delegate to the provider so the token invalidation, definition write, and entry swap all
+                // happen atomically under ITS refresh gate — no concurrent mint can interleave, and a
+                // failed token removal aborts before the new definition is written.
+                await existing.ApplyUpdateAsync(entry, credentialChanged, Persist).ConfigureAwait(false);
             }
             else
             {
+                await Persist().ConfigureAwait(false);
                 _providers[entry.Id] = NewProvider(entry);
             }
         }
