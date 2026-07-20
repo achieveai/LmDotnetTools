@@ -28,9 +28,26 @@ public static class ConversationUsageProjection
     private const int CurrentSchemaVersion = 1;
 
     /// <summary>
-    ///     Atomically persists the aggregate and (optionally) its canonical records into the conversation's
-    ///     metadata property bag, under a watermark guard so a stale/out-of-order/post-restart write cannot
-    ///     replace a newer aggregate with a lower-<see cref="ConversationUsageAggregate.FoldedRevision" /> one.
+    ///     Atomically persists the aggregate and its canonical records into the conversation's metadata
+    ///     property bag. Durable across restarts, concurrent writers, and rollbacks:
+    ///     <list type="bullet">
+    ///         <item>
+    ///             Records are <b>merged</b> with what is already persisted — unioned by
+    ///             <see cref="UsageRecord.ProviderAttemptId" />, highest <see cref="UsageRecord.Revision" />
+    ///             winning per attempt — then the aggregate is re-folded from the union. This is the durable
+    ///             merge identity: no writer (post-restart, second instance, or out-of-order) can drop another
+    ///             writer's attempts, even when both reuse the same process-local revision.
+    ///         </item>
+    ///         <item>
+    ///             A projection written by a <b>newer schema version</b> is never overwritten, so an older
+    ///             build during a rollback / mixed-version deployment preserves forward-compatible data.
+    ///         </item>
+    ///         <item>
+    ///             When no records are supplied (aggregate-only save), it falls back to a
+    ///             <see cref="ConversationUsageAggregate.FoldedRevision" /> guard that rejects a strictly-lower
+    ///             write.
+    ///         </item>
+    ///     </list>
     /// </summary>
     public static Task SaveAsync(
         IConversationStore store,
@@ -45,20 +62,108 @@ public static class ConversationUsageProjection
             aggregate.RootConversationId,
             existing =>
             {
-                // Runs under the store's write serialization, so concurrent fire-and-forget writers cannot
-                // clobber a newer aggregate with an older one; and a recreated writer after a restart cannot
-                // regress the persisted totals.
+                // Runs under the store's write serialization, so the read-merge-write below is atomic per
+                // conversation: concurrent writers each union with the latest persisted state.
+
+                // Forward-compatibility: refuse to overwrite a projection a newer build wrote.
+                if (PersistedSchemaVersion(existing) > CurrentSchemaVersion)
+                {
+                    return existing!;
+                }
+
+                if (records is { Count: > 0 })
+                {
+                    var persisted = RecordsFromMetadata(existing);
+                    var merged = MergeRecords(persisted, records);
+                    var revision = Math.Max(aggregate.FoldedRevision, PersistedFoldedRevision(existing));
+                    var foldedAggregate = ConversationUsageAggregate.Fold(
+                        aggregate.RootConversationId, merged, revision, aggregate.Completeness);
+
+                    return WithProjection(
+                        existing,
+                        aggregate.RootConversationId,
+                        JsonSerializer.Serialize(foldedAggregate),
+                        JsonSerializer.Serialize(merged));
+                }
+
+                // Aggregate-only save: keep the strictly-lower-watermark guard.
                 var current = FromMetadata(existing);
                 if (existing is not null && current is not null && current.FoldedRevision > aggregate.FoldedRevision)
                 {
                     return existing;
                 }
 
-                var aggregateJson = JsonSerializer.Serialize(aggregate);
-                var recordsJson = records is null ? null : JsonSerializer.Serialize(records);
-                return WithProjection(existing, aggregate.RootConversationId, aggregateJson, recordsJson);
+                return WithProjection(
+                    existing,
+                    aggregate.RootConversationId,
+                    JsonSerializer.Serialize(aggregate),
+                    recordsJson: null);
             },
             ct);
+    }
+
+    /// <summary>
+    ///     Unions persisted and incoming records by <see cref="UsageRecord.ProviderAttemptId" />, keeping the
+    ///     highest <see cref="UsageRecord.Revision" /> per attempt (cumulative streaming / retry). Order-
+    ///     independent and idempotent, so it can never lose an attempt one writer knew about.
+    /// </summary>
+    private static IReadOnlyList<UsageRecord> MergeRecords(
+        IReadOnlyList<UsageRecord> persisted,
+        IReadOnlyList<UsageRecord> incoming)
+    {
+        if (persisted.Count == 0)
+        {
+            return incoming;
+        }
+
+        if (incoming.Count == 0)
+        {
+            return persisted;
+        }
+
+        var byAttempt = new Dictionary<string, UsageRecord>(StringComparer.Ordinal);
+        foreach (var record in persisted)
+        {
+            byAttempt[record.ProviderAttemptId] = record;
+        }
+
+        foreach (var record in incoming)
+        {
+            if (!byAttempt.TryGetValue(record.ProviderAttemptId, out var existing) || record.Revision >= existing.Revision)
+            {
+                byAttempt[record.ProviderAttemptId] = record;
+            }
+        }
+
+        return [.. byAttempt.Values];
+    }
+
+    /// <summary>Reads the persisted schema version even when it is newer than this build understands.</summary>
+    private static int PersistedSchemaVersion(ThreadMetadata? metadata)
+    {
+        var json = RawJson(metadata, PropertyKey);
+        if (json is null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("SchemaVersion", out var value)
+                && value.ValueKind == JsonValueKind.Number
+                ? value.GetInt32()
+                : CurrentSchemaVersion;
+        }
+        catch (JsonException)
+        {
+            return 0; // corrupt — treat as absent, allow overwrite
+        }
+    }
+
+    private static long PersistedFoldedRevision(ThreadMetadata? metadata)
+    {
+        return FromMetadata(metadata)?.FoldedRevision ?? 0;
     }
 
     /// <summary>Loads the persisted aggregate for a conversation, or null when none has been stored.</summary>
