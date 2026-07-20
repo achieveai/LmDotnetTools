@@ -89,6 +89,7 @@ const {
   markStreamIdle,
   markStreamLoading,
   getResultForToolCall,
+  threadId: chatThreadId,
 } = useChat({
   getModeId: () => currentModeId.value,
   getProviderId: () => selectedProviderId.value,
@@ -586,7 +587,10 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <SubAgentListPanel :parent-thread-id="currentThreadId" />
+    <!-- Bind the sub-agent panel to the ACTIVE chat thread (useChat's threadId), not the
+         sidebar's currentThreadId: a freshly-started chat runs on useChat's thread before it is
+         ever selected/persisted in the sidebar, and the panel must track where sub-agents spawn. -->
+    <SubAgentListPanel :parent-thread-id="chatThreadId" />
   </div>
 </template>
 

@@ -258,26 +258,31 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         var threads = await store.ListThreadsAsync(limit, offset, ct);
-        var result = threads.Select(t => new ConversationSummary
-        {
-            ThreadId = t.ThreadId,
-            Title = t.Properties?.TryGetValue("title", out var titleObj) == true
-                ? titleObj?.ToString() ?? "New Conversation"
-                : "New Conversation",
-            Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
-                ? previewObj?.ToString()
-                : null,
-            LastUpdated = t.LastUpdated,
-            Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
-                ? providerObj?.ToString()
-                : null,
-            Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
-                ? workspaceObj?.ToString()
-                : null,
-            Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
-                ? modeObj?.ToString()
-                : null,
-        });
+        var result = threads
+            // Sub-agent conversations use the reserved "subagent-{agentId}" thread-id convention and are
+            // surfaced only through the sub-agent panel (GET .../subagents + /ws/subagent). They must not
+            // leak into the primary conversation sidebar (nor be auto-selected on load).
+            .Where(t => !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal))
+            .Select(t => new ConversationSummary
+            {
+                ThreadId = t.ThreadId,
+                Title = t.Properties?.TryGetValue("title", out var titleObj) == true
+                    ? titleObj?.ToString() ?? "New Conversation"
+                    : "New Conversation",
+                Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
+                    ? previewObj?.ToString()
+                    : null,
+                LastUpdated = t.LastUpdated,
+                Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
+                    ? providerObj?.ToString()
+                    : null,
+                Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
+                    ? workspaceObj?.ToString()
+                    : null,
+                Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                    ? modeObj?.ToString()
+                    : null,
+            });
         return Ok(result);
     }
 
