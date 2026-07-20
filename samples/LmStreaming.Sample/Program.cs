@@ -132,6 +132,14 @@ try
     _ = builder.Services.AddControllers();
     _ = builder.Services.AddEndpointsApiExplorer();
 
+    // Raise the request-body ceiling so the file browser's multipart upload (WI #195) can carry a file of
+    // exactly MaxFileBytes (64 MiB) plus a fixed 8 KiB framing allowance. The exact inclusive per-file cap
+    // is enforced in FileBrowserController against both the declared and observed bytes.
+    builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes);
+    _ = builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
+        o.MultipartBodyLengthLimit = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes
+    );
+
     // Add Vite services for frontend integration. The dev-server port is configurable via
     // VITE_DEV_PORT so an isolated instance can run alongside another without colliding on 5173
     // (the paired vite.config.ts reads the same env var). Defaults to 5173.
@@ -248,8 +256,16 @@ try
     // unenforced gateway is unaffected.
     HttpClient GatewayHttpClient(TimeSpan? timeout = null)
     {
+        // AllowAutoRedirect=false is a security precondition of the Sandbox SDK's borrowed-client
+        // contract: the SDK authenticates with custom X-Sbx-* headers, which .NET's auto-redirect
+        // logic would re-send to a redirect target (it only strips the standard Authorization header).
+        // The per-credential SandboxClient instances the registry builds forward onto this shared
+        // client, so disabling it here closes that leak for the whole gateway transport.
         var client = new HttpClient(
-            new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey) { InnerHandler = new HttpClientHandler() });
+            new GatewayAuthHandler(sandboxOptions.AppId, sandboxOptions.AppKey)
+            {
+                InnerHandler = new HttpClientHandler { AllowAutoRedirect = false },
+            });
         if (timeout is { } t)
         {
             client.Timeout = t;
@@ -351,6 +367,10 @@ try
         authOptions,
         sp.GetRequiredService<SessionSecretStore>()
     ));
+
+    // The registry also implements the narrow file-browser surface the FileBrowserController depends on
+    // (WI #195): non-creating session resolution + credentialed workspace file ops.
+    _ = builder.Services.AddSingleton<IWorkspaceFileBrowser>(sp => sp.GetRequiredService<SandboxSessionRegistry>());
 
     _ = builder.Services.AddSingleton(sp =>
         SubAgentIntelligenceOptions.Load(
@@ -602,6 +622,9 @@ try
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
+                // Staged for the pool to publish as part of a successful agent-entry commit (WI #195): the
+                // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
+                SandboxEstablishedBinding? stagedBinding = null;
                 var effectiveMode = mode;
                 if (isWorkspaceMode)
                 {
@@ -645,6 +668,15 @@ try
                         .GetOrCreateLiveSessionAsync(workspaceRef, credential: callerCredential)
                         .GetAwaiter()
                         .GetResult();
+                    // The effective credential is the caller's or the process default (never null) — used for
+                    // gateway calls. The THIRD arg preserves the original caller's provenance (null for the
+                    // interactive UI) so the file-browser resolver can distinguish an interactive owner from
+                    // an S2S caller even when the S2S caller reuses the default app id.
+                    stagedBinding = new SandboxEstablishedBinding(
+                        workspaceRef,
+                        callerCredential ?? sandboxRegistry.DefaultCredential,
+                        callerCredential
+                    );
                     var wsSuffix =
                         "\n\nYour workspace directory is: "
                         + sandboxSession.HostPath
@@ -1241,7 +1273,7 @@ try
                         triggerOptions: isTestMode ? triggerOptions : null
                     );
 
-                    return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
+                    return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
                 }
                 catch
                 {
@@ -1265,7 +1297,10 @@ try
             },
             providerRegistry: providerRegistry,
             conversationStore: conversationStore,
-            logger: loggerFactory.CreateLogger<MultiTurnAgentPool>()
+            logger: loggerFactory.CreateLogger<MultiTurnAgentPool>(),
+            // The registry is the binding sink: the pool publishes/clears each conversation's
+            // sandbox-established binding through it as part of the agent-entry commit/removal (WI #195).
+            bindingSink: sandboxRegistryForCleanup
         );
 
         // When a thread is fully removed (NOT recreated for a mode-switch — that preserves the
@@ -2216,9 +2251,10 @@ public partial class Program
     /// <summary>
     /// Seeds the workspace's root instruction file (AGENTS.md, else CLAUDE.md) into the system
     /// prompt at agent build, so the model has the workspace's high-priority instructions on turn 1
-    /// WITHOUT having to read any file. The content is fetched THROUGH the gateway's MCP <c>Read</c>
-    /// tool (<see cref="SandboxSessionRegistry.ReadWorkspaceFileAsync"/>): the local-host backend
-    /// cannot read the container's <c>/workspace</c> filesystem, and this path is race-free (it does
+    /// WITHOUT having to read any file. The content is fetched THROUGH the gateway via the typed
+    /// Sandbox SDK (<see cref="SandboxSessionRegistry.ReadWorkspaceFileAsync"/>, which addresses the
+    /// file by its workspace-relative path): the local-host backend cannot read the container's
+    /// <c>/workspace</c> filesystem, and this path is race-free (it does
     /// not depend on the async discovery webhook, which fires after the system prompt is built).
     /// AGENTS.md takes precedence over CLAUDE.md — the first file that exists is injected and the
     /// search stops. Returns an empty string when neither exists, the session has no host path, or

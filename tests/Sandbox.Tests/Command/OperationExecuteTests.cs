@@ -1,0 +1,385 @@
+using System.Net;
+using System.Text;
+using FluentAssertions;
+using Xunit;
+
+namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Command;
+
+/// <summary>
+/// Wire-level tests for <see cref="SandboxClient.ExecuteAsync"/> against the gateway's direct
+/// operations API (ADR 0031 / issue #119): <c>POST .../operations</c> submit, the bounded poll of
+/// <c>GET .../operations/{operation_id}</c>, and the terminal stdout/stderr download through
+/// <c>GET .../files/{mount_id}</c>. Every test registers the workspace-mount-resolution route first
+/// (<see cref="RegisterWorkspaceMount"/>) since <see cref="SandboxClient.ExecuteAsync"/> resolves the
+/// mount id before submitting.
+/// </summary>
+public sealed class OperationExecuteTests
+{
+    private static void RegisterWorkspaceMount(FakeGatewayHandler handler, string sessionId, long mountId) =>
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/sandboxes/{sessionId}", StringComparison.Ordinal),
+            _ => Json(
+                "{\"session_id\":\""
+                    + sessionId
+                    + "\",\"container_id\":null,\"volumes\":{\"workspace\":{\"container_path\":\"/workspace\",\"read_only\":false,\"id\":"
+                    + mountId
+                    + "}}}"
+            )
+        );
+
+    private static void RegisterSubmit(FakeGatewayHandler handler, string json, HttpStatusCode status = HttpStatusCode.Accepted) =>
+        handler.On(
+            req => req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath.EndsWith("/operations", StringComparison.Ordinal),
+            _ => Json(json, status)
+        );
+
+    private static void RegisterPoll(FakeGatewayHandler handler, string operationId, string json) =>
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal),
+            _ => Json(json)
+        );
+
+    private static void RegisterDownload(FakeGatewayHandler handler, string pathMarker, string content) =>
+        handler.On(
+            req => req.Method == HttpMethod.Get && req.RequestUri!.Query.Contains(pathMarker, StringComparison.Ordinal),
+            _ => Text(content)
+        );
+
+    private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK) =>
+        new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    private static HttpResponseMessage Text(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8) };
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitAccepted_ThenPollSucceeded_ReturnsExitZeroAndExactOutput()
+    {
+        const string sessionId = "sess-1";
+        const string operationId = "op-1";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 7);
+        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"running"}""");
+        RegisterPoll(
+            handler,
+            operationId,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":7,\"stdout_path\":\".sbx/op-1/stdout\",\"stderr_path\":\".sbx/op-1/stderr\"}}"
+        );
+        RegisterDownload(handler, "stdout", "hello-exact");
+        RegisterDownload(handler, "stderr", "");
+
+        var command = new SandboxCommand(["echo", "hello-exact"], operationId: operationId);
+        var result = await client.ExecuteAsync(sessionId, command);
+
+        result.ExitCode.Should().Be(0);
+        result.StandardOutput.Should().Be("hello-exact");
+        result.StandardError.Should().Be("");
+        result.OperationId.Should().Be(operationId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitReturnsTerminalImmediately_DoesNotPoll()
+    {
+        const string sessionId = "sess-2";
+        const string operationId = "op-2";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 3);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":3,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "replayed");
+        RegisterDownload(handler, "path=err", "");
+
+        var command = new SandboxCommand(["echo", "hi"], operationId: operationId);
+        var result = await client.ExecuteAsync(sessionId, command);
+
+        result.ExitCode.Should().Be(0);
+        result.StandardOutput.Should().Be("replayed");
+        // An idempotent-replay 200 answers the submit with a terminal snapshot directly, so the SDK
+        // never issues a follow-up poll GET.
+        handler.Requests.Should().NotContain(r => r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalFailed_ReturnsNonZeroExitAndCapturedStderr()
+    {
+        const string sessionId = "sess-3";
+        const string operationId = "op-3";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 5);
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"failed\",\"exit_code\":7,\"artifacts\":{\"mount_id\":5,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "boom");
+
+        var command = new SandboxCommand(["false"], operationId: operationId);
+        var result = await client.ExecuteAsync(sessionId, command);
+
+        result.ExitCode.Should().Be(7);
+        result.StandardOutput.Should().Be("");
+        result.StandardError.Should().Be("boom");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitIdempotencyConflict_ThrowsConflict()
+    {
+        const string sessionId = "sess-4";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, """{"error":"conflict","error_code":"idempotency_conflict"}""", HttpStatusCode.Conflict);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-4"));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Conflict);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitOperationApiUnavailable_ThrowsUnavailable()
+    {
+        const string sessionId = "sess-5";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, """{"error":"agent too old","error_code":"operation_api_unavailable"}""", HttpStatusCode.FailedDependency);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-5"));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Unavailable);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitWorkspaceRequired_ThrowsWorkspaceRequired()
+    {
+        const string sessionId = "sess-6";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, """{"error":"no writable workspace","error_code":"workspace_required"}""", HttpStatusCode.Conflict);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-6"));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.WorkspaceRequired);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalTimedOut_ThrowsExecutionTimeout()
+    {
+        const string sessionId = "sess-7";
+        const string operationId = "op-7";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"timed_out"}""", HttpStatusCode.OK);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "999"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalOutputLimitExceeded_ThrowsOutputLimitExceeded()
+    {
+        const string sessionId = "sess-8";
+        const string operationId = "op-8";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"output_limit_exceeded"}""", HttpStatusCode.OK);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["yes"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.OutputLimitExceeded);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UnrecognizedTerminalStatus_ThrowsProtocol()
+    {
+        const string sessionId = "sess-9";
+        const string operationId = "op-9";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"quantum_superposition"}""", HttpStatusCode.OK);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SuppliedOperationId_IsEchoedInSubmitBody_PollUrl_AndResult()
+    {
+        const string sessionId = "sess-10";
+        const string operationId = "custom-op-123";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 9);
+        RegisterSubmit(handler, $$"""{"operation_id":"{{operationId}}","status":"running"}""");
+        RegisterPoll(
+            handler,
+            operationId,
+            "{\"operation_id\":\""
+                + operationId
+                + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":9,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}"
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        var command = new SandboxCommand(["echo", "hi"], operationId: operationId);
+        var result = await client.ExecuteAsync(sessionId, command);
+
+        result.OperationId.Should().Be(operationId);
+        handler.Requests.Should().Contain(r => r.Method == HttpMethod.Post && r.Body != null && r.Body.Contains($"\"operation_id\":\"{operationId}\"", StringComparison.Ordinal));
+        handler.Requests.Should().Contain(r => r.Method == HttpMethod.Get && r.Uri.AbsolutePath.EndsWith($"/operations/{operationId}", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitError_DoesNotLeakGatewayErrorMessage()
+    {
+        // The gateway's free-text `error` message can carry captured/credential material; the SDK must
+        // surface only the closed-vocabulary `error_code`, never the message.
+        const string sessionId = "sess-leak";
+        const string sentinel = "sk-sandbox-op-secret-9f3a1c";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        RegisterSubmit(
+            handler,
+            "{\"error\":\"" + sentinel + "\",\"code\":409,\"error_code\":\"idempotency_conflict\",\"retryable\":false}",
+            HttpStatusCode.Conflict
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "op-leak"));
+
+        var exception = await act.Should().ThrowAsync<SandboxException>();
+        exception.Which.Kind.Should().Be(SandboxErrorKind.Conflict);
+        exception.Which.Message.Should().NotContain(sentinel);
+        exception.Which.ToString().Should().NotContain(sentinel);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalFailedWithoutExitCode_ThrowsProtocol()
+    {
+        const string sessionId = "sess-noexit";
+        const string operationId = "op-noexit";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // A `failed` status with no exit_code is a protocol anomaly (a real failure always carries the
+        // child's code) — the SDK refuses to fabricate one.
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"failed\"}", HttpStatusCode.OK);
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["false"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PollDeadlineElapses_ThrowsExecutionTimeout()
+    {
+        const string sessionId = "sess-stuck";
+        const string operationId = "op-stuck";
+        // A short client-side execution ceiling so the poll deadline (ExecutionTimeout + grace) elapses fast.
+        var (client, handler) = TestSupport.CreateBorrowedClient(executionTimeout: TimeSpan.FromMilliseconds(150));
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // The submit and every poll report the operation still `running`: it never terminalizes, so the
+        // SDK's own poll deadline must fire and surface ExecutionTimeout.
+        RegisterSubmit(handler, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+        RegisterPoll(handler, operationId, "{\"operation_id\":\"" + operationId + "\",\"status\":\"running\"}");
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["sleep", "999"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.ExecutionTimeout);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SnapshotForDifferentOperation_ThrowsProtocol()
+    {
+        const string sessionId = "sess-corr";
+        const string operationId = "op-corr";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // A well-formed terminal snapshot, but for a DIFFERENT operation id than we submitted (a proxy /
+        // gateway stitching in another operation's response) — it must not be attributed to this command.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"someone-elses-op\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalSnapshotWithNullArtifactPath_ThrowsProtocol()
+    {
+        const string sessionId = "sess-art";
+        const string operationId = "op-art";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // Correlated correctly and terminal, but a null stdout_path — must map to Protocol, not throw a raw
+        // ArgumentNullException inside Uri.EscapeDataString when the artifact download is attempted.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":1,\"stdout_path\":null,\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SucceededWithNullExitCode_ThrowsProtocol()
+    {
+        const string sessionId = "sess-noexit-ok";
+        const string operationId = "op-noexit-ok";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 1);
+        // A `succeeded` status carrying NO exit_code is malformed — the SDK must not silently read it as a
+        // false exit 0, but surface Protocol.
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + operationId + "\",\"status\":\"succeeded\",\"artifacts\":{\"mount_id\":1,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+
+        var act = () => client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: operationId));
+
+        (await act.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CanonicalizesOperationId_SubmitsAndCorrelatesTrimmedForm()
+    {
+        const string sessionId = "sess-canon";
+        const string canonical = "op-canon";
+        var (client, handler) = TestSupport.CreateBorrowedClient();
+        RegisterWorkspaceMount(handler, sessionId, mountId: 4);
+        // The gateway trims and echoes the canonical id; the SDK must submit AND correlate the same trimmed
+        // value (had it submitted the untrimmed "  op-canon  ", correlation against this echo would fail).
+        RegisterSubmit(
+            handler,
+            "{\"operation_id\":\"" + canonical + "\",\"status\":\"succeeded\",\"exit_code\":0,\"artifacts\":{\"mount_id\":4,\"stdout_path\":\"out\",\"stderr_path\":\"err\"}}",
+            HttpStatusCode.OK
+        );
+        RegisterDownload(handler, "path=out", "");
+        RegisterDownload(handler, "path=err", "");
+
+        var result = await client.ExecuteAsync(sessionId, new SandboxCommand(["echo", "hi"], operationId: "  op-canon  "));
+
+        result.OperationId.Should().Be(canonical);
+        handler
+            .Requests.Should()
+            .Contain(r =>
+                r.Method == HttpMethod.Post
+                && r.Body != null
+                && r.Body.Contains("\"operation_id\":\"" + canonical + "\"", StringComparison.Ordinal)
+                && !r.Body.Contains("  op-canon  ", StringComparison.Ordinal)
+            );
+    }
+}

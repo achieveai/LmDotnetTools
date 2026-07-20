@@ -14,7 +14,7 @@ namespace CodeReviewDaemon.Sample.Workspace.ReviewBot;
 /// access first. When the clone fails it returns a precise, classified exit code + message
 /// (<see cref="CloneFailureClassifier"/>) — not-found vs permission vs bad-credential vs transient —
 /// rather than a generic failure. All decision logic lives in <see cref="ReviewBotInitializer"/>,
-/// <see cref="CloneFailureClassifier"/>, and <see cref="SandboxFileSystem"/>, which are verifiable
+/// <see cref="CloneFailureClassifier"/>, and <see cref="SandboxSessionAdapter"/>, which are verifiable
 /// against fakes; only the live sandbox connection and clone live here.
 /// </summary>
 internal static class ReviewBotInitCommand
@@ -79,13 +79,13 @@ internal static class ReviewBotInitCommand
 
         var credential = new SandboxCredential(appId, appKey ?? string.Empty);
 
-        await using var sandbox = new SandboxOrchestrator(
+        await using var sandbox = new SandboxSessionAdapter(
             gateway,
             sessionId,
-            loggerFactory.CreateLogger<SandboxOrchestrator>(),
+            loggerFactory.CreateLogger<SandboxSessionAdapter>(),
             credential);
         var git = new GitRunner(sandbox);
-        var fileSystem = new SandboxFileSystem(sandbox);
+        ISandboxFileSystem fileSystem = sandbox;
 
         var cloneFailure = await ReviewBotCheckout
             .EnsureCheckoutAsync(git, url, workdir, logger, cancellationToken)

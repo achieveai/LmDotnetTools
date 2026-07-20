@@ -24,6 +24,7 @@
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
+    <ProjectReference Include="..\Sandbox\AchieveAi.LmDotnetTools.Sandbox.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- The host apps' controllers/Program drive internal OAuth callback-completion
