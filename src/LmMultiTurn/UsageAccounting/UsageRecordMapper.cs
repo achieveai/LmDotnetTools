@@ -1,3 +1,4 @@
+using System.Globalization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
@@ -27,8 +28,12 @@ public static class UsageRecordMapper
         var usage = message.Usage;
 
         // A generation is one provider call; combined with the emitter id it is a stable, globally unique
-        // dedup key across the conversation tree. Fall back to the run id, then a fixed token.
-        var attemptKey = message.GenerationId ?? message.RunId ?? "usage";
+        // dedup key across the conversation tree. Fall back to the run id, then — when the producer supplies
+        // neither — to a key derived from the call's observable usage scope, so distinct provider calls are
+        // not silently collapsed into one attempt (a shared constant would MAX-merge and undercount) while an
+        // exact replay of the same observation still dedups. A provider-minted attempt id (#116-adjacent)
+        // remains the fully-correct source.
+        var attemptKey = message.GenerationId ?? message.RunId ?? DeriveCallScopeKey(message);
         var attemptId = $"{ownerExecutionId}:{attemptKey}";
 
         return new UsageRecord
@@ -49,6 +54,19 @@ public static class UsageRecordMapper
             ProviderReportedCostMicros = ToMicros(usage.TotalCost),
             Finalized = true,
         };
+    }
+
+    /// <summary>
+    ///     Derives a dedup key from a usage message's observable scope when the producer supplies no
+    ///     generation or run id. Deterministic, so an exact replay dedups; distinct-usage calls get distinct
+    ///     keys, so they are counted separately rather than MAX-collapsed by a shared constant.
+    /// </summary>
+    private static string DeriveCallScopeKey(UsageMessage message)
+    {
+        var usage = message.Usage;
+        var order = message.MessageOrderIdx?.ToString(CultureInfo.InvariantCulture) ?? "-";
+        return FormattableString.Invariant(
+            $"derived:{usage.PromptTokens}-{usage.CompletionTokens}-{usage.TotalCachedTokens}-{usage.TotalReasoningTokens}-{usage.TotalCost ?? 0d}-{order}");
     }
 
     private static long? ToMicros(double? cost)
