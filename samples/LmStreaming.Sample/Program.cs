@@ -1713,10 +1713,16 @@ public partial class Program
     /// </summary>
     private static IStreamingAgent CreateAnthropicCompatAgent(AnthropicCompatModel model, ILoggerFactory loggerFactory)
     {
+        // BaseUrl is operator-controlled (the family's {KEY}_ANTHROPIC_URL env var) and could carry
+        // credentials in its user-info (user:pass@host) or query (?token=...) components. Log ONLY the
+        // validated scheme+host+port origin so no secret material is persisted to application logs.
+        var baseUrlOrigin = Uri.TryCreate(model.BaseUrl, UriKind.Absolute, out var parsedBaseUrl)
+            ? $"{parsedBaseUrl.Scheme}://{parsedBaseUrl.Host}:{parsedBaseUrl.Port}"
+            : "(invalid base URL)";
         Log.Information(
-            "Creating {FamilyKey} agent with base URL: {BaseUrl}",
+            "Creating {FamilyKey} agent with base URL origin: {BaseUrlOrigin}",
             model.FamilyKey,
-            model.BaseUrl
+            baseUrlOrigin
         );
 
         var anthropicClient = new AnthropicClient(
