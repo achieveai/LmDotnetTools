@@ -31,12 +31,19 @@ public class WaitTriggerLoopIntegrationTests
     [Fact]
     public async Task Wait_Timer_ParksThenAutoResumes_WithFiredPayload()
     {
-        // Turn 1: the LLM asks to wait on a short one-shot timer. Turn 2 (after the timer fires and
-        // the run auto-resumes) returns final text and must see the resolved "fired" payload.
+        // Turn 1: the LLM asks to wait on a one-shot timer. Turn 2 (after the timer fires and the run
+        // auto-resumes) returns final text and must see the resolved "fired" payload.
+        //
+        // The delay must comfortably exceed the window between firstDone completing and the parked-state
+        // assertions (callCount==1 / deferred registered) executing. A 150ms delay was comparable to a
+        // single thread-pool scheduling hiccup: under full-suite load the timer could fire and auto-resume
+        // (callCount->2, deferred cleared) before those assertions ran, failing intermittently. 1s is
+        // robust — the parked assertions take microseconds, and both they and the timer-fire callback share
+        // the same thread-pool/timer queue, so any load that delays the assertions delays the fire too.
         var waitCall = new ToolCallMessage
         {
             FunctionName = WaitToolProvider.WaitToolName,
-            FunctionArgs = WaitArgs(new { kind = "timer", args = new { delay = "150ms" }, timeout = "10m" }),
+            FunctionArgs = WaitArgs(new { kind = "timer", args = new { delay = "1s" }, timeout = "10m" }),
             ToolCallId = "tc_wait",
             Role = Role.Assistant,
         };

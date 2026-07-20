@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -327,6 +328,19 @@ public class ConversationsController(
             .ToList();
 
         return Ok(normalized);
+    }
+
+    /// <summary>
+    /// Returns the persisted conversation-wide token usage &amp; cost aggregate (#196): totals plus the
+    /// per-model breakdown, including usage from sub-agents and workflow descendants. A client that
+    /// re-opens a conversation reads this to show real usage that survives reload; headless clients use
+    /// it to retrieve spend without a live stream. Returns 404 when no usage has been recorded yet.
+    /// </summary>
+    [HttpGet("{threadId}/usage")]
+    public async Task<IActionResult> GetUsage(string threadId, CancellationToken ct = default)
+    {
+        var usage = await ConversationUsageProjection.LoadAsync(store, threadId, ct);
+        return usage is null ? NotFound() : Ok(usage);
     }
 
     /// <summary>

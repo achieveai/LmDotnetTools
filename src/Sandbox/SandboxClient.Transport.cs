@@ -36,10 +36,16 @@ public sealed partial class SandboxClient
         string sessionId,
         string operation,
         string? operationId,
+        long? maxBytes,
         CancellationToken ct
     )
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // A caller may impose a TIGHTER cap than the default 64 MiB direct-read ceiling (the file-preview
+        // path reads only the first 256 KiB + 1). A null maxBytes keeps the default; a supplied value is
+        // never allowed to exceed the default ceiling, so the whole-body allocation bound still holds.
+        var cap = maxBytes is { } requested ? Math.Min(requested, MaxDirectReadBytes) : MaxDirectReadBytes;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, ResolveRequestUri(relativeUri));
         StampAuthHeaders(request);
@@ -63,18 +69,21 @@ public sealed partial class SandboxClient
             }
 
             var declaredLength = response.Content.Headers.ContentLength;
-            if (declaredLength is > MaxDirectReadBytes)
+            if (declaredLength is { } length && length > cap)
             {
                 throw new SandboxException(
                     SandboxErrorKind.Protocol,
                     $"Sandbox gateway response for {operation} declared {declaredLength} bytes, exceeding the "
-                        + $"{MaxDirectReadBytes}-byte direct-read cap; refusing to buffer it.",
+                        + $"{cap}-byte direct-read cap; refusing to buffer it.",
                     (int)response.StatusCode,
                     operationId: operationId
-                );
+                )
+                {
+                    IsDirectReadCapExceeded = true,
+                };
             }
 
-            return await ReadStreamCappedAsync(response, operation, operationId, timeoutCts.Token).ConfigureAwait(false);
+            return await ReadStreamCappedAsync(response, operation, operationId, cap, timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -111,6 +120,7 @@ public sealed partial class SandboxClient
         HttpResponseMessage response,
         string operation,
         string? operationId,
+        long cap,
         CancellationToken ct
     )
     {
@@ -119,7 +129,7 @@ public sealed partial class SandboxClient
         // Pre-size only when the gateway declared a sane (already-capped) length; otherwise start empty
         // and let the buffer grow so a missing/over-declared length never drives a huge up-front alloc.
         var declaredLength = response.Content.Headers.ContentLength;
-        var initialCapacity = declaredLength is > 0 and <= MaxDirectReadBytes ? (int)declaredLength.Value : 0;
+        var initialCapacity = declaredLength is > 0 && declaredLength <= cap ? (int)declaredLength.Value : 0;
         using var buffer = new MemoryStream(initialCapacity);
 
         var chunk = new byte[81920];
@@ -128,15 +138,18 @@ public sealed partial class SandboxClient
         while ((read = await stream.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
         {
             total += read;
-            if (total > MaxDirectReadBytes)
+            if (total > cap)
             {
                 throw new SandboxException(
                     SandboxErrorKind.Protocol,
-                    $"Sandbox gateway response for {operation} exceeded the {MaxDirectReadBytes}-byte "
+                    $"Sandbox gateway response for {operation} exceeded the {cap}-byte "
                         + "direct-read cap while streaming; refusing to buffer it.",
                     (int)response.StatusCode,
                     operationId: operationId
-                );
+                )
+                {
+                    IsDirectReadCapExceeded = true,
+                };
             }
 
             buffer.Write(chunk, 0, read);
@@ -221,7 +234,7 @@ public sealed partial class SandboxClient
                     );
                 }
 
-                var bytes = await ReadStreamCappedAsync(response, $"'{relativeUri}'", operationId: null, timeoutCts.Token)
+                var bytes = await ReadStreamCappedAsync(response, $"'{relativeUri}'", operationId: null, MaxDirectReadBytes, timeoutCts.Token)
                     .ConfigureAwait(false);
                 var contentType = response.Content.Headers.ContentType;
                 response.Content.Dispose();
