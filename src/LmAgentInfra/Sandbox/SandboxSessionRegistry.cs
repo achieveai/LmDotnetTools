@@ -803,9 +803,10 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
 
     /// <summary>
     /// Drops a dead session from both caches so the next request recreates it. Removes the
-    /// per-(workspace id, caller app id) creation entry and the reverse id mapping (the latter only
-    /// when it still points at <paramref name="session"/>, so a concurrent recreation is never
-    /// clobbered).
+    /// per-(workspace id, caller app id) creation entry, then funnels through
+    /// <see cref="EvictSessionStateAsync"/> so EVERY per-session collection is cleared — not just the
+    /// main maps. The gateway already dropped this session (a 404 liveness probe is what brought us
+    /// here), so no DELETE is issued.
     /// </summary>
     private async Task InvalidateSessionAsync(
         (string WorkspaceId, string AppId) key,
@@ -831,11 +832,32 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             );
         }
 
-        // Reverse map removal is already exact: only drops the entry when it still points at this
-        // dead session, so a concurrent recreation's mapping is never clobbered.
+        // Clear every per-session-id-indexed collection so a gateway-evicted session leaves no stale
+        // sub-agent binding / thread routing / discovery-ledger state behind until registry disposal.
+        await EvictSessionStateAsync(session, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Evicts EVERY per-session-id-indexed collection for <paramref name="session"/>: the reverse
+    /// session map, sub-agent bindings, thread routing, discovery dedup ledger, the creating credential
+    /// (releasing its per-credential client refcount), and the persisted webhook secret. Both the
+    /// liveness-eviction path (<see cref="InvalidateSessionAsync"/>) and the explicit-teardown path
+    /// (<see cref="DestroyWorkspaceSessionAsync"/>) funnel through here so a new per-session collection
+    /// can never be wired into one lifecycle path and silently forgotten by the other. Deliberately does
+    /// NOT touch the <see cref="_sessions"/> creation slot (its removal differs per caller) and does NOT
+    /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionAsync"/> does that, and it calls
+    /// this AFTER the DELETE so the session's creating credential is still resolvable for it.
+    /// </summary>
+    private async Task EvictSessionStateAsync(SandboxSession session, CancellationToken ct)
+    {
+        // Reverse map removal is exact: only drops the entry when it still points at this session, so a
+        // concurrent recreation's mapping is never clobbered.
         _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
             new KeyValuePair<string, SandboxSession>(session.SessionId, session)
         );
+        _ = _subAgentBindings.TryRemove(session.SessionId, out _);
+        _ = _sessionThreads.TryRemove(session.SessionId, out _);
+        _ = _discoverySeen.TryRemove(session.SessionId, out _);
         // Drop the session's credential and release its client refcount (evicting+disposing the per-
         // credential client when this was its last session). Guarded on the TryRemove so an already-
         // invalidated session never double-decrements.
@@ -1024,20 +1046,42 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             var hostPath = StripLongPathPrefix(info.WorkspaceContainerPath ?? string.Empty);
             var session = new SandboxSession(workspaceId, info.SessionId, workspaceRelPath, hostPath);
 
-            // Register the reverse session-id → session mapping so the context-discovery webhook can
-            // resolve back to the session. Last-write-wins is acceptable because session ids are
-            // gateway-allocated and unique per creation.
-            _sessionsById[session.SessionId] = session;
-            // Capture the credential this session was created with so contextless paths (liveness,
-            // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
-            // default (relevant once M2 lets callers create under a per-caller credential).
-            _sessionCredentials[session.SessionId] = effectiveCredential;
-            // Persist BEFORE returning: a webhook call for this session id must never race ahead of
-            // its secret hitting disk. If this throws, let it propagate — the surrounding
-            // Lazy<Task<SandboxSession>> single-flight fault/retry already handles exceptions in this
-            // exact window; swallowing it would instead silently produce a session whose webhooks can
-            // never authenticate.
-            await _sessionSecretStore.SaveAsync(session.SessionId, sessionSecret, ct).ConfigureAwait(false);
+            // The gateway session now exists remotely. Publish its maps and persist its secret as one
+            // unit: if ANY step fails (e.g. SaveAsync throws or is cancelled), the remote session and
+            // these map entries would otherwise be orphaned while the faulting Lazy<> single-flight
+            // retries into a SECOND gateway session — with discovery/liveness seeing stale state in
+            // between. So roll back exactly the entries this attempt added and best-effort destroy the
+            // just-created remote session before letting the exception propagate.
+            try
+            {
+                // Register the reverse session-id → session mapping so the context-discovery webhook can
+                // resolve back to the session. Last-write-wins is acceptable because session ids are
+                // gateway-allocated and unique per creation.
+                _sessionsById[session.SessionId] = session;
+                // Capture the credential this session was created with so contextless paths (liveness,
+                // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
+                // default (relevant once M2 lets callers create under a per-caller credential).
+                _sessionCredentials[session.SessionId] = effectiveCredential;
+                // Persist BEFORE returning: a webhook call for this session id must never race ahead of
+                // its secret hitting disk. On failure the catch below tears the half-built session down
+                // rather than leaving a session whose webhooks can never authenticate.
+                await _sessionSecretStore.SaveAsync(session.SessionId, sessionSecret, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort destroy FIRST — DestroySessionAsync resolves the session's creating
+                // credential via _sessionCredentials, so the DELETE must carry the owner's app id while
+                // that entry is still present (a default/foreign id is rejected 404, leaking the remote
+                // session). Uses CancellationToken.None so a cancelled create still attempts teardown.
+                await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+                // Remove ONLY the entries this attempt added, and only while they still point at THIS
+                // session, so a concurrent recreation is never clobbered (mirrors InvalidateSessionAsync).
+                _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
+                    new KeyValuePair<string, SandboxSession>(session.SessionId, session));
+                _ = ((ICollection<KeyValuePair<string, SandboxCredential>>)_sessionCredentials).Remove(
+                    new KeyValuePair<string, SandboxCredential>(session.SessionId, effectiveCredential));
+                throw;
+            }
             // The reservation acquired above IS this session's refcount — commit it (no extra increment),
             // so the finally does not roll it back.
             reservationCommitted = true;
@@ -1091,23 +1135,16 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             }
 
             var session = lazy.Value.Result;
-            _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
-                new KeyValuePair<string, SandboxSession>(session.SessionId, session));
-            _ = _subAgentBindings.TryRemove(session.SessionId, out _);
-            _ = _sessionThreads.TryRemove(session.SessionId, out _);
-            _ = _discoverySeen.TryRemove(session.SessionId, out _);
 
-            // Destroy BEFORE dropping the credential: DestroySessionAsync resolves the session's
+            // Destroy BEFORE evicting per-session state: DestroySessionAsync resolves the session's
             // creating credential via CredentialFor(sessionId), so the DELETE must carry the owner's
-            // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session).
+            // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session) —
+            // and CredentialFor reads _sessionCredentials, which EvictSessionStateAsync clears.
             await DestroySessionAsync(session, ct).ConfigureAwait(false);
-            // Drop the credential and release its client refcount (evicting+disposing the per-credential
-            // client when this was its last session). Guarded so a concurrent invalidate never double-drops.
-            if (_sessionCredentials.TryRemove(session.SessionId, out var credential))
-            {
-                DecrementSessionRefAndMaybeDispose(credential);
-            }
-            await _sessionSecretStore.RemoveAsync(session.SessionId, ct).ConfigureAwait(false);
+            // Clear every per-session collection (reverse map, sub-agent bindings, thread routing,
+            // discovery ledger, credential + client refcount, persisted secret) via the shared helper —
+            // the same one InvalidateSessionAsync uses, so the two teardown paths can never diverge.
+            await EvictSessionStateAsync(session, ct).ConfigureAwait(false);
         }
     }
 
@@ -1124,44 +1161,67 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
 
         _disposed = true;
 
-        foreach (var entry in _sessions.Values)
+        try
         {
-            // Only destroy sessions that were actually created and completed successfully.
-            if (!entry.IsValueCreated || !entry.Value.IsCompletedSuccessfully)
+            foreach (var entry in _sessions.Values)
             {
-                continue;
+                // Only destroy sessions that were actually created and completed successfully.
+                if (!entry.IsValueCreated || !entry.Value.IsCompletedSuccessfully)
+                {
+                    continue;
+                }
+
+                await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
+                // Best-effort secret cleanup: a single filesystem failure here must not abort disposal of
+                // the remaining sessions, per-credential clients, and the shared transport below. Isolate it
+                // (DestroySessionAsync already swallows its own errors) so disposal always reaches the
+                // guaranteed final resource cleanup in the finally.
+                try
+                {
+                    await _sessionSecretStore
+                        .RemoveAsync(entry.Value.Result.SessionId, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Failed to remove webhook secret for session {SessionId} during disposal; continuing teardown.",
+                        entry.Value.Result.SessionId
+                    );
+                }
             }
 
-            await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
-            await _sessionSecretStore.RemoveAsync(entry.Value.Result.SessionId, CancellationToken.None).ConfigureAwait(false);
+            _sessions.Clear();
+            _subAgentBindings.Clear();
+            _sessionsById.Clear();
+            _sessionThreads.Clear();
+            _discoverySeen.Clear();
+            _sessionCredentials.Clear();
         }
-
-        _sessions.Clear();
-        _subAgentBindings.Clear();
-        _sessionsById.Clear();
-        _sessionThreads.Clear();
-        _discoverySeen.Clear();
-        _sessionCredentials.Clear();
-
-        // Catch-all: dispose every remaining per-credential transport (refcount eviction handles the
-        // steady state; this covers any sessions still live at shutdown). Snapshot + clear under the lock,
-        // then dispose OUTSIDE it. Each entry owns only its GatewayAuthHandler → forwarding pipeline; the
-        // SandboxClient over it is borrowed, so disposing the client is a no-op and the forwarding handler
-        // never disposes the shared transport. The shared transport is disposed last, below.
-        List<SandboxClientEntry> remainingClients;
-        lock (_clientsLock)
+        finally
         {
-            remainingClients = [.. _clients.Values];
-            _clients.Clear();
-        }
+            // GUARANTEED final resource cleanup: even if a session-teardown step above threw, the
+            // per-credential transports and the shared HttpClient must still be disposed, or disposal
+            // would leak sockets. Snapshot + clear the clients under the lock, then dispose OUTSIDE it.
+            // Each entry owns only its GatewayAuthHandler → forwarding pipeline; the SandboxClient over it
+            // is borrowed, so disposing the client is a no-op and the forwarding handler never disposes the
+            // shared transport. The shared transport is disposed last, below.
+            List<SandboxClientEntry> remainingClients;
+            lock (_clientsLock)
+            {
+                remainingClients = [.. _clients.Values];
+                _clients.Clear();
+            }
 
-        foreach (var entry in remainingClients)
-        {
-            entry.Client.Dispose();
-            entry.Transport.Dispose();
-        }
+            foreach (var entry in remainingClients)
+            {
+                entry.Client.Dispose();
+                entry.Transport.Dispose();
+            }
 
-        _httpClient.Dispose();
+            _httpClient.Dispose();
+        }
     }
 
     /// <summary>
