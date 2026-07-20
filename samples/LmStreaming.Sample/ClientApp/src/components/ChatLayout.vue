@@ -562,7 +562,7 @@ onBeforeUnmount(() => {
           {{ error }}
         </div>
 
-        <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner">
+        <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner" data-testid="usage-banner">
           Total: {{ cumulativeUsage.totalTokens }} |
           In: {{ cumulativeUsage.uncachedInputTokens }} |
           Out: {{ cumulativeUsage.completionTokens }}

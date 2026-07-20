@@ -55,6 +55,15 @@ public static class UiHelpers
         return page.GetByTestId("error-banner");
     }
 
+    /// <summary>
+    /// Conversation-wide token-usage banner (#196) — rendered only once cumulative total tokens &gt; 0.
+    /// Text shape: <c>Total: N | In: N | Out: N [| Cached: N] [| Cache created: N]</c>.
+    /// </summary>
+    public static ILocator UsageBanner(this IPage page)
+    {
+        return page.GetByTestId("usage-banner");
+    }
+
     /// <summary>Deferred-auth banner — rendered while the backend holds a webhook call awaiting sign-in (one per provider, see <c>data-provider-id</c>).</summary>
     public static ILocator AuthRequiredBanner(this IPage page)
     {
