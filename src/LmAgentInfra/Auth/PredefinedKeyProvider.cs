@@ -102,7 +102,7 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
     /// invalidated flag, and DROPS the persisted token record so the next acquisition re-mints with
     /// the new credential instead of reloading the stale access/rotated-refresh token by provider id.
     /// </summary>
-    public async Task UpdateEntry(PredefinedKeyEntry entry, CancellationToken ct = default)
+    public async Task UpdateEntry(PredefinedKeyEntry entry, bool credentialChanged, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(entry);
         await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
@@ -110,10 +110,15 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
         {
             _entry = entry;
             _invalidated = false;
-            _cachedToken = null;
-            // ProviderId is derived from the immutable id, so this drops THIS entry's stale token.
-            await _tokenStore.RemoveAsync(ProviderId, ct).ConfigureAwait(false);
-            _status = new OAuthStatus(OAuthSignInState.NotStarted, null, entry.Scopes, null, null);
+            // Only drop the in-memory minted token when the credential changed; a pure host/header edit
+            // keeps the still-valid cached token (re-injected under the new host/header). Invalidating the
+            // PERSISTED token — and its ordering relative to the durable definition write — is the
+            // registry's job (see PredefinedKeyRegistry.UpsertAsync), so a partial failure degrades safely.
+            if (credentialChanged)
+            {
+                _cachedToken = null;
+                _status = new OAuthStatus(OAuthSignInState.NotStarted, null, entry.Scopes, null, null);
+            }
         }
         finally
         {
@@ -121,34 +126,45 @@ internal sealed class PredefinedKeyProvider : IOAuthTokenProvider
         }
     }
 
+    /// <summary>
+    /// True when the credential material (kind, token endpoint, client id/secret, refresh token, scopes)
+    /// differs — the only case that invalidates a minted/persisted token. A pure host or header-name edit
+    /// preserves the credential and, crucially, the latest ROTATED refresh token in the persisted record.
+    /// </summary>
+    internal static bool CredentialChanged(PredefinedKeyEntry oldEntry, PredefinedKeyEntry newEntry) =>
+        oldEntry.Kind != newEntry.Kind
+        || !string.Equals(oldEntry.TokenEndpoint, newEntry.TokenEndpoint, StringComparison.Ordinal)
+        || !string.Equals(oldEntry.ClientId, newEntry.ClientId, StringComparison.Ordinal)
+        || !string.Equals(oldEntry.ClientSecret, newEntry.ClientSecret, StringComparison.Ordinal)
+        || !string.Equals(oldEntry.RefreshToken, newEntry.RefreshToken, StringComparison.Ordinal)
+        || !oldEntry.Scopes.SequenceEqual(newEntry.Scopes, StringComparer.Ordinal);
+
     /// <inheritdoc />
     public async Task<OAuthAccessToken> GetAccessTokenAsync(
         IReadOnlyList<string>? scopes = null,
         CancellationToken ct = default)
     {
-        var entry = _entry;
-
-        if (entry.Kind == PredefinedKeyKind.CustomHeaders)
-        {
-            if (entry.Headers.Count == 0)
-            {
-                SetStatus(OAuthSignInState.NotStarted, "no headers configured");
-                throw new InvalidOperationException($"predefined key '{_id}' has no headers configured; add them.");
-            }
-
-            SetStatus(OAuthSignInState.SignedIn, null);
-            // Sentinel: the controller injects BuildHeaders() for custom-headers, not this value.
-            return new OAuthAccessToken(string.Empty, NonExpiring);
-        }
-
-        if (_invalidated)
-        {
-            throw new InvalidOperationException($"predefined key '{_id}' is marked invalid; update the credential.");
-        }
-
+        // Everything runs under the gate so a captured entry can never be minted with a credential that
+        // an interleaved UpdateEntry (also gated) has since superseded: the kind/invalidation/credential
+        // decision and the mint all read one locked snapshot.
         await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            var entry = _entry;
+
+            if (entry.Kind == PredefinedKeyKind.CustomHeaders)
+            {
+                if (entry.Headers.Count == 0)
+                {
+                    SetStatus(OAuthSignInState.NotStarted, "no headers configured");
+                    throw new InvalidOperationException($"predefined key '{_id}' has no headers configured; add them.");
+                }
+
+                SetStatus(OAuthSignInState.SignedIn, null);
+                // Sentinel: the controller injects BuildHeaders() for custom-headers, not this value.
+                return new OAuthAccessToken(string.Empty, NonExpiring);
+            }
+
             if (_invalidated)
             {
                 throw new InvalidOperationException($"predefined key '{_id}' is marked invalid; update the credential.");

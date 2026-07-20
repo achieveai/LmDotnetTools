@@ -235,6 +235,13 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             {
                 deny.RootElement.GetProperty("decision").GetString().Should().Be("deny");
             }
+
+            // Same host but a non-443 port is denied — a predefined key is HTTPS/443-only, so a
+            // misbehaving gateway cannot extract it over a cleartext port.
+            using (var portDeny = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test", port: 8443))
+            {
+                portDeny.RootElement.GetProperty("decision").GetString().Should().Be("deny");
+            }
         }
         finally
         {
@@ -252,7 +259,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
     }
 
     private static async Task<JsonDocument> PostWebhookAsync(
-        HttpClient client, string sharedSecret, string providerId, string destinationHost)
+        HttpClient client, string sharedSecret, string providerId, string destinationHost, int port = 443)
     {
         var body = JsonSerializer.Serialize(new
         {
@@ -261,7 +268,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             provider_id = providerId,
             rule_id = providerId,
             destination_host = destinationHost,
-            destination_port = 443,
+            destination_port = port,
             method = "GET",
             path = "/",
             required_scopes = Array.Empty<string>(),

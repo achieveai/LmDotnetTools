@@ -28,8 +28,31 @@ internal static class AtomicJsonFile
         }
 
         var json = JsonSerializer.Serialize(value, options);
-        var tempFilePath = filePath + ".tmp";
-        await File.WriteAllTextAsync(tempFilePath, json, Encoding.UTF8, ct).ConfigureAwait(false);
-        File.Move(tempFilePath, filePath, overwrite: true);
+
+        // Unique same-directory staging file (not a fixed "<file>.tmp") so concurrent writers / processes
+        // never collide, and delete it if the write or move fails so a secret-bearing partial file is never
+        // left behind on a cancelled/failed write.
+        var tempFilePath = filePath + "." + Path.GetRandomFileName() + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(tempFilePath, json, Encoding.UTF8, ct).ConfigureAwait(false);
+            File.Move(tempFilePath, filePath, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(tempFilePath))
+                {
+                    File.Delete(tempFilePath);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup of the staging file; surface the original failure below.
+            }
+
+            throw;
+        }
     }
 }

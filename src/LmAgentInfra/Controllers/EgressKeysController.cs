@@ -9,12 +9,12 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 /// blocks on the NEXT session create.
 /// </summary>
 /// <remarks>
-/// SECURITY / THREAT MODEL: like the rest of this local-dev sample (the OAuth sign-in controllers, the
-/// workspaces / providers / conversations endpoints — all unauthenticated) this management API assumes a
-/// trusted local user on a localhost-bound host; it is not a hardened, network-exposed service. It is
-/// deliberately NOT reachable from the sandbox: default-deny egress opens no allow-rule for the app's own
-/// host, so a sandboxed agent cannot call it. GET masks all secret values and nothing here logs them.
-/// An enforced management-auth boundary for the sample as a whole is out of scope for #210.
+/// SECURITY / THREAT MODEL: this credential-management API is for a trusted local user of this local-dev
+/// sample (like the OAuth sign-in / workspaces / providers endpoints, which are also unauthenticated). It
+/// is ENFORCED loopback-only in code (<see cref="RejectNonLoopback"/>) so a non-local caller is rejected
+/// even if the app is bound beyond localhost, and it is additionally unreachable from the sandbox
+/// (default-deny egress opens no allow-rule for the app's own host). GET masks all secret values and
+/// nothing here logs them. A full management-auth boundary for the sample as a whole is out of scope for #210.
 /// </remarks>
 [ApiController]
 [Route("api/auth/egress-keys")]
@@ -23,12 +23,25 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
 {
     /// <summary>Lists the configured entries with all secret material masked/omitted.</summary>
     [HttpGet]
-    public IActionResult List() => Ok(registry.Entries.Select(ToView).ToList());
+    public IActionResult List()
+    {
+        if (RejectNonLoopback() is { } forbidden)
+        {
+            return forbidden;
+        }
+
+        return Ok(registry.Entries.Select(ToView).ToList());
+    }
 
     /// <summary>Creates a new entry (blank id) or updates an existing one (secrets left blank are preserved).</summary>
     [HttpPost]
     public async Task<IActionResult> Upsert([FromBody] EgressKeyRequest request, CancellationToken ct = default)
     {
+        if (RejectNonLoopback() is { } forbidden)
+        {
+            return forbidden;
+        }
+
         ArgumentNullException.ThrowIfNull(request);
 
         // Host: SSRF-safe pattern + no collision with a managed OAuth provider's egress scope.
@@ -75,8 +88,32 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(string id, CancellationToken ct = default)
     {
+        if (RejectNonLoopback() is { } forbidden)
+        {
+            return forbidden;
+        }
+
         var removed = await registry.RemoveAsync(id, ct).ConfigureAwait(false);
         return removed ? NoContent() : NotFound();
+    }
+
+    /// <summary>
+    /// Enforces the local-only boundary: rejects a caller whose remote address is a real, non-loopback IP
+    /// (returns 403). A null remote address — the in-process TestServer and same-host pipelines — is treated
+    /// as local. Returns null when the caller is allowed.
+    /// </summary>
+    private IActionResult? RejectNonLoopback()
+    {
+        // A null HttpContext/remote (in-process TestServer, direct unit construction) is treated as local;
+        // only a real, non-loopback remote IP is rejected.
+        var remote = HttpContext?.Connection?.RemoteIpAddress;
+        if (remote is not null && !System.Net.IPAddress.IsLoopback(remote))
+        {
+            logger.LogWarning("Rejected non-loopback egress-key management request from {Remote}.", remote);
+            return StatusCode(403, new { error = "Egress-key management is restricted to local (loopback) callers." });
+        }
+
+        return null;
     }
 
     private static (PredefinedKeyEntry? entry, string? error) BuildCustomHeadersEntry(

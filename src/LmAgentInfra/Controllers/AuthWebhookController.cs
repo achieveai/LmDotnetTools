@@ -65,7 +65,7 @@ public sealed class AuthWebhookController(
         // rules misconfiguration must not turn this endpoint into an open token-minting oracle —
         // only inject the credential toward that provider's/entry's own hosts. Predefined keys carry
         // their own (user-entered) host, so they gate on the entry's host, not the managed OAuth list.
-        if (!IsDestinationAllowed(tokenProvider, body.DestinationHost))
+        if (!IsDestinationAllowed(tokenProvider, body.DestinationHost, body.DestinationPort))
         {
             logger.LogWarning(
                 "Auth-webhook deny for provider {ProviderId}: destination host {DestinationHost} is not in the provider's allowlist.",
@@ -262,12 +262,14 @@ public sealed class AuthWebhookController(
         ?? predefinedKeys?.TryResolve(provider);
 
     /// <summary>
-    /// The defense-in-depth destination-host gate. Predefined keys gate on their own user-entered
-    /// host(s); managed OAuth providers gate on their compile-time host allowlist.
+    /// The defense-in-depth destination gate. Predefined keys gate on their own user-entered host(s)
+    /// AND on port 443 — the generated rule is HTTPS/443-only, so a malformed/misbehaving gateway must
+    /// not extract the credential for the same host on another (cleartext) port. Managed OAuth providers
+    /// gate on their compile-time host allowlist.
     /// </summary>
-    private static bool IsDestinationAllowed(IOAuthTokenProvider provider, string? destinationHost) =>
+    private static bool IsDestinationAllowed(IOAuthTokenProvider provider, string? destinationHost, int destinationPort) =>
         provider is PredefinedKeyProvider pk
-            ? EgressHostMatcher.IsAllowed(pk.Hosts, destinationHost)
+            ? destinationPort == 443 && EgressHostMatcher.IsAllowed(pk.Hosts, destinationHost)
             : OAuthProviderHosts.IsAllowed(provider.ProviderId, destinationHost);
 
     /// <summary>

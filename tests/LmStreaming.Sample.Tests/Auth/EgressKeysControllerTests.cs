@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
+using Microsoft.AspNetCore.Http;
 
 namespace LmStreaming.Sample.Tests.Auth;
 
@@ -164,6 +165,26 @@ public sealed class EgressKeysControllerTests
         {
             // No existing entry to preserve from → a blank value on a fresh header is an error.
             (await controller.Upsert(CustomReq("api.example.com", ("X-New", "")))).Should().BeOfType<BadRequestObjectResult>();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Non_loopback_caller_is_rejected_403()
+    {
+        var (controller, _, dir) = NewController();
+        try
+        {
+            var ctx = new DefaultHttpContext();
+            ctx.Connection.RemoteIpAddress = System.Net.IPAddress.Parse("203.0.113.7"); // a real, non-loopback IP
+            controller.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = ctx };
+
+            var result = await controller.Upsert(CustomReq("api.example.com", ("X-Key", "v")));
+
+            result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
         }
         finally
         {

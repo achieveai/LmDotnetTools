@@ -104,6 +104,19 @@ public sealed class OAuthTokenEndpointClientTests
     }
 
     [Fact]
+    public async Task PostAsync_handles_unexpected_json_field_types()
+    {
+        // Valid JSON but access_token is an object → GetString throws InvalidOperationException, which
+        // must be normalized rather than escaping the documented result contract.
+        var (client, _) = NewClient("{\"access_token\":{}}");
+
+        var result = await client.PostAsync("https://token.example/oauth/token", RefreshForm());
+
+        result.AccessToken.Should().BeNull();
+        result.Error.Should().Be("unparseable_response");
+    }
+
+    [Fact]
     public async Task PostAsync_surfaces_oauth_error_on_4xx()
     {
         var (client, _) = NewClient(new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)

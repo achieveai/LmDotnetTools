@@ -111,16 +111,28 @@ public sealed class PredefinedKeyRegistry
         await _persistGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            _ = _providers.TryGetValue(entry.Id, out var existing);
+            var credentialChanged = existing is null || PredefinedKeyProvider.CredentialChanged(existing.Entry, entry);
+
             var candidate = _providers.Values
                 .Select(p => p.Entry)
                 .Where(e => !string.Equals(e.Id, entry.Id, StringComparison.Ordinal))
                 .Append(entry)
                 .ToList();
+
+            // Invalidate the stale minted token BEFORE the new definition is made durable, so a failed
+            // persist can never leave the new definition on disk while the old token stays reloadable under
+            // the unchanged provider id. Cleanup is best-effort (see TryRemovePersistedTokenAsync).
+            if (existing is not null && credentialChanged)
+            {
+                await TryRemovePersistedTokenAsync(entry.Id).ConfigureAwait(false);
+            }
+
             await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
 
-            if (_providers.TryGetValue(entry.Id, out var existing))
+            if (existing is not null)
             {
-                await existing.UpdateEntry(entry, ct).ConfigureAwait(false);
+                await existing.UpdateEntry(entry, credentialChanged, ct).ConfigureAwait(false);
             }
             else
             {
@@ -155,13 +167,32 @@ public sealed class PredefinedKeyRegistry
             await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
 
             _ = _providers.TryRemove(id, out _);
-            // Best-effort: drop the persisted minted token so the secret does not linger.
-            await provider.SignOutAsync(ct).ConfigureAwait(false);
+            // Drop the persisted minted token so the secret does not linger — genuinely best-effort so a
+            // cleanup failure/cancellation never fails the (already-committed) deletion or strands the caller.
+            await TryRemovePersistedTokenAsync(id).ConfigureAwait(false);
             return true;
         }
         finally
         {
             _ = _persistGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Best-effort removal of an entry's persisted minted token. Uses a NON-request cancellation token so a
+    /// disconnecting caller cannot strand the cleanup, and never throws — a failure is logged (never the
+    /// secret) and the operation proceeds; a leftover token is harmless (it is re-validated / overwritten on
+    /// the next mint and is not reachable without its now-removed definition).
+    /// </summary>
+    private async Task TryRemovePersistedTokenAsync(string entryId)
+    {
+        try
+        {
+            await _tokenStore.RemoveAsync($"{ProviderIdPrefix}{entryId}", CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Best-effort cleanup of the persisted token for predefined key {Id} failed.", entryId);
         }
     }
 }

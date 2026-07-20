@@ -66,9 +66,12 @@ internal sealed class OAuthTokenEndpointClient(HttpClient http)
                 expiresIn = root.TryGetProperty("expires_in", out var ei) && ei.TryGetInt32(out var seconds) ? seconds : 0;
                 error = root.TryGetProperty("error", out var er) ? er.GetString() : null;
             }
-            catch (JsonException)
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
             {
-                // Non-JSON body (HTML error page, etc.). Surface as a token-free error; never log the body.
+                // Non-JSON body (HTML error page) OR valid JSON with unexpected field types (e.g.
+                // {"access_token":{}} makes GetString throw InvalidOperationException). Either way, surface a
+                // fixed token-free error rather than letting it escape the documented result contract; never
+                // log the body.
                 error = "unparseable_response";
             }
         }

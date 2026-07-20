@@ -16,8 +16,35 @@ public sealed class PredefinedKeyRegistryTests
         public Task RemoveAsync(string provider, CancellationToken ct = default) => Task.CompletedTask;
     }
 
-    private static PredefinedKeyRegistry NewRegistry(string dir) =>
-        new(dir, new NoopStore(), new HttpClient(), NullLoggerFactory.Instance);
+    private sealed class InMemoryStore : IOAuthTokenStore
+    {
+        private readonly Dictionary<string, OAuthTokenRecord> _map = new(StringComparer.Ordinal);
+
+        public bool ThrowOnRemove { get; init; }
+
+        public Task<OAuthTokenRecord?> GetAsync(string provider, CancellationToken ct = default) =>
+            Task.FromResult(_map.TryGetValue(provider, out var r) ? r : null);
+
+        public Task SaveAsync(OAuthTokenRecord record, CancellationToken ct = default)
+        {
+            _map[record.Provider] = record;
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveAsync(string provider, CancellationToken ct = default)
+        {
+            if (ThrowOnRemove)
+            {
+                throw new IOException("simulated token-store cleanup failure");
+            }
+
+            _ = _map.Remove(provider);
+            return Task.CompletedTask;
+        }
+    }
+
+    private static PredefinedKeyRegistry NewRegistry(string dir, IOAuthTokenStore? store = null) =>
+        new(dir, store ?? new NoopStore(), new HttpClient(), NullLoggerFactory.Instance);
 
     private static PredefinedKeyEntry Custom(string id, string host = "api.example.com") => new()
     {
@@ -26,6 +53,19 @@ public sealed class PredefinedKeyRegistryTests
         Kind = PredefinedKeyKind.CustomHeaders,
         Headers = [new PredefinedHeader("X-Key", "v")],
     };
+
+    private static PredefinedKeyEntry Refresh(string id, string host = "api.example.com", string refreshToken = "rt0") => new()
+    {
+        Id = id,
+        Host = host,
+        Kind = PredefinedKeyKind.RefreshToken,
+        TokenEndpoint = "https://token.example/oauth/token",
+        ClientId = "cid",
+        RefreshToken = refreshToken,
+    };
+
+    private static OAuthTokenRecord Minted(string providerId) =>
+        new(providerId, null, "rotated-rt", "at", DateTimeOffset.UtcNow.AddHours(1), []);
 
     [Fact]
     public async Task Upsert_creates_resolves_and_persists_across_reload()
@@ -101,6 +141,91 @@ public sealed class PredefinedKeyRegistryTests
             registry.TryResolve("github").Should().BeNull();
             registry.TryResolve(null).Should().BeNull();
             registry.TryResolve("predefined-unknown").Should().BeNull();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Update_changing_credential_invalidates_the_persisted_token()
+    {
+        var dir = Directory.CreateTempSubdirectory("egr-reg");
+        try
+        {
+            var store = new InMemoryStore();
+            var registry = NewRegistry(dir.FullName, store);
+            await registry.UpsertAsync(Refresh("e1"));
+            await store.SaveAsync(Minted("predefined-e1"));
+
+            await registry.UpsertAsync(Refresh("e1", refreshToken: "new-rt")); // credential change
+
+            (await store.GetAsync("predefined-e1")).Should().BeNull();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Update_preserving_credential_retains_the_persisted_rotated_token()
+    {
+        var dir = Directory.CreateTempSubdirectory("egr-reg");
+        try
+        {
+            var store = new InMemoryStore();
+            var registry = NewRegistry(dir.FullName, store);
+            await registry.UpsertAsync(Refresh("e1"));
+            await store.SaveAsync(Minted("predefined-e1"));
+
+            await registry.UpsertAsync(Refresh("e1", host: "api2.example.com")); // host-only edit
+
+            (await store.GetAsync("predefined-e1")).Should().NotBeNull();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Remove_cleans_up_the_persisted_token()
+    {
+        var dir = Directory.CreateTempSubdirectory("egr-reg");
+        try
+        {
+            var store = new InMemoryStore();
+            var registry = NewRegistry(dir.FullName, store);
+            await registry.UpsertAsync(Refresh("e1"));
+            await store.SaveAsync(Minted("predefined-e1"));
+
+            (await registry.RemoveAsync("e1")).Should().BeTrue();
+
+            (await store.GetAsync("predefined-e1")).Should().BeNull();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Token_cleanup_failure_does_not_fail_upsert_or_remove()
+    {
+        var dir = Directory.CreateTempSubdirectory("egr-reg");
+        try
+        {
+            var store = new InMemoryStore { ThrowOnRemove = true };
+            var registry = NewRegistry(dir.FullName, store);
+            await registry.UpsertAsync(Refresh("e1"));
+
+            // A credential-change upsert and a delete both trigger best-effort token cleanup that throws
+            // internally — neither must surface the failure to the caller.
+            await FluentActions.Awaiting(() => registry.UpsertAsync(Refresh("e1", refreshToken: "x")))
+                .Should().NotThrowAsync();
+            (await registry.RemoveAsync("e1")).Should().BeTrue();
         }
         finally
         {
