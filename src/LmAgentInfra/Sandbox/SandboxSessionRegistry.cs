@@ -739,7 +739,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             workspaceId
         );
 
-        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session, ct).ConfigureAwait(false);
+        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session).ConfigureAwait(false);
         return await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
     }
 
@@ -810,8 +810,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// </summary>
     private async Task InvalidateSessionAsync(
         (string WorkspaceId, string AppId) key,
-        SandboxSession session,
-        CancellationToken ct
+        SandboxSession session
     )
     {
         // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
@@ -834,7 +833,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
 
         // Clear every per-session-id-indexed collection so a gateway-evicted session leaves no stale
         // sub-agent binding / thread routing / discovery-ledger state behind until registry disposal.
-        await EvictSessionStateAsync(session, ct).ConfigureAwait(false);
+        await EvictSessionStateAsync(session).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -848,7 +847,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionAsync"/> does that, and it calls
     /// this AFTER the DELETE so the session's creating credential is still resolvable for it.
     /// </summary>
-    private async Task EvictSessionStateAsync(SandboxSession session, CancellationToken ct)
+    private async Task EvictSessionStateAsync(SandboxSession session)
     {
         // Reverse map removal is exact: only drops the entry when it still points at this session, so a
         // concurrent recreation's mapping is never clobbered.
@@ -865,7 +864,28 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         {
             DecrementSessionRefAndMaybeDispose(credential);
         }
-        await _sessionSecretStore.RemoveAsync(session.SessionId, ct).ConfigureAwait(false);
+        // The in-memory eviction above is COMMITTED: the session is now unreachable through every
+        // per-session collection. The persisted webhook secret is the last authenticator that could
+        // still validate a callback for this dead session, so its removal MUST run to completion under
+        // CancellationToken.None — never the caller's cancellable token. Cancelling between the
+        // committed in-memory eviction and the file delete would otherwise leave a valid on-disk secret
+        // for a session the registry already considers gone, letting a later callback authenticate a
+        // supposedly dead session. Best-effort: a filesystem failure is logged and swallowed so it
+        // can't leave the rest of teardown half-done.
+        try
+        {
+            await _sessionSecretStore
+                .RemoveAsync(session.SessionId, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to remove webhook secret for evicted session {SessionId}; continuing teardown.",
+                session.SessionId
+            );
+        }
     }
 
     /// <summary>
@@ -1114,7 +1134,10 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// every non-default-credential session forever. Evicts each entry's creation slot + reverse
     /// maps, then issues the gateway DELETE. Idempotent — a no-op when nothing is cached for the id.
     /// Best-effort: gateway failures are logged inside <see cref="DestroySessionAsync"/> and
-    /// swallowed so run teardown never throws.
+    /// swallowed so run teardown never throws. Cancellation is observed only BEFORE each entry is
+    /// removed from the cache (the point of no return); once an entry is committed to teardown its
+    /// remote DELETE + secret removal run under <see cref="CancellationToken.None"/> so a cancellation
+    /// can never orphan the remote session or its persisted secret.
     /// </summary>
     public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
     {
@@ -1125,6 +1148,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
 
         foreach (var key in matchingKeys)
         {
+            // Check cancellation BEFORE removing the entry from the cache — this is the point of no
+            // return. Once the entry is gone the session is committed to teardown; observing a
+            // cancellation mid-teardown would forget the session while potentially leaving the remote
+            // gateway session and/or its persisted secret behind (DestroySessionAsync also swallows
+            // cancellation, so the caller could never reliably retry). Throwing here instead leaves the
+            // remaining cache entries intact for a clean retry.
+            ct.ThrowIfCancellationRequested();
+
             if (
                 !_sessions.TryRemove(key, out var lazy)
                 || !lazy.IsValueCreated
@@ -1136,15 +1167,21 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
 
             var session = lazy.Value.Result;
 
+            // The cache entry is now removed — teardown is COMMITTED. Run the gateway DELETE and the
+            // per-session state eviction under CancellationToken.None so a cancellation cannot orphan the
+            // remote sandbox session or its on-disk secret. DestroySessionAsync isolates its own gateway
+            // failures, and the secret removal inside EvictSessionStateAsync is likewise best-effort, so
+            // one cleanup step failing never skips the rest.
+            //
             // Destroy BEFORE evicting per-session state: DestroySessionAsync resolves the session's
             // creating credential via CredentialFor(sessionId), so the DELETE must carry the owner's
             // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session) —
             // and CredentialFor reads _sessionCredentials, which EvictSessionStateAsync clears.
-            await DestroySessionAsync(session, ct).ConfigureAwait(false);
+            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
             // Clear every per-session collection (reverse map, sub-agent bindings, thread routing,
             // discovery ledger, credential + client refcount, persisted secret) via the shared helper —
             // the same one InvalidateSessionAsync uses, so the two teardown paths can never diverge.
-            await EvictSessionStateAsync(session, ct).ConfigureAwait(false);
+            await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
     }
 
@@ -1214,13 +1251,37 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
                 _clients.Clear();
             }
 
-            foreach (var entry in remainingClients)
+            try
             {
-                entry.Client.Dispose();
-                entry.Transport.Dispose();
-            }
+                foreach (var entry in remainingClients)
+                {
+                    // Isolate each entry's disposal independently: one Client.Dispose()/Transport.Dispose()
+                    // throwing must not abort the loop and skip the remaining entries — nor the shared
+                    // HttpClient disposal in the nested finally below — per the documented best-effort
+                    // disposal contract.
+                    try
+                    {
+                        entry.Client.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to dispose a sandbox client during registry disposal; continuing.");
+                    }
 
-            _httpClient.Dispose();
+                    try
+                    {
+                        entry.Transport.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to dispose a sandbox transport during registry disposal; continuing.");
+                    }
+                }
+            }
+            finally
+            {
+                _httpClient.Dispose();
+            }
         }
     }
 
