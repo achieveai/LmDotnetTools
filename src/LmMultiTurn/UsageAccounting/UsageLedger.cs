@@ -68,14 +68,17 @@ public sealed class UsageLedger : IUsageSink
     /// </summary>
     public ConversationUsageAggregate Snapshot(UsageCompleteness completeness = UsageCompleteness.InProgress)
     {
+        UsageRecord[] records;
+        long prefix;
         lock (_gate)
         {
-            return ConversationUsageAggregate.Fold(
-                RootConversationId,
-                _byAttempt.Values,
-                _watermark.Prefix,
-                completeness);
+            // Copy the records and watermark under the lock, then fold (group/sort) OUTSIDE it, so reporting
+            // cost does not hold the mutation lock and block concurrent usage updates as history grows.
+            records = [.. _byAttempt.Values];
+            prefix = _watermark.Prefix;
         }
+
+        return ConversationUsageAggregate.Fold(RootConversationId, records, prefix, completeness);
     }
 
     /// <summary>
