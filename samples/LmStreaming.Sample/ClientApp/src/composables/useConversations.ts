@@ -22,7 +22,16 @@ export function useConversations() {
     isLoading.value = true;
     error.value = null;
     try {
-      conversations.value = await apiListConversations();
+      const fetched = await apiListConversations();
+      // Merge rather than overwrite: this fetch is kicked off once, on mount, and can still be
+      // in flight when the user's first send in a brand-new thread synchronously calls
+      // addOrUpdateConversation() below. That new conversation has not been persisted to the
+      // backend yet, so it is legitimately absent from this fetch's result. Blindly replacing
+      // conversations.value would silently discard it if this fetch resolves after the local
+      // add — keep any such local-only entries (newest first, ahead of the fetched list).
+      const fetchedIds = new Set(fetched.map((c) => c.threadId));
+      const localOnly = conversations.value.filter((c) => !fetchedIds.has(c.threadId));
+      conversations.value = [...localOnly, ...fetched];
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to load conversations';
       console.error('Failed to load conversations:', e);
