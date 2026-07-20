@@ -16,7 +16,12 @@ public class SystemProcessHandleTests
         {
             Agent = CliAgentKind.Codex,
             ExecutableHint = "dotnet",
-            Arguments = args ?? ["--info"],
+            // `--version` (a single short line) rather than `--info`: these tests don't read the redirected
+            // stdout/stderr before calling WaitForExitAsync, so a child whose output exceeds the OS pipe
+            // buffer would block writing and never exit — deadlocking the wait. `--info` grows with the number
+            // of installed SDKs/runtimes and crosses that threshold on developer boxes (it stayed under it on
+            // CI's clean image, so the hang only reproduced locally). `--version` can never fill the buffer.
+            Arguments = args ?? ["--version"],
         };
         return DefaultProcessLauncher.Instance.Launch(request);
     }
