@@ -88,19 +88,13 @@ public sealed class FileOAuthTokenStore : IOAuthTokenStore
         ArgumentNullException.ThrowIfNull(record);
 
         var filePath = GetFilePath(record.Provider);
-        var json = JsonSerializer.Serialize(record, JsonOptions);
 
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            // Ensure the directory still exists (it may have been removed out-of-band).
-            _ = Directory.CreateDirectory(_baseDirectory);
-
-            // Atomic write: stage to a temp file, then move over the target so a reader never
-            // observes a partially written file.
-            var tempFilePath = filePath + ".tmp";
-            await File.WriteAllTextAsync(tempFilePath, json, Encoding.UTF8, ct).ConfigureAwait(false);
-            File.Move(tempFilePath, filePath, overwrite: true);
+            // Atomic write (temp-file + move) via the shared helper so a reader never observes a
+            // partially-written file. The helper re-creates the base dir if it was removed out-of-band.
+            await AtomicJsonFile.WriteAsync(filePath, record, JsonOptions, ct).ConfigureAwait(false);
         }
         finally
         {

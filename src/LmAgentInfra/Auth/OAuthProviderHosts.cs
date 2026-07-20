@@ -33,21 +33,36 @@ internal static class OAuthProviderHosts
     /// <summary>
     /// True when <paramref name="destinationHost"/> matches one of the provider's allowed hosts —
     /// exact (case-insensitive) or a <c>*.</c> wildcard suffix match. Fails closed: an unknown
-    /// provider or a missing host is not allowed.
+    /// provider or a missing host is not allowed. Matching is delegated to
+    /// <see cref="EgressHostMatcher.IsAllowed"/> so the OAuth path and the predefined-key path share
+    /// one algorithm.
     /// </summary>
-    public static bool IsAllowed(string providerId, string? destinationHost)
+    public static bool IsAllowed(string providerId, string? destinationHost) =>
+        HostsByProvider.TryGetValue(providerId, out var hosts)
+        && EgressHostMatcher.IsAllowed(hosts, destinationHost);
+
+    /// <summary>
+    /// True when a user-entered predefined-key host <paramref name="pattern"/> would match (or be
+    /// matched by) a managed OAuth provider's host — i.e. it collides with the github/ado/m365 egress
+    /// scope. Predefined-key entries are rejected in that case so a static key can never silently
+    /// shadow (or be shadowed by) a managed OAuth credential on the same host.
+    /// </summary>
+    public static bool CollidesWithManagedHost(string? pattern)
     {
-        if (string.IsNullOrWhiteSpace(destinationHost) || !HostsByProvider.TryGetValue(providerId, out var hosts))
+        if (string.IsNullOrWhiteSpace(pattern))
         {
             return false;
         }
 
-        foreach (var host in hosts)
+        // Strip a single leading "*." so a wildcard entry is compared by its concrete suffix host.
+        var candidate = pattern.StartsWith("*.", StringComparison.Ordinal) ? pattern[2..] : pattern;
+
+        foreach (var hosts in HostsByProvider.Values)
         {
-            var allowed = host.StartsWith("*.", StringComparison.Ordinal)
-                ? destinationHost.EndsWith(host[1..], StringComparison.OrdinalIgnoreCase)
-                : string.Equals(destinationHost, host, StringComparison.OrdinalIgnoreCase);
-            if (allowed)
+            // Collision either way: the entry matches a managed host, or a managed *.wildcard matches
+            // the entry's host.
+            if (EgressHostMatcher.IsAllowed(hosts, candidate)
+                || hosts.Any(h => EgressHostMatcher.IsAllowed([pattern], h)))
             {
                 return true;
             }

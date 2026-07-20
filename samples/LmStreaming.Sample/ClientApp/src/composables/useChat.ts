@@ -5,12 +5,9 @@ import type {
   UsageMessage,
   ToolCallResultMessage,
   DisplayItem,
-  NotificationDisplayData,
   MessageStatus,
-  ReasoningMessage,
   ToolsCallMessage,
   ToolCallMessage,
-  NotifyMessage,
   AuthEvent,
   AuthRequiredEvent,
 } from '@/types';
@@ -36,6 +33,13 @@ import {
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
 import { useMessageMerger } from './useMessageMerger';
+import { getMergeKey } from './messageMergeKey';
+import { buildDisplayItems } from './messageDisplay';
+import {
+  serverToolUseToToolsCall,
+  serverToolResultToToolCallResult,
+  textWithCitationsToText,
+} from './messageConversions';
 import { logger } from '@/utils';
 
 const log = logger.forComponent('useChat');
@@ -92,83 +96,6 @@ export interface UseChatOptions {
 }
 
 /**
- * Generate merge key for message updates
- */
-function getMergeKey(msg: Message, turnSeq = 0): string {
-  const runId = msg.runId || 'default';
-  const generationId = msg.generationId || 'default';
-  const messageOrderIdx = msg.messageOrderIdx ?? 0;
-  const mergeKind = getMergeKind(msg);
-
-  // A notification carries a distinct generationId ('notify:<guid>' stamped by the backend on the
-  // ONE message object), so two notifications in one run never collide on the shared
-  // runId/messageOrderIdx (both 0), and the live-published copy merges with its reload-parsed twin
-  // (same generationId). Keyed explicitly so a null/missing messageOrderIdx can't fold two distinct
-  // notifications onto one pill.
-  if (isNotifyMessage(msg)) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
-  }
-
-  // Individual tool calls — streaming OR finalized — are keyed by tool_call_id. Several concurrent
-  // tool calls in one turn share runId/generationId/messageOrderIdx and differ only by tool_call_id
-  // (e.g. GPT-5.5 via the OpenAI Responses API); without it they collapse into a single pill.
-  if (isToolCallUpdateMessage(msg) || isToolCallMessage(msg)) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_call_id || 'tc'}`;
-  }
-
-  // A finalized single-call ToolsCallMessage is the same case wrapped in the aggregate type —
-  // disambiguate by its tool_call_id too. Multi-call aggregates already carry every call in one
-  // message (rendered as N pills), so they key on messageOrderIdx only.
-  if (isToolsCallMessage(msg) && msg.tool_calls?.length === 1 && msg.tool_calls[0]?.tool_call_id) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.tool_calls[0].tool_call_id}`;
-  }
-
-  // Reasoning and text have no per-instance id (unlike tool_call_id). The server now mints a
-  // per-turn generationId (MultiTurnAgentLoop.ExecuteRunTurnsAsync), so live streams keep turns
-  // distinct on their own. But conversations PERSISTED before that fix still carry the old
-  // run-scoped shape on disk — one generationId across every turn with messageOrderIdx reset each
-  // turn — so turn N and N+1 content would collide on reload (later turns' thinking/text collapsing
-  // onto the first block, text between tool calls pinned to the top instead of interleaving). Fold
-  // in a caller-supplied turn epoch (contentTurnEpoch in useChat, bumped when content resumes after
-  // intervening non-content) so each turn stays a distinct block regardless. Defense-in-depth that
-  // also covers that on-disk legacy data. Mirrors the tool_call_id disambiguation above.
-  if (
-    isReasoningMessage(msg) || isReasoningUpdateMessage(msg) ||
-    isTextMessage(msg) || isTextUpdateMessage(msg)
-  ) {
-    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-t${turnSeq}`;
-  }
-
-  // ToolsCallUpdate accumulates tools into one array → key on messageOrderIdx only.
-  return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
-}
-
-function getMergeKind(msg: Message): 'text' | 'reasoning' | 'tools' | 'tool' | 'notify' | 'other' {
-  if (isNotifyMessage(msg)) return 'notify';
-  if (isTextMessage(msg) || isTextUpdateMessage(msg)) return 'text';
-  if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) return 'reasoning';
-  if (isToolsCallMessage(msg) || isToolsCallUpdateMessage(msg)) return 'tools';
-  if (isToolCallMessage(msg) || isToolCallUpdateMessage(msg)) return 'tool';
-  return 'other';
-}
-
-/**
- * Normalize a NotifyMessage into the shape the notification pill renders. Producing the pill data
- * here (rather than passing the raw message) lets the legacy `context_discovery` TextMessage path
- * feed the SAME pill via a hand-built {@link NotificationDisplayData}.
- */
-function notifyToDisplayData(msg: NotifyMessage): NotificationDisplayData {
-  return {
-    notifyKind: msg.notify_kind,
-    label: msg.label,
-    sourceToolName: msg.source_tool_name,
-    sourceToolCallId: msg.source_tool_call_id,
-    detail: msg.detail,
-    text: msg.text,
-  };
-}
-
-/**
  * Check if message contains test instructions
  */
 export function isTestInstruction(text: string): boolean {
@@ -180,6 +107,17 @@ export function isTestInstruction(text: string): boolean {
  */
 export function getDisplayText(text: string): string {
   return isTestInstruction(text) ? '🧪 Test instruction sent' : text;
+}
+
+/**
+ * Fresh (uncached) input tokens for one usage row. `cacheRead` is a SUBSET of `input` for the OpenAI
+ * family, so In = input - cacheRead; when a provider reports `cacheRead >= input` (some report cache reads
+ * additively) fall back to the full input so the banner value never goes negative. Shared by the live
+ * stream and the reload path so both normalize identically, and applied PER MODEL ROW before summing so a
+ * mix of rows (some with cacheRead > input) is handled correctly (#196).
+ */
+export function uncachedInput(input: number, cacheRead: number): number {
+  return cacheRead <= input ? input - cacheRead : input;
 }
 
 /**
@@ -329,156 +267,11 @@ export function useChat(options: UseChatOptions = {}) {
   }
 
   /**
-   * Transform messages into display items with pill grouping
+   * Transform messages into display items with pill grouping. Delegates to the shared
+   * {@link buildDisplayItems} (extracted so the sub-agent panel renders identically) — `sortMessages`
+   * already returns non-pending messages in arrival order.
    */
-  const displayItems = computed<DisplayItem[]>(() => {
-    const sortedMessages = sortMessages();
-    const items: DisplayItem[] = [];
-
-    let pillBuffer: Array<ReasoningMessage | ToolsCallMessage> = [];
-    let pillRunId: string | null = null;
-    let pillParentRunId: string | null = null;
-    let pillMessageOrderIdx: number | null = null;
-
-    function flushPill() {
-      if (pillBuffer.length > 0) {
-        items.push({
-          type: 'pill',
-          id: `pill-${items.length}`,
-          items: [...pillBuffer],
-          runId: pillRunId,
-          parentRunId: pillParentRunId,
-          messageOrderIdx: pillMessageOrderIdx,
-        });
-        pillBuffer = [];
-        pillRunId = null;
-        pillParentRunId = null;
-        pillMessageOrderIdx = null;
-      }
-    }
-
-    for (const msg of sortedMessages) {
-      const content = msg.content;
-      // Out-of-band notifications render as a distinct pill, NEVER a user bubble — so this branch
-      // must precede the `role === 'user'` catch-all (a NotifyMessage maps to Role.User, and a
-      // reload-parsed one is tagged role 'user'). The legacy pre-migration path — a context_discovery
-      // marker flattened onto a Role.User TextMessage — is folded into the SAME branch so already
-      // persisted rows render one unified context pill (no duplicate, no user bubble) too.
-      if (isNotifyMessage(content)) {
-        flushPill();
-        items.push({
-          type: 'notification',
-          id: msg.id,
-          notification: notifyToDisplayData(content),
-          runId: msg.runId,
-        });
-      } else if (isTextMessage(content) && content.context_discovery != null) {
-        flushPill();
-        items.push({
-          type: 'notification',
-          id: msg.id,
-          notification: {
-            notifyKind: 'context-discovery',
-            contextPath: content.context_discovery.path,
-            contextTruncated: content.context_discovery.truncated,
-            text: content.text,
-          },
-          runId: msg.runId,
-        });
-      } else if (msg.role === 'user') {
-        flushPill();
-        items.push({
-          type: 'user-message',
-          id: msg.id,
-          content: msg.content as TextMessage,
-          status: msg.status,
-          timestamp: msg.timestamp,
-        });
-      } else if (isReasoningMessage(msg.content)) {
-        const reasoning = msg.content as ReasoningMessage;
-        const visibility = normalizeReasoningVisibility(reasoning.visibility);
-
-        // Skip encrypted reasoning (just shows "[Encrypted reasoning hidden]" noise)
-        if (visibility === 'Encrypted') {
-          continue;
-        }
-
-        // Skip duplicate plain reasoning with same content already in pill buffer
-        // (backend stores both streamed accumulation and final complete message)
-        const isDuplicate = pillBuffer.some(
-          (item) =>
-            isReasoningMessage(item) &&
-            (item as ReasoningMessage).generationId === reasoning.generationId &&
-            (item as ReasoningMessage).reasoning === reasoning.reasoning
-        );
-        if (isDuplicate) {
-          continue;
-        }
-
-        // Add to pill buffer
-        pillBuffer.push(reasoning);
-        pillRunId = msg.runId ?? null;
-        pillParentRunId = msg.parentRunId ?? null;
-        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
-      } else if (isToolsCallMessage(msg.content)) {
-        // Split multi-tool-call messages into individual pills (one per tool call)
-        const toolsCall = msg.content as ToolsCallMessage;
-        for (const tc of toolsCall.tool_calls) {
-          const singleToolMsg: ToolsCallMessage = {
-            $type: MessageType.ToolsCall,
-            tool_calls: [tc],
-            role: toolsCall.role,
-            generationId: toolsCall.generationId,
-            runId: toolsCall.runId,
-            parentRunId: toolsCall.parentRunId,
-            threadId: toolsCall.threadId,
-            messageOrderIdx: toolsCall.messageOrderIdx,
-          };
-          pillBuffer.push(singleToolMsg);
-        }
-        pillRunId = msg.runId ?? null;
-        pillParentRunId = msg.parentRunId ?? null;
-        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
-      } else if (isToolCallMessage(msg.content)) {
-        // Wrap individual tool call as its own pill (no merging)
-        const toolCall: ToolCallMessage = msg.content as ToolCallMessage;
-        const toolsCallMsg: ToolsCallMessage = {
-          $type: MessageType.ToolsCall,
-          tool_calls: [{
-            tool_call_id: toolCall.tool_call_id,
-            function_name: toolCall.function_name,
-            function_args: toolCall.function_args,
-          }],
-          role: toolCall.role,
-          generationId: toolCall.generationId,
-          runId: toolCall.runId,
-          parentRunId: toolCall.parentRunId,
-          threadId: toolCall.threadId,
-          messageOrderIdx: toolCall.messageOrderIdx,
-        };
-        pillBuffer.push(toolsCallMsg);
-        pillRunId = msg.runId ?? null;
-        pillParentRunId = msg.parentRunId ?? null;
-        pillMessageOrderIdx = msg.messageOrderIdx ?? null;
-      } else if (isTextMessage(msg.content)) {
-        // Text message - flush pill and add text
-        flushPill();
-        items.push({
-          type: 'assistant-message',
-          id: msg.id,
-          content: msg.content as TextMessage,
-          runId: msg.runId,
-          parentRunId: msg.parentRunId,
-          messageOrderIdx: msg.messageOrderIdx,
-        });
-      }
-    }
-
-    // Flush any remaining pill items
-    flushPill();
-
-    return items;
-  });
+  const displayItems = computed<DisplayItem[]>(() => buildDisplayItems(sortMessages()));
 
   /**
    * Handle RunAssignment message - activate pending messages
@@ -617,11 +410,9 @@ export function useChat(options: UseChatOptions = {}) {
       const totalTokens = u.total_tokens ?? (promptTokens + completionTokens);
       const cachedTokens = u.input_tokens_details?.cached_tokens ?? u.cacheReadTokens ?? 0;
       const cacheCreationTokens = u.cache_creation_input_tokens ?? u.cacheCreationTokens ?? 0;
-      // Fresh input for this turn = prompt minus the cached read. cachedTokens is a SUBSET of
-      // promptTokens for the OpenAI family; if it ever exceeds it (e.g. providers that report cache
-      // reads additively) fall back to the prompt so this never goes negative. Accumulate per-turn so
-      // In + Cached + Out == Total holds across the whole conversation.
-      const uncachedInputTokens = cachedTokens <= promptTokens ? promptTokens - cachedTokens : promptTokens;
+      // Fresh input for this turn = prompt minus the cached read (never negative; see uncachedInput).
+      // Accumulate per-turn so In + Cached + Out == Total holds across the whole conversation.
+      const uncachedInputTokens = uncachedInput(promptTokens, cachedTokens);
       cumulativeUsage.value = {
         promptTokens: cumulativeUsage.value.promptTokens + promptTokens,
         uncachedInputTokens: cumulativeUsage.value.uncachedInputTokens + uncachedInputTokens,
@@ -682,41 +473,12 @@ export function useChat(options: UseChatOptions = {}) {
 
     // Handle server tool result → convert to ToolCallResultMessage and attach
     if (isServerToolResultMessage(msg)) {
-      const stResult = msg as unknown as Record<string, unknown>;
-      const toolUseId =
-        (typeof stResult.tool_use_id === 'string' ? stResult.tool_use_id : undefined)
-        ?? (typeof stResult.tool_call_id === 'string' ? stResult.tool_call_id : undefined);
-      const toolName =
-        (typeof stResult.tool_name === 'string' ? stResult.tool_name : undefined)
-        ?? (typeof stResult.function_name === 'string' ? stResult.function_name : undefined);
-      const isError =
-        (typeof stResult.is_error === 'boolean' ? stResult.is_error : undefined)
-        ?? (typeof stResult.isError === 'boolean' ? stResult.isError : undefined)
-        ?? false;
-      const errorCode =
-        (typeof stResult.error_code === 'string' ? stResult.error_code : undefined)
-        ?? (typeof stResult.errorCode === 'string' ? stResult.errorCode : undefined)
-        ?? null;
-      const rawResult = stResult.result;
-      const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult ?? {});
-      const converted: ToolCallResultMessage = {
-        $type: MessageType.ToolCallResult,
-        tool_call_id: toolUseId,
-        tool_name: toolName,
-        result: isError ? `Error (${errorCode || 'unknown'}): ${resultStr}` : resultStr,
-        is_error: isError,
-        error_code: errorCode,
-        role: msg.role,
-        generationId: msg.generationId,
-        runId: msg.runId,
-        parentRunId: msg.parentRunId,
-        threadId: msg.threadId,
-        messageOrderIdx: msg.messageOrderIdx,
-      };
+      const converted = serverToolResultToToolCallResult(msg);
+      const toolUseId = converted.tool_call_id;
       if (toolUseId) {
         toolResults.value.set(toolUseId, converted);
       }
-      log.debug('Received server tool result', { toolName, toolUseId, isError });
+      log.debug('Received server tool result', { toolName: converted.tool_name, toolUseId, isError: converted.is_error });
 
       // Attach to matching server tool use (converted to ToolsCallMessage)
       if (toolUseId) {
@@ -732,80 +494,27 @@ export function useChat(options: UseChatOptions = {}) {
           }
         }
       } else {
-        log.warn('Server tool result missing tool id', { msg: stResult });
+        log.warn('Server tool result missing tool id', { msg });
       }
       return;
     }
 
     // Handle server tool use → convert to ToolsCallMessage for pill display
     if (isServerToolUseMessage(msg)) {
-      const stUse = msg as unknown as Record<string, unknown>;
-      const toolName =
-        (typeof stUse.tool_name === 'string' ? stUse.tool_name : undefined)
-        ?? (typeof stUse.function_name === 'string' ? stUse.function_name : undefined);
-      const toolUseId =
-        (typeof stUse.tool_use_id === 'string' ? stUse.tool_use_id : undefined)
-        ?? (typeof stUse.tool_call_id === 'string' ? stUse.tool_call_id : undefined);
-      const rawInput = stUse.input ?? stUse.function_args ?? {};
-      const executionTarget = stUse.execution_target === 'ProviderServer' || stUse.execution_target === 'LocalFunction'
-        ? stUse.execution_target
-        : undefined;
-      const inputStr = typeof rawInput === 'string' ? rawInput : JSON.stringify(rawInput ?? {});
-      const converted: ToolsCallMessage = {
-        $type: MessageType.ToolsCall,
-        tool_calls: [{
-          function_name: toolName,
-          function_args: inputStr,
-          tool_call_id: toolUseId,
-          execution_target: executionTarget,
-        }],
-        role: msg.role,
-        fromAgent: msg.fromAgent,
-        generationId: msg.generationId,
-        runId: msg.runId,
-        parentRunId: msg.parentRunId,
-        threadId: msg.threadId,
-        messageOrderIdx: msg.messageOrderIdx,
-      };
-      log.debug('Converted server tool use to ToolsCallMessage', { toolName, toolUseId });
+      const converted = serverToolUseToToolsCall(msg);
+      log.debug('Converted server tool use to ToolsCallMessage', {
+        toolName: converted.tool_calls[0]?.function_name,
+        toolUseId: converted.tool_calls[0]?.tool_call_id,
+      });
       msg = converted;
       // Fall through to normal message handling below
     }
 
     // Handle text with citations → convert to TextMessage with citations as markdown
     if (isTextWithCitationsMessage(msg)) {
-      const citMsg = msg; // narrowed to TextWithCitationsMessage
-      let text = citMsg.text;
-      if (citMsg.citations?.length) {
-        const uniqueUrls = new Map<string, { title: string; url: string }>();
-        for (const cite of citMsg.citations) {
-          if (cite.url && !uniqueUrls.has(cite.url)) {
-            uniqueUrls.set(cite.url, {
-              title: cite.title || cite.url,
-              url: cite.url,
-            });
-          }
-        }
-        if (uniqueUrls.size > 0) {
-          text += '\n\n**Sources:**\n';
-          for (const { title, url } of uniqueUrls.values()) {
-            text += `- [${title}](${url})\n`;
-          }
-        }
-      }
-      const converted: TextMessage = {
-        $type: MessageType.Text,
-        text,
-        role: citMsg.role,
-        fromAgent: citMsg.fromAgent,
-        generationId: citMsg.generationId,
-        runId: citMsg.runId,
-        parentRunId: citMsg.parentRunId,
-        threadId: citMsg.threadId,
-        messageOrderIdx: citMsg.messageOrderIdx,
-      };
-      log.debug('Converted text with citations to TextMessage', { citationCount: citMsg.citations?.length ?? 0 });
-      msg = converted;
+      const citationCount = msg.citations?.length ?? 0;
+      msg = textWithCitationsToText(msg);
+      log.debug('Converted text with citations to TextMessage', { citationCount });
       // Fall through to normal message handling below
     }
 
@@ -1404,6 +1113,36 @@ export function useChat(options: UseChatOptions = {}) {
           }
         }
       }
+    }
+
+    // Restore the persisted usage banner (#196): the loop above skips UsageMessages, so read the
+    // conversation's persisted aggregate — which includes sub-agent/workflow usage — and populate the
+    // banner from it instead of leaving it at zero on reload.
+    try {
+      const { getConversationUsage } = await import('@/api/conversationsApi');
+      const usageAggregate = await getConversationUsage(existingThreadId);
+      if (usageAggregate) {
+        const input = usageAggregate.perModel.reduce((sum, m) => sum + m.inputTokens, 0);
+        const output = usageAggregate.perModel.reduce((sum, m) => sum + m.outputTokens, 0);
+        const cached = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheReadTokens, 0);
+        const cacheCreation = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheWriteTokens, 0);
+        // Normalize uncached input PER MODEL ROW (then sum), matching the live rule — summing input/cached
+        // across rows first would mis-handle a mix where cacheRead exceeds input for only some rows.
+        const uncachedInputTokens = usageAggregate.perModel.reduce(
+          (sum, m) => sum + uncachedInput(m.inputTokens, m.cacheReadTokens),
+          0,
+        );
+        cumulativeUsage.value = {
+          promptTokens: input,
+          uncachedInputTokens,
+          completionTokens: output,
+          totalTokens: usageAggregate.totalTokens,
+          cachedTokens: cached,
+          cacheCreationTokens: cacheCreation,
+        };
+      }
+    } catch (e) {
+      log.warn('Failed to restore persisted usage banner', { error: String(e) });
     }
 
     log.info('Loaded messages into chat', {
