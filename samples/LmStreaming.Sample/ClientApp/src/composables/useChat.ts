@@ -183,6 +183,17 @@ export function getDisplayText(text: string): string {
 }
 
 /**
+ * Fresh (uncached) input tokens for one usage row. `cacheRead` is a SUBSET of `input` for the OpenAI
+ * family, so In = input - cacheRead; when a provider reports `cacheRead >= input` (some report cache reads
+ * additively) fall back to the full input so the banner value never goes negative. Shared by the live
+ * stream and the reload path so both normalize identically, and applied PER MODEL ROW before summing so a
+ * mix of rows (some with cacheRead > input) is handled correctly (#196).
+ */
+export function uncachedInput(input: number, cacheRead: number): number {
+  return cacheRead <= input ? input - cacheRead : input;
+}
+
+/**
  * Composable for managing chat state and interactions
  */
 export function useChat(options: UseChatOptions = {}) {
@@ -617,11 +628,9 @@ export function useChat(options: UseChatOptions = {}) {
       const totalTokens = u.total_tokens ?? (promptTokens + completionTokens);
       const cachedTokens = u.input_tokens_details?.cached_tokens ?? u.cacheReadTokens ?? 0;
       const cacheCreationTokens = u.cache_creation_input_tokens ?? u.cacheCreationTokens ?? 0;
-      // Fresh input for this turn = prompt minus the cached read. cachedTokens is a SUBSET of
-      // promptTokens for the OpenAI family; if it ever exceeds it (e.g. providers that report cache
-      // reads additively) fall back to the prompt so this never goes negative. Accumulate per-turn so
-      // In + Cached + Out == Total holds across the whole conversation.
-      const uncachedInputTokens = cachedTokens <= promptTokens ? promptTokens - cachedTokens : promptTokens;
+      // Fresh input for this turn = prompt minus the cached read (never negative; see uncachedInput).
+      // Accumulate per-turn so In + Cached + Out == Total holds across the whole conversation.
+      const uncachedInputTokens = uncachedInput(promptTokens, cachedTokens);
       cumulativeUsage.value = {
         promptTokens: cumulativeUsage.value.promptTokens + promptTokens,
         uncachedInputTokens: cumulativeUsage.value.uncachedInputTokens + uncachedInputTokens,
@@ -1404,6 +1413,36 @@ export function useChat(options: UseChatOptions = {}) {
           }
         }
       }
+    }
+
+    // Restore the persisted usage banner (#196): the loop above skips UsageMessages, so read the
+    // conversation's persisted aggregate — which includes sub-agent/workflow usage — and populate the
+    // banner from it instead of leaving it at zero on reload.
+    try {
+      const { getConversationUsage } = await import('@/api/conversationsApi');
+      const usageAggregate = await getConversationUsage(existingThreadId);
+      if (usageAggregate) {
+        const input = usageAggregate.perModel.reduce((sum, m) => sum + m.inputTokens, 0);
+        const output = usageAggregate.perModel.reduce((sum, m) => sum + m.outputTokens, 0);
+        const cached = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheReadTokens, 0);
+        const cacheCreation = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheWriteTokens, 0);
+        // Normalize uncached input PER MODEL ROW (then sum), matching the live rule — summing input/cached
+        // across rows first would mis-handle a mix where cacheRead exceeds input for only some rows.
+        const uncachedInputTokens = usageAggregate.perModel.reduce(
+          (sum, m) => sum + uncachedInput(m.inputTokens, m.cacheReadTokens),
+          0,
+        );
+        cumulativeUsage.value = {
+          promptTokens: input,
+          uncachedInputTokens,
+          completionTokens: output,
+          totalTokens: usageAggregate.totalTokens,
+          cachedTokens: cached,
+          cacheCreationTokens: cacheCreation,
+        };
+      }
+    } catch (e) {
+      log.warn('Failed to restore persisted usage banner', { error: String(e) });
     }
 
     log.info('Loaded messages into chat', {

@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -146,6 +148,45 @@ public class ConversationsControllerTests
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         var payload = JsonSerializer.Serialize(notFound.Value);
         payload.Should().Contain("missing-mode");
+    }
+
+    [Fact]
+    public async Task GetUsage_ReturnsPersistedAggregate_IncludingTotals()
+    {
+        var store = new InMemoryConversationStore();
+        var ledger = new UsageLedger("usage-thread");
+        ledger.UpsertAttempt(new UsageRecord
+        {
+            LogicalCallId = "a1",
+            ProviderAttemptId = "a1",
+            RootConversationId = "usage-thread",
+            RequestedModel = "model-A",
+            InputTokens = 100,
+            OutputTokens = 40,
+        });
+        await ConversationUsageProjection.SaveAsync(store, ledger.Snapshot());
+
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.GetUsage("usage-thread");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var aggregate = Assert.IsType<ConversationUsageAggregate>(ok.Value);
+        aggregate.TotalTokens.Should().Be(140);
+        aggregate.PerModel.Should().ContainSingle(m => m.ModelId == "model-A");
+    }
+
+    [Fact]
+    public async Task GetUsage_ReturnsNotFound_WhenNoUsageRecorded()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.GetUsage("no-usage-thread");
+
+        Assert.IsType<NotFoundResult>(result);
     }
 
     private static MultiTurnAgentPool CreatePool()

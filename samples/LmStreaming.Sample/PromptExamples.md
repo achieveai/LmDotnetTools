@@ -426,6 +426,34 @@ use a literal string, e.g. `a queued follow-up typed mid-stream`.
 
 ---
 
+## Usage banner (#196) UI tests
+
+Prompts for the conversation-wide token-usage banner
+([`playwright-scripts/usage-banner.mjs`](playwright-scripts/usage-banner.mjs) and the C# scenario
+`Scenarios/UsageBannerTests.cs`). Use the **`test-anthropic`** mock: its scripted SSE emits a fixed
+**100 input / 50 output** tokens per generation, so the banner totals are exact and deterministic.
+The banner (`data-testid="usage-banner"`) renders once cumulative total tokens > 0 and reads
+`Total: N | In: N | Out: N [| Cached: N] [| Cache created: N]`.
+
+### Single reply (one generation → Total 150 / In 100 / Out 50)
+
+<|instruction_start|>{"instruction_chain":[{"id":"u1","id_message":"Reply","messages":[{"text_message":{"length":20}}]}]}<|instruction_end|>
+
+Send it twice in one conversation to accumulate to **Total 300 / In 200 / Out 100** (additive, not
+max'd), then reload the page: the banner is restored to 300 from the persisted aggregate.
+
+### Sub-agent delegation (descendant tokens fold into the SAME banner total)
+
+Parent delegates via the `Agent` tool; the nested chain drives the sub-agent (`calculate` then text),
+whose usage is relayed into the root conversation's ledger — so the banner total exceeds the 300 the
+two parent turns alone would produce. Requires a mode where `calculate` + `Agent` are available
+(**General Assistant**). Escaping rule: inner `<|instruction_start|>`/`<|instruction_end|>` stay
+literal; only the inner JSON quotes are escaped.
+
+<|instruction_start|>{"instruction_chain":[{"id":"parent","id_message":"Delegate to sub-agent","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"sub-tool\",\"messages\":[{\"tool_call\":[{\"name\":\"calculate\",\"args\":{\"a\":2,\"operation\":\"add\",\"b\":3}}]}]},{\"id\":\"sub-text\",\"messages\":[{\"text\":\"hi from agent\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent2","id_message":"Wrap up","messages":[{"text":"Parent done: sub-agent finished."}]}]}<|instruction_end|>
+
+---
+
 ## Codex Mode Prompt Examples
 
 These prompts are for `LM_PROVIDER_MODE=codex`.

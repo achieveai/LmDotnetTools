@@ -5,11 +5,13 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -111,6 +113,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     (with the built-in one-shot <c>timer</c> source plus any host registrations). When null,
     ///     no wait tools are exposed.
     /// </param>
+    /// <param name="pricingResolver">
+    ///     Optional public-pricing resolver for conversation-wide usage accounting (#196). When supplied,
+    ///     the usage ledger fills an estimated public cost per model; null still captures token totals.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -126,11 +132,17 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         MutableSubAgentTemplateSource? subAgentTemplateSource = null,
         ILoggerFactory? loggerFactory = null,
         bool persistRunLedger = false,
-        TriggerOptions? triggerOptions = null)
+        TriggerOptions? triggerOptions = null,
+        IPricingResolver? pricingResolver = null)
         : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger, persistRunLedger: persistRunLedger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);
+
+        // Conversation-wide usage accounting (#196): one ledger per root conversation, shared below with
+        // the SubAgentManager so the primary loop's own usage and every descendant's usage accumulate
+        // into a single root total. Usage is captured in MultiTurnAgentBase.AddToHistory.
+        UsageLedger = new UsageLedger(threadId, pricingResolver);
 
         // When sub-agent orchestration is configured, snapshot the current tools
         // and register Agent/CheckAgent tools before building the middleware stack.
@@ -167,7 +179,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 logger: logger,
                 // Sub-agents whose template/override sets no model inherit the parent's model, so a
                 // built-in template doesn't fall back to the provider's stale hardcoded default.
-                parentModelId: DefaultOptions.ModelId);
+                parentModelId: DefaultOptions.ModelId,
+                // Share the root ledger so descendant usage folds into the same conversation total (#196).
+                usageSink: UsageLedger,
+                // Persist immediately on each descendant observation (covers late/background descendants).
+                persistUsageAsync: PersistCurrentUsageAsync);
 
             var toolProvider = new SubAgentToolProvider(
                 SubAgentManager,

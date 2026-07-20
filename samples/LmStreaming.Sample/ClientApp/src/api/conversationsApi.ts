@@ -67,6 +67,51 @@ export async function getRunState(threadId: string): Promise<ConversationRunStat
   return response.json();
 }
 
+/** Per-model rollup row within a conversation usage aggregate (#196). */
+export interface ConversationUsageModelRow {
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  estimatedPublicCostMicros?: number | null;
+  providerReportedCostMicros?: number | null;
+  attemptCount: number;
+}
+
+/** Persisted conversation-wide token usage & cost, including sub-agent/workflow descendants (#196). */
+export interface ConversationUsageAggregate {
+  rootConversationId: string;
+  schemaVersion: number;
+  foldedRevision: number;
+  completeness: string;
+  perModel: ConversationUsageModelRow[];
+  totalTokens: number;
+  estimatedPublicCostMicros?: number | null;
+  providerReportedCostMicros?: number | null;
+  currency: string;
+}
+
+/**
+ * Fetches the persisted conversation-wide usage aggregate (#196), or null when none has been
+ * recorded yet (404). Used on reload to restore the usage banner from persisted totals — including
+ * usage spent inside sub-agents and workflow tasks — instead of resetting to zero.
+ */
+export async function getConversationUsage(
+  threadId: string
+): Promise<ConversationUsageAggregate | null> {
+  const response = await fetch(`/api/conversations/${encodeURIComponent(threadId)}/usage`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch usage: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 /**
  * Updates conversation metadata (title, preview).
  */
