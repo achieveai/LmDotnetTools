@@ -22,8 +22,9 @@ public class UsagePersistenceWriterTests
         });
 
         writer.Schedule();
-        await writer.FlushAsync();
+        var durable = await writer.FlushAsync();
 
+        durable.Should().BeTrue();
         count.Should().BeGreaterThan(0);
     }
 
@@ -37,8 +38,9 @@ public class UsagePersistenceWriterTests
             return Task.CompletedTask;
         });
 
-        await writer.FlushAsync();
+        var durable = await writer.FlushAsync();
 
+        durable.Should().BeTrue();
         count.Should().Be(0);
     }
 
@@ -57,8 +59,9 @@ public class UsagePersistenceWriterTests
             writer.Schedule();
         }
 
-        await writer.FlushAsync();
+        var durable = await writer.FlushAsync();
 
+        durable.Should().BeTrue();
         persisted.Should().BeGreaterThan(0);
         persisted.Should().BeLessThan(50);
     }
@@ -74,23 +77,51 @@ public class UsagePersistenceWriterTests
         });
 
         writer.Schedule();
-        await writer.FlushAsync();
+        _ = await writer.FlushAsync();
         var first = count;
 
         writer.Schedule();
-        await writer.FlushAsync();
+        _ = await writer.FlushAsync();
 
         count.Should().BeGreaterThan(first);
     }
 
     [Fact]
-    public async Task FlushAsync_DoesNotThrow_WhenPersistFaults()
+    public async Task FlushAsync_ReportsNotDurable_AndInvokesOnError_WhenPersistFails()
     {
-        var writer = new UsagePersistenceWriter(ct => throw new InvalidOperationException("boom"));
+        // A failed authoritative write must NOT be reported as a clean durability boundary — Flush returns
+        // false and the failure is surfaced once via onError.
+        var errors = 0;
+        var writer = new UsagePersistenceWriter(
+            ct => throw new InvalidOperationException("boom"),
+            onError: _ => Interlocked.Increment(ref errors));
 
         writer.Schedule();
-        var flush = async () => await writer.FlushAsync();
+        var durable = await writer.FlushAsync();
 
-        await flush.Should().NotThrowAsync();
+        durable.Should().BeFalse();
+        errors.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task FlushAsync_BecomesDurable_WhenAFailedWriteLaterSucceeds()
+    {
+        // The failed write is retained; once the store recovers, a later flush persists it and reports true.
+        var fail = true;
+        var writer = new UsagePersistenceWriter(ct =>
+        {
+            if (Volatile.Read(ref fail))
+            {
+                throw new InvalidOperationException("boom");
+            }
+
+            return Task.CompletedTask;
+        });
+
+        writer.Schedule();
+        (await writer.FlushAsync()).Should().BeFalse();
+
+        Volatile.Write(ref fail, false);
+        (await writer.FlushAsync()).Should().BeTrue();
     }
 }

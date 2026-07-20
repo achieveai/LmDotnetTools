@@ -351,21 +351,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         EnsureUsageWriter()?.Schedule();
     }
 
-    private async Task PersistUsageSnapshotAsync(
-        IConversationStore store,
-        ConversationUsageAggregate snapshot,
-        IReadOnlyList<UsageRecord> records)
-    {
-        try
-        {
-            await ConversationUsageProjection.SaveAsync(store, snapshot, records, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId);
-        }
-    }
-
     /// <summary>
     /// Schedules a durable write of the current usage ledger snapshot + records for the root conversation
     /// through the serialized writer. Handed to the SubAgentManager so a descendant's usage is made durable
@@ -402,7 +387,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         lock (_usageWriterLock)
         {
             return _usageWriter ??= new UsagePersistenceWriter(
-                _ => PersistUsageSnapshotAsync(store, ledger.Snapshot(), ledger.SnapshotRecords()));
+                ct => ConversationUsageProjection.SaveAsync(store, ledger.Snapshot(), ledger.SnapshotRecords(), ct),
+                onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId));
         }
     }
 
@@ -420,7 +406,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         try
         {
-            await writer.FlushAsync();
+            var durable = await writer.FlushAsync();
+            if (!durable)
+            {
+                Logger.LogError(
+                    "Usage flush did not achieve durability for thread {ThreadId}; final usage may remain only in memory",
+                    ThreadId);
+            }
         }
         catch (Exception ex)
         {

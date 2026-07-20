@@ -10,21 +10,24 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 /// <remarks>
 ///     The persist delegate is invoked with the <b>latest</b> ledger state at write time, so a burst of
 ///     <see cref="Schedule" /> calls collapses into a single in-flight write plus at most one trailing write
-///     — reporting cost does not scale with the number of observations. The delegate is responsible for its
-///     own error handling; a fault it surfaces is swallowed here so a persistence failure can neither wedge
-///     the drain loop nor fault a lifecycle <see cref="FlushAsync" />.
+///     — reporting cost does not scale with the number of observations. When the delegate <b>throws</b>, the
+///     write is kept pending (so a later <see cref="Schedule" /> / <see cref="FlushAsync" /> retries it) and
+///     <see cref="FlushAsync" /> returns <c>false</c>, so a failed authoritative write is never silently
+///     reported as a clean durability boundary. The failure is reported once via <c>onError</c>.
 /// </remarks>
 internal sealed class UsagePersistenceWriter
 {
     private readonly Func<CancellationToken, Task> _persist;
+    private readonly Action<Exception>? _onError;
     private readonly object _gate = new();
     private bool _pending;
     private Task _drain = Task.CompletedTask;
 
-    public UsagePersistenceWriter(Func<CancellationToken, Task> persist)
+    public UsagePersistenceWriter(Func<CancellationToken, Task> persist, Action<Exception>? onError = null)
     {
         ArgumentNullException.ThrowIfNull(persist);
         _persist = persist;
+        _onError = onError;
     }
 
     /// <summary>
@@ -45,10 +48,14 @@ internal sealed class UsagePersistenceWriter
 
     /// <summary>
     ///     Awaits any pending or in-flight write so the latest scheduled snapshot is durable before the
-    ///     caller (run completion / disposal) proceeds. A no-op when nothing has been scheduled.
+    ///     caller (run completion / disposal) proceeds. Returns <c>true</c> when no write remains pending
+    ///     (durable), or <c>false</c> when a write failed and is still outstanding — so the caller can log a
+    ///     genuine error rather than treat the boundary as clean. A no-op returning <c>true</c> when nothing
+    ///     was scheduled.
     /// </summary>
-    public Task FlushAsync()
+    public async Task<bool> FlushAsync()
     {
+        Task drain;
         lock (_gate)
         {
             if (_pending && _drain.IsCompleted)
@@ -56,7 +63,14 @@ internal sealed class UsagePersistenceWriter
                 _drain = DrainAsync();
             }
 
-            return _drain;
+            drain = _drain;
+        }
+
+        await drain;
+
+        lock (_gate)
+        {
+            return !_pending;
         }
     }
 
@@ -81,10 +95,17 @@ internal sealed class UsagePersistenceWriter
             {
                 await _persist(CancellationToken.None);
             }
-            catch
+            catch (Exception ex)
             {
-                // The delegate logs its own failures; swallow so a persistence fault cannot wedge the
-                // loop or fault a lifecycle flush. A later Schedule() re-attempts with the newest state.
+                // Persist failed: retain the pending write so a later Schedule()/FlushAsync() retries it and
+                // so FlushAsync reports a non-durable boundary. Stop draining so Flush cannot spin.
+                lock (_gate)
+                {
+                    _pending = true;
+                }
+
+                _onError?.Invoke(ex);
+                return;
             }
         }
     }
