@@ -62,6 +62,27 @@ public class WebToolRegistrationPolicyTests
         RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");
     }
 
+    [Theory]
+    [InlineData("deepseek-v4-pro")]
+    [InlineData("deepseek-v4-flash")]
+    public void Apply_RegistersBothTools_ForDiscoveredAnthropicCompatModel_WhenKeyPresent(string providerId)
+    {
+        var registry = new FunctionRegistry();
+        var (provider, options) = Backend(ApiKey);
+
+        _ = WebToolRegistrationPolicy.Apply(
+            registry,
+            providerId,
+            enabledTools: null,
+            provider,
+            options,
+            NullLoggerFactory.Instance,
+            isAnthropicCompatModel: true
+        );
+
+        RegisteredNames(registry).Should().Contain("WebFetch").And.Contain("WebSearch");
+    }
+
     // ---- Provider matrix: providers with native web (or mocks/test/unknown) receive nothing ----
 
     [Theory]

@@ -272,6 +272,73 @@ public class ProviderRegistryTests
     }
 
     [Fact]
+    public void ListAll_IncludesDiscoveredAnthropicCompatModels_PartitionedByFamily()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var compatModels = new[]
+        {
+            new AnthropicCompatModel(
+                "deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro",
+                "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
+        };
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, anthropicCompatModels: compatModels);
+        var byId = registry.ListAll().ToDictionary(p => p.Id);
+
+        byId["deepseek-v4-pro"].Group.Should().Be("DEEPSEEK (Anthropic-compatible)");
+        byId["deepseek-v4-pro"].DisplayName.Should().Be("deepseek-v4-pro");
+        byId["deepseek-v4-pro"].Available.Should().BeTrue();
+    }
+
+    [Fact]
+    public void TryGetAnthropicCompatModel_ResolvesDiscoveredModel_AndRejectsFixedProviders()
+    {
+        using var env = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var compatModels = new[]
+        {
+            new AnthropicCompatModel(
+                "deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro",
+                "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
+        };
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, anthropicCompatModels: compatModels);
+
+        registry.TryGetAnthropicCompatModel("deepseek-v4-pro", out var model).Should().BeTrue();
+        model.BaseUrl.Should().Be("https://api.deepseek.com/anthropic");
+        model.ApiKey.Should().Be("sk-deepseek");
+        registry.TryGetAnthropicCompatModel("openai", out _).Should().BeFalse();
+        registry.TryGetAnthropicCompatModel("does-not-exist", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void DiscoveredAnthropicCompatModels_AreOmitted_WhenListEmpty()
+    {
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, anthropicCompatModels: []);
+
+        registry.ListAll().Should().OnlyContain(p => p.Group == null);
+    }
+
+    [Fact]
+    public void IsAvailable_AnthropicCompatModel_AlwaysTrue_NoTokenGate()
+    {
+        // Unlike Copilot models, compat-family models carry no separate token gate: presence in
+        // the discovered list already implies the family's three env vars were all set.
+        using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");
+        var compatModels = new[]
+        {
+            new AnthropicCompatModel(
+                "deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro",
+                "https://api.deepseek.com/anthropic", "sk-deepseek", "DEEPSEEK"),
+        };
+
+        var registry = new ProviderRegistry(new FakeFileSystemProbe(), () => false, anthropicCompatModels: compatModels);
+
+        registry.IsAvailable("deepseek-v4-pro").Should().BeTrue();
+    }
+
+    [Fact]
     public void IsAvailable_ClaudeMock_RequiresCliAndRunningHost()
     {
         using var _ = EnvScope.Set("LM_PROVIDER_MODE", "test");

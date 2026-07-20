@@ -170,8 +170,10 @@ try
     {
         var probe = sp.GetRequiredService<IFileSystemProbe>();
         var mockHost = sp.GetRequiredService<MockProviderHostLifetime>();
-        var copilotModels = DiscoverCopilotModels(sp.GetRequiredService<ILoggerFactory>());
-        return new ProviderRegistry(copilotModels, probe, mockHost);
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var copilotModels = DiscoverCopilotModels(loggerFactory);
+        var anthropicCompatModels = AnthropicCompatProviders.DiscoverFromEnv(loggerFactory);
+        return new ProviderRegistry(copilotModels, probe, mockHost, anthropicCompatModels);
     });
 
     // Register the FunctionRegistry with sample tools
@@ -278,10 +280,13 @@ try
     var authOptions =
         builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
     _ = builder.Services.AddSingleton(authOptions);
-    _ = builder.Services.AddSingleton<AuthSharedSecret>();
     var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
         ? Path.Combine(AppContext.BaseDirectory, "oauth-tokens")
         : authOptions.TokenStoreDir;
+    _ = builder.Services.AddSingleton(sp => new SessionSecretStore(
+        Path.Combine(oauthTokenDir, "session-secrets"),
+        sp.GetRequiredService<ILogger<SessionSecretStore>>()
+    ));
     _ = builder.Services.AddSingleton<IOAuthTokenStore>(sp => new FileOAuthTokenStore(
         oauthTokenDir,
         sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
@@ -344,7 +349,7 @@ try
         // WebSocket request thread, so the 100s default could stall it indefinitely.
         GatewayHttpClient(TimeSpan.FromSeconds(30)),
         authOptions,
-        sp.GetRequiredService<AuthSharedSecret>()
+        sp.GetRequiredService<SessionSecretStore>()
     ));
 
     _ = builder.Services.AddSingleton(sp =>
@@ -497,6 +502,14 @@ try
             if (sp.GetRequiredService<ProviderRegistry>().TryGetCopilotModel(providerId, out var copilotModel))
             {
                 return CreateCopilotModelAgent(copilotModel, loggerFactory);
+            }
+
+            // Discovered Anthropic-compatible provider-family models (e.g. DeepSeek) route through the
+            // same AnthropicClient/AnthropicAgent pairing as the "anthropic" provider, but with the
+            // family's own base URL/API key instead of fixed env vars.
+            if (sp.GetRequiredService<ProviderRegistry>().TryGetAnthropicCompatModel(providerId, out var compatModel))
+            {
+                return CreateAnthropicCompatAgent(compatModel, loggerFactory);
             }
 
             return providerId.ToLowerInvariant() switch
@@ -978,6 +991,9 @@ try
                 // Resolve the discovered Copilot model (if any) backing this provider once; its
                 // transport and raw id drive the model-id, reasoning, and web-tool wiring below.
                 var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(normalizedProviderId, out var copilotModelInfo);
+                // Same resolution for a discovered Anthropic-compatible provider-family model (e.g.
+                // DeepSeek); its raw model id drives the model-id and web-tool wiring below.
+                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(normalizedProviderId, out var anthropicCompatModelInfo);
 
                 var webToolStatuses = WebToolRegistrationPolicy.Apply(
                     filteredRegistry,
@@ -986,7 +1002,8 @@ try
                     jinaWebProvider,
                     webToolsOptions,
                     loggerFactory,
-                    isCopilotBackedModel
+                    isCopilotBackedModel,
+                    isAnthropicCompatModel
                 );
                 if (webToolStatuses.Count > 0)
                 {
@@ -999,11 +1016,14 @@ try
 
                 try
                 {
-                    // Discovered Copilot models use their raw model id verbatim; fixed providers keep
-                    // the curated per-provider id map.
+                    // Discovered Copilot models use their raw model id verbatim; discovered
+                    // Anthropic-compatible models likewise use their configured model name verbatim;
+                    // fixed providers keep the curated per-provider id map.
                     var modelId = isCopilotBackedModel
                         ? copilotModelInfo.Id
-                        : GetModelIdForProvider(normalizedProviderId);
+                        : isAnthropicCompatModel
+                            ? anthropicCompatModelInfo.ModelName
+                            : GetModelIdForProvider(normalizedProviderId);
 
                     // Built-in (server-side) tools are selected by the MODE — never injected per
                     // provider or via a per-mode override. A mode declares its server-side built-ins in
@@ -1563,6 +1583,28 @@ public partial class Program
         );
 
         return new AnthropicAgent("Anthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
+    }
+
+    /// <summary>
+    ///     Creates an agent for a discovered Anthropic-compatible provider-family model (e.g. DeepSeek),
+    ///     using that model's own base URL/API key rather than fixed env vars — see
+    ///     <see cref="AnthropicCompatProviders.DiscoverFromEnv"/>.
+    /// </summary>
+    private static IStreamingAgent CreateAnthropicCompatAgent(AnthropicCompatModel model, ILoggerFactory loggerFactory)
+    {
+        Log.Information(
+            "Creating {FamilyKey} agent with base URL: {BaseUrl}",
+            model.FamilyKey,
+            model.BaseUrl
+        );
+
+        var anthropicClient = new AnthropicClient(
+            model.ApiKey,
+            baseUrl: model.BaseUrl,
+            logger: loggerFactory.CreateLogger<AnthropicClient>()
+        );
+
+        return new AnthropicAgent(model.FamilyKey, anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
     }
 
     // Shared across the GitHub Copilot-backed agents: one token (resolved from the Copilot/gh CLI

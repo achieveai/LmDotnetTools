@@ -36,7 +36,7 @@ internal static class ContextDiscoveryKinds
 [ApiController]
 [Route("api/discovery")]
 public sealed class ContextDiscoveryController(
-    AuthSharedSecret sharedSecret,
+    SessionSecretStore sessionSecretStore,
     SandboxSessionRegistry sessionRegistry,
     WorkspaceSubAgentLoader subAgentLoader,
     ContextDiscoveryInjector contextInjector,
@@ -55,17 +55,23 @@ public sealed class ContextDiscoveryController(
         [FromBody] ContextDiscoveryEnvelope? body,
         CancellationToken cancellationToken)
     {
-        if (!sharedSecret.Matches(Request.Headers.Authorization.ToString()))
-        {
-            // Do not reveal whether the header was missing, malformed, or simply wrong.
-            logger.LogWarning("Rejected unauthorized context-discovery webhook call.");
-            return Unauthorized();
-        }
-
         if (body is null)
         {
             logger.LogWarning("Rejected context-discovery webhook with malformed payload.");
             return BadRequest();
+        }
+
+        if (string.IsNullOrEmpty(body.SessionId))
+        {
+            logger.LogWarning("Rejected context-discovery webhook call: missing session id.");
+            return Unauthorized();
+        }
+
+        if (!await sessionSecretStore.MatchesAsync(body.SessionId, Request.Headers.Authorization.ToString(), cancellationToken))
+        {
+            // Do not reveal whether the header was missing, malformed, or simply wrong.
+            logger.LogWarning("Rejected unauthorized context-discovery webhook call.");
+            return Unauthorized();
         }
 
         // Project each batched item onto the per-item carrier the downstream handlers consume,

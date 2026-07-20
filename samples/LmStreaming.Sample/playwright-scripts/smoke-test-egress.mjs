@@ -1,0 +1,174 @@
+// smoke-test-egress.mjs — single-call live smoke test of the LmStreaming chat app reached through the
+// Traefik reverse-proxy hostname (egress path), falling back to the direct Kestrel origin if the
+// HTTPS/Traefik hostname fails to load (e.g. self-signed cert not trusted in headless mode). Run with:
+//
+//   browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/smoke-test-egress.mjs" })
+//
+// Verifies (in ONE conversation, mock provider only — no real LLM calls):
+//   1. The chat UI loads (chat-input-textarea + send-button present).
+//   2. A mock/test provider can be selected.
+//   3. A basic tool-call instruction-chain prompt (calculate) streams to completion and renders a
+//      tool-call pill.
+//   4. A second, meaningfully different instruction-chain prompt (multi-turn + reasoning + parallel
+//      tool calls) sent in the SAME conversation streams to completion and renders thinking-pills,
+//      more tool-call pills, and final assistant text — proving multi-turn context works.
+//   5. One screenshot is captured for the record.
+//
+// Prompts are taken verbatim from PromptExamples.md ("Calculate Tool" and "Multiturn Example").
+// Do NOT drive this with snapshot->act->screenshot loops. Assert only DETERMINISTIC, browser-observable
+// state (DOM/data-testid).
+async (page) => {
+  const HTTPS_URL = 'https://lmstreaming.bhakars.internal/';
+  const FALLBACK_URL = 'http://127.0.0.1:5050/';
+  const PROVIDER = 'test-anthropic';
+
+  // Prompt 1: basic tool-call test (Calculate Tool > Basic addition), verbatim from PromptExamples.md.
+  const PROMPT_1 =
+    '<|instruction_start|>{"instruction_chain":[{"id":"calc-add","id_message":"Adding numbers","messages":[{"tool_call":[{"name":"calculate","args":{"a":10,"operation":"add","b":5}}]}]}]}<|instruction_end|>';
+
+  // Prompt 2: multiturn example with reasoning + parallel tool calls + text, verbatim from
+  // PromptExamples.md ("Multiturn Example (multiple turns with reasoning)").
+  const PROMPT_2 =
+    '<|instruction_start|>{"instruction_chain":[{"id":"turn1_parallel_tools","reasoning":{"length":30},"messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}},{"name":"get_weather","args":{"location":"San Francisco"}}]}]},{"id":"turn2_final","reasoning":{"length":50},"messages":[{"tool_call":[{"name":"get_weather","args":{"location":"Seattle"}}]},{"text_message":{"length":50}}]},{"id":"turn3_summary","reasoning":{"length":10},"messages":[{"text_message":{"length":100}}]}]}<|instruction_end|>';
+
+  const steps = [];
+  const record = (name, pass, detail) => steps.push({ name, pass, detail });
+  const tid = (id) => page.locator(`[data-testid="${id}"]`);
+  const waitStreaming = () => tid('stop-button').waitFor({ state: 'visible', timeout: 15000 });
+  const waitIdle = async () => {
+    await tid('stop-button').waitFor({ state: 'hidden', timeout: 90000 });
+    await tid('send-button').waitFor({ state: 'visible', timeout: 90000 });
+  };
+  const send = async (text) => {
+    await tid('chat-input-textarea').fill(text);
+    await tid('send-button').click();
+  };
+  const domSnapshot = () =>
+    page.evaluate(() => ({
+      toolCallPills: [...document.querySelectorAll('[data-testid="tool-call-pill"]')].map(
+        (n) => n.getAttribute('data-tool-name')
+      ),
+      thinkingPillCount: document.querySelectorAll('[data-testid="thinking-pill"]').length,
+      assistantTexts: [...document.querySelectorAll('[data-testid="assistant-text"]')].map((n) =>
+        n.textContent.trim()
+      ),
+      errorBanner: document.querySelector('[data-testid="error-banner"]')?.textContent?.trim() ?? null,
+    }));
+
+  const consoleErrors = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') consoleErrors.push(msg.text());
+  });
+  page.on('pageerror', (err) => consoleErrors.push(String(err)));
+
+  const errors = [];
+  let urlUsed = null;
+  let pageLoaded = false;
+  let providerSelected = null;
+  const messagesSent = [];
+  const responsesReceived = [];
+  let toolCallsRendered = false;
+
+  try {
+    // 1. Navigate — prefer the Traefik/HTTPS hostname, fall back to the direct Kestrel origin.
+    try {
+      await page.goto(HTTPS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await tid('chat-input-textarea').waitFor({ timeout: 15000 });
+      urlUsed = HTTPS_URL;
+    } catch (e) {
+      errors.push(`HTTPS navigation to ${HTTPS_URL} failed, falling back to ${FALLBACK_URL}: ${String(e)}`);
+      // The failed HTTPS attempt races Chromium's async transition to its cert-error interstitial
+      // (chrome-error://chromewebdata/); an immediate second goto() can be interrupted by it. Let that
+      // settle, then retry the fallback navigation once more if it happens anyway.
+      await page.waitForTimeout(500).catch(() => {});
+      try {
+        await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      } catch (e2) {
+        errors.push(`Fallback navigation raced the HTTPS interstitial, retrying: ${String(e2)}`);
+        await page.waitForTimeout(500).catch(() => {});
+        await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      }
+      await tid('chat-input-textarea').waitFor({ timeout: 15000 });
+      urlUsed = FALLBACK_URL;
+    }
+
+    // 2. Chat UI present.
+    const hasTextarea = (await tid('chat-input-textarea').count()) > 0;
+    const hasSendButton = (await tid('send-button').count()) > 0;
+    pageLoaded = hasTextarea && hasSendButton;
+    record('chat-ui-loaded (textarea + send-button)', pageLoaded, { urlUsed, hasTextarea, hasSendButton });
+
+    // 3. Fresh chat; select the mock provider BEFORE the first send.
+    await page.getByRole('button', { name: '+ New Chat' }).click();
+    await tid('provider-selector-button').click();
+    await tid(`provider-option-${PROVIDER}`).click();
+    const providerLabel = (await tid('provider-selector-button').textContent())?.trim() ?? null;
+    providerSelected = /test/i.test(providerLabel ?? '') ? PROVIDER : providerLabel;
+    record('provider-selected (test-anthropic)', /test/i.test(providerLabel ?? ''), providerLabel);
+
+    // 4. Prompt 1 — basic tool-call test (calculate).
+    await send(PROMPT_1);
+    messagesSent.push(PROMPT_1);
+    await waitStreaming().catch(() => {});
+    await waitIdle();
+    const afterPrompt1 = await domSnapshot();
+    responsesReceived.push(afterPrompt1);
+    record(
+      'prompt1-tool-call-rendered (calculate)',
+      afterPrompt1.toolCallPills.includes('calculate'),
+      afterPrompt1
+    );
+
+    // 5. Prompt 2 — multi-turn + reasoning + parallel tool calls, SAME conversation (context retained).
+    await send(PROMPT_2);
+    messagesSent.push(PROMPT_2);
+    await waitStreaming().catch(() => {});
+    await waitIdle();
+    const afterPrompt2 = await domSnapshot();
+    responsesReceived.push(afterPrompt2);
+    const weatherPillCount = afterPrompt2.toolCallPills.filter((n) => n === 'get_weather').length;
+    record(
+      'prompt2-multiturn-rendered (thinking + weather tool calls + final text)',
+      afterPrompt2.thinkingPillCount > 0 && weatherPillCount >= 2 && afterPrompt2.assistantTexts.length > 0,
+      { ...afterPrompt2, weatherPillCount }
+    );
+
+    toolCallsRendered =
+      afterPrompt1.toolCallPills.includes('calculate') && afterPrompt2.toolCallPills.includes('get_weather');
+
+    // 6. Same-conversation sanity: both user turns landed in the one thread.
+    const userTurnCount = await tid('user-message-group').count();
+    record('multi-turn-same-conversation (2 user turns)', userTurnCount >= 2, { userTurnCount });
+
+    // 7. No error banner surfaced at any point.
+    record('no-error-banner', !afterPrompt1.errorBanner && !afterPrompt2.errorBanner, {
+      afterPrompt1: afterPrompt1.errorBanner,
+      afterPrompt2: afterPrompt2.errorBanner,
+    });
+
+    // 8. Screenshot for the record (final state, after both responses).
+    await page.screenshot({
+      path: 'B:/sources/LmDotnetTools/samples/LmStreaming.Sample/playwright-scripts/smoke-test-egress-result.png',
+      fullPage: true,
+    });
+  } catch (e) {
+    errors.push(String((e && e.stack) || e));
+    record('exception', false, String((e && e.stack) || e));
+  }
+
+  errors.push(...consoleErrors);
+
+  const failures = steps.filter((s) => !s.pass).map((s) => s.name);
+  return {
+    pass: failures.length === 0,
+    failures,
+    steps,
+    urlUsed,
+    pageLoaded,
+    providerSelected,
+    messagesSent,
+    responsesReceived,
+    toolCallsRendered,
+    errors,
+  };
+}

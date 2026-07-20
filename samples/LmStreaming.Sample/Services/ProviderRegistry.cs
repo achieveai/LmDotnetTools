@@ -27,6 +27,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 {
     private const string CopilotAnthropicGroup = "Copilot · Anthropic";
     private const string CopilotOpenAiGroup = "Copilot · OpenAI";
+    private const string AnthropicCompatGroupSuffix = " (Anthropic-compatible)";
 
     private static readonly ImmutableArray<CatalogEntry> CatalogEntries =
         [
@@ -49,6 +50,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
 
     private readonly ImmutableDictionary<string, ProviderDescriptor> _byId;
     private readonly ImmutableDictionary<string, CopilotModelInfo> _copilotModelsById;
+    private readonly ImmutableDictionary<string, AnthropicCompatModel> _anthropicCompatModelsById;
     private readonly ImmutableHashSet<string> _staticAvailability;
     private readonly Func<string, bool> _dynamicAvailability;
 
@@ -58,14 +60,16 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     }
 
     /// <summary>
-    ///     Production constructor that injects the Copilot models discovered at startup. When the list is
-    ///     empty (no token, or discovery failed) no Copilot models are exposed.
+    ///     Production constructor that injects the Copilot models discovered at startup and the
+    ///     Anthropic-compatible provider families discovered from env vars. When either list is empty
+    ///     (no token/discovery failed, or no families configured) the corresponding models are not exposed.
     /// </summary>
     public ProviderRegistry(
         IReadOnlyList<CopilotModelInfo> copilotModels,
         IFileSystemProbe? probe = null,
-        MockProviderHostLifetime? mockHost = null)
-        : this(probe, mockHost is null ? () => false : () => mockHost.IsRunning, copilotModels)
+        MockProviderHostLifetime? mockHost = null,
+        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null)
+        : this(probe, mockHost is null ? () => false : () => mockHost.IsRunning, copilotModels, anthropicCompatModels: anthropicCompatModels)
     {
     }
 
@@ -77,7 +81,8 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         IFileSystemProbe? probe,
         Func<bool> mockHostIsRunning,
         IReadOnlyList<CopilotModelInfo>? copilotModels = null,
-        Func<bool>? copilotTokenAvailable = null)
+        Func<bool>? copilotTokenAvailable = null,
+        IReadOnlyList<AnthropicCompatModel>? anthropicCompatModels = null)
     {
         ArgumentNullException.ThrowIfNull(mockHostIsRunning);
 
@@ -88,6 +93,7 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
         var builder = ImmutableDictionary.CreateBuilder<string, ProviderDescriptor>(StringComparer.OrdinalIgnoreCase);
         var staticBuilder = ImmutableHashSet.CreateBuilder<string>(StringComparer.OrdinalIgnoreCase);
         var copilotBuilder = ImmutableDictionary.CreateBuilder<string, CopilotModelInfo>(StringComparer.OrdinalIgnoreCase);
+        var anthropicCompatBuilder = ImmutableDictionary.CreateBuilder<string, AnthropicCompatModel>(StringComparer.OrdinalIgnoreCase);
 
         // Pre-compute the static availability of CLI gates and env-var gates once.
         // *-mock providers AND-on the runtime mock-host signal in the dynamic delegate below.
@@ -151,8 +157,24 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
             builder[id] = new ProviderDescriptor(id, displayName, hasCopilotToken, Group: group);
         }
 
+        // Anthropic-compatible provider families (e.g. DeepSeek) discovered from env vars — see
+        // AnthropicCompatProviders.DiscoverFromEnv. Presence in the list already implies its family's
+        // three env vars were all set, so these are always available.
+        foreach (var model in anthropicCompatModels ?? [])
+        {
+            if (builder.ContainsKey(model.Id))
+            {
+                continue;
+            }
+
+            anthropicCompatBuilder[model.Id] = model;
+            _ = staticBuilder.Add(model.Id);
+            builder[model.Id] = new ProviderDescriptor(model.Id, model.DisplayName, true, Group: model.FamilyKey + AnthropicCompatGroupSuffix);
+        }
+
         _byId = builder.ToImmutable();
         _copilotModelsById = copilotBuilder.ToImmutable();
+        _anthropicCompatModelsById = anthropicCompatBuilder.ToImmutable();
         _staticAvailability = staticBuilder.ToImmutable();
         _dynamicAvailability = id => _staticAvailability.Contains(id)
             && (!IsMockProvider(id) || mockHostIsRunning());
@@ -206,6 +228,25 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     {
         var normalized = NormalizeId(providerId);
         if (normalized != null && _copilotModelsById.TryGetValue(normalized, out var found))
+        {
+            model = found;
+            return true;
+        }
+
+        model = null!;
+        return false;
+    }
+
+    /// <summary>
+    ///     Resolves the Anthropic-compatible provider-family model (e.g. a discovered DeepSeek model)
+    ///     backing a provider id, if any. Returns <c>false</c> for every other provider id, letting
+    ///     callers keep their existing behavior and only branch into compat-family wiring (base URL,
+    ///     API key, raw model id, web-tool fallback) when this returns <c>true</c>.
+    /// </summary>
+    public bool TryGetAnthropicCompatModel(string? providerId, out AnthropicCompatModel model)
+    {
+        var normalized = NormalizeId(providerId);
+        if (normalized != null && _anthropicCompatModelsById.TryGetValue(normalized, out var found))
         {
             model = found;
             return true;

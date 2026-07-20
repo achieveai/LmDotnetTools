@@ -45,6 +45,11 @@ internal static class WebToolRegistrationPolicy
     /// <c>true</c> when the provider id resolves to a dynamically discovered Copilot model (Anthropic or
     /// OpenAI). Those models lack a native web capability and so receive the Jina fallback tools,
     /// alongside the statically allow-listed ids in <see cref="FallbackProviderIds" />.</param>
+    /// <param name="isAnthropicCompatModel">
+    /// <c>true</c> when the provider id resolves to a dynamically discovered Anthropic-compatible
+    /// provider-family model (e.g. DeepSeek). Those models likewise lack a native web capability and so
+    /// receive the Jina fallback tools, alongside <paramref name="isCopilotBackedModel" /> and the
+    /// statically allow-listed ids in <see cref="FallbackProviderIds" />.</param>
     /// <returns>A small list of human-readable status strings describing what was registered, skipped,
     /// or disabled (for diagnostics/logging). Never contains secret values.</returns>
     public static IReadOnlyList<string> Apply(
@@ -54,7 +59,8 @@ internal static class WebToolRegistrationPolicy
         JinaWebProvider? provider,
         WebToolsOptions options,
         ILoggerFactory loggerFactory,
-        bool isCopilotBackedModel = false
+        bool isCopilotBackedModel = false,
+        bool isAnthropicCompatModel = false
     )
     {
         ArgumentNullException.ThrowIfNull(registry);
@@ -73,7 +79,7 @@ internal static class WebToolRegistrationPolicy
         var normalized = string.IsNullOrWhiteSpace(providerId)
             ? string.Empty
             : providerId.Trim().ToLowerInvariant();
-        if (!isCopilotBackedModel && !FallbackProviderIds.Contains(normalized))
+        if (!isCopilotBackedModel && !isAnthropicCompatModel && !FallbackProviderIds.Contains(normalized))
         {
             return statuses;
         }

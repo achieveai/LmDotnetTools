@@ -10,7 +10,18 @@ internal static class OAuthProviderHosts
 {
     private static readonly Dictionary<string, string[]> HostsByProvider = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["github"] = ["github.com", "api.github.com", "codeload.github.com"],
+        // results-receiver + the blob host below are hops in GitHub's Actions run-log download
+        // redirect chain (api.github.com -> results-receiver -> a per-shard SAS-signed blob URL).
+        // The blob host is exact-listed (not *.blob.core.windows.net) since that suffix covers
+        // every Azure Blob Storage tenant, not just GitHub's; if GitHub rotates to a new shard,
+        // this will need the new host added.
+        ["github"] = [
+            "github.com",
+            "api.github.com",
+            "codeload.github.com",
+            "results-receiver.actions.githubusercontent.com",
+            "productionresultssa7.blob.core.windows.net",
+        ],
         ["ado"] = ["dev.azure.com", "*.dev.azure.com", "*.visualstudio.com"],
         ["m365"] = ["graph.microsoft.com"],
     };

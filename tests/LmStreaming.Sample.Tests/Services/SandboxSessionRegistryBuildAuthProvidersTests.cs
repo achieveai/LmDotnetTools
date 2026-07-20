@@ -107,7 +107,9 @@ public class SandboxSessionRegistryBuildAuthProvidersTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Unused)),
             auth,
-            new AuthSharedSecret(auth));
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance));
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

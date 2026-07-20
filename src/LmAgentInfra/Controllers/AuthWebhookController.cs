@@ -21,7 +21,7 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 [Route("api/auth/webhook")]
 public sealed class AuthWebhookController(
     IEnumerable<IOAuthTokenProvider> providers,
-    AuthSharedSecret sharedSecret,
+    SessionSecretStore sessionSecretStore,
     IAuthResolutionPolicy authPolicy,
     IAuthWebhookForwarder authWebhookForwarder,
     AuthOptions authOptions,
@@ -41,14 +41,18 @@ public sealed class AuthWebhookController(
         [FromBody] AuthWebhookRequest body,
         CancellationToken ct = default)
     {
-        if (!sharedSecret.Matches(Request.Headers.Authorization.ToString()))
+        if (body is null || string.IsNullOrEmpty(body.SessionId))
+        {
+            logger.LogWarning("Rejected auth-webhook call for provider {Provider}: missing session id.", provider);
+            return Unauthorized();
+        }
+
+        if (!await sessionSecretStore.MatchesAsync(body.SessionId, Request.Headers.Authorization.ToString(), ct))
         {
             // Do not reveal whether the header was missing, malformed, or simply wrong.
             logger.LogWarning("Rejected unauthorized auth-webhook call for provider {Provider}.", provider);
             return Unauthorized();
         }
-
-        ArgumentNullException.ThrowIfNull(body);
 
         var tokenProvider = Resolve(provider);
         if (tokenProvider is null)

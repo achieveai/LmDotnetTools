@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -165,7 +166,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     private readonly ILogger<SandboxSessionRegistry> _logger;
     private readonly HttpClient _httpClient;
     private readonly AuthOptions _authOptions;
-    private readonly AuthSharedSecret _sharedSecret;
+    private readonly SessionSecretStore _sessionSecretStore;
     private readonly SandboxCredential _defaultCredential;
     private bool _disposed;
 
@@ -187,15 +188,15 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// <param name="httpClient">Client used to create and destroy sandbox sessions.</param>
     /// <param name="authOptions">OAuth auth-provider configuration; drives the optional
     /// <c>auth_providers</c>/<c>network</c> blocks sent on sandbox creation.</param>
-    /// <param name="sharedSecret">Gateway↔webhook shared secret attached to each auth provider.
-    /// SECRET — never logged.</param>
+    /// <param name="sessionSecretStore">Per-session webhook secret store; each created session's
+    /// secret is persisted here and attached to each auth provider. SECRET — never logged.</param>
     public SandboxSessionRegistry(
         SandboxGatewayLifetime gateway,
         SandboxGatewayOptions options,
         ILogger<SandboxSessionRegistry> logger,
         HttpClient httpClient,
         AuthOptions authOptions,
-        AuthSharedSecret sharedSecret
+        SessionSecretStore sessionSecretStore
     )
     {
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
@@ -203,7 +204,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _authOptions = authOptions ?? throw new ArgumentNullException(nameof(authOptions));
-        _sharedSecret = sharedSecret ?? throw new ArgumentNullException(nameof(sharedSecret));
+        _sessionSecretStore = sessionSecretStore ?? throw new ArgumentNullException(nameof(sessionSecretStore));
         // Non-null default even when no key is configured: contextless paths (liveness/destroy on
         // a session with no side-table entry) always resolve to a credential, never null. An empty
         // AppKey is exactly the keyless AUTH_ENFORCE=off dev path.
@@ -395,7 +396,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             workspaceId
         );
 
-        InvalidateSession((workspaceId, effectiveCredential.AppId), session);
+        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session, ct).ConfigureAwait(false);
         return await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
     }
 
@@ -470,7 +471,11 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// when it still points at <paramref name="session"/>, so a concurrent recreation is never
     /// clobbered).
     /// </summary>
-    private void InvalidateSession((string WorkspaceId, string AppId) key, SandboxSession session)
+    private async Task InvalidateSessionAsync(
+        (string WorkspaceId, string AppId) key,
+        SandboxSession session,
+        CancellationToken ct
+    )
     {
         // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
         // AwaitAndEvictOnFailureAsync's "only evict the entry we own" discipline. A plain key-removal
@@ -496,6 +501,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             new KeyValuePair<string, SandboxSession>(session.SessionId, session)
         );
         _ = _sessionCredentials.TryRemove(session.SessionId, out _);
+        await _sessionSecretStore.RemoveAsync(session.SessionId, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -538,8 +544,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         var workspaceRelPath = workspaceLeaf ?? string.Empty;
 
         var requestUri = $"{_gateway.GatewayBaseUrl}/api/v1/sandboxes";
-        var (authProviders, network) = BuildAuthProviders();
-        var discovery = BuildDiscovery();
+        // SECRET — never log. Generated fresh per session so a restart never invalidates a live
+        // session's webhook auth (the secret is persisted to disk below once the session id is
+        // known) and so two sessions' secrets can never be cross-validated against each other.
+        var sessionSecret = RandomNumberGenerator.GetHexString(64);
+        var (authProviders, network) = BuildAuthProviders(sessionSecret);
+        var discovery = BuildDiscovery(sessionSecret);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
         var marketplaces = workspaceRef.Marketplaces is { Count: > 0 }
@@ -681,6 +691,12 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
         // default (relevant once M2 lets callers create under a per-caller credential).
         _sessionCredentials[session.SessionId] = effectiveCredential;
+        // Persist BEFORE returning: a webhook call for this session id must never race ahead of
+        // its secret hitting disk. If this throws, let it propagate — the surrounding
+        // Lazy<Task<SandboxSession>> single-flight fault/retry already handles exceptions in this
+        // exact window; swallowing it would instead silently produce a session whose webhooks can
+        // never authenticate.
+        await _sessionSecretStore.SaveAsync(session.SessionId, sessionSecret, ct).ConfigureAwait(false);
 
         _logger.LogInformation(
             "Created sandbox session {SessionId} for workspace {WorkspaceId} at host path {HostPath}",
@@ -732,6 +748,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session).
             await DestroySessionAsync(session, ct).ConfigureAwait(false);
             _ = _sessionCredentials.TryRemove(session.SessionId, out _);
+            await _sessionSecretStore.RemoveAsync(session.SessionId, ct).ConfigureAwait(false);
         }
     }
 
@@ -757,6 +774,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
             }
 
             await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
+            await _sessionSecretStore.RemoveAsync(entry.Value.Result.SessionId, CancellationToken.None).ConfigureAwait(false);
         }
 
         _sessions.Clear();
@@ -1345,9 +1363,9 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// each provider (e.g. m365 needs both ClientId + ClientSecret) without standing up the gateway.
     /// </summary>
     internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
-        BuildAuthProviders().Providers?.Select(p => p.Id).ToArray() ?? [];
+        BuildAuthProviders(string.Empty).Providers?.Select(p => p.Id).ToArray() ?? [];
 
-    private (IReadOnlyList<AuthProviderDto>? Providers, NetworkDto? Network) BuildAuthProviders()
+    private (IReadOnlyList<AuthProviderDto>? Providers, NetworkDto? Network) BuildAuthProviders(string sessionSecret)
     {
         var providers = new List<AuthProviderDto>();
         var rules = new List<NetworkRuleDto>();
@@ -1360,7 +1378,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
                     Id: "github-auth",
                     Type: "webhook",
                     Endpoint: $"{baseUrl}/api/auth/webhook/github",
-                    GatewayAuth: _sharedSecret.Value,
+                    GatewayAuth: sessionSecret,
                     CacheTtlSeconds: 300,
                     RequiredScopes: []
                 )
@@ -1387,7 +1405,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
                     Id: "ado-auth",
                     Type: "webhook",
                     Endpoint: $"{baseUrl}/api/auth/webhook/ado",
-                    GatewayAuth: _sharedSecret.Value,
+                    GatewayAuth: sessionSecret,
                     CacheTtlSeconds: 300,
                     RequiredScopes: []
                 )
@@ -1418,7 +1436,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
                     Id: "m365-auth",
                     Type: "webhook",
                     Endpoint: $"{baseUrl}/api/auth/webhook/m365",
-                    GatewayAuth: _sharedSecret.Value,
+                    GatewayAuth: sessionSecret,
                     CacheTtlSeconds: 300,
                     RequiredScopes: []
                 )
@@ -1447,7 +1465,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
     /// already uses for auth callbacks) plus the discovery route; the auth value is the
     /// gateway↔webhook shared secret. SECRET — never logged.
     /// </summary>
-    private DiscoveryDto BuildDiscovery()
+    private DiscoveryDto BuildDiscovery(string sessionSecret)
     {
         var url = DiscoveryWebhookUrl;
         // Registration breadcrumb: logs WHERE the gateway will deliver discoveries so an operator
@@ -1460,7 +1478,7 @@ public sealed partial class SandboxSessionRegistry : IAsyncDisposable
         return new DiscoveryDto(
             new DiscoveryWebhookDto(
                 Url: url,
-                Auth: _sharedSecret.Value
+                Auth: sessionSecret
             )
         );
     }
