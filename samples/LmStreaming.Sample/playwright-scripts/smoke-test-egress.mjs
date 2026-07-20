@@ -47,6 +47,21 @@ async (page) => {
   const steps = [];
   const record = (name, pass, detail) => steps.push({ name, pass, detail });
   const tid = (id) => page.locator(`[data-testid="${id}"]`);
+
+  // The configured URLs are operator-supplied (env vars) and can carry user-info or a query token
+  // (EUII). Reduce any URL that reaches diagnostic output to just scheme/host/port — never the path,
+  // query, or credentials. Likewise, a browser/navigation exception string embeds the raw URL, so
+  // captured error output surfaces only structured metadata (the error name), never the raw exception.
+  const sanitizeOrigin = (u) => {
+    if (!u) return null;
+    try {
+      const { protocol, hostname, port } = new URL(u);
+      return port ? `${protocol}//${hostname}:${port}` : `${protocol}//${hostname}`;
+    } catch {
+      return '<unparseable-url>';
+    }
+  };
+  const errName = (e) => (e && e.name) || 'Error';
   const waitStreaming = () => tid('stop-button').waitFor({ state: 'visible', timeout: 15000 });
   const waitIdle = async () => {
     await tid('stop-button').waitFor({ state: 'hidden', timeout: 90000 });
@@ -90,9 +105,11 @@ async (page) => {
       try {
         await page.goto(HTTPS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
         await tid('chat-input-textarea').waitFor({ timeout: 15000 });
-        urlUsed = HTTPS_URL;
+        urlUsed = sanitizeOrigin(HTTPS_URL);
       } catch (e) {
-        errors.push(`HTTPS navigation to ${HTTPS_URL} failed, falling back to ${FALLBACK_URL}: ${String(e)}`);
+        errors.push(
+          `HTTPS navigation to ${sanitizeOrigin(HTTPS_URL)} failed, falling back to ${sanitizeOrigin(FALLBACK_URL)}: ${errName(e)}`
+        );
         // The failed HTTPS attempt races Chromium's async transition to its cert-error interstitial
         // (chrome-error://chromewebdata/); an immediate second goto() can be interrupted by it. Let that
         // settle, then retry the fallback navigation once more if it happens anyway.
@@ -100,18 +117,18 @@ async (page) => {
         try {
           await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
         } catch (e2) {
-          errors.push(`Fallback navigation raced the HTTPS interstitial, retrying: ${String(e2)}`);
+          errors.push(`Fallback navigation raced the HTTPS interstitial, retrying: ${errName(e2)}`);
           await page.waitForTimeout(500).catch(() => {});
           await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
         }
         await tid('chat-input-textarea').waitFor({ timeout: 15000 });
-        urlUsed = FALLBACK_URL;
+        urlUsed = sanitizeOrigin(FALLBACK_URL);
       }
     } else {
       // No HTTPS host configured — go directly to the portable Kestrel origin.
       await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await tid('chat-input-textarea').waitFor({ timeout: 15000 });
-      urlUsed = FALLBACK_URL;
+      urlUsed = sanitizeOrigin(FALLBACK_URL);
     }
 
     // 2. Chat UI present.
@@ -176,8 +193,10 @@ async (page) => {
       fullPage: true,
     });
   } catch (e) {
-    errors.push(String((e && e.stack) || e));
-    record('exception', false, String((e && e.stack) || e));
+    // A navigation/Playwright exception embeds the raw (operator-supplied) URL in its message/stack, so
+    // capture only the structured error name here — never the raw exception string.
+    errors.push(errName(e));
+    record('exception', false, errName(e));
   }
 
   errors.push(...consoleErrors);
