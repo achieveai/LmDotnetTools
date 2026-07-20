@@ -12,6 +12,7 @@ import ConversationSidebar from './ConversationSidebar.vue';
 import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
+import SubAgentListPanel from './SubAgentListPanel.vue';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -89,6 +90,7 @@ const {
   markStreamIdle,
   markStreamLoading,
   getResultForToolCall,
+  threadId: chatThreadId,
 } = useChat({
   getModeId: () => currentModeId.value,
   getProviderId: () => selectedProviderId.value,
@@ -601,6 +603,11 @@ onBeforeUnmount(() => {
         />
       </div>
     </main>
+
+    <!-- Bind the sub-agent panel to the ACTIVE chat thread (useChat's threadId), not the
+         sidebar's currentThreadId: a freshly-started chat runs on useChat's thread before it is
+         ever selected/persisted in the sidebar, and the panel must track where sub-agents spawn. -->
+    <SubAgentListPanel :parent-thread-id="chatThreadId" />
   </div>
 </template>
 

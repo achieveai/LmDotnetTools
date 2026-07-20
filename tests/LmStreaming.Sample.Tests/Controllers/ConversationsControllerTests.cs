@@ -151,6 +151,30 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task List_ExcludesSubAgentThreads_FromTheConversationSidebar()
+    {
+        // Sub-agent conversations use the reserved "subagent-{agentId}" thread id and are surfaced
+        // only through the sub-agent panel; they must never leak into the primary conversation list.
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            "thread-normal",
+            new ThreadMetadata { ThreadId = "thread-normal", LastUpdated = 2, Properties = ImmutableDictionary<string, object>.Empty });
+        await store.SaveMetadataAsync(
+            "subagent-abc123",
+            new ThreadMetadata { ThreadId = "subagent-abc123", LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+
+        await using var pool = CreatePool();
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.List() as OkObjectResult;
+        result.Should().NotBeNull();
+        var summaries = (result!.Value as IEnumerable<ConversationSummary>)!.ToList();
+
+        summaries.Select(s => s.ThreadId).Should().Contain("thread-normal");
+        summaries.Select(s => s.ThreadId).Should().NotContain(id => id.StartsWith("subagent-", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task GetUsage_ReturnsPersistedAggregate_IncludingTotals()
     {
         var store = new InMemoryConversationStore();

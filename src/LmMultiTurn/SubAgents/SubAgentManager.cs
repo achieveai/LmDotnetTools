@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -15,6 +16,28 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+
+/// <summary>
+/// Read-only, point-in-time snapshot of a single registered sub-agent, for presentation seams
+/// (e.g. a UI listing children before resolving one for subscription). Carries no live handles and
+/// is safe to hand to callers outside the SubAgents module.
+/// </summary>
+/// <param name="AgentId">Stable id of the sub-agent.</param>
+/// <param name="Name">Optional caller-supplied name, or null if none was provided at spawn.</param>
+/// <param name="TemplateName">Name of the template the sub-agent was spawned from.</param>
+/// <param name="Task">The task the sub-agent was spawned with.</param>
+/// <param name="Status">Lifecycle status at the moment the snapshot was taken.</param>
+/// <param name="ThreadId">The sub-agent's conversation thread id.</param>
+/// <param name="LastActivityUtc">Timestamp of the newest buffered turn, or null when no turn has
+/// been recorded yet.</param>
+public sealed record SubAgentSnapshot(
+    string AgentId,
+    string? Name,
+    string TemplateName,
+    string Task,
+    SubAgentStatus Status,
+    string ThreadId,
+    DateTimeOffset? LastActivityUtc);
 
 /// <summary>
 /// Manages sub-agent lifecycle: spawning, monitoring, resuming, and disposal.
@@ -208,8 +231,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 [new TextMessage { Role = Role.User, Text = task }], ct: ct);
 
             _logger.LogInformation(
-                "Spawned sub-agent {AgentId} from template {Template} (background={Background}) with task: {Task}",
-                agentId, templateName, runInBackground, Truncate(task, 100));
+                "Spawned sub-agent {AgentId} from template {Template} (background={Background}) with task length {TaskLength}",
+                agentId, templateName, runInBackground, task?.Length ?? 0);
         }
         catch
         {
@@ -391,8 +414,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 }
 
                 _logger.LogInformation(
-                    "Sent message to running sub-agent {AgentId}: {Message}",
-                    agentId, Truncate(prompt, 100));
+                    "Sent message to running sub-agent {AgentId} ({MessageLength} chars)",
+                    agentId, prompt?.Length ?? 0);
 
                 wasRunning = true;
                 break;
@@ -630,6 +653,13 @@ public sealed class SubAgentManager : IAsyncDisposable
                     state.RemoveTools
                 );
 
+                // Presentation-only: the replacement is now built and we are about to dispose the previous
+                // instance (which ends any focused observer's stream). Mark the restart in flight BEFORE
+                // that dispose so an observer whose stream ends on it deterministically waits for the
+                // imminent swap's replacement signal (no timeout) instead of treating the end as a
+                // backpressure drop. Cleared under the same lock by SwapLiveAgentAndSignalReplaced below.
+                state.SignalRestartStarting();
+
                 try { await previousAgent.DisposeAsync(); }
                 catch (Exception ex)
                 {
@@ -683,9 +713,16 @@ public sealed class SubAgentManager : IAsyncDisposable
                     }
                 }
 
-                state.Agent = replacementAgent;
                 state.Store = replacementStore;
                 state.SetOwnedProviderAgent(replacementOwnedProviderAgent);
+
+                // Presentation-only: atomically install the replacement as the live Agent AND wake any
+                // external observer whose subscription was bound to the now-disposed previous instance so
+                // it can re-subscribe to this replacement and keep following the child across the swap.
+                // Setting Agent and signalling together (SwapLiveAgentAndSignalReplaced) means an observer's
+                // SnapshotForObservation can never see a torn (agent, replaced-signal) pair. Never awaited
+                // by the run/monitor/restart logic.
+                state.SwapLiveAgentAndSignalReplaced(replacementAgent);
             }
 
             // Recover conversation history after replacing a completed owned-provider loop, so a
@@ -721,8 +758,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             _ = state.TryArmRunning(runGeneration);
 
             _logger.LogInformation(
-                "Resumed sub-agent {AgentId} with message: {Message}",
-                state.AgentId, Truncate(prompt, 100));
+                "Resumed sub-agent {AgentId} ({MessageLength} chars)",
+                state.AgentId, prompt?.Length ?? 0);
         }
         catch
         {
@@ -780,6 +817,162 @@ public sealed class SubAgentManager : IAsyncDisposable
             // released the slot first (both hold the SAME gateGuard instance created above).
             gateGuard.ReleaseOnce(_concurrencyGate);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Returns a read-only, point-in-time snapshot of every registered sub-agent. Presentation-only:
+    /// it reads the live registry without mutating any state, never blocks, and is safe to call
+    /// concurrently with spawn/send/dispose. A sub-agent added or removed after the snapshot is taken
+    /// is simply not reflected in the returned list.
+    /// </summary>
+    public IReadOnlyList<SubAgentSnapshot> ListAgents()
+    {
+        var snapshots = new List<SubAgentSnapshot>(_agents.Count);
+        foreach (var state in _agents.Values)
+        {
+            snapshots.Add(new SubAgentSnapshot(
+                AgentId: state.AgentId,
+                Name: state.Name,
+                TemplateName: state.TemplateName,
+                Task: state.Task,
+                Status: state.Status,
+                ThreadId: state.Agent.ThreadId,
+                LastActivityUtc: GetLastActivityUtc(state)));
+        }
+
+        return snapshots;
+    }
+
+    /// <summary>
+    /// Derives the timestamp of the newest buffered turn for <paramref name="state"/>, or null when
+    /// the buffer is empty. The buffer is a lock-free <see cref="System.Collections.Concurrent.ConcurrentQueue{T}"/>;
+    /// snapshotting it with <c>ToArray</c> gives a consistent view even while the monitor enqueues.
+    /// </summary>
+    private static DateTimeOffset? GetLastActivityUtc(SubAgentState state)
+    {
+        var turns = state.TurnBuffer.ToArray();
+        if (turns.Length == 0)
+        {
+            return null;
+        }
+
+        var newest = turns[0].Timestamp;
+        for (var i = 1; i < turns.Length; i++)
+        {
+            if (turns[i].Timestamp > newest)
+            {
+                newest = turns[i].Timestamp;
+            }
+        }
+
+        return newest;
+    }
+
+    /// <summary>
+    /// Non-throwing resolve of a single sub-agent by its id or caller-supplied name, for a
+    /// presentation seam that needs the live instance (e.g. to subscribe to its output). Returns
+    /// false (with <paramref name="agent"/> set to null) when the target matches no registered
+    /// sub-agent, so a caller can distinguish "not ours" without catching exceptions. Read-only: it
+    /// does not alter any sub-agent state.
+    /// </summary>
+    /// <param name="target">The sub-agent id or its caller-supplied name.</param>
+    /// <param name="agent">The resolved live instance on success; null otherwise.</param>
+    /// <returns>True if a registered sub-agent was resolved; false otherwise.</returns>
+    public bool TryGetAgent(string target, out IMultiTurnAgent? agent)
+    {
+        if (TryResolveAgentId(target, out var agentId)
+            && _agents.TryGetValue(agentId, out var state))
+        {
+            agent = state.Agent;
+            return true;
+        }
+
+        agent = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Presentation-only observation seam that streams a single sub-agent's output and transparently
+    /// follows the child across an owned-provider restart's instance swap — so a focused viewer keeps
+    /// receiving frames when a finished child is relayed a follow-up (which disposes the old loop and
+    /// installs a fresh one). It NEVER drives, restarts, or otherwise mutates execution: it only
+    /// subscribes to whatever the child's CURRENT live instance is and re-subscribes when that instance
+    /// is replaced.
+    /// <para>
+    /// Each iteration captures the state's replacement signal BEFORE subscribing to the current instance
+    /// (order matters: capturing the signal first means a swap racing between capture and subscribe is
+    /// not lost), yields that instance's messages until its stream ends (an owned-provider restart
+    /// disposes it, or cancellation), then awaits the replacement — re-subscribing to the new instance,
+    /// or ending when the child was torn down (<c>null</c>), pruned, or the caller cancelled. A borrowed-
+    /// provider child never swaps instances, so it simply streams the one loop until cancellation.
+    /// </para>
+    /// </summary>
+    /// <param name="target">The sub-agent id or its caller-supplied name.</param>
+    /// <param name="ct">Cancellation token; cancelling ends the enumeration.</param>
+    /// <returns>An async stream of the child's messages spanning any owned-provider restart swaps.</returns>
+    public async IAsyncEnumerable<IMessage> SubscribeToAgentAcrossRestartsAsync(
+        string target,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            // Re-resolve at the loop top so a swap (or teardown) between iterations is observed against
+            // the live registry rather than a stale handle.
+            if (!TryResolveAgentId(target, out var id) || !_agents.TryGetValue(id, out var state))
+            {
+                yield break;
+            }
+
+            // Capture the live instance AND its replacement signal in ONE atomic snapshot so a swap that
+            // lands between the two reads can never pair a signal from one restart epoch with an agent from
+            // another (torn read). The signal is captured BEFORE subscribing so a swap between snapshot and
+            // the SubscribeAsync below is delivered via `replaced` rather than lost.
+            var (current, replaced) = state.SnapshotForObservation();
+
+            await foreach (var msg in current.SubscribeAsync(ct))
+            {
+                yield return msg;
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                yield break;
+            }
+
+            // The current instance's stream ended without cancellation. Three causes:
+            //  (a) an owned-provider restart disposed it (SignalRestartStarting set the restart flag
+            //      BEFORE that dispose, and the swap completes `replaced` with the new instance),
+            //  (b) the manager tore it down (completes `replaced` with null), or
+            //  (c) a slow-subscriber backpressure DROP removed our subscriber while the instance is
+            //      still alive (MultiTurnAgentBase.PublishToSubscriber) — which never fires `replaced`
+            //      and sets no restart flag.
+            // DecideAfterStreamEnd distinguishes these deterministically, under the same lock the swap and
+            // teardown use, with NO elapsed-time heuristic: a restart/teardown (a)/(b) yields
+            // AwaitReplacement (wait for the definitive signal, however long the dispose+cleanup takes); a
+            // drop (c) yields EndStream so the socket closes and the client reconnects + replays.
+            if (state.DecideAfterStreamEnd(replaced) == ObservationContinuation.EndStream)
+            {
+                yield break;
+            }
+
+            // A restart is in flight or already signalled: await the replacement bounded ONLY by the
+            // caller's connection lifetime (ct), never by a fixed timeout. A slow restart therefore keeps
+            // the focus stream attached instead of tearing a valid stream down.
+            IMultiTurnAgent? next;
+            try
+            {
+                next = await replaced.WaitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                yield break;
+            }
+
+            if (next is null)
+            {
+                yield break;
+            }
         }
     }
 
@@ -920,6 +1113,11 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 _logger.LogWarning(ex, "DisposeAsync failed for sub-agent {AgentId}", state.AgentId);
             }
+
+            // Presentation-only: the agent's dispose above ends any external observer's current
+            // subscription; signal null so an observer that then awaits the replacement unblocks and
+            // ends cleanly instead of hanging for a swap that will never come. Never affects execution.
+            state.SignalAgentReplaced(null);
 
             try { await state.DisposeOwnedProviderAgentAsync(); }
             catch (Exception ex)

@@ -259,26 +259,31 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         var threads = await store.ListThreadsAsync(limit, offset, ct);
-        var result = threads.Select(t => new ConversationSummary
-        {
-            ThreadId = t.ThreadId,
-            Title = t.Properties?.TryGetValue("title", out var titleObj) == true
-                ? titleObj?.ToString() ?? "New Conversation"
-                : "New Conversation",
-            Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
-                ? previewObj?.ToString()
-                : null,
-            LastUpdated = t.LastUpdated,
-            Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
-                ? providerObj?.ToString()
-                : null,
-            Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
-                ? workspaceObj?.ToString()
-                : null,
-            Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
-                ? modeObj?.ToString()
-                : null,
-        });
+        var result = threads
+            // Sub-agent conversations use the reserved "subagent-{agentId}" thread-id convention and are
+            // surfaced only through the sub-agent panel (GET .../subagents + /ws/subagent). They must not
+            // leak into the primary conversation sidebar (nor be auto-selected on load).
+            .Where(t => !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal))
+            .Select(t => new ConversationSummary
+            {
+                ThreadId = t.ThreadId,
+                Title = t.Properties?.TryGetValue("title", out var titleObj) == true
+                    ? titleObj?.ToString() ?? "New Conversation"
+                    : "New Conversation",
+                Preview = t.Properties?.TryGetValue("preview", out var previewObj) == true
+                    ? previewObj?.ToString()
+                    : null,
+                LastUpdated = t.LastUpdated,
+                Provider = t.Properties?.TryGetValue(MultiTurnAgentPool.ProviderPropertyKey, out var providerObj) == true
+                    ? providerObj?.ToString()
+                    : null,
+                Workspace = t.Properties?.TryGetValue(MultiTurnAgentPool.WorkspacePropertyKey, out var workspaceObj) == true
+                    ? workspaceObj?.ToString()
+                    : null,
+                Mode = t.Properties?.TryGetValue(MultiTurnAgentPool.ModePropertyKey, out var modeObj) == true
+                    ? modeObj?.ToString()
+                    : null,
+            });
         return Ok(result);
     }
 
@@ -355,6 +360,42 @@ public class ConversationsController(
             IsInProgress = runState.IsInProgress,
             CurrentRunId = runState.CurrentRunId,
         });
+    }
+
+    /// <summary>
+    /// Read-only presentation listing of the sub-agents a conversation's parent agent has spawned.
+    /// The Vue client polls this to render a conversation's children; it never spawns, sends to,
+    /// stops, or otherwise mutates a sub-agent (WI #194). Returns 404 for an unknown thread, an
+    /// empty array for a conversation whose agent has no sub-agent support, otherwise the
+    /// <c>SubAgentManager.ListAgents()</c> snapshot projected to <see cref="SubAgentSummary"/>.
+    /// </summary>
+    [HttpGet("{threadId}/subagents")]
+    public IActionResult ListSubAgents(string threadId)
+    {
+        if (!agentPool.TryGet(threadId, out var agent) || agent is null)
+        {
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+        }
+
+        if (agent is not MultiTurnAgentLoop loop || loop.SubAgentManager is null)
+        {
+            return Ok(Array.Empty<SubAgentSummary>());
+        }
+
+        var summaries = loop.SubAgentManager.ListAgents()
+            .Select(s => new SubAgentSummary
+            {
+                AgentId = s.AgentId,
+                Name = s.Name,
+                Template = s.TemplateName,
+                Task = s.Task,
+                Status = s.Status.ToString().ToLowerInvariant(),
+                ThreadId = s.ThreadId,
+                LastActivityUtc = s.LastActivityUtc,
+            })
+            .ToArray();
+
+        return Ok(summaries);
     }
 
     /// <summary>

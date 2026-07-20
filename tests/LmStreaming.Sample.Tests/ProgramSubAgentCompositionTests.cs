@@ -380,6 +380,110 @@ public sealed class ProgramSubAgentCompositionTests
         rebound.Source.Templates["explicit"].IsModelExplicitlySelected.Should().BeTrue();
     }
 
+    [Fact]
+    public void ApplyDefaultSubAgentStore_WiresNonOwningWrapper_WhenOptionsHasNoDefault()
+    {
+        var store = new Mock<IConversationStore>().Object;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["custom"] = Template("custom", () => new Mock<IStreamingAgent>().Object),
+            },
+        };
+
+        var result = global::Program.ApplyDefaultSubAgentStore(options, store);
+
+        result.DefaultConversationStoreFactory.Should().NotBeNull();
+
+        // Every child gets a NON-OWNING decorator over the shared store, never the store itself, so a
+        // child that tears down cannot dispose storage the parent/other conversations still use.
+        var wrappedA = result.DefaultConversationStoreFactory!("subagent-a");
+        var wrappedB = result.DefaultConversationStoreFactory!("subagent-b");
+
+        wrappedA.Should().BeOfType<NonOwningConversationStore>();
+        wrappedB.Should().BeOfType<NonOwningConversationStore>();
+        wrappedA.Should().NotBeSameAs(store);
+
+        // The whole point: SubAgentManager only disposes a child store when `store is IAsyncDisposable`.
+        (wrappedA is IAsyncDisposable).Should().BeFalse(
+            "a child must never be able to dispose the shared conversation store");
+        (wrappedA is IDisposable).Should().BeFalse(
+            "a child must never be able to dispose the shared conversation store");
+    }
+
+    [Fact]
+    public void ApplyDefaultSubAgentStore_PreservesExistingFactory_WhenAlreadySet()
+    {
+        var templateStore = new Mock<IConversationStore>().Object;
+        var fallbackStore = new Mock<IConversationStore>().Object;
+        Func<string, IConversationStore> existingFactory = _ => templateStore;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["custom"] = Template("custom", () => new Mock<IStreamingAgent>().Object),
+            },
+            DefaultConversationStoreFactory = existingFactory,
+        };
+
+        var result = global::Program.ApplyDefaultSubAgentStore(options, fallbackStore);
+
+        result.Should().BeSameAs(options);
+        result.DefaultConversationStoreFactory.Should().BeSameAs(existingFactory);
+        result.DefaultConversationStoreFactory!("subagent-a").Should().BeSameAs(templateStore);
+    }
+
+    [Fact]
+    public async Task SpawnedSubAgent_PersistsTranscript_ViaWiredDefaultStore()
+    {
+        var fakeStore = new InMemoryConversationStore();
+        var templates = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+        {
+            ["worker"] = Template("worker", () => CreateRespondingAgent().Object),
+        };
+        var options = global::Program.ApplyDefaultSubAgentStore(
+            new SubAgentOptions { Templates = templates },
+            fakeStore);
+        var source = new MutableSubAgentTemplateSource(templates);
+        await using var manager = new SubAgentManager(
+            Mock.Of<IMultiTurnAgent>(),
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+
+        _ = await manager.SpawnAsync("worker", "persist my transcript");
+
+        var threadId = manager.ListAgents().Should().ContainSingle().Subject.ThreadId;
+        threadId.Should().StartWith("subagent-");
+
+        // Canonical persistence via AddToHistory is fire-and-forget on the child's background run
+        // (MultiTurnAgentBase), so there is no happens-before edge between SpawnAsync returning and
+        // the store write landing. Poll deterministically (bounded) until the transcript appears
+        // instead of asserting on a single race-prone read.
+        var persisted = await WaitForPersistedMessagesAsync(fakeStore, threadId);
+        persisted.Should().NotBeEmpty();
+    }
+
+    private static async Task<IReadOnlyList<PersistedMessage>> WaitForPersistedMessagesAsync(
+        InMemoryConversationStore store,
+        string threadId,
+        int timeoutMs = 5000)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
+        while (true)
+        {
+            var messages = await store.LoadMessagesAsync(threadId);
+            if (messages.Count > 0 || cts.IsCancellationRequested)
+            {
+                return messages;
+            }
+
+            await Task.Delay(10, cts.Token).ContinueWith(_ => { }, TaskScheduler.Default);
+        }
+    }
+
     private static SandboxSessionRegistry CreateRegistry()
     {
         const string baseUrl = "http://localhost:3000";

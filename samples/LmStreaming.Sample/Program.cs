@@ -1214,6 +1214,15 @@ try
                         }
                     }
 
+                    // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
+                    // sample's shared conversation store so a focused child can be replayed via the
+                    // existing conversation-messages endpoint. Only fills the fallback when unset, so a
+                    // template-specified store still wins.
+                    if (subAgentOptions is not null)
+                    {
+                        subAgentOptions = ApplyDefaultSubAgentStore(subAgentOptions, conversationStore);
+                    }
+
                     agent = new MultiTurnAgentLoop(
                         providerAgent,
                         filteredRegistry,
@@ -1456,6 +1465,72 @@ try
 
                 webSocket.Dispose();
                 wsLogger.LogInformation("WebSocket connection closed for thread {ThreadId}", threadId);
+            }
+        }
+    );
+
+    // Map a SEPARATE WebSocket endpoint for a FOCUSED sub-agent (WI #194, presentation-only). Kept
+    // distinct from "/ws" so the parent handler stays byte-compatible: this route resolves the live
+    // child through the parent conversation's SubAgentManager (never the pool, which would wrongly
+    // create a top-level agent for a "subagent-{id}" thread) and streams/relays it read-only.
+    _ = app.Map(
+        "/ws/subagent",
+        async (
+            HttpContext context,
+            ChatWebSocketManager wsManager,
+            ILogger<Program> wsLogger,
+            CancellationToken cancellationToken
+        ) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("WebSocket connection required", cancellationToken);
+                return;
+            }
+
+            var parentThreadId = context.Request.Query["parentThreadId"].FirstOrDefault();
+            var agentId = context.Request.Query["agentId"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(parentThreadId) || string.IsNullOrWhiteSpace(agentId))
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(
+                    "parentThreadId and agentId are required", cancellationToken);
+                return;
+            }
+
+            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            wsLogger.LogInformation(
+                "Sub-agent WebSocket connection established for agent {AgentId} on parent {ParentThreadId}",
+                agentId,
+                parentThreadId
+            );
+
+            try
+            {
+                await wsManager.HandleSubAgentConnectionAsync(
+                    webSocket,
+                    parentThreadId,
+                    agentId,
+                    cancellationToken
+                );
+            }
+            finally
+            {
+                if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(
+                        System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                        "Server closing",
+                        CancellationToken.None
+                    );
+                }
+
+                webSocket.Dispose();
+                wsLogger.LogInformation(
+                    "Sub-agent WebSocket connection closed for agent {AgentId}",
+                    agentId
+                );
             }
         }
     );
@@ -2045,6 +2120,41 @@ public partial class Program
                 },
                 StringComparer.Ordinal),
         };
+    }
+
+    /// <summary>
+    /// Fills <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> with the sample's shared
+    /// conversation store when the options don't already specify one, so spawned sub-agents persist
+    /// their transcripts (keyed per <c>subagent-{agentId}</c> thread) and can be replayed via the
+    /// existing conversation-messages endpoint. This only supplies the FALLBACK: a template that sets
+    /// its own <see cref="SubAgentTemplate.ConversationStoreFactory"/> — or options that already carry a
+    /// <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> — still wins, so the options are
+    /// returned unchanged in that case.
+    /// <para>
+    /// The shared store is handed to children through a
+    /// <see cref="LmStreaming.Sample.Persistence.NonOwningConversationStore"/> decorator so a child can
+    /// never dispose it: <see cref="SubAgentManager"/> disposes a child store that is
+    /// <see cref="IAsyncDisposable"/>, and every child shares this one application-wide store.
+    /// </para>
+    /// </summary>
+    public static SubAgentOptions ApplyDefaultSubAgentStore(
+        SubAgentOptions options,
+        IConversationStore store)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(store);
+
+        // Wrap the shared store in a non-owning decorator so a child can NEVER dispose it: SubAgentManager
+        // disposes a child store that is IAsyncDisposable during spawn-cleanup/restart/completion/rollback,
+        // and every child shares this one application-wide store. The wrapper implements neither
+        // IDisposable nor IAsyncDisposable, so those ownership checks all skip it.
+        return options.DefaultConversationStoreFactory is not null
+            ? options
+            : options with
+            {
+                DefaultConversationStoreFactory = _ =>
+                    new LmStreaming.Sample.Persistence.NonOwningConversationStore(store),
+            };
     }
 
     internal static SubAgentSessionBinding BindConversationSubAgents(
