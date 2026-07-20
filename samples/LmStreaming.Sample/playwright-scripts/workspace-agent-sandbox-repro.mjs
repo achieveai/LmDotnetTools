@@ -64,7 +64,9 @@ async (page) => {
     if (!CONFIRM_SEND) {
       record('dry-run-skipped-send', true, {
         note: 'DRY-RUN: selection wiring exercised; state-changing prompt NOT sent. Set LMSTREAMING_REPRO_CONFIRM=1 to send.',
-        promptPreview: PROMPT.slice(0, 80),
+        // Metadata only — the prompt is arbitrary operator-supplied text that could carry repo data or
+        // credentials, so report its length, never a content preview.
+        promptLength: PROMPT.length,
       });
       const dryFailures = steps.filter((s) => !s.pass).map((s) => s.name);
       return { pass: dryFailures.length === 0, dryRun: true, sent: false, failures: dryFailures, steps };
@@ -85,11 +87,23 @@ async (page) => {
         .then(() => 'assistant-text'),
     ]).catch(() => 'timeout');
 
-    const errorBannerText = (await tid('error-banner').count()) > 0 ? await tid('error-banner').textContent() : null;
-    const assistantText =
-      (await tid('assistant-text').count()) > 0 ? await tid('assistant-text').first().textContent() : null;
+    // Return only NON-LEAKING metadata about the terminal state. The live agent's assistant answer and
+    // error-banner text can contain repository data, credentials, or EUII, so surface presence + length
+    // (enough to diagnose "did it answer / error, and roughly how much"), never the content itself.
+    const errorBannerCount = await tid('error-banner').count();
+    const assistantTextCount = await tid('assistant-text').count();
+    const errorBannerLength =
+      errorBannerCount > 0 ? ((await tid('error-banner').textContent()) || '').length : 0;
+    const assistantTextLength =
+      assistantTextCount > 0 ? ((await tid('assistant-text').first().textContent()) || '').length : 0;
 
-    record('reached-terminal-state', result !== 'timeout', { result, errorBannerText, assistantText });
+    record('reached-terminal-state', result !== 'timeout', {
+      result,
+      hasError: errorBannerCount > 0,
+      hasAssistantText: assistantTextCount > 0,
+      errorBannerLength,
+      assistantTextLength,
+    });
   } catch (e) {
     record('exception', false, String((e && e.stack) || e));
   }

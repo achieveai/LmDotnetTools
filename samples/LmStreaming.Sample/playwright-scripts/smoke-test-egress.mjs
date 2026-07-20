@@ -1,6 +1,8 @@
-// smoke-test-egress.mjs — single-call live smoke test of the LmStreaming chat app reached through the
-// Traefik reverse-proxy hostname (egress path), falling back to the direct Kestrel origin if the
-// HTTPS/Traefik hostname fails to load (e.g. self-signed cert not trusted in headless mode). Run with:
+// smoke-test-egress.mjs — single-call live smoke test of the LmStreaming chat app. When an HTTPS/Traefik
+// hostname is configured (LMSTREAMING_HTTPS_URL) it is reached through that reverse-proxy first (egress
+// path), falling back to the direct Kestrel origin if it fails to load (e.g. self-signed cert not
+// trusted in headless mode). When LMSTREAMING_HTTPS_URL is UNSET the HTTPS attempt is skipped and the
+// direct Kestrel origin is used, so no environment-specific hostname is baked in. Run with:
 //
 //   browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/smoke-test-egress.mjs" })
 //
@@ -19,14 +21,15 @@
 // state (DOM/data-testid).
 //
 // Portability: nothing here is hardcoded to one machine. Override via environment variables:
-//   - LMSTREAMING_HTTPS_URL  (default 'https://lmstreaming.bhakars.internal/') — the Traefik/HTTPS host.
+//   - LMSTREAMING_HTTPS_URL  (OPTIONAL, no default) — a Traefik/HTTPS host to try first. When unset, the
+//     HTTPS attempt is skipped entirely and only the portable Kestrel origin is used.
 //   - LMSTREAMING_URL        (default 'http://127.0.0.1:5050/')                — the direct Kestrel origin.
 //   - LMSTREAMING_OUTPUT_DIR (default the OS temp dir)                         — where the screenshot lands.
 async (page) => {
   const os = await import('node:os');
   const path = await import('node:path');
 
-  const HTTPS_URL = process.env.LMSTREAMING_HTTPS_URL || 'https://lmstreaming.bhakars.internal/';
+  const HTTPS_URL = process.env.LMSTREAMING_HTTPS_URL || null;
   const FALLBACK_URL = process.env.LMSTREAMING_URL || 'http://127.0.0.1:5050/';
   const OUTPUT_DIR = process.env.LMSTREAMING_OUTPUT_DIR || os.tmpdir();
   const SCREENSHOT_PATH = path.join(OUTPUT_DIR, 'smoke-test-egress-result.png');
@@ -80,24 +83,33 @@ async (page) => {
   let toolCallsRendered = false;
 
   try {
-    // 1. Navigate — prefer the Traefik/HTTPS hostname, fall back to the direct Kestrel origin.
-    try {
-      await page.goto(HTTPS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await tid('chat-input-textarea').waitFor({ timeout: 15000 });
-      urlUsed = HTTPS_URL;
-    } catch (e) {
-      errors.push(`HTTPS navigation to ${HTTPS_URL} failed, falling back to ${FALLBACK_URL}: ${String(e)}`);
-      // The failed HTTPS attempt races Chromium's async transition to its cert-error interstitial
-      // (chrome-error://chromewebdata/); an immediate second goto() can be interrupted by it. Let that
-      // settle, then retry the fallback navigation once more if it happens anyway.
-      await page.waitForTimeout(500).catch(() => {});
+    // 1. Navigate. When LMSTREAMING_HTTPS_URL is set, prefer that Traefik/HTTPS hostname and fall back
+    //    to the direct Kestrel origin on failure. When it is UNSET, skip the HTTPS attempt entirely and
+    //    go straight to the portable Kestrel origin — no environment-specific host is hardcoded.
+    if (HTTPS_URL) {
       try {
-        await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      } catch (e2) {
-        errors.push(`Fallback navigation raced the HTTPS interstitial, retrying: ${String(e2)}`);
+        await page.goto(HTTPS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await tid('chat-input-textarea').waitFor({ timeout: 15000 });
+        urlUsed = HTTPS_URL;
+      } catch (e) {
+        errors.push(`HTTPS navigation to ${HTTPS_URL} failed, falling back to ${FALLBACK_URL}: ${String(e)}`);
+        // The failed HTTPS attempt races Chromium's async transition to its cert-error interstitial
+        // (chrome-error://chromewebdata/); an immediate second goto() can be interrupted by it. Let that
+        // settle, then retry the fallback navigation once more if it happens anyway.
         await page.waitForTimeout(500).catch(() => {});
-        await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        try {
+          await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        } catch (e2) {
+          errors.push(`Fallback navigation raced the HTTPS interstitial, retrying: ${String(e2)}`);
+          await page.waitForTimeout(500).catch(() => {});
+          await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        }
+        await tid('chat-input-textarea').waitFor({ timeout: 15000 });
+        urlUsed = FALLBACK_URL;
       }
+    } else {
+      // No HTTPS host configured — go directly to the portable Kestrel origin.
+      await page.goto(FALLBACK_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await tid('chat-input-textarea').waitFor({ timeout: 15000 });
       urlUsed = FALLBACK_URL;
     }

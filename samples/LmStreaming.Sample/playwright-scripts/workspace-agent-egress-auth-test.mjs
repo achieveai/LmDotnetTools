@@ -28,11 +28,12 @@
 //      egress auth to apply. The values are REDACTED before printing — HTTP_PROXY/HTTPS_PROXY can carry
 //      embedded proxy credentials, so we emit only the variable NAMES (whether they are set), never the
 //      raw values, into tool output.
-//   2. `curl -sS -w '\nHTTP_STATUS:%{http_code}\n' https://api.github.com/user --max-time 30` — we send
-//      NO Authorization header ourselves. HTTP_STATUS:200 + real GitHub user JSON means the proxy
-//      transparently authenticated the request (egress auth genuinely working). HTTP_STATUS:401 + a
-//      real GitHub "Requires authentication" body means network egress works but token injection is
-//      NOT happening. A connect/resolve/timeout failure means network is locked down or misconfigured.
+//   2. `curl -sS -o /dev/null -w 'HTTP_STATUS:%{http_code}\n' https://api.github.com/user --max-time 30`
+//      — we send NO Authorization header ourselves and DISCARD the response body (`-o /dev/null`), so
+//      only the status code is captured, never the authenticated `/user` profile JSON (which is EUII).
+//      HTTP_STATUS:200 means the proxy transparently authenticated the request (egress auth genuinely
+//      working). HTTP_STATUS:401 means network egress works but token injection is NOT happening. A
+//      connect/resolve/timeout failure means network is locked down or misconfigured.
 async (page) => {
   const BASE = 'http://127.0.0.1:5050';
   const WORKSPACE_ID = '192a3465-67a1-4945-9323-44c2168aeb2b'; // "LmDotnetTools"
@@ -41,9 +42,11 @@ async (page) => {
 
   // `sed 's/=.*/=<redacted>/'` collapses each matched `NAME=value` line to `NAME=<redacted>` so the
   // presence of HTTP_PROXY/HTTPS_PROXY/SSL_CERT* is diagnosable WITHOUT leaking any (possibly
-  // credential-bearing) proxy value into the captured tool output.
+  // credential-bearing) proxy value into the captured tool output. The curl `-o /dev/null` discards the
+  // GitHub `/user` response BODY so only `HTTP_STATUS:<code>` reaches the tool pill — the authenticated
+  // profile JSON (and the 401 error body) is EUII and must never be captured into diagnostics.
   const bashCommand =
-    "env | grep -i -E 'proxy|ssl_cert' | sed -E 's/=.*/=<redacted>/' ; echo '---' ; curl -sS -w '\\nHTTP_STATUS:%{http_code}\\n' https://api.github.com/user --max-time 30";
+    "env | grep -i -E 'proxy|ssl_cert' | sed -E 's/=.*/=<redacted>/' ; echo '---' ; curl -sS -o /dev/null -w 'HTTP_STATUS:%{http_code}\\n' https://api.github.com/user --max-time 30";
 
   const instructionChain = {
     instruction_chain: [
