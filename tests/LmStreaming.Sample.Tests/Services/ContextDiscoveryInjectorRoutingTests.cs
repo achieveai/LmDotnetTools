@@ -497,10 +497,10 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             Pool.ThreadRemoved += threadId => Registry.UnregisterThreadFromAllSessions(threadId);
 
             Diagnostics = new ContextDiscoveryDiagnostics();
-            SharedSecret = new AuthSharedSecret(new AuthOptions
-            {
-                Webhook = new WebhookOptions { GatewaySharedSecret = Secret },
-            });
+            SessionSecretStore = new SessionSecretStore(
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance);
+            SessionSecretStore.SaveAsync(SessionId, Secret).GetAwaiter().GetResult();
             Injector = new ContextDiscoveryInjector(
                 Registry,
                 Pool,
@@ -514,7 +514,7 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         public MultiTurnAgentPool Pool { get; }
         public ContextDiscoveryInjector Injector { get; }
         public ContextDiscoveryDiagnostics Diagnostics { get; }
-        public AuthSharedSecret SharedSecret { get; }
+        public SessionSecretStore SessionSecretStore { get; }
 
         public RecordingMultiTurnAgent RegisterPrimaryThread(string sessionId, string threadId)
         {
@@ -539,7 +539,7 @@ public sealed class ContextDiscoveryInjectorRoutingTests
         {
             var loader = new WorkspaceSubAgentLoader(Registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
             var controller = new ContextDiscoveryController(
-                SharedSecret,
+                SessionSecretStore,
                 Registry,
                 loader,
                 Injector,
@@ -576,7 +576,9 @@ public sealed class ContextDiscoveryInjectorRoutingTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Unused)),
             new AuthOptions(),
-            new AuthSharedSecret(new AuthOptions()));
+            new SessionSecretStore(
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance));
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

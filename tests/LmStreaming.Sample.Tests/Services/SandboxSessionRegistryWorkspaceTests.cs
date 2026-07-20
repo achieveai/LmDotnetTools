@@ -142,7 +142,9 @@ public class SandboxSessionRegistryWorkspaceTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(CreateSession)),
             new AuthOptions(),
-            new AuthSharedSecret(new AuthOptions()));
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance));
     }
 
     private sealed class CapturedRequest

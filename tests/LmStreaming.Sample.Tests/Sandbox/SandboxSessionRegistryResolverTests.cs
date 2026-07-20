@@ -33,7 +33,9 @@ public class SandboxSessionRegistryResolverTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new ThrowingHandler()),
             new AuthOptions(),
-            new AuthSharedSecret(new AuthOptions())
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance)
         );
     }
 

@@ -8,9 +8,9 @@ namespace LmStreaming.Sample.Tests.Auth;
 /// the forwarder is invoked only on the deferred (not-immediately-signed-in) path, the target
 /// resolved by <c>NotifyAuthRequiredAsync</c> is captured once and reused unchanged at whichever
 /// terminal call fires, a forwarder failure never turns an allow/deny decision into a 500, and a
-/// missing session id is a no-op. End-to-end HTTP-pipeline coverage of the controller (secret
-/// checks, allow/deny bodies) lives in <c>LmStreaming.Sample.E2E.Tests</c>; these tests isolate the
-/// forwarder seam with hand-written fakes.
+/// missing session id is rejected outright (it can't be resolved to a per-session secret). End-to-end
+/// HTTP-pipeline coverage of the controller (secret checks, allow/deny bodies) lives in
+/// <c>LmStreaming.Sample.E2E.Tests</c>; these tests isolate the forwarder seam with hand-written fakes.
 /// </summary>
 public sealed class AuthWebhookControllerForwarderTests
 {
@@ -102,10 +102,18 @@ public sealed class AuthWebhookControllerForwarderTests
         IAuthResolutionPolicy policy,
         IAuthWebhookForwarder forwarder)
     {
-        var authOptions = new AuthOptions { Webhook = new WebhookOptions { GatewaySharedSecret = Secret } };
+        var authOptions = new AuthOptions();
+        var sessionSecretStore = new SessionSecretStore(
+            Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+            NullLogger<SessionSecretStore>.Instance);
+        // Tests below use "session-1" and "session-2" as their request session ids — seed both with
+        // the same known Secret so a fixed Authorization header can authenticate either one.
+        sessionSecretStore.SaveAsync("session-1", Secret).GetAwaiter().GetResult();
+        sessionSecretStore.SaveAsync("session-2", Secret).GetAwaiter().GetResult();
+
         var controller = new AuthWebhookController(
             [provider],
-            new AuthSharedSecret(authOptions),
+            sessionSecretStore,
             policy,
             forwarder,
             authOptions,
@@ -196,18 +204,51 @@ public sealed class AuthWebhookControllerForwarderTests
     }
 
     [Fact]
-    public async Task Missing_session_id_never_calls_the_forwarder()
+    public async Task Missing_session_id_is_rejected_before_ever_reaching_the_forwarder()
     {
+        // Per-session secrets need the session id up front to know which secret to check against —
+        // a missing session id can no longer fall through to an Ok allow/deny decision, unlike the
+        // old global-secret design where the id was only needed for the (optional) forwarder calls.
         var provider = new FakeTokenProvider("github");
         var forwarder = new RecordingForwarder { TargetToReturn = new AuthWebhookTarget("thread-3", null, "https://caller.test/hook") };
         var controller = CreateController(provider, new StubResolutionPolicy(null), forwarder);
 
         var result = await controller.Evaluate("github", NewRequest(sessionId: null), CancellationToken.None);
 
-        result.Should().BeOfType<OkObjectResult>();
+        result.Should().BeOfType<UnauthorizedResult>();
         forwarder.RequiredCalls.Should().BeEmpty();
         forwarder.CompletedCalls.Should().BeEmpty();
         forwarder.DeniedCalls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Secret_valid_for_another_session_is_rejected()
+    {
+        // The cross-session-isolation guarantee: session A's real secret must not authenticate a
+        // call claiming to be session B, even though both sessions are known to the store.
+        var sessionSecretStore = new SessionSecretStore(
+            Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+            NullLogger<SessionSecretStore>.Instance);
+        await sessionSecretStore.SaveAsync("session-a", "secret-for-a");
+        await sessionSecretStore.SaveAsync("session-b", "secret-for-b");
+
+        var provider = new FakeTokenProvider("github");
+        var forwarder = new RecordingForwarder();
+        var controller = new AuthWebhookController(
+            [provider],
+            sessionSecretStore,
+            new StubResolutionPolicy(null),
+            forwarder,
+            new AuthOptions(),
+            NullLogger<AuthWebhookController>.Instance);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Headers.Authorization = "secret-for-a";
+        controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+
+        var result = await controller.Evaluate("github", NewRequest("session-b"), CancellationToken.None);
+
+        result.Should().BeOfType<UnauthorizedResult>();
+        forwarder.RequiredCalls.Should().BeEmpty();
     }
 
     [Fact]

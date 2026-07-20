@@ -10,10 +10,40 @@ internal static class OAuthProviderHosts
 {
     private static readonly Dictionary<string, string[]> HostsByProvider = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["github"] = ["github.com", "api.github.com", "codeload.github.com"],
+        // OAuth-token-injected hosts ONLY. The user's GitHub access token is attached (as an
+        // Authorization header) by the auth webhook on egress to every host in this list, so it must
+        // contain nothing but GitHub's own API/git endpoints. The Actions run-log download redirect
+        // chain (results-receiver -> a SAS-signed Azure blob) is deliberately NOT here — those hops
+        // already carry their own authorization and must be reached WITHOUT the GitHub token; they get
+        // a separate network-only allow rule (see <see cref="GithubEgressOnlyHosts"/>).
+        ["github"] = [
+            "github.com",
+            "api.github.com",
+            "codeload.github.com",
+        ],
         ["ado"] = ["dev.azure.com", "*.dev.azure.com", "*.visualstudio.com"],
         ["m365"] = ["graph.microsoft.com"],
     };
+
+    /// <summary>
+    /// Hosts the GitHub Actions run-log download redirect chain hops through
+    /// (<c>api.github.com</c> -&gt; <c>results-receiver</c> -&gt; a per-shard SAS-signed Azure blob
+    /// URL) that must be reachable but must NEVER receive the user's OAuth token: the SAS URL is
+    /// already authorized and the receiver is not a GitHub API endpoint. These are emitted as a
+    /// network-only allow rule (no <c>authProvider</c>) by
+    /// <c>SandboxSessionRegistry.BuildAuthProviders</c>, so the gateway permits egress without ever
+    /// calling the auth webhook — and because no token is injected here, they are intentionally kept
+    /// out of <see cref="HostsByProvider"/> so the webhook's <see cref="IsAllowed"/> gate also refuses
+    /// GitHub-token injection to them. <c>*.blob.core.windows.net</c> is the suffix GitHub documents
+    /// for log/artifact/cache transfers, so it is used instead of pinning a single shard (e.g.
+    /// <c>productionresultssa7</c>) that would break whenever GitHub rotates shards; because this rule
+    /// injects no credential, the broad suffix carries no token-leak risk.
+    /// </summary>
+    public static readonly IReadOnlyList<string> GithubEgressOnlyHosts =
+    [
+        "results-receiver.actions.githubusercontent.com",
+        "*.blob.core.windows.net",
+    ];
 
     /// <summary>The allowed destination hosts for <paramref name="providerId"/> (empty when unknown).</summary>
     public static IReadOnlyList<string> For(string providerId) =>

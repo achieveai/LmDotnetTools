@@ -132,7 +132,9 @@ public sealed class SandboxSessionRegistryAuthHeaderTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(handler),
             auth,
-            new AuthSharedSecret(auth)
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance)
         );
 
         return (registry, handler);

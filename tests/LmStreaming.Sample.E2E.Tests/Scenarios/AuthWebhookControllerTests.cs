@@ -19,6 +19,13 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// </summary>
 public sealed class AuthWebhookControllerTests : LoggingTestBase
 {
+    // Per-session secrets have no single "correct secret" for a session that was never created
+    // through SandboxSessionRegistry.CreateSessionAsync — NewFactory seeds this fixed session id's
+    // secret directly into the DI-resolved SessionSecretStore so these fixture webhook bodies
+    // (which all carry "session_id": "s-test") can present it and hit the real MatchesAsync path.
+    private const string SessionId = "s-test";
+    private const string SharedSecret = "e2e-webhook-shared-secret";
+
     private const string WebhookBody = """
         {
           "session_id": "s-test",
@@ -52,7 +59,12 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         var settings = disableDeferredAuth
             ? new Dictionary<string, string?> { ["Auth:Webhook:HoldTimeoutSeconds"] = "0" }
             : null;
-        return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
+        var factory = new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
+        factory.Services.GetRequiredService<SessionSecretStore>()
+            .SaveAsync(SessionId, SharedSecret)
+            .GetAwaiter()
+            .GetResult();
+        return factory;
     }
 
     private static StringContent JsonBody() => new(WebhookBody, Encoding.UTF8, "application/json");
@@ -100,9 +112,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         using var factory = NewFactory(disableDeferredAuth: true);
         using var client = factory.CreateClient();
 
-        // The real shared secret is resolved by the host (configured or random-at-startup).
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
-        Logger.LogInformation("Resolved AuthSharedSecret from DI (length {Length}); value NOT logged", sharedSecret.Length);
+        var sharedSecret = SharedSecret;
 
         // Ensure the github provider has no persisted token so the deny path is deterministic.
         await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
@@ -149,7 +159,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             Scopes: ["repo", "read:org"]));
         Logger.LogInformation("Seeded a valid github token in the store (value not logged) to exercise the allow path");
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/github")
         {
             Content = JsonBody(),
@@ -201,7 +211,8 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
                 new ScriptedBuilder(responder.AsAnthropicHandler()),
                 new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = tokenDir });
             using var client = factory.CreateClient();
-            var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+            await factory.Services.GetRequiredService<SessionSecretStore>().SaveAsync(SessionId, SharedSecret);
+            var sharedSecret = SharedSecret;
 
             var createBody = JsonSerializer.Serialize(new
             {
@@ -315,7 +326,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             }
             """;
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/github")
         {
             Content = new StringContent(gitBody, Encoding.UTF8, "application/json"),
@@ -350,7 +361,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         using var factory = NewFactory(disableDeferredAuth: true);
         using var client = factory.CreateClient();
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         var body = """
             {
               "session_id": "s-test",
@@ -387,7 +398,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         using var factory = NewFactory();
         using var client = factory.CreateClient();
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         // A misconfigured rule pointing m365 at api.github.com must NOT mint an m365 token toward
         // GitHub — the webhook's OAuthProviderHosts.IsAllowed check is the final gate.
         var body = """

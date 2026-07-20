@@ -286,7 +286,12 @@ public class ContextDiscoveryInjectorTests
                 NullLogger<SandboxSessionRegistry>.Instance,
                 new HttpClient(new StubHandler(Unused)),
                 new AuthOptions(),
-                new AuthSharedSecret(new AuthOptions()));
+                new SessionSecretStore(
+                    System.IO.Path.Combine(
+                        System.IO.Path.GetTempPath(),
+                        "lmstreaming-test-secrets",
+                        Guid.NewGuid().ToString("N")),
+                    NullLogger<SessionSecretStore>.Instance));
         }
     }
 

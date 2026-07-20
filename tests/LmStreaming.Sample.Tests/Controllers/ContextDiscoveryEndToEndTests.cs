@@ -215,10 +215,10 @@ public sealed class ContextDiscoveryEndToEndTests
                 new ContextDiscoveryDiagnostics(),
                 NullLogger<ContextDiscoveryInjector>.Instance);
             Loader = new WorkspaceSubAgentLoader(Registry, NullLogger<WorkspaceSubAgentLoader>.Instance);
-            SharedSecret = new AuthSharedSecret(new AuthOptions
-            {
-                Webhook = new WebhookOptions { GatewaySharedSecret = Secret },
-            });
+            SessionSecretStore = new SessionSecretStore(
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance);
+            SessionSecretStore.SaveAsync(SessionId, Secret).GetAwaiter().GetResult();
             Diagnostics = new ContextDiscoveryDiagnostics();
         }
 
@@ -226,7 +226,7 @@ public sealed class ContextDiscoveryEndToEndTests
         public MultiTurnAgentPool Pool { get; }
         public ContextDiscoveryInjector Injector { get; }
         public WorkspaceSubAgentLoader Loader { get; }
-        public AuthSharedSecret SharedSecret { get; }
+        public SessionSecretStore SessionSecretStore { get; }
         public ContextDiscoveryDiagnostics Diagnostics { get; }
 
         public RecordingMultiTurnAgent RegisterLiveThread(string sessionId, string threadId)
@@ -240,7 +240,7 @@ public sealed class ContextDiscoveryEndToEndTests
         public ContextDiscoveryController CreateController(string? authorizationHeader)
         {
             var controller = new ContextDiscoveryController(
-                SharedSecret,
+                SessionSecretStore,
                 Registry,
                 Loader,
                 Injector,
@@ -278,7 +278,9 @@ public sealed class ContextDiscoveryEndToEndTests
                 NullLogger<SandboxSessionRegistry>.Instance,
                 new HttpClient(new StubHandler(Unused)),
                 new AuthOptions(),
-                new AuthSharedSecret(new AuthOptions()));
+                new SessionSecretStore(
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                    NullLogger<SessionSecretStore>.Instance));
         }
     }
 

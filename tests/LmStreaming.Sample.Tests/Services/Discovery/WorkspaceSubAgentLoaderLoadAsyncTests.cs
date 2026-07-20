@@ -77,7 +77,9 @@ public class WorkspaceSubAgentLoaderLoadAsyncTests : IDisposable
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(handler),
             new AuthOptions(),
-            new AuthSharedSecret(new AuthOptions()));
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance));
 
         var loader = new WorkspaceSubAgentLoader(
             registry,

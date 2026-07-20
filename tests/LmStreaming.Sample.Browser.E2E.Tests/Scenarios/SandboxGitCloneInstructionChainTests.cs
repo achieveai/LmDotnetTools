@@ -16,7 +16,7 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 /// <para>
 /// Driven by an <em>instruction chain</em> (a <see cref="ScriptedSseResponder"/> that scripts the
 /// model's tool calls deterministically — the tools themselves execute for real). Two
-/// <c>sandbox-Bash</c> turns clone <c>octocat/Hello-World</c> (public, sanity) and
+/// <c>Bash</c> turns clone <c>octocat/Hello-World</c> (public, sanity) and
 /// <c>achieveai/LmDotnetTools</c> (private — the clone that requires the host-aware Basic-auth header
 /// AND the proxy's flushed/de-chunked response). Success is asserted three ways: the rendered
 /// tool-call pills, the final assistant text, and — decisively — the cloned <c>.git</c> trees on the
@@ -65,7 +65,9 @@ public sealed class SandboxGitCloneInstructionChainTests
         var pubDir = "e2e-pub-" + id;
         var privDir = "e2e-priv-" + id;
 
-        // Each turn is one sandbox-Bash command; '&&' makes a failed clone fail the whole command.
+        // Each turn is one Bash command; '&&' makes a failed clone fail the whole command. The gateway
+        // is the sole MCP server here, so its tools are exposed under their natural names (Bash, not
+        // sandbox-Bash — see Program.cs's ConnectHttpMcpClient(omitServerPrefix: true) for "sandbox").
         // The public repo needs no real auth; the private one exercises Basic auth + the proxy fixes.
         var pubCommand =
             $"rm -rf {pubDir} && git clone --depth 1 https://github.com/octocat/Hello-World {pubDir} && cat {pubDir}/README";
@@ -75,8 +77,8 @@ public sealed class SandboxGitCloneInstructionChainTests
 
         var responder = ScriptedSseResponder.New()
             .ForRole("workspace-agent", _ => true)
-                .Turn(t => t.ToolCall("sandbox-Bash", new { command = pubCommand }))
-                .Turn(t => t.ToolCall("sandbox-Bash", new { command = privCommand }))
+                .Turn(t => t.ToolCall("Bash", new { command = pubCommand }))
+                .Turn(t => t.ToolCall("Bash", new { command = privCommand }))
                 .Turn(t => t.Text("Cloned both repositories."))
             .Build();
 
@@ -115,10 +117,10 @@ public sealed class SandboxGitCloneInstructionChainTests
             // Real network clones, including a ~5 MB private packfile through the MITM proxy — be generous.
             await page.WaitForStreamIdleAsync(timeoutMs: 240_000);
 
-            // (1) Browser-visible: both sandbox-Bash tool calls rendered as pills.
+            // (1) Browser-visible: both Bash tool calls rendered as pills.
             await page.ToolCallPills().WaitForCountAtLeastAsync(2, timeoutMs: 20_000);
             var toolNames = await page.ToolCallNamesAsync();
-            toolNames.Should().Contain("sandbox-Bash", "the clones run through the gateway's sandbox Bash tool");
+            toolNames.Should().Contain("Bash", "the clones run through the gateway's sandbox Bash tool");
 
             // (2) The instruction chain ran to completion and the closing text reached the renderer.
             await page.AssistantText().WaitForCountAtLeastAsync(1);

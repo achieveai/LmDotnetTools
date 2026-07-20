@@ -28,6 +28,7 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 public sealed class DeferredAuthBannerTests
 {
     private const string SharedSecret = "e2e-deferred-auth-shared-secret";
+    private const string SessionId = "s-browser-e2e";
 
     private const string WebhookBody = """
         {
@@ -59,12 +60,20 @@ public sealed class DeferredAuthBannerTests
             Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tokenStoreDir);
 
+        // Per-session secrets: the app's SessionSecretStore lives under
+        // {Auth:TokenStoreDir}/session-secrets/ (Program.cs), so seed this fixed session id's
+        // secret directly on disk before the webhook fires — the same "config-by-env, write the
+        // store's on-disk format directly" trick used below for the OAuth token store.
+        var sessionSecretStore = new SessionSecretStore(
+            Path.Combine(tokenStoreDir, "session-secrets"),
+            NullLogger<SessionSecretStore>.Instance);
+        await sessionSecretStore.SaveAsync(SessionId, SharedSecret);
+
         // Config-by-env: the Kestrel-hosted factory does not expose DI Services, so the test
         // pins the shared secret and points the token store at a private temp dir it can seed
         // directly. The scope restores prior values on dispose; tests run serialized.
         using var env = new EnvironmentVariableScope(new Dictionary<string, string?>(StringComparer.Ordinal)
         {
-            ["Auth__Webhook__GatewaySharedSecret"] = SharedSecret,
             ["Auth__TokenStoreDir"] = tokenStoreDir,
             ["Auth__Webhook__HoldTimeoutSeconds"] = "60",
             ["Auth__Webhook__PollIntervalSeconds"] = "0.25",

@@ -155,7 +155,6 @@ All settings live under the **`Auth`** configuration section (bound to
 | `Auth:M365:Scopes` | `["User.Read","Mail.Read","Calendars.Read","OnlineMeetings.Read"]` | Delegated Microsoft Graph scopes. MSAL strips reserved OIDC scopes (`openid`/`profile`/`offline_access`) before calling MSAL. |
 | `Auth:M365:RedirectPath` | `/auth/m365/callback` | App-primary-port callback path. Must exactly match the redirect URI registered in the Entra app. |
 | `Auth:Webhook:PublicBaseUrl` | `http://127.0.0.1:5000` | The base URL the **gateway** calls back on to reach this app's webhook. Also serves as the M365 callback base. |
-| `Auth:Webhook:GatewaySharedSecret` | *(empty)* | Shared secret the gateway sends as `Authorization`. If unset, a random 64-hex-char secret is generated at startup. |
 | `Auth:Webhook:HoldTimeoutSeconds` | `120` | Deferred auth: how long a not-signed-in webhook call is held open while the chat UI prompts for sign-in. `0` disables deferral (immediate deny). |
 | `Auth:Webhook:PollIntervalSeconds` | `1.0` | Deferred auth: interval between token-acquisition attempts while a webhook call is held. |
 
@@ -191,7 +190,7 @@ All settings live under the **`Auth`** configuration section (bound to
 ### Environment-variable override form
 
 ASP.NET Core maps nested keys with the double-underscore separator. This is the recommended way to
-supply your own client ids/secret and the shared secret (e.g. from `.env`):
+supply your own client ids/secrets (e.g. from `.env`):
 
 ```bash
 Auth__Github__ClientId=Iv23xxxxxxxxxxxxxxxx
@@ -201,7 +200,6 @@ Auth__Ado__TenantId=organizations
 Auth__M365__ClientId=00000000-0000-0000-0000-000000000000
 Auth__M365__ClientSecret=<your m365 entra confidential-client secret>
 Auth__M365__TenantId=common
-Auth__Webhook__GatewaySharedSecret=<a long random string>
 ```
 
 > **Provider disabled when client id (or, for M365, the client secret) is empty.** That provider is
@@ -665,14 +663,13 @@ flag and the held call resolves **allow** — no session restart needed.
 - **M365 client secret stays out of source.** The M365 confidential-client secret MUST be supplied
   via user-secrets / env (`Auth__M365__ClientSecret`). Committed `appsettings.Development.json`
   carries the M365 client id + tenant only — no secret.
-- **Webhook authentication is constant-time.** The shared secret is validated with a fixed-time
-  comparison of SHA-256 digests; the controller never logs the token, the incoming `Authorization`
-  value, or the secret, and never echoes token material back to the gateway.
+- **Webhook authentication is per-session and constant-time.** Each sandbox session gets its own
+  random secret, persisted to disk (`oauth-tokens/session-secrets/`) so it survives app restarts and
+  can never be cross-validated against another session. Presented secrets are validated with a
+  fixed-time comparison of SHA-256 digests; the controller never logs the token, the incoming
+  `Authorization` value, or the secret, and never echoes token material back to the gateway.
 - **Default-deny egress.** With auth configured, only the authenticated GitHub/ADO hosts are
   reachable from the sandbox. Anything else is blocked by the absence of an `allow` rule.
-- **Keep the shared secret out of source control.** Supply
-  `Auth__Webhook__GatewaySharedSecret` via `.env`/user-secrets/environment. If you leave it unset, a
-  random secret is generated per process start (fine for local dev, but it changes on each restart).
 
 ---
 
@@ -701,10 +698,10 @@ you run your own gateway — that the `PublicBaseUrl` host is in that env var, o
 over **HTTPS**.
 
 **401 from the webhook.**
-The shared secret the gateway sends does not match the app's. Ensure
-`Auth__Webhook__GatewaySharedSecret` is the same value the gateway uses — and remember that if you
-leave it unset, the app generates a **new random secret on every restart**, so a previously-spawned
-gateway will be out of sync. Set an explicit secret to pin it.
+The secret the gateway sends does not match the session's. Each sandbox session has its own secret,
+persisted under `oauth-tokens/session-secrets/` and reloaded across restarts, so this should only
+happen for a session that predates the secret store being wired up, or if the session's secret file
+was removed out-of-band. Recreate the session to mint a fresh one.
 
 **`deny` with "sign in required" in the webhook response.**
 The provider is not signed in (or its refresh failed). Re-run the sign-in flow and confirm

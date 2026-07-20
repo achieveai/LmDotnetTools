@@ -68,7 +68,6 @@ var daemonCredential = new SandboxCredential(daemonAppId, daemonAppKey ?? string
 var authOptions =
     builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
 builder.Services.AddSingleton(authOptions);
-builder.Services.AddSingleton<AuthSharedSecret>();
 
 var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
     ? Path.Combine(AppContext.BaseDirectory, "oauth-tokens")
@@ -76,6 +75,9 @@ var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
 builder.Services.AddSingleton<IOAuthTokenStore>(sp => new FileOAuthTokenStore(
     oauthTokenDir,
     sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()));
+builder.Services.AddSingleton(sp => new SessionSecretStore(
+    Path.Combine(oauthTokenDir, "session-secrets"),
+    sp.GetRequiredService<ILogger<SessionSecretStore>>()));
 
 // Dual-register each provider (concrete + IOAuthTokenProvider alias-to-concrete) so the
 // enumerable-consuming callers (AuthWebhookController, OAuthTokenHydrator) and any concrete-typed
@@ -112,15 +114,16 @@ builder.Services.AddSingleton<IAuthResolutionPolicy, FailFastDaemonAuthPolicy>()
 builder.Services.AddSingleton<IAuthWebhookForwarder, NoOpAuthWebhookForwarder>();
 
 // Gateway callback authentication. The real sandbox gateway authenticates its auth-webhook calls with a
-// single shared secret in the `Authorization` header (crates/mcp-gateway/.../proxy_policy/auth_webhook.rs
+// per-session secret in the `Authorization` header (crates/mcp-gateway/.../proxy_policy/auth_webhook.rs
 // sends ONLY `Authorization: {gateway_auth}` — no body signature, timestamp, or delivery id). The shared
-// AuthWebhookController already verifies that secret (AuthSharedSecret, constant-time) and injects tokens
-// only toward each provider's own hosts. The plan §9 HMAC/timestamp/replay middleware was built for a
-// Stripe-style signing gateway this one is NOT: it hard-required X-Sandbox-Signature/Timestamp/Delivery-Id
-// and so rejected EVERY real callback as MissingHeaders (proven live — clone 403, "Rejected ... MissingHeaders"),
-// breaking all authenticated git (private clone, ReviewBot push). It is therefore not wired; the shared
-// secret carried in Authorization is the gateway↔webhook boundary. (WebhookVerification* + DeliveryReplayCache
-// are retained unwired for a future signing gateway.)
+// AuthWebhookController already verifies that secret (SessionSecretStore, constant-time, keyed by the
+// session id carried in the callback body) and injects tokens only toward each provider's own hosts. The
+// plan §9 HMAC/timestamp/replay middleware was built for a Stripe-style signing gateway this one is NOT:
+// it hard-required X-Sandbox-Signature/Timestamp/Delivery-Id and so rejected EVERY real callback as
+// MissingHeaders (proven live — clone 403, "Rejected ... MissingHeaders"), breaking all authenticated git
+// (private clone, ReviewBot push). It is therefore not wired; the per-session secret carried in
+// Authorization is the gateway↔webhook boundary. (WebhookVerification* + DeliveryReplayCache are retained
+// unwired for a future signing gateway.)
 
 // ── Orchestration: store, sandbox, agents, providers, poller ─────────────────────────────────────
 // The daemon's orchestration source of truth (plan §6–§14). The store migrates SQLite at construction,
@@ -192,7 +195,7 @@ builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
         Timeout = TimeSpan.FromSeconds(30),
     },
     authOptions,
-    sp.GetRequiredService<AuthSharedSecret>()));
+    sp.GetRequiredService<SessionSecretStore>()));
 builder.Services.AddSingleton<ISandboxSessionSource>(sp =>
     new RegistrySessionSource(sp.GetRequiredService<SandboxSessionRegistry>()));
 builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSessionProvisioner(
