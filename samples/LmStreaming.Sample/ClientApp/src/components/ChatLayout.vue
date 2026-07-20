@@ -5,6 +5,7 @@ import { useChat, getDisplayText } from '@/composables/useChat';
 import { useChatModes } from '@/composables/useChatModes';
 import { useProviders } from '@/composables/useProviders';
 import { useWorkspaces } from '@/composables/useWorkspaces';
+import { egressDialogRequest, closeEgressDialog } from '@/composables/useEgressAuth';
 import { updateConversationMetadata } from '@/api/conversationsApi';
 import type { ChatModeCreateUpdate } from '@/types/chatMode';
 import type { WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
@@ -18,6 +19,7 @@ import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
 import AuthRequiredBanner from './AuthRequiredBanner.vue';
 import MarketplaceModal from './MarketplaceModal.vue';
+import EgressAuthModal from './EgressAuthModal.vue';
 import FileBrowserModal from './FileBrowserModal.vue';
 
 const {
@@ -108,7 +110,17 @@ const sidebarCollapsed = ref(false);
 const isSwitchingMode = ref(false);
 const isSwitchingProvider = ref(false);
 const marketplaceModalOpen = ref(false);
+const egressAuthModalOpen = ref(false);
 const fileBrowserModalOpen = ref(false);
+
+/**
+ * Closes the egress-auth modal, resetting both the header-button flag and any
+ * programmatic open request (openEgressDialog).
+ */
+function handleCloseEgressModal(): void {
+  egressAuthModalOpen.value = false;
+  closeEgressDialog();
+}
 const modeSwitchDisabled = computed(
   () => modesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
 );
@@ -543,6 +555,14 @@ onBeforeUnmount(() => {
               Marketplaces
             </button>
             <button
+              class="egress-auth-btn"
+              data-testid="egress-auth-button"
+              title="Manage egress auth keys"
+              @click="egressAuthModalOpen = true"
+            >
+              Egress Auth
+            </button>
+            <button
               class="file-browser-btn"
               data-testid="file-browser-button"
               title="Browse workspace files"
@@ -565,6 +585,11 @@ onBeforeUnmount(() => {
         <MarketplaceModal
           v-if="marketplaceModalOpen"
           @close="marketplaceModalOpen = false"
+        />
+
+        <EgressAuthModal
+          v-if="egressAuthModalOpen || egressDialogRequest.open"
+          @close="handleCloseEgressModal"
         />
 
         <FileBrowserModal
@@ -698,6 +723,17 @@ onBeforeUnmount(() => {
   background: #2057bd;
 }
 
+.egress-auth-btn {
+  padding: 8px 16px;
+  background: #6f42c1;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
 .file-browser-btn {
   padding: 8px 16px;
   background: #2d6cdf;
@@ -707,6 +743,10 @@ onBeforeUnmount(() => {
   font-size: 14px;
   cursor: pointer;
   transition: background 0.2s;
+}
+
+.egress-auth-btn:hover {
+  background: #5a34a0;
 }
 
 .file-browser-btn:hover:not(:disabled) {

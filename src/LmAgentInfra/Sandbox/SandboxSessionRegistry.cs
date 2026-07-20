@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -255,6 +255,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     private readonly HttpClient _httpClient;
     private readonly AuthOptions _authOptions;
     private readonly AuthSharedSecret _sharedSecret;
+    private readonly PredefinedKeyRegistry? _predefinedKeys;
     private readonly SandboxCredential _defaultCredential;
     private bool _disposed;
 
@@ -289,13 +290,17 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// <c>auth_providers</c>/<c>network</c> blocks sent on sandbox creation.</param>
     /// <param name="sharedSecret">Gateway↔webhook shared secret attached to each auth provider.
     /// SECRET — never logged.</param>
+    /// <param name="predefinedKeys">Optional predefined-egress-key registry; when supplied, each
+    /// configured entry contributes a webhook auth-provider + host-scoped allow rule. Null (the
+    /// headless daemon and every test that does not exercise egress keys) emits none — fail-closed.</param>
     public SandboxSessionRegistry(
         SandboxGatewayLifetime gateway,
         SandboxGatewayOptions options,
         ILogger<SandboxSessionRegistry> logger,
         HttpClient httpClient,
         AuthOptions authOptions,
-        AuthSharedSecret sharedSecret
+        AuthSharedSecret sharedSecret,
+        PredefinedKeyRegistry? predefinedKeys = null
     )
     {
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
@@ -304,6 +309,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _authOptions = authOptions ?? throw new ArgumentNullException(nameof(authOptions));
         _sharedSecret = sharedSecret ?? throw new ArgumentNullException(nameof(sharedSecret));
+        _predefinedKeys = predefinedKeys;
         // Non-null default even when no key is configured: contextless paths (liveness/destroy on
         // a session with no side-table entry) always resolve to a credential, never null. An empty
         // AppKey is exactly the keyless AUTH_ENFORCE=off dev path.
@@ -1773,6 +1779,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
         BuildAuthProviders().Providers?.Select(p => p.Id).ToArray() ?? [];
 
+    /// <summary>
+    /// Test seam: the full <c>auth_providers</c> + <c>network</c> pair the registry would attach, so a
+    /// test can assert the security-sensitive rule shape (host, ports, auth-provider linkage) and the
+    /// webhook endpoint / cache TTL — not just the provider id.
+    /// </summary>
+    internal (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProvidersForTest() =>
+        BuildAuthProviders();
+
     private (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProviders()
     {
         var providers = new List<SandboxAuthProvider>();
@@ -1862,6 +1876,42 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
                     priority: 100
                 )
             );
+        }
+
+        // Predefined egress keys (issue #210): one webhook provider + host-scoped allow rule per
+        // configured entry. Custom-header entries carry no token expiry, so the gateway falls back to
+        // the provider cache TTL — keep it short so an edited/rotated key takes effect promptly; the
+        // token-minting kinds carry the minted token's real expiry regardless.
+        if (_predefinedKeys is not null)
+        {
+            foreach (var entry in _predefinedKeys.Entries)
+            {
+                var id = $"{PredefinedKeyRegistry.ProviderIdPrefix}{entry.Id}";
+                var cacheTtlSeconds = entry.Kind == PredefinedKeyKind.CustomHeaders ? 30 : 300;
+                providers.Add(
+                    new SandboxAuthProvider(
+                        id: id,
+                        type: "webhook",
+                        endpoint: $"{baseUrl}/api/auth/webhook/{id}",
+                        gatewayAuth: _sharedSecret.Value,
+                        cacheTtlSeconds: cacheTtlSeconds,
+                        requiredScopes: []
+                    )
+                );
+                rules.Add(
+                    new SandboxNetworkRule(
+                        id: id,
+                        action: "allow",
+                        hosts: [entry.Host],
+                        ports: [443],
+                        methods: [],
+                        paths: [],
+                        authProvider: id,
+                        requiredScopes: [],
+                        priority: 100
+                    )
+                );
+            }
         }
 
         return providers.Count > 0 ? (providers, rules) : (null, null);

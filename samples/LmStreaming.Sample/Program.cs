@@ -302,6 +302,16 @@ try
         oauthTokenDir,
         sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
     ));
+    // Predefined egress keys (issue #210): a runtime-managed registry of custom-header / OAuth
+    // credentials the gateway injects on egress to user-specified hosts (managed via the Egress Auth
+    // dialog / EgressKeysController). Persists under the same gitignored token dir; a dedicated
+    // HttpClient drives the OAuth token-endpoint mint/refresh calls.
+    _ = builder.Services.AddSingleton(sp => new PredefinedKeyRegistry(
+        oauthTokenDir,
+        sp.GetRequiredService<IOAuthTokenStore>(),
+        new HttpClient(),
+        sp.GetRequiredService<ILoggerFactory>()
+    ));
     // Dual-register each provider: the concrete type is what the per-provider controller
     // (AdoAuthController / GitHubAuthController) takes in its ctor, while the IOAuthTokenProvider
     // alias keeps the enumerable-consuming callers (AuthWebhookController, OAuthTokenHydrator)
@@ -360,7 +370,8 @@ try
         // WebSocket request thread, so the 100s default could stall it indefinitely.
         GatewayHttpClient(TimeSpan.FromSeconds(30)),
         authOptions,
-        sp.GetRequiredService<AuthSharedSecret>()
+        sp.GetRequiredService<AuthSharedSecret>(),
+        sp.GetRequiredService<PredefinedKeyRegistry>()
     ));
 
     // The registry also implements the narrow file-browser surface the FileBrowserController depends on

@@ -4,3 +4,4 @@ export * from './wsClient';
 export * from './conversationsApi';
 export * from './chatModesApi';
 export * from './providersApi';
+export * from './egressAuthApi';

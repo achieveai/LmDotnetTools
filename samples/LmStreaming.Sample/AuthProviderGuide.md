@@ -437,6 +437,223 @@ own gateway, you must set this yourself (or serve the webhook over HTTPS).
 
 ---
 
+## Pre-defined egress keys (issue #210)
+
+OAuth sign-in (above) is one way the gateway injects credentials on sandbox egress; **pre-defined
+egress keys** are a **second** kind that sits alongside it. Instead of an interactive
+authorization-code flow, you register a **per-entry credential for a host you name**, and the gateway
+injects it as an outbound header — no browser, no sign-in. Entries are created and edited **at
+runtime** through the **"Egress Auth"** dialog in the chat header (or the REST API below), and they
+ride the **same webhook mechanism** the OAuth providers use, so the sandbox still never sees the
+secret.
+
+Use these when the destination is not GitHub / Azure DevOps / Microsoft 365 — an internal API behind
+a session cookie, a SaaS endpoint keyed by an API-key header, or any host reachable with a generic
+OAuth2 client. Each entry is **generic OAuth2, self-contained**: the token endpoint URL, client id,
+client secret, refresh token and scopes all live on the entry — there are **no provider presets**.
+
+### Three credential kinds
+
+| Kind (`kind` on the wire) | What it injects | Auto-refreshes |
+| --- | --- | --- |
+| **Custom Headers** (`custom-headers`) | A **list** of `{ headerName, value }` pairs injected **verbatim** — a session `Cookie`, an `Authorization` token, an `X-Api-Key`, any custom header(s). | n/a (static values) |
+| **OAuth2 Refresh Token** (`refresh-token`) | The app runs `grant_type=refresh_token` against the entry's token endpoint and injects `Bearer <access>`. | Yes — re-mints ~120s before expiry; a rotated `refresh_token` is persisted and reused. |
+| **OAuth2 Client-Credentials** (`client-credentials`) | The app runs `grant_type=client_credentials` (client id + secret) and injects `Bearer <access>`. | Yes — re-mints ~120s before expiry. |
+
+For the OAuth kinds the minted `Bearer` is injected under the entry's `headerName` (default
+`Authorization`).
+
+### How it plugs into the sandbox
+
+The wiring mirrors the OAuth webhook exactly. When at least one entry is configured,
+`Services/SandboxSessionRegistry.cs` adds — **per entry** — the same two blocks it adds per OAuth
+provider to the sandbox-create request:
+
+- **`auth_providers`** — one `webhook`-type provider with id **`predefined-<id>`**, pointing at
+  `{PublicBaseUrl}/api/auth/webhook/predefined-<id>`, carrying the shared secret as `gateway_auth`.
+  Custom-header entries use a short 30-second cache TTL so an edited/rotated key takes effect
+  promptly; the token-minting kinds carry the minted token's **real expiry** so the gateway caches on
+  it.
+- **`network.rules`** — a single `action: "allow"` rule scoping **only that entry's host** (**port
+  443 only**) through the matching `predefined-<id>` auth provider.
+
+When the gateway intercepts a sandboxed request to that host, it calls back
+`Controllers/AuthWebhookController.cs`, which returns the entry's **header list** (custom-headers) or
+a freshly-minted **`Bearer` token** (OAuth kinds). **The sandbox never sees the secret** — it is
+added by the gateway proxy outside the sandbox boundary. **Default-deny egress is preserved**: an
+entry opens **only its own host**, nothing else.
+
+> **Changes apply to sessions created afterward.** Adding, editing, or deleting an entry rebuilds the
+> `auth_providers`/`network` blocks for the **next** sandbox-create; **existing sessions are
+> unchanged** — the same behavior as signing in / out of an OAuth provider mid-session.
+
+### The CRUD REST API
+
+Entries are managed by `Controllers/EgressKeysController.cs` on the route `api/auth/egress-keys` —
+from the **"Egress Auth"** dialog in the chat header, or with `curl`. The API **never returns secret
+values**.
+
+#### `GET /api/auth/egress-keys` — masked list
+
+Returns every configured entry with all secret material masked or omitted:
+
+```json
+[
+  {
+    "id": "3f2c…",
+    "host": "api.example.com",
+    "kind": "client-credentials",
+    "headerName": "Authorization",
+    "headerNames": [],
+    "hasClientSecret": true,
+    "hasRefreshToken": false,
+    "scopes": ["https://api.example.com/.default"]
+  }
+]
+```
+
+`headerNames[]` lists the custom-header **names** (values never appear); `hasClientSecret` /
+`hasRefreshToken` are booleans, never the secrets themselves.
+
+```bash
+curl -s http://127.0.0.1:5000/api/auth/egress-keys | jq
+```
+
+#### `POST /api/auth/egress-keys` — create or update
+
+`id` **null / omitted → create**; `id` **set → update** that entry (**404** if the id is unknown).
+On an update, **secret fields left blank are preserved** (the stored value stays), so you can change
+the host or scopes without re-entering the secret. `host` and `kind` are always required; the other
+OAuth fields fall back to the stored entry when omitted on an update.
+
+| Field | Required for | Notes |
+| --- | --- | --- |
+| `id` | — | Null/omitted = create; set = update an existing entry (404 if unknown). |
+| `host` | all | Exact host or `*.suffix` — SSRF-validated (see Security). |
+| `kind` | all | `custom-headers` \| `refresh-token` \| `client-credentials`. |
+| `headers` | custom-headers | List of `{ name, value }`. Omit on an update to keep the stored list. |
+| `headerName` | oauth kinds (optional) | Header the minted `Bearer` is injected under. Defaults to `Authorization`. |
+| `tokenEndpoint` | oauth kinds | Absolute **https** token endpoint URL. |
+| `clientId` | oauth kinds | OAuth2 client id. |
+| `clientSecret` | client-credentials (always); refresh-token (when the endpoint requires it) | **SECRET.** Blank on an update preserves the stored value. |
+| `refreshToken` | refresh-token | **SECRET.** Blank on an update preserves the stored value. |
+| `scopes` | oauth kinds (optional) | Scopes requested when minting. |
+
+On success it returns the **masked view** (same shape as `GET`); on a validation failure it returns
+`{ "error": "…" }` with **400** (bad host / header / kind / missing required field) or **404**
+(update of an unknown id).
+
+Create a **custom-headers** entry (injects an API-key header):
+
+```bash
+curl -s -X POST http://127.0.0.1:5000/api/auth/egress-keys \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "api.example.com",
+    "kind": "custom-headers",
+    "headers": [{ "name": "X-Api-Key", "value": "<secret api key>" }]
+  }' | jq
+```
+
+Create a **refresh-token** entry:
+
+```bash
+curl -s -X POST http://127.0.0.1:5000/api/auth/egress-keys \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "api.example.com",
+    "kind": "refresh-token",
+    "tokenEndpoint": "https://login.example.com/oauth2/token",
+    "clientId": "my-client",
+    "clientSecret": "<secret>",
+    "refreshToken": "<refresh token>",
+    "scopes": ["read"]
+  }' | jq
+```
+
+Create a **client-credentials** entry:
+
+```bash
+curl -s -X POST http://127.0.0.1:5000/api/auth/egress-keys \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "api.example.com",
+    "kind": "client-credentials",
+    "tokenEndpoint": "https://login.example.com/oauth2/token",
+    "clientId": "my-client",
+    "clientSecret": "<secret>",
+    "scopes": ["https://api.example.com/.default"]
+  }' | jq
+```
+
+Update an entry **without re-entering the secret** — pass the `id` and leave `clientSecret` out (the
+stored one is preserved):
+
+```bash
+curl -s -X POST http://127.0.0.1:5000/api/auth/egress-keys \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "<id>",
+    "host": "api2.example.com",
+    "kind": "client-credentials",
+    "tokenEndpoint": "https://login.example.com/oauth2/token",
+    "clientId": "my-client"
+  }' | jq
+```
+
+#### `DELETE /api/auth/egress-keys/{id}` — remove
+
+Deletes the entry and its persisted secret (and drops any minted-token record). **204 No Content** on
+success, **404** for an unknown id.
+
+```bash
+curl -s -X DELETE http://127.0.0.1:5000/api/auth/egress-keys/<id> -o /dev/null -w "%{http_code}\n"
+```
+
+### Security notes (pre-defined keys)
+
+- **Secrets persist locally, never in logs.** Entry definitions (including header values, client
+  secret, and refresh token) are written to `oauth-tokens/predefined-keys.json`, and minted OAuth
+  access/refresh tokens ride the shared token store keyed **`predefined-<id>`** — both under the
+  gitignored `oauth-tokens/` directory (default; overridable via `Auth:TokenStoreDir`). None of this
+  material is ever logged, and `GET` masks it (booleans + header **names** only). `DELETE` removes the
+  persisted secret.
+- **Host validation is an SSRF trust boundary.** A user-entered host **widens a default-deny egress
+  boundary**, so it is validated (`EgressHostMatcher.ValidateHostPattern`) before an entry is
+  accepted. It allows an **exact host** or a single leading `*.suffix` wildcard, and **rejects**: a
+  bare `*`; loopback (`127.*` / `localhost` / `::1` / `[::1]`); link-local & cloud metadata
+  (`169.254.*`, `169.254.169.254`, `metadata.google.internal`); `0.0.0.0`; an embedded
+  scheme / port / path; a trailing dot; a bare-TLD wildcard (`*.com`); anything that is not a valid
+  DNS host; and any host that **collides with a managed OAuth provider's egress scope**
+  (GitHub / ADO / M365) so a static key can never shadow — or be shadowed by — a managed credential
+  on the same host.
+- **Header names are constrained.** A header name must be an **RFC 7230 token** and may **not** be a
+  hop-by-hop / framing header — `Host`, `Content-Length`, `Connection`, `Transfer-Encoding`,
+  `Content-Type` are rejected; `Cookie` and `Authorization` are allowed. Header **values** may not
+  contain CR/LF or control characters (a header-injection guard).
+- **HTTPS/443 only.** Every allow rule is scoped to port 443, so an injected secret never egresses in
+  cleartext.
+- **The headless daemon fails closed.** `CodeReviewDaemon` constructs the registry as **absent**
+  (`predefinedKeys: null`) — no entries, no dialog, no prompt. Pre-defined keys are an
+  attended-app-only feature.
+
+### Missing / invalid key re-prompt
+
+Token-minting entries can go stale — a credential is missing, or the token endpoint rejects it
+(`invalid_grant`, `invalid_client`, `unauthorized_client`, `access_denied`, `invalid_scope`). When
+that happens the entry is **marked invalid**, the webhook **holds** the gateway's call (the same
+deferred-auth hold the OAuth providers use), and the chat client shows a **banner** whose CTA opens
+the **Egress Auth** dialog to re-enter the credential. Saving a corrected entry clears the invalid
+flag and the held call resolves **allow** — no session restart needed.
+
+> **A post-egress `401` from the target is not auto-detected.** If the injected value is *accepted* by
+> the app but *rejected downstream* by the target host, the gateway currently has no way to feed that
+> `401` back into this re-prompt loop — detecting it needs a gateway change and is tracked as a
+> separate follow-up. Only a **missing credential or a token-endpoint rejection** (above) triggers the
+> re-prompt today.
+
+---
+
 ## Security notes
 
 - **Tokens and the shared secret are sensitive.** GitHub tokens are persisted as one JSON file per
