@@ -193,6 +193,29 @@ public sealed class EgressKeysControllerTests
     }
 
     [Fact]
+    public void Proxied_request_with_forwarding_header_is_rejected_403()
+    {
+        var (controller, _, dir) = NewController();
+        try
+        {
+            // The caller appears local (a reverse proxy on loopback) but the forwarding header reveals it was
+            // proxied — the IP check alone would pass, so the forwarding-header check must reject it.
+            var ctx = new DefaultHttpContext();
+            ctx.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
+            ctx.Request.Headers["X-Forwarded-For"] = "203.0.113.9";
+            controller.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = ctx };
+
+            var result = controller.List();
+
+            result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Delete_removes_entry_and_404s_when_unknown()
     {
         var (controller, _, dir) = NewController();

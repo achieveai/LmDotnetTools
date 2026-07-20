@@ -98,19 +98,28 @@ public sealed class EgressKeysController(PredefinedKeyRegistry registry, ILogger
     }
 
     /// <summary>
-    /// Enforces the local-only boundary: rejects a caller whose remote address is a real, non-loopback IP
-    /// (returns 403). A null remote address — the in-process TestServer and same-host pipelines — is treated
-    /// as local. Returns null when the caller is allowed.
+    /// Enforces the local-only boundary. Rejects (403) a caller whose remote address is a real, non-loopback
+    /// IP, OR any request that arrived through a proxy (carries a forwarding header) — behind a reverse proxy
+    /// a remote caller can appear to the app as the proxy's loopback address, so the IP check alone is not
+    /// sufficient. A null HttpContext/remote (in-process TestServer, direct unit construction) is treated as
+    /// local. Returns null when the caller is allowed.
     /// </summary>
     private IActionResult? RejectNonLoopback()
     {
-        // A null HttpContext/remote (in-process TestServer, direct unit construction) is treated as local;
-        // only a real, non-loopback remote IP is rejected.
+        var headers = HttpContext?.Request?.Headers;
+        var proxied = headers is not null
+            && (headers.ContainsKey("X-Forwarded-For")
+                || headers.ContainsKey("X-Forwarded-Host")
+                || headers.ContainsKey("Forwarded"));
+
         var remote = HttpContext?.Connection?.RemoteIpAddress;
-        if (remote is not null && !System.Net.IPAddress.IsLoopback(remote))
+        var nonLoopback = remote is not null && !System.Net.IPAddress.IsLoopback(remote);
+
+        if (proxied || nonLoopback)
         {
-            logger.LogWarning("Rejected non-loopback egress-key management request from {Remote}.", remote);
-            return StatusCode(403, new { error = "Egress-key management is restricted to local (loopback) callers." });
+            logger.LogWarning(
+                "Rejected egress-key management request from {Remote} (proxied={Proxied}).", remote, proxied);
+            return StatusCode(403, new { error = "Egress-key management is restricted to direct local (loopback) callers." });
         }
 
         return null;

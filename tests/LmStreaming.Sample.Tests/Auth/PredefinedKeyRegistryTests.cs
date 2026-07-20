@@ -212,19 +212,21 @@ public sealed class PredefinedKeyRegistryTests
     }
 
     [Fact]
-    public async Task Token_cleanup_failure_does_not_fail_upsert_or_remove()
+    public async Task Credential_change_aborts_when_token_invalidation_fails_but_delete_stays_best_effort()
     {
         var dir = Directory.CreateTempSubdirectory("egr-reg");
         try
         {
             var store = new InMemoryStore { ThrowOnRemove = true };
             var registry = NewRegistry(dir.FullName, store);
-            await registry.UpsertAsync(Refresh("e1"));
+            await registry.UpsertAsync(Refresh("e1")); // create: no existing entry → no token invalidation
 
-            // A credential-change upsert and a delete both trigger best-effort token cleanup that throws
-            // internally — neither must surface the failure to the caller.
+            // A credential-change upsert must FAIL (reliably) if the stale token can't be invalidated,
+            // rather than commit the new definition while the old token stays reloadable.
             await FluentActions.Awaiting(() => registry.UpsertAsync(Refresh("e1", refreshToken: "x")))
-                .Should().NotThrowAsync();
+                .Should().ThrowAsync<IOException>();
+
+            // Delete cleanup stays best-effort — a token-store failure does not fail the delete.
             (await registry.RemoveAsync("e1")).Should().BeTrue();
         }
         finally

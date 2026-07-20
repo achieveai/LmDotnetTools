@@ -120,12 +120,14 @@ public sealed class PredefinedKeyRegistry
                 .Append(entry)
                 .ToList();
 
-            // Invalidate the stale minted token BEFORE the new definition is made durable, so a failed
-            // persist can never leave the new definition on disk while the old token stays reloadable under
-            // the unchanged provider id. Cleanup is best-effort (see TryRemovePersistedTokenAsync).
+            // Invalidate the stale minted token BEFORE the new definition is made durable. This is a
+            // RELIABLE (not best-effort) step: if removal fails the whole upsert throws before anything is
+            // persisted or published, so we never leave the new definition live with the old access/rotated
+            // token reloadable under the unchanged provider id. CancellationToken.None so a disconnecting
+            // caller can't strand it mid-invalidation.
             if (existing is not null && credentialChanged)
             {
-                await TryRemovePersistedTokenAsync(entry.Id).ConfigureAwait(false);
+                await _tokenStore.RemoveAsync($"{ProviderIdPrefix}{entry.Id}", CancellationToken.None).ConfigureAwait(false);
             }
 
             await AtomicJsonFile.WriteAsync(_filePath, candidate, JsonOptions, ct).ConfigureAwait(false);
