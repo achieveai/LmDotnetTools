@@ -159,6 +159,27 @@ public sealed class PredefinedKeyProviderTests
     }
 
     [Fact]
+    public async Task ApplyUpdate_when_persist_fails_invalidates_token_but_leaves_the_old_entry()
+    {
+        // Deliberate, consistent degradation on the (narrow) persist-failure window of a credential-change
+        // edit: the stale token is invalidated first (step 1), then the definition write fails, so the
+        // in-memory entry is NOT swapped (step 3 never runs). State stays consistent with the pre-edit
+        // definition — the next acquisition re-mints from the OLD entry credential (safe), and the caller
+        // sees the failure — rather than the unsafe alternative of a stale token under a new definition.
+        var (provider, store, _) = NewProvider(RefreshEntry(), () => "{\"access_token\":\"AT\",\"expires_in\":3600}");
+        _ = await provider.GetAccessTokenAsync();
+        (await store.GetAsync("predefined-r1")).Should().NotBeNull();
+
+        var newEntry = RefreshEntry() with { RefreshToken = "new-rt" };
+        await FluentActions
+            .Awaiting(() => provider.ApplyUpdateAsync(newEntry, credentialChanged: true, () => throw new IOException("persist failed")))
+            .Should().ThrowAsync<IOException>();
+
+        provider.Entry.RefreshToken.Should().Be("rt0");           // entry NOT swapped
+        (await store.GetAsync("predefined-r1")).Should().BeNull(); // token invalidated (step 1)
+    }
+
+    [Fact]
     public async Task Update_preserving_credential_keeps_the_cached_token()
     {
         var (provider, _, handler) = NewProvider(RefreshEntry(), () => "{\"access_token\":\"AT\",\"expires_in\":3600}");
