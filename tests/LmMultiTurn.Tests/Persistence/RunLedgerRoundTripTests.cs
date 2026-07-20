@@ -86,10 +86,16 @@ public class RunLedgerRoundTripTests
             persistRunLedger: true,
             pauseBeforeComplete: true);
         using var cts = new CancellationTokenSource();
-        _ = agent.RunAsync(cts.Token);
 
+        // Enqueue BOTH inputs before starting the loop so they drain into a single batch deterministically.
+        // Starting the loop first races the second send against the loop's first WaitToRead/TryDrainInputs:
+        // under load the loop can drain input-A alone and start a run before input-B is enqueued, leaving an
+        // InProgress row with only ["input-A"]. SendAsync writes to the channel synchronously and does not
+        // require the loop to be running, and a fresh agent's channel is open (not recreated on RunAsync).
         await agent.SendAsync([new TextMessage { Text = "Hi", Role = Role.User }], inputId: "input-A");
         await agent.SendAsync([new TextMessage { Text = "There", Role = Role.User }], inputId: "input-B");
+
+        _ = agent.RunAsync(cts.Token);
 
         await agent.RunStarted.WaitAsync(TimeSpan.FromSeconds(5));
 
