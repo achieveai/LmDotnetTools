@@ -88,8 +88,9 @@ internal sealed class AdoPrProvider : IPrProvider
                     // created/closed), so "updated since" can't come from the list. For a PR created BEFORE the
                     // recency window, fetch the source branch tip commit's date (its last push) so an
                     // old-but-recently-pushed PR is still reviewed. Bounded: recent-created PRs skip this call
-                    // entirely. Keep-on-uncertainty: an unfetchable date resolves to the cutoff so an active PR
-                    // is never silently dropped.
+                    // entirely. Keep-on-uncertainty: an unfetchable date stays NULL (unknown), which the recency
+                    // filter's explicit unknown-date policy retains — never a synthetic `cutoff` timestamp a
+                    // downstream consumer would read as real activity.
                     DateTimeOffset? updatedAt = null;
                     if (request.RecencyCutoff is { } cutoff
                         && createdAt is { } created
@@ -98,7 +99,7 @@ internal sealed class AdoPrProvider : IPrProvider
                     {
                         updatedAt =
                             await TryGetLastPushDateAsync(org, project, repo, headSha, cancellationToken)
-                                .ConfigureAwait(false) ?? cutoff;
+                                .ConfigureAwait(false);
                     }
 
                     pullRequests.Add(new PullRequestDescriptor

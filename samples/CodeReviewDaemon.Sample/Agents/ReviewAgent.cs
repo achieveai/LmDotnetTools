@@ -66,10 +66,15 @@ internal sealed class ReviewAgent
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // The review (turn 1) is the valuable artifact and is already collected; a failed enforcement
-                // turn must not lose it. Log and continue — the run still persists/judges/retains the review.
-                _logger.LogWarning(
+                // turn must not discard it. But a failed enforcement means the agent may NOT have posted, and with
+                // the host-side summary fallback off there is no other delivery path — so surface it at Error (an
+                // operational signal an operator can alert on / re-run against), not a quiet warning. Full
+                // delivery verification (parse/confirm a posting receipt and re-attempt on failure) is a tracked
+                // follow-up; this keeps the failure loud rather than silent.
+                _logger.LogError(
                     ex,
-                    "Post-enforcement turn for run {RunId} failed; keeping the review, but the agent may not have posted.",
+                    "Post-enforcement turn for run {RunId} failed; the review is retained but may NOT have been "
+                        + "posted to the PR — no host-side fallback will deliver it.",
                     collected.RunId
                 );
             }
