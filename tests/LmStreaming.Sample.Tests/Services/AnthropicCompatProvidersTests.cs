@@ -1,4 +1,5 @@
 using LmStreaming.Sample.Services;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -132,6 +133,109 @@ public class AnthropicCompatProvidersTests
         var models = AnthropicCompatProviders.DiscoverFromEnv(NullLoggerFactory.Instance);
 
         models.Select(m => m.Id).Should().BeEquivalentTo(["deepseek-v4-pro", "deepseek-v4-flash"]);
+    }
+
+    [Fact]
+    public void DiscoverFromEnv_DropsSameFamilySlugCollision_KeepingFirstAndWarning()
+    {
+        // "kimi-2.5" and "kimi-2-5" both slugify to "kimi-2-5" — a same-family collision that would
+        // otherwise let ProviderRegistry silently drop the second entry.
+        using var _ = EnvScope.Set("ANTHROPIC_COMPAT_PROVIDERS", "KIMI");
+        using var __ = EnvScope.Set("KIMI_ANTHROPIC_URL", "https://api.kimi.com/coding");
+        using var ___ = EnvScope.Set("KIMI_APIKEY", "sk-kimi");
+        using var ____ = EnvScope.Set("KIMI_MODELS", "kimi-2.5,kimi-2-5");
+
+        var factory = new CapturingLoggerFactory();
+        var models = AnthropicCompatProviders.DiscoverFromEnv(factory);
+
+        // First configured entry wins; the colliding second is dropped, not silently overwritten.
+        models.Select(m => m.ModelName).Should().BeEquivalentTo(["kimi-2.5"]);
+        models.Single().Id.Should().Be("kimi-2-5");
+        factory.Entries
+            .Should()
+            .ContainSingle(e => e.Level == LogLevel.Warning && e.Message.Contains("collides") && e.Message.Contains("kimi-2-5"));
+    }
+
+    [Fact]
+    public void DiscoverFromEnv_DropsCrossFamilyIdCollision_KeepingFirstAndWarning()
+    {
+        // The same model name configured under two families generates the same id — a cross-family
+        // collision. Keep the first family's entry and warn rather than silently routing the shared id
+        // through the wrong family.
+        using var _ = EnvScope.Set("ANTHROPIC_COMPAT_PROVIDERS", "DEEPSEEK,KIMI");
+        using var __ = EnvScope.Set("DEEPSEEK_ANTHROPIC_URL", "https://api.deepseek.com/anthropic");
+        using var ___ = EnvScope.Set("DEEPSEEK_APIKEY", "sk-deepseek");
+        using var ____ = EnvScope.Set("DEEPSEEK_MODELS", "shared-model");
+        using var _____ = EnvScope.Set("KIMI_ANTHROPIC_URL", "https://api.kimi.com/coding");
+        using var ______ = EnvScope.Set("KIMI_APIKEY", "sk-kimi");
+        using var _______ = EnvScope.Set("KIMI_MODELS", "shared-model");
+
+        var factory = new CapturingLoggerFactory();
+        var models = AnthropicCompatProviders.DiscoverFromEnv(factory);
+
+        var model = models.Should().ContainSingle().Subject;
+        model.Id.Should().Be("shared-model");
+        model.FamilyKey.Should().Be("DEEPSEEK");
+        factory.Entries
+            .Should()
+            .ContainSingle(e => e.Level == LogLevel.Warning && e.Message.Contains("collides") && e.Message.Contains("KIMI"));
+    }
+
+    /// <summary>
+    /// Minimal <see cref="ILoggerFactory"/> capturing every entry across all created (named) loggers,
+    /// so a test can assert the discovery path logs a clear collision warning. <c>DiscoverFromEnv</c>
+    /// resolves a non-generic named logger, which the shared <c>CapturingLogger&lt;T&gt;</c> test double
+    /// (an <c>ILogger&lt;T&gt;</c>) does not cover, so this small factory bridges the gap.
+    /// </summary>
+    private sealed class CapturingLoggerFactory : ILoggerFactory
+    {
+        private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries
+        {
+            get
+            {
+                lock (_entries)
+                {
+                    return [.. _entries];
+                }
+            }
+        }
+
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(_entries);
+
+        public void AddProvider(ILoggerProvider provider) { }
+
+        public void Dispose() { }
+
+        private sealed class CapturingLogger(List<(LogLevel Level, string Message)> entries) : ILogger
+        {
+            public IDisposable BeginScope<TState>(TState state)
+                where TState : notnull => NullScope.Instance;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                var message = formatter(state, exception);
+                lock (entries)
+                {
+                    entries.Add((logLevel, message));
+                }
+            }
+
+            private sealed class NullScope : IDisposable
+            {
+                public static readonly NullScope Instance = new();
+
+                public void Dispose() { }
+            }
+        }
     }
 
     /// <summary>

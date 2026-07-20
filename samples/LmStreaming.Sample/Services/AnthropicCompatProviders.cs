@@ -46,6 +46,15 @@ internal static class AnthropicCompatProviders
         var models = new List<AnthropicCompatModel>();
         var familyKeys = familyKeysRaw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
+        // The generated id is the dropdown/provider key. ProviderRegistry indexes models by id with an
+        // OrdinalIgnoreCase comparer and would SILENTLY overwrite/skip a later entry sharing an id — so
+        // two model names that slugify to the same id (e.g. same-family "kimi-2.5" vs "kimi-2-5", or the
+        // same model name configured under two families) would make a configured model vanish with no
+        // signal. Track ids as they are minted (same comparer as the registry) and skip+warn on a
+        // collision so the loss is loud and deterministic (first configured entry wins) rather than a
+        // silent, order-dependent drop.
+        var seenIds = new Dictionary<string, AnthropicCompatModel>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var familyKey in familyKeys)
         {
             var baseUrl = Environment.GetEnvironmentVariable($"{familyKey}_ANTHROPIC_URL");
@@ -65,7 +74,24 @@ internal static class AnthropicCompatProviders
             foreach (var modelName in modelNames)
             {
                 var id = Slugify(modelName);
-                models.Add(new AnthropicCompatModel(id, modelName, modelName, baseUrl, apiKey, familyKey));
+                if (seenIds.TryGetValue(id, out var existing))
+                {
+                    logger.LogWarning(
+                        "Skipping Anthropic-compatible model {ModelName} (family {FamilyKey}): its generated id {Id} "
+                            + "collides with already-registered model {ExistingModelName} (family {ExistingFamilyKey}). "
+                            + "Model ids must be unique; rename one of the colliding models so their slugified ids differ.",
+                        modelName,
+                        familyKey,
+                        id,
+                        existing.ModelName,
+                        existing.FamilyKey
+                    );
+                    continue;
+                }
+
+                var model = new AnthropicCompatModel(id, modelName, modelName, baseUrl, apiKey, familyKey);
+                seenIds[id] = model;
+                models.Add(model);
             }
         }
 
