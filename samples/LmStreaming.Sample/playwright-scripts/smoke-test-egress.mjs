@@ -17,9 +17,19 @@
 // Prompts are taken verbatim from PromptExamples.md ("Calculate Tool" and "Multiturn Example").
 // Do NOT drive this with snapshot->act->screenshot loops. Assert only DETERMINISTIC, browser-observable
 // state (DOM/data-testid).
+//
+// Portability: nothing here is hardcoded to one machine. Override via environment variables:
+//   - LMSTREAMING_HTTPS_URL  (default 'https://lmstreaming.bhakars.internal/') — the Traefik/HTTPS host.
+//   - LMSTREAMING_URL        (default 'http://127.0.0.1:5050/')                — the direct Kestrel origin.
+//   - LMSTREAMING_OUTPUT_DIR (default the OS temp dir)                         — where the screenshot lands.
 async (page) => {
-  const HTTPS_URL = 'https://lmstreaming.bhakars.internal/';
-  const FALLBACK_URL = 'http://127.0.0.1:5050/';
+  const os = await import('node:os');
+  const path = await import('node:path');
+
+  const HTTPS_URL = process.env.LMSTREAMING_HTTPS_URL || 'https://lmstreaming.bhakars.internal/';
+  const FALLBACK_URL = process.env.LMSTREAMING_URL || 'http://127.0.0.1:5050/';
+  const OUTPUT_DIR = process.env.LMSTREAMING_OUTPUT_DIR || os.tmpdir();
+  const SCREENSHOT_PATH = path.join(OUTPUT_DIR, 'smoke-test-egress-result.png');
   const PROVIDER = 'test-anthropic';
 
   // Prompt 1: basic tool-call test (Calculate Tool > Basic addition), verbatim from PromptExamples.md.
@@ -146,9 +156,11 @@ async (page) => {
       afterPrompt2: afterPrompt2.errorBanner,
     });
 
-    // 8. Screenshot for the record (final state, after both responses).
+    // 8. Screenshot for the record (final state, after both responses). Written to a portable
+    // location (OS temp dir, or LMSTREAMING_OUTPUT_DIR) so the script never writes into an arbitrary
+    // checkout path.
     await page.screenshot({
-      path: 'B:/sources/LmDotnetTools/samples/LmStreaming.Sample/playwright-scripts/smoke-test-egress-result.png',
+      path: SCREENSHOT_PATH,
       fullPage: true,
     });
   } catch (e) {
@@ -169,6 +181,7 @@ async (page) => {
     messagesSent,
     responsesReceived,
     toolCallsRendered,
+    screenshotPath: SCREENSHOT_PATH,
     errors,
   };
 }

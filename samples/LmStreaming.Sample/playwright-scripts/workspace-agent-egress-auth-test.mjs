@@ -23,8 +23,11 @@
 // (confirmed missing from the sandbox mount in a prior run — a gateway/mount config gap, not what
 // we're testing here). Instead it uses `env` + `curl`, which are near-guaranteed present in the
 // sandbox image, to directly probe the thing we actually care about:
-//   1. `env | grep -i -E 'proxy|ssl_cert'` — is the sandbox wired to route through an egress-forward
-//      proxy at all (HTTP_PROXY/HTTPS_PROXY set)? Necessary precondition for egress auth to apply.
+//   1. `env | grep -i -E 'proxy|ssl_cert' | sed 's/=.*/=<redacted>/'` — is the sandbox wired to route
+//      through an egress-forward proxy at all (HTTP_PROXY/HTTPS_PROXY set)? Necessary precondition for
+//      egress auth to apply. The values are REDACTED before printing — HTTP_PROXY/HTTPS_PROXY can carry
+//      embedded proxy credentials, so we emit only the variable NAMES (whether they are set), never the
+//      raw values, into tool output.
 //   2. `curl -sS -w '\nHTTP_STATUS:%{http_code}\n' https://api.github.com/user --max-time 30` — we send
 //      NO Authorization header ourselves. HTTP_STATUS:200 + real GitHub user JSON means the proxy
 //      transparently authenticated the request (egress auth genuinely working). HTTP_STATUS:401 + a
@@ -36,8 +39,11 @@ async (page) => {
   const PROVIDER_ID = 'test'; // "Test (Mock)"
   const MODE_ID = 'workspace-agent'; // "Workspace Agent"
 
+  // `sed 's/=.*/=<redacted>/'` collapses each matched `NAME=value` line to `NAME=<redacted>` so the
+  // presence of HTTP_PROXY/HTTPS_PROXY/SSL_CERT* is diagnosable WITHOUT leaking any (possibly
+  // credential-bearing) proxy value into the captured tool output.
   const bashCommand =
-    "env | grep -i -E 'proxy|ssl_cert' ; echo '---' ; curl -sS -w '\\nHTTP_STATUS:%{http_code}\\n' https://api.github.com/user --max-time 30";
+    "env | grep -i -E 'proxy|ssl_cert' | sed -E 's/=.*/=<redacted>/' ; echo '---' ; curl -sS -w '\\nHTTP_STATUS:%{http_code}\\n' https://api.github.com/user --max-time 30";
 
   const instructionChain = {
     instruction_chain: [
