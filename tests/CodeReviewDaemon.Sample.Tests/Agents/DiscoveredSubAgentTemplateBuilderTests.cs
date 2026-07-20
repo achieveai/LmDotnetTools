@@ -75,7 +75,7 @@ public class DiscoveredSubAgentTemplateBuilderTests
             effort: maximum
             """);
 
-        var templates = builder.Build(items, "code-reviewer", AgentFactory);
+        var templates = builder.Build(items, ["gb-plugins"], AgentFactory);
 
         templates.Should().ContainKey("code-reviewer:architecture-review");
         logger.WarningCount("modelintelligence must be an integer").Should().Be(1);
@@ -96,12 +96,12 @@ public class DiscoveredSubAgentTemplateBuilderTests
             NullLogger<DiscoveredSubAgentTemplateBuilder>.Instance);
         var baseline = builder.Build(
             ItemsWithFrontmatter(baselineModelFrontmatter),
-            "code-reviewer",
+            ["gb-plugins"],
             AgentFactory)["code-reviewer:architecture-review"];
 
         var actual = builder.Build(
             ItemsWithFrontmatter(characteristicsFrontmatter),
-            "code-reviewer",
+            ["gb-plugins"],
             AgentFactory)["code-reviewer:architecture-review"];
 
         JsonSerializer.SerializeToUtf8Bytes(actual.DefaultOptions)

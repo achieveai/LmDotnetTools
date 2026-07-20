@@ -1789,7 +1789,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// each provider (e.g. m365 needs both ClientId + ClientSecret) without standing up the gateway.
     /// </summary>
     internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
-        BuildAuthProviders(string.Empty).Providers?.Select(p => p.Id).ToArray() ?? [];
+        BuildAuthProviders("test-secret").Providers?.Select(p => p.Id).ToArray() ?? [];
 
     private (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProviders(string sessionSecret)
     {
