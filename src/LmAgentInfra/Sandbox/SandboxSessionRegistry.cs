@@ -1836,6 +1836,25 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
                     priority: 100
                 )
             );
+            // Network-only companion rule (SECURITY, no authProvider): the Actions run-log download
+            // redirect chain (results-receiver -> a SAS-signed *.blob.core.windows.net URL) must be
+            // reachable, but those hops already carry their own authorization, so the GitHub token is
+            // NEVER injected here — the rule omits authProvider so the gateway allows egress without
+            // calling the auth webhook. Keeping this disjoint from the github-auth rule above is what
+            // stops the user's GitHub token from being sent to the receiver / Azure blob hosts.
+            rules.Add(
+                new SandboxNetworkRule(
+                    id: "github-egress",
+                    action: "allow",
+                    hosts: OAuthProviderHosts.GithubEgressOnlyHosts,
+                    ports: [443],
+                    methods: [],
+                    paths: [],
+                    authProvider: null,
+                    requiredScopes: [],
+                    priority: 100
+                )
+            );
         }
 
         if (!string.IsNullOrWhiteSpace(_authOptions.Ado.ClientId))
