@@ -57,6 +57,32 @@ public sealed class SessionSecretStoreTests
         (await store.MatchesAsync("never-created", "anything")).Should().BeFalse();
     }
 
+    // Ids that the OLD lossy sanitizer collapsed to the SAME file name: it lowercased and dropped every
+    // character outside [a-z0-9_-]. "Session-A"/"session-a" collided on case; "session.a"/"sessiona"
+    // collided because "." was stripped. A collision let a later session read/overwrite another's secret.
+    [Theory]
+    [InlineData("Session-A", "session-a")]
+    [InlineData("session.a", "sessiona")]
+    public async Task PreviouslyCollidingSessionIds_NowMapToDistinctSecrets(string idOne, string idTwo)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N"));
+        var store = NewStore(directory);
+
+        await store.SaveAsync(idOne, "secret-one");
+        await store.SaveAsync(idTwo, "secret-two");
+
+        // Neither id can read the other's secret (the isolation the collision used to break)...
+        (await store.MatchesAsync(idOne, "secret-two")).Should().BeFalse();
+        (await store.MatchesAsync(idTwo, "secret-one")).Should().BeFalse();
+
+        // ...and saving idTwo did NOT overwrite idOne's file — each still matches its own secret.
+        (await store.MatchesAsync(idOne, "secret-one")).Should().BeTrue();
+        (await store.MatchesAsync(idTwo, "secret-two")).Should().BeTrue();
+
+        // Two distinct ids ⇒ two distinct files on disk.
+        Directory.GetFiles(directory, "*.secret").Should().HaveCount(2);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

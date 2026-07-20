@@ -153,47 +153,32 @@ public sealed class SessionSecretStore
     }
 
     /// <summary>
-    /// Maps a session id to its on-disk file path, sanitizing the id into a safe file name.
+    /// Maps a session id to its on-disk file path, deriving a safe, collision-resistant file name
+    /// from the id.
     /// </summary>
-    /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="sessionId"/> is null/whitespace or contains no characters
-    /// that survive sanitization (which prevents path traversal via separators or <c>..</c>).
-    /// </exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="sessionId"/> is null/whitespace.</exception>
     private string GetFilePath(string sessionId)
     {
-        var fileName = SanitizeSessionId(sessionId);
+        var fileName = ToFileNameStem(sessionId);
         return Path.Combine(_baseDirectory, fileName + ".secret");
     }
 
     /// <summary>
-    /// Reduces a session id to a safe file-name stem. Only <c>[a-z0-9_-]</c> survive
-    /// (lowercased); every other character — including path separators and <c>.</c> — is
-    /// dropped, which makes path traversal (e.g. <c>..</c> or <c>../etc</c>) impossible.
+    /// Derives a safe file-name stem from a session id via a SHA-256 hex digest of its exact UTF-8
+    /// bytes. Every distinct session id maps to a distinct 64-char <c>[0-9a-f]</c> stem, so two ids
+    /// that differ only by case or by a character an older lossy sanitizer would have dropped can
+    /// never resolve to the same <c>.secret</c> file — the cross-session isolation guarantee. The
+    /// digest output is inherently path-traversal-proof (hex only, no separators or <c>.</c>), so a
+    /// hostile id such as <c>../../etc/passwd</c> still yields a benign in-directory file name.
     /// </summary>
-    private static string SanitizeSessionId(string sessionId)
+    private static string ToFileNameStem(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId))
         {
             throw new ArgumentException("Session id cannot be null or whitespace.", nameof(sessionId));
         }
 
-        var builder = new StringBuilder(sessionId.Length);
-        foreach (var ch in sessionId)
-        {
-            var lower = char.ToLowerInvariant(ch);
-            if (lower is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_' or '-')
-            {
-                _ = builder.Append(lower);
-            }
-        }
-
-        if (builder.Length == 0)
-        {
-            throw new ArgumentException(
-                $"Session id '{sessionId}' did not yield a valid file name after sanitization.",
-                nameof(sessionId));
-        }
-
-        return builder.ToString();
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(sessionId));
+        return Convert.ToHexStringLower(digest);
     }
 }
