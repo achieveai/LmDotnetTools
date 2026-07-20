@@ -64,6 +64,16 @@ public sealed class SandboxException : Exception
     /// </summary>
     public bool IsDefiniteMissingPath => Kind == SandboxErrorKind.NotFound && ErrorCode == "path_not_found";
 
+    /// <summary>
+    /// Whether this failure is the SDK refusing to buffer a direct-read response whose size exceeded the
+    /// effective read cap — either a declared <c>Content-Length</c> over the cap or a body that streamed past
+    /// it. It is a CLIENT-SIDE guard (not a gateway error), so it carries no <see cref="ErrorCode"/> and its
+    /// <see cref="Kind"/> is <see cref="SandboxErrorKind.Protocol"/>; this flag lets a caller map the
+    /// condition to a "payload too large" outcome without parsing message text. Set via object initializer at
+    /// the over-cap throw sites (kept OFF the constructor so its signature stays binary-stable).
+    /// </summary>
+    public bool IsDirectReadCapExceeded { get; init; }
+
     public SandboxException(SandboxErrorKind kind, string message, int? statusCode = null, Exception? innerException = null, string? operationId = null)
         : base(message, innerException)
     {
