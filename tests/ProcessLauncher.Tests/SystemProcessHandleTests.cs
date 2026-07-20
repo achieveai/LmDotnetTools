@@ -26,6 +26,35 @@ public class SystemProcessHandleTests
         return DefaultProcessLauncher.Instance.Launch(request);
     }
 
+    /// <summary>
+    /// A long-running benign child (a sleeper that writes nothing to stdout, so no pipe-buffer deadlock)
+    /// that stays alive until <see cref="IProcessHandle.Kill"/>. Used where a test must attach a subscriber
+    /// or observe the running state BEFORE the child exits.
+    /// </summary>
+    private static IProcessHandle LaunchLongRunning()
+    {
+        IReadOnlyList<string> args;
+        string fileName;
+        if (OperatingSystem.IsWindows())
+        {
+            fileName = "cmd";
+            args = ["/c", "timeout", "/t", "30", "/nobreak"];
+        }
+        else
+        {
+            fileName = "sh";
+            args = ["-c", "sleep 30"];
+        }
+
+        var request = new ProcessLaunchRequest
+        {
+            Agent = CliAgentKind.Codex,
+            ExecutableHint = fileName,
+            Arguments = args,
+        };
+        return DefaultProcessLauncher.Instance.Launch(request);
+    }
+
     [Fact]
     public async Task WaitForExitAsync_ReturnsExitCode()
     {
@@ -42,10 +71,15 @@ public class SystemProcessHandleTests
     [Fact]
     public async Task ExitedEvent_FiresExactlyOnce()
     {
-        using var handle = LaunchBenign();
+        // A controllable long-running child (killed on demand), NOT a very short-lived one: SystemProcessHandle
+        // raises its one-shot Exited event during construction when the child has already exited, so a fast
+        // child (e.g. `dotnet --version`) could exit before this subscriber attaches and the handler would never
+        // fire. The sleeper stays alive until Kill, so Exited fires while the subscriber is attached.
+        using var handle = LaunchLongRunning();
         var count = 0;
         handle.Exited += (_, _) => Interlocked.Increment(ref count);
 
+        handle.Kill(entireProcessTree: true);
         _ = await handle.WaitForExitAsync();
         // Give the event loop a moment to deliver the Exited callback.
         await Task.Delay(100);
