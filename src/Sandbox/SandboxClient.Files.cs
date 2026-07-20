@@ -32,20 +32,54 @@ public sealed partial class SandboxClient
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
     public async Task<string> ReadTextFileAsync(string sessionId, string path, CancellationToken ct = default)
     {
+        // Decode the shared byte-read pipeline so path normalization, mount resolution, URL construction,
+        // and the capped-download setup live in ONE place (ReadFileBytesAsync) and can never diverge.
+        var bytes = await ReadFileBytesAsync(sessionId, path, maxBytes: null, ct).ConfigureAwait(false);
+        return DecodeFileUtf8OrThrow(bytes, "file");
+    }
+
+    /// <summary>
+    /// Reads a workspace file's exact current bytes via the gateway's direct files API — the binary-safe,
+    /// no-decode counterpart to <see cref="ReadTextFileAsync"/>. Returns the raw bytes without any UTF-8
+    /// decode, so a caller can download an arbitrary (possibly binary) file, or read a bounded prefix for a
+    /// text preview by passing a tighter <paramref name="maxBytes"/>.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="path"/> is a workspace-relative POSIX path validated exactly like
+    /// <see cref="ReadTextFileAsync"/> (the workspace root is rejected). <paramref name="maxBytes"/> caps
+    /// how many bytes will be buffered: <c>null</c> uses the default 64&#160;MiB direct-read ceiling, and a
+    /// supplied value is additionally clamped to that ceiling so it can only ever be TIGHTER. A body that
+    /// declares or streams past the effective cap is refused with <see cref="SandboxErrorKind.Protocol"/>
+    /// rather than truncated.
+    /// </remarks>
+    /// <exception cref="SandboxException">
+    /// The path does not exist or does not name a regular file (<see cref="SandboxErrorKind.NotFound"/>);
+    /// the body exceeds the effective cap (<see cref="SandboxErrorKind.Protocol"/>); the transport deadline
+    /// elapsed (<see cref="SandboxErrorKind.TransportTimeout"/>); or the gateway otherwise rejected or
+    /// malformed the request (<see cref="SandboxErrorKind.Protocol"/>).
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
+    public async Task<byte[]> ReadFileBytesAsync(
+        string sessionId,
+        string path,
+        long? maxBytes = null,
+        CancellationToken ct = default
+    )
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         var relativePath = NormalizeFilePath(path);
 
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
-        var bytes = await DownloadCappedBytesAsync(
+        return await DownloadCappedBytesAsync(
                 $"api/v1/sandboxes/{Uri.EscapeDataString(sessionId)}/files/{mountId}?path={Uri.EscapeDataString(relativePath)}",
                 sessionId,
                 $"reading file '{path}'",
                 operationId: null,
+                maxBytes: maxBytes,
                 ct
             )
             .ConfigureAwait(false);
-        return DecodeFileUtf8OrThrow(bytes, "file");
     }
 
     /// <summary>
@@ -90,10 +124,43 @@ public sealed partial class SandboxClient
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentNullException.ThrowIfNull(content);
+
+        var bytes = S_strictUtf8.GetBytes(content);
+        await WriteFileBytesAsync(sessionId, path, bytes, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes the exact <paramref name="bytes"/> to a workspace file via the gateway's direct files API
+    /// (ADR 0031 / issue #119) — the binary-safe counterpart to <see cref="WriteTextFileAsync"/> (which is
+    /// now a strict-UTF-8 encode over this). Same single-<c>PUT</c> atomic replace and same one-shot
+    /// parent-directory self-heal: on a definite <c>path_not_found</c> for a nested path it runs a single
+    /// <c>mkdir -p</c> for the parent and retries the PUT exactly once.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="path"/> is a workspace-relative POSIX path, validated exactly like
+    /// <see cref="ReadTextFileAsync"/> (the workspace root is rejected — it cannot name a file).
+    /// </remarks>
+    /// <exception cref="SandboxException">
+    /// The gateway reported a different byte count than was sent (<see cref="SandboxErrorKind.Protocol"/>);
+    /// the target is held by a concurrent writer (<see cref="SandboxErrorKind.Conflict"/>); the parent-
+    /// directory self-heal did not succeed (<see cref="SandboxErrorKind.OperationFailed"/>); the transport
+    /// deadline elapsed (<see cref="SandboxErrorKind.TransportTimeout"/>); or the gateway otherwise rejected
+    /// or malformed the request (<see cref="SandboxErrorKind.Protocol"/>).
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
+    public async Task WriteFileBytesAsync(
+      string sessionId,
+      string path,
+      byte[] bytes,
+      CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(bytes);
         var relativePath = NormalizeFilePath(path);
 
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
-        var bytes = S_strictUtf8.GetBytes(content);
 
         try
         {
@@ -279,10 +346,91 @@ public sealed partial class SandboxClient
 
         var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
         var operation = $"listing directory '{path}'";
-        var names = new List<string>();
-        // Bound the cursor loop two ways so a buggy/hostile gateway cannot loop unbounded: reject a
-        // REPEATED cursor (the realistic infinite loop), and cap the total page count (distinct-forever
-        // cursors). Both surface as Protocol rather than silently truncating the listing.
+        var entries = await ListDirectoryEntryDtosAsync(sessionId, mountId, relativePath, operation, ct)
+            .ConfigureAwait(false);
+
+        var names = new List<string>(entries.Count);
+        foreach (var entry in entries)
+        {
+            names.Add(
+                entry.Name
+                ?? throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a directory entry with no name for {operation}."
+                )
+            );
+        }
+
+        return names;
+    }
+
+    /// <summary>
+    /// Lists a workspace directory's NON-RECURSIVE entries with full metadata (name, kind, size, and the
+    /// lossy-name flag) — the rich counterpart to <see cref="ListDirectoryAsync"/>, which projects names
+    /// only. Shares the exact same paginated, bounded gateway read; the two differ only in what each keeps
+    /// from every returned entry.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="path"/> is a workspace-relative POSIX path (the empty/normalized-empty value lists
+    /// the workspace root), validated like <see cref="SandboxCommand.WorkingDirectory"/>. The gateway
+    /// remains authoritative for symlink containment and for the reported <see cref="SandboxEntryType"/>.
+    /// </remarks>
+    /// <exception cref="SandboxException">
+    /// The directory does not exist or is not a directory (<see cref="SandboxErrorKind.NotFound"/>); an
+    /// entry has no name or an absent/unrecognized type (<see cref="SandboxErrorKind.Protocol"/>); a
+    /// malformed or over-paginated gateway reply (<see cref="SandboxErrorKind.Protocol"/>); or the transport
+    /// deadline elapsed (<see cref="SandboxErrorKind.TransportTimeout"/>).
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
+    public async Task<IReadOnlyList<SandboxDirectoryEntry>> ListDirectoryEntriesAsync(
+      string sessionId,
+      string path,
+      CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        var relativePath = WorkspaceRelativePath.Normalize(path, nameof(path));
+
+        var mountId = await ResolveWorkspaceMountIdAsync(sessionId, ct).ConfigureAwait(false);
+        var operation = $"listing directory '{path}'";
+        var entries = await ListDirectoryEntryDtosAsync(sessionId, mountId, relativePath, operation, ct)
+            .ConfigureAwait(false);
+
+        var result = new List<SandboxDirectoryEntry>(entries.Count);
+        foreach (var entry in entries)
+        {
+            var name =
+                entry.Name
+                ?? throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a directory entry with no name for {operation}."
+                );
+            result.Add(new SandboxDirectoryEntry(name, MapEntryType(entry.Type, operation), entry.Size, entry.NameLossy ?? false));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reads every page of a workspace directory listing into a single flat list of raw entry DTOs, shared
+    /// by <see cref="ListDirectoryAsync"/> (names) and <see cref="ListDirectoryEntriesAsync"/> (full
+    /// metadata). Threads the gateway's opaque <c>next_cursor</c> verbatim into each subsequent request and
+    /// bounds the loop two ways so a buggy/hostile gateway cannot loop unbounded: it rejects a REPEATED
+    /// cursor (the realistic infinite loop) and caps the total page count (distinct-forever cursors). Both
+    /// surface as <see cref="SandboxErrorKind.Protocol"/> rather than silently truncating the listing. A
+    /// null array element is rejected as <c>Protocol</c>; per-entry <c>name</c>/<c>type</c> validation is
+    /// left to each caller's projection.
+    /// </summary>
+    private async Task<List<DirectoryEntryDto>> ListDirectoryEntryDtosAsync(
+        string sessionId,
+        long mountId,
+        string relativePath,
+        string operation,
+        CancellationToken ct
+    )
+    {
+        var entries = new List<DirectoryEntryDto>();
         var seenCursors = new HashSet<string>(StringComparer.Ordinal);
         string? cursor = null;
         var pageCount = 0;
@@ -333,19 +481,7 @@ public sealed partial class SandboxClient
                 );
             }
 
-            names.AddRange(
-              SelectNonNullOrThrow(
-                page.Entries,
-                entry =>
-                  entry.Name
-                  ?? throw new SandboxException(
-                    SandboxErrorKind.Protocol,
-                    $"Sandbox gateway returned a directory entry with no name for {operation}."
-                  ),
-                operation,
-                (int)response.StatusCode
-              )
-            );
+            entries.AddRange(SelectNonNullOrThrow(page.Entries, static entry => entry, operation, (int)response.StatusCode));
 
             cursor = string.IsNullOrEmpty(page.NextCursor) ? null : page.NextCursor;
             if (cursor is not null && !seenCursors.Add(cursor))
@@ -357,8 +493,26 @@ public sealed partial class SandboxClient
             }
         } while (cursor is not null);
 
-        return names;
+        return entries;
     }
+
+    /// <summary>
+    /// Maps the gateway's directory-entry <c>type</c> string to a <see cref="SandboxEntryType"/>. The
+    /// gateway's vocabulary is the closed set <c>file</c>/<c>directory</c>/<c>symlink</c>; an absent or
+    /// unrecognized value is a protocol violation (the SDK never guesses a kind), so it surfaces as
+    /// <see cref="SandboxErrorKind.Protocol"/> rather than being silently classified.
+    /// </summary>
+    private static SandboxEntryType MapEntryType(string? wireType, string operation) =>
+        wireType switch
+        {
+            "file" => SandboxEntryType.File,
+            "directory" => SandboxEntryType.Directory,
+            "symlink" => SandboxEntryType.Symlink,
+            _ => throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a directory entry with an unrecognized type '{wireType ?? "(null)"}' for {operation}."
+            ),
+        };
 
     /// <summary>
     /// Defensive upper bound on directory-listing pages. The seen-cursor guard already catches a repeated

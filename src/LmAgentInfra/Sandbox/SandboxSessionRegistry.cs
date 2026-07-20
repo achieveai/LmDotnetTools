@@ -53,6 +53,67 @@ public sealed record WorkspaceRef(
     IReadOnlyList<string>? Marketplaces = null);
 
 /// <summary>
+/// A conversation's sandbox-established binding: the exact <see cref="WorkspaceRef"/> and creating
+/// <see cref="SandboxCredential"/> a thread's workspace session was first opened with. This is the ONLY
+/// authoritative signal that a conversation has an established sandbox workspace — it is published by the
+/// agent pool exactly when a workspace-mode agent commits, and cleared when the agent is removed. It is
+/// deliberately separate from <c>_sessionThreads</c> membership (which is populated only when sub-agent
+/// options are present) and from the pool's private per-thread agent entry (which exists for every mode).
+/// </summary>
+/// <param name="WorkspaceRef">The workspace reference the thread's session was established for.</param>
+/// <param name="Credential">The EFFECTIVE credential the session was established under (used for gateway
+/// calls). An interactive caller's effective credential is the non-null process default, never null.</param>
+/// <param name="CallerCredential">The ORIGINAL caller's credential — <c>null</c> for the interactive UI,
+/// an app-id-bearing credential for an S2S caller. Provenance for the credential-conflict gate, kept
+/// separate from <paramref name="Credential"/> so an interactive caller and an S2S caller that happens to
+/// use the configured default app id are NOT conflated (mirrors <c>MultiTurnAgentPool.CallerCredential</c>).</param>
+public sealed record SandboxEstablishedBinding(
+    WorkspaceRef WorkspaceRef,
+    SandboxCredential Credential,
+    SandboxCredential? CallerCredential = null
+);
+
+/// <summary>
+/// The seam the agent pool uses to publish/clear a conversation's <see cref="SandboxEstablishedBinding"/>
+/// without holding a reference to the whole registry. Implemented by <see cref="SandboxSessionRegistry"/>.
+/// Both operations are lock-free and safe to call while the pool holds its per-thread lock.
+/// </summary>
+public interface ISandboxBindingSink
+{
+    /// <summary>Publishes (or replaces) the binding for <paramref name="threadId"/>.</summary>
+    void PublishEstablishedBinding(string threadId, SandboxEstablishedBinding binding);
+
+    /// <summary>Clears any binding for <paramref name="threadId"/>. Idempotent; never destroys a live session.</summary>
+    void ClearEstablishedBinding(string threadId);
+}
+
+/// <summary>The outcome of resolving a conversation thread to its sandbox workspace session.</summary>
+public enum SandboxSessionResolutionOutcome
+{
+    /// <summary>A live session for the conversation's workspace was resolved (or recreated in-process).</summary>
+    Resolved,
+
+    /// <summary>No sandbox binding exists for the thread (non-sandbox conversation, legacy metadata, or after a process restart). No session was created.</summary>
+    NoSession,
+
+    /// <summary>The caller's credential does not match the conversation's frozen creating identity.</summary>
+    CredentialConflict,
+}
+
+/// <summary>
+/// The result of <see cref="SandboxSessionRegistry.ResolveThreadWorkspaceSessionAsync"/>: the
+/// <see cref="Outcome"/>, the resolved <see cref="Session"/> (only when
+/// <see cref="SandboxSessionResolutionOutcome.Resolved"/>), and — on a
+/// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/> — the existing and requested app ids
+/// for diagnostics (never the keys).
+/// </summary>
+public sealed record SandboxSessionResolution(
+    SandboxSessionResolutionOutcome Outcome,
+    SandboxSession? Session,
+    string? ExistingAppId,
+    string? RequestedAppId);
+
+/// <summary>
 /// Owns sandbox sessions for the sample app. Sessions are created lazily and exactly once per
 /// workspace id, then destroyed on application shutdown when the DI container disposes this
 /// singleton.
@@ -71,7 +132,7 @@ public sealed record WorkspaceRef(
 /// or a caller and the interactive UI default) never collide on one shared session.
 /// </para>
 /// </remarks>
-public sealed class SandboxSessionRegistry : IAsyncDisposable
+public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSink, IWorkspaceFileBrowser
 {
     /// <summary>
     /// Logical id of the default workspace, which maps to the configured
@@ -207,6 +268,17 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         new(StringComparer.Ordinal);
 
     /// <summary>
+    /// A conversation thread's sandbox-established binding (workspace ref + creating credential), the
+    /// authoritative "this conversation has a sandbox workspace" signal. Published by the agent pool on a
+    /// successful workspace-mode agent commit and cleared on agent removal (see
+    /// <see cref="ISandboxBindingSink"/>). Kept across gateway eviction (so the browser can recreate the
+    /// same durable workspace in-process) and NEVER persisted. Independent of <see cref="_sessionThreads"/>
+    /// and of the pool's private agent entry.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SandboxEstablishedBinding> _establishedBindings =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Initialises the registry.
     /// </summary>
     /// <param name="gateway">Gateway lifetime, used for the base URL.</param>
@@ -236,6 +308,100 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         // a session with no side-table entry) always resolve to a credential, never null. An empty
         // AppKey is exactly the keyless AUTH_ENFORCE=off dev path.
         _defaultCredential = new SandboxCredential(_options.AppId, _options.AppKey ?? string.Empty);
+    }
+
+    /// <summary>
+    /// The process-wide default credential (from configured <c>AppId</c>/<c>AppKey</c>) an interactive
+    /// caller's session is established under when no per-request caller credential was supplied. Exposed so
+    /// the app can stage a binding with the SAME effective credential the registry itself would resolve.
+    /// </summary>
+    public SandboxCredential DefaultCredential => _defaultCredential;
+
+    /// <inheritdoc />
+    public void PublishEstablishedBinding(string threadId, SandboxEstablishedBinding binding)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+        ArgumentNullException.ThrowIfNull(binding);
+        // Last-writer-wins under the pool's per-thread lock; a mode switch that establishes a new binding
+        // replaces the prior one atomically with the pool's agent-entry commit.
+        _establishedBindings[threadId] = binding;
+    }
+
+    /// <inheritdoc />
+    public void ClearEstablishedBinding(string threadId)
+    {
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            return;
+        }
+
+        // Clearing a binding only forgets the browse-resolution hint; it never destroys the shared
+        // (workspaceId, appId) gateway session, which other conversations may still be using.
+        _ = _establishedBindings.TryRemove(threadId, out _);
+    }
+
+    /// <summary>
+    /// Resolves a conversation thread to a LIVE sandbox workspace session WITHOUT ever provisioning a
+    /// first-time session, for the file-browser surface. Resolution is driven solely by the thread's
+    /// <see cref="SandboxEstablishedBinding"/>:
+    /// <list type="bullet">
+    /// <item>No binding ⇒ <see cref="SandboxSessionResolutionOutcome.NoSession"/> and NO gateway call (a
+    /// non-sandbox conversation, legacy metadata without a workspace, or a process restart).</item>
+    /// <item>Binding whose workspace id does not match the conversation's persisted workspace id ⇒
+    /// <see cref="SandboxSessionResolutionOutcome.NoSession"/> (defensive; the persisted workspace is
+    /// authoritative).</item>
+    /// <item>A caller identity whose provenance differs from the binding's original creating caller ⇒
+    /// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/>. Provenance is compared raw and
+    /// nullable (null = interactive UI), symmetric with <c>MultiTurnAgentPool</c>: a null caller conflicts
+    /// with an S2S-owned binding (and vice versa), an interactive caller is NOT the same as an explicit
+    /// caller that reuses the default app id, and only a matching identity (or null-vs-null) passes.</item>
+    /// <item>Otherwise the binding's own workspace ref + credential resolve (or recreate in-process, same
+    /// identity, durable workspace) a live session ⇒ <see cref="SandboxSessionResolutionOutcome.Resolved"/>.</item>
+    /// </list>
+    /// </summary>
+    public async Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        SandboxCredential? requestCredential,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        if (!_establishedBindings.TryGetValue(threadId, out var binding))
+        {
+            return new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
+        }
+
+        // The persisted conversation workspace is authoritative: a binding for a different workspace id is
+        // not a match (guards a stale binding after a workspace switch).
+        if (!string.IsNullOrWhiteSpace(persistedWorkspaceId)
+            && !string.Equals(binding.WorkspaceRef.Id, persistedWorkspaceId, StringComparison.Ordinal))
+        {
+            return new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
+        }
+
+        // Compare PROVENANCE, not just the effective app id: the binding remembers the ORIGINAL caller
+        // identity (null for the interactive UI; an app id for an S2S caller — even when that app id equals
+        // the configured default). A null interactive request matches only a null-owned binding; an S2S
+        // request matches only its own app-id-owned binding. This mirrors MultiTurnAgentPool's cross-actor
+        // guard exactly, so an interactive caller and an explicit caller that happens to use the default app
+        // id are never conflated. The effective binding.Credential is still what the gateway call uses.
+        var ownerAppId = binding.CallerCredential?.AppId;
+        var callerAppId = requestCredential?.AppId;
+        if (!string.Equals(ownerAppId, callerAppId, StringComparison.Ordinal))
+        {
+            return new SandboxSessionResolution(
+                SandboxSessionResolutionOutcome.CredentialConflict,
+                null,
+                ownerAppId,
+                callerAppId
+            );
+        }
+
+        var session = await GetOrCreateLiveSessionAsync(binding.WorkspaceRef, ct, binding.Credential).ConfigureAwait(false);
+        return new SandboxSessionResolution(SandboxSessionResolutionOutcome.Resolved, session, ownerAppId, callerAppId);
     }
 
     /// <summary>
@@ -1070,6 +1236,77 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             // OperationCanceledException (not a SandboxException) and is left to propagate.
             return null;
         }
+    }
+
+    /// <summary>
+    /// Lists a workspace directory's rich entries (name/type/size/nameLossy) for the file browser. The
+    /// <paramref name="relativePath"/> is workspace-relative (empty = root). Unlike the best-effort
+    /// <see cref="ReadWorkspaceFileAsync"/>, this PROPAGATES <see cref="SandboxException"/> so the HTTP
+    /// caller can map its <see cref="SandboxErrorKind"/> to a status code.
+    /// </summary>
+    public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(
+        string sessionId,
+        string relativePath,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(relativePath);
+        return ClientFor(CredentialFor(sessionId)).ListDirectoryEntriesAsync(sessionId, relativePath, ct);
+    }
+
+    /// <summary>
+    /// Reads a workspace file's raw bytes (no decode) for download/preview, capping at
+    /// <paramref name="maxBytes"/> (null = the 64 MiB default). Propagates <see cref="SandboxException"/>.
+    /// </summary>
+    public Task<byte[]> ReadWorkspaceFileBytesAsync(
+        string sessionId,
+        string relativePath,
+        long? maxBytes,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(relativePath);
+        return ClientFor(CredentialFor(sessionId)).ReadFileBytesAsync(sessionId, relativePath, maxBytes, ct);
+    }
+
+    /// <summary>
+    /// Writes a workspace file's raw bytes (uploads) with the SDK's one-shot parent-directory self-heal.
+    /// Propagates <see cref="SandboxException"/> (e.g. <see cref="SandboxErrorKind.Conflict"/> when the
+    /// target is held by a concurrent writer).
+    /// </summary>
+    public Task WriteWorkspaceFileBytesAsync(
+        string sessionId,
+        string relativePath,
+        byte[] bytes,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(relativePath);
+        ArgumentNullException.ThrowIfNull(bytes);
+        return ClientFor(CredentialFor(sessionId)).WriteFileBytesAsync(sessionId, relativePath, bytes, ct);
+    }
+
+    /// <summary>
+    /// Runs a shell command in the session's workspace via the existing execute path — the seam the file
+    /// browser's delete uses (an <c>rm</c> the caller assembles from the server-verified entry type). No new
+    /// gateway/SDK delete primitive is introduced; a non-zero exit is returned on the result, not thrown.
+    /// </summary>
+    public Task<SandboxCommandResult> ExecuteWorkspaceCommandAsync(
+        string sessionId,
+        SandboxCommand command,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(command);
+        return ClientFor(CredentialFor(sessionId)).ExecuteAsync(sessionId, command, ct);
     }
 
     /// <summary>
