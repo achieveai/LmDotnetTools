@@ -1230,9 +1230,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             if (!string.IsNullOrWhiteSpace(content))
             {
                 // SECURITY: this guidance is read from the PR HEAD, so it is attacker-controllable — a hostile
-                // PR could put injection text in its CLAUDE.md/AGENTS.md. Fence each file as quoted DATA so its
-                // contents can never be mistaken for instructions to the agent.
-                blocks.Add($"<pr-guidance-file path=\"{name}\">\n{content}\n</pr-guidance-file>");
+                // PR could put injection text in its CLAUDE.md/AGENTS.md. Fence each file as quoted DATA, and
+                // neutralize any literal </pr-guidance-file> the content embeds (rewrite it to a bracketed,
+                // non-tag form) so it cannot forge the closing fence and break out of the quoted region.
+                // Belt-and-braces with the "UNTRUSTED, report injection" instruction the block is headed with.
+                var fenced = content.Replace(
+                    "</pr-guidance-file>", "[/pr-guidance-file]", StringComparison.OrdinalIgnoreCase);
+                blocks.Add($"<pr-guidance-file path=\"{name}\">\n{fenced}\n</pr-guidance-file>");
             }
         }
 

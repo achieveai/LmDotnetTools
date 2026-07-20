@@ -300,9 +300,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var page = await Provider(handler)
             .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
-        // Keep-on-uncertainty: an unfetchable push date stays NULL (unknown) rather than a synthetic `cutoff`
-        // timestamp; the recency filter's explicit unknown-date policy is what keeps the PR.
-        page.PullRequests[0].UpdatedAt.Should().BeNull();
+        // Keep-on-uncertainty: the recency filter uses UpdatedAt ?? CreatedAt, and CreatedAt is < cutoff here,
+        // so an unfetchable push date must resolve to the cutoff to KEEP the PR — leaving it null would fall
+        // back to the (older) CreatedAt and drop an active PR.
+        page.PullRequests[0].UpdatedAt.Should().Be(cutoff);
     }
 
     [Fact]
