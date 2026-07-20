@@ -73,11 +73,25 @@ public static class ConversationUsageProjection
 
                 if (records is { Count: > 0 })
                 {
-                    var persisted = RecordsFromMetadata(existing);
-                    var merged = MergeRecords(persisted, records);
-                    var revision = Math.Max(aggregate.FoldedRevision, PersistedFoldedRevision(existing));
+                    var persistedAggregate = FromMetadata(existing);
+
+                    // The records artifact is the authoritative per-attempt history. If it is present but
+                    // unreadable while a valid aggregate exists, merging with an empty set would drop that
+                    // history and undercount — refuse the write rather than clobber authoritative usage.
+                    if (persistedAggregate is not null && RecordsArtifactCorrupt(existing))
+                    {
+                        return existing!;
+                    }
+
+                    var merged = MergeRecords(RecordsFromMetadata(existing), records);
+                    var revision = Math.Max(aggregate.FoldedRevision, persistedAggregate?.FoldedRevision ?? 0);
+
+                    // Merge completeness monotonically so a later InProgress writer (e.g. a rebuilt writer
+                    // after restart) cannot regress a previously Complete/Partial terminal state.
+                    var completeness = MaxCompleteness(persistedAggregate?.Completeness, aggregate.Completeness);
+
                     var foldedAggregate = ConversationUsageAggregate.Fold(
-                        aggregate.RootConversationId, merged, revision, aggregate.Completeness);
+                        aggregate.RootConversationId, merged, revision, completeness);
 
                     return WithProjection(
                         existing,
@@ -138,6 +152,37 @@ public static class ConversationUsageProjection
         return [.. byAttempt.Values];
     }
 
+    /// <summary>
+    ///     True when a records artifact is present but cannot be parsed. Absent records are not "corrupt":
+    ///     they legitimately mean no prior per-attempt history (first write / aggregate-only legacy).
+    /// </summary>
+    private static bool RecordsArtifactCorrupt(ThreadMetadata? metadata)
+    {
+        var json = RawJson(metadata, RecordsPropertyKey);
+        if (json is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = JsonSerializer.Deserialize<List<UsageRecord>>(json);
+            return false;
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>Returns the more-complete of two completeness states (Complete &gt; Partial &gt; InProgress).</summary>
+    private static UsageCompleteness MaxCompleteness(UsageCompleteness? persisted, UsageCompleteness incoming)
+    {
+        return persisted is null
+            ? incoming
+            : (UsageCompleteness)Math.Max((int)persisted.Value, (int)incoming);
+    }
+
     /// <summary>Reads the persisted schema version even when it is newer than this build understands.</summary>
     private static int PersistedSchemaVersion(ThreadMetadata? metadata)
     {
@@ -159,11 +204,6 @@ public static class ConversationUsageProjection
         {
             return 0; // corrupt — treat as absent, allow overwrite
         }
-    }
-
-    private static long PersistedFoldedRevision(ThreadMetadata? metadata)
-    {
-        return FromMetadata(metadata)?.FoldedRevision ?? 0;
     }
 
     /// <summary>Loads the persisted aggregate for a conversation, or null when none has been stored.</summary>

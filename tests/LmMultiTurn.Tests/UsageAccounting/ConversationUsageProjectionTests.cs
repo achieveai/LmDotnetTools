@@ -208,6 +208,114 @@ public class ConversationUsageProjectionTests
     }
 
     [Fact]
+    public async Task SaveAsync_PreservesCompleteCompleteness_WhenLaterWriterMergesInProgress()
+    {
+        // A post-restart / second writer that merges an InProgress snapshot (its rebuilt local records) at
+        // an equal revision must not regress a previously Complete projection's completeness (#196).
+        var store = new InMemoryConversationStore();
+
+        var a1 = new UsageRecord
+        {
+            LogicalCallId = "a1",
+            ProviderAttemptId = "a1",
+            RootConversationId = "conv-1",
+            RequestedModel = "m",
+            InputTokens = 100,
+            OutputTokens = 10,
+            Revision = 1,
+        };
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [a1], 1, UsageCompleteness.Complete), [a1]);
+
+        var b1 = new UsageRecord
+        {
+            LogicalCallId = "b1",
+            ProviderAttemptId = "b1",
+            RootConversationId = "conv-1",
+            RequestedModel = "m",
+            InputTokens = 50,
+            OutputTokens = 5,
+            Revision = 1,
+        };
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [b1], 1, UsageCompleteness.InProgress), [b1]);
+
+        var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
+        loaded!.Completeness.Should().Be(UsageCompleteness.Complete); // not regressed to InProgress
+        loaded.TotalTokens.Should().Be(165); // records still merged
+    }
+
+    [Fact]
+    public async Task SaveAsync_UpgradesCompleteness_WhenIncomingIsMoreComplete()
+    {
+        var store = new InMemoryConversationStore();
+        var a1 = new UsageRecord
+        {
+            LogicalCallId = "a1",
+            ProviderAttemptId = "a1",
+            RootConversationId = "conv-1",
+            RequestedModel = "m",
+            InputTokens = 100,
+            OutputTokens = 10,
+            Revision = 1,
+        };
+
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [a1], 1, UsageCompleteness.InProgress), [a1]);
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [a1 with { Revision = 2 }], 2, UsageCompleteness.Complete), [a1 with { Revision = 2 }]);
+
+        var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
+        loaded!.Completeness.Should().Be(UsageCompleteness.Complete);
+    }
+
+    [Fact]
+    public async Task SaveAsync_RefusesWrite_WhenRecordsArtifactCorrupt_ButAggregateValid()
+    {
+        // The records artifact is the authoritative per-attempt history. If it is unreadable while the
+        // aggregate is valid, merging would treat history as empty and undercount — refuse instead (#196).
+        var store = new InMemoryConversationStore();
+        var a1 = new UsageRecord
+        {
+            LogicalCallId = "a1",
+            ProviderAttemptId = "a1",
+            RootConversationId = "conv-1",
+            RequestedModel = "m",
+            InputTokens = 100,
+            OutputTokens = 10,
+            Revision = 5,
+        };
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [a1], 5), [a1]);
+
+        // Corrupt ONLY the records artifact; the aggregate stays valid.
+        await store.UpdateMetadataAsync(
+            "conv-1",
+            existing => existing! with
+            {
+                Properties = existing.Properties!.SetItem(
+                    ConversationUsageProjection.RecordsPropertyKey, "{ not valid json"),
+            });
+
+        var b1 = new UsageRecord
+        {
+            LogicalCallId = "b1",
+            ProviderAttemptId = "b1",
+            RootConversationId = "conv-1",
+            RequestedModel = "m",
+            InputTokens = 30,
+            OutputTokens = 5,
+            Revision = 6,
+        };
+        await ConversationUsageProjection.SaveAsync(
+            store, ConversationUsageAggregate.Fold("conv-1", [b1], 6), [b1]);
+
+        // The authoritative aggregate must be preserved, not overwritten with only b1's usage.
+        var loaded = await ConversationUsageProjection.LoadAsync(store, "conv-1");
+        loaded!.TotalTokens.Should().Be(110); // a1's 100+10, NOT b1's 35
+    }
+
+    [Fact]
     public async Task SaveAsync_DoesNotOverwrite_NewerSchemaProjection()
     {
         // During a rollback / mixed-version deployment an older (v1) writer must not clobber a projection
