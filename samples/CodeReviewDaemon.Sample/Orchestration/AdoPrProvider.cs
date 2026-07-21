@@ -88,19 +88,34 @@ internal sealed class AdoPrProvider : IPrProvider
                     // created/closed), so "updated since" can't come from the list. For a PR created BEFORE the
                     // recency window, fetch the source branch tip commit's date (its last push) so an
                     // old-but-recently-pushed PR is still reviewed. Bounded: recent-created PRs skip this call
-                    // entirely. Keep-on-uncertainty: an unfetchable date resolves to the cutoff so the filter
-                    // KEEPS the PR (the recency filter uses UpdatedAt ?? CreatedAt, and CreatedAt is < cutoff on
-                    // this branch, so leaving UpdatedAt null would instead DROP an active PR — the exact regression
-                    // the re-review flagged). UpdatedAt is consumed only by this recency keep/drop decision.
+                    // entirely.
+                    //
+                    // Recency signal (consumed only by PrPollingService.ApplyRecencyFilter as `UpdatedAt ?? CreatedAt`):
+                    //  - recent-created PR  -> UpdatedAt null, CreatedAt = creationDate (recent) -> kept.
+                    //  - old PR, push date known   -> UpdatedAt = push date -> kept/dropped on real recency.
+                    //  - old PR, push date UNKNOWN  -> leave the signal indeterminate (BOTH null) so the filter's
+                    //    "can't date it => keep" path applies. We do NOT fabricate a boundary timestamp (an earlier
+                    //    `?? cutoff` did, which conflates "unknown" with "active exactly at the cutoff"), and we do
+                    //    NOT fall back to the stale opened-date (which would wrongly DROP a possibly-active PR).
                     DateTimeOffset? updatedAt = null;
+                    DateTimeOffset? recencyCreatedAt = createdAt;
                     if (request.RecencyCutoff is { } cutoff
                         && createdAt is { } created
                         && created < cutoff
                         && !string.IsNullOrEmpty(headSha))
                     {
-                        updatedAt =
-                            await TryGetLastPushDateAsync(org, project, repo, headSha, cancellationToken)
-                                .ConfigureAwait(false) ?? cutoff;
+                        var lastPush = await TryGetLastPushDateAsync(org, project, repo, headSha, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (lastPush is { } push)
+                        {
+                            updatedAt = push;
+                        }
+                        else
+                        {
+                            // Uncertain: null the recency signal so the filter keeps this PR rather than dropping
+                            // it on the old opened-date. CreatedAt has no other consumer than the recency filter.
+                            recencyCreatedAt = null;
+                        }
                     }
 
                     pullRequests.Add(new PullRequestDescriptor
@@ -112,9 +127,10 @@ internal sealed class AdoPrProvider : IPrProvider
                         // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
                         TriggerWatermark = headSha,
                         LifecycleState = MapLifecycle(pr.GetProperty("status").GetString()),
-                        // Recency signals: creationDate (opened) always; UpdatedAt = last push, resolved above
-                        // only for PRs created before the window (bounded extra call).
-                        CreatedAt = createdAt,
+                        // Recency signals (consumed only by ApplyRecencyFilter): CreatedAt = opened date, but
+                        // nulled for an old PR whose last push couldn't be dated (see above) so the filter keeps
+                        // it; UpdatedAt = last push, resolved above only for PRs created before the window.
+                        CreatedAt = recencyCreatedAt,
                         UpdatedAt = updatedAt,
                     });
 

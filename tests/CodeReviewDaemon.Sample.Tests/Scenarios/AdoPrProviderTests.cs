@@ -300,10 +300,14 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var page = await Provider(handler)
             .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
-        // Keep-on-uncertainty: the recency filter uses UpdatedAt ?? CreatedAt, and CreatedAt is < cutoff here,
-        // so an unfetchable push date must resolve to the cutoff to KEEP the PR — leaving it null would fall
-        // back to the (older) CreatedAt and drop an active PR.
-        page.PullRequests[0].UpdatedAt.Should().Be(cutoff);
+        // Keep-on-uncertainty WITHOUT fabrication: when the last-push lookup fails for an old PR, the provider
+        // leaves the recency signal indeterminate — BOTH UpdatedAt and CreatedAt null — so
+        // PrPollingService.ApplyRecencyFilter's "activity (UpdatedAt ?? CreatedAt) is null ⇒ keep" path applies.
+        // It must NOT fabricate a boundary timestamp (an earlier `?? cutoff` did, conflating "unknown" with
+        // "active exactly at the cutoff"), nor fall back to the stale opened-date (which would drop a
+        // possibly-active PR).
+        page.PullRequests[0].UpdatedAt.Should().BeNull("an unknown push date must not be fabricated");
+        page.PullRequests[0].CreatedAt.Should().BeNull("the recency signal is indeterminate, so the filter keeps it");
     }
 
     [Fact]

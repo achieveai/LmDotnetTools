@@ -170,6 +170,27 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var slot = CreateSlot();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
+            "submodule update --init",
+            new SandboxCommandResult(1, string.Empty, "fatal: Unable to create '.git/modules/sub/index.lock': File exists."));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotCorruptException>("a corrupt reviewed-submodule init failure (a stuck lock) drives the reclone ladder");
+    }
+
+    [Fact]
+    public async Task PrepareAsync_ReviewedSubmoduleUnknownInitFailure_DoesNotDriveReclone()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        // An init failure whose stderr matches neither a corrupt nor a transient marker classifies as
+        // GitFailureKind.Unknown, which GitFailureClassifier documents as "treated as transient". It must
+        // therefore retry the warm store, NOT drive a destructive reclone (matching the store-checkout path,
+        // which also reclones only on a definitely-Corrupt classification).
+        runner.OnArgvContains(
             "submodule update --init", new SandboxCommandResult(1, string.Empty, "fatal: clone of submodule failed"));
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
@@ -177,7 +198,9 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var act = async () => await preparer.PrepareAsync(
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
 
-        await act.Should().ThrowAsync<SlotCorruptException>("a half-inited reviewed submodule is slot corruption, not a silent proceed");
+        // It still throws (no silent proceed on a half-inited submodule), but NOT the reclone-driving exception.
+        var thrown = await act.Should().ThrowAsync<Exception>();
+        thrown.Which.Should().NotBeOfType<SlotCorruptException>();
     }
 
     [Fact]

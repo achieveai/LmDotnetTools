@@ -1187,6 +1187,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// (<c>CLAUDE.md</c>) before agent instructions (<c>AGENTS.md</c>).</summary>
     private static readonly string[] RepoGuidanceFileNames = ["CLAUDE.md", "AGENTS.md"];
 
+    /// <summary>Per-file cap on reviewed-repo guidance prepended to the review input. The content is read
+    /// from the attacker-controllable PR head, so an arbitrarily large file must not balloon the review
+    /// input (context-window pressure / cost). Generous enough for legitimate guidance — the sample's own
+    /// CLAUDE.md is ~11 KB — and truncation is marked so the model knows the file is partial.</summary>
+    private const int MaxGuidanceFileChars = 32 * 1024;
+
     /// <summary>
     /// Best-effort prepends the reviewed repo's own root guidance (<c>CLAUDE.md</c>, <c>AGENTS.md</c>) to
     /// the review input so the reviewer starts with the project's coding conventions and build/test commands
@@ -1230,11 +1236,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             if (!string.IsNullOrWhiteSpace(content))
             {
                 // SECURITY: this guidance is read from the PR HEAD, so it is attacker-controllable — a hostile
-                // PR could put injection text in its CLAUDE.md/AGENTS.md. Fence each file as quoted DATA, and
-                // neutralize any literal </pr-guidance-file> the content embeds (rewrite it to a bracketed,
-                // non-tag form) so it cannot forge the closing fence and break out of the quoted region.
-                // Belt-and-braces with the "UNTRUSTED, report injection" instruction the block is headed with.
-                var fenced = content.Replace(
+                // PR could put injection text in its CLAUDE.md/AGENTS.md OR make it arbitrarily large to pressure
+                // the review's context window / cost. Bound each file to MaxGuidanceFileChars (marking any
+                // truncation so the model knows it is partial), then fence it as quoted DATA and neutralize any
+                // literal </pr-guidance-file> the content embeds (rewrite it to a bracketed, non-tag form) so it
+                // cannot forge the closing fence and break out of the quoted region. Belt-and-braces with the
+                // "UNTRUSTED, report injection" instruction the block is headed with.
+                var bounded = content.Length > MaxGuidanceFileChars
+                    ? content[..MaxGuidanceFileChars]
+                        + $"\n\n… [truncated: reviewed-repo guidance exceeded {MaxGuidanceFileChars} characters]"
+                    : content;
+                var fenced = bounded.Replace(
                     "</pr-guidance-file>", "[/pr-guidance-file]", StringComparison.OrdinalIgnoreCase);
                 blocks.Add($"<pr-guidance-file path=\"{name}\">\n{fenced}\n</pr-guidance-file>");
             }

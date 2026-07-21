@@ -148,16 +148,17 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         // submodule must have actually initialized. Without this a denied/failed init silently proceeds to
         // the fetch below, which then fails opaquely. But NOT every failure is slot corruption: a TRANSIENT
         // cause (auth/network/throttle — captured in the denial reason's stderr) must retry the warm store, not
-        // trigger a destructive reclone that can't fix it and would loop (review #180). Only corrupt/unrecognized
-        // failures drive the reclone ladder.
+        // trigger a destructive reclone that can't fix it and would loop (review #180). Only a definitely-Corrupt
+        // failure drives the reclone ladder; Unknown is "treated as transient" (per GitFailureKind) — retry it,
+        // don't reclone — matching the store-checkout classification at RunGitOrThrowAsync below.
         if (!outcome.InitializedPaths.Contains(submoduleRelPath, StringComparer.Ordinal))
         {
             var reason = outcome.Denied
                 .FirstOrDefault(d => string.Equals(d.Path, submoduleRelPath, StringComparison.Ordinal))?.Reason;
-            if (GitFailureClassifier.Classify(reason) == GitFailureKind.Transient)
+            if (GitFailureClassifier.Classify(reason) != GitFailureKind.Corrupt)
             {
                 throw new InvalidOperationException(
-                    $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize (transient): {reason}");
+                    $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize (transient/unknown): {reason}");
             }
 
             throw new SlotCorruptException(

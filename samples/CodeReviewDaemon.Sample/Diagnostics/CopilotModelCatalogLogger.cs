@@ -15,11 +15,13 @@ namespace CodeReviewDaemon.Sample.Diagnostics;
 ///   <c>ReviewModelId</c> (Anthropic via <c>/v1/messages</c>, OpenAI via <c>/responses</c>), with the
 ///   transport it routes through. This is the list to pick a valid model id from.</item>
 /// </list>
-/// Runs once, best-effort and bounded: any failure (no credential, network, non-success, malformed body)
-/// is logged and swallowed so model discovery never blocks or crashes boot. Purely diagnostic — it makes
+/// Runs once shortly after startup, best-effort and bounded: it executes on a background task (a
+/// <see cref="BackgroundService"/>, so its <c>GET /models</c> call — up to <see cref="DiscoveryTimeout"/>
+/// — never delays host startup), and any failure (no credential, network, non-success, malformed body) is
+/// logged and swallowed so model discovery never blocks or crashes boot. Purely diagnostic — it makes
 /// no routing or config decisions.
 /// </summary>
-internal sealed class CopilotModelCatalogLogger : IHostedService
+internal sealed class CopilotModelCatalogLogger : BackgroundService
 {
     private static readonly TimeSpan DiscoveryTimeout = TimeSpan.FromSeconds(30);
 
@@ -30,21 +32,19 @@ internal sealed class CopilotModelCatalogLogger : IHostedService
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             cts.CancelAfter(DiscoveryTimeout);
             await LogCatalogAsync(cts.Token).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Copilot model catalog discovery failed at startup; continuing without it.");
         }
     }
-
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     private async Task LogCatalogAsync(CancellationToken cancellationToken)
     {
