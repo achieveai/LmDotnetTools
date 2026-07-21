@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import ChatLayout from '@/components/ChatLayout.vue';
+import SubAgentListPanel from '@/components/SubAgentListPanel.vue';
 
 interface ConversationSummary {
   threadId: string;
@@ -127,6 +128,7 @@ vi.mock('@/composables/useChat', async () => {
       clearMessages: vi.fn(),
       cancelStream: vi.fn(async () => {}),
       disconnectWebSocket: sharedMocks.disconnectWebSocket,
+      threadId: ref(sharedMocks.currentThreadId),
       setThreadId: vi.fn(),
       loadMessagesFromBackend: vi.fn(async () => {}),
       resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
@@ -561,5 +563,52 @@ describe('ChatLayout ?threadId= deep link', () => {
 
     expect(wrapper.find('[data-testid="conversation-not-found"]').exists()).toBe(false);
     expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-1');
+  });
+});
+
+// Regression: a freshly-created chat (handleNewChat) assigns useChat's threadId immediately,
+// well before any message is sent, but the backend's agent pool has no entry for that thread
+// yet. Passing that id straight to SubAgentListPanel made it poll listSubAgents immediately and
+// hit a 404 ("unknown_thread") on every new conversation. The panel must not receive a
+// parentThreadId until the conversation has a sidebar entry (added by handleSend only after the
+// first message is actually dispatched) — mirrors the same start-gating already used for mode
+// and provider switching above.
+describe('ChatLayout sub-agent panel start-gating', () => {
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+  });
+
+  it('withholds the thread id from the sub-agent panel on a fresh, messageless conversation', async () => {
+    sharedMocks.currentThreadId = 'thread-new';
+    sharedMocks.conversations = [];
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.findComponent(SubAgentListPanel).props('parentThreadId')).toBeNull();
+  });
+
+  it('passes the thread id to the sub-agent panel once the conversation has a sidebar entry', async () => {
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.findComponent(SubAgentListPanel).props('parentThreadId')).toBe('thread-1');
   });
 });

@@ -103,6 +103,17 @@ async function handleCancel(): Promise<void> {
   await cancelStream();
 }
 
+// A freshly-created thread (New Chat / handleNewChat) gets `chatThreadId` immediately, well before
+// any message is sent — the backend's agent pool has no entry for it yet. Gate the sub-agent panel
+// on the same "has a sidebar entry" signal already used for provider/mode switching (added by
+// handleSend only after the first message is actually dispatched) so listSubAgents is never called
+// for a conversation that hasn't started.
+const subAgentParentThreadId = computed(() =>
+  chatThreadId.value && conversations.value.some((c) => c.threadId === chatThreadId.value)
+    ? chatThreadId.value
+    : null
+);
+
 // Provide getResultForToolCall to child components
 provide('getResultForToolCall', getResultForToolCall);
 
@@ -631,8 +642,10 @@ onBeforeUnmount(() => {
 
     <!-- Bind the sub-agent panel to the ACTIVE chat thread (useChat's threadId), not the
          sidebar's currentThreadId: a freshly-started chat runs on useChat's thread before it is
-         ever selected/persisted in the sidebar, and the panel must track where sub-agents spawn. -->
-    <SubAgentListPanel :parent-thread-id="chatThreadId" />
+         ever selected/persisted in the sidebar, and the panel must track where sub-agents spawn.
+         subAgentParentThreadId additionally withholds that id until the conversation has a sidebar
+         entry, so listSubAgents is never polled before the backend has an agent for this thread. -->
+    <SubAgentListPanel :parent-thread-id="subAgentParentThreadId" />
   </div>
 </template>
 
