@@ -9,8 +9,9 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// <see cref="HostGitCredentialEnv"/> (token off argv + off on-disk config).
 /// </summary>
 internal sealed class HostGitCommandRunner(
-    Func<CancellationToken, Task<string?>> tokenSource,
-    ILogger<HostGitCommandRunner> logger) : ISandboxCommandRunner
+    Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> credentialsSource,
+    ILogger<HostGitCommandRunner> logger,
+    IReadOnlyCollection<string>? adoOrgs = null) : ISandboxCommandRunner
 {
     public async Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
     {
@@ -48,16 +49,16 @@ internal sealed class HostGitCommandRunner(
             psi.ArgumentList.Add(command.Argv[i]);
         }
 
-        // Inject the github credential only when this is a git command (the sole remote-talking case here).
+        // Inject each signed-in provider's credential only when this is a git command (the sole
+        // remote-talking case here) — GitHub and/or Azure DevOps, per which providers are signed in.
+        // HostGitCredentialEnv always sets GIT_TERMINAL_PROMPT=0, so even a credential-less git command
+        // fails fast rather than hanging on a prompt.
         if (string.Equals(command.Argv[0], "git", StringComparison.OrdinalIgnoreCase))
         {
-            var token = await tokenSource(cancellationToken).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(token))
+            var credentials = await credentialsSource(cancellationToken).ConfigureAwait(false);
+            foreach (var (k, v) in HostGitCredentialEnv.Build(credentials, adoOrgs))
             {
-                foreach (var (k, v) in HostGitCredentialEnv.Build(token))
-                {
-                    psi.Environment[k] = v;
-                }
+                psi.Environment[k] = v;
             }
         }
 

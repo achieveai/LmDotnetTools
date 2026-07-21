@@ -63,6 +63,24 @@ internal sealed class KnowledgeExtractionCommitter
             // The sweeper store clone has no local notes branch; fetch and check origin/<branch> out so the
             // KnowledgeBase write lands on the branch the sweeper later merges into the default branch.
             _ = await _git.RunAsync(["fetch", "origin"], _repoRoot, cancellationToken).ConfigureAwait(false);
+
+            // The notes branch is deleted once MergeToDefaultAsync folds it into the default branch, so a later
+            // sweep that re-lists an already-merged PR (the in-memory _terminallyResolved set forgets on restart)
+            // finds origin/<branch> gone. A blind `checkout -B` then fails with a scary "not a commit" fatal that
+            // reads like a real error. Probe first and treat a missing branch as the expected no-op it is — the
+            // KB write for this PR already landed on the default branch on the earlier successful sweep.
+            var branchExists = await _git
+                .RunAsync(["rev-parse", "--verify", "--quiet", $"origin/{branch}"], _repoRoot, cancellationToken)
+                .ConfigureAwait(false);
+            if (!branchExists.Succeeded)
+            {
+                _logger.LogInformation(
+                    "Knowledge extraction for {SourcePr}: notes branch '{Branch}' no longer exists on origin "
+                        + "(already merged on an earlier sweep); nothing to extract.",
+                    sourcePrRef, branch);
+                return;
+            }
+
             var checkedOut = await _git
                 .RunAsync(["checkout", "-B", branch, $"origin/{branch}"], _repoRoot, cancellationToken)
                 .ConfigureAwait(false);

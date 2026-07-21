@@ -166,13 +166,17 @@ public sealed class DaemonAgentFactoryTests
     [Fact]
     public void ReviewProfile_Prompt_InstructsSkillSubAgentsAndInjectionSafety()
     {
-        var prompt = DaemonAgentFactory.CreateReviewProfile().SystemPrompt;
+        // Render with should_post=true so the posting step (step 5) is present; a GitHub run (is_ado unset)
+        // posts inline via the code-reviewer:post-pr-review skill.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
 
         prompt.Should().Contain("code-reviewer"); // load the skill
         prompt.Should().Contain("Skill"); // via the Skill tool
         prompt.Should().Contain("Contracts/"); // cross-repo reading
         prompt.Should().MatchRegex("(?i)injection|untrusted"); // injection framing
-        prompt.Should().MatchRegex("(?i)daemon.*post"); // daemon owns posting
+        prompt.Should().Contain("code-reviewer:post-pr-review"); // the agent posts inline via the post-pr-review skill
+        prompt.Should().MatchRegex("(?i)inline"); // findings must be posted inline, not as one summary
     }
 
     [Fact]

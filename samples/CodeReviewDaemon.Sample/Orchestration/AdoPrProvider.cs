@@ -37,6 +37,10 @@ internal sealed class AdoPrProvider : IPrProvider
     /// <summary>Bounded pages per poll (PR #121 M5) so one poll can't spin unboundedly on a huge repo.</summary>
     private const int MaxPages = 10;
 
+    /// <summary>Max concurrent ADO <c>/pushes</c> recency lookups per poll — bounds the fan-out so a page full
+    /// of old PRs doesn't serialize into minutes of round trips or trip ADO throttling.</summary>
+    private const int MaxRecencyLookupConcurrency = 6;
+
     public async Task<PullRequestPage> ListOpenPullRequestsAsync(PrPollRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -78,23 +82,55 @@ internal sealed class AdoPrProvider : IPrProvider
             await using (var stream = await response.Content.ReadAsStreamAsync(cancellationToken))
             {
                 using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+                // Phase 1: extract each PR's raw metadata. A JsonElement can't outlive its document, and the
+                // recency resolution below is async I/O, so the fields must be materialized first.
+                var rawPrs = new List<RawAdoPr>();
                 foreach (var pr in document.RootElement.GetProperty("value").EnumerateArray())
                 {
-                    var prId = pr.GetProperty("pullRequestId").GetInt64();
+                    rawPrs.Add(new RawAdoPr(
+                        pr.GetProperty("pullRequestId").GetInt64(),
+                        CommitId(pr, "lastMergeSourceCommit"),
+                        CommitId(pr, "lastMergeTargetCommit"),
+                        ParseTimestamp(pr, "creationDate"),
+                        pr.TryGetProperty("sourceRefName", out var srn) && srn.ValueKind is JsonValueKind.String
+                            ? srn.GetString()
+                            : null,
+                        pr.GetProperty("status").GetString()));
+                }
+
+                // Phase 2: resolve each PR's recency signal. ADO's PR list has no last-activity field, so a PR
+                // created BEFORE the window needs one bounded `/pushes` lookup for its source branch's true
+                // last-push time (so an old-but-recently-pushed PR is still reviewed). These lookups run with
+                // bounded concurrency so a page full of old PRs doesn't serialize into minutes of round trips or
+                // trip ADO throttling; recent PRs and PRs with no usable source ref make no call.
+                var recency = await ResolveRecencySignalsAsync(
+                    rawPrs, org, project, repo, request.RecencyCutoff, cancellationToken).ConfigureAwait(false);
+
+                // Phase 3: build descriptors.
+                for (var i = 0; i < rawPrs.Count; i++)
+                {
+                    var raw = rawPrs[i];
+                    var (updatedAt, recencyCreatedAt) = recency[i];
                     pullRequests.Add(new PullRequestDescriptor
                     {
-                        PrId = prId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        HeadSha = CommitId(pr, "lastMergeSourceCommit"),
-                        BaseSha = CommitId(pr, "lastMergeTargetCommit"),
+                        PrId = raw.PrId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        HeadSha = raw.HeadSha,
+                        BaseSha = raw.BaseSha,
                         // ADO's PR list exposes no last-activity timestamp, so a new source commit (the head
                         // SHA) is the re-review trigger; same-head comment threads do not re-trigger here.
-                        TriggerWatermark = CommitId(pr, "lastMergeSourceCommit"),
-                        LifecycleState = MapLifecycle(pr.GetProperty("status").GetString()),
+                        TriggerWatermark = raw.HeadSha,
+                        LifecycleState = MapLifecycle(raw.Status),
+                        // Recency signals (consumed only by ApplyRecencyFilter): CreatedAt = opened date, but
+                        // nulled for an old PR whose last push couldn't be dated (see ResolveRecencySignalsAsync)
+                        // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
+                        CreatedAt = recencyCreatedAt,
+                        UpdatedAt = updatedAt,
                     });
 
-                    if (prId > highWaterMark)
+                    if (raw.PrId > highWaterMark)
                     {
-                        highWaterMark = prId;
+                        highWaterMark = raw.PrId;
                     }
                 }
             }
@@ -130,6 +166,167 @@ internal sealed class AdoPrProvider : IPrProvider
         && commit.TryGetProperty("commitId", out var id)
             ? id.GetString() ?? string.Empty
             : string.Empty;
+
+    /// <summary>Parses an ISO-8601 timestamp property (e.g. ADO's <c>creationDate</c>) to a
+    /// <see cref="DateTimeOffset"/>, or null when absent/unparseable — a missing date leaves the PR
+    /// unfiltered by the recency window rather than silently dropping it.</summary>
+    private static DateTimeOffset? ParseTimestamp(JsonElement pr, string property) =>
+        pr.TryGetProperty(property, out var value)
+        && value.ValueKind is JsonValueKind.String
+        && DateTimeOffset.TryParse(
+            value.GetString(),
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind,
+            out var parsed)
+            ? parsed
+            : null;
+
+    /// <summary>Raw per-PR metadata materialized from one ADO PR-list page, before the async recency
+    /// resolution (a <see cref="JsonElement"/> can't outlive its document).</summary>
+    private sealed record RawAdoPr(
+        long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status);
+
+    /// <summary>
+    /// Resolves each PR's recency signal (<c>UpdatedAt</c>, <c>CreatedAt</c>) for
+    /// <c>PrPollingService.ApplyRecencyFilter</c>. A PR created before the window gets one bounded
+    /// <c>/pushes</c> lookup for its source branch's real last-push time; recent PRs and PRs with no usable
+    /// source ref make no call. Lookups run with bounded concurrency (<see cref="MaxRecencyLookupConcurrency"/>)
+    /// so a page full of old PRs doesn't serialize into minutes of sequential round trips. Per PR:
+    /// recent → <c>(null, createdAt)</c> (kept on the recent opened-date); old + push known →
+    /// <c>(push, createdAt)</c>; old + push indeterminate (blank ref or failed lookup) → <c>(null, null)</c>
+    /// so the filter's "can't-date-it ⇒ keep" path applies (never fabricate, never drop on the stale opened-date).
+    /// </summary>
+    private async Task<(DateTimeOffset? UpdatedAt, DateTimeOffset? RecencyCreatedAt)[]> ResolveRecencySignalsAsync(
+        IReadOnlyList<RawAdoPr> prs,
+        string org,
+        string? project,
+        string repo,
+        DateTimeOffset? cutoff,
+        CancellationToken cancellationToken)
+    {
+        using var gate = new SemaphoreSlim(MaxRecencyLookupConcurrency);
+        var tasks = prs.Select(pr => ResolveOneRecencyAsync(pr, gate, org, project, repo, cutoff, cancellationToken));
+        return await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    /// <summary>Resolves one PR's recency signal (see <see cref="ResolveRecencySignalsAsync"/>), taking a slot on
+    /// <paramref name="gate"/> only for the (old-PR) branch that makes the <c>/pushes</c> call.</summary>
+    private async Task<(DateTimeOffset? UpdatedAt, DateTimeOffset? RecencyCreatedAt)> ResolveOneRecencyAsync(
+        RawAdoPr pr,
+        SemaphoreSlim gate,
+        string org,
+        string? project,
+        string repo,
+        DateTimeOffset? cutoff,
+        CancellationToken cancellationToken)
+    {
+        // Recent PR (or recency off): no lookup; the recent opened-date is the keep signal.
+        if (cutoff is not { } c || pr.CreatedAt is not { } created || created >= c)
+        {
+            return (null, pr.CreatedAt);
+        }
+
+        // Old PR with no usable source ref: recency indeterminate ⇒ keep (both null), like a failed lookup.
+        if (string.IsNullOrEmpty(pr.SourceRefName))
+        {
+            return (null, null);
+        }
+
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var push = await TryGetLastPushDateAsync(org, project, repo, pr.SourceRefName, cancellationToken)
+                .ConfigureAwait(false);
+            if (push is null)
+            {
+                return (null, null);
+            }
+
+            return (push, pr.CreatedAt);
+        }
+        finally
+        {
+            _ = gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Fetches the most recent push to the PR's source branch (<c>GET .../pushes?searchCriteria.refName=...</c>)
+    /// and returns its <c>date</c> — the PR's true last-push time, ADO's stand-in for a "last updated" field.
+    /// Uses the ref-update/push time rather than the head commit's <c>committer</c>/<c>author</c> date, which are
+    /// authored/rebased timestamps, not push times (an old commit recently pushed or force-pushed would otherwise
+    /// be mis-dated and wrongly dropped). Used by the recency filter for PRs created before the window. Returns
+    /// null (caller keeps the PR, recency indeterminate) on any non-success, missing field, or transient failure
+    /// — a recency heuristic must never drop an active PR because a metadata read hiccuped.
+    /// </summary>
+    private async Task<DateTimeOffset?> TryGetLastPushDateAsync(
+        string org,
+        string? project,
+        string repo,
+        string sourceRefName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url =
+                $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pushes"
+                + $"?searchCriteria.refName={Uri.EscapeDataString(sourceRefName)}"
+                + $"&$top=1&api-version={ApiVersion}";
+
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
+                .WithOperation(SandboxOperation.ReadProviderMetadata);
+            var token = await _tokenProvider.GetAccessTokenAsync(ct: cancellationToken);
+            var basic = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token.Value}"));
+            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
+            httpRequest.Headers.Accept.ParseAdd("application/json");
+
+            using var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug(
+                    "ADO pushes fetch for ref {Ref} returned {Status}; keeping the PR (recency indeterminate).",
+                    sourceRefName,
+                    (int)response.StatusCode);
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty("value", out var pushes)
+                || pushes.ValueKind is not JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            // ADO returns pushes newest-first; take the max `date` over the (top-1) page defensively, so the
+            // result is the latest push time regardless of page ordering.
+            DateTimeOffset? latest = null;
+            foreach (var push in pushes.EnumerateArray())
+            {
+                var date = ParseTimestamp(push, "date");
+                if (date is { } d && (latest is null || d > latest))
+                {
+                    latest = d;
+                }
+            }
+
+            return latest;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A real caller cancellation (poll aborted) — propagate; nobody is waiting for this result.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Everything else — including an HttpClient TIMEOUT, which surfaces as a
+            // TaskCanceledException/OperationCanceledException even though the caller's token was NOT
+            // cancelled — is a failed lookup: keep the PR (recency indeterminate) rather than letting one
+            // timed-out /pushes call fault the whole poll via Task.WhenAll.
+            _logger.LogDebug(ex, "ADO pushes fetch for ref {Ref} failed; keeping the PR.", sourceRefName);
+            return null;
+        }
+    }
 
     /// <summary>
     /// Classifies a single PR's lifecycle via

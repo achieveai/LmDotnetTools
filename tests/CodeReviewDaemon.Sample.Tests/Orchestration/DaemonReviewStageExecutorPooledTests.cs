@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
@@ -77,6 +78,41 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task ContextReady_reclones_and_retries_prepare_once_when_the_slot_is_corrupt()
+    {
+        using var fixture = Fixture.Create();
+        // The warm store is corrupt: the first prepare reports it, the executor re-clones and retries once.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("stale lock survived"));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        fixture.Pool.RecloneCount.Should().Be(1, "a corrupt store is re-cloned before the retry");
+        fixture.Preparer.PrepareCount.Should().Be(2, "prepare is retried exactly once after the re-clone");
+        fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind,
+                "the retried prepare succeeded, so the stage completed with a context artifact");
+    }
+
+    [Fact]
+    public async Task ContextReady_surfaces_and_returns_the_slot_when_prepare_still_fails_after_reclone()
+    {
+        using var fixture = Fixture.Create();
+        // Corrupt twice: re-clone + retry does not help, so the failure surfaces (the retry governor bounds it)
+        // and the slot must be returned so it cannot leak pool capacity.
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("corrupt 1"));
+        fixture.Preparer.ThrowThenSucceed.Enqueue(new SlotCorruptException("corrupt 2"));
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<SlotCorruptException>();
+        fixture.Pool.RecloneCount.Should().Be(1, "re-clone is attempted once");
+        fixture.Preparer.PrepareCount.Should().Be(2, "prepare is attempted once, then once more after the re-clone");
+        fixture.Pool.ReturnCount.Should().Be(1, "the failed lease is returned so it cannot leak pool capacity");
+    }
+
+    [Fact]
     public async Task Reviewed_builds_a_scoped_write_tool_context_with_the_notes_and_scratch_roots()
     {
         using var fixture = Fixture.Create();
@@ -91,6 +127,143 @@ public sealed class DaemonReviewStageExecutorPooledTests
         toolContext.ReadOnlyToolAllowList.Should().BeEquivalentTo(["Read", "Grep", "Glob", "Skill"]);
         toolContext.NotesDir.Should().Be("/workspace/store/PRs/lmdotnettools-118");
         toolContext.ScratchDir.Should().Be("/workspace/scratch");
+    }
+
+    [Fact]
+    public async Task Reviewed_prepends_the_knowledge_base_toc_read_from_the_leased_slots_host_store()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The pooled path must read KnowledgeBase/_toc.md HOST-side from the LEASED SLOT's store checkout —
+        // via _slotWorkspace.HostFileSystem + lease.Prepared.StoreRoot — not the boot-lifetime sandbox
+        // session (fixture.BootFileSystem), which the gateway never registers for a pooled run and 404s
+        // ("Session not found"). Seed the ToC on the HOST file system at the slot's store root, mirroring
+        // what a real KnowledgeExtractionCommitter run would have already committed there.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [KB-ENTRY-XYZ](system/kb-entry-xyz.md)\n");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("## Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
+        text.Should().Contain("KB-ENTRY-XYZ", "the seeded ToC entry is surfaced to the pooled reviewer");
+    }
+
+    [Fact]
+    public async Task Reviewed_prepends_the_reviewed_repos_root_guidance_read_from_the_leased_checkout()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The reviewed repo's own CLAUDE.md/AGENTS.md live in the LEASED SLOT's target checkout
+        // (lease.Prepared.TargetDir = <store>/repos/LmDotnetTools) and must be read HOST-side via
+        // _slotWorkspace.HostFileSystem — the same host filesystem the KB / prior-notes reads use, NOT the
+        // boot-lifetime sandbox session (which the gateway never registers for a pooled run). A headless,
+        // collect-only reviewer must fold the repo's own guidance into the review INPUT up front; injecting
+        // it mid-run (the interactive chat path) would restart the collector and could discard the review.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/repos/LmDotnetTools/CLAUDE.md",
+            "# LmDotnetTools\nUse CSharpier. REPO-GUIDANCE-MARKER.");
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/repos/LmDotnetTools/AGENTS.md",
+            "Agents must read AGENTS-MARKER before reviewing.");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("Repository guidance", "the reviewed repo's own guidance is prepended as a labelled block");
+        text.Should().Contain("REPO-GUIDANCE-MARKER", "the reviewed repo's CLAUDE.md is surfaced to the reviewer");
+        text.Should().Contain("AGENTS-MARKER", "the reviewed repo's AGENTS.md is surfaced to the reviewer");
+    }
+
+    [Fact]
+    public async Task Reviewed_skips_the_repo_guidance_block_when_neither_file_exists()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // No CLAUDE.md / AGENTS.md seeded in the checkout — the block must be silently omitted (design §6:
+        // the enrichment must never fail or pollute the review), leaving the review input clean.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Repository guidance", "an absent CLAUDE.md/AGENTS.md must not add an empty block");
+    }
+
+    [Fact]
+    public async Task Reviewed_escalates_to_the_bigger_model_then_diff_only_when_the_context_window_overflows()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // EVERY tool-assisted attempt is rejected with the context-window 400 the daemon saw live (the PR diff +
+        // fanned-out sub-agent results overflow the window). So the escalation ladder runs to the end: (1) base
+        // model tool-assisted → overflow; (2) escalate to the bigger-window model tool-assisted → overflow;
+        // (3) diff-only on the bigger model → succeeds, yielding a leaner review instead of producing nothing.
+        fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+        fixture.Factory.DefaultText = "## Review (diff-only)\nMust: null check missing in Foo.cs:10.";
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // Three attempts: base tool-assisted, escalation-model tool-assisted, escalation-model diff-only.
+        fixture.Factory.ToolContexts.Should().HaveCount(3);
+        fixture.Factory.ToolContexts[0].Should().NotBeNull();
+        fixture.Factory.ToolContexts[1].Should().NotBeNull();
+        fixture.Factory.ToolContexts[2].Should().BeNull();
+
+        // Attempts 2 & 3 escalate to the bigger-window model (OverflowEscalationModelId default gpt-5.6-terra).
+        fixture.Factory.ModelIds[0].Should().Be(run.ModelId);
+        fixture.Factory.ModelIds[1].Should().Be("gpt-5.6-terra");
+        fixture.Factory.ModelIds[2].Should().Be("gpt-5.6-terra");
+
+        // Each attempt runs on a DISTINCT thread so it starts a clean conversation rather than reloading the
+        // overflowing history that just blew the window.
+        fixture.Factory.ThreadIds.Distinct().Should().HaveCount(3);
+
+        // The review artifact holds the diff-only review — the run produced content, not a silent nothing.
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        artifact.Payload.Should().Contain("diff-only");
+    }
+
+    [Fact]
+    public async Task Reviewed_escalation_to_the_bigger_model_succeeds_tool_assisted_without_dropping_to_diff_only()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun() with { ModelId = "gpt-5.6-luna" };
+
+        // ONLY the base model overflows; the bigger-window escalation model succeeds tool-assisted — so the
+        // review stays grounded (keeps its sub-agents) instead of degrading to diff-only.
+        fixture.Factory.ThrowWhenToolAssisted = new HttpRequestException(
+            "HTTP request failed with status BadRequest (Bad Request). Response body: "
+                + "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\"}}");
+        fixture.Factory.ThrowOnlyForModel = "gpt-5.6-luna";
+        fixture.Factory.DefaultText = "## Review (grounded on the bigger model)\nShould: rename X.";
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // Two attempts, both tool-assisted: base (overflow) then escalation model (succeeds). No diff-only fallback.
+        fixture.Factory.ToolContexts.Should().HaveCount(2);
+        fixture.Factory.ToolContexts[0].Should().NotBeNull();
+        fixture.Factory.ToolContexts[1].Should().NotBeNull();
+        fixture.Factory.ModelIds[0].Should().Be("gpt-5.6-luna");
+        fixture.Factory.ModelIds[1].Should().Be("gpt-5.6-terra");
+
+        var artifact = fixture.Store.GetArtifacts(run.Id)
+            .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind).Subject;
+        artifact.Payload.Should().Contain("grounded on the bigger model");
     }
 
     [Fact]
@@ -141,9 +314,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
         });
         var run = fixture.SeedRun(); // head-sha "head-sha" — this round's head
 
-        // The prior round's own notes are already on the notes dir the reviewer's tools address.
-        fixture.BootFileSystem.Seed(
-            "/workspace/store/PRs/lmdotnettools-118/PR_Findings_01.md", "prior findings");
+        // The prior round's own notes live on the LEASED SLOT's host store checkout (where
+        // CommitPooledNotesAsync wrote them) and MUST be listed HOST-side via _slotWorkspace.HostFileSystem +
+        // lease.Prepared.NotesDir — NOT the boot-lifetime sandbox session (fixture.BootFileSystem), which the
+        // gateway never registers for a pooled run (so it 404s) and whose first use would bind a boot gateway
+        // session that collides with the per-run review MCP session, failing the whole review. Seeding host-side
+        // (not boot) is the regression guard: reading prior notes through the boot fs would find nothing here.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-0/store/PRs/lmdotnettools-118/PR_Findings_01.md", "prior findings");
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -171,6 +349,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(1);
         fixture.Provisioner.LastSlot.Should().NotBeNull();
         fixture.Provisioner.LastSlot!.Index.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Reviewed_re_leases_a_slot_when_resuming_after_a_restart_dropped_the_in_memory_lease()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Process A: ContextReady leases slot 0 and persists the context artifact to the shared store.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        fixture.Pool.LeaseCount.Should().Be(1);
+
+        // A restart drops the in-memory _leasedReviews (the persisted context + Stage survive in the store),
+        // so the NEXT process resumes straight into Reviewed with NO recorded lease. Seed the gitmodules for
+        // the slot the resumed run will lease next (slot-1), mirroring slot-0.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-1/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The resumed review must RE-LEASE a slot and mount the agent session OVER it — never the per-run
+        // review-run-{id} mount, which does not exist under the gateway's read-only workspace base and 400s
+        // (the silent degrade-to-diff-only these resumed runs were stuck in).
+        fixture.Pool.LeaseCount.Should().Be(2, "the resumed review re-leases a slot because the prior lease was lost on restart");
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(1, "the resumed review mounts over the re-leased slot");
+        fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
     }
 
     [Fact]
@@ -219,6 +425,37 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         fixture.Pool.ReturnCount.Should().Be(1);
         fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
+    }
+
+    [Fact]
+    public async Task Posted_destroys_the_session_before_returning_the_slot()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // The sandbox session is mounted OVER the slot, so it must be torn down BEFORE the slot is returned to
+        // the pool — otherwise a lingering sub-agent git op could race the next lease's clean-on-entry on the
+        // same store (the concurrency window flagged in review #180).
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
+    }
+
+    [Fact]
+    public async Task ReleaseReviewLease_destroys_the_session_before_returning_the_slot()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Lease a slot (ContextReady) and provision the session (Reviewed), then simulate a cancel/fail before
+        // Posted: the orchestrator's terminal ReleaseReviewLeaseAsync must tear the session down before returning
+        // the slot, so no session-side work races the next lease's clean-on-entry (review #180).
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await fixture.Executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
+
+        fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
     }
 
     [Fact]
@@ -283,6 +520,22 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.Returned.Should().ContainSingle(s => s.Index == 0);
     }
 
+    [Fact]
+    public async Task Posted_strips_the_slot_store_to_pristine_after_committing_the_notes()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // Commit-then-strip: after the notes are committed, the store working tree is reset + cleaned so the
+        // next lease starts clean with nothing left around (the user's durability requirement).
+        var commands = fixture.HostRunner.Commands.Select(Join).ToList();
+        commands.Should().Contain(a => a.Contains("reset --hard"), "the slot store is reset on terminal return");
+        commands.Should().Contain(a => a.Contains("clean -ffdx"), "untracked review byproduct is cleaned on return");
+        fixture.Pool.ReturnCount.Should().Be(1, "the slot is still returned after the strip");
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
@@ -296,6 +549,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class Fixture : IDisposable
     {
         private readonly TempSqliteDatabase _db;
+        private readonly CodeReviewDaemonOptions _options;
+        private readonly ReviewSlotWorkspace _slotWorkspace;
 
         private Fixture()
         {
@@ -312,29 +567,42 @@ public sealed class DaemonReviewStageExecutorPooledTests
             Pool = new FakeReviewSlotPool("/pool");
             Preparer = new FakeReviewSlotPreparer();
 
-            var options = new CodeReviewDaemonOptions
+            // Shared cleanup-order log so a test can assert the session is destroyed before the slot is returned.
+            Pool.Order = CleanupOrder;
+            Provisioner.Order = CleanupOrder;
+
+            _options = new CodeReviewDaemonOptions
             {
                 EnableToolAssistedReview = true,
                 EnableReviewerWrites = true,
                 CrossRepoStoreUrl = StoreUrl,
             };
-            var slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
+            _slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
 
-            Executor = new DaemonReviewStageExecutor(
+            Executor = BuildExecutor();
+        }
+
+        /// <summary>
+        /// Builds an executor over the fixture's SHARED store/pool/preparer/provisioner. Each executor has its
+        /// own in-memory <c>_leasedReviews</c>, so calling this a second time simulates a daemon RESTART: the
+        /// persisted context artifact survives (shared store) while the process-local pooled lease does not.
+        /// </summary>
+        public DaemonReviewStageExecutor BuildExecutor() =>
+            new(
                 Store,
                 Factory,
                 BootRunner,
                 BootFileSystem,
-                options,
+                _options,
                 [new FakeReviewCommentPublisher("github")],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
-                slotWorkspace: slotWorkspace);
-        }
+                slotWorkspace: _slotWorkspace);
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
         public RecordingProvisioner Provisioner { get; } = new();
+        public List<string> CleanupOrder { get; } = [];
         public FakeSandboxCommandRunner BootRunner { get; }
         public FakeSandboxCommandRunner HostRunner { get; }
         public FakeSandboxFileSystem HostFileSystem { get; }
@@ -388,7 +656,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
+        public int RecloneCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
+
+        /// <summary>Shared cleanup-order log (with <see cref="RecordingProvisioner"/>) to assert the session is
+        /// destroyed before the slot is returned.</summary>
+        public List<string>? Order { get; set; }
 
         public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
         {
@@ -402,6 +675,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             ReturnCount++;
             Returned.Add(slot);
+            Order?.Add("return");
+            return Task.CompletedTask;
+        }
+
+        public Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
+        {
+            RecloneCount++;
             return Task.CompletedTask;
         }
     }
@@ -416,6 +696,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public string? LastNotesRelPath { get; private set; }
         public string? LastDefaultBranch { get; private set; }
 
+        /// <summary>Exceptions to throw on the first N prepare calls (then succeed) — drives the re-clone ladder.</summary>
+        public Queue<Exception> ThrowThenSucceed { get; } = new();
+
         public Task<PreparedCheckout> PrepareAsync(
             ReviewSlot slot,
             ReviewRun run,
@@ -428,6 +711,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
             CancellationToken cancellationToken)
         {
             PrepareCount++;
+            if (ThrowThenSucceed.Count > 0)
+            {
+                throw ThrowThenSucceed.Dequeue();
+            }
+
             LastSubmoduleRelPath = submoduleRelPath;
             LastBranch = branch;
             LastNotesRelPath = notesRelPath;
@@ -444,12 +732,19 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class RecordingProvisioner : IReviewSessionProvisioner
     {
         public int GetOrCreateForSlotCalls { get; private set; }
+        public int GetOrCreateCalls { get; private set; }
         public ReviewSlot? LastSlot { get; private set; }
 
-        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct) =>
-            Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
+        /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
+        public List<string>? Order { get; set; }
+
+        public Task<ReviewRunSession?> GetOrCreateAsync(ReviewRun run, CancellationToken ct)
+        {
+            GetOrCreateCalls++;
+            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
                 $"session-{run.Id}", $"/workspace/review-run-{run.Id}",
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+        }
 
         public Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct)
         {
@@ -461,7 +756,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
         }
 
-        public Task DestroyAsync(ReviewRun run, CancellationToken ct) => Task.CompletedTask;
+        public Task DestroyAsync(ReviewRun run, CancellationToken ct)
+        {
+            Order?.Add("destroy");
+            return Task.CompletedTask;
+        }
+
+        public Task DestroyAsync(long runId, CancellationToken ct)
+        {
+            Order?.Add("destroy");
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>Delegates every stage to a real executor but throws at a chosen stage, so a run driven

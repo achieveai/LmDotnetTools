@@ -124,11 +124,14 @@ internal sealed class SubmoduleInitializer
                 .ConfigureAwait(false);
             if (!result.Succeeded)
             {
+                // Carry the git STDERR into the reason so a caller can classify the failure (a transient
+                // auth/network fault vs. real local corruption — review #180) instead of treating every failed
+                // init as corruption.
                 denied.Add(
                     new SubmoduleDenied(
                         submodulePath,
                         entry.Url,
-                        $"git submodule update failed (exit {result.ExitCode})"));
+                        $"git submodule update failed (exit {result.ExitCode}): {result.Stderr}"));
                 continue;
             }
 
@@ -158,6 +161,13 @@ internal sealed class SubmoduleInitializer
             return PolicyDecision.Deny(
                 $"submodule transport '{url.Kind}' is not permitted (only HTTP/HTTPS)");
         }
+
+        // Azure DevOps legacy-host equivalence: a repo's own .gitmodules may declare the historical
+        // {org}.visualstudio.com host form, but the per-run allow-list (and the modern ADO credential) are
+        // keyed to dev.azure.com. Canonicalize the parsed URL BEFORE building the policy request so the
+        // exact host+path allow rule matches. This is a fixed URL-shape rewrite, not a security relaxation:
+        // a non-visualstudio.com URL is returned unchanged and still gated by the explicit allow-list.
+        url = GitRemoteUrl.CanonicalizeAdoLegacyHost(url);
 
         var request = new OperationRequest(
             SandboxOperation.FetchSubmodule,

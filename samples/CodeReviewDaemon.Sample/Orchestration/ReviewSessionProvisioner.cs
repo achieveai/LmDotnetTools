@@ -37,6 +37,14 @@ internal interface IReviewSessionProvisioner
     Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct);
 
     Task DestroyAsync(ReviewRun run, CancellationToken ct);
+
+    /// <summary>
+    /// Tears down the session for a run identified only by its id. Used by the orchestrator's terminal
+    /// <c>ReleaseReviewLeaseAsync</c> (the cancel/fail path, which has no <see cref="ReviewRun"/> in hand) to
+    /// destroy the session BEFORE the slot is returned to the pool, so a lingering sub-agent git op can't race
+    /// the next lease's clean-on-entry on the same store.
+    /// </summary>
+    Task DestroyAsync(long runId, CancellationToken ct);
 }
 
 /// <summary>
@@ -81,15 +89,15 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     /// </summary>
     private readonly string? _workspaceBasePath;
 
-    private readonly string _gatewayBaseUrl =
-        Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000";
+    private readonly string _gatewayBaseUrl;
 
     public ReviewSessionProvisioner(
         ISandboxSessionSource sessions,
         CodeReviewDaemonOptions options,
         ILoggerFactory loggerFactory,
         SandboxCredential credential = default,
-        string? workspaceBasePath = null)
+        string? workspaceBasePath = null,
+        string? gatewayBaseUrl = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -97,9 +105,14 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         _logger = loggerFactory.CreateLogger<ReviewSessionProvisioner>();
         _credential = credential;
         _workspaceBasePath = workspaceBasePath;
+        _gatewayBaseUrl = gatewayBaseUrl
+            ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+            ?? "http://127.0.0.1:3000";
     }
 
-    public static string WorkspaceId(ReviewRun run) => $"review-run-{run.Id}";
+    public static string WorkspaceId(ReviewRun run) => WorkspaceId(run.Id);
+
+    public static string WorkspaceId(long runId) => $"review-run-{runId}";
 
     /// <summary>
     /// Host directory that per-run sandbox workspaces are created under (<see
@@ -143,7 +156,7 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     /// <summary>
     /// The shared session-provisioning tail: applies the host-dir disk guard, then resolves (creating once)
     /// the run's sandbox session mounting <paramref name="directoryRelPath"/> under the gateway base, and
-    /// caches the runner/filesystem per session id. The session is always keyed by <see cref="WorkspaceId"/>
+    /// caches the runner/filesystem per session id. The session is always keyed by <see cref="WorkspaceId(ReviewRun)"/>
     /// so every stage of a run resolves the SAME session regardless of the mounted directory.
     /// </summary>
     private async Task<ReviewRunSession?> ProvisionAsync(ReviewRun run, string directoryRelPath, CancellationToken ct)
@@ -228,11 +241,15 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         }
     }
 
-    public async Task DestroyAsync(ReviewRun run, CancellationToken ct)
+    public Task DestroyAsync(ReviewRun run, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(run);
+        return DestroyAsync(run.Id, ct);
+    }
 
-        var workspaceId = WorkspaceId(run);
+    public async Task DestroyAsync(long runId, CancellationToken ct)
+    {
+        var workspaceId = WorkspaceId(runId);
         try
         {
             await _sessions.DestroyWorkspaceSessionAsync(workspaceId, ct).ConfigureAwait(false);

@@ -1,5 +1,6 @@
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Orchestration;
@@ -94,5 +95,58 @@ public sealed class OrphanBranchReconcilerTests
             NullLogger.Instance);
 
         result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Warns_once_per_unmatched_branch_across_sweeps_when_a_dedupe_set_is_supplied()
+    {
+        // A stray branch that maps to no configured repo is skipped every sweep. Passing a persistent dedupe
+        // set must collapse the "matches no configured repo" warning to ONE per branch per process instead of
+        // one per sweep (a single stray otherwise emitted 163 warnings in one mcqdb run).
+        var warned = new HashSet<string>(StringComparer.Ordinal);
+        var logger = new CountingLogger();
+
+        for (var sweep = 0; sweep < 5; sweep++)
+        {
+            var result = OrphanBranchReconciler.Reconcile(
+                fromDb: [],
+                remoteReviewBranches: ["review/lmdotnettools-178"],
+                configuredTargets: [WidgetsTarget],
+                logger,
+                warned);
+            result.Should().BeEmpty("the branch still matches no configured repo, so it is never added to the watch-set");
+        }
+
+        logger.WarningCount.Should().Be(1, "the unresolvable branch is a steady-state condition, warned once per process");
+        warned.Should().Contain("review/lmdotnettools-178");
+    }
+
+    /// <summary>Minimal <see cref="ILogger"/> that only counts warning-level records, so a test can assert the
+    /// stray-branch skip is logged once across sweeps rather than on every one.</summary>
+    private sealed class CountingLogger : ILogger
+    {
+        public int WarningCount { get; private set; }
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+            {
+                WarningCount++;
+            }
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
     }
 }

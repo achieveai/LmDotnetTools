@@ -202,6 +202,13 @@ internal sealed class KnowledgeAgent
             return null;
         }
 
+        // Reconcile the scope directory's CASE against the Knowledge Base: the extraction agent is an LLM that
+        // cases a repo scope inconsistently across runs (e.g. 'MCQdbDEV' one run, 'mcqdbdev' the next). Written
+        // verbatim those become two directories a case-sensitive git tracks but a case-insensitive checkout
+        // (Windows) collapses — losing entries and breaking retrieval (observed live on the mcqdb store). Reuse
+        // the first-seen case so every entry for a scope stays in ONE directory.
+        scope = await ReconcileScopeCaseAsync(knowledgeBaseDir, scope, cancellationToken).ConfigureAwait(false);
+
         var relPath = $"{scope}/{Slugify(parsed.Title)}.md";
         if (!StaysUnderKnowledgeBase(knowledgeBaseDir, relPath))
         {
@@ -514,6 +521,43 @@ internal sealed class KnowledgeAgent
     {
         var slash = relPath.IndexOf('/', StringComparison.Ordinal);
         return slash > 0 ? relPath[..slash] : null;
+    }
+
+    /// <summary>
+    /// Returns the scope directory the entry should use, reusing the case of an existing Knowledge Base
+    /// directory that matches <paramref name="scope"/> case-insensitively (else <paramref name="scope"/>
+    /// as-is). This keeps a scope whose case the model varies across runs ('MCQdbDEV' vs 'mcqdbdev') in a
+    /// single directory — otherwise the two are distinct in git but collide on a case-insensitive checkout,
+    /// silently dropping entries. A listing failure never blocks the write: it falls back to the model's case.
+    /// </summary>
+    private async Task<string> ReconcileScopeCaseAsync(
+        string knowledgeBaseDir, string scope, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> children;
+        try
+        {
+            children = await _fileSystem.ListFilesAsync(knowledgeBaseDir, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex, "Listing the Knowledge Base to reconcile scope '{Scope}' case failed; using it as-is.", scope);
+            return scope;
+        }
+
+        var existing = children.FirstOrDefault(
+            child => string.Equals(child, scope, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null && !string.Equals(existing, scope, StringComparison.Ordinal))
+        {
+            _logger.LogInformation(
+                "Reconciling Knowledge Base scope '{Scope}' to the existing directory '{Existing}' to avoid a "
+                    + "case-variant collision.",
+                scope,
+                existing);
+            return existing;
+        }
+
+        return scope;
     }
 
     /// <summary>The file stem of <paramref name="relPath"/> (a last-resort title when the model omits one).</summary>

@@ -15,7 +15,9 @@ namespace CodeReviewDaemon.Sample.Orchestration;
 /// form (see <see cref="ReviewBranchManager.TryParseLegacyReviewBranch"/>), so orphans from either naming
 /// generation get cleaned up. The daemon needs that target's <see cref="PrPollTarget.Repo"/> identity and
 /// <see cref="PrPollTarget.Provider"/> to look the PR's lifecycle up. A branch that matches no configured repo,
-/// or is unparseable, is logged and skipped: its identity cannot be recovered from the name.
+/// or is unparseable, is skipped: its identity cannot be recovered from the name. Because that is a steady-state
+/// condition (a stray from another store/generation), passing a persistent <c>warnedOrphanBranches</c> set makes
+/// the skip warn only once per branch per process instead of on every sweep.
 /// </para>
 /// </summary>
 internal static class OrphanBranchReconciler
@@ -24,7 +26,8 @@ internal static class OrphanBranchReconciler
         IReadOnlyList<ReviewedPr> fromDb,
         IReadOnlyList<string> remoteReviewBranches,
         IReadOnlyList<PrPollTarget> configuredTargets,
-        ILogger logger)
+        ILogger logger,
+        ISet<string>? warnedOrphanBranches = null)
     {
         ArgumentNullException.ThrowIfNull(fromDb);
         ArgumentNullException.ThrowIfNull(remoteReviewBranches);
@@ -60,9 +63,18 @@ internal static class OrphanBranchReconciler
 
             if (!targetsBySlug.TryGetValue(slug, out var target))
             {
-                logger.LogWarning(
-                    "PR-lifecycle sweep: orphaned notes branch '{Branch}' matches no configured repo; skipping.",
-                    branch);
+                // A branch for a repo this daemon doesn't manage — a leftover pushed into this store by another
+                // daemon/generation, or a repo removed from the config. Its PR lifecycle can't be resolved from
+                // the name, so it is skipped. This is a STEADY-STATE condition, not a transient error, so when a
+                // dedupe set is supplied warn only ONCE per branch per process rather than on every sweep — one
+                // stray branch was otherwise flooding the log (163x in a single mcqdb run).
+                if (warnedOrphanBranches is null || warnedOrphanBranches.Add(branch))
+                {
+                    logger.LogWarning(
+                        "PR-lifecycle sweep: orphaned notes branch '{Branch}' matches no configured repo; skipping.",
+                        branch);
+                }
+
                 continue;
             }
 

@@ -143,6 +143,14 @@ internal sealed class ReviewBranchManager
             {
                 await RunGitAsync(["add", "--", path], repoRoot, cancellationToken).ConfigureAwait(false);
             }
+
+            // The review agent runs with scoped write access into these notes paths and can leave a nested git
+            // repo there (it cloned/inited something while reviewing). `git add` records that as an embedded
+            // gitlink (mode 160000) with no .gitmodules URL; once committed it makes every later SlotHygiene
+            // `git submodule foreach` fatal, wedging the pooled store in an unfixable re-clone loop (the
+            // PR-11182 incident). Unstage any such stray under the staged notes paths before committing — the
+            // reviewed submodule lives outside them (repos/…) and is never touched.
+            await StripEmbeddedGitlinksAsync(repoRoot, stagePaths, cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -219,6 +227,17 @@ internal sealed class ReviewBranchManager
             return true;
         }
 
+        // Clean-on-entry: a PRIOR sweep's non-ff merge (below) may have hit a conflict and left this SHARED
+        // ReviewBot retention checkout with an unresolved index — after which every `git checkout` fails with
+        // "you need to resolve your current index first", wedging the sweep (and the KnowledgeExtractionCommitter)
+        // for this PR every cycle. Abort any in-progress merge and hard-reset so the checkout below starts clean
+        // and a one-time conflict self-heals. Best-effort — a clean checkout has nothing to abort. (SlotHygiene
+        // does this for the pooled review slot; the host retention checkout needs the same guard.)
+        _ = await RunGitAsync(["merge", "--abort"], repoRoot, cancellationToken, allowFailure: true)
+            .ConfigureAwait(false);
+        _ = await RunGitAsync(["reset", "--hard"], repoRoot, cancellationToken, allowFailure: true)
+            .ConfigureAwait(false);
+
         await RunGitAsync(["checkout", defaultBranch], repoRoot, cancellationToken).ConfigureAwait(false);
 
         var ffOnly = await RunGitAsync(
@@ -229,7 +248,14 @@ internal sealed class ReviewBranchManager
             .ConfigureAwait(false);
         if (!ffOnly.Succeeded)
         {
-            await RunGitAsync(["merge", "--no-edit", remoteBranch], repoRoot, cancellationToken).ConfigureAwait(false);
+            // Not a fast-forward — land a merge commit. `-X theirs` auto-resolves a content conflict on an
+            // accumulated notes file (the notes branch's latest review.md vs a default that advanced under a
+            // concurrent PR's merge) in favour of the notes branch — which is exactly what we want to carry —
+            // instead of leaving a conflicted index that would wedge this checkout on the next sweep. Without
+            // it the same conflict re-throws every cycle and the notes never land.
+            await RunGitAsync(
+                    ["merge", "--no-edit", "-X", "theirs", remoteBranch], repoRoot, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         var pushed = await TryPushWithRebaseAsync(repoRoot, defaultBranch, cancellationToken)
@@ -348,6 +374,74 @@ internal sealed class ReviewBranchManager
         return result;
     }
 
+    /// <summary>
+    /// Unstages any embedded gitlink (a mode-160000 index entry — an agent-left nested git repo) that was just
+    /// staged under one of the <paramref name="stagePaths"/> notes dirs. Committing such a gitlink with no
+    /// <c>.gitmodules</c> URL makes every later <c>git submodule foreach</c> in <see cref="SlotHygiene"/> fatal
+    /// and wedges the pooled store in an unfixable re-clone loop (the PR-11182 incident). The reviewed submodule
+    /// lives outside the notes paths (<c>repos/…</c>), so scoping the strip to the staged notes paths only ever
+    /// drops strays. Best-effort: an <c>ls-files</c> failure or an already-gone entry is tolerated.
+    /// </summary>
+    private async Task StripEmbeddedGitlinksAsync(
+        string repoRoot, IReadOnlyList<string> stagePaths, CancellationToken cancellationToken)
+    {
+        var staged = await RunGitAsync(["ls-files", "--stage"], repoRoot, cancellationToken, allowFailure: true)
+            .ConfigureAwait(false);
+        if (!staged.Succeeded)
+        {
+            return;
+        }
+
+        foreach (var line in staged.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            // `git ls-files --stage` lines are "<mode> <sha> <stage>\t<path>"; only embedded gitlinks are 160000.
+            if (!line.StartsWith("160000 ", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var tab = line.IndexOf('\t');
+            if (tab < 0)
+            {
+                continue;
+            }
+
+            var path = line[(tab + 1)..].Trim();
+            if (!IsUnderAnyStagePath(path, stagePaths))
+            {
+                continue;
+            }
+
+            _logger.LogWarning(
+                "Dropping stray embedded git repo '{Path}' from review notes before commit — an agent-left "
+                    + "nested repo committed as a gitlink would wedge slot hygiene.",
+                path);
+            await RunGitAsync(["rm", "--cached", "--", path], repoRoot, cancellationToken, allowFailure: true)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>True when <paramref name="path"/> is one of, or nested under, the <paramref name="stagePaths"/>
+    /// (both compared as forward-slash repo-relative paths, matching <c>git ls-files</c> output).</summary>
+    private static bool IsUnderAnyStagePath(string path, IReadOnlyList<string> stagePaths)
+    {
+        foreach (var stagePath in stagePaths)
+        {
+            var root = stagePath.Trim().Trim('/');
+            if (root.Length == 0)
+            {
+                continue;
+            }
+
+            if (path.Equals(root, StringComparison.Ordinal)
+                || path.StartsWith(root + "/", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
     /// <summary>
     /// Builds the review branch name <c>review/{repo}-{pr}</c>. The <c>{repo}</c> segment uses the
     /// normalized, slug-escaped target repo name so it is stable across casing drift and safe as a git ref.

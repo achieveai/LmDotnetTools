@@ -289,6 +289,34 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         fs.Files[entryPath].Should().Contain("Keep them at the top.");
     }
 
+    [Fact]
+    public async Task TryExtractAsync_reuses_an_existing_scope_directorys_case_avoiding_a_case_variant_collision()
+    {
+        // The extraction agent (an LLM) cases a repo scope inconsistently across runs. Written verbatim, a
+        // second-cased scope ('MCQdbDEV' after an earlier 'mcqdbdev') becomes a distinct directory: a
+        // case-sensitive git tracks both, but a case-insensitive checkout (Windows) collapses them and loses
+        // entries, breaking KB retrieval (observed live on the mcqdb store). A new entry must reuse the
+        // EXISTING scope directory's case so every entry for a scope stays in ONE directory.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/mcqdbdev/existing-lesson.md"] =
+            "---\ntitle: Existing\ntags: []\nscope: mcqdbdev\nsourcePrs: [\"github/o-r/1\"]\nupdated: 2026-07-01\n---\nbody";
+        var agent = AgentReturning(
+            "## SCOPE: MCQdbDEV\n## TITLE: New Lesson\n## TAGS: a\n\nA newly distilled lesson.");
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result!.EntryFileName.Should().Be(
+            "mcqdbdev/new-lesson.md", "the new entry reuses the existing scope directory's case");
+        fs.Files.Should().ContainKey(KbDir + "/mcqdbdev/new-lesson.md");
+        fs.Files.Keys.Where(k => k.Contains("/MCQdbDEV/", StringComparison.Ordinal))
+            .Should().BeEmpty("a second case-variant scope directory collides on a case-insensitive checkout");
+        // The daemon-injected frontmatter scope matches the reconciled directory, not the model's casing.
+        var meta = KnowledgeIndex.ParseFrontmatter("mcqdbdev/new-lesson.md", fs.Files[KbDir + "/mcqdbdev/new-lesson.md"]);
+        meta!.Scope.Should().Be("mcqdbdev");
+    }
+
     private static FakeMultiTurnAgent AgentReturning(string text) =>
         new(RunId, new TextMessage { Text = text, Role = Role.Assistant, RunId = RunId });
 

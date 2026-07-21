@@ -178,6 +178,43 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task CommitNotes_drops_an_agent_left_embedded_gitlink_under_the_notes_before_commit()
+    {
+        // The review agent can leave a nested git repo inside its per-PR notes dir; `git add` records it as an
+        // embedded gitlink (mode 160000) with no .gitmodules URL. Committed, it makes every later SlotHygiene
+        // `git submodule foreach` fatal, wedging the pooled store in an unfixable re-clone loop (the PR-11182
+        // incident). CommitNotes must unstage such a stray under the staged notes paths before committing —
+        // but NEVER the reviewed submodule (which lives outside those paths, under repos/…).
+        var runner = new FakeSandboxCommandRunner();
+        // After staging, the index holds a stray gitlink under the notes dir alongside the reviewed submodule.
+        runner.OnArgvContains(
+            "ls-files --stage",
+            new SandboxCommandResult(
+                0,
+                "100644 aaaa 0\tPRs/widgets-42/review.md\n"
+                    + "160000 bbbb 0\tPRs/widgets-42/repo\n"
+                    + "160000 cccc 0\trepos/widgets\n",
+                string.Empty));
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs)
+            .CommitNotesAsync(RepoRoot, Request, CancellationToken.None, stagePaths: ["PRs/widgets-42"]);
+
+        result.Outcome.Should().Be(ReviewBotPublishOutcome.Pushed);
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains("rm --cached -- PRs/widgets-42/repo"),
+            "the stray embedded gitlink under the notes dir is unstaged before commit");
+        commands.Should().NotContain(
+            a => a.Contains("rm --cached -- repos/widgets"),
+            "the reviewed submodule, outside the staged notes paths, is never dropped");
+        // The unstage happens before the commit, so the stray never reaches the tree.
+        IndexOf(commands, "rm --cached -- PRs/widgets-42/repo")
+            .Should()
+            .BeLessThan(IndexOf(commands, "commit -m"));
+    }
+
+    [Fact]
     public async Task MergeToDefault_fetches_then_merges_the_remote_tracking_ref_pushes_and_deletes_the_branch()
     {
         var runner = new FakeSandboxCommandRunner();
@@ -231,7 +268,29 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         result.Should().BeTrue();
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
-        commands.Should().Contain(a => a.Contains($"merge --no-edit origin/{ReviewBranch}"));
+        commands.Should().Contain(a => a.Contains($"merge --no-edit -X theirs origin/{ReviewBranch}"));
+    }
+
+    [Fact]
+    public async Task MergeToDefault_aborts_any_conflicted_merge_and_resets_before_checking_out_the_default()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs)
+            .MergeToDefaultAsync(RepoRoot, ReviewBranch, DefaultBranch, CancellationToken.None);
+
+        result.Should().BeTrue();
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        // Clean-on-entry: a PRIOR sweep's non-ff merge could have hit a conflict and left this SHARED retention
+        // checkout with an unresolved index — after which every `git checkout` fails "you need to resolve your
+        // current index first", wedging the sweep for this PR every cycle. Abort any in-progress merge and
+        // hard-reset BEFORE checking out the default so the checkout can't inherit that state.
+        IndexOf(commands, "merge --abort").Should().BeGreaterThanOrEqualTo(0);
+        IndexOf(commands, "reset --hard").Should().BeGreaterThanOrEqualTo(0);
+        IndexOf(commands, "merge --abort").Should().BeLessThan(IndexOf(commands, $"checkout {DefaultBranch}"));
+        IndexOf(commands, "reset --hard").Should().BeLessThan(IndexOf(commands, $"checkout {DefaultBranch}"));
     }
 
     [Fact]

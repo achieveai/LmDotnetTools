@@ -16,7 +16,41 @@ public class SystemProcessHandleTests
         {
             Agent = CliAgentKind.Codex,
             ExecutableHint = "dotnet",
-            Arguments = args ?? ["--info"],
+            // `--version` (a single short line) rather than `--info`: these tests don't read the redirected
+            // stdout/stderr before calling WaitForExitAsync, so a child whose output exceeds the OS pipe
+            // buffer would block writing and never exit — deadlocking the wait. `--info` grows with the number
+            // of installed SDKs/runtimes and crosses that threshold on developer boxes (it stayed under it on
+            // CI's clean image, so the hang only reproduced locally). `--version` can never fill the buffer.
+            Arguments = args ?? ["--version"],
+        };
+        return DefaultProcessLauncher.Instance.Launch(request);
+    }
+
+    /// <summary>
+    /// A long-running benign child (a sleeper that writes nothing to stdout, so no pipe-buffer deadlock)
+    /// that stays alive until <see cref="IProcessHandle.Kill"/>. Used where a test must attach a subscriber
+    /// or observe the running state BEFORE the child exits.
+    /// </summary>
+    private static IProcessHandle LaunchLongRunning()
+    {
+        IReadOnlyList<string> args;
+        string fileName;
+        if (OperatingSystem.IsWindows())
+        {
+            fileName = "cmd";
+            args = ["/c", "timeout", "/t", "30", "/nobreak"];
+        }
+        else
+        {
+            fileName = "sh";
+            args = ["-c", "sleep 30"];
+        }
+
+        var request = new ProcessLaunchRequest
+        {
+            Agent = CliAgentKind.Codex,
+            ExecutableHint = fileName,
+            Arguments = args,
         };
         return DefaultProcessLauncher.Instance.Launch(request);
     }
@@ -52,11 +86,19 @@ public class SystemProcessHandleTests
     [Fact]
     public async Task ExitedEvent_FiresExactlyOnce()
     {
-        using var handle = LaunchBenign();
+        // A controllable long-running child (killed on demand), NOT a very short-lived one: SystemProcessHandle
+        // raises its one-shot Exited event during construction when the child has already exited, so a fast
+        // child (e.g. `dotnet --version`) could exit before this subscriber attaches and the handler would never
+        // fire. The sleeper stays alive until Kill, so Exited fires while the subscriber is attached.
+        using var handle = LaunchLongRunning();
         var count = 0;
         handle.Exited += (_, _) => Interlocked.Increment(ref count);
 
-        _ = await WaitForExitDrainedAsync(handle);
+        // LaunchLongRunning() is a sleeper that never exits on its own, so it must be killed to
+        // trigger Exited (main's WaitForExitDrainedAsync would block forever waiting for a self-exit).
+        // It writes nothing to stdout, so there is no pipe-buffer to drain here.
+        handle.Kill(entireProcessTree: true);
+        _ = await handle.WaitForExitAsync();
         // Give the event loop a moment to deliver the Exited callback.
         await Task.Delay(100);
 
