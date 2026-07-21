@@ -120,8 +120,9 @@ internal class SubAgentState
 
     /// <summary>The final resolved model this sub-agent was built with (override &gt; template &gt; parent, after
     /// characteristics processing) — captured at creation so descendant usage is billed to the model that
-    /// actually handled the request, not a value re-derived later that could diverge.</summary>
-    public string? EffectiveModelId { get; init; }
+    /// actually handled the request, not a value re-derived later that could diverge. Refreshed on an
+    /// owned-provider restart (the characteristics factory is re-invoked and may resolve differently).</summary>
+    public string? EffectiveModelId { get; set; }
     public string[]? AddTools { get; init; }
     public string[]? RemoveTools { get; init; }
 

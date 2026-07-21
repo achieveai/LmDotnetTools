@@ -646,7 +646,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 var previousAgent = state.Agent;
                 var previousStore = state.Store;
-                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, _) = await CreateSubAgentAsync(
+                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, replacementEffectiveModelId) = await CreateSubAgentAsync(
                     state.AgentId,
                     state.Template,
                     state.ModelOverride,
@@ -716,6 +716,11 @@ public sealed class SubAgentManager : IAsyncDisposable
 
                 state.Store = replacementStore;
                 state.SetOwnedProviderAgent(replacementOwnedProviderAgent);
+                // Refresh the billed model: the characteristics factory was re-invoked for the replacement and is
+                // not required to make the same UseParentModel/routing decision, so the effective model can differ
+                // from the original run. Without this, descendant usage after a restart would be attributed to the
+                // stale init-time model.
+                state.EffectiveModelId = replacementEffectiveModelId;
 
                 // Presentation-only: atomically install the replacement as the live Agent AND wake any
                 // external observer whose subscription was bound to the now-disposed previous instance so

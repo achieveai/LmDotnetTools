@@ -375,6 +375,66 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         handler.MaxConcurrentPushes.Should().BeLessThanOrEqualTo(6, "concurrency is bounded by the provider's cap");
     }
 
+    [Fact]
+    public async Task Timed_out_push_lookup_keeps_the_pr_and_does_not_fault_the_poll()
+    {
+        // An HttpClient timeout surfaces as a TaskCanceledException with the caller's token NOT cancelled. It
+        // must be treated as a failed lookup (recency indeterminate ⇒ keep the PR), NOT propagated to fault the
+        // whole poll via Task.WhenAll.
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        using var handler = new CancelOnPushHandler(OneOldPr);
+        var provider = new AdoPrProvider(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            LoggerFactory.CreateLogger<AdoPrProvider>());
+
+        var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        page.PullRequests.Should().ContainSingle();
+        page.PullRequests[0].UpdatedAt.Should().BeNull();
+        page.PullRequests[0].CreatedAt.Should().BeNull("a timed-out push lookup leaves recency indeterminate ⇒ the PR is kept");
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_during_push_lookup_propagates()
+    {
+        // A REAL caller cancellation (the poll was aborted) must propagate, not be swallowed as a failed lookup.
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        using var cts = new CancellationTokenSource();
+        using var handler = new CancelOnPushHandler(OneOldPr, cts);
+        var provider = new AdoPrProvider(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            LoggerFactory.CreateLogger<AdoPrProvider>());
+
+        var act = async () => await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    /// <summary>
+    /// Returns the PR list for <c>/pullrequests</c>, then simulates a cancellation on the first <c>/pushes</c>
+    /// call: with no <paramref name="cancelOnPush"/> it throws a <see cref="TaskCanceledException"/> WITHOUT
+    /// cancelling the caller's token (an HttpClient timeout); with one, it cancels that token first (a real
+    /// caller cancellation).
+    /// </summary>
+    private sealed class CancelOnPushHandler(string prsJson, CancellationTokenSource? cancelOnPush = null)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.ToString().Contains("/pullrequests", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) });
+            }
+
+            cancelOnPush?.Cancel();
+            throw new TaskCanceledException("simulated push-lookup cancellation");
+        }
+    }
+
     /// <summary>
     /// Returns the PR list for <c>/pullrequests</c> and, for each <c>/pushes</c> call, records the total number
     /// of push lookups and the peak number simultaneously in-flight (holding each briefly so genuine overlap is

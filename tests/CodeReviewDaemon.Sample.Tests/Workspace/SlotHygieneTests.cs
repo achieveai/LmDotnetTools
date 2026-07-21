@@ -92,7 +92,7 @@ public sealed class SlotHygieneTests : IDisposable
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().Contain(
-            a => a.Contains("submodule update --force"),
+            a => a.Contains("submodule update --recursive --force"),
             "submodule checkouts must be restored to the recorded gitlink so a warm slot is not re-cloned");
     }
 
@@ -162,7 +162,7 @@ public sealed class SlotHygieneTests : IDisposable
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            "submodule update --force",
+            "submodule update --recursive --force",
             new SandboxCommandResult(1, string.Empty, "fatal: unable to access 'https://x': Could not resolve host: x"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
