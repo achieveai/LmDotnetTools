@@ -27,6 +27,27 @@ internal enum HygieneVerdict
 /// </summary>
 internal static class SlotHygiene
 {
+    /// <summary>
+    /// git <c>-c</c> args that DENY every network transport, prepended to the hygiene submodule restore so it can
+    /// only do a LOCAL checkout and can NEVER clone/fetch through the host's broad credentials (a
+    /// registered-but-deinit'd submodule otherwise drives <c>submodule--helper clone</c> — reproduced on Git
+    /// 2.53; <c>--no-fetch</c> alone does NOT stop that). A command-line <c>-c protocol.&lt;name&gt;.allow=never</c>
+    /// beats any config that tries to <c>allow</c> it (verified), and propagates to the internal clone/fetch via
+    /// <c>GIT_CONFIG_PARAMETERS</c>. Explicit per-protocol denials cover the network transports (<see cref="GitRunner"/>
+    /// already denies <c>file</c>/<c>ext</c> globally); <c>protocol.allow=never</c> is the catch-all default for
+    /// any other/future transport. A present object is unaffected — a local checkout uses no transport.
+    /// </summary>
+    private static readonly string[] DenyNetworkArgs =
+    [
+        "-c", "protocol.allow=never",
+        "-c", "protocol.http.allow=never",
+        "-c", "protocol.https.allow=never",
+        "-c", "protocol.ssh.allow=never",
+        "-c", "protocol.git.allow=never",
+        "-c", "protocol.ftp.allow=never",
+        "-c", "protocol.ftps.allow=never",
+    ];
+
     public static async Task<HygieneVerdict> EnsureCleanAsync(
         GitRunner git, string storePath, CancellationToken ct, ILogger? logger = null)
     {
@@ -54,27 +75,34 @@ internal static class SlotHygiene
         //    this. `--recursive --checkout --force` (NO --init) touches only already-initialized,
         //    .gitmodules-registered submodules at every depth, so it skips a committed embedded gitlink with no
         //    .gitmodules URL (the PR-11182 wedge) and never inits a new/denied submodule.
-        //    SECURITY: `--no-fetch` is REQUIRED. Hygiene runs on the host runner with the daemon's broad provider
-        //    credentials, BEFORE ReviewSlotPreparer builds this run's policy-enforced SubmoduleInitializer — so a
-        //    fetch here would bypass the per-review submodule allow-list and could contact a retained nested
-        //    remote outside this review's scope (the recursive expansion widens that surface). `--no-fetch` makes
-        //    this a pure LOCAL checkout: a present object checks out, a MISSING object fails with no network
-        //    contact, which the step-4 gate then treats as a re-clone condition (the policy-controlled
-        //    initializer is the only thing that performs permitted network fetches).
+        //    SECURITY: hygiene runs on the host runner with the daemon's broad provider credentials, BEFORE
+        //    ReviewSlotPreparer builds this run's policy-enforced SubmoduleInitializer, so it must NEVER touch a
+        //    remote — otherwise a prior lease that left a submodule registered-but-deinit'd (worktree +
+        //    `.git/modules/<name>` gitdir removed, URL retained) would make `submodule update` CLONE it through
+        //    those broad credentials, outside this review's allow-list. `--no-fetch` alone is NOT sufficient: it
+        //    only suppresses fetch into an existing submodule repo; a missing gitdir still drives
+        //    `submodule--helper clone` → `git clone` (reproduced on Git 2.53). The hard guard is
+        //    <see cref="DenyNetworkArgs"/> (explicit per-protocol <c>never</c> for every transport), which denies
+        //    all clone/fetch (propagated to the internal clone/fetch via GIT_CONFIG_PARAMETERS): a present object
+        //    is a pure LOCAL checkout, while any clone/fetch fails with no network contact — the step-4 gate then
+        //    classifies that failure (the policy-controlled initializer is the only thing that performs permitted
+        //    network fetches). `--no-fetch` is kept as belt-and-braces.
         var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
         var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
         var restore = await git.RunAsync(
-                ["-C", storePath, "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
+                ["-C", storePath, .. DenyNetworkArgs,
+                    "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
                 storePath, ct)
             .ConfigureAwait(false);
 
         // 4. Early cleanliness gate. If the superproject reset/clean failed the store is structurally unusable —
-        //    re-clone. A submodule RESTORE failure is classified, NOT unconditionally re-cloned: `--no-fetch`
-        //    means the restore is a pure local checkout, so a failure is either confirmed corruption (a broken
-        //    local object/repo → re-clone fixes it) or a transient/unrecognized/missing-object condition. The
-        //    latter must NOT destructively delete + re-clone the persistent store — it should retry the warm
-        //    store (and, for a legitimately missing gitlink object, the run's policy-enforced SubmoduleInitializer
-        //    performs the PERMITTED fetch). This mirrors the store-checkout ladder (only Corrupt re-clones;
+        //    re-clone. A submodule RESTORE failure is classified, NOT unconditionally re-cloned: hygiene never
+        //    touches a remote (<see cref="DenyNetworkArgs"/>), so the restore is a pure local checkout and a failure is
+        //    either confirmed corruption (a broken local object/repo → re-clone fixes it) or a transient/
+        //    unrecognized/missing-object/deinit'd-submodule condition. The latter must NOT destructively delete +
+        //    re-clone the persistent store — it should retry the warm store (and, for a legitimately missing gitlink
+        //    object, the run's policy-enforced SubmoduleInitializer performs the PERMITTED fetch). This mirrors the
+        //    store-checkout ladder (only Corrupt re-clones;
         //    Unknown is "treated as transient"). Either way we do NOT fall through to `status --porcelain`, which
         //    can hide a submodule left off its recorded gitlink under submodule-ignore settings.
         if (!reset.Succeeded || !clean.Succeeded)
@@ -143,10 +171,11 @@ internal static class SlotHygiene
         await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
         // Restore ALL submodule checkouts (top-level + nested) to the recorded gitlink (see EnsureCleanAsync
         // step 3) so the slot is left pristine for the next lease instead of pinned at this review's PR head.
-        // `--no-fetch` is REQUIRED (same reason as step 3): hygiene must never fetch through the host's broad
-        // credentials outside a review's policy-enforced allow-list.
+        // DenyNetworkArgs (+ --no-fetch) is REQUIRED (same reason as step 3): hygiene must never contact a remote
+        // through the host's broad credentials outside a review's policy-enforced allow-list.
         await git.RunAsync(
-                ["-C", storePath, "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
+                ["-C", storePath, .. DenyNetworkArgs,
+                    "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
                 storePath, ct)
             .ConfigureAwait(false);
         await git.RunAsync(

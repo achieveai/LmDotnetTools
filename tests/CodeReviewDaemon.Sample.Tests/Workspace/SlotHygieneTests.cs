@@ -2,6 +2,7 @@ using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeReviewDaemon.Sample.Tests.Workspace;
 
@@ -98,12 +99,14 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureClean_restore_never_fetches_through_host_credentials()
+    public async Task EnsureClean_restore_never_contacts_a_remote_through_host_credentials()
     {
         // SECURITY: hygiene runs on the host with the daemon's broad provider credentials, BEFORE the run's
-        // policy-enforced SubmoduleInitializer. A restore that fetched could contact a retained nested remote
-        // outside this review's submodule allow-list. Every `submodule update` hygiene issues MUST carry
-        // `--no-fetch` so it can only do a local checkout; missing objects fall through to the reclone gate.
+        // policy-enforced SubmoduleInitializer, so it must never touch a remote — otherwise a registered-but-
+        // deinit'd submodule would be CLONED through those credentials outside the allow-list. `--no-fetch` alone
+        // is insufficient (a missing gitdir still drives an implicit clone), so every `submodule update` hygiene
+        // issues MUST carry the hard transport guard `-c protocol.allow=never` (which denies all clone/fetch
+        // transports) as well as `--no-fetch`.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
 
@@ -115,8 +118,10 @@ public sealed class SlotHygieneTests : IDisposable
             .ToList();
         submoduleUpdates.Should().NotBeEmpty();
         submoduleUpdates.Should().OnlyContain(
-            a => a.Contains("--no-fetch"),
-            "hygiene must never fetch through the host's broad credentials, bypassing the per-review allow-list");
+            a => a.Contains("protocol.https.allow=never")
+                && a.Contains("protocol.allow=never")
+                && a.Contains("--no-fetch"),
+            "hygiene must deny all transports so it cannot clone/fetch through the host's broad credentials");
     }
 
     [Fact]
@@ -237,6 +242,93 @@ public sealed class SlotHygieneTests : IDisposable
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().Contain(a => a.Contains("reset --hard"));
         commands.Should().Contain(a => a.Contains("clean -ffdx"));
+    }
+
+    [Fact]
+    public async Task EnsureClean_does_not_clone_a_deinitialized_submodule_over_the_network()
+    {
+        // REAL-GIT regression for the implicit-clone hole (an argv-only test cannot detect a clone): a prior lease
+        // can leave a submodule registered (URL in .git/config) with its worktree + .git/modules gitdir removed.
+        // `submodule update` (even --no-fetch) then drives `submodule--helper clone` → git clone through the host's
+        // broad credentials, outside the review's allow-list. Hygiene must NOT clone it (DenyNetworkArgs denies all
+        // transports); it classifies the failure as NeedsRetry instead of silently reporting Clean.
+        var runner = new HostGitCommandRunner(
+            _ => Task.FromResult<IReadOnlyList<GitProviderToken>>([]),
+            NullLogger<HostGitCommandRunner>.Instance);
+
+        var remote = Path.Combine(_root, "remote.git").Replace('\\', '/');
+        var seed = Path.Combine(_root, "seed");
+        var super = Path.Combine(_root, "super");
+        var sub = Path.Combine(super, "sub");
+        Directory.CreateDirectory(_root);
+
+        async Task Git(string dir, params string[] args)
+        {
+            Directory.CreateDirectory(dir);
+            var r = await runner.RunAsync(new SandboxCommand(["git", .. args], dir), default);
+            r.Succeeded.Should().BeTrue($"setup `git {string.Join(' ', args)}` failed: {r.Stderr}");
+        }
+
+        // Bare remote with one commit.
+        await Git(_root, "init", "-q", "--bare", "remote.git");
+        await Git(_root, "clone", "-q", remote, "seed");
+        await Git(seed, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "init");
+        await Git(seed, "push", "-q", "origin", "HEAD:master");
+        // Superproject with the remote as a (file://) submodule — setup explicitly allows the local transport.
+        await Git(_root, "init", "-q", "super");
+        await Git(super, "-c", "protocol.file.allow=always", "-c", "user.email=a@b", "-c", "user.name=a",
+            "submodule", "add", "-q", remote, "sub");
+        await Git(super, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "addsub");
+
+        // DEINIT: remove the submodule worktree + gitdir, KEEP its URL in .git/config — the exploitable state.
+        foreach (var e in Directory.GetFileSystemEntries(sub))
+        {
+            DeleteRecursive(e);
+        }
+
+        DeleteRecursive(Path.Combine(super, ".git", "modules", "sub"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), super, CancellationToken.None);
+
+        // The guard must have BLOCKED the clone: the submodule was NOT re-created (no .git), and hygiene reports
+        // NeedsRetry (a non-corrupt local failure) rather than silently Clean.
+        Directory.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
+        File.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
+        verdict.Should().Be(HygieneVerdict.NeedsRetry);
+    }
+
+    private static void DeleteRecursive(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            // git object/pack files are read-only on Windows; clear the attribute before deleting the tree.
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    File.SetAttributes(file, FileAttributes.Normal);
+                }
+                catch
+                {
+                    // best-effort
+                }
+            }
+
+            Directory.Delete(path, recursive: true);
+        }
+        else if (File.Exists(path))
+        {
+            try
+            {
+                File.SetAttributes(path, FileAttributes.Normal);
+            }
+            catch
+            {
+                // best-effort
+            }
+
+            File.Delete(path);
+        }
     }
 
     private string SeedStore()
