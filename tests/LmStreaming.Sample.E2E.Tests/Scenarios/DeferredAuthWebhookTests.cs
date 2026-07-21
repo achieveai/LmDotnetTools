@@ -21,6 +21,13 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// </summary>
 public sealed class DeferredAuthWebhookTests : LoggingTestBase
 {
+    // Per-session secrets have no single "correct secret" for a session that was never created
+    // through SandboxSessionRegistry.CreateSessionAsync — NewFactory seeds this fixed session id's
+    // secret directly into the DI-resolved SessionSecretStore so these fixture webhook bodies
+    // (which all carry "session_id": "s-test") can present it and hit the real MatchesAsync path.
+    private const string SessionId = "s-test";
+    private const string SharedSecret = "e2e-deferred-webhook-shared-secret";
+
     private const string GitHubWebhookBody = """
         {
           "session_id": "s-test",
@@ -46,7 +53,7 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
             .ForRole("noop", _ => true)
                 .Turn(t => t.Text("ok"))
             .Build();
-        return new E2EWebAppFactory(
+        var factory = new E2EWebAppFactory(
             "test",
             new ScriptedBuilder(responder.AsAnthropicHandler()),
             new Dictionary<string, string?>
@@ -54,6 +61,11 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
                 ["Auth:Webhook:HoldTimeoutSeconds"] = holdTimeoutSeconds.ToString(),
                 ["Auth:Webhook:PollIntervalSeconds"] = "0.2",
             });
+        factory.Services.GetRequiredService<SessionSecretStore>()
+            .SaveAsync(SessionId, SharedSecret)
+            .GetAwaiter()
+            .GetResult();
+        return factory;
     }
 
     private static Task<HttpResponseMessage> PostWebhookAsync(
@@ -63,12 +75,11 @@ public sealed class DeferredAuthWebhookTests : LoggingTestBase
         string? body = null,
         CancellationToken ct = default)
     {
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
         var request = new HttpRequestMessage(HttpMethod.Post, $"/api/auth/webhook/{provider}")
         {
             Content = new StringContent(body ?? GitHubWebhookBody, Encoding.UTF8, "application/json"),
         };
-        request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
+        request.Headers.TryAddWithoutValidation("Authorization", SharedSecret);
         return client.SendAsync(request, ct);
     }
 

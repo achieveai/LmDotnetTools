@@ -11,12 +11,24 @@ const log = logger.forComponent('WebSocketClient');
 export interface WebSocketClientCallbacks {
   onMessage: (message: Message) => void;
   onDone: () => void;
-  onError: (error: string) => void;
+  /**
+   * Surface a stream failure to the caller. `code` carries the structured discriminator from a
+   * server error frame (e.g. `subagent_unavailable`, `subagent_stream_failed`, `relay_failed`) when
+   * one is present, so callers can distinguish a terminal application error from a transient/parse
+   * failure. Optional and backward-compatible — existing `(error) => void` callers still bind.
+   */
+  onError: (error: string, code?: string) => void;
   /**
    * Out-of-band deferred-auth events (`auth_required` / `auth_completed`) pushed by the
    * backend while a sandbox webhook call is held awaiting an interactive sign-in.
    */
   onAuthEvent?: (event: AuthEvent) => void;
+  /**
+   * Fired when the socket closes for ANY reason (clean or not) — after the `!wasClean` error
+   * surfacing below. Lets a caller react to a server-initiated NormalClosure (which fires neither
+   * `onDone` nor `onError`), e.g. the sub-agent focus view resuming after a backpressure drop.
+   */
+  onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
 }
 
 /**
@@ -106,33 +118,82 @@ export function normalizeKeys(value: unknown): unknown {
 }
 
 /**
- * Create a WebSocket connection for chat streaming.
- * The WebSocket sends raw JSON messages (not SSE format).
+ * Build the chat WebSocket URL (`/ws?threadId=..&connectionId=..[&modeId=..][&providerId=..]
+ * [&workspaceId=..][&record=1]`). Split out so `createWebSocketConnection` delegates URL construction
+ * and the socket wiring below is shared with other endpoints (e.g. the sub-agent stream).
  */
-export function createWebSocketConnection(
-  options: WebSocketClientOptions
+function buildChatWebSocketUrl(
+  options: WebSocketClientOptions,
+  effectiveThreadId: string,
+  connectionId: string
+): string {
+  const { baseUrl = '', modeId, providerId, workspaceId, record } = options;
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsHost = baseUrl || window.location.host;
+  let wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
+  if (modeId) {
+    wsUrl += `&modeId=${encodeURIComponent(modeId)}`;
+  }
+  if (providerId) {
+    wsUrl += `&providerId=${encodeURIComponent(providerId)}`;
+  }
+  if (workspaceId) {
+    wsUrl += `&workspaceId=${encodeURIComponent(workspaceId)}`;
+  }
+  if (record) {
+    wsUrl += '&record=1';
+  }
+  return wsUrl;
+}
+
+/**
+ * Summarize a WebSocket payload that FAILED to parse into content-free diagnostics. This handler is
+ * SHARED by the parent chat and the focused sub-agent transcript stream, so the raw payload may carry
+ * prompts / reasoning / tool content (EUII). We must therefore log ONLY metadata — never `event.data`
+ * or any payload text:
+ *   - `byteLength`  — UTF-8 byte size of a string payload (undefined for non-string frames).
+ *   - `type`        — the `$type` discriminator IF it can be lifted with a bounded regex. The
+ *                     discriminator is a fixed enum token (e.g. `text`, `tool_call`), not content.
+ *   - `errorName`   — the exception category (`err.name`), never its message/content.
+ * Exported for unit testing of the privacy contract.
+ */
+export function summarizeParseFailure(data: unknown, err: unknown): {
+  byteLength: number | undefined;
+  type: string | undefined;
+  errorName: string;
+} {
+  let byteLength: number | undefined;
+  let type: string | undefined;
+  if (typeof data === 'string') {
+    byteLength = new TextEncoder().encode(data).length;
+    // Lift ONLY the discriminator token; the capture group is bounded to a quoted enum value and
+    // never includes surrounding payload content.
+    const match = /"\$type"\s*:\s*"([^"]+)"/.exec(data);
+    type = match ? match[1] : undefined;
+  }
+  const errorName = err instanceof Error ? err.name : typeof err;
+  return { byteLength, type, errorName };
+}
+
+/**
+ * Open a WebSocket at `wsUrl` and wire the standard stream callbacks (auth-event → done → error →
+ * normalized message). This is the shared socket handling used by BOTH the chat stream
+ * ({@link createWebSocketConnection}) and the sub-agent stream (`connectSubAgent`), so the
+ * onmessage normalize/done/error logic lives in ONE place. The returned {@link WebSocketConnection}
+ * carries `effectiveThreadId`/`connectionId` for the caller's bookkeeping; this helper does NOT
+ * build the URL (callers do, since query strings differ per endpoint).
+ *
+ * Exported for reuse by sibling WebSocket clients; not part of the public chat API.
+ */
+export function openWebSocketConnection(
+  wsUrl: string,
+  effectiveThreadId: string,
+  connectionId: string,
+  callbacks: WebSocketClientCallbacks
 ): Promise<WebSocketConnection> {
-  const { baseUrl = '', threadId, modeId, providerId, workspaceId, record, onMessage, onDone, onError, onAuthEvent } = options;
+  const { onMessage, onDone, onError, onAuthEvent, onClose } = callbacks;
 
   return new Promise((resolve, reject) => {
-    const connectionId = generateConnectionId();
-    const effectiveThreadId = threadId || generateThreadId();
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = baseUrl || window.location.host;
-    let wsUrl = `${wsProtocol}//${wsHost}/ws?threadId=${effectiveThreadId}&connectionId=${connectionId}`;
-    if (modeId) {
-      wsUrl += `&modeId=${encodeURIComponent(modeId)}`;
-    }
-    if (providerId) {
-      wsUrl += `&providerId=${encodeURIComponent(providerId)}`;
-    }
-    if (workspaceId) {
-      wsUrl += `&workspaceId=${encodeURIComponent(workspaceId)}`;
-    }
-    if (record) {
-      wsUrl += '&record=1';
-    }
-
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
 
     const socket = new WebSocket(wsUrl);
@@ -171,7 +232,10 @@ export function createWebSocketConnection(
         if (data.includes('"$type":"error"')) {
           const errorData = JSON.parse(data);
           log.error('Received error', { error: errorData });
-          onError(errorData.message || 'Unknown error');
+          onError(
+            errorData.message || 'Unknown error',
+            typeof errorData.code === 'string' ? errorData.code : undefined
+          );
           return;
         }
 
@@ -184,12 +248,19 @@ export function createWebSocketConnection(
           onMessage(message);
         }
       } catch (err) {
-        // Surface parse/normalize failures via onError so the UI shows a banner
-        // instead of silently hanging — same pattern as the other error paths in
-        // this connection (error signal, socket error). Without this, a bug in
-        // normalizeKeys or malformed server JSON would drop the message invisibly.
+        // Surface parse/normalize failures via onError so the UI shows a banner instead of silently
+        // hanging — same pattern as the other error paths in this connection. Log ONLY content-free
+        // metadata: this SHARED handler now carries focused sub-agent transcript frames, so logging
+        // `event.data` here would leak prompts/reasoning/tool content into client diagnostics (EUII).
         const msg = err instanceof Error ? err.message : 'Failed to parse server message';
-        log.error('Failed to parse WebSocket message', { error: err, data: event.data });
+        const { byteLength, type, errorName } = summarizeParseFailure(event.data, err);
+        log.error('Failed to parse WebSocket message', {
+          byteLength,
+          type,
+          connectionId,
+          threadId: effectiveThreadId,
+          errorName,
+        });
         onError(msg);
       }
     };
@@ -205,7 +276,27 @@ export function createWebSocketConnection(
       if (!event.wasClean) {
         onError(`WebSocket closed unexpectedly: ${event.reason || 'Unknown reason'}`);
       }
+      onClose?.({ wasClean: event.wasClean, code: event.code, reason: event.reason });
     };
+  });
+}
+
+/**
+ * Create a WebSocket connection for chat streaming.
+ * The WebSocket sends raw JSON messages (not SSE format).
+ */
+export function createWebSocketConnection(
+  options: WebSocketClientOptions
+): Promise<WebSocketConnection> {
+  const { threadId, onMessage, onDone, onError, onAuthEvent } = options;
+  const connectionId = generateConnectionId();
+  const effectiveThreadId = threadId || generateThreadId();
+  const wsUrl = buildChatWebSocketUrl(options, effectiveThreadId, connectionId);
+  return openWebSocketConnection(wsUrl, effectiveThreadId, connectionId, {
+    onMessage,
+    onDone,
+    onError,
+    onAuthEvent,
   });
 }
 
@@ -237,9 +328,10 @@ export function closeWebSocketConnection(connection: WebSocketConnection): void 
 }
 
 /**
- * Generate a unique connection ID
+ * Generate a unique connection ID. Exported so sibling WebSocket clients (e.g. the sub-agent
+ * stream) reuse the same id scheme instead of re-deriving it.
  */
-function generateConnectionId(): string {
+export function generateConnectionId(): string {
   return `ws-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 

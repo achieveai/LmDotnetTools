@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isAuthEventPayload } from '@/types/auth';
+import { isAuthEventPayload, isPredefinedKeyProvider } from '@/types/auth';
 
 /**
  * `isAuthEventPayload` is the single routing gate for the whole deferred-auth client feature and
@@ -35,5 +35,21 @@ describe('isAuthEventPayload', () => {
 
   it('returns false for an empty object', () => {
     expect(isAuthEventPayload('{}')).toBe(false);
+  });
+});
+
+/**
+ * The provider-id namespace is the kind discriminator that routes the banner CTA (OAuth sign-in vs
+ * the Egress Auth dialog). A mis-classification sends the user to the wrong action.
+ */
+describe('isPredefinedKeyProvider', () => {
+  it('is true for a predefined-<id> provider id', () => {
+    expect(isPredefinedKeyProvider('predefined-abc123')).toBe(true);
+  });
+
+  it('is false for a managed OAuth provider id', () => {
+    expect(isPredefinedKeyProvider('github')).toBe(false);
+    expect(isPredefinedKeyProvider('ado')).toBe(false);
+    expect(isPredefinedKeyProvider('m365')).toBe(false);
   });
 });

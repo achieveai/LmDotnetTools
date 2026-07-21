@@ -111,7 +111,9 @@ public sealed class SandboxSessionRegistryClientEvictionTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new GatedHandler(Respond)),
             auth,
-            new AuthSharedSecret(auth)
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance)
         );
 
         // Two workspaces under the SAME credential → they share one per-credential client entry.
@@ -184,7 +186,9 @@ public sealed class SandboxSessionRegistryClientEvictionTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(handler),
             auth,
-            new AuthSharedSecret(auth)
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance)
         );
 
         return (registry, handler);

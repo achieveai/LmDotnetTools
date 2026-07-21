@@ -132,6 +132,14 @@ try
     _ = builder.Services.AddControllers();
     _ = builder.Services.AddEndpointsApiExplorer();
 
+    // Raise the request-body ceiling so the file browser's multipart upload (WI #195) can carry a file of
+    // exactly MaxFileBytes (64 MiB) plus a fixed 8 KiB framing allowance. The exact inclusive per-file cap
+    // is enforced in FileBrowserController against both the declared and observed bytes.
+    builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes);
+    _ = builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
+        o.MultipartBodyLengthLimit = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes
+    );
+
     // Add Vite services for frontend integration. The dev-server port is configurable via
     // VITE_DEV_PORT so an isolated instance can run alongside another without colliding on 5173
     // (the paired vite.config.ts reads the same env var). Defaults to 5173.
@@ -170,8 +178,10 @@ try
     {
         var probe = sp.GetRequiredService<IFileSystemProbe>();
         var mockHost = sp.GetRequiredService<MockProviderHostLifetime>();
-        var copilotModels = DiscoverCopilotModels(sp.GetRequiredService<ILoggerFactory>());
-        return new ProviderRegistry(copilotModels, probe, mockHost);
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var copilotModels = DiscoverCopilotModels(loggerFactory);
+        var anthropicCompatModels = AnthropicCompatProviders.DiscoverFromEnv(loggerFactory);
+        return new ProviderRegistry(copilotModels, probe, mockHost, anthropicCompatModels);
     });
 
     // Register the FunctionRegistry with sample tools
@@ -286,13 +296,26 @@ try
     var authOptions =
         builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
     _ = builder.Services.AddSingleton(authOptions);
-    _ = builder.Services.AddSingleton<AuthSharedSecret>();
     var oauthTokenDir = string.IsNullOrWhiteSpace(authOptions.TokenStoreDir)
         ? Path.Combine(AppContext.BaseDirectory, "oauth-tokens")
         : authOptions.TokenStoreDir;
+    _ = builder.Services.AddSingleton(sp => new SessionSecretStore(
+        Path.Combine(oauthTokenDir, "session-secrets"),
+        sp.GetRequiredService<ILogger<SessionSecretStore>>()
+    ));
     _ = builder.Services.AddSingleton<IOAuthTokenStore>(sp => new FileOAuthTokenStore(
         oauthTokenDir,
         sp.GetRequiredService<ILogger<FileOAuthTokenStore>>()
+    ));
+    // Predefined egress keys (issue #210): a runtime-managed registry of custom-header / OAuth
+    // credentials the gateway injects on egress to user-specified hosts (managed via the Egress Auth
+    // dialog / EgressKeysController). Persists under the same gitignored token dir; a dedicated
+    // HttpClient drives the OAuth token-endpoint mint/refresh calls.
+    _ = builder.Services.AddSingleton(sp => new PredefinedKeyRegistry(
+        oauthTokenDir,
+        sp.GetRequiredService<IOAuthTokenStore>(),
+        new HttpClient(),
+        sp.GetRequiredService<ILoggerFactory>()
     ));
     // Dual-register each provider: the concrete type is what the per-provider controller
     // (AdoAuthController / GitHubAuthController) takes in its ctor, while the IOAuthTokenProvider
@@ -352,8 +375,13 @@ try
         // WebSocket request thread, so the 100s default could stall it indefinitely.
         GatewayHttpClient(TimeSpan.FromSeconds(30)),
         authOptions,
-        sp.GetRequiredService<AuthSharedSecret>()
+        sp.GetRequiredService<SessionSecretStore>(),
+        sp.GetRequiredService<PredefinedKeyRegistry>()
     ));
+
+    // The registry also implements the narrow file-browser surface the FileBrowserController depends on
+    // (WI #195): non-creating session resolution + credentialed workspace file ops.
+    _ = builder.Services.AddSingleton<IWorkspaceFileBrowser>(sp => sp.GetRequiredService<SandboxSessionRegistry>());
 
     _ = builder.Services.AddSingleton(sp =>
         SubAgentIntelligenceOptions.Load(
@@ -507,6 +535,14 @@ try
                 return CreateCopilotModelAgent(copilotModel, loggerFactory);
             }
 
+            // Discovered Anthropic-compatible provider-family models (e.g. DeepSeek) route through the
+            // same AnthropicClient/AnthropicAgent pairing as the "anthropic" provider, but with the
+            // family's own base URL/API key instead of fixed env vars.
+            if (sp.GetRequiredService<ProviderRegistry>().TryGetAnthropicCompatModel(providerId, out var compatModel))
+            {
+                return CreateAnthropicCompatAgent(compatModel, loggerFactory);
+            }
+
             return providerId.ToLowerInvariant() switch
             {
                 "openai" => CreateOpenAiAgent(loggerFactory),
@@ -597,6 +633,9 @@ try
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
+                // Staged for the pool to publish as part of a successful agent-entry commit (WI #195): the
+                // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
+                SandboxEstablishedBinding? stagedBinding = null;
                 var effectiveMode = mode;
                 if (isWorkspaceMode)
                 {
@@ -640,6 +679,15 @@ try
                         .GetOrCreateLiveSessionAsync(workspaceRef, credential: callerCredential)
                         .GetAwaiter()
                         .GetResult();
+                    // The effective credential is the caller's or the process default (never null) — used for
+                    // gateway calls. The THIRD arg preserves the original caller's provenance (null for the
+                    // interactive UI) so the file-browser resolver can distinguish an interactive owner from
+                    // an S2S caller even when the S2S caller reuses the default app id.
+                    stagedBinding = new SandboxEstablishedBinding(
+                        workspaceRef,
+                        callerCredential ?? sandboxRegistry.DefaultCredential,
+                        callerCredential
+                    );
                     var wsSuffix =
                         "\n\nYour workspace directory is: "
                         + sandboxSession.HostPath
@@ -986,6 +1034,9 @@ try
                 // Resolve the discovered Copilot model (if any) backing this provider once; its
                 // transport and raw id drive the model-id, reasoning, and web-tool wiring below.
                 var isCopilotBackedModel = providerRegistry.TryGetCopilotModel(normalizedProviderId, out var copilotModelInfo);
+                // Same resolution for a discovered Anthropic-compatible provider-family model (e.g.
+                // DeepSeek); its raw model id drives the model-id and web-tool wiring below.
+                var isAnthropicCompatModel = providerRegistry.TryGetAnthropicCompatModel(normalizedProviderId, out var anthropicCompatModelInfo);
 
                 var webToolStatuses = WebToolRegistrationPolicy.Apply(
                     filteredRegistry,
@@ -994,7 +1045,8 @@ try
                     jinaWebProvider,
                     webToolsOptions,
                     loggerFactory,
-                    isCopilotBackedModel
+                    isCopilotBackedModel,
+                    isAnthropicCompatModel
                 );
                 if (webToolStatuses.Count > 0)
                 {
@@ -1007,11 +1059,14 @@ try
 
                 try
                 {
-                    // Discovered Copilot models use their raw model id verbatim; fixed providers keep
-                    // the curated per-provider id map.
+                    // Discovered Copilot models use their raw model id verbatim; discovered
+                    // Anthropic-compatible models likewise use their configured model name verbatim;
+                    // fixed providers keep the curated per-provider id map.
                     var modelId = isCopilotBackedModel
                         ? copilotModelInfo.Id
-                        : GetModelIdForProvider(normalizedProviderId);
+                        : isAnthropicCompatModel
+                            ? anthropicCompatModelInfo.ModelName
+                            : GetModelIdForProvider(normalizedProviderId);
 
                     // Built-in (server-side) tools are selected by the MODE — never injected per
                     // provider or via a per-mode override. A mode declares its server-side built-ins in
@@ -1190,6 +1245,15 @@ try
                         }
                     }
 
+                    // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
+                    // sample's shared conversation store so a focused child can be replayed via the
+                    // existing conversation-messages endpoint. Only fills the fallback when unset, so a
+                    // template-specified store still wins.
+                    if (subAgentOptions is not null)
+                    {
+                        subAgentOptions = ApplyDefaultSubAgentStore(subAgentOptions, conversationStore);
+                    }
+
                     agent = new MultiTurnAgentLoop(
                         providerAgent,
                         filteredRegistry,
@@ -1229,7 +1293,7 @@ try
                         triggerOptions: isTestMode ? triggerOptions : null
                     );
 
-                    return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources);
+                    return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
                 }
                 catch
                 {
@@ -1253,7 +1317,10 @@ try
             },
             providerRegistry: providerRegistry,
             conversationStore: conversationStore,
-            logger: loggerFactory.CreateLogger<MultiTurnAgentPool>()
+            logger: loggerFactory.CreateLogger<MultiTurnAgentPool>(),
+            // The registry is the binding sink: the pool publishes/clears each conversation's
+            // sandbox-established binding through it as part of the agent-entry commit/removal (WI #195).
+            bindingSink: sandboxRegistryForCleanup
         );
 
         // When a thread is fully removed (NOT recreated for a mode-switch — that preserves the
@@ -1433,6 +1500,72 @@ try
         }
     );
 
+    // Map a SEPARATE WebSocket endpoint for a FOCUSED sub-agent (WI #194, presentation-only). Kept
+    // distinct from "/ws" so the parent handler stays byte-compatible: this route resolves the live
+    // child through the parent conversation's SubAgentManager (never the pool, which would wrongly
+    // create a top-level agent for a "subagent-{id}" thread) and streams/relays it read-only.
+    _ = app.Map(
+        "/ws/subagent",
+        async (
+            HttpContext context,
+            ChatWebSocketManager wsManager,
+            ILogger<Program> wsLogger,
+            CancellationToken cancellationToken
+        ) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync("WebSocket connection required", cancellationToken);
+                return;
+            }
+
+            var parentThreadId = context.Request.Query["parentThreadId"].FirstOrDefault();
+            var agentId = context.Request.Query["agentId"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(parentThreadId) || string.IsNullOrWhiteSpace(agentId))
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(
+                    "parentThreadId and agentId are required", cancellationToken);
+                return;
+            }
+
+            var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            wsLogger.LogInformation(
+                "Sub-agent WebSocket connection established for agent {AgentId} on parent {ParentThreadId}",
+                agentId,
+                parentThreadId
+            );
+
+            try
+            {
+                await wsManager.HandleSubAgentConnectionAsync(
+                    webSocket,
+                    parentThreadId,
+                    agentId,
+                    cancellationToken
+                );
+            }
+            finally
+            {
+                if (webSocket.State == System.Net.WebSockets.WebSocketState.Open)
+                {
+                    await webSocket.CloseAsync(
+                        System.Net.WebSockets.WebSocketCloseStatus.NormalClosure,
+                        "Server closing",
+                        CancellationToken.None
+                    );
+                }
+
+                webSocket.Dispose();
+                wsLogger.LogInformation(
+                    "Sub-agent WebSocket connection closed for agent {AgentId}",
+                    agentId
+                );
+            }
+        }
+    );
+
     // Map controllers (conversations, chat-modes, tools, diagnostics)
     _ = app.MapControllers();
 
@@ -1571,6 +1704,34 @@ public partial class Program
         );
 
         return new AnthropicAgent("Anthropic", anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
+    }
+
+    /// <summary>
+    ///     Creates an agent for a discovered Anthropic-compatible provider-family model (e.g. DeepSeek),
+    ///     using that model's own base URL/API key rather than fixed env vars — see
+    ///     <see cref="AnthropicCompatProviders.DiscoverFromEnv"/>.
+    /// </summary>
+    private static IStreamingAgent CreateAnthropicCompatAgent(AnthropicCompatModel model, ILoggerFactory loggerFactory)
+    {
+        // BaseUrl is operator-controlled (the family's {KEY}_ANTHROPIC_URL env var) and could carry
+        // credentials in its user-info (user:pass@host) or query (?token=...) components. Log ONLY the
+        // validated scheme+host+port origin so no secret material is persisted to application logs.
+        var baseUrlOrigin = Uri.TryCreate(model.BaseUrl, UriKind.Absolute, out var parsedBaseUrl)
+            ? $"{parsedBaseUrl.Scheme}://{parsedBaseUrl.Host}:{parsedBaseUrl.Port}"
+            : "(invalid base URL)";
+        Log.Information(
+            "Creating {FamilyKey} agent with base URL origin: {BaseUrlOrigin}",
+            model.FamilyKey,
+            baseUrlOrigin
+        );
+
+        var anthropicClient = new AnthropicClient(
+            model.ApiKey,
+            baseUrl: model.BaseUrl,
+            logger: loggerFactory.CreateLogger<AnthropicClient>()
+        );
+
+        return new AnthropicAgent(model.FamilyKey, anthropicClient, loggerFactory.CreateLogger<AnthropicAgent>());
     }
 
     // Shared across the GitHub Copilot-backed agents: one token (resolved from the Copilot/gh CLI
@@ -2018,6 +2179,41 @@ public partial class Program
                 },
                 StringComparer.Ordinal),
         };
+    }
+
+    /// <summary>
+    /// Fills <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> with the sample's shared
+    /// conversation store when the options don't already specify one, so spawned sub-agents persist
+    /// their transcripts (keyed per <c>subagent-{agentId}</c> thread) and can be replayed via the
+    /// existing conversation-messages endpoint. This only supplies the FALLBACK: a template that sets
+    /// its own <see cref="SubAgentTemplate.ConversationStoreFactory"/> — or options that already carry a
+    /// <see cref="SubAgentOptions.DefaultConversationStoreFactory"/> — still wins, so the options are
+    /// returned unchanged in that case.
+    /// <para>
+    /// The shared store is handed to children through a
+    /// <see cref="LmStreaming.Sample.Persistence.NonOwningConversationStore"/> decorator so a child can
+    /// never dispose it: <see cref="SubAgentManager"/> disposes a child store that is
+    /// <see cref="IAsyncDisposable"/>, and every child shares this one application-wide store.
+    /// </para>
+    /// </summary>
+    public static SubAgentOptions ApplyDefaultSubAgentStore(
+        SubAgentOptions options,
+        IConversationStore store)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(store);
+
+        // Wrap the shared store in a non-owning decorator so a child can NEVER dispose it: SubAgentManager
+        // disposes a child store that is IAsyncDisposable during spawn-cleanup/restart/completion/rollback,
+        // and every child shares this one application-wide store. The wrapper implements neither
+        // IDisposable nor IAsyncDisposable, so those ownership checks all skip it.
+        return options.DefaultConversationStoreFactory is not null
+            ? options
+            : options with
+            {
+                DefaultConversationStoreFactory = _ =>
+                    new LmStreaming.Sample.Persistence.NonOwningConversationStore(store),
+            };
     }
 
     internal static SubAgentSessionBinding BindConversationSubAgents(

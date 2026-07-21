@@ -22,6 +22,7 @@ lists the failing step names and each `steps[].detail` has the observed values.
 |--------|--------------------|
 | `provider-switch.mjs` | Switch a conversation's provider when idle; selector locked (disabled) while streaming; no permanent lock badge; switch persists + recreates the agent. |
 | `queue-button.mjs` | Blue **Queue** button replaces red Stop while streaming when the composer has text; clicking Queue clears the box and enqueues the message. |
+| `usage-banner.mjs` | Token-usage banner (#196): single turn → Total 150/In 100/Out 50; two turns accumulate to 300; reload restores from the persisted aggregate; a sub-agent delegation folds the descendant's tokens into the persisted aggregate (600) visible via the REST usage endpoint + on reopen. |
 
 ## Conventions (so these stay fast + reliable)
 

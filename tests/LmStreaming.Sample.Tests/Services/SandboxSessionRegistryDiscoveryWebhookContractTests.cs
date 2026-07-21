@@ -20,7 +20,6 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
     [Fact]
     public async Task CreateSession_SendsDiscoveryWebhookSecret_UnderAuthHeaderField_NotAuth()
     {
-        const string secret = "gw-shared-secret-2f9c";
         using var baseDir = new TempWorkspaceBase();
         string? capturedBody = null;
 
@@ -54,9 +53,11 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
             Webhook = new WebhookOptions
             {
                 PublicBaseUrl = "http://127.0.0.1:5000",
-                GatewaySharedSecret = secret,
             },
         };
+        var sessionSecretStore = new SessionSecretStore(
+            Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+            NullLogger<SessionSecretStore>.Instance);
 
         var gateway = new SandboxGatewayLifetime(
             options,
@@ -69,9 +70,9 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Respond)),
             authOptions,
-            new AuthSharedSecret(authOptions));
+            sessionSecretStore);
 
-        _ = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1", "projA"));
+        var session = await registry.GetOrCreateSessionAsync(new WorkspaceRef("ws-1", "projA"));
 
         capturedBody.Should().NotBeNull("the registry must POST a create request to the gateway");
         using var doc = JsonDocument.Parse(capturedBody!);
@@ -79,8 +80,10 @@ public sealed class SandboxSessionRegistryDiscoveryWebhookContractTests
 
         webhook.GetProperty("url").GetString()
             .Should().EndWith("/api/discovery/context_discovery");
-        webhook.GetProperty("auth_header").GetString()
-            .Should().Be(secret, "the gateway reads the secret from `auth_header` and sends it verbatim as Authorization");
+        var sentSecret = webhook.GetProperty("auth_header").GetString();
+        sentSecret.Should().NotBeNullOrEmpty("the gateway reads the secret from `auth_header` and sends it verbatim as Authorization");
+        (await sessionSecretStore.MatchesAsync(session.SessionId, sentSecret))
+            .Should().BeTrue("the value sent under `auth_header` must be this session's own saved secret");
         webhook.TryGetProperty("auth", out _)
             .Should().BeFalse("the legacy `auth` field name is ignored by the gateway → it would send no Authorization header → 401");
     }

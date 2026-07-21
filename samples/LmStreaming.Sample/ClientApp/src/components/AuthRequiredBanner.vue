@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import type { AuthRequiredEvent } from '@/types';
+import { isPredefinedKeyProvider } from '@/types/auth';
+import { openEgressDialog } from '@/composables/useEgressAuth';
 
 /**
- * Banner shown while the backend is HOLDING a sandbox webhook call waiting for an interactive
- * sign-in (deferred auth). One row per pending provider. The sign-in button opens the
- * same-origin landing page (e.g. /auth/github) in a popup; that page drives the OAuth flow.
- * The banner is dismissed by the backend's terminal frame — `auth_completed` (a token landed)
- * or `auth_denied` (the hold timed out / sign-in failed) — both handled in useChat, which
- * removes the provider from the pending set. The ✕ button dismisses locally at any time.
+ * Banner shown while the backend is HOLDING a sandbox webhook call waiting for a credential
+ * (deferred auth). One row per pending provider. For an OAuth provider the "Sign in" button opens
+ * the same-origin landing page (e.g. /auth/github) in a popup; for a pre-defined egress key
+ * (`predefined-<id>`, issue #210) the "Update egress key" button instead opens the Egress Auth
+ * dialog so the user can re-enter the failing credential. Either way the banner is dismissed by the
+ * backend's terminal frame — `auth_completed` (a valid credential landed) or `auth_denied` (the hold
+ * timed out) — both handled in useChat. The ✕ button dismisses locally at any time.
  *
  * Note: the chat WebSocket connects lazily on the first message, so prompts can only arrive
  * once a conversation is active — the backend replays pending prompts to late connections.
@@ -33,12 +36,26 @@ function openSignIn(request: AuthRequiredEvent): void {
     data-testid="auth-required-banner"
     :data-provider-id="request.providerId"
   >
-    <span class="auth-required-text">
+    <span v-if="isPredefinedKeyProvider(request.providerId)" class="auth-required-text">
+      A sandbox egress key needs updating —
+      {{ request.reason || 'a sandbox request is waiting for a valid egress key' }}
+    </span>
+    <span v-else class="auth-required-text">
       Sign in to <strong>{{ request.providerId }}</strong> required —
       {{ request.reason || 'a sandbox request is waiting for your credentials' }}
     </span>
     <span class="auth-required-actions">
       <button
+        v-if="isPredefinedKeyProvider(request.providerId)"
+        type="button"
+        class="auth-signin-btn"
+        data-testid="auth-update-key-button"
+        @click="openEgressDialog()"
+      >
+        Update egress key
+      </button>
+      <button
+        v-else
         type="button"
         class="auth-signin-btn"
         data-testid="auth-signin-button"

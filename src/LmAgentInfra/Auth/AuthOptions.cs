@@ -115,9 +115,6 @@ public sealed class WebhookOptions
     /// <summary>Externally-reachable base URL the gateway calls back on (loopback for local dev).</summary>
     public string PublicBaseUrl { get; set; } = "http://127.0.0.1:5000";
 
-    /// <summary>Shared secret the gateway sends as Authorization when calling the webhook. When null, one is generated at startup.</summary>
-    public string? GatewaySharedSecret { get; set; }
-
     /// <summary>
     /// Seconds a not-signed-in webhook call is HELD open awaiting an interactive sign-in (deferred
     /// auth) before resolving deny. While held, connected chat clients receive an

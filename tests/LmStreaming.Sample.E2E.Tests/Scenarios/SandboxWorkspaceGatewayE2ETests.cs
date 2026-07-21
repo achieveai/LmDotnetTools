@@ -11,7 +11,7 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 
 /// <summary>
 /// End-to-end proof that the <c>Workspace Agent</c> mode drives the REAL sandbox MCP gateway:
-/// a mock-Anthropic provider returns a scripted instruction chain (one <c>sandbox-Bash</c> tool
+/// a mock-Anthropic provider returns a scripted instruction chain (one <c>Bash</c> tool
 /// call, then a final text), the middleware executes that tool call against the gateway, and we
 /// assert both the tool-result round-trip and the write-through to the host workspace directory.
 /// </summary>
@@ -19,8 +19,9 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// <para>
 /// Why <c>test-anthropic</c>: it is NOT one of the providers the Workspace-Agent guard rejects, so
 /// it flows through the same middleware path as the real Anthropic/OpenAI providers — the path that
-/// folds the gateway's MCP tools into the per-agent function registry. Tool names are registered as
-/// <c>{clientId}-{tool}</c>, i.e. <c>sandbox-Bash</c>.
+/// folds the gateway's MCP tools into the per-agent function registry. The sandbox gateway is the
+/// sole MCP server here, so tools are registered under their bare names (<c>omitServerPrefix: true</c>
+/// in <c>Program.cs</c>'s <c>ConnectHttpMcpClient</c> call), i.e. <c>Bash</c>, not <c>sandbox-Bash</c>.
 /// </para>
 /// <para>
 /// Gated: the test runs only when a gateway is configured/reachable
@@ -66,12 +67,12 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
         // inside the host workspace. echo+cat writes the marker AND returns it as the tool result.
         var command = $"echo {marker} > {fileName} && cat {fileName}";
         Logger.LogInformation(
-            "Scripted instruction chain: turn 1 -> tool_use sandbox-Bash (command={Command}); turn 2 -> final text",
+            "Scripted instruction chain: turn 1 -> tool_use Bash (command={Command}); turn 2 -> final text",
             command);
 
         var responder = ScriptedSseResponder.New()
             .ForRole("workspace-agent", _ => true)
-                .Turn(t => t.ToolCall("sandbox-Bash", new { command }))
+                .Turn(t => t.ToolCall("Bash", new { command }))
                 .Turn(t => t.Text("Wrote and read the marker file."))
             .Build();
 
@@ -100,10 +101,10 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             string.Join(", ", toolNames));
         LogData("toolResults", toolResults);
 
-        // (1) The model's tool call reached the registry under the prefixed sandbox tool name.
+        // (1) The model's tool call reached the registry under the bare gateway tool name.
         toolNames.Should().Contain(
-            "sandbox-Bash",
-            "the gateway's Bash tool is folded into the registry as 'sandbox-Bash'");
+            "Bash",
+            "the gateway's Bash tool is folded into the registry as 'Bash' (omitServerPrefix: true)");
 
         // (2) Round-trip through the gateway: executing Bash returned the marker it just wrote.
         string.Concat(toolResults).Should().Contain(
@@ -111,37 +112,52 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             "the sandbox Bash tool executed echo+cat through the gateway and returned the marker");
 
         // (3) Write-through: the file the model created exists on the REAL host workspace.
-        //     HostPath is gateway-reported, so read it from the (single-flight) live session.
+        //     session.HostPath is the gateway's CONTAINER-side path (e.g. "/workspace"), never a host
+        //     filesystem path (see SandboxInfo.WorkspaceContainerPath) — by SDK design, the client only
+        //     knows the real host base directory in SPAWN mode (it provisioned config.WorkspacePath for
+        //     the gateway it launched). When ADOPTING a possibly-remote gateway, that gateway owns
+        //     workspace-directory placement entirely and never reports a host path back, so the real
+        //     directory is unknowable here — skip the filesystem check in that mode.
         var session = await factory.Services
             .GetRequiredService<SandboxSessionRegistry>()
             .GetOrCreateSessionAsync("default");
         Logger.LogInformation(
-            "Resolved live sandbox session {SessionId}; host workspace path {HostPath}",
+            "Resolved live sandbox session {SessionId}; container workspace path {HostPath}",
             session.SessionId,
             session.HostPath);
 
-        var hostFile = Path.Combine(session.HostPath, fileName);
-        Logger.LogInformation("Asserting host write-through at {HostFile}", hostFile);
-        File.Exists(hostFile).Should().BeTrue(
-            $"the model wrote {fileName} via the sandbox gateway into the host workspace {session.HostPath}");
-        var hostContent = await File.ReadAllTextAsync(hostFile);
-        Logger.LogInformation("Host file content length {Length}; contains marker={ContainsMarker}",
-            hostContent.Length,
-            hostContent.Contains(marker, StringComparison.Ordinal));
-        hostContent.Should().Contain(marker);
+        if (prereq.SpawnMode)
+        {
+            var hostFile = Path.Combine(config.WorkspacePath, fileName);
+            Logger.LogInformation("Asserting host write-through at {HostFile}", hostFile);
+            File.Exists(hostFile).Should().BeTrue(
+                $"the model wrote {fileName} via the sandbox gateway into the host workspace {config.WorkspacePath}");
+            var hostContent = await File.ReadAllTextAsync(hostFile);
+            Logger.LogInformation("Host file content length {Length}; contains marker={ContainsMarker}",
+                hostContent.Length,
+                hostContent.Contains(marker, StringComparison.Ordinal));
+            hostContent.Should().Contain(marker);
+
+            try
+            {
+                File.Delete(hostFile);
+                Logger.LogInformation("Cleaned up probe file {HostFile}", hostFile);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Best-effort cleanup of probe file {HostFile} failed", hostFile);
+            }
+        }
+        else
+        {
+            Logger.LogInformation(
+                "Adopting a possibly-remote gateway: it owns workspace-directory placement and never "
+                    + "reports a host path, so the host-filesystem write-through check is skipped; "
+                    + "check (2) already confirms the gateway wrote and read back the marker.");
+        }
 
         // (4) The agent finished with its scripted closing text.
         frames.ConcatText().Should().Contain("Wrote and read the marker file.");
-
-        try
-        {
-            File.Delete(hostFile);
-            Logger.LogInformation("Cleaned up probe file {HostFile}", hostFile);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Best-effort cleanup of probe file {HostFile} failed", hostFile);
-        }
 
         LogTestEnd();
     }
@@ -149,7 +165,7 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
     /// <summary>
     /// Validates the CORE sandbox MCP tool set end-to-end through the real gateway by driving a
     /// scripted instruction chain that exercises, in sequence,
-    /// <c>sandbox-Write → sandbox-Read → sandbox-Bash → sandbox-Glob → sandbox-Grep</c>, then asserts
+    /// <c>Write → Read → Bash → Glob → Grep</c>, then asserts
     /// each tool produced its expected result. Per-tool validation outcomes are logged as structured
     /// <c>SandboxToolCheck</c> events to <c>.logs/tests/tests.jsonl</c> so they can be queried with DuckDB.
     /// </summary>
@@ -168,20 +184,18 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
         Skip.IfNot(prereq.Available, prereq.SkipReason);
 
         using var config = prereq.CreateConfigScope();
-        var ws = Path.GetFullPath(config.WorkspacePath);
 
         var id = Guid.NewGuid().ToString("N")[..8];
         var marker = "marker_" + id;          // appears in file content -> surfaced ONLY by Read
         var needle = "NEEDLE_" + id;          // appears in file content -> surfaced by Read AND Grep
         var bashMarker = "bashok_" + id;      // surfaced ONLY by Bash echo
         var probeName = "probe-" + id + ".txt";
-        var probeAbs = Path.Combine(ws, probeName);
         var fileContent = $"line-one {marker}\nline-two {needle}\n";
 
         Logger.LogInformation(
-            "Scripted chain over workspace {Ws}: Read(register) -> Write -> Read -> Bash -> Glob -> Grep "
+            "Scripted chain (paths relative to the session workspace cwd, portable across spawn/adopt "
+                + "gateways): Read(register) -> Write -> Read -> Bash -> Glob -> Grep "
                 + "(probe={Probe}, marker={Marker}, needle={Needle}, bashMarker={BashMarker})",
-            ws,
             probeName,
             marker,
             needle,
@@ -190,15 +204,20 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
         // The gateway enforces Claude-Code read-before-write semantics: a path must be Read (even a
         // not-yet-existing one — a failed Read still registers it) before Write/Edit is permitted.
         // The chain therefore opens with a Read of the (missing) probe path, mirroring what the
-        // Workspace Agent system prompt instructs the real LLM to do.
+        // Workspace Agent system prompt instructs the real LLM to do. Paths are deliberately BARE
+        // relative names, not an absolute host-style path — the tools resolve them against the
+        // session's own workspace cwd, which is the only path form valid whether the gateway is
+        // spawned locally or adopted as an already-running (possibly remote/containerized) process;
+        // an absolute host path built from config.WorkspacePath is meaningless to an adopted gateway
+        // (see the write-through comment further below).
         var responder = ScriptedSseResponder.New()
             .ForRole("workspace-agent", _ => true)
-                .Turn(t => t.ToolCall("sandbox-Read", new { file_path = probeAbs }))
-                .Turn(t => t.ToolCall("sandbox-Write", new { file_path = probeAbs, content = fileContent }))
-                .Turn(t => t.ToolCall("sandbox-Read", new { file_path = probeAbs }))
-                .Turn(t => t.ToolCall("sandbox-Bash", new { command = $"echo {bashMarker}" }))
-                .Turn(t => t.ToolCall("sandbox-Glob", new { pattern = "*.txt", path = ws }))
-                .Turn(t => t.ToolCall("sandbox-Grep", new { pattern = needle, path = ws, output_mode = "content" }))
+                .Turn(t => t.ToolCall("Read", new { file_path = probeName }))
+                .Turn(t => t.ToolCall("Write", new { file_path = probeName, content = fileContent }))
+                .Turn(t => t.ToolCall("Read", new { file_path = probeName }))
+                .Turn(t => t.ToolCall("Bash", new { command = $"echo {bashMarker}" }))
+                .Turn(t => t.ToolCall("Glob", new { pattern = "*.txt", path = "." }))
+                .Turn(t => t.ToolCall("Grep", new { pattern = needle, path = ".", output_mode = "content" }))
                 .Turn(t => t.Text("Completed sandbox tool chain."))
             .Build();
 
@@ -231,48 +250,39 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             .GetRequiredService<SandboxSessionRegistry>()
             .GetOrCreateSessionAsync("default");
         Logger.LogInformation(
-            "Live session {SessionId}; hostPath={HostPath}; configuredWorkspace={Ws}; pathsMatch={Match}",
+            "Live session {SessionId}; container workspace path {HostPath}",
             session.SessionId,
-            session.HostPath,
-            ws,
-            string.Equals(Path.GetFullPath(session.HostPath), ws, StringComparison.OrdinalIgnoreCase));
-
-        var hostExists = File.Exists(probeAbs);
-        var hostContent = hostExists ? await File.ReadAllTextAsync(probeAbs) : string.Empty;
-        Logger.LogInformation(
-            "Host probe file: path={ProbeAbs} exists={Exists} contentLength={Length} containsMarker={HasMarker} containsNeedle={HasNeedle}",
-            probeAbs,
-            hostExists,
-            hostContent.Length,
-            hostContent.Contains(marker, StringComparison.Ordinal),
-            hostContent.Contains(needle, StringComparison.Ordinal));
+            session.HostPath);
 
         // Per-tool validation: each tool gets a distinct signal so a single failing tool is isolable.
+        // All signals come from the tools' OWN returned text — never local host-disk state — so this
+        // check set holds whether the gateway is spawned locally or adopted as a remote/containerized
+        // process (see the write-through comment further below).
         var checks = new[]
         {
             new ToolCheck(
-                "sandbox-Write",
-                toolNames.Contains("sandbox-Write"),
-                File.Exists(probeAbs) && hostContent.Contains(marker, StringComparison.Ordinal),
-                $"host file {probeName} written with marker"),
+                "Write",
+                toolNames.Contains("Write"),
+                combinedResults.Contains("wrote", StringComparison.OrdinalIgnoreCase),
+                "the sandbox Write tool reported a successful write"),
             new ToolCheck(
-                "sandbox-Read",
-                toolNames.Contains("sandbox-Read"),
+                "Read",
+                toolNames.Contains("Read"),
                 combinedResults.Contains(marker, StringComparison.Ordinal),
                 "Read returned file content (marker)"),
             new ToolCheck(
-                "sandbox-Bash",
-                toolNames.Contains("sandbox-Bash"),
+                "Bash",
+                toolNames.Contains("Bash"),
                 combinedResults.Contains(bashMarker, StringComparison.Ordinal),
                 "Bash echoed its marker"),
             new ToolCheck(
-                "sandbox-Glob",
-                toolNames.Contains("sandbox-Glob"),
+                "Glob",
+                toolNames.Contains("Glob"),
                 combinedResults.Contains(probeName, StringComparison.Ordinal),
                 "Glob listed the probe file"),
             new ToolCheck(
-                "sandbox-Grep",
-                toolNames.Contains("sandbox-Grep"),
+                "Grep",
+                toolNames.Contains("Grep"),
                 needleHits >= 2,
                 "Grep matched the needle (Read + Grep => >=2 hits)"),
         };
@@ -300,14 +310,36 @@ public sealed class SandboxWorkspaceGatewayE2ETests : LoggingTestBase
             "Completed sandbox tool chain.",
             "the agent loop should run all five tool turns then the closing text");
 
-        try
+        // Bonus write-through verification against the real host disk: only meaningful in SPAWN mode,
+        // where config.WorkspacePath IS the directory the test itself provisioned for the gateway it
+        // launched. session.HostPath is the gateway's CONTAINER-side path (e.g. "/workspace"), never a
+        // host filesystem path (see SandboxInfo.WorkspaceContainerPath) — when ADOPTING a possibly-
+        // remote gateway, that gateway owns workspace-directory placement entirely and never reports a
+        // host path back, so the real directory is unknowable here and this check is skipped.
+        if (prereq.SpawnMode)
         {
-            File.Delete(probeAbs);
-            Logger.LogInformation("Cleaned up probe file {ProbeAbs}", probeAbs);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Best-effort cleanup of probe file {ProbeAbs} failed", probeAbs);
+            var probeAbs = Path.Combine(Path.GetFullPath(config.WorkspacePath), probeName);
+            var hostExists = File.Exists(probeAbs);
+            var hostContent = hostExists ? await File.ReadAllTextAsync(probeAbs) : string.Empty;
+            Logger.LogInformation(
+                "Host probe file: path={ProbeAbs} exists={Exists} contentLength={Length} containsMarker={HasMarker}",
+                probeAbs,
+                hostExists,
+                hostContent.Length,
+                hostContent.Contains(marker, StringComparison.Ordinal));
+            hostExists.Should().BeTrue(
+                $"the model wrote {probeName} via the sandbox gateway into the host workspace {config.WorkspacePath}");
+            hostContent.Should().Contain(marker);
+
+            try
+            {
+                File.Delete(probeAbs);
+                Logger.LogInformation("Cleaned up probe file {ProbeAbs}", probeAbs);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Best-effort cleanup of probe file {ProbeAbs} failed", probeAbs);
+            }
         }
 
         LogTestEnd();

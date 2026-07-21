@@ -19,6 +19,13 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// </summary>
 public sealed class AuthWebhookControllerTests : LoggingTestBase
 {
+    // Per-session secrets have no single "correct secret" for a session that was never created
+    // through SandboxSessionRegistry.CreateSessionAsync — NewFactory seeds this fixed session id's
+    // secret directly into the DI-resolved SessionSecretStore so these fixture webhook bodies
+    // (which all carry "session_id": "s-test") can present it and hit the real MatchesAsync path.
+    private const string SessionId = "s-test";
+    private const string SharedSecret = "e2e-webhook-shared-secret";
+
     private const string WebhookBody = """
         {
           "session_id": "s-test",
@@ -52,7 +59,12 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         var settings = disableDeferredAuth
             ? new Dictionary<string, string?> { ["Auth:Webhook:HoldTimeoutSeconds"] = "0" }
             : null;
-        return new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
+        var factory = new E2EWebAppFactory("test", new ScriptedBuilder(responder.AsAnthropicHandler()), settings);
+        factory.Services.GetRequiredService<SessionSecretStore>()
+            .SaveAsync(SessionId, SharedSecret)
+            .GetAwaiter()
+            .GetResult();
+        return factory;
     }
 
     private static StringContent JsonBody() => new(WebhookBody, Encoding.UTF8, "application/json");
@@ -100,9 +112,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         using var factory = NewFactory(disableDeferredAuth: true);
         using var client = factory.CreateClient();
 
-        // The real shared secret is resolved by the host (configured or random-at-startup).
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
-        Logger.LogInformation("Resolved AuthSharedSecret from DI (length {Length}); value NOT logged", sharedSecret.Length);
+        var sharedSecret = SharedSecret;
 
         // Ensure the github provider has no persisted token so the deny path is deterministic.
         await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
@@ -149,7 +159,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             Scopes: ["repo", "read:org"]));
         Logger.LogInformation("Seeded a valid github token in the store (value not logged) to exercise the allow path");
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/github")
         {
             Content = JsonBody(),
@@ -179,6 +189,109 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         // Clean up so a sibling test in the same process starts from a known (signed-out) state.
         await factory.Services.GetRequiredService<IOAuthTokenStore>().RemoveAsync("github");
         LogTestEnd();
+    }
+
+    [Fact]
+    public async Task Predefined_custom_header_key_injected_on_its_host_and_denied_elsewhere()
+    {
+        // End-to-end for issue #210: a custom-header egress key created via the CRUD API is injected
+        // VERBATIM (no Bearer, no expiry) by the predefined webhook route on the entry's own host, and
+        // a request to any OTHER host is denied by the per-entry host gate (anti-oracle guard).
+        LogTestStart();
+        var tokenDir = Path.Combine(Path.GetTempPath(), "lm-egress-key-e2e", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(tokenDir);
+        try
+        {
+            var responder = ScriptedSseResponder.New()
+                .ForRole("noop", _ => true)
+                    .Turn(t => t.Text("ok"))
+                .Build();
+            using var factory = new E2EWebAppFactory(
+                "test",
+                new ScriptedBuilder(responder.AsAnthropicHandler()),
+                new Dictionary<string, string?> { ["Auth:TokenStoreDir"] = tokenDir });
+            using var client = factory.CreateClient();
+            await factory.Services.GetRequiredService<SessionSecretStore>().SaveAsync(SessionId, SharedSecret);
+            var sharedSecret = SharedSecret;
+
+            var createBody = JsonSerializer.Serialize(new
+            {
+                host = "api.internal.test",
+                kind = "custom-headers",
+                headers = new[] { new { name = "X-Api-Key", value = "secret-123" } },
+            });
+            using var createResponse = await client.PostAsync(
+                "/api/auth/egress-keys",
+                new StringContent(createBody, Encoding.UTF8, "application/json"));
+            createResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            string id;
+            using (var created = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync()))
+            {
+                id = created.RootElement.GetProperty("id").GetString()!;
+            }
+
+            var providerId = $"predefined-{id}";
+            Logger.LogInformation("Created custom-header egress key {ProviderId} for host api.internal.test", providerId);
+
+            using (var allow = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test"))
+            {
+                allow.RootElement.GetProperty("decision").GetString().Should().Be("allow");
+                var pair = allow.RootElement.GetProperty("headers")[0];
+                pair[0].GetString().Should().Be("X-Api-Key");
+                pair[1].GetString().Should().Be("secret-123");
+                allow.RootElement.TryGetProperty("expires_at", out _).Should().BeFalse();
+            }
+
+            using (var deny = await PostWebhookAsync(client, sharedSecret, providerId, "evil.test"))
+            {
+                deny.RootElement.GetProperty("decision").GetString().Should().Be("deny");
+            }
+
+            // Same host but a non-443 port is denied — a predefined key is HTTPS/443-only, so a
+            // misbehaving gateway cannot extract it over a cleartext port.
+            using (var portDeny = await PostWebhookAsync(client, sharedSecret, providerId, "api.internal.test", port: 8443))
+            {
+                portDeny.RootElement.GetProperty("decision").GetString().Should().Be("deny");
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tokenDir, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort temp cleanup.
+            }
+        }
+
+        LogTestEnd();
+    }
+
+    private static async Task<JsonDocument> PostWebhookAsync(
+        HttpClient client, string sharedSecret, string providerId, string destinationHost, int port = 443)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            session_id = "s-test",
+            app_id = "lmstreaming-sample",
+            provider_id = providerId,
+            rule_id = providerId,
+            destination_host = destinationHost,
+            destination_port = port,
+            method = "GET",
+            path = "/",
+            required_scopes = Array.Empty<string>(),
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/auth/webhook/{providerId}")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", sharedSecret);
+        using var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -213,7 +326,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
             }
             """;
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/webhook/github")
         {
             Content = new StringContent(gitBody, Encoding.UTF8, "application/json"),
@@ -248,7 +361,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         using var factory = NewFactory(disableDeferredAuth: true);
         using var client = factory.CreateClient();
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         var body = """
             {
               "session_id": "s-test",
@@ -285,7 +398,7 @@ public sealed class AuthWebhookControllerTests : LoggingTestBase
         using var factory = NewFactory();
         using var client = factory.CreateClient();
 
-        var sharedSecret = factory.Services.GetRequiredService<AuthSharedSecret>().Value;
+        var sharedSecret = SharedSecret;
         // A misconfigured rule pointing m365 at api.github.com must NOT mint an m365 token toward
         // GitHub — the webhook's OAuthProviderHosts.IsAllowed check is the final gate.
         var body = """

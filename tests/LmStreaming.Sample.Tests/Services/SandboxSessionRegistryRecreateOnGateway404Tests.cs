@@ -196,7 +196,9 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(registryHandler),
             auth,
-            new AuthSharedSecret(auth));
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance));
 
         return (registry, calls);
     }
@@ -226,7 +228,9 @@ public class SandboxSessionRegistryRecreateOnGateway404Tests
                 throw new HttpRequestException(
                     "No connection could be made because the target machine actively refused it."))),
             auth,
-            new AuthSharedSecret(auth));
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance));
 
         var act = async () => await registry.GetOrCreateSessionAsync();
 

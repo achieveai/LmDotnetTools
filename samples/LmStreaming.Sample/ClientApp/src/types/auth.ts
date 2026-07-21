@@ -28,6 +28,16 @@ export interface AuthDeniedEvent {
 
 export type AuthEvent = AuthRequiredEvent | AuthCompletedEvent | AuthDeniedEvent;
 
+/**
+ * The provider-id namespace IS the kind discriminator: a pre-defined egress key (issue #210) uses a
+ * `predefined-<id>` provider id (see the backend PredefinedKeyRegistry), whereas an OAuth provider is
+ * a bare id like `github`. A failing pre-defined key routes the banner CTA to the Egress Auth dialog
+ * (to re-enter the credential) instead of opening an OAuth sign-in page.
+ */
+export function isPredefinedKeyProvider(providerId: string): boolean {
+  return providerId.startsWith('predefined-');
+}
+
 export function isAuthEventPayload(data: string): boolean {
   return (
     data.includes('"$type":"auth_required"') ||

@@ -27,7 +27,14 @@ public class DefaultProcessLauncherTests
         };
 
         using var handle = DefaultProcessLauncher.Instance.Launch(request);
+        // Both streams are redirected but this test doesn't care about their content — still must
+        // drain them concurrently with the wait. `dotnet --info`'s output is close to the pipe's
+        // buffer capacity; leaving it unread blocks the child's write, and WaitForExitAsync then
+        // waits forever for an exit that can never happen.
+        var stdoutTask = handle.StandardOutput.ReadToEndAsync();
+        var stderrTask = handle.StandardError.ReadToEndAsync();
         var exit = await handle.WaitForExitAsync();
+        await Task.WhenAll(stdoutTask, stderrTask);
 
         exit.Should().Be(0);
         handle.HasExited.Should().BeTrue();

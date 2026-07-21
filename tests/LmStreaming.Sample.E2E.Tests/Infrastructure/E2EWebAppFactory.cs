@@ -120,4 +120,31 @@ public sealed class E2EWebAppFactory : WebApplicationFactory<Program>
         return await wsClient.ConnectAsync(uri, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Creates a WebSocket client bound to the in-memory test server and returns a connected
+    /// <see cref="System.Net.WebSockets.WebSocket"/> attached to the FOCUSED sub-agent endpoint
+    /// <c>/ws/subagent</c> (WI #194). Mirrors <see cref="ConnectWebSocketAsync"/> but carries the
+    /// <c>parentThreadId</c> and <c>agentId</c> query params the route requires (both mandatory —
+    /// the route answers 400 when either is missing).
+    /// </summary>
+    public async Task<System.Net.WebSockets.WebSocket> ConnectSubAgentWebSocketAsync(
+        string parentThreadId,
+        string agentId,
+        CancellationToken ct = default)
+    {
+        var wsClient = Server.CreateWebSocketClient();
+
+        var query =
+            $"parentThreadId={Uri.EscapeDataString(parentThreadId)}&agentId={Uri.EscapeDataString(agentId)}";
+
+        var uri = new UriBuilder(Server.BaseAddress)
+        {
+            Scheme = "ws",
+            Path = "/ws/subagent",
+            Query = query,
+        }.Uri;
+
+        return await wsClient.ConnectAsync(uri, ct).ConfigureAwait(false);
+    }
+
 }

@@ -125,13 +125,17 @@ public sealed class ContextDiscoveryWebhookHttpTests
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxGatewayLifetime>.Instance,
             new HttpClient(new StubHandler(Unused)));
+        var sessionSecretStore = new SessionSecretStore(
+            Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+            NullLogger<SessionSecretStore>.Instance);
+        await sessionSecretStore.SaveAsync(SessionId, Secret);
         var registry = new SandboxSessionRegistry(
             gateway,
             new SandboxGatewayOptions { BaseUrl = "http://localhost:3000" },
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Unused)),
             authOptions,
-            new AuthSharedSecret(authOptions));
+            sessionSecretStore);
 
         // The sub-agent's provider BLOCKS on its first turn, so the spawned "ctx-probe" sub-agent stays
         // deterministically Running (no timer) for the whole routed delivery.
@@ -192,10 +196,6 @@ public sealed class ContextDiscoveryWebhookHttpTests
         _ = await primaryLoop!.SubAgentManager!.SpawnAsync(
             "probe", "probe task", name: ProbeAgentId, runInBackground: true);
 
-        var sharedSecret = new AuthSharedSecret(new AuthOptions
-        {
-            Webhook = new WebhookOptions { GatewaySharedSecret = Secret },
-        });
         var diagnostics = new ContextDiscoveryDiagnostics();
 
         using var host = await new HostBuilder()
@@ -207,7 +207,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                     services.AddControllers().AddApplicationPart(typeof(ContextDiscoveryController).Assembly);
                     services.AddSingleton(registry);
                     services.AddSingleton(pool);
-                    services.AddSingleton(sharedSecret);
+                    services.AddSingleton(sessionSecretStore);
                     services.AddSingleton<ContextDiscoveryFormatter>();
                     // Flag ON so the routed path is exercised end to end.
                     services.AddSingleton(new ContextDiscoveryOptions { RouteToOpeningSubAgent = true });
@@ -291,7 +291,12 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
         public static async Task<TestApp> BuildAsync()
         {
-            var registry = CreateRegistry();
+            var sessionSecretStore = new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance);
+            await sessionSecretStore.SaveAsync(SessionId, Secret);
+
+            var registry = CreateRegistry(sessionSecretStore);
 
             RecordingMultiTurnAgent? created = null;
             var pool = new MultiTurnAgentPool(
@@ -309,11 +314,6 @@ public sealed class ContextDiscoveryWebhookHttpTests
             registry.RegisterThread(SessionId, ThreadId);
             var agent = created ?? throw new InvalidOperationException("recording agent was not created");
 
-            var sharedSecret = new AuthSharedSecret(new AuthOptions
-            {
-                Webhook = new WebhookOptions { GatewaySharedSecret = Secret },
-            });
-
             var host = await new HostBuilder()
                 .ConfigureWebHost(webBuilder =>
                 {
@@ -325,7 +325,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
 
                         services.AddSingleton(registry);
                         services.AddSingleton(pool);
-                        services.AddSingleton(sharedSecret);
+                        services.AddSingleton(sessionSecretStore);
                         services.AddSingleton<ContextDiscoveryFormatter>();
                         services.AddSingleton(new ContextDiscoveryOptions());
                         services.AddSingleton<ContextDiscoveryInjector>();
@@ -350,7 +350,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
             _host.Dispose();
         }
 
-        private static SandboxSessionRegistry CreateRegistry()
+        private static SandboxSessionRegistry CreateRegistry(SessionSecretStore sessionSecretStore)
         {
             static HttpResponseMessage Unused(HttpRequestMessage _) => new(HttpStatusCode.OK);
 
@@ -366,7 +366,7 @@ public sealed class ContextDiscoveryWebhookHttpTests
                 NullLogger<SandboxSessionRegistry>.Instance,
                 new HttpClient(new StubHandler(Unused)),
                 authOptions,
-                new AuthSharedSecret(authOptions));
+                sessionSecretStore);
         }
     }
 

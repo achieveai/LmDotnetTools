@@ -1,8 +1,9 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.Sandbox;
 
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
@@ -53,6 +54,67 @@ public sealed record WorkspaceRef(
     IReadOnlyList<string>? Marketplaces = null);
 
 /// <summary>
+/// A conversation's sandbox-established binding: the exact <see cref="WorkspaceRef"/> and creating
+/// <see cref="SandboxCredential"/> a thread's workspace session was first opened with. This is the ONLY
+/// authoritative signal that a conversation has an established sandbox workspace — it is published by the
+/// agent pool exactly when a workspace-mode agent commits, and cleared when the agent is removed. It is
+/// deliberately separate from <c>_sessionThreads</c> membership (which is populated only when sub-agent
+/// options are present) and from the pool's private per-thread agent entry (which exists for every mode).
+/// </summary>
+/// <param name="WorkspaceRef">The workspace reference the thread's session was established for.</param>
+/// <param name="Credential">The EFFECTIVE credential the session was established under (used for gateway
+/// calls). An interactive caller's effective credential is the non-null process default, never null.</param>
+/// <param name="CallerCredential">The ORIGINAL caller's credential — <c>null</c> for the interactive UI,
+/// an app-id-bearing credential for an S2S caller. Provenance for the credential-conflict gate, kept
+/// separate from <paramref name="Credential"/> so an interactive caller and an S2S caller that happens to
+/// use the configured default app id are NOT conflated (mirrors <c>MultiTurnAgentPool.CallerCredential</c>).</param>
+public sealed record SandboxEstablishedBinding(
+    WorkspaceRef WorkspaceRef,
+    SandboxCredential Credential,
+    SandboxCredential? CallerCredential = null
+);
+
+/// <summary>
+/// The seam the agent pool uses to publish/clear a conversation's <see cref="SandboxEstablishedBinding"/>
+/// without holding a reference to the whole registry. Implemented by <see cref="SandboxSessionRegistry"/>.
+/// Both operations are lock-free and safe to call while the pool holds its per-thread lock.
+/// </summary>
+public interface ISandboxBindingSink
+{
+    /// <summary>Publishes (or replaces) the binding for <paramref name="threadId"/>.</summary>
+    void PublishEstablishedBinding(string threadId, SandboxEstablishedBinding binding);
+
+    /// <summary>Clears any binding for <paramref name="threadId"/>. Idempotent; never destroys a live session.</summary>
+    void ClearEstablishedBinding(string threadId);
+}
+
+/// <summary>The outcome of resolving a conversation thread to its sandbox workspace session.</summary>
+public enum SandboxSessionResolutionOutcome
+{
+    /// <summary>A live session for the conversation's workspace was resolved (or recreated in-process).</summary>
+    Resolved,
+
+    /// <summary>No sandbox binding exists for the thread (non-sandbox conversation, legacy metadata, or after a process restart). No session was created.</summary>
+    NoSession,
+
+    /// <summary>The caller's credential does not match the conversation's frozen creating identity.</summary>
+    CredentialConflict,
+}
+
+/// <summary>
+/// The result of <see cref="SandboxSessionRegistry.ResolveThreadWorkspaceSessionAsync"/>: the
+/// <see cref="Outcome"/>, the resolved <see cref="Session"/> (only when
+/// <see cref="SandboxSessionResolutionOutcome.Resolved"/>), and — on a
+/// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/> — the existing and requested app ids
+/// for diagnostics (never the keys).
+/// </summary>
+public sealed record SandboxSessionResolution(
+    SandboxSessionResolutionOutcome Outcome,
+    SandboxSession? Session,
+    string? ExistingAppId,
+    string? RequestedAppId);
+
+/// <summary>
 /// Owns sandbox sessions for the sample app. Sessions are created lazily and exactly once per
 /// workspace id, then destroyed on application shutdown when the DI container disposes this
 /// singleton.
@@ -71,7 +133,7 @@ public sealed record WorkspaceRef(
 /// or a caller and the interactive UI default) never collide on one shared session.
 /// </para>
 /// </remarks>
-public sealed class SandboxSessionRegistry : IAsyncDisposable
+public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSink, IWorkspaceFileBrowser
 {
     /// <summary>
     /// Logical id of the default workspace, which maps to the configured
@@ -193,7 +255,8 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     private readonly ILogger<SandboxSessionRegistry> _logger;
     private readonly HttpClient _httpClient;
     private readonly AuthOptions _authOptions;
-    private readonly AuthSharedSecret _sharedSecret;
+    private readonly SessionSecretStore _sessionSecretStore;
+    private readonly PredefinedKeyRegistry? _predefinedKeys;
     private readonly SandboxCredential _defaultCredential;
     private bool _disposed;
 
@@ -207,6 +270,17 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         new(StringComparer.Ordinal);
 
     /// <summary>
+    /// A conversation thread's sandbox-established binding (workspace ref + creating credential), the
+    /// authoritative "this conversation has a sandbox workspace" signal. Published by the agent pool on a
+    /// successful workspace-mode agent commit and cleared on agent removal (see
+    /// <see cref="ISandboxBindingSink"/>). Kept across gateway eviction (so the browser can recreate the
+    /// same durable workspace in-process) and NEVER persisted. Independent of <see cref="_sessionThreads"/>
+    /// and of the pool's private agent entry.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SandboxEstablishedBinding> _establishedBindings =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Initialises the registry.
     /// </summary>
     /// <param name="gateway">Gateway lifetime, used for the base URL.</param>
@@ -215,15 +289,19 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// <param name="httpClient">Client used to create and destroy sandbox sessions.</param>
     /// <param name="authOptions">OAuth auth-provider configuration; drives the optional
     /// <c>auth_providers</c>/<c>network</c> blocks sent on sandbox creation.</param>
-    /// <param name="sharedSecret">Gateway↔webhook shared secret attached to each auth provider.
-    /// SECRET — never logged.</param>
+    /// <param name="sessionSecretStore">Per-session webhook secret store; each created session's
+    /// secret is persisted here and attached to each auth provider. SECRET — never logged.</param>
+    /// <param name="predefinedKeys">Optional predefined-egress-key registry; when supplied, each
+    /// configured entry contributes a webhook auth-provider + host-scoped allow rule. Null (the
+    /// headless daemon and every test that does not exercise egress keys) emits none — fail-closed.</param>
     public SandboxSessionRegistry(
         SandboxGatewayLifetime gateway,
         SandboxGatewayOptions options,
         ILogger<SandboxSessionRegistry> logger,
         HttpClient httpClient,
         AuthOptions authOptions,
-        AuthSharedSecret sharedSecret
+        SessionSecretStore sessionSecretStore,
+        PredefinedKeyRegistry? predefinedKeys = null
     )
     {
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
@@ -231,11 +309,106 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _authOptions = authOptions ?? throw new ArgumentNullException(nameof(authOptions));
-        _sharedSecret = sharedSecret ?? throw new ArgumentNullException(nameof(sharedSecret));
+        _sessionSecretStore = sessionSecretStore ?? throw new ArgumentNullException(nameof(sessionSecretStore));
+        _predefinedKeys = predefinedKeys;
         // Non-null default even when no key is configured: contextless paths (liveness/destroy on
         // a session with no side-table entry) always resolve to a credential, never null. An empty
         // AppKey is exactly the keyless AUTH_ENFORCE=off dev path.
         _defaultCredential = new SandboxCredential(_options.AppId, _options.AppKey ?? string.Empty);
+    }
+
+    /// <summary>
+    /// The process-wide default credential (from configured <c>AppId</c>/<c>AppKey</c>) an interactive
+    /// caller's session is established under when no per-request caller credential was supplied. Exposed so
+    /// the app can stage a binding with the SAME effective credential the registry itself would resolve.
+    /// </summary>
+    public SandboxCredential DefaultCredential => _defaultCredential;
+
+    /// <inheritdoc />
+    public void PublishEstablishedBinding(string threadId, SandboxEstablishedBinding binding)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+        ArgumentNullException.ThrowIfNull(binding);
+        // Last-writer-wins under the pool's per-thread lock; a mode switch that establishes a new binding
+        // replaces the prior one atomically with the pool's agent-entry commit.
+        _establishedBindings[threadId] = binding;
+    }
+
+    /// <inheritdoc />
+    public void ClearEstablishedBinding(string threadId)
+    {
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            return;
+        }
+
+        // Clearing a binding only forgets the browse-resolution hint; it never destroys the shared
+        // (workspaceId, appId) gateway session, which other conversations may still be using.
+        _ = _establishedBindings.TryRemove(threadId, out _);
+    }
+
+    /// <summary>
+    /// Resolves a conversation thread to a LIVE sandbox workspace session WITHOUT ever provisioning a
+    /// first-time session, for the file-browser surface. Resolution is driven solely by the thread's
+    /// <see cref="SandboxEstablishedBinding"/>:
+    /// <list type="bullet">
+    /// <item>No binding ⇒ <see cref="SandboxSessionResolutionOutcome.NoSession"/> and NO gateway call (a
+    /// non-sandbox conversation, legacy metadata without a workspace, or a process restart).</item>
+    /// <item>Binding whose workspace id does not match the conversation's persisted workspace id ⇒
+    /// <see cref="SandboxSessionResolutionOutcome.NoSession"/> (defensive; the persisted workspace is
+    /// authoritative).</item>
+    /// <item>A caller identity whose provenance differs from the binding's original creating caller ⇒
+    /// <see cref="SandboxSessionResolutionOutcome.CredentialConflict"/>. Provenance is compared raw and
+    /// nullable (null = interactive UI), symmetric with <c>MultiTurnAgentPool</c>: a null caller conflicts
+    /// with an S2S-owned binding (and vice versa), an interactive caller is NOT the same as an explicit
+    /// caller that reuses the default app id, and only a matching identity (or null-vs-null) passes.</item>
+    /// <item>Otherwise the binding's own workspace ref + credential resolve (or recreate in-process, same
+    /// identity, durable workspace) a live session ⇒ <see cref="SandboxSessionResolutionOutcome.Resolved"/>.</item>
+    /// </list>
+    /// </summary>
+    public async Task<SandboxSessionResolution> ResolveThreadWorkspaceSessionAsync(
+        string threadId,
+        string persistedWorkspaceId,
+        SandboxCredential? requestCredential,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        if (!_establishedBindings.TryGetValue(threadId, out var binding))
+        {
+            return new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
+        }
+
+        // The persisted conversation workspace is authoritative: a binding for a different workspace id is
+        // not a match (guards a stale binding after a workspace switch).
+        if (!string.IsNullOrWhiteSpace(persistedWorkspaceId)
+            && !string.Equals(binding.WorkspaceRef.Id, persistedWorkspaceId, StringComparison.Ordinal))
+        {
+            return new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
+        }
+
+        // Compare PROVENANCE, not just the effective app id: the binding remembers the ORIGINAL caller
+        // identity (null for the interactive UI; an app id for an S2S caller — even when that app id equals
+        // the configured default). A null interactive request matches only a null-owned binding; an S2S
+        // request matches only its own app-id-owned binding. This mirrors MultiTurnAgentPool's cross-actor
+        // guard exactly, so an interactive caller and an explicit caller that happens to use the default app
+        // id are never conflated. The effective binding.Credential is still what the gateway call uses.
+        var ownerAppId = binding.CallerCredential?.AppId;
+        var callerAppId = requestCredential?.AppId;
+        if (!string.Equals(ownerAppId, callerAppId, StringComparison.Ordinal))
+        {
+            return new SandboxSessionResolution(
+                SandboxSessionResolutionOutcome.CredentialConflict,
+                null,
+                ownerAppId,
+                callerAppId
+            );
+        }
+
+        var session = await GetOrCreateLiveSessionAsync(binding.WorkspaceRef, ct, binding.Credential).ConfigureAwait(false);
+        return new SandboxSessionResolution(SandboxSessionResolutionOutcome.Resolved, session, ownerAppId, callerAppId);
     }
 
     /// <summary>
@@ -566,7 +739,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             workspaceId
         );
 
-        InvalidateSession((workspaceId, effectiveCredential.AppId), session);
+        await InvalidateSessionAsync((workspaceId, effectiveCredential.AppId), session).ConfigureAwait(false);
         return await GetOrCreateSessionAsync(effectiveRef, ct, effectiveCredential).ConfigureAwait(false);
     }
 
@@ -630,11 +803,15 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
     /// <summary>
     /// Drops a dead session from both caches so the next request recreates it. Removes the
-    /// per-(workspace id, caller app id) creation entry and the reverse id mapping (the latter only
-    /// when it still points at <paramref name="session"/>, so a concurrent recreation is never
-    /// clobbered).
+    /// per-(workspace id, caller app id) creation entry, then funnels through
+    /// <see cref="EvictSessionStateAsync"/> so EVERY per-session collection is cleared — not just the
+    /// main maps. The gateway already dropped this session (a 404 liveness probe is what brought us
+    /// here), so no DELETE is issued.
     /// </summary>
-    private void InvalidateSession((string WorkspaceId, string AppId) key, SandboxSession session)
+    private async Task InvalidateSessionAsync(
+        (string WorkspaceId, string AppId) key,
+        SandboxSession session
+    )
     {
         // Remove the cached creation ONLY when it still holds the exact dead session — mirroring
         // AwaitAndEvictOnFailureAsync's "only evict the entry we own" discipline. A plain key-removal
@@ -654,17 +831,60 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             );
         }
 
-        // Reverse map removal is already exact: only drops the entry when it still points at this
-        // dead session, so a concurrent recreation's mapping is never clobbered.
+        // Clear every per-session-id-indexed collection so a gateway-evicted session leaves no stale
+        // sub-agent binding / thread routing / discovery-ledger state behind until registry disposal.
+        await EvictSessionStateAsync(session).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Evicts EVERY per-session-id-indexed collection for <paramref name="session"/>: the reverse
+    /// session map, sub-agent bindings, thread routing, discovery dedup ledger, the creating credential
+    /// (releasing its per-credential client refcount), and the persisted webhook secret. Both the
+    /// liveness-eviction path (<see cref="InvalidateSessionAsync"/>) and the explicit-teardown path
+    /// (<see cref="DestroyWorkspaceSessionAsync"/>) funnel through here so a new per-session collection
+    /// can never be wired into one lifecycle path and silently forgotten by the other. Deliberately does
+    /// NOT touch the <see cref="_sessions"/> creation slot (its removal differs per caller) and does NOT
+    /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionAsync"/> does that, and it calls
+    /// this AFTER the DELETE so the session's creating credential is still resolvable for it.
+    /// </summary>
+    private async Task EvictSessionStateAsync(SandboxSession session)
+    {
+        // Reverse map removal is exact: only drops the entry when it still points at this session, so a
+        // concurrent recreation's mapping is never clobbered.
         _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
             new KeyValuePair<string, SandboxSession>(session.SessionId, session)
         );
+        _ = _subAgentBindings.TryRemove(session.SessionId, out _);
+        _ = _sessionThreads.TryRemove(session.SessionId, out _);
+        _ = _discoverySeen.TryRemove(session.SessionId, out _);
         // Drop the session's credential and release its client refcount (evicting+disposing the per-
         // credential client when this was its last session). Guarded on the TryRemove so an already-
         // invalidated session never double-decrements.
         if (_sessionCredentials.TryRemove(session.SessionId, out var credential))
         {
             DecrementSessionRefAndMaybeDispose(credential);
+        }
+        // The in-memory eviction above is COMMITTED: the session is now unreachable through every
+        // per-session collection. The persisted webhook secret is the last authenticator that could
+        // still validate a callback for this dead session, so its removal MUST run to completion under
+        // CancellationToken.None — never the caller's cancellable token. Cancelling between the
+        // committed in-memory eviction and the file delete would otherwise leave a valid on-disk secret
+        // for a session the registry already considers gone, letting a later callback authenticate a
+        // supposedly dead session. Best-effort: a filesystem failure is logged and swallowed so it
+        // can't leave the rest of teardown half-done.
+        try
+        {
+            await _sessionSecretStore
+                .RemoveAsync(session.SessionId, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to remove webhook secret for evicted session {SessionId}; continuing teardown.",
+                session.SessionId
+            );
         }
     }
 
@@ -707,8 +927,12 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
         var (_, workspaceLeaf, _) = _options.ResolveWorkspace(workspaceRef.DirectoryRelPath);
         var workspaceRelPath = workspaceLeaf ?? string.Empty;
 
-        var (authProviders, network) = BuildAuthProviders();
-        var discovery = BuildDiscovery();
+        // SECRET — never log. Generated fresh per session so a restart never invalidates a live
+        // session's webhook auth (the secret is persisted to disk below once the session id is
+        // known) and so two sessions' secrets can never be cross-validated against each other.
+        var sessionSecret = RandomNumberGenerator.GetHexString(64);
+        var (authProviders, network) = BuildAuthProviders(sessionSecret);
+        var discovery = BuildDiscovery(sessionSecret);
         // Per-workspace marketplace selection wins; fall back to the global config default when the
         // workspace enables none. Either way `null` means "omit the field, gateway picks its default".
         var marketplaces = workspaceRef.Marketplaces is { Count: > 0 }
@@ -842,14 +1066,42 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             var hostPath = StripLongPathPrefix(info.WorkspaceContainerPath ?? string.Empty);
             var session = new SandboxSession(workspaceId, info.SessionId, workspaceRelPath, hostPath);
 
-            // Register the reverse session-id → session mapping so the context-discovery webhook can
-            // resolve back to the session. Last-write-wins is acceptable because session ids are
-            // gateway-allocated and unique per creation.
-            _sessionsById[session.SessionId] = session;
-            // Capture the credential this session was created with so contextless paths (liveness,
-            // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
-            // default (relevant once M2 lets callers create under a per-caller credential).
-            _sessionCredentials[session.SessionId] = effectiveCredential;
+            // The gateway session now exists remotely. Publish its maps and persist its secret as one
+            // unit: if ANY step fails (e.g. SaveAsync throws or is cancelled), the remote session and
+            // these map entries would otherwise be orphaned while the faulting Lazy<> single-flight
+            // retries into a SECOND gateway session — with discovery/liveness seeing stale state in
+            // between. So roll back exactly the entries this attempt added and best-effort destroy the
+            // just-created remote session before letting the exception propagate.
+            try
+            {
+                // Register the reverse session-id → session mapping so the context-discovery webhook can
+                // resolve back to the session. Last-write-wins is acceptable because session ids are
+                // gateway-allocated and unique per creation.
+                _sessionsById[session.SessionId] = session;
+                // Capture the credential this session was created with so contextless paths (liveness,
+                // destroy, discovery) resolve the SAME credential via CredentialFor, not the process
+                // default (relevant once M2 lets callers create under a per-caller credential).
+                _sessionCredentials[session.SessionId] = effectiveCredential;
+                // Persist BEFORE returning: a webhook call for this session id must never race ahead of
+                // its secret hitting disk. On failure the catch below tears the half-built session down
+                // rather than leaving a session whose webhooks can never authenticate.
+                await _sessionSecretStore.SaveAsync(session.SessionId, sessionSecret, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort destroy FIRST — DestroySessionAsync resolves the session's creating
+                // credential via _sessionCredentials, so the DELETE must carry the owner's app id while
+                // that entry is still present (a default/foreign id is rejected 404, leaking the remote
+                // session). Uses CancellationToken.None so a cancelled create still attempts teardown.
+                await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+                // Remove ONLY the entries this attempt added, and only while they still point at THIS
+                // session, so a concurrent recreation is never clobbered (mirrors InvalidateSessionAsync).
+                _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
+                    new KeyValuePair<string, SandboxSession>(session.SessionId, session));
+                _ = ((ICollection<KeyValuePair<string, SandboxCredential>>)_sessionCredentials).Remove(
+                    new KeyValuePair<string, SandboxCredential>(session.SessionId, effectiveCredential));
+                throw;
+            }
             // The reservation acquired above IS this session's refcount — commit it (no extra increment),
             // so the finally does not roll it back.
             reservationCommitted = true;
@@ -882,7 +1134,10 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// every non-default-credential session forever. Evicts each entry's creation slot + reverse
     /// maps, then issues the gateway DELETE. Idempotent — a no-op when nothing is cached for the id.
     /// Best-effort: gateway failures are logged inside <see cref="DestroySessionAsync"/> and
-    /// swallowed so run teardown never throws.
+    /// swallowed so run teardown never throws. Cancellation is observed only BEFORE each entry is
+    /// removed from the cache (the point of no return); once an entry is committed to teardown its
+    /// remote DELETE + secret removal run under <see cref="CancellationToken.None"/> so a cancellation
+    /// can never orphan the remote session or its persisted secret.
     /// </summary>
     public async Task DestroyWorkspaceSessionAsync(string workspaceId, CancellationToken ct = default)
     {
@@ -893,6 +1148,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
         foreach (var key in matchingKeys)
         {
+            // Check cancellation BEFORE removing the entry from the cache — this is the point of no
+            // return. Once the entry is gone the session is committed to teardown; observing a
+            // cancellation mid-teardown would forget the session while potentially leaving the remote
+            // gateway session and/or its persisted secret behind (DestroySessionAsync also swallows
+            // cancellation, so the caller could never reliably retry). Throwing here instead leaves the
+            // remaining cache entries intact for a clean retry.
+            ct.ThrowIfCancellationRequested();
+
             if (
                 !_sessions.TryRemove(key, out var lazy)
                 || !lazy.IsValueCreated
@@ -903,22 +1166,22 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             }
 
             var session = lazy.Value.Result;
-            _ = ((ICollection<KeyValuePair<string, SandboxSession>>)_sessionsById).Remove(
-                new KeyValuePair<string, SandboxSession>(session.SessionId, session));
-            _ = _subAgentBindings.TryRemove(session.SessionId, out _);
-            _ = _sessionThreads.TryRemove(session.SessionId, out _);
-            _ = _discoverySeen.TryRemove(session.SessionId, out _);
 
-            // Destroy BEFORE dropping the credential: DestroySessionAsync resolves the session's
+            // The cache entry is now removed — teardown is COMMITTED. Run the gateway DELETE and the
+            // per-session state eviction under CancellationToken.None so a cancellation cannot orphan the
+            // remote sandbox session or its on-disk secret. DestroySessionAsync isolates its own gateway
+            // failures, and the secret removal inside EvictSessionStateAsync is likewise best-effort, so
+            // one cleanup step failing never skips the rest.
+            //
+            // Destroy BEFORE evicting per-session state: DestroySessionAsync resolves the session's
             // creating credential via CredentialFor(sessionId), so the DELETE must carry the owner's
-            // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session).
-            await DestroySessionAsync(session, ct).ConfigureAwait(false);
-            // Drop the credential and release its client refcount (evicting+disposing the per-credential
-            // client when this was its last session). Guarded so a concurrent invalidate never double-drops.
-            if (_sessionCredentials.TryRemove(session.SessionId, out var credential))
-            {
-                DecrementSessionRefAndMaybeDispose(credential);
-            }
+            // X-Sbx-App-Id (a foreign/default id would be rejected 404, leaking the gateway session) —
+            // and CredentialFor reads _sessionCredentials, which EvictSessionStateAsync clears.
+            await DestroySessionAsync(session, CancellationToken.None).ConfigureAwait(false);
+            // Clear every per-session collection (reverse map, sub-agent bindings, thread routing,
+            // discovery ledger, credential + client refcount, persisted secret) via the shared helper —
+            // the same one InvalidateSessionAsync uses, so the two teardown paths can never diverge.
+            await EvictSessionStateAsync(session).ConfigureAwait(false);
         }
     }
 
@@ -935,43 +1198,91 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
 
         _disposed = true;
 
-        foreach (var entry in _sessions.Values)
+        try
         {
-            // Only destroy sessions that were actually created and completed successfully.
-            if (!entry.IsValueCreated || !entry.Value.IsCompletedSuccessfully)
+            foreach (var entry in _sessions.Values)
             {
-                continue;
+                // Only destroy sessions that were actually created and completed successfully.
+                if (!entry.IsValueCreated || !entry.Value.IsCompletedSuccessfully)
+                {
+                    continue;
+                }
+
+                await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
+                // Best-effort secret cleanup: a single filesystem failure here must not abort disposal of
+                // the remaining sessions, per-credential clients, and the shared transport below. Isolate it
+                // (DestroySessionAsync already swallows its own errors) so disposal always reaches the
+                // guaranteed final resource cleanup in the finally.
+                try
+                {
+                    await _sessionSecretStore
+                        .RemoveAsync(entry.Value.Result.SessionId, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Failed to remove webhook secret for session {SessionId} during disposal; continuing teardown.",
+                        entry.Value.Result.SessionId
+                    );
+                }
             }
 
-            await DestroySessionAsync(entry.Value.Result, CancellationToken.None).ConfigureAwait(false);
+            _sessions.Clear();
+            _subAgentBindings.Clear();
+            _sessionsById.Clear();
+            _sessionThreads.Clear();
+            _discoverySeen.Clear();
+            _sessionCredentials.Clear();
         }
-
-        _sessions.Clear();
-        _subAgentBindings.Clear();
-        _sessionsById.Clear();
-        _sessionThreads.Clear();
-        _discoverySeen.Clear();
-        _sessionCredentials.Clear();
-
-        // Catch-all: dispose every remaining per-credential transport (refcount eviction handles the
-        // steady state; this covers any sessions still live at shutdown). Snapshot + clear under the lock,
-        // then dispose OUTSIDE it. Each entry owns only its GatewayAuthHandler → forwarding pipeline; the
-        // SandboxClient over it is borrowed, so disposing the client is a no-op and the forwarding handler
-        // never disposes the shared transport. The shared transport is disposed last, below.
-        List<SandboxClientEntry> remainingClients;
-        lock (_clientsLock)
+        finally
         {
-            remainingClients = [.. _clients.Values];
-            _clients.Clear();
-        }
+            // GUARANTEED final resource cleanup: even if a session-teardown step above threw, the
+            // per-credential transports and the shared HttpClient must still be disposed, or disposal
+            // would leak sockets. Snapshot + clear the clients under the lock, then dispose OUTSIDE it.
+            // Each entry owns only its GatewayAuthHandler → forwarding pipeline; the SandboxClient over it
+            // is borrowed, so disposing the client is a no-op and the forwarding handler never disposes the
+            // shared transport. The shared transport is disposed last, below.
+            List<SandboxClientEntry> remainingClients;
+            lock (_clientsLock)
+            {
+                remainingClients = [.. _clients.Values];
+                _clients.Clear();
+            }
 
-        foreach (var entry in remainingClients)
-        {
-            entry.Client.Dispose();
-            entry.Transport.Dispose();
-        }
+            try
+            {
+                foreach (var entry in remainingClients)
+                {
+                    // Isolate each entry's disposal independently: one Client.Dispose()/Transport.Dispose()
+                    // throwing must not abort the loop and skip the remaining entries — nor the shared
+                    // HttpClient disposal in the nested finally below — per the documented best-effort
+                    // disposal contract.
+                    try
+                    {
+                        entry.Client.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to dispose a sandbox client during registry disposal; continuing.");
+                    }
 
-        _httpClient.Dispose();
+                    try
+                    {
+                        entry.Transport.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to dispose a sandbox transport during registry disposal; continuing.");
+                    }
+                }
+            }
+            finally
+            {
+                _httpClient.Dispose();
+            }
+        }
     }
 
     /// <summary>
@@ -1070,6 +1381,77 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             // OperationCanceledException (not a SandboxException) and is left to propagate.
             return null;
         }
+    }
+
+    /// <summary>
+    /// Lists a workspace directory's rich entries (name/type/size/nameLossy) for the file browser. The
+    /// <paramref name="relativePath"/> is workspace-relative (empty = root). Unlike the best-effort
+    /// <see cref="ReadWorkspaceFileAsync"/>, this PROPAGATES <see cref="SandboxException"/> so the HTTP
+    /// caller can map its <see cref="SandboxErrorKind"/> to a status code.
+    /// </summary>
+    public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(
+        string sessionId,
+        string relativePath,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(relativePath);
+        return ClientFor(CredentialFor(sessionId)).ListDirectoryEntriesAsync(sessionId, relativePath, ct);
+    }
+
+    /// <summary>
+    /// Reads a workspace file's raw bytes (no decode) for download/preview, capping at
+    /// <paramref name="maxBytes"/> (null = the 64 MiB default). Propagates <see cref="SandboxException"/>.
+    /// </summary>
+    public Task<byte[]> ReadWorkspaceFileBytesAsync(
+        string sessionId,
+        string relativePath,
+        long? maxBytes,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(relativePath);
+        return ClientFor(CredentialFor(sessionId)).ReadFileBytesAsync(sessionId, relativePath, maxBytes, ct);
+    }
+
+    /// <summary>
+    /// Writes a workspace file's raw bytes (uploads) with the SDK's one-shot parent-directory self-heal.
+    /// Propagates <see cref="SandboxException"/> (e.g. <see cref="SandboxErrorKind.Conflict"/> when the
+    /// target is held by a concurrent writer).
+    /// </summary>
+    public Task WriteWorkspaceFileBytesAsync(
+        string sessionId,
+        string relativePath,
+        byte[] bytes,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(relativePath);
+        ArgumentNullException.ThrowIfNull(bytes);
+        return ClientFor(CredentialFor(sessionId)).WriteFileBytesAsync(sessionId, relativePath, bytes, ct);
+    }
+
+    /// <summary>
+    /// Runs a shell command in the session's workspace via the existing execute path — the seam the file
+    /// browser's delete uses (an <c>rm</c> the caller assembles from the server-verified entry type). No new
+    /// gateway/SDK delete primitive is introduced; a non-zero exit is returned on the result, not thrown.
+    /// </summary>
+    public Task<SandboxCommandResult> ExecuteWorkspaceCommandAsync(
+        string sessionId,
+        SandboxCommand command,
+        CancellationToken ct = default
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(command);
+        return ClientFor(CredentialFor(sessionId)).ExecuteAsync(sessionId, command, ct);
     }
 
     /// <summary>
@@ -1534,9 +1916,17 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// each provider (e.g. m365 needs both ClientId + ClientSecret) without standing up the gateway.
     /// </summary>
     internal IReadOnlyList<string> GetAuthProviderIdsForTest() =>
-        BuildAuthProviders().Providers?.Select(p => p.Id).ToArray() ?? [];
+        BuildAuthProviders("test-secret").Providers?.Select(p => p.Id).ToArray() ?? [];
 
-    private (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProviders()
+    /// <summary>
+    /// Test seam: the full <c>auth_providers</c> + <c>network</c> pair the registry would attach, so a
+    /// test can assert the security-sensitive rule shape (host, ports, auth-provider linkage) and the
+    /// webhook endpoint / cache TTL — not just the provider id.
+    /// </summary>
+    internal (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProvidersForTest() =>
+        BuildAuthProviders("test-secret");
+
+    private (IReadOnlyList<SandboxAuthProvider>? Providers, IReadOnlyList<SandboxNetworkRule>? Network) BuildAuthProviders(string sessionSecret)
     {
         var providers = new List<SandboxAuthProvider>();
         var rules = new List<SandboxNetworkRule>();
@@ -1549,7 +1939,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                     id: "github-auth",
                     type: "webhook",
                     endpoint: $"{baseUrl}/api/auth/webhook/github",
-                    gatewayAuth: _sharedSecret.Value,
+                    gatewayAuth: sessionSecret,
                     cacheTtlSeconds: 300,
                     requiredScopes: []
                 )
@@ -1567,6 +1957,25 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                     priority: 100
                 )
             );
+            // Network-only companion rule (SECURITY, no authProvider): the Actions run-log download
+            // redirect chain (results-receiver -> a SAS-signed *.blob.core.windows.net URL) must be
+            // reachable, but those hops already carry their own authorization, so the GitHub token is
+            // NEVER injected here — the rule omits authProvider so the gateway allows egress without
+            // calling the auth webhook. Keeping this disjoint from the github-auth rule above is what
+            // stops the user's GitHub token from being sent to the receiver / Azure blob hosts.
+            rules.Add(
+                new SandboxNetworkRule(
+                    id: "github-egress",
+                    action: "allow",
+                    hosts: OAuthProviderHosts.GithubEgressOnlyHosts,
+                    ports: [443],
+                    methods: [],
+                    paths: [],
+                    authProvider: null,
+                    requiredScopes: [],
+                    priority: 100
+                )
+            );
         }
 
         if (!string.IsNullOrWhiteSpace(_authOptions.Ado.ClientId))
@@ -1576,7 +1985,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                     id: "ado-auth",
                     type: "webhook",
                     endpoint: $"{baseUrl}/api/auth/webhook/ado",
-                    gatewayAuth: _sharedSecret.Value,
+                    gatewayAuth: sessionSecret,
                     cacheTtlSeconds: 300,
                     requiredScopes: []
                 )
@@ -1607,7 +2016,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
                     id: "m365-auth",
                     type: "webhook",
                     endpoint: $"{baseUrl}/api/auth/webhook/m365",
-                    gatewayAuth: _sharedSecret.Value,
+                    gatewayAuth: sessionSecret,
                     cacheTtlSeconds: 300,
                     requiredScopes: []
                 )
@@ -1627,6 +2036,42 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             );
         }
 
+        // Predefined egress keys (issue #210): one webhook provider + host-scoped allow rule per
+        // configured entry. Custom-header entries carry no token expiry, so the gateway falls back to
+        // the provider cache TTL — keep it short so an edited/rotated key takes effect promptly; the
+        // token-minting kinds carry the minted token's real expiry regardless.
+        if (_predefinedKeys is not null)
+        {
+            foreach (var entry in _predefinedKeys.Entries)
+            {
+                var id = $"{PredefinedKeyRegistry.ProviderIdPrefix}{entry.Id}";
+                var cacheTtlSeconds = entry.Kind == PredefinedKeyKind.CustomHeaders ? 30 : 300;
+                providers.Add(
+                    new SandboxAuthProvider(
+                        id: id,
+                        type: "webhook",
+                        endpoint: $"{baseUrl}/api/auth/webhook/{id}",
+                        gatewayAuth: sessionSecret,
+                        cacheTtlSeconds: cacheTtlSeconds,
+                        requiredScopes: []
+                    )
+                );
+                rules.Add(
+                    new SandboxNetworkRule(
+                        id: id,
+                        action: "allow",
+                        hosts: [entry.Host],
+                        ports: [443],
+                        methods: [],
+                        paths: [],
+                        authProvider: id,
+                        requiredScopes: [],
+                        priority: 100
+                    )
+                );
+            }
+        }
+
         return providers.Count > 0 ? (providers, rules) : (null, null);
     }
 
@@ -1636,7 +2081,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
     /// already uses for auth callbacks) plus the discovery route; the auth value is the
     /// gateway↔webhook shared secret. SECRET — never logged.
     /// </summary>
-    private SandboxDiscoverySettings BuildDiscovery()
+    private SandboxDiscoverySettings BuildDiscovery(string sessionSecret)
     {
         var url = DiscoveryWebhookUrl;
         // Registration breadcrumb: logs WHERE the gateway will deliver discoveries so an operator
@@ -1646,7 +2091,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable
             "ContextDiscovery: gateway will deliver discoveries to {WebhookUrl} (enabled={Enabled}).",
             url,
             DiscoveryEnabled);
-        return new SandboxDiscoverySettings(url, _sharedSecret.Value);
+        return new SandboxDiscoverySettings(url, sessionSecret);
     }
 
 

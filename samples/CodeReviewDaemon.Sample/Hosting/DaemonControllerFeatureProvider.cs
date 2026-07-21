@@ -12,8 +12,9 @@ namespace CodeReviewDaemon.Sample.Hosting;
 /// — and nothing else.
 /// </summary>
 /// <remarks>
-/// Both callbacks come from the same gateway and are authenticated by the same shared secret; the
-/// discovery route exists solely so a non-2xx response no longer tears down the sandbox session. The
+/// Both callbacks come from the same gateway and are authenticated the same way (a per-session secret
+/// via <see cref="AchieveAi.LmDotnetTools.LmAgentInfra.Auth.SessionSecretStore"/>); the discovery route
+/// exists solely so a missing route (404) no longer tears down the sandbox session. The
 /// daemon still exposes no other surface: filtering at the <see cref="ControllerFeatureProvider"/> level
 /// — rather than relying on "we happen to reference an assembly with these controllers" — keeps that
 /// guarantee explicit, and is what the route-exposure test (AC#4) asserts against.

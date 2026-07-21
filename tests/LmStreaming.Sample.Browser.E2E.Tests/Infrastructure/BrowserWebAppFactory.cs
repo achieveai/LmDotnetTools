@@ -228,7 +228,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
                     sp.GetRequiredService<ILogger<SandboxSessionRegistry>>(),
                     new HttpClient(_sandboxGatewayHandler, disposeHandler: false),
                     sp.GetRequiredService<AuthOptions>(),
-                    sp.GetRequiredService<AuthSharedSecret>()));
+                    sp.GetRequiredService<SessionSecretStore>()));
             }
         });
     }

@@ -56,7 +56,9 @@ public sealed class SandboxAuthWebhookForwarderTests
             NullLogger<SandboxSessionRegistry>.Instance,
             new HttpClient(new StubHandler(Unused)),
             new AuthOptions(),
-            new AuthSharedSecret(new AuthOptions()));
+            new SessionSecretStore(
+                Path.Combine(Path.GetTempPath(), "lmstreaming-test-secrets", Guid.NewGuid().ToString("N")),
+                NullLogger<SessionSecretStore>.Instance));
     }
 
     private static SandboxAuthWebhookForwarder CreateForwarder(

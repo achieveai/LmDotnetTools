@@ -55,12 +55,27 @@ public class SystemProcessHandleTests
         return DefaultProcessLauncher.Instance.Launch(request);
     }
 
+    /// <summary>
+    /// Drains both redirected streams concurrently with the exit wait. Both streams are redirected
+    /// but left unread otherwise; <c>dotnet --info</c>'s output is close to the pipe's buffer capacity,
+    /// so an unread pipe blocks the child's write and <see cref="IProcessHandle.WaitForExitAsync"/>
+    /// then waits forever for an exit that can never happen.
+    /// </summary>
+    private static async Task<int> WaitForExitDrainedAsync(IProcessHandle handle)
+    {
+        var stdoutTask = handle.StandardOutput.ReadToEndAsync();
+        var stderrTask = handle.StandardError.ReadToEndAsync();
+        var exit = await handle.WaitForExitAsync();
+        await Task.WhenAll(stdoutTask, stderrTask);
+        return exit;
+    }
+
     [Fact]
     public async Task WaitForExitAsync_ReturnsExitCode()
     {
         using var handle = LaunchBenign();
 
-        var exit = await handle.WaitForExitAsync();
+        var exit = await WaitForExitDrainedAsync(handle);
 
         exit.Should().Be(0);
         handle.ExitCode.Should().Be(0);
@@ -79,6 +94,9 @@ public class SystemProcessHandleTests
         var count = 0;
         handle.Exited += (_, _) => Interlocked.Increment(ref count);
 
+        // LaunchLongRunning() is a sleeper that never exits on its own, so it must be killed to
+        // trigger Exited (main's WaitForExitDrainedAsync would block forever waiting for a self-exit).
+        // It writes nothing to stdout, so there is no pipe-buffer to drain here.
         handle.Kill(entireProcessTree: true);
         _ = await handle.WaitForExitAsync();
         // Give the event loop a moment to deliver the Exited callback.
@@ -128,7 +146,7 @@ public class SystemProcessHandleTests
     public async Task DisposeAsync_IsIdempotent()
     {
         var handle = LaunchBenign();
-        _ = await handle.WaitForExitAsync();
+        _ = await WaitForExitDrainedAsync(handle);
 
         await handle.DisposeAsync();
         await handle.DisposeAsync();
