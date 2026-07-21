@@ -104,6 +104,59 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
         persistCount.Should().BeGreaterThan(0);
     }
 
+    [Fact]
+    public async Task DescendantUsage_IsAttributedToTemplateDefaultModel_WhenNoPerSpawnOverride()
+    {
+        // A split-model config sets the sub-agent's model on the template's DefaultOptions (not a per-spawn
+        // ModelOverride). The descendant usage record must be attributed to THAT model, not the parent model —
+        // otherwise a sub-agent's spend is mis-attributed (e.g. to the dispatcher/parent model).
+        UsageRecord? captured = null;
+        var sink = new Mock<IUsageSink>();
+        sink.Setup(s => s.RecordUsage(It.IsAny<UsageRecord>())).Callback<UsageRecord>(r => captured = r);
+
+        SetupSubAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                GenerationId = "gen-1",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+
+        var options = CreateOptionsWithTemplateModel("sub-model-sol");
+        _manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates),
+            usageSink: sink.Object,
+            persistUsageAsync: null);
+
+        var spawnJson = await _manager.SpawnAsync("test-agent", "Do some work", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+        _ = await _manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        captured.Should().NotBeNull();
+        captured!.RequestedModel.Should().Be("sub-model-sol");
+    }
+
+    private SubAgentOptions CreateOptionsWithTemplateModel(string templateModel) =>
+        new()
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["test-agent"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a test agent.",
+                    AgentFactory = () => _subAgentMock.Object,
+                    DefaultOptions = new GenerateReplyOptions { ModelId = templateModel },
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+
     private async Task<string> SpawnAsync(IUsageSink? usageSink, Func<Task>? persistUsageAsync = null)
     {
         var manager = CreateManager(usageSink, persistUsageAsync);

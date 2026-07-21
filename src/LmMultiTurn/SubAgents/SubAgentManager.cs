@@ -1743,16 +1743,19 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     /// <summary>
     /// Maps a descendant's <see cref="UsageMessage"/> into a <see cref="UsageRecord"/> for the root
-    /// ledger via the shared <see cref="UsageRecordMapper"/>. The model is the sub-agent's resolved model
-    /// (override, else inherited parent model); the <c>RootConversationId</c> placeholder is re-stamped to
-    /// the ledger's root by <see cref="UsageLedger.RecordUsage"/>.
+    /// ledger via the shared <see cref="UsageRecordMapper"/>. The model is the sub-agent's resolved model:
+    /// the per-spawn override, else the template's default model (a split-model config sets this on the
+    /// discovered/built template's <see cref="SubAgentTemplate.DefaultOptions"/> — without it, sub-agent
+    /// spend would be mis-attributed to the parent model), else the inherited parent model. The
+    /// <c>RootConversationId</c> placeholder is re-stamped to the ledger's root by
+    /// <see cref="UsageLedger.RecordUsage"/>.
     /// </summary>
     private UsageRecord BuildDescendantUsageRecord(UsageMessage message, SubAgentState state) =>
         UsageRecordMapper.FromUsageMessage(
             message,
             state.AgentId,
             UsageExecutionKind.SubAgent,
-            state.ModelOverride ?? _parentModelId);
+            state.ModelOverride ?? state.Template.DefaultOptions?.ModelId ?? _parentModelId);
 
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {
