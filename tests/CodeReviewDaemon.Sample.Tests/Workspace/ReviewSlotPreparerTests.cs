@@ -198,9 +198,9 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var act = async () => await preparer.PrepareAsync(
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
 
-        // It still throws (no silent proceed on a half-inited submodule), but NOT the reclone-driving exception.
-        var thrown = await act.Should().ThrowAsync<Exception>();
-        thrown.Which.Should().NotBeOfType<SlotCorruptException>();
+        // It still throws (no silent proceed on a half-inited submodule), but the SPECIFIC transient/unknown
+        // exception — not the reclone-driving SlotCorruptException, and not some unrelated regression (e.g. an NRE).
+        await act.Should().ThrowExactlyAsync<InvalidOperationException>();
     }
 
     [Fact]
@@ -219,9 +219,9 @@ public sealed class ReviewSlotPreparerTests : IDisposable
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
 
         // A transient auth/network init failure must retry the warm store, NOT trigger a destructive reclone
-        // (which cannot fix it and would loop) — so it throws, but not the reclone-driving SlotCorruptException.
-        var thrown = await act.Should().ThrowAsync<Exception>();
-        thrown.Which.Should().NotBeOfType<SlotCorruptException>();
+        // (which cannot fix it and would loop) — so it throws the SPECIFIC transient exception, not the
+        // reclone-driving SlotCorruptException (and not an unrelated regression).
+        await act.Should().ThrowExactlyAsync<InvalidOperationException>();
     }
 
     [Fact]
