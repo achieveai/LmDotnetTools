@@ -80,11 +80,12 @@ public sealed class SlotHygieneTests : IDisposable
     [Fact]
     public async Task EnsureClean_restores_submodules_to_the_recorded_gitlink()
     {
-        // Regression guard for warm-slot re-clone churn: a prior lease leaves the reviewed submodule checked out
-        // at the PR head, which the superproject sees as a moved pointer (dirty). Without a `submodule update
-        // --force` to restore it to the recorded gitlink, every warm slot looks dirty and is needlessly
-        // re-cloned. `submodule foreach reset --hard` alone does NOT fix this — it resets to the submodule's own
-        // (PR-head) HEAD, not the superproject's gitlink.
+        // Regression guard for warm-slot re-clone churn: a prior lease leaves the reviewed submodule (and its
+        // nested submodules) checked out at PR-head commits, which the superproject sees as moved pointers
+        // (dirty). Without a recursive `submodule update` to restore them to the recorded gitlink, every warm
+        // slot looks dirty and is needlessly re-cloned. `submodule foreach reset --hard` alone does NOT fix this —
+        // it resets each to its own (PR-head) HEAD, not the superproject's gitlink. It must also be `--no-fetch`
+        // (see the dedicated security test below).
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
 
@@ -92,8 +93,30 @@ public sealed class SlotHygieneTests : IDisposable
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().Contain(
-            a => a.Contains("submodule update --recursive --force"),
+            a => a.Contains("submodule update") && a.Contains("--recursive") && a.Contains("--force"),
             "submodule checkouts must be restored to the recorded gitlink so a warm slot is not re-cloned");
+    }
+
+    [Fact]
+    public async Task EnsureClean_restore_never_fetches_through_host_credentials()
+    {
+        // SECURITY: hygiene runs on the host with the daemon's broad provider credentials, BEFORE the run's
+        // policy-enforced SubmoduleInitializer. A restore that fetched could contact a retained nested remote
+        // outside this review's submodule allow-list. Every `submodule update` hygiene issues MUST carry
+        // `--no-fetch` so it can only do a local checkout; missing objects fall through to the reclone gate.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+
+        await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        var submoduleUpdates = runner.Commands
+            .Select(c => string.Join(' ', c.Argv))
+            .Where(a => a.Contains("submodule update"))
+            .ToList();
+        submoduleUpdates.Should().NotBeEmpty();
+        submoduleUpdates.Should().OnlyContain(
+            a => a.Contains("--no-fetch"),
+            "hygiene must never fetch through the host's broad credentials, bypassing the per-review allow-list");
     }
 
     [Fact]
@@ -154,16 +177,16 @@ public sealed class SlotHygieneTests : IDisposable
     [Fact]
     public async Task EnsureClean_reports_NeedsReclone_when_submodule_restore_fails()
     {
-        // A failed `git submodule update --force` (whatever the cause) means the reviewed submodule can't be
-        // confirmed at its recorded gitlink — which `status --porcelain` may hide under submodule-ignore
-        // settings — so the slot must NOT be reported Clean. Re-clone: `--force` only needs a network fetch when
-        // the recorded gitlink object is absent locally, i.e. the warm slot is genuinely stale, so a reclone is
-        // the correct refresh (it self-heals once any transient cause clears — a retry, not an infinite loop).
+        // A failed `submodule update --no-fetch` means the reviewed submodule can't be confirmed at its recorded
+        // gitlink — which `status --porcelain` may hide under submodule-ignore settings — so the slot must NOT be
+        // reported Clean. Because hygiene never fetches (`--no-fetch`), a failure is deterministically a MISSING
+        // local object, i.e. the warm slot is genuinely stale/incomplete relative to store main, so a re-clone is
+        // the correct refresh (it self-heals once store main's objects are re-fetched — a retry, not a loop).
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            "submodule update --recursive --force",
-            new SandboxCommandResult(1, string.Empty, "fatal: unable to access 'https://x': Could not resolve host: x"));
+            "submodule update --recursive",
+            new SandboxCommandResult(1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 

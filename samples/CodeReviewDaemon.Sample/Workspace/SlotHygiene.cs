@@ -41,19 +41,26 @@ internal static class SlotHygiene
         AbortInProgress(gitDir);
 
         // 3. Reset + clean the superproject, then restore ALL submodule checkouts (top-level AND nested,
-        //    recursively) to the superproject's RECORDED gitlink. Restoring to the gitlink
-        //    (`submodule update --recursive --force`) is what keeps a warm slot reusable: a prior lease left the
-        //    reviewed submodule — and, since the review path initializes submodules recursively, its nested
-        //    submodules — checked out at PR-head/agent commits, which the superproject sees as moved pointers
-        //    (`git status` reports dirty). The `submodule foreach` (step 5) only resets each submodule to its OWN
-        //    HEAD, not the recorded (nested) gitlink, so it does NOT fix this. `--recursive --force` (NO --init)
-        //    uses locally-present objects — no fetch in the common case — and touches only already-initialized,
+        //    recursively) to the superproject's RECORDED gitlink. Restoring to the gitlink keeps a warm slot
+        //    reusable: a prior lease left the reviewed submodule — and, since the review path initializes
+        //    submodules recursively, its nested submodules — checked out at PR-head/agent commits, which the
+        //    superproject sees as moved pointers (`git status` reports dirty). The `submodule foreach` (step 5)
+        //    only resets each submodule to its OWN HEAD, not the recorded (nested) gitlink, so it does NOT fix
+        //    this. `--recursive --checkout --force` (NO --init) touches only already-initialized,
         //    .gitmodules-registered submodules at every depth, so it skips a committed embedded gitlink with no
         //    .gitmodules URL (the PR-11182 wedge) and never inits a new/denied submodule.
+        //    SECURITY: `--no-fetch` is REQUIRED. Hygiene runs on the host runner with the daemon's broad provider
+        //    credentials, BEFORE ReviewSlotPreparer builds this run's policy-enforced SubmoduleInitializer — so a
+        //    fetch here would bypass the per-review submodule allow-list and could contact a retained nested
+        //    remote outside this review's scope (the recursive expansion widens that surface). `--no-fetch` makes
+        //    this a pure LOCAL checkout: a present object checks out, a MISSING object fails with no network
+        //    contact, which the step-4 gate then treats as a re-clone condition (the policy-controlled
+        //    initializer is the only thing that performs permitted network fetches).
         var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
         var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
         var restore = await git.RunAsync(
-                ["-C", storePath, "submodule", "update", "--recursive", "--force"], storePath, ct)
+                ["-C", storePath, "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
+                storePath, ct)
             .ConfigureAwait(false);
 
         // 4. Early cleanliness gate. If the superproject reset/clean OR the submodule restore reported failure,
@@ -125,7 +132,12 @@ internal static class SlotHygiene
         await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
         // Restore ALL submodule checkouts (top-level + nested) to the recorded gitlink (see EnsureCleanAsync
         // step 3) so the slot is left pristine for the next lease instead of pinned at this review's PR head.
-        await git.RunAsync(["-C", storePath, "submodule", "update", "--recursive", "--force"], storePath, ct).ConfigureAwait(false);
+        // `--no-fetch` is REQUIRED (same reason as step 3): hygiene must never fetch through the host's broad
+        // credentials outside a review's policy-enforced allow-list.
+        await git.RunAsync(
+                ["-C", storePath, "submodule", "update", "--recursive", "--no-fetch", "--checkout", "--force"],
+                storePath, ct)
+            .ConfigureAwait(false);
         await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
                 storePath, ct)
