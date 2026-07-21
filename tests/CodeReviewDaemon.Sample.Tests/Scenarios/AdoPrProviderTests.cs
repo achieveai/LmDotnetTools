@@ -370,13 +370,15 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
         page.PullRequests.Should().HaveCount(oldPrCount);
+        handler.TotalPushes.Should().Be(oldPrCount, "every eligible old PR receives exactly one /pushes lookup");
         handler.MaxConcurrentPushes.Should().BeGreaterThan(1, "the per-PR push lookups run concurrently, not sequentially");
         handler.MaxConcurrentPushes.Should().BeLessThanOrEqualTo(6, "concurrency is bounded by the provider's cap");
     }
 
     /// <summary>
-    /// Returns the PR list for <c>/pullrequests</c> and, for each <c>/pushes</c> call, records the peak number of
-    /// simultaneously in-flight push lookups (holding each briefly so genuine overlap is observable).
+    /// Returns the PR list for <c>/pullrequests</c> and, for each <c>/pushes</c> call, records the total number
+    /// of push lookups and the peak number simultaneously in-flight (holding each briefly so genuine overlap is
+    /// observable).
     /// </summary>
     private sealed class ConcurrencyTrackingHandler(string prsJson) : HttpMessageHandler
     {
@@ -384,6 +386,8 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         private int _current;
 
         public int MaxConcurrentPushes { get; private set; }
+
+        public int TotalPushes { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -398,6 +402,7 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             lock (_lock)
             {
                 _current++;
+                TotalPushes++;
                 MaxConcurrentPushes = Math.Max(MaxConcurrentPushes, _current);
             }
 

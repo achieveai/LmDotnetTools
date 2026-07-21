@@ -312,8 +312,17 @@ internal sealed class AdoPrProvider : IPrProvider
 
             return latest;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // A real caller cancellation (poll aborted) — propagate; nobody is waiting for this result.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Everything else — including an HttpClient TIMEOUT, which surfaces as a
+            // TaskCanceledException/OperationCanceledException even though the caller's token was NOT
+            // cancelled — is a failed lookup: keep the PR (recency indeterminate) rather than letting one
+            // timed-out /pushes call fault the whole poll via Task.WhenAll.
             _logger.LogDebug(ex, "ADO pushes fetch for ref {Ref} failed; keeping the PR.", sourceRefName);
             return null;
         }

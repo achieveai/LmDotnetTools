@@ -40,62 +40,51 @@ internal static class SlotHygiene
         // 2. Abort any in-progress merge/rebase/cherry-pick left by an interrupted prior lease.
         AbortInProgress(gitDir);
 
-        // 3. Reset + clean the superproject, restore submodule checkouts to the superproject's RECORDED
-        //    gitlink, then reset + clean every submodule working tree. Restoring to the gitlink
-        //    (`submodule update --force`) is what keeps a warm slot reusable: a prior lease left the reviewed
-        //    submodule checked out at the PR head, which the superproject sees as a moved pointer
-        //    (`git status` reports it dirty). The `submodule foreach` below only resets each submodule to its
-        //    OWN (PR-head) HEAD, so without this restore the slot would look dirty on every warm lease and be
-        //    needlessly re-cloned. `--force` alone (no --init / --recursive) uses locally-present objects — no
-        //    fetch — and touches only already-initialized, .gitmodules-registered submodules, so it can't hit a
-        //    denied/network submodule and skips a committed embedded gitlink with no .gitmodules URL (the
-        //    PR-11182 wedge). It is not re-clone-gated: a failure leaves the pointer moved, which the status
-        //    probe below then catches as dirty.
+        // 3. Reset + clean the superproject, then restore submodule checkouts to the superproject's RECORDED
+        //    gitlink. Restoring to the gitlink (`submodule update --force`) is what keeps a warm slot reusable: a
+        //    prior lease left the reviewed submodule checked out at the PR head, which the superproject sees as a
+        //    moved pointer (`git status` reports it dirty). The `submodule foreach` (step 5) only resets each
+        //    submodule to its OWN (PR-head) HEAD, so without this restore the slot would look dirty on every warm
+        //    lease and be needlessly re-cloned. `--force` alone (no --init / --recursive) uses locally-present
+        //    objects — no fetch in the common case — and touches only already-initialized, .gitmodules-registered
+        //    submodules, so it skips a committed embedded gitlink with no .gitmodules URL (the PR-11182 wedge).
         var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
         var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
         var restore = await git.RunAsync(
                 ["-C", storePath, "submodule", "update", "--force"], storePath, ct)
             .ConfigureAwait(false);
-        // A failed restore is re-clone-worthy ONLY if it is real corruption. `git submodule update --force` can
-        // perform an implicit remote fetch when the recorded gitlink object is absent locally (e.g. store main
-        // advanced to an unfetched commit), so a transient auth/network/throttle failure must NOT be classified
-        // as corruption — a destructive full-store reclone can't fix a network blip and would discard a good warm
-        // slot. Corrupt restore failures still reclone (the gitlink object is genuinely broken); Transient/Unknown
-        // are left to the status probe below + the next lease, mirroring the store-checkout classification ladder.
-        var restoreCorrupt = !restore.Succeeded
-            && GitFailureClassifier.Classify(restore.Stderr) == GitFailureKind.Corrupt;
-        if (!restore.Succeeded)
+
+        // 4. Early cleanliness gate. If the superproject reset/clean OR the submodule restore reported failure,
+        //    the store CANNOT be confirmed pristine — re-clone. Do NOT run the remaining ops on a doomed store,
+        //    and do NOT fall through to `status --porcelain`, which may not surface a submodule left off its
+        //    recorded gitlink when submodule-ignore settings hide it. A restore failure is gated even when it
+        //    looks "transient": `submodule update --force` only needs a network fetch when the recorded gitlink
+        //    object is ABSENT locally, which means the warm slot is genuinely stale relative to store main — a
+        //    re-clone is the correct refresh and self-heals once the cause clears (a retry, not an infinite loop;
+        //    corrupt COMMITTED content is handled by the foreach-tolerance in step 5, never by a reclone).
+        if (!reset.Succeeded || !clean.Succeeded || !restore.Succeeded)
         {
-            logger?.LogWarning(
-                "Slot hygiene at {StorePath}: `git submodule update --force` (restore submodules to the recorded "
-                    + "gitlink) failed ({Classification}); {Action}: {Stderr}",
-                storePath,
-                restoreCorrupt ? "corrupt" : "transient/unknown",
-                restoreCorrupt ? "re-cloning" : "leaving it to the status probe + next lease",
-                restore.Stderr);
+            if (!restore.Succeeded)
+            {
+                logger?.LogWarning(
+                    "Slot hygiene at {StorePath}: `git submodule update --force` (restore submodules to the "
+                        + "recorded gitlink) failed; re-cloning (the slot cannot be confirmed pristine): {Stderr}",
+                    storePath, restore.Stderr);
+            }
+
+            return HygieneVerdict.NeedsReclone;
         }
 
+        // 5. Clean every submodule working tree, then structurally probe. Only reached once reset/clean/restore
+        //    succeeded, so these never run on an already-doomed store.
         var submodules = await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
                 storePath, ct)
             .ConfigureAwait(false);
 
-        // 4. Structural probe — a missing/broken gitdir means the warm store is unusable and must be re-cloned.
         var probe = await git.RunAsync(["-C", storePath, "rev-parse", "--git-dir"], storePath, ct)
             .ConfigureAwait(false);
         if (!probe.Succeeded)
-        {
-            return HygieneVerdict.NeedsReclone;
-        }
-
-        // 5. Cleanliness gate: `rev-parse --git-dir` only proves the repo STRUCTURE is intact, not that the tree
-        //    is CLEAN. A superproject cleanup step that reported failure, a CORRUPT submodule restore (a submodule
-        //    genuinely broken off its recorded gitlink — which `status --porcelain` may not surface when
-        //    submodule-ignore settings hide it), or a working tree still showing tracked/untracked changes
-        //    afterwards, means stale state would cross into the next run — so force a re-clone rather than
-        //    reporting a still-dirty slot as Clean (which would let contamination survive the pool). A merely
-        //    transient restore failure is deliberately NOT gated here (see above).
-        if (!reset.Succeeded || !clean.Succeeded || restoreCorrupt)
         {
             return HygieneVerdict.NeedsReclone;
         }
