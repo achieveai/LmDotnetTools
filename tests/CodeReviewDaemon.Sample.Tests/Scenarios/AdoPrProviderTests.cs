@@ -346,4 +346,77 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         page.PullRequests.Should().OnlyContain(p => p.UpdatedAt == null, "with no window ADO never fetches push dates");
         handler.CountRequests("/pushes").Should().Be(0);
     }
+
+    [Fact]
+    public async Task RecencyLookups_run_with_bounded_concurrency()
+    {
+        // Many old PRs each need a /pushes lookup. The lookups must overlap (run concurrently) — a sequential
+        // implementation would show a max concurrency of 1 — but never exceed the provider's concurrency cap.
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        const int oldPrCount = 20;
+        var items = string.Join(",", Enumerable.Range(1, oldPrCount).Select(i =>
+            "{ \"pullRequestId\": " + i + ", \"status\": \"active\", \"creationDate\": \"2026-06-01T00:00:00Z\", "
+            + "\"sourceRefName\": \"refs/heads/f" + i + "\", "
+            + "\"lastMergeSourceCommit\": { \"commitId\": \"h" + i + "\" }, "
+            + "\"lastMergeTargetCommit\": { \"commitId\": \"b" + i + "\" } }"));
+        var prsJson = "{ \"value\": [ " + items + " ] }";
+
+        using var handler = new ConcurrencyTrackingHandler(prsJson);
+        var provider = new AdoPrProvider(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            LoggerFactory.CreateLogger<AdoPrProvider>());
+
+        var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        page.PullRequests.Should().HaveCount(oldPrCount);
+        handler.MaxConcurrentPushes.Should().BeGreaterThan(1, "the per-PR push lookups run concurrently, not sequentially");
+        handler.MaxConcurrentPushes.Should().BeLessThanOrEqualTo(6, "concurrency is bounded by the provider's cap");
+    }
+
+    /// <summary>
+    /// Returns the PR list for <c>/pullrequests</c> and, for each <c>/pushes</c> call, records the peak number of
+    /// simultaneously in-flight push lookups (holding each briefly so genuine overlap is observable).
+    /// </summary>
+    private sealed class ConcurrencyTrackingHandler(string prsJson) : HttpMessageHandler
+    {
+        private readonly object _lock = new();
+        private int _current;
+
+        public int MaxConcurrentPushes { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var uri = request.RequestUri!.ToString();
+            if (uri.Contains("/pullrequests", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) };
+            }
+
+            lock (_lock)
+            {
+                _current++;
+                MaxConcurrentPushes = Math.Max(MaxConcurrentPushes, _current);
+            }
+
+            try
+            {
+                await Task.Delay(30, cancellationToken);
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    _current--;
+                }
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{ \"value\": [ { \"date\": \"2026-07-10T12:00:00Z\" } ] }"),
+            };
+        }
+    }
 }

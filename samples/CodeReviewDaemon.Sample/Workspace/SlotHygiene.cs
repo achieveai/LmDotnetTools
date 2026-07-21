@@ -56,13 +56,23 @@ internal static class SlotHygiene
         var restore = await git.RunAsync(
                 ["-C", storePath, "submodule", "update", "--force"], storePath, ct)
             .ConfigureAwait(false);
+        // A failed restore is re-clone-worthy ONLY if it is real corruption. `git submodule update --force` can
+        // perform an implicit remote fetch when the recorded gitlink object is absent locally (e.g. store main
+        // advanced to an unfetched commit), so a transient auth/network/throttle failure must NOT be classified
+        // as corruption — a destructive full-store reclone can't fix a network blip and would discard a good warm
+        // slot. Corrupt restore failures still reclone (the gitlink object is genuinely broken); Transient/Unknown
+        // are left to the status probe below + the next lease, mirroring the store-checkout classification ladder.
+        var restoreCorrupt = !restore.Succeeded
+            && GitFailureClassifier.Classify(restore.Stderr) == GitFailureKind.Corrupt;
         if (!restore.Succeeded)
         {
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: `git submodule update --force` (restore submodules to the recorded "
-                    + "gitlink) failed; re-cloning, since `status --porcelain` may not surface a submodule left off "
-                    + "its gitlink (submodule-ignore settings can hide it): {Stderr}",
-                storePath, restore.Stderr);
+                    + "gitlink) failed ({Classification}); {Action}: {Stderr}",
+                storePath,
+                restoreCorrupt ? "corrupt" : "transient/unknown",
+                restoreCorrupt ? "re-cloning" : "leaving it to the status probe + next lease",
+                restore.Stderr);
         }
 
         var submodules = await git.RunAsync(
@@ -79,12 +89,13 @@ internal static class SlotHygiene
         }
 
         // 5. Cleanliness gate: `rev-parse --git-dir` only proves the repo STRUCTURE is intact, not that the tree
-        //    is CLEAN. A superproject cleanup step that reported failure, a FAILED submodule restore (a submodule
-        //    left off its recorded gitlink — which `status --porcelain` may not surface when submodule-ignore
-        //    settings hide it), or a working tree still showing tracked/untracked changes afterwards, means stale
-        //    state would cross into the next run — so force a re-clone rather than reporting a still-dirty slot as
-        //    Clean (which would let contamination survive the pool).
-        if (!reset.Succeeded || !clean.Succeeded || !restore.Succeeded)
+        //    is CLEAN. A superproject cleanup step that reported failure, a CORRUPT submodule restore (a submodule
+        //    genuinely broken off its recorded gitlink — which `status --porcelain` may not surface when
+        //    submodule-ignore settings hide it), or a working tree still showing tracked/untracked changes
+        //    afterwards, means stale state would cross into the next run — so force a re-clone rather than
+        //    reporting a still-dirty slot as Clean (which would let contamination survive the pool). A merely
+        //    transient restore failure is deliberately NOT gated here (see above).
+        if (!reset.Succeeded || !clean.Succeeded || restoreCorrupt)
         {
             return HygieneVerdict.NeedsReclone;
         }

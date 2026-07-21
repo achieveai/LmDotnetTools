@@ -152,19 +152,37 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureClean_reports_NeedsReclone_when_submodule_restore_fails()
+    public async Task EnsureClean_reports_NeedsReclone_when_submodule_restore_fails_with_corruption()
     {
-        // A failed `git submodule update --force` may leave a submodule off its recorded gitlink — which
-        // `status --porcelain` can hide (submodule-ignore settings) — so it must NOT be reported as Clean.
-        // Re-clone instead of letting stale submodule state cross into the next lease.
+        // A CORRUPT `git submodule update --force` failure (a genuinely broken gitlink object) may leave a
+        // submodule off its recorded gitlink — which `status --porcelain` can hide (submodule-ignore settings) —
+        // so it must NOT be reported as Clean. Re-clone instead of letting stale submodule state cross leases.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
-            "submodule update --force", new SandboxCommandResult(1, string.Empty, "fatal: could not restore gitlink"));
+            "submodule update --force", new SandboxCommandResult(1, string.Empty, "fatal: bad object in submodule gitlink"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
         verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
+    public async Task EnsureClean_does_not_reclone_when_submodule_restore_fails_transiently()
+    {
+        // `git submodule update --force` can trigger an implicit remote fetch when the recorded gitlink object is
+        // absent locally. A TRANSIENT failure of that fetch (network/auth/throttle) must NOT be classified as
+        // corruption: a destructive full-store reclone can't fix a network blip and would discard a good warm
+        // slot. The tree is otherwise clean, so the slot is reused (the next lease retries the restore).
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --force",
+            new SandboxCommandResult(1, string.Empty, "fatal: unable to access 'https://x': Could not resolve host: x"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.Clean);
     }
 
     [Fact]
