@@ -221,9 +221,9 @@ public sealed class ReviewSlotPreparerTests : IDisposable
         var thrown = await Record.ExceptionAsync(async () => await preparer.PrepareAsync(
             slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None));
 
-        // Whatever else happens downstream (here it completes cleanly), hygiene must NOT have driven a reclone.
-        (thrown is null or not SlotNeedsRecloneException)
-            .Should().BeTrue("a non-corrupt hygiene restore failure must not re-clone the persistent store");
+        // PrepareAsync must complete (hygiene proceeds, then the rest of preparation runs) — NOT throw at all, and
+        // in particular NOT the reclone-driving SlotNeedsRecloneException.
+        thrown.Should().BeNull("a non-corrupt hygiene restore failure proceeds; preparation completes without a reclone");
     }
 
     [Fact]

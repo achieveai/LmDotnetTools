@@ -150,14 +150,17 @@ internal static class SlotHygiene
                 storePath, submodules.Stderr);
         }
 
-        // Status probe. `--ignore-submodules=all`: submodule state (a moved/stale/missing pointer or uncommitted
-        // content) is deliberately NOT gated here — the review re-checks-out every submodule with permitted
-        // fetches, so submodule state between leases can't cross into it, and gating on it would drive the exact
-        // warm-slot re-clone churn this path exists to avoid (and mask the DenyNetworkArgs-blocked restore as a
-        // spurious reclone). Only leftover SUPERPROJECT (non-submodule) state means contamination that survives.
-        var status = await git.RunAsync(
-                ["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"], storePath, ct)
-            .ConfigureAwait(false);
+        // Status probe. When the submodule content cleanup (step 5 foreach) SUCCEEDED, each submodule's working
+        // tree is clean, so ignore submodule state here (`--ignore-submodules=all`): the moved/stale POINTER is
+        // the review's to re-establish (step 4) and gating on it drives the warm-slot re-clone churn this path
+        // avoids. But if the foreach FAILED, do NOT hide submodule state — fall back to a full status so leftover
+        // dirty submodule content the foreach couldn't clean is CAUGHT (→ reclone) rather than masked. An
+        // uninitialized stray gitlink (the PR-11182 wedge) still shows clean under a full status, so this doesn't
+        // reintroduce the wedge reclone-loop. Only leftover SUPERPROJECT state (always checked) means contamination.
+        string[] statusArgs = submodules.Succeeded
+            ? ["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"]
+            : ["-C", storePath, "status", "--porcelain"];
+        var status = await git.RunAsync(statusArgs, storePath, ct).ConfigureAwait(false);
         return status.Succeeded && string.IsNullOrWhiteSpace(status.Stdout)
             ? HygieneVerdict.Clean
             : HygieneVerdict.NeedsReclone;

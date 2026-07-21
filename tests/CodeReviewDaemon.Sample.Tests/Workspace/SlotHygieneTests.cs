@@ -233,6 +233,26 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_reports_NeedsReclone_when_foreach_fails_and_submodule_content_is_dirty()
+    {
+        // When the submodule content cleanup (foreach) FAILS, hygiene must NOT hide submodule state: it falls back
+        // to a FULL status (no --ignore-submodules) so leftover DIRTY submodule content the foreach couldn't clean
+        // is caught (→ reclone) rather than masked and allowed to cross into the next lease.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule foreach --recursive",
+            new SandboxCommandResult(1, string.Empty, "warning: could not reset submodule (read-only file)"));
+        runner.OnArgvContains(
+            "status --porcelain",
+            new SandboxCommandResult(0, " M repos/X/leftover.cs\n", string.Empty));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
     public async Task StripAsync_issues_reset_and_clean()
     {
         var store = SeedStore();
