@@ -117,6 +117,11 @@ internal class SubAgentState
     /// </summary>
     public required SubAgentTemplate Template { get; init; }
     public string? ModelOverride { get; init; }
+
+    /// <summary>The final resolved model this sub-agent was built with (override &gt; template &gt; parent, after
+    /// characteristics processing) — captured at creation so descendant usage is billed to the model that
+    /// actually handled the request, not a value re-derived later that could diverge.</summary>
+    public string? EffectiveModelId { get; init; }
     public string[]? AddTools { get; init; }
     public string[]? RemoveTools { get; init; }
 

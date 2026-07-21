@@ -176,7 +176,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
-            var (agent, store, ownedProviderAgent) = await CreateSubAgentAsync(
+            var (agent, store, ownedProviderAgent, effectiveModelId) = await CreateSubAgentAsync(
                 agentId,
                 template,
                 model,
@@ -192,6 +192,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Agent = agent,
                 Template = template,
                 ModelOverride = model,
+                EffectiveModelId = effectiveModelId,
                 AddTools = addTools,
                 RemoveTools = removeTools,
                 Store = store,
@@ -645,7 +646,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 var previousAgent = state.Agent;
                 var previousStore = state.Store;
-                var (replacementAgent, replacementStore, replacementOwnedProviderAgent) = await CreateSubAgentAsync(
+                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, _) = await CreateSubAgentAsync(
                     state.AgentId,
                     state.Template,
                     state.ModelOverride,
@@ -1187,7 +1188,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>
     /// Creates a MultiTurnAgentLoop configured for a sub-agent with filtered tools.
     /// </summary>
-    private async Task<(IMultiTurnAgent Agent, IConversationStore? Store, IStreamingAgent? OwnedProviderAgent)> CreateSubAgentAsync(
+    private async Task<(IMultiTurnAgent Agent, IConversationStore? Store, IStreamingAgent? OwnedProviderAgent, string? EffectiveModelId)> CreateSubAgentAsync(
         string agentId,
         SubAgentTemplate template,
         string? modelOverride,
@@ -1199,7 +1200,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             return (
                 TestAgentFactoryOverride(agentId, template),
                 null,
-                TestOwnedProviderOverride?.Invoke(agentId, template));
+                TestOwnedProviderOverride?.Invoke(agentId, template),
+                ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId)?.ModelId);
         }
 
         // Resolve the sub-agent's options with model inheritance (override > template > parent).
@@ -1286,7 +1288,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                     logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger)
                 ),
                 store,
-                ownedProviderAgent
+                ownedProviderAgent,
+                // The billed model is the FINAL resolved model — after ResolveSubAgentOptions (which treats a
+                // whitespace override/template id as absent) and after the characteristics path may have replaced
+                // it with the parent model (UseParentModel, above). Captured here so usage isn't attributed to a
+                // reconstructed model that could diverge from the one that actually handled the request.
+                defaultOptions?.ModelId
             );
         }
         catch
@@ -1743,11 +1750,11 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     /// <summary>
     /// Maps a descendant's <see cref="UsageMessage"/> into a <see cref="UsageRecord"/> for the root
-    /// ledger via the shared <see cref="UsageRecordMapper"/>. The model is the sub-agent's resolved model:
-    /// the per-spawn override, else the template's default model (a split-model config sets this on the
-    /// discovered/built template's <see cref="SubAgentTemplate.DefaultOptions"/> — without it, sub-agent
-    /// spend would be mis-attributed to the parent model), else the inherited parent model. The
-    /// <c>RootConversationId</c> placeholder is re-stamped to the ledger's root by
+    /// ledger via the shared <see cref="UsageRecordMapper"/>. The model is the sub-agent's effective model
+    /// captured at creation (<see cref="SubAgentState.EffectiveModelId"/> — the final resolved model after
+    /// override/template/parent inheritance AND the characteristics path; without it a split-model sub-agent's
+    /// spend would be mis-attributed to the parent model), falling back to the parent model only when creation
+    /// recorded none. The <c>RootConversationId</c> placeholder is re-stamped to the ledger's root by
     /// <see cref="UsageLedger.RecordUsage"/>.
     /// </summary>
     private UsageRecord BuildDescendantUsageRecord(UsageMessage message, SubAgentState state) =>
@@ -1755,7 +1762,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             message,
             state.AgentId,
             UsageExecutionKind.SubAgent,
-            state.ModelOverride ?? state.Template.DefaultOptions?.ModelId ?? _parentModelId);
+            state.EffectiveModelId ?? _parentModelId);
 
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {
