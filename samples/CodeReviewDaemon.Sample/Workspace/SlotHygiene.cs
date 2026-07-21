@@ -40,9 +40,30 @@ internal static class SlotHygiene
         // 2. Abort any in-progress merge/rebase/cherry-pick left by an interrupted prior lease.
         AbortInProgress(gitDir);
 
-        // 3. Reset + clean the superproject, then every submodule working tree.
+        // 3. Reset + clean the superproject, restore submodule checkouts to the superproject's RECORDED
+        //    gitlink, then reset + clean every submodule working tree. Restoring to the gitlink
+        //    (`submodule update --force`) is what keeps a warm slot reusable: a prior lease left the reviewed
+        //    submodule checked out at the PR head, which the superproject sees as a moved pointer
+        //    (`git status` reports it dirty). The `submodule foreach` below only resets each submodule to its
+        //    OWN (PR-head) HEAD, so without this restore the slot would look dirty on every warm lease and be
+        //    needlessly re-cloned. `--force` alone (no --init / --recursive) uses locally-present objects — no
+        //    fetch — and touches only already-initialized, .gitmodules-registered submodules, so it can't hit a
+        //    denied/network submodule and skips a committed embedded gitlink with no .gitmodules URL (the
+        //    PR-11182 wedge). It is not re-clone-gated: a failure leaves the pointer moved, which the status
+        //    probe below then catches as dirty.
         var reset = await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
         var clean = await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
+        var restore = await git.RunAsync(
+                ["-C", storePath, "submodule", "update", "--force"], storePath, ct)
+            .ConfigureAwait(false);
+        if (!restore.Succeeded)
+        {
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: `git submodule update --force` (restore submodules to the recorded "
+                    + "gitlink) failed; the status probe still gates cleanliness: {Stderr}",
+                storePath, restore.Stderr);
+        }
+
         var submodules = await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
                 storePath, ct)
@@ -98,6 +119,9 @@ internal static class SlotHygiene
         RemoveStaleLocks(Path.Combine(storePath, ".git"));
         await git.RunAsync(["-C", storePath, "reset", "--hard"], storePath, ct).ConfigureAwait(false);
         await git.RunAsync(["-C", storePath, "clean", "-ffdx"], storePath, ct).ConfigureAwait(false);
+        // Restore submodule checkouts to the recorded gitlink (see EnsureCleanAsync step 3) so the slot is left
+        // pristine for the next lease instead of pinned at this review's PR head.
+        await git.RunAsync(["-C", storePath, "submodule", "update", "--force"], storePath, ct).ConfigureAwait(false);
         await git.RunAsync(
                 ["-C", storePath, "submodule", "foreach", "--recursive", "git reset --hard && git clean -ffdx"],
                 storePath, ct)

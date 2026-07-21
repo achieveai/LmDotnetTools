@@ -83,16 +83,20 @@ internal sealed class AdoPrProvider : IPrProvider
                     var prId = pr.GetProperty("pullRequestId").GetInt64();
                     var headSha = CommitId(pr, "lastMergeSourceCommit");
                     var createdAt = ParseTimestamp(pr, "creationDate");
+                    var sourceRefName = pr.TryGetProperty("sourceRefName", out var srn)
+                        && srn.ValueKind is JsonValueKind.String
+                            ? srn.GetString()
+                            : null;
 
                     // ADO's PR list has no last-activity field (and its server-side time filter supports only
                     // created/closed), so "updated since" can't come from the list. For a PR created BEFORE the
-                    // recency window, fetch the source branch tip commit's date (its last push) so an
-                    // old-but-recently-pushed PR is still reviewed. Bounded: recent-created PRs skip this call
+                    // recency window, fetch the most recent push to its source branch (its true last-push time) so
+                    // an old-but-recently-pushed PR is still reviewed. Bounded: recent-created PRs skip this call
                     // entirely.
                     //
                     // Recency signal (consumed only by PrPollingService.ApplyRecencyFilter as `UpdatedAt ?? CreatedAt`):
                     //  - recent-created PR  -> UpdatedAt null, CreatedAt = creationDate (recent) -> kept.
-                    //  - old PR, push date known   -> UpdatedAt = push date -> kept/dropped on real recency.
+                    //  - old PR, push date known   -> UpdatedAt = last push -> kept/dropped on real recency.
                     //  - old PR, push date UNKNOWN  -> leave the signal indeterminate (BOTH null) so the filter's
                     //    "can't date it => keep" path applies. We do NOT fabricate a boundary timestamp (an earlier
                     //    `?? cutoff` did, which conflates "unknown" with "active exactly at the cutoff"), and we do
@@ -102,9 +106,9 @@ internal sealed class AdoPrProvider : IPrProvider
                     if (request.RecencyCutoff is { } cutoff
                         && createdAt is { } created
                         && created < cutoff
-                        && !string.IsNullOrEmpty(headSha))
+                        && !string.IsNullOrEmpty(sourceRefName))
                     {
-                        var lastPush = await TryGetLastPushDateAsync(org, project, repo, headSha, cancellationToken)
+                        var lastPush = await TryGetLastPushDateAsync(org, project, repo, sourceRefName, cancellationToken)
                             .ConfigureAwait(false);
                         if (lastPush is { } push)
                         {
@@ -188,24 +192,27 @@ internal sealed class AdoPrProvider : IPrProvider
             : null;
 
     /// <summary>
-    /// Fetches the source branch tip commit (<c>GET .../commits/{commitId}</c>) and returns its
-    /// <c>committer.date</c> (falling back to <c>author.date</c>) — the PR's last-push time, ADO's stand-in
-    /// for a "last updated" field. Used by the recency filter for PRs created before the window. Returns
-    /// null (caller keeps the PR) on any non-success, missing field, or transient failure — a recency
-    /// heuristic must never drop an active PR because a metadata read hiccuped.
+    /// Fetches the most recent push to the PR's source branch (<c>GET .../pushes?searchCriteria.refName=...</c>)
+    /// and returns its <c>date</c> — the PR's true last-push time, ADO's stand-in for a "last updated" field.
+    /// Uses the ref-update/push time rather than the head commit's <c>committer</c>/<c>author</c> date, which are
+    /// authored/rebased timestamps, not push times (an old commit recently pushed or force-pushed would otherwise
+    /// be mis-dated and wrongly dropped). Used by the recency filter for PRs created before the window. Returns
+    /// null (caller keeps the PR, recency indeterminate) on any non-success, missing field, or transient failure
+    /// — a recency heuristic must never drop an active PR because a metadata read hiccuped.
     /// </summary>
     private async Task<DateTimeOffset?> TryGetLastPushDateAsync(
         string org,
         string? project,
         string repo,
-        string commitId,
+        string sourceRefName,
         CancellationToken cancellationToken)
     {
         try
         {
             var url =
-                $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/commits/{commitId}"
-                + $"?api-version={ApiVersion}";
+                $"{BaseUrl}/{org}/{project}/_apis/git/repositories/{repo}/pushes"
+                + $"?searchCriteria.refName={Uri.EscapeDataString(sourceRefName)}"
+                + $"&$top=1&api-version={ApiVersion}";
 
             using var httpRequest = new HttpRequestMessage(HttpMethod.Get, url)
                 .WithOperation(SandboxOperation.ReadProviderMetadata);
@@ -218,35 +225,37 @@ internal sealed class AdoPrProvider : IPrProvider
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogDebug(
-                    "ADO commit {CommitId} recency fetch returned {Status}; keeping the PR.",
-                    commitId,
+                    "ADO pushes fetch for ref {Ref} returned {Status}; keeping the PR (recency indeterminate).",
+                    sourceRefName,
                     (int)response.StatusCode);
                 return null;
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var root = document.RootElement;
-
-            // Prefer committer.date (when the commit was applied to the branch); fall back to author.date.
-            foreach (var field in new[] { "committer", "author" })
+            if (!document.RootElement.TryGetProperty("value", out var pushes)
+                || pushes.ValueKind is not JsonValueKind.Array)
             {
-                if (root.TryGetProperty(field, out var gitUserDate)
-                    && gitUserDate.ValueKind is JsonValueKind.Object)
+                return null;
+            }
+
+            // ADO returns pushes newest-first; take the max `date` over the (top-1) page defensively, so the
+            // result is the latest push time regardless of page ordering.
+            DateTimeOffset? latest = null;
+            foreach (var push in pushes.EnumerateArray())
+            {
+                var date = ParseTimestamp(push, "date");
+                if (date is { } d && (latest is null || d > latest))
                 {
-                    var date = ParseTimestamp(gitUserDate, "date");
-                    if (date is not null)
-                    {
-                        return date;
-                    }
+                    latest = d;
                 }
             }
 
-            return null;
+            return latest;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "ADO commit {CommitId} recency fetch failed; keeping the PR.", commitId);
+            _logger.LogDebug(ex, "ADO pushes fetch for ref {Ref} failed; keeping the PR.", sourceRefName);
             return null;
         }
     }

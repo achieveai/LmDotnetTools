@@ -65,8 +65,10 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         {
           "value": [
             { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+              "sourceRefName": "refs/heads/feature-42",
               "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } },
             { "pullRequestId": 50, "status": "active", "creationDate": "2026-07-09T00:00:00Z",
+              "sourceRefName": "refs/heads/feature-50",
               "lastMergeSourceCommit": { "commitId": "head-50" }, "lastMergeTargetCommit": { "commitId": "base-50" } }
           ]
         }
@@ -74,6 +76,7 @@ public sealed class AdoPrProviderTests : LoggingTestBase
 
     private const string OneOldPr = """
         { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+            "sourceRefName": "refs/heads/feature-42",
             "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
         """;
 
@@ -272,21 +275,21 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     {
         var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
         var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "/commits/head-42", """{ "committer": { "date": "2026-07-10T12:00:00Z" } }""")
+            .OnJson(HttpMethod.Get, "/pushes", """{ "value": [ { "date": "2026-07-10T12:00:00Z" } ] }""")
             .OnJson(HttpMethod.Get, "/pullrequests", DatedPrs);
 
         var page = await Provider(handler)
             .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
 
-        // PR 42 (opened 2026-06-01, before the window) → its last push (2026-07-10) becomes UpdatedAt.
+        // PR 42 (opened 2026-06-01, before the window) → its source branch's last push (2026-07-10) becomes UpdatedAt.
         page.PullRequests[0].PrId.Should().Be("42");
         page.PullRequests[0].UpdatedAt.Should().Be(new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
         // PR 50 (opened 2026-07-09, inside the window) → no extra call, UpdatedAt stays null.
         page.PullRequests[1].PrId.Should().Be("50");
         page.PullRequests[1].UpdatedAt.Should().BeNull();
 
-        handler.CountRequests("/commits/head-42").Should().Be(1, "the old PR's last-push date is fetched");
-        handler.CountRequests("/commits/head-50").Should().Be(0, "the recent PR skips the extra call");
+        handler.CountRequests("feature-42").Should().Be(1, "the old PR's source-branch last push is fetched");
+        handler.CountRequests("feature-50").Should().Be(0, "the recent PR skips the extra call");
     }
 
     [Fact]
@@ -294,7 +297,7 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     {
         var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
         var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Get, "/commits/head-42", """{"message":"nope"}""", HttpStatusCode.NotFound)
+            .OnJson(HttpMethod.Get, "/pushes", """{"message":"nope"}""", HttpStatusCode.NotFound)
             .OnJson(HttpMethod.Get, "/pullrequests", OneOldPr);
 
         var page = await Provider(handler)
@@ -318,6 +321,6 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
 
         page.PullRequests.Should().OnlyContain(p => p.UpdatedAt == null, "with no window ADO never fetches push dates");
-        handler.CountRequests("/commits/").Should().Be(0);
+        handler.CountRequests("/pushes").Should().Be(0);
     }
 }

@@ -78,6 +78,25 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_restores_submodules_to_the_recorded_gitlink()
+    {
+        // Regression guard for warm-slot re-clone churn: a prior lease leaves the reviewed submodule checked out
+        // at the PR head, which the superproject sees as a moved pointer (dirty). Without a `submodule update
+        // --force` to restore it to the recorded gitlink, every warm slot looks dirty and is needlessly
+        // re-cloned. `submodule foreach reset --hard` alone does NOT fix this — it resets to the submodule's own
+        // (PR-head) HEAD, not the superproject's gitlink.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+
+        await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(
+            a => a.Contains("submodule update --force"),
+            "submodule checkouts must be restored to the recorded gitlink so a warm slot is not re-cloned");
+    }
+
+    [Fact]
     public async Task EnsureClean_reports_NeedsReclone_when_gitdir_missing()
     {
         var store = Path.Combine(_root, "empty");
