@@ -175,18 +175,32 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureClean_reports_NeedsReclone_when_submodule_restore_fails()
+    public async Task EnsureClean_retries_when_submodule_restore_fails_transiently()
     {
-        // A failed `submodule update --no-fetch` means the reviewed submodule can't be confirmed at its recorded
-        // gitlink — which `status --porcelain` may hide under submodule-ignore settings — so the slot must NOT be
-        // reported Clean. Because hygiene never fetches (`--no-fetch`), a failure is deterministically a MISSING
-        // local object, i.e. the warm slot is genuinely stale/incomplete relative to store main, so a re-clone is
-        // the correct refresh (it self-heals once store main's objects are re-fetched — a retry, not a loop).
+        // A non-corrupt `submodule update --no-fetch` failure (a transient/unrecognized/missing-object condition)
+        // must NOT drive a destructive delete + re-clone of the persistent store — it should retry the warm store
+        // (and a legitimately missing gitlink object is fetched, with policy, by the run's SubmoduleInitializer).
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
             "submodule update --recursive",
             new SandboxCommandResult(1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsRetry);
+    }
+
+    [Fact]
+    public async Task EnsureClean_reports_NeedsReclone_when_submodule_restore_is_corrupt()
+    {
+        // A CORRUPT restore failure (a genuinely broken local object) IS re-clone-worthy: a fresh clone fixes it,
+        // and the submodule can't be confirmed at its recorded gitlink (which status may hide).
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --recursive",
+            new SandboxCommandResult(1, string.Empty, "error: object file .git/modules/repos/X/objects/de/adbeef is empty"));
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 

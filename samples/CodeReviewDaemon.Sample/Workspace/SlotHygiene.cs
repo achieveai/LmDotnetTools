@@ -8,8 +8,13 @@ internal enum HygieneVerdict
     /// <summary>Store is usable — stale state was cleared in place.</summary>
     Clean,
 
-    /// <summary>Store is structurally broken — the caller must re-clone it before use.</summary>
+    /// <summary>Store is structurally broken (or its content is corrupt) — the caller must re-clone it.</summary>
     NeedsReclone,
+
+    /// <summary>Hygiene hit a transient/unrecognized failure (e.g. a submodule restore that couldn't complete
+    /// locally). NOT confirmed corruption — the caller should retry the warm store rather than destructively
+    /// re-cloning it. Mirrors the store-checkout ladder's transient/unknown path.</summary>
+    NeedsRetry,
 }
 
 /// <summary>
@@ -63,25 +68,31 @@ internal static class SlotHygiene
                 storePath, ct)
             .ConfigureAwait(false);
 
-        // 4. Early cleanliness gate. If the superproject reset/clean OR the submodule restore reported failure,
-        //    the store CANNOT be confirmed pristine — re-clone. Do NOT run the remaining ops on a doomed store,
-        //    and do NOT fall through to `status --porcelain`, which may not surface a submodule left off its
-        //    recorded gitlink when submodule-ignore settings hide it. A restore failure is gated even when it
-        //    looks "transient": `submodule update --force` only needs a network fetch when the recorded gitlink
-        //    object is ABSENT locally, which means the warm slot is genuinely stale relative to store main — a
-        //    re-clone is the correct refresh and self-heals once the cause clears (a retry, not an infinite loop;
-        //    corrupt COMMITTED content is handled by the foreach-tolerance in step 5, never by a reclone).
-        if (!reset.Succeeded || !clean.Succeeded || !restore.Succeeded)
+        // 4. Early cleanliness gate. If the superproject reset/clean failed the store is structurally unusable —
+        //    re-clone. A submodule RESTORE failure is classified, NOT unconditionally re-cloned: `--no-fetch`
+        //    means the restore is a pure local checkout, so a failure is either confirmed corruption (a broken
+        //    local object/repo → re-clone fixes it) or a transient/unrecognized/missing-object condition. The
+        //    latter must NOT destructively delete + re-clone the persistent store — it should retry the warm
+        //    store (and, for a legitimately missing gitlink object, the run's policy-enforced SubmoduleInitializer
+        //    performs the PERMITTED fetch). This mirrors the store-checkout ladder (only Corrupt re-clones;
+        //    Unknown is "treated as transient"). Either way we do NOT fall through to `status --porcelain`, which
+        //    can hide a submodule left off its recorded gitlink under submodule-ignore settings.
+        if (!reset.Succeeded || !clean.Succeeded)
         {
-            if (!restore.Succeeded)
-            {
-                logger?.LogWarning(
-                    "Slot hygiene at {StorePath}: `git submodule update --force` (restore submodules to the "
-                        + "recorded gitlink) failed; re-cloning (the slot cannot be confirmed pristine): {Stderr}",
-                    storePath, restore.Stderr);
-            }
-
             return HygieneVerdict.NeedsReclone;
+        }
+
+        if (!restore.Succeeded)
+        {
+            var corrupt = GitFailureClassifier.Classify(restore.Stderr) == GitFailureKind.Corrupt;
+            logger?.LogWarning(
+                "Slot hygiene at {StorePath}: `git submodule update --no-fetch` (restore submodules to the "
+                    + "recorded gitlink) failed ({Classification}); {Action}: {Stderr}",
+                storePath,
+                corrupt ? "corrupt" : "transient/unknown",
+                corrupt ? "re-cloning" : "retrying the warm store (no destructive reclone)",
+                restore.Stderr);
+            return corrupt ? HygieneVerdict.NeedsReclone : HygieneVerdict.NeedsRetry;
         }
 
         // 5. Clean every submodule working tree, then structurally probe. Only reached once reset/clean/restore

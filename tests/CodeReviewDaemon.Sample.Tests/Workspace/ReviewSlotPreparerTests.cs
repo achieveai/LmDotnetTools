@@ -204,6 +204,28 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task PrepareAsync_TransientHygieneRestoreFailure_RetriesInsteadOfReclone()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        // Clean-on-entry hygiene's submodule restore (`submodule update --recursive --no-fetch ...`) fails
+        // NON-corruptly (a missing local object / transient checkout failure) → EnsureCleanAsync returns
+        // HygieneVerdict.NeedsRetry. That must retry the warm store, NOT throw SlotNeedsRecloneException — which
+        // the executor turns into a destructive delete + RecloneStoreAsync of the persistent store.
+        runner.OnArgvContains(
+            "submodule update --recursive --no-fetch",
+            new SandboxCommandResult(1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        var act = async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        // Exactly InvalidOperationException (the retry signal) — never SlotNeedsRecloneException, so no reclone.
+        await act.Should().ThrowExactlyAsync<InvalidOperationException>();
+    }
+
+    [Fact]
     public async Task PrepareAsync_ReviewedSubmoduleTransientInitFailure_DoesNotDriveReclone()
     {
         var slot = CreateSlot();
