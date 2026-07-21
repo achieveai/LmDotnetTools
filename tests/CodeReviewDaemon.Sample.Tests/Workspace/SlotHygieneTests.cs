@@ -252,11 +252,48 @@ public sealed class SlotHygieneTests : IDisposable
         // can leave a submodule registered (URL in .git/config) with its worktree + .git/modules gitdir removed.
         // `submodule update` (even --no-fetch) then drives `submodule--helper clone` → git clone through the host's
         // broad credentials, outside the review's allow-list. Hygiene must NOT clone it (DenyNetworkArgs denies all
-        // transports); it classifies the failure as NeedsRetry instead of silently reporting Clean.
-        var runner = new HostGitCommandRunner(
-            _ => Task.FromResult<IReadOnlyList<GitProviderToken>>([]),
-            NullLogger<HostGitCommandRunner>.Instance);
+        // transports) — it proceeds (Clean, a non-corrupt restore failure is non-fatal), never cloning.
+        var runner = NewHostGitRunner();
+        var (super, sub) = await SetupDeinitializedSubmoduleStoreAsync(runner);
 
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), super, CancellationToken.None);
+
+        AssertSubmoduleNotCloned(sub);
+        verdict.Should().Be(HygieneVerdict.Clean);
+    }
+
+    [Fact]
+    public async Task Strip_does_not_clone_a_deinitialized_submodule_over_the_network()
+    {
+        // Same real-git regression for the success-path StripAsync — it uses the SAME DenyNetworkArgs guard as
+        // EnsureCleanAsync, and a shared setup (SetupDeinitializedSubmoduleStoreAsync) keeps the two hygiene paths
+        // from drifting. StripAsync is best-effort (no verdict); the guarantee is that it never clones/fetches the
+        // deinit'd submodule through the host's broad credentials.
+        var runner = NewHostGitRunner();
+        var (super, sub) = await SetupDeinitializedSubmoduleStoreAsync(runner);
+
+        await SlotHygiene.StripAsync(new GitRunner(runner), super, CancellationToken.None);
+
+        AssertSubmoduleNotCloned(sub);
+    }
+
+    private static HostGitCommandRunner NewHostGitRunner() =>
+        new(_ => Task.FromResult<IReadOnlyList<GitProviderToken>>([]), NullLogger<HostGitCommandRunner>.Instance);
+
+    private static void AssertSubmoduleNotCloned(string sub)
+    {
+        // The transport guard must have BLOCKED the clone — the submodule was NOT re-created (no .git).
+        Directory.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
+        File.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
+    }
+
+    /// <summary>
+    /// Real-git setup shared by both hygiene-path clone-guard tests: a superproject whose (file://) submodule is
+    /// registered (URL retained in .git/config) but DEINIT'd — worktree + <c>.git/modules/&lt;name&gt;</c> gitdir
+    /// removed. That is the exact state in which <c>submodule update</c> would drive an implicit clone.
+    /// </summary>
+    private async Task<(string super, string sub)> SetupDeinitializedSubmoduleStoreAsync(HostGitCommandRunner runner)
+    {
         var remote = Path.Combine(_root, "remote.git").Replace('\\', '/');
         var seed = Path.Combine(_root, "seed");
         var super = Path.Combine(_root, "super");
@@ -288,15 +325,7 @@ public sealed class SlotHygieneTests : IDisposable
         }
 
         DeleteRecursive(Path.Combine(super, ".git", "modules", "sub"));
-
-        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), super, CancellationToken.None);
-
-        // The guard must have BLOCKED the clone: the submodule was NOT re-created (no .git). Hygiene proceeds
-        // (Clean) — a non-corrupt restore failure is non-fatal, and the review re-establishes the submodule with
-        // permitted fetches — so it neither clones through host credentials nor destructively re-clones the store.
-        Directory.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
-        File.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
-        verdict.Should().Be(HygieneVerdict.Clean);
+        return (super, sub);
     }
 
     private static void DeleteRecursive(string path)
