@@ -204,25 +204,26 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
-    public async Task PrepareAsync_TransientHygieneRestoreFailure_RetriesInsteadOfReclone()
+    public async Task PrepareAsync_NonCorruptHygieneRestoreFailure_DoesNotReclone()
     {
         var slot = CreateSlot();
         var runner = new FakeSandboxCommandRunner();
         // Clean-on-entry hygiene's submodule restore (`submodule update --recursive --no-fetch ...`) fails
-        // NON-corruptly (a missing local object / transient checkout failure) → EnsureCleanAsync returns
-        // HygieneVerdict.NeedsRetry. That must retry the warm store, NOT throw SlotNeedsRecloneException — which
-        // the executor turns into a destructive delete + RecloneStoreAsync of the persistent store.
+        // NON-corruptly (a missing local object / deinit'd submodule). EnsureCleanAsync proceeds (Clean) — the
+        // review re-establishes submodules with permitted fetches — so PrepareAsync must NOT throw
+        // SlotNeedsRecloneException (which the executor turns into a destructive delete + RecloneStoreAsync).
         runner.OnArgvContains(
             "submodule update --recursive --no-fetch",
             new SandboxCommandResult(1, string.Empty, "fatal: Unable to checkout 'deadbeef' in submodule path 'repos/X'"));
         var preparer = new ReviewSlotPreparer(
             new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
 
-        var act = async () => await preparer.PrepareAsync(
-            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+        var thrown = await Record.ExceptionAsync(async () => await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None));
 
-        // Exactly InvalidOperationException (the retry signal) — never SlotNeedsRecloneException, so no reclone.
-        await act.Should().ThrowExactlyAsync<InvalidOperationException>();
+        // Whatever else happens downstream (here it completes cleanly), hygiene must NOT have driven a reclone.
+        (thrown is null or not SlotNeedsRecloneException)
+            .Should().BeTrue("a non-corrupt hygiene restore failure must not re-clone the persistent store");
     }
 
     [Fact]

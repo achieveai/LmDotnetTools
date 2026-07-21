@@ -180,11 +180,12 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureClean_retries_when_submodule_restore_fails_transiently()
+    public async Task EnsureClean_proceeds_when_submodule_restore_fails_non_corruptly()
     {
-        // A non-corrupt `submodule update --no-fetch` failure (a transient/unrecognized/missing-object condition)
-        // must NOT drive a destructive delete + re-clone of the persistent store — it should retry the warm store
-        // (and a legitimately missing gitlink object is fetched, with policy, by the run's SubmoduleInitializer).
+        // A non-corrupt `submodule update` failure (transient/unrecognized/missing-object/deinit'd-submodule) is
+        // NON-fatal: it must NOT destructively re-clone the persistent store, and must NOT retry-loop (a
+        // deterministic missing object never reaches the initializer). Hygiene proceeds — the review re-establishes
+        // submodules with permitted fetches — so with the superproject clean the verdict is Clean.
         var store = SeedStore();
         var runner = new FakeSandboxCommandRunner();
         runner.OnArgvContains(
@@ -193,7 +194,7 @@ public sealed class SlotHygieneTests : IDisposable
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
 
-        verdict.Should().Be(HygieneVerdict.NeedsRetry);
+        verdict.Should().Be(HygieneVerdict.Clean);
     }
 
     [Fact]
@@ -290,11 +291,12 @@ public sealed class SlotHygieneTests : IDisposable
 
         var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), super, CancellationToken.None);
 
-        // The guard must have BLOCKED the clone: the submodule was NOT re-created (no .git), and hygiene reports
-        // NeedsRetry (a non-corrupt local failure) rather than silently Clean.
+        // The guard must have BLOCKED the clone: the submodule was NOT re-created (no .git). Hygiene proceeds
+        // (Clean) — a non-corrupt restore failure is non-fatal, and the review re-establishes the submodule with
+        // permitted fetches — so it neither clones through host credentials nor destructively re-clones the store.
         Directory.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
         File.Exists(Path.Combine(sub, ".git")).Should().BeFalse("the deinit'd submodule must not be re-cloned");
-        verdict.Should().Be(HygieneVerdict.NeedsRetry);
+        verdict.Should().Be(HygieneVerdict.Clean);
     }
 
     private static void DeleteRecursive(string path)

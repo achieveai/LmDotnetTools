@@ -102,19 +102,14 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         // 0. Clean-on-entry (the durability guarantee): bring the persistent warm store to a pristine state
         // BEFORE any git step, so a stale lock / dirty tree / half-checked-out submodule left by a crashed
         // prior lease can never wedge or contaminate this one. A structurally broken (or corrupt) store is
-        // re-cloned by the executor's recovery ladder; a transient/unknown hygiene failure retries the warm store
-        // instead — a destructive delete + re-clone must never be driven by a temporary local problem.
-        var hygiene = await SlotHygiene.EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger).ConfigureAwait(false);
-        if (hygiene == HygieneVerdict.NeedsReclone)
+        // re-cloned by the executor's recovery ladder; a non-corrupt submodule-restore failure is non-fatal
+        // (EnsureCleanAsync returns Clean and proceeds — the review re-establishes submodules with permitted
+        // fetches), so it never destructively re-clones a healthy warm store.
+        if (await SlotHygiene.EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger).ConfigureAwait(false)
+            == HygieneVerdict.NeedsReclone)
         {
             throw new SlotNeedsRecloneException(
                 $"Run {run.Id}: slot {slot.Index} store is structurally unusable; re-clone required.");
-        }
-
-        if (hygiene == HygieneVerdict.NeedsRetry)
-        {
-            throw new InvalidOperationException(
-                $"Run {run.Id}: slot {slot.Index} hygiene hit a transient/unknown failure; retry the warm store (no reclone).");
         }
 
         // 1. Fetch origin — refreshes the store's remote-tracking refs so the branch-resolve below sees

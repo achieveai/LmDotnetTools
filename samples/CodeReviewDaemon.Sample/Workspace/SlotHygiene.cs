@@ -5,16 +5,12 @@ namespace CodeReviewDaemon.Sample.Workspace;
 /// <summary>Result of a clean-on-entry pass over a leased slot's store.</summary>
 internal enum HygieneVerdict
 {
-    /// <summary>Store is usable — stale state was cleared in place.</summary>
+    /// <summary>Store is usable — stale state was cleared in place (a non-corrupt submodule-restore failure is
+    /// non-fatal: the review re-establishes submodules, so the slot still counts as usable).</summary>
     Clean,
 
     /// <summary>Store is structurally broken (or its content is corrupt) — the caller must re-clone it.</summary>
     NeedsReclone,
-
-    /// <summary>Hygiene hit a transient/unrecognized failure (e.g. a submodule restore that couldn't complete
-    /// locally). NOT confirmed corruption — the caller should retry the warm store rather than destructively
-    /// re-cloning it. Mirrors the store-checkout ladder's transient/unknown path.</summary>
-    NeedsRetry,
 }
 
 /// <summary>
@@ -95,16 +91,17 @@ internal static class SlotHygiene
                 storePath, ct)
             .ConfigureAwait(false);
 
-        // 4. Early cleanliness gate. If the superproject reset/clean failed the store is structurally unusable —
-        //    re-clone. A submodule RESTORE failure is classified, NOT unconditionally re-cloned: hygiene never
-        //    touches a remote (<see cref="DenyNetworkArgs"/>), so the restore is a pure local checkout and a failure is
-        //    either confirmed corruption (a broken local object/repo → re-clone fixes it) or a transient/
-        //    unrecognized/missing-object/deinit'd-submodule condition. The latter must NOT destructively delete +
-        //    re-clone the persistent store — it should retry the warm store (and, for a legitimately missing gitlink
-        //    object, the run's policy-enforced SubmoduleInitializer performs the PERMITTED fetch). This mirrors the
-        //    store-checkout ladder (only Corrupt re-clones;
-        //    Unknown is "treated as transient"). Either way we do NOT fall through to `status --porcelain`, which
-        //    can hide a submodule left off its recorded gitlink under submodule-ignore settings.
+        // 4. Cleanliness gate for the SUPERPROJECT + corruption. If the superproject reset/clean failed the store
+        //    is structurally unusable — re-clone. A submodule RESTORE failure is classified: confirmed corruption
+        //    (a broken local object/repo) re-clones; a transient/unrecognized/missing-object/deinit'd-submodule
+        //    failure is NON-fatal and PROCEEDS. Hygiene never fetches (<see cref="DenyNetworkArgs"/>), so it cannot
+        //    fix a missing/stale submodule itself — but it does not need to: the review re-establishes EVERY
+        //    submodule downstream (FetchAndCheckoutHead for the reviewed repo + the run's policy-enforced
+        //    SubmoduleInitializer for nested submodules, both with PERMITTED fetches), so a stale/missing submodule
+        //    between leases is superseded and never contaminates a review. Blocking here would either discard a
+        //    healthy warm store (reclone) or loop forever on a deterministic missing-object (retry — which hygiene
+        //    can't fetch and which never reaches the initializer). Submodule state is therefore left to the review;
+        //    the status probe below ignores submodules for the same reason.
         if (!reset.Succeeded || !clean.Succeeded)
         {
             return HygieneVerdict.NeedsReclone;
@@ -112,15 +109,18 @@ internal static class SlotHygiene
 
         if (!restore.Succeeded)
         {
-            var corrupt = GitFailureClassifier.Classify(restore.Stderr) == GitFailureKind.Corrupt;
-            logger?.LogWarning(
-                "Slot hygiene at {StorePath}: `git submodule update --no-fetch` (restore submodules to the "
-                    + "recorded gitlink) failed ({Classification}); {Action}: {Stderr}",
-                storePath,
-                corrupt ? "corrupt" : "transient/unknown",
-                corrupt ? "re-cloning" : "retrying the warm store (no destructive reclone)",
-                restore.Stderr);
-            return corrupt ? HygieneVerdict.NeedsReclone : HygieneVerdict.NeedsRetry;
+            if (GitFailureClassifier.Classify(restore.Stderr) == GitFailureKind.Corrupt)
+            {
+                logger?.LogWarning(
+                    "Slot hygiene at {StorePath}: submodule restore failed with CORRUPTION; re-cloning: {Stderr}",
+                    storePath, restore.Stderr);
+                return HygieneVerdict.NeedsReclone;
+            }
+
+            logger?.LogInformation(
+                "Slot hygiene at {StorePath}: submodule restore did not complete locally ({Stderr}); proceeding — "
+                    + "the review re-establishes submodules with permitted fetches.",
+                storePath, restore.Stderr);
         }
 
         // 5. Clean every submodule working tree, then structurally probe. Only reached once reset/clean/restore
@@ -150,7 +150,13 @@ internal static class SlotHygiene
                 storePath, submodules.Stderr);
         }
 
-        var status = await git.RunAsync(["-C", storePath, "status", "--porcelain"], storePath, ct)
+        // Status probe. `--ignore-submodules=all`: submodule state (a moved/stale/missing pointer or uncommitted
+        // content) is deliberately NOT gated here — the review re-checks-out every submodule with permitted
+        // fetches, so submodule state between leases can't cross into it, and gating on it would drive the exact
+        // warm-slot re-clone churn this path exists to avoid (and mask the DenyNetworkArgs-blocked restore as a
+        // spurious reclone). Only leftover SUPERPROJECT (non-submodule) state means contamination that survives.
+        var status = await git.RunAsync(
+                ["-C", storePath, "status", "--porcelain", "--ignore-submodules=all"], storePath, ct)
             .ConfigureAwait(false);
         return status.Succeeded && string.IsNullOrWhiteSpace(status.Stdout)
             ? HygieneVerdict.Clean
