@@ -60,7 +60,8 @@ internal static class SlotHygiene
         {
             logger?.LogWarning(
                 "Slot hygiene at {StorePath}: `git submodule update --force` (restore submodules to the recorded "
-                    + "gitlink) failed; the status probe still gates cleanliness: {Stderr}",
+                    + "gitlink) failed; re-cloning, since `status --porcelain` may not surface a submodule left off "
+                    + "its gitlink (submodule-ignore settings can hide it): {Stderr}",
                 storePath, restore.Stderr);
         }
 
@@ -78,11 +79,12 @@ internal static class SlotHygiene
         }
 
         // 5. Cleanliness gate: `rev-parse --git-dir` only proves the repo STRUCTURE is intact, not that the tree
-        //    is CLEAN. A superproject cleanup step that reported failure, or a working tree still showing
-        //    tracked/untracked changes afterwards, means stale state would cross into the next run — so force a
-        //    re-clone rather than reporting a still-dirty slot as Clean (which would let contamination survive
-        //    the pool).
-        if (!reset.Succeeded || !clean.Succeeded)
+        //    is CLEAN. A superproject cleanup step that reported failure, a FAILED submodule restore (a submodule
+        //    left off its recorded gitlink — which `status --porcelain` may not surface when submodule-ignore
+        //    settings hide it), or a working tree still showing tracked/untracked changes afterwards, means stale
+        //    state would cross into the next run — so force a re-clone rather than reporting a still-dirty slot as
+        //    Clean (which would let contamination survive the pool).
+        if (!reset.Succeeded || !clean.Succeeded || !restore.Succeeded)
         {
             return HygieneVerdict.NeedsReclone;
         }

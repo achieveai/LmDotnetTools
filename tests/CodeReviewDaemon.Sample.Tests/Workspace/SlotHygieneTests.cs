@@ -152,6 +152,22 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_reports_NeedsReclone_when_submodule_restore_fails()
+    {
+        // A failed `git submodule update --force` may leave a submodule off its recorded gitlink — which
+        // `status --porcelain` can hide (submodule-ignore settings) — so it must NOT be reported as Clean.
+        // Re-clone instead of letting stale submodule state cross into the next lease.
+        var store = SeedStore();
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            "submodule update --force", new SandboxCommandResult(1, string.Empty, "fatal: could not restore gitlink"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(new GitRunner(runner), store, CancellationToken.None);
+
+        verdict.Should().Be(HygieneVerdict.NeedsReclone);
+    }
+
+    [Fact]
     public async Task EnsureClean_tolerates_submodule_cleanup_failure_when_the_tree_is_clean()
     {
         // A `git submodule foreach` that fatals on a committed embedded gitlink with no .gitmodules URL (the

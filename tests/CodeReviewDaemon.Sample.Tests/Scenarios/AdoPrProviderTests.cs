@@ -314,6 +314,29 @@ public sealed class AdoPrProviderTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task RecencyCutoff_keeps_an_old_pr_with_no_source_ref()
+    {
+        // An old PR whose sourceRefName is missing/blank can't be push-dated, so its recency is indeterminate:
+        // both signals null ⇒ ApplyRecencyFilter keeps it, rather than dropping on the stale opened-date. No
+        // push lookup is attempted (there is no ref to query).
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/pullrequests",
+                """
+                { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+                    "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+                """);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        page.PullRequests[0].UpdatedAt.Should().BeNull();
+        page.PullRequests[0].CreatedAt.Should().BeNull("no source ref ⇒ recency indeterminate ⇒ kept");
+        handler.CountRequests("/pushes").Should().Be(0, "no source ref means no push lookup is attempted");
+    }
+
+    [Fact]
     public async Task No_recency_cutoff_means_no_extra_commit_calls()
     {
         var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests", DatedPrs);
