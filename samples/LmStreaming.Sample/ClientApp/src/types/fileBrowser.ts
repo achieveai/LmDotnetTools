@@ -53,6 +53,27 @@ export interface UploadOutcome {
   error?: string;
 }
 
+/**
+ * A file plus the workspace-relative path it should be written to. Produced by a folder / relative-path
+ * upload (webkitdirectory picker or a directory drag-drop). `relativePath` INCLUDES the leaf filename,
+ * e.g. `myfolder/sub/note.txt`.
+ */
+export interface UploadItem {
+  file: File;
+  relativePath: string;
+}
+
+/**
+ * Sequential-upload progress: completed vs total files and the name of the file currently uploading
+ * (`null` between files). Byte progress is intentionally NOT tracked — `fetch` exposes no upload byte
+ * progress, so progress is per-file.
+ */
+export interface UploadProgress {
+  completed: number;
+  total: number;
+  activeName: string | null;
+}
+
 /** Narrows a listing response to the no-session shape (vs a {@link DirectoryListing}). */
 export function isNoSession(x: DirectoryListing | NoSessionState): x is NoSessionState {
   return 'state' in x;

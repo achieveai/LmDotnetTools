@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using LmStreaming.Sample.Browser.E2E.Tests.Infrastructure;
 
@@ -57,5 +58,186 @@ public sealed class FileBrowserTests
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
         await session.SaveSuccessScreenshotAsync("FileBrowser.No_session_state");
+    }
+
+    /// <summary>
+    /// Fixed-height list (WI #214): the browser's file panel must occupy a STABLE height whether it holds
+    /// few or many files (no "jumping"), scrolling internally when the list overflows. The deterministic
+    /// suite has no sandbox gateway, so this stubs the file REST API at the HTTP boundary (via
+    /// <c>page.RouteAsync</c>) to render real populated listings through the real Vue component — the
+    /// controller/sandbox path is proven separately by the FileBrowserController unit tests. Also captures
+    /// the New-folder dialog. Screenshots land in <c>.logs/e2e-screenshots/</c> as reviewer-facing proof.
+    /// </summary>
+    [Fact]
+    public async Task File_browser_list_keeps_stable_height_across_file_counts_and_shows_new_folder_dialog()
+    {
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
+            .Turn(t => t.Text("ok"))
+            .Build();
+        await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
+        var page = session.Page;
+
+        await page.NewChatButton().ClickAsync();
+        await page.SendMessageAsync("hello");
+        await page.WaitForStreamIdleAsync();
+        await page.AssistantText().WaitForCountAtLeastAsync(1);
+
+        // Stub ONLY the file-browser REST surface; every other API call falls through untouched. `fileCount`
+        // is captured (not a value) so bumping it below changes what the next listing returns.
+        var fileCount = 4;
+        await page.RouteAsync(
+            url => url.Contains("/api/conversations/", StringComparison.Ordinal) && url.Contains("/files", StringComparison.Ordinal),
+            async route =>
+            {
+                var request = route.Request;
+                var url = request.Url;
+                var method = request.Method;
+
+                if (method == "GET" && !url.Contains("/download", StringComparison.Ordinal) && !url.Contains("/preview", StringComparison.Ordinal))
+                {
+                    await route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = ListingJson(fileCount) });
+                }
+                else if (method == "POST" && url.Contains("/files/directory", StringComparison.Ordinal))
+                {
+                    await route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = "{\"path\":\"reports\"}" });
+                }
+                else if (method == "POST")
+                {
+                    await route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = "{\"name\":\"note.txt\",\"size\":12}" });
+                }
+                else if (method == "DELETE")
+                {
+                    await route.FulfillAsync(new RouteFulfillOptions { Status = 204 });
+                }
+                else
+                {
+                    await route.ContinueAsync();
+                }
+            }
+        );
+
+        // --- Few files: the panel renders without an internal scrollbar ---
+        await page.GetByTestId("file-browser-button").ClickAsync();
+        await page.GetByTestId("file-browser-modal").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var list = page.GetByTestId("file-browser-list");
+        await list.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+
+        var fewClientHeight = await list.EvaluateAsync<double>("el => el.clientHeight");
+        var fewScrollHeight = await list.EvaluateAsync<double>("el => el.scrollHeight");
+        Assert.False(fewScrollHeight > fewClientHeight + 4, "A short listing must NOT overflow — the panel should size to its fixed height, not shrink to the content.");
+        await session.SaveSuccessScreenshotAsync("FileBrowser.FixedHeight_FewFiles");
+
+        // --- New-folder dialog ---
+        await page.GetByTestId("file-browser-new-folder").ClickAsync();
+        await page.GetByTestId("file-browser-new-folder-dialog").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("file-browser-new-folder-input").FillAsync("reports");
+        await session.SaveSuccessScreenshotAsync("FileBrowser.NewFolderDialog");
+        await page.GetByTestId("file-browser-new-folder-cancel").ClickAsync();
+
+        // --- Many files: reopen with a large listing; the panel scrolls internally at the SAME height ---
+        await page.GetByTestId("file-browser-modal-close").ClickAsync();
+        await page.GetByTestId("file-browser-modal").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+
+        fileCount = 200;
+        await page.GetByTestId("file-browser-button").ClickAsync();
+        await page.GetByTestId("file-browser-modal").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await list.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+
+        var manyClientHeight = await list.EvaluateAsync<double>("el => el.clientHeight");
+        var manyScrollHeight = await list.EvaluateAsync<double>("el => el.scrollHeight");
+        Assert.True(manyScrollHeight > manyClientHeight + 4, "A long listing must overflow and scroll INSIDE the panel (no virtualization), proving the content grew but the panel did not.");
+        await session.SaveSuccessScreenshotAsync("FileBrowser.FixedHeight_ManyFiles");
+
+        // The visible panel height must not "jump" between few and many files — that is the whole point of #214.
+        Assert.True(
+            Math.Abs(manyClientHeight - fewClientHeight) <= 2,
+            $"File list panel height jumped between few ({fewClientHeight}px) and many ({manyClientHeight}px) files — it must stay fixed."
+        );
+    }
+
+    /// <summary>
+    /// Fixed-height regression (WI #214 review T8): the list container must stay MOUNTED at a stable height while
+    /// a listing is loading — the loading indicator renders INSIDE the fixed-height panel, so initial load and
+    /// every refresh no longer collapse then re-expand it (the layout jump this change removes). Gates the first
+    /// listing response so the loading state is deterministically observable.
+    /// </summary>
+    [Fact]
+    public async Task File_browser_list_container_stays_mounted_at_stable_height_while_loading()
+    {
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
+            .Turn(t => t.Text("ok"))
+            .Build();
+        await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
+        var page = session.Page;
+
+        await page.NewChatButton().ClickAsync();
+        await page.SendMessageAsync("hello");
+        await page.WaitForStreamIdleAsync();
+        await page.AssistantText().WaitForCountAtLeastAsync(1);
+
+        // Hold the FIRST listing response open so the loading state is observable; later calls resolve normally.
+        var listGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstList = true;
+        await page.RouteAsync(
+            url => url.Contains("/api/conversations/", StringComparison.Ordinal) && url.Contains("/files", StringComparison.Ordinal),
+            async route =>
+            {
+                var url = route.Request.Url;
+                if (route.Request.Method == "GET" && !url.Contains("/download", StringComparison.Ordinal) && !url.Contains("/preview", StringComparison.Ordinal))
+                {
+                    if (firstList)
+                    {
+                        firstList = false;
+                        await listGate.Task;
+                    }
+
+                    await route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = ListingJson(6) });
+                }
+                else
+                {
+                    await route.ContinueAsync();
+                }
+            }
+        );
+
+        await page.GetByTestId("file-browser-button").ClickAsync();
+        await page.GetByTestId("file-browser-modal").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+
+        // While loading: the fixed-height list container is mounted with the loading indicator INSIDE it.
+        var list = page.GetByTestId("file-browser-list");
+        await list.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("file-browser-loading").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var loadingHeight = await list.EvaluateAsync<double>("el => el.clientHeight");
+        await session.SaveSuccessScreenshotAsync("FileBrowser.Loading_State");
+
+        // Release the listing; the rows replace the loading indicator inside the SAME container.
+        listGate.SetResult();
+        await page.GetByTestId("file-browser-loading").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+        var loadedHeight = await list.EvaluateAsync<double>("el => el.clientHeight");
+
+        Assert.True(
+            Math.Abs(loadedHeight - loadingHeight) <= 2,
+            $"File list panel height changed between loading ({loadingHeight}px) and loaded ({loadedHeight}px) — the container must stay mounted at a stable height."
+        );
+    }
+
+    /// <summary>Builds a camelCase <c>DirectoryListing</c> JSON with two directories and <paramref name="fileCount"/> files.</summary>
+    private static string ListingJson(int fileCount)
+    {
+        var entries = new List<object>
+        {
+            new { name = "docs", type = "directory", size = (long?)null, nameLossy = false },
+            new { name = "src", type = "directory", size = (long?)null, nameLossy = false },
+        };
+        for (var i = 1; i <= fileCount; i++)
+        {
+            entries.Add(new { name = $"file-{i:D3}.txt", type = "file", size = (long?)(1024 + i), nameLossy = false });
+        }
+
+        return JsonSerializer.Serialize(new { workspaceId = "demo", path = "", entries, moreCount = 0 });
     }
 }

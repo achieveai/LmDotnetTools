@@ -204,11 +204,17 @@ public sealed class FileBrowserController(
         }
     }
 
-    /// <summary>Uploads ONE file into a workspace directory. Inclusive 64 MiB per file (declared and observed); advisory overwrite is last-writer-wins.</summary>
+    /// <summary>
+    /// Uploads ONE file into a workspace directory. Inclusive 64 MiB per file (declared and observed); advisory
+    /// overwrite is last-writer-wins. When <paramref name="relativePath"/> is supplied (folder upload), the file
+    /// is written at that workspace-relative destination under the resolved directory and any missing parent
+    /// directories are created first — every path segment is validated server-side and a non-directory parent
+    /// fails the file rather than being traversed or replaced.
+    /// </summary>
     [HttpPost]
     [RequestSizeLimit(FileBrowserLimits.MaxUploadRequestBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = FileBrowserLimits.MaxUploadRequestBytes)]
-    public async Task<IActionResult> Upload(string threadId, [FromQuery] string? path, [FromForm(Name = "file")] IFormFile? file, CancellationToken ct)
+    public async Task<IActionResult> Upload(string threadId, [FromQuery] string? path, [FromForm(Name = "file")] IFormFile? file, [FromForm(Name = "relativePath")] string? relativePath, CancellationToken ct)
     {
         var context = await ResolveSessionAsync(threadId, isListing: false, ct);
         if (!context.Ok)
@@ -221,9 +227,22 @@ public sealed class FileBrowserController(
             return BadRequest(new { error = "no_file", code = "no_file", threadId });
         }
 
-        if (!IsValidBaseName(file.FileName))
+        // Resolve the destination path components. A flat upload validates the single base name; a folder
+        // upload validates EVERY segment of the client's relative path (rejecting empty/'.'/'..'/separators/
+        // NUL/drive forms) so a traversal, absolute, or backslash path never runs a command or writes a byte.
+        string[] destSegments;
+        if (string.IsNullOrEmpty(relativePath))
         {
-            return BadRequest(new { error = "invalid_file_name", code = "invalid_file_name", threadId });
+            if (!IsValidBaseName(file.FileName))
+            {
+                return BadRequest(new { error = "invalid_file_name", code = "invalid_file_name", threadId });
+            }
+
+            destSegments = [file.FileName];
+        }
+        else if (!TryValidateRelativePath(relativePath, out destSegments))
+        {
+            return BadRequest(new { error = "invalid_path", code = "invalid_path", threadId });
         }
 
         // Declared-length check first, then re-check the OBSERVED bytes while reading — a lying declared
@@ -247,15 +266,126 @@ public sealed class FileBrowserController(
                 return BadRequest(new { error = "not_a_directory", code = "not_a_directory", threadId });
             }
 
+            var relativeDestination = string.Join('/', destSegments);
+            var serverPath = target.ServerPath.Length == 0 ? relativeDestination : $"{target.ServerPath}/{relativeDestination}";
+
+            // Folder upload: create the validated parent chain ONE component at a time, rejecting any symlink or
+            // file component, then guard the leaf the same way. A plain `mkdir -p` would silently FOLLOW a symlink
+            // in the chain, letting a relative path be written THROUGH it out of the resolved directory; walking
+            // the chain against the authoritative listing prevents that. Flat uploads keep their single write.
+            if (!string.IsNullOrEmpty(relativePath))
+            {
+                var chain = await EnsureDirectoryChainAsync(session.SessionId, target.ServerPath, destSegments[..^1], threadId, ct);
+                if (!chain.Ok)
+                {
+                    return chain.Error!;
+                }
+
+                var leafConflict = await RejectNonFileLeafAsync(session.SessionId, chain.FinalDir, destSegments[^1], threadId, ct);
+                if (leafConflict is not null)
+                {
+                    return leafConflict;
+                }
+            }
+
             var bytes = await ReadUploadWithinCapAsync(file, ct);
             if (bytes is null)
             {
                 return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "file_too_large", code = "file_too_large", threadId });
             }
 
-            var serverPath = target.ServerPath.Length == 0 ? file.FileName : $"{target.ServerPath}/{file.FileName}";
             await fileBrowser.WriteWorkspaceFileBytesAsync(session.SessionId, serverPath, bytes, ct);
-            return Ok(new UploadResultDto(file.FileName, bytes.LongLength));
+            var resultName = string.IsNullOrEmpty(relativePath) ? file.FileName : relativePath;
+            return Ok(new UploadResultDto(resultName, bytes.LongLength));
+        }
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Conflict)
+        {
+            return Conflict(new { error = "target_busy", code = "target_busy", threadId });
+        }
+        catch (SandboxException ex)
+        {
+            return MapSandbox(ex, threadId);
+        }
+    }
+
+    /// <summary>
+    /// Creates a directory under a resolved workspace directory via a single <c>mkdir --</c> through the same
+    /// command seam <c>Delete</c> uses. The name is validated as a single base component and checked against the
+    /// authoritative listing first: an existing real directory is idempotent success, while an existing file OR
+    /// symlink is a conflict (never followed, unlike a plain <c>mkdir -p</c>).
+    /// </summary>
+    [HttpPost("directory")]
+    public async Task<IActionResult> CreateDirectory(string threadId, [FromQuery] string? path, [FromBody] CreateDirectoryRequest? request, CancellationToken ct)
+    {
+        var context = await ResolveSessionAsync(threadId, isListing: false, ct);
+        if (!context.Ok)
+        {
+            return context.Error!;
+        }
+
+        // Validate the name as a single base component BEFORE touching the sandbox — an invalid name never
+        // runs a command.
+        var name = request?.Name;
+        if (name is null || !IsValidBaseName(name))
+        {
+            return BadRequest(new { error = "invalid_folder_name", code = "invalid_folder_name", threadId });
+        }
+
+        var session = context.Session!;
+        try
+        {
+            var target = await ResolveTargetAsync(session.SessionId, path ?? string.Empty, ct);
+            if (!target.Success)
+            {
+                return ResolveFailureResult(target.Failure, threadId);
+            }
+
+            if (target.Type != SandboxEntryType.Directory)
+            {
+                return BadRequest(new { error = "not_a_directory", code = "not_a_directory", threadId });
+            }
+
+            var dirPath = target.ServerPath.Length == 0 ? name : $"{target.ServerPath}/{name}";
+
+            // Verify the name against the authoritative listing FIRST: an existing real directory is idempotent
+            // success, while an existing file OR symlink is a conflict (a plain `mkdir -p` would follow a symlink
+            // and wrongly return success). Only a genuinely-absent name is created.
+            var siblings = await fileBrowser.ListWorkspaceDirectoryAsync(session.SessionId, target.ServerPath, ct);
+            var existing = siblings
+                .Where(e => !e.NameLossy && string.Equals(e.Name, name, StringComparison.Ordinal))
+                .ToList();
+            if (existing.Count > 1)
+            {
+                return BadRequest(new { error = "ambiguous_path", code = "ambiguous_path", threadId });
+            }
+
+            if (existing.Count == 1)
+            {
+                return existing[0].Type == SandboxEntryType.Directory
+                    ? Ok(new CreateDirectoryResultDto(dirPath))
+                    : Conflict(new { error = "path_conflict", code = "path_conflict", threadId });
+            }
+
+            // A single `mkdir --` under the verified-real parent; `--` keeps a leading-dash name an operand.
+            string[] argv = ["mkdir", "--", dirPath];
+            var result = await fileBrowser.ExecuteWorkspaceCommandAsync(session.SessionId, new SandboxCommand(argv), ct);
+            if (result.ExitCode != 0)
+            {
+                logger.LogWarning(
+                    "File browser create-directory failed for thread {ThreadId}: mkdir exit {ExitCode} at depth {Depth}",
+                    threadId,
+                    result.ExitCode,
+                    PathDepth(dirPath)
+                );
+                return UnprocessableEntity(new { error = "create_directory_failed", code = "create_directory_failed", exitCode = result.ExitCode, threadId });
+            }
+
+            logger.LogInformation(
+                "File browser created a directory for thread {ThreadId} at depth {Depth}",
+                threadId,
+                PathDepth(dirPath)
+            );
+            return Ok(new CreateDirectoryResultDto(dirPath));
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Conflict)
         {
@@ -577,6 +707,115 @@ public sealed class FileBrowserController(
         // POSIX-relative, so a basename never needs one).
         return !name.Contains(':');
     }
+
+    /// <summary>
+    /// Validates a folder-upload relative path (e.g. <c>proj/docs/note.txt</c>) segment by segment. Splitting on
+    /// '/' and requiring every segment to be a valid base name rejects empty segments (leading/trailing/double
+    /// slash), <c>.</c>/<c>..</c> traversal, backslash, NUL, and drive-qualified/absolute forms — the returned
+    /// segments include the leaf file name.
+    /// </summary>
+    private static bool TryValidateRelativePath(string relativePath, out string[] segments)
+    {
+        segments = relativePath.Split('/');
+        foreach (var segment in segments)
+        {
+            if (!IsValidBaseName(segment))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private readonly record struct DirectoryChainResult(bool Ok, string FinalDir, IActionResult? Error)
+    {
+        public static DirectoryChainResult Success(string finalDir) => new(true, finalDir, null);
+
+        public static DirectoryChainResult Fail(IActionResult error) => new(false, string.Empty, error);
+    }
+
+    /// <summary>
+    /// Ensures every <paramref name="segments"/> component under <paramref name="baseDir"/> exists as a REAL
+    /// directory, creating missing ones one at a time with <c>mkdir --</c> (never <c>mkdir -p</c>, which would
+    /// follow a symlink in the chain). An existing file OR symlink component is rejected — never traversed — so
+    /// a folder-upload relative path can never be written through a symlink out of the resolved directory. The
+    /// residual create-then-write atomicity boundary is tracked separately by #213.
+    /// </summary>
+    private async Task<DirectoryChainResult> EnsureDirectoryChainAsync(string sessionId, string baseDir, IReadOnlyList<string> segments, string threadId, CancellationToken ct)
+    {
+        var currentDir = baseDir;
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var segment = segments[i];
+            var entries = await fileBrowser.ListWorkspaceDirectoryAsync(sessionId, currentDir, ct);
+            var matches = entries
+                .Where(e => !e.NameLossy && string.Equals(e.Name, segment, StringComparison.Ordinal))
+                .ToList();
+            var nextDir = currentDir.Length == 0 ? segment : $"{currentDir}/{segment}";
+
+            if (matches.Count > 1)
+            {
+                return DirectoryChainResult.Fail(BadRequest(new { error = "ambiguous_path", code = "ambiguous_path", threadId }));
+            }
+
+            if (matches.Count == 1)
+            {
+                if (matches[0].Type != SandboxEntryType.Directory)
+                {
+                    return DirectoryChainResult.Fail(Conflict(new { error = "path_conflict", code = "path_conflict", threadId }));
+                }
+            }
+            else
+            {
+                string[] argv = ["mkdir", "--", nextDir];
+                var result = await fileBrowser.ExecuteWorkspaceCommandAsync(sessionId, new SandboxCommand(argv), ct);
+                if (result.ExitCode != 0)
+                {
+                    logger.LogWarning(
+                        "File browser folder-upload directory creation failed for thread {ThreadId}: mkdir exit {ExitCode} at depth {Depth}",
+                        threadId,
+                        result.ExitCode,
+                        PathDepth(nextDir)
+                    );
+                    return DirectoryChainResult.Fail(UnprocessableEntity(new { error = "mkdir_failed", code = "mkdir_failed", exitCode = result.ExitCode, threadId }));
+                }
+            }
+
+            currentDir = nextDir;
+        }
+
+        return DirectoryChainResult.Success(currentDir);
+    }
+
+    /// <summary>
+    /// Guards the write leaf: a pre-existing plain FILE is overwritten (last-writer-wins, as flat upload does),
+    /// but a symlink or directory at the destination is rejected so a write is never followed through a symlink
+    /// or made to clobber a directory. Returns a conflict result to short-circuit, or <c>null</c> to proceed.
+    /// </summary>
+    private async Task<IActionResult?> RejectNonFileLeafAsync(string sessionId, string parentDir, string leaf, string threadId, CancellationToken ct)
+    {
+        var entries = await fileBrowser.ListWorkspaceDirectoryAsync(sessionId, parentDir, ct);
+        var matches = entries
+            .Where(e => !e.NameLossy && string.Equals(e.Name, leaf, StringComparison.Ordinal))
+            .ToList();
+        if (matches.Count == 0)
+        {
+            return null;
+        }
+
+        if (matches.Count > 1)
+        {
+            return BadRequest(new { error = "ambiguous_path", code = "ambiguous_path", threadId });
+        }
+
+        return matches[0].Type == SandboxEntryType.File
+            ? null
+            : Conflict(new { error = "path_conflict", code = "path_conflict", threadId });
+    }
+
+    /// <summary>The number of '/'-separated components in a workspace-relative server path (0 for the root). Content-free metadata for logs.</summary>
+    private static int PathDepth(string serverPath) => serverPath.Length == 0 ? 0 : serverPath.Split('/').Length;
 
     private static int CountLines(string text)
     {
