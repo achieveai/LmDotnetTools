@@ -15,7 +15,8 @@ const {
   error,
   noSession,
   uploadProgress,
-  isUploading,
+  uploadBusy,
+  setOverwritePending,
   previewTarget,
   previewResult,
   load,
@@ -45,6 +46,16 @@ const cancelBtnRef = ref<HTMLButtonElement | null>(null);
 // Files awaiting an advisory overwrite confirmation (their names collide with existing files).
 const pendingUpload = ref<{ files: File[]; colliding: string[] } | null>(null);
 const overwriteKeepBtnRef = ref<HTMLButtonElement | null>(null);
+
+/**
+ * Opens/closes the overwrite confirmation, keeping the composable's `uploadBusy` admission barrier in
+ * lockstep so a folder pick/drop cannot start a batch while the user is still deciding (which would
+ * mutate the directory and make the pending decision stale).
+ */
+function setPendingUpload(pending: { files: File[]; colliding: string[] } | null): void {
+  pendingUpload.value = pending;
+  setOverwritePending(pending !== null);
+}
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const folderInputRef = ref<HTMLInputElement | null>(null);
 const isDragOver = ref(false);
@@ -161,8 +172,8 @@ function onFilesPicked(event: Event): void {
   const files = input.files ? Array.from(input.files) : [];
   // Reset so picking the same file again re-triggers change.
   input.value = '';
-  // Ignore new picks while a batch is uploading (single-flight; buttons are also disabled).
-  if (isUploading.value) {
+  // Ignore new picks while an upload is busy (a batch is running OR an overwrite confirm is pending).
+  if (uploadBusy.value) {
     return;
   }
   if (files.length > 0) {
@@ -175,7 +186,7 @@ function onFolderPicked(event: Event): void {
   const input = event.target as HTMLInputElement;
   const files = input.files ? Array.from(input.files) : [];
   input.value = '';
-  if (isUploading.value) {
+  if (uploadBusy.value) {
     return;
   }
   const result = filesFromDirectoryInput(files);
@@ -195,8 +206,8 @@ function onFolderPicked(event: Event): void {
  */
 async function onDrop(event: DragEvent): Promise<void> {
   isDragOver.value = false;
-  // Ignore drops while a batch is uploading (single-flight).
-  if (!event.dataTransfer || isUploading.value) {
+  // Ignore drops while an upload is busy (a batch is running OR an overwrite confirm is pending).
+  if (!event.dataTransfer || uploadBusy.value) {
     return;
   }
   const result = await resolveDrop(event.dataTransfer);
@@ -235,17 +246,22 @@ function handleUpload(files: File[]): void {
   );
   const colliding = files.filter((file) => existing.has(file.name)).map((file) => file.name);
   if (colliding.length > 0) {
-    pendingUpload.value = { files, colliding };
+    setPendingUpload({ files, colliding });
     return;
   }
   void doUpload(files);
 }
 
-/** Overwrite confirmed: upload the whole batch (colliding files are replaced, last-writer-wins). */
+/**
+ * Overwrite confirmed: upload the whole batch (colliding files are replaced, last-writer-wins). The
+ * listing is re-checked (reloaded) FIRST so the decision is applied against the current directory rather
+ * than a stale snapshot (e.g. after a mixed drop's folder batch mutated it while the confirm was open).
+ */
 async function confirmOverwrite(): Promise<void> {
   const pending = pendingUpload.value;
-  pendingUpload.value = null;
+  setPendingUpload(null);
   if (pending) {
+    await load();
     await doUpload(pending.files);
   }
 }
@@ -253,7 +269,7 @@ async function confirmOverwrite(): Promise<void> {
 /** Overwrite declined: skip the colliding files and upload only the non-colliding ones (per-file independence). */
 function cancelOverwrite(): void {
   const pending = pendingUpload.value;
-  pendingUpload.value = null;
+  setPendingUpload(null);
   if (pending) {
     const collidingSet = new Set(pending.colliding);
     const safe = pending.files.filter((file) => !collidingSet.has(file.name));
@@ -406,7 +422,7 @@ function typeIcon(entry: FileEntry): string {
         <button
           class="fb-upload-btn"
           data-testid="file-browser-upload"
-          :disabled="isUploading"
+          :disabled="uploadBusy"
           @click="fileInputRef?.click()"
         >
           Choose files
@@ -414,7 +430,7 @@ function typeIcon(entry: FileEntry): string {
         <button
           class="fb-upload-btn"
           data-testid="file-browser-folder-upload"
-          :disabled="!folderPickerSupported || isUploading"
+          :disabled="!folderPickerSupported || uploadBusy"
           @click="folderInputRef?.click()"
         >
           Upload folder

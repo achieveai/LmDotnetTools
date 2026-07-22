@@ -220,6 +220,23 @@ describe('useFileBrowser upload single-flight guard (F5)', () => {
   });
 });
 
+describe('useFileBrowser uploadBusy admission barrier (F5 round-2)', () => {
+  it('reports uploadBusy while a flat overwrite confirmation is pending, even with no batch running', () => {
+    const fb = useFileBrowser(() => 'thread-1');
+
+    expect(fb.uploadBusy.value).toBe(false);
+
+    // A pending flat overwrite confirmation makes uploads busy so no folder batch can start under it...
+    fb.setOverwritePending(true);
+    expect(fb.uploadBusy.value).toBe(true);
+    // ...even though no batch is actually running.
+    expect(fb.isUploading.value).toBe(false);
+
+    fb.setOverwritePending(false);
+    expect(fb.uploadBusy.value).toBe(false);
+  });
+});
+
 describe('useFileBrowser upload outcomes on mid-batch throw (F7)', () => {
   it('preserves already-completed outcomes; marks only the active + remaining files failed', async () => {
     let postCount = 0;

@@ -56,6 +56,19 @@ export function useFileBrowser(getThreadId: () => string | null) {
   // the shared `uploadProgress` or race reloads.
   const pendingBatches = ref(0);
   const isUploading = computed(() => pendingBatches.value > 0);
+  // True while the component's flat overwrite confirmation is open (set via {@link setOverwritePending}).
+  // Folded into {@link uploadBusy} so a folder pick/drop cannot START a batch while the user is still
+  // deciding — otherwise that batch would mutate the directory and the later confirm/cancel would apply
+  // a STALE decision against a changed listing.
+  const overwriteConfirmPending = ref(false);
+  // The single admission barrier every upload entry point consults: a batch is running OR a flat overwrite
+  // confirmation is pending. The component binds its controls' `disabled` + input guards to this.
+  const uploadBusy = computed(() => pendingBatches.value > 0 || overwriteConfirmPending.value);
+
+  /** Sets whether a flat overwrite confirmation is pending, engaging/releasing the {@link uploadBusy} barrier. */
+  function setOverwritePending(pending: boolean): void {
+    overwriteConfirmPending.value = pending;
+  }
 
   // Inline preview state (the panel the component renders in a <pre>).
   const previewTarget = ref<FileEntry | null>(null);
@@ -423,6 +436,8 @@ export function useFileBrowser(getThreadId: () => string | null) {
     noSession,
     uploadProgress,
     isUploading,
+    uploadBusy,
+    setOverwritePending,
     previewTarget,
     previewResult,
     load,

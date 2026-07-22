@@ -562,8 +562,9 @@ describe('FileBrowser overwrite confirmation', () => {
     expect(fetchSpy.mock.calls.length).toBe(1);
 
     fetchSpy
+      .mockResolvedValueOnce(jsonResponse(sampleListing)) // re-check reload (applied against a fresh listing)
       .mockResolvedValueOnce(jsonResponse({ name: 'readme.md', size: 1 })) // upload
-      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // post-batch reload
     await wrapper.find('[data-testid="file-browser-overwrite-confirm-btn"]').trigger('click');
     await flushPromises();
 
@@ -589,5 +590,82 @@ describe('FileBrowser overwrite confirmation', () => {
     // Only the non-colliding file uploaded (readme.md was skipped).
     const uploads = fetchSpy.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
     expect(uploads.length).toBe(1);
+  });
+});
+
+describe('FileBrowser overwrite-pending admission barrier (F5 round-2)', () => {
+  /** Opens a flat overwrite confirmation (readme.md collides with the existing root readme.md). */
+  async function openOverwriteConfirm(wrapper: ReturnType<typeof mount>): Promise<void> {
+    const input = wrapper.find('[data-testid="file-browser-file-input"]');
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['x'], 'readme.md')],
+    });
+    await input.trigger('change');
+    await flushPromises();
+  }
+
+  it('ignores a folder pick AND a folder drop while an overwrite confirm is pending, then still confirms', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    await openOverwriteConfirm(wrapper);
+    expect(wrapper.find('[data-testid="file-browser-overwrite-confirm"]').exists()).toBe(true);
+
+    // (c) Both upload entry buttons are disabled while the confirmation is pending.
+    expect(wrapper.find('[data-testid="file-browser-upload"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-testid="file-browser-folder-upload"]').attributes('disabled')).toBeDefined();
+
+    const bodies: FormData[] = [];
+    fetchSpy.mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === 'POST') {
+        bodies.push((init as RequestInit).body as FormData);
+        return Promise.resolve(jsonResponse({ name: 'readme.md', size: 1 }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing));
+    });
+
+    // (a) A folder PICK while the overwrite confirm is pending is IGNORED (no folder batch starts).
+    const folderInput = wrapper.find('[data-testid="file-browser-folder-input"]');
+    Object.defineProperty(folderInput.element, 'files', {
+      configurable: true,
+      value: [relFile('proj/a.txt')],
+    });
+    await folderInput.trigger('change');
+    await flushPromises();
+
+    // (a) A folder DROP while pending is likewise IGNORED.
+    dispatchDrop(wrapper, [dirEntry('proj', [fileEntry('b.txt')])]);
+    await flushPromises();
+
+    // No folder (relativePath) upload happened while the confirmation was pending...
+    expect(bodies.some((b) => b.get('relativePath'))).toBe(false);
+    // ...and the confirmation is still open (the ignored folder actions did not disturb it).
+    expect(wrapper.find('[data-testid="file-browser-overwrite-confirm"]').exists()).toBe(true);
+
+    // (b) Confirming the flat overwrite still uploads readme.md correctly afterward.
+    await wrapper.find('[data-testid="file-browser-overwrite-confirm-btn"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="file-browser-overwrite-confirm"]').exists()).toBe(false);
+    const flatUploads = bodies.filter((b) => b.get('file') && !b.get('relativePath'));
+    expect(flatUploads).toHaveLength(1);
+  });
+
+  it('re-checks (reloads) the listing before applying a confirmed overwrite', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    await openOverwriteConfirm(wrapper);
+
+    const methods: string[] = [];
+    fetchSpy.mockImplementation((_url, init) => {
+      const isPost = (init as RequestInit)?.method === 'POST';
+      methods.push(isPost ? 'POST' : 'GET');
+      return Promise.resolve(isPost ? jsonResponse({ name: 'readme.md', size: 1 }) : jsonResponse(sampleListing));
+    });
+
+    await wrapper.find('[data-testid="file-browser-overwrite-confirm-btn"]').trigger('click');
+    await flushPromises();
+
+    // A GET (the re-check reload) is issued BEFORE the upload POST, so the decision isn't applied stale.
+    const firstPost = methods.indexOf('POST');
+    expect(firstPost).toBeGreaterThan(0);
+    expect(methods.slice(0, firstPost)).toContain('GET');
   });
 });
