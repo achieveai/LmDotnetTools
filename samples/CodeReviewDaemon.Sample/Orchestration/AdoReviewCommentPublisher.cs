@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -19,6 +20,9 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
 {
     private const string BaseUrl = "https://dev.azure.com";
     private const string ApiVersion = "7.1";
+
+    /// <summary>Per-comment content cap when listing existing findings — enough to recognize a duplicate.</summary>
+    private const int MaxBodyChars = 280;
 
     private readonly HttpClient _httpClient;
     private readonly IOAuthTokenProvider _tokenProvider;
@@ -100,6 +104,76 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     private static string ThreadsUrl(ReviewCommentTarget target) =>
         $"{BaseUrl}/{target.Repo.OrgOrOwner}/{target.Repo.Project}/_apis/git/repositories/{target.Repo.RepoName}"
         + $"/pullRequests/{target.PrId}/threads?api-version={ApiVersion}";
+
+    public async Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
+        ReviewCommentTarget target,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        using var request = await BuildRequestAsync(
+            HttpMethod.Get, ThreadsUrl(target), SandboxOperation.ReadProviderMetadata, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        var results = new List<ExistingReviewComment>();
+        foreach (var thread in document.RootElement.GetProperty("value").EnumerateArray())
+        {
+            var (path, line) = ThreadLocation(thread);
+            if (!thread.TryGetProperty("comments", out var comments) || comments.ValueKind is not JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var comment in comments.EnumerateArray())
+            {
+                var content = comment.TryGetProperty("content", out var c) && c.ValueKind is JsonValueKind.String
+                    ? c.GetString()
+                    : null;
+                if (string.IsNullOrWhiteSpace(content))
+                {
+                    continue;
+                }
+
+                results.Add(new ExistingReviewComment(path, line, Trim(content), AuthorOf(comment)));
+            }
+        }
+
+        return results;
+    }
+
+    private static (string? Path, string? Line) ThreadLocation(JsonElement thread)
+    {
+        if (!thread.TryGetProperty("threadContext", out var ctx) || ctx.ValueKind is not JsonValueKind.Object)
+        {
+            return (null, null);
+        }
+
+        var path = ctx.TryGetProperty("filePath", out var fp) && fp.ValueKind is JsonValueKind.String ? fp.GetString() : null;
+        string? line = null;
+        if (ctx.TryGetProperty("rightFileStart", out var rs) && rs.ValueKind is JsonValueKind.Object
+            && rs.TryGetProperty("line", out var ln) && ln.ValueKind is JsonValueKind.Number)
+        {
+            line = ln.GetInt32().ToString(CultureInfo.InvariantCulture);
+        }
+
+        return (path, line);
+    }
+
+    private static string? AuthorOf(JsonElement comment) =>
+        comment.TryGetProperty("author", out var a) && a.ValueKind is JsonValueKind.Object
+            && a.TryGetProperty("displayName", out var dn) && dn.ValueKind is JsonValueKind.String
+            ? dn.GetString()
+            : null;
+
+    private static string Trim(string content)
+    {
+        var oneLine = content.ReplaceLineEndings(" ").Trim();
+        return oneLine.Length <= MaxBodyChars ? oneLine : oneLine[..MaxBodyChars] + "…";
+    }
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
         HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)

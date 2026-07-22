@@ -70,12 +70,19 @@ review:
          "body" is only a one-line overall summary. A body-only review is exactly what we do NOT want.
        - "line" must be a line that appears in the PR diff on the RIGHT (added/changed) side; if a finding is
          about a line GitHub rejects (not in the diff), attach it to the nearest changed line in that file.
+       - Post EXACTLY ONE review per run — a SINGLE POST /reviews carrying ALL your new findings in comments[].
+         Never post multiple reviews, never one review per finding, and NEVER submit an EMPTY review (no comments
+         AND no meaningful body). If you have nothing new to post, post NOTHING at all.
        To answer an OPEN review thread, reply IN-THREAD (not a new comment, not the summary):
          POST /repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/comments/{comment_id}/replies  body {"body":"<reply>"}
        You MAY use the code-reviewer:post-pr-review skill, but ONLY if it SUBMITS the review and posts inline
        comments — last run it left an unsubmitted draft with the finding in the body, so prefer the direct call above.
        {{ end ~}}
-       On a re-review, reply to or update the existing threads rather than duplicating identical comments.{{ else }}Do NOT post on this run (collect-only): produce the review as your final message, but do not
+       On a re-review, the review input includes a "## Already posted on this PR" list of the comments already
+       on this PR. Post ONLY findings that are NOT already there: do not re-post an existing finding as a new
+       comment (reply in-thread only if you have a material update). If you have NOTHING new to add beyond what
+       is already posted, post NOTHING and make your final review exactly "No new findings since the last
+       review."{{ else }}Do NOT post on this run (collect-only): produce the review as your final message, but do not
        post to the repository.{{ end }}
 
     Workspace layout for this run:
@@ -142,8 +149,13 @@ post-enforcement:
     request. Posting the review to the PR is the WHOLE POINT of this run: a review that is written but never
     posted is worthless. Do NOT restate or re-summarize the review here — POST it.
 
-    Post your findings to the PR NOW, exactly as step 5 of your instructions describes. Make the ACTUAL HTTP
-    request(s) over the sandbox's egress proxy (it attaches the bot's auth automatically — you need no token).
+    EXCEPTION — nothing new to post: if your review is "No new findings since the last review." (everything you
+    found is ALREADY in the "## Already posted on this PR" list), then there is correctly nothing to post. Do
+    NOT post a duplicate. Reply with exactly "No new findings — nothing to post." and finish.
+
+    Otherwise, post your NEW findings to the PR NOW, exactly as step 5 of your instructions describes. Make the
+    ACTUAL HTTP request(s) over the sandbox's egress proxy (it attaches the bot's auth automatically — you need
+    no token).
     {{ if is_ado ~}}
     This is an Azure DevOps PR: POST your inline findings + a one-line summary to the ADO threads REST API with
     `curl` (append ?api-version=7.1 to every URL, base as in step 5). Verify each POST returned 200/201.

@@ -199,6 +199,48 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_prepends_existing_pr_comments_so_the_reviewer_posts_only_new_findings()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Simulate a PR that already has prior review comments — the daemon fetches them HOST-side (via the
+        // provider's IReviewCommentPublisher) and folds them into the review INPUT so the reviewer adds only
+        // genuinely NEW findings instead of re-posting a full review every run (the "45 reviews on one PR" bug).
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment("src/Foo.cs", "42", "Must — null deref EXISTING-FINDING", "revobot"));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment(null, null, "Reviewed PR — 1 Must EXISTING-SUMMARY", "revobot"));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("Already posted on this PR", "existing comments are prepended as a labelled dedup block");
+        text.Should().Contain("src/Foo.cs:42");
+        text.Should().Contain("EXISTING-FINDING");
+        text.Should().Contain("EXISTING-SUMMARY");
+        text.Should().Contain(
+            "No new findings since the last review", "the reviewer is told to post nothing when there is nothing new");
+    }
+
+    [Fact]
+    public async Task Reviewed_skips_the_existing_comments_block_when_the_pr_has_none()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // No prior comments seeded → the dedup block must be omitted (a first review has nothing to dedup against).
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Already posted on this PR");
+    }
+
+    [Fact]
     public async Task Reviewed_escalates_to_the_bigger_model_then_diff_only_when_the_context_window_overflows()
     {
         using var fixture = Fixture.Create();
@@ -594,13 +636,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 BootRunner,
                 BootFileSystem,
                 _options,
-                [new FakeReviewCommentPublisher("github")],
+                [Publisher],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace);
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
+        public FakeReviewCommentPublisher Publisher { get; } = new("github");
         public RecordingProvisioner Provisioner { get; } = new();
         public List<string> CleanupOrder { get; } = [];
         public FakeSandboxCommandRunner BootRunner { get; }

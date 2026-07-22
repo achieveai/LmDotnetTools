@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
@@ -17,6 +18,12 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 {
     private const string BaseUrl = "https://api.github.com";
     private const string UserAgent = "LmDotnetTools-CodeReviewDaemon";
+
+    /// <summary>Cap on inline-comment pages fetched when listing existing findings (100 per page).</summary>
+    private const int MaxListPages = 5;
+
+    /// <summary>Per-comment body cap when listing existing findings — enough to recognize a duplicate.</summary>
+    private const int MaxBodyChars = 280;
 
     private readonly HttpClient _httpClient;
     private readonly IOAuthTokenProvider _tokenProvider;
@@ -85,6 +92,86 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 
     private static string CommentsUrl(ReviewCommentTarget target) =>
         $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/issues/{target.PrId}/comments";
+
+    public async Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
+        ReviewCommentTarget target,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        var results = new List<ExistingReviewComment>();
+        var pullsBase = $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/pulls/{target.PrId}";
+
+        // Inline review comments — the actual per-line findings. Paginated (100/page), bounded by MaxListPages.
+        for (var page = 1; page <= MaxListPages; page++)
+        {
+            var count = 0;
+            await foreach (var comment in EnumerateAsync($"{pullsBase}/comments?per_page=100&page={page}", cancellationToken))
+            {
+                count++;
+                var body = GetString(comment, "body");
+                if (string.IsNullOrWhiteSpace(body))
+                {
+                    continue;
+                }
+
+                results.Add(new ExistingReviewComment(GetString(comment, "path"), LineOf(comment), Trim(body), AuthorOf(comment)));
+            }
+
+            if (count < 100)
+            {
+                break; // last page reached
+            }
+        }
+
+        // Review-level summaries (one page is plenty — the top-level "Reviewed PR X…" bodies).
+        await foreach (var review in EnumerateAsync($"{pullsBase}/reviews?per_page=100", cancellationToken))
+        {
+            var body = GetString(review, "body");
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                results.Add(new ExistingReviewComment(null, null, Trim(body), AuthorOf(review)));
+            }
+        }
+
+        return results;
+    }
+
+    private async IAsyncEnumerable<JsonElement> EnumerateAsync(
+        string url,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var request = await BuildRequestAsync(
+            HttpMethod.Get, url, SandboxOperation.ReadProviderMetadata, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        foreach (var element in document.RootElement.EnumerateArray())
+        {
+            yield return element;
+        }
+    }
+
+    private static string? GetString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String ? v.GetString() : null;
+
+    private static string? LineOf(JsonElement comment) =>
+        comment.TryGetProperty("line", out var l) && l.ValueKind is JsonValueKind.Number
+            ? l.GetInt32().ToString(CultureInfo.InvariantCulture)
+            : comment.TryGetProperty("original_line", out var ol) && ol.ValueKind is JsonValueKind.Number
+                ? ol.GetInt32().ToString(CultureInfo.InvariantCulture)
+                : null;
+
+    private static string? AuthorOf(JsonElement element) =>
+        element.TryGetProperty("user", out var u) && u.ValueKind is JsonValueKind.Object ? GetString(u, "login") : null;
+
+    private static string Trim(string body)
+    {
+        var oneLine = body.ReplaceLineEndings(" ").Trim();
+        return oneLine.Length <= MaxBodyChars ? oneLine : oneLine[..MaxBodyChars] + "…";
+    }
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
         HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)

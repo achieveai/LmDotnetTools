@@ -113,4 +113,37 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
 
         await act.Should().ThrowAsync<HttpRequestException>();
     }
+
+    [Fact]
+    public async Task ListExisting_returns_thread_comments_with_file_line_and_author()
+    {
+        var threads = JsonSerializer.Serialize(new
+        {
+            value = new object[]
+            {
+                new
+                {
+                    threadContext = new { filePath = "/src/Foo.cs", rightFileStart = new { line = 42 } },
+                    comments = new object[] { new { content = "Must — null deref here", author = new { displayName = "Revobot" } } },
+                },
+                new
+                {
+                    // no thread context (PR-level) + one blank comment that must be skipped
+                    comments = new object[]
+                    {
+                        new { content = "General note", author = new { displayName = "Alice" } },
+                        new { content = "   ", author = new { displayName = "Revobot" } },
+                    },
+                },
+            },
+        });
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().HaveCount(2, "one inline finding + one PR-level note; the blank comment is skipped");
+        existing.Should().ContainSingle(e =>
+            e.Path == "/src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "Revobot");
+        existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("General note") && e.Author == "Alice");
+    }
 }

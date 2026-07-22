@@ -102,4 +102,44 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
 
         await act.Should().ThrowAsync<HttpRequestException>();
     }
+
+    [Fact]
+    public async Task ListExisting_returns_inline_findings_and_review_summaries()
+    {
+        var comments = JsonSerializer.Serialize(new object[]
+        {
+            new { path = "src/Foo.cs", line = 42, body = "Must — null deref here", user = new { login = "revobot" } },
+            new { path = "src/Bar.cs", original_line = 7, body = "Should — extract this", user = new { login = "alice" } },
+            new { path = "src/Baz.cs", line = 3, body = "   ", user = new { login = "revobot" } }, // blank → skipped
+        });
+        var reviews = JsonSerializer.Serialize(new object[]
+        {
+            new { body = "Reviewed PR 7 — 1 Must, 1 Should", user = new { login = "revobot" }, state = "COMMENTED" },
+            new { body = "", user = new { login = "revobot" }, state = "COMMENTED" }, // empty body → skipped
+        });
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", comments)
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().HaveCount(3, "two non-blank inline comments + one non-empty review summary");
+        existing.Should().ContainSingle(e =>
+            e.Path == "src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "revobot");
+        existing.Should().ContainSingle(e =>
+            e.Path == "src/Bar.cs" && e.Line == "7" && e.Author == "alice"); // original_line fallback when line is absent
+        existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("Reviewed PR 7"));
+    }
+
+    [Fact]
+    public async Task ListExisting_returns_empty_for_a_pr_with_no_comments()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().BeEmpty();
+    }
 }
