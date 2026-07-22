@@ -5,6 +5,7 @@ import {
   uploadFile,
   deleteEntry,
   downloadFile,
+  createDirectory,
   NoSessionError,
   CredentialConflictError,
   FileBrowserError,
@@ -135,6 +136,91 @@ describe('fileBrowserApi.uploadFile', () => {
     const file = new File(['x'], 'a.txt');
 
     await expect(uploadFile('thread-1', '', file)).rejects.toBeInstanceOf(NoSessionError);
+  });
+
+  it('appends the optional relativePath field and echoes the server name for a folder upload', async () => {
+    const fetchSpy = spyFetch(jsonResponse({ name: 'proj/sub/a.txt', size: 3 }));
+    const file = new File(['abc'], 'a.txt');
+
+    const outcome = await uploadFile('thread-1', '', file, undefined, 'proj/sub/a.txt');
+
+    expect(outcome).toEqual({ name: 'proj/sub/a.txt', success: true });
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = init.body as FormData;
+    expect(body.get('file')).toBe(file);
+    expect(body.get('relativePath')).toBe('proj/sub/a.txt');
+  });
+
+  it('does NOT append relativePath for a flat upload (today behavior)', async () => {
+    const fetchSpy = spyFetch(jsonResponse({ name: 'a.txt', size: 3 }));
+
+    await uploadFile('thread-1', '', new File(['abc'], 'a.txt'));
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect((init.body as FormData).get('relativePath')).toBeNull();
+  });
+
+  it('labels a failed folder-upload outcome with the relativePath (distinguishes duplicate basenames)', async () => {
+    spyFetch(jsonResponse({ code: 'mkdir_failed' }, 422));
+    const file = new File(['x'], 'readme.md');
+
+    const outcome = await uploadFile('thread-1', '', file, undefined, 'b/readme.md');
+
+    expect(outcome).toEqual({ name: 'b/readme.md', success: false, error: 'mkdir_failed' });
+  });
+});
+
+describe('fileBrowserApi.createDirectory', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('POSTs a JSON body { name } to the /directory endpoint under the parent path', async () => {
+    const fetchSpy = spyFetch(jsonResponse({ path: 'docs/notes' }));
+
+    const result = await createDirectory('thread-1', 'docs', 'notes');
+
+    expect(result).toEqual({ path: 'docs/notes' });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/conversations/thread-1/files/directory?path=docs');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'notes' });
+  });
+
+  it('omits the query at the root and returns the resolved path', async () => {
+    const fetchSpy = spyFetch(jsonResponse({ path: 'notes' }));
+
+    const result = await createDirectory('thread-1', '', 'notes');
+
+    expect(result).toEqual({ path: 'notes' });
+    expect((fetchSpy.mock.calls[0] as [string, RequestInit])[0]).toBe(
+      '/api/conversations/thread-1/files/directory'
+    );
+  });
+
+  it('throws NoSessionError on 409 no_session_yet', async () => {
+    spyFetch(jsonResponse({ code: 'no_session_yet' }, 409));
+
+    await expect(createDirectory('thread-1', '', 'x')).rejects.toBeInstanceOf(NoSessionError);
+  });
+
+  it('throws FileBrowserError carrying code/status on 400 invalid_folder_name', async () => {
+    spyFetch(jsonResponse({ error: 'bad', code: 'invalid_folder_name' }, 400));
+
+    await expect(createDirectory('thread-1', '', '..')).rejects.toMatchObject({
+      name: 'FileBrowserError',
+      status: 400,
+      code: 'invalid_folder_name',
+    });
+  });
+
+  it('throws FileBrowserError on 422 create_directory_failed', async () => {
+    spyFetch(jsonResponse({ code: 'create_directory_failed', exitCode: 1 }, 422));
+
+    await expect(createDirectory('thread-1', '', 'x')).rejects.toMatchObject({
+      name: 'FileBrowserError',
+      status: 422,
+      code: 'create_directory_failed',
+    });
   });
 });
 

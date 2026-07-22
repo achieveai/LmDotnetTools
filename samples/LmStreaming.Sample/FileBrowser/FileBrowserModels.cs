@@ -35,5 +35,11 @@ public sealed record NoSessionStateDto(string State, string? WorkspaceId)
 /// <summary>A text-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file).</summary>
 public sealed record PreviewResultDto(bool Previewable, string? Reason, string? Text, int? LineCount);
 
-/// <summary>The per-file upload outcome (one file per request).</summary>
+/// <summary>The per-file upload outcome (one file per request). <see cref="Name"/> echoes the relative path when the upload carried one, otherwise the base file name.</summary>
 public sealed record UploadResultDto(string Name, long Size);
+
+/// <summary>The JSON body of a create-directory request: the new folder's base name (a single path component).</summary>
+public sealed record CreateDirectoryRequest(string Name);
+
+/// <summary>The create-directory outcome: the resolved server path of the created (or already-existing) directory.</summary>
+public sealed record CreateDirectoryResultDto(string Path);

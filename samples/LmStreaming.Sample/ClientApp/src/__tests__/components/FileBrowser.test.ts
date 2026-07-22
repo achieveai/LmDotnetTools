@@ -223,6 +223,182 @@ describe('FileBrowser upload failures', () => {
   });
 });
 
+/** A File-like carrying a webkitRelativePath (happy-dom's File lacks a settable one). */
+function relFile(relativePath: string): File {
+  const name = relativePath.split('/').pop() ?? relativePath;
+  const file = new File(['x'], name);
+  Object.defineProperty(file, 'webkitRelativePath', { value: relativePath, configurable: true });
+  return file;
+}
+
+/** A leaf file entry for a fake drag-drop tree. */
+function fileEntry(name: string) {
+  return { isFile: true, isDirectory: false, name, file: (cb: (f: File) => void) => cb(new File(['d'], name)) };
+}
+
+/** A directory entry whose reader returns one non-empty batch then an empty one. */
+function dirEntry(name: string, children: Array<ReturnType<typeof fileEntry> | Record<string, unknown>>) {
+  return {
+    isFile: false,
+    isDirectory: true,
+    name,
+    createReader: () => {
+      let done = false;
+      return {
+        readEntries: (cb: (entries: unknown[]) => void) => {
+          cb(done ? [] : children);
+          done = true;
+        },
+      };
+    },
+  };
+}
+
+/** Dispatches a native drop carrying a webkitGetAsEntry-capable dataTransfer onto the dropzone. */
+function dispatchDrop(wrapper: ReturnType<typeof mount>, entries: unknown[]): void {
+  const dt = {
+    items: entries.map((entry) => ({ kind: 'file', webkitGetAsEntry: () => entry })),
+    files: [] as File[],
+  };
+  const event = new Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', { value: dt, configurable: true });
+  wrapper.find('[data-testid="file-browser-dropzone"]').element.dispatchEvent(event);
+}
+
+describe('FileBrowser new folder', () => {
+  it('opens a name-entry dialog (focusing its input), marking the background inert', async () => {
+    const { wrapper } = await mountBrowser();
+
+    await wrapper.find('[data-testid="file-browser-new-folder"]').trigger('click');
+    await flushPromises();
+
+    const dialog = wrapper.find('[data-testid="file-browser-new-folder-dialog"]');
+    expect(dialog.exists()).toBe(true);
+    const input = wrapper.find('[data-testid="file-browser-new-folder-input"]');
+    expect(document.activeElement).toBe(input.element);
+    // Background is inert (focus + pointer confined to the dialog, which is OUTSIDE the inert subtree).
+    expect(wrapper.find('.fb-main').attributes('inert')).toBeDefined();
+  });
+
+  it('creates the folder then refreshes the listing on confirm', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+
+    await wrapper.find('[data-testid="file-browser-new-folder"]').trigger('click');
+    await flushPromises();
+    await wrapper.find('[data-testid="file-browser-new-folder-input"]').setValue('docs');
+
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ path: 'docs' })) // create directory
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload listing
+    await wrapper.find('[data-testid="file-browser-new-folder-confirm"]').trigger('click');
+    await flushPromises();
+
+    const posts = fetchSpy.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+    expect(posts.length).toBe(1);
+    expect(posts[0][0]).toBe('/api/conversations/thread-1/files/directory');
+    expect(JSON.parse((posts[0][1] as RequestInit).body as string)).toEqual({ name: 'docs' });
+    // Dialog closed and the listing was reloaded (create POST + reload GET after the initial listing).
+    expect(wrapper.find('[data-testid="file-browser-new-folder-dialog"]').exists()).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('disables Create while the name is blank', async () => {
+    const { wrapper } = await mountBrowser();
+
+    await wrapper.find('[data-testid="file-browser-new-folder"]').trigger('click');
+    await flushPromises();
+
+    const confirm = wrapper.find('[data-testid="file-browser-new-folder-confirm"]');
+    expect(confirm.attributes('disabled')).toBeDefined();
+    await wrapper.find('[data-testid="file-browser-new-folder-input"]').setValue('docs');
+    expect(confirm.attributes('disabled')).toBeUndefined();
+  });
+});
+
+describe('FileBrowser folder upload (picker)', () => {
+  it('uploads each picked file sequentially, sending its relativePath', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const bodies: FormData[] = [];
+    fetchSpy.mockImplementation((_url, init) => {
+      const method = (init as RequestInit)?.method;
+      if (method === 'POST') {
+        bodies.push((init as RequestInit).body as FormData);
+        return Promise.resolve(jsonResponse({ name: 'x', size: 1 }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing));
+    });
+
+    const input = wrapper.find('[data-testid="file-browser-folder-input"]');
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [relFile('proj/a.txt'), relFile('proj/sub/b.txt')],
+    });
+    await input.trigger('change');
+    await flushPromises();
+
+    expect(bodies.map((b) => b.get('relativePath'))).toEqual(['proj/a.txt', 'proj/sub/b.txt']);
+  });
+
+  it('shows an unsupported hint when the platform lacks webkitdirectory (flat upload still works)', async () => {
+    // happy-dom does not implement webkitdirectory, so the affordance renders in its unsupported state.
+    const { wrapper } = await mountBrowser();
+    expect(wrapper.find('[data-testid="file-browser-folder-unsupported"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="file-browser-folder-upload"]').attributes('disabled')).toBeDefined();
+    // The flat picker is untouched.
+    expect(wrapper.find('[data-testid="file-browser-file-input"]').exists()).toBe(true);
+  });
+});
+
+describe('FileBrowser folder upload (drag & drop)', () => {
+  it('traverses a dropped folder and uploads files with distinct relativePaths, WITHOUT an overwrite preflight', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const bodies: FormData[] = [];
+    fetchSpy.mockImplementation((_url, init) => {
+      const method = (init as RequestInit)?.method;
+      if (method === 'POST') {
+        bodies.push((init as RequestInit).body as FormData);
+        return Promise.resolve(jsonResponse({ name: 'x', size: 1 }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing));
+    });
+
+    // The dropped tree contains readme.md (which collides with the EXISTING root readme.md) plus a
+    // duplicate basename across two subfolders — folder uploads must skip the basename preflight.
+    const tree = dirEntry('proj', [
+      fileEntry('readme.md'),
+      dirEntry('a', [fileEntry('dup.txt')]),
+      dirEntry('b', [fileEntry('dup.txt')]),
+    ]);
+    dispatchDrop(wrapper, [tree]);
+    await flushPromises();
+
+    // No advisory overwrite confirmation was shown for the folder drop.
+    expect(wrapper.find('[data-testid="file-browser-overwrite-confirm"]').exists()).toBe(false);
+    const paths = bodies.map((b) => b.get('relativePath')).sort();
+    expect(paths).toEqual(['proj/a/dup.txt', 'proj/b/dup.txt', 'proj/readme.md']);
+  });
+});
+
+describe('FileBrowser fixed-height list', () => {
+  it('constrains the list to a stable-height, internally-scrolling panel', async () => {
+    const { wrapper } = await mountBrowser();
+
+    const list = wrapper.find('[data-testid="file-browser-list"]');
+    expect(list.exists()).toBe(true);
+    const style = list.attributes('style') ?? '';
+    expect(style).toContain('overflow-y: auto');
+    expect(style).toContain('min-height: 0');
+    expect(style).toMatch(/height:/);
+  });
+
+  it('renders the empty state INSIDE the fixed-height list container (constant space when empty)', async () => {
+    const { wrapper } = await mountBrowser({ ...sampleListing, entries: [] });
+
+    const list = wrapper.find('[data-testid="file-browser-list"]');
+    expect(list.find('[data-testid="file-browser-empty"]').exists()).toBe(true);
+  });
+});
+
 describe('FileBrowser workspace display', () => {
   it('shows the active workspace id', async () => {
     const { wrapper } = await mountBrowser();

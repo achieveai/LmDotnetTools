@@ -3,7 +3,9 @@ import type {
   DirectoryListing,
   FileEntry,
   PreviewResult,
+  UploadItem,
   UploadOutcome,
+  UploadProgress,
 } from '@/types/fileBrowser';
 import { isNoSession } from '@/types/fileBrowser';
 import {
@@ -12,6 +14,8 @@ import {
   downloadFile,
   uploadFile,
   deleteEntry,
+  createDirectory as createDirectoryApi,
+  FileBrowserError,
   NoSessionError,
 } from '@/api/fileBrowserApi';
 
@@ -19,6 +23,12 @@ import {
 export interface Breadcrumb {
   name: string;
   path: string;
+}
+
+/** An item queued for the sequential upload loop. `relativePath` is set only for folder uploads. */
+interface PendingUpload {
+  file: File;
+  relativePath?: string;
 }
 
 /**
@@ -38,6 +48,8 @@ export function useFileBrowser(getThreadId: () => string | null) {
   const isLoading = ref(false);
   const error = ref<string | null>(null);
   const noSession = ref(false);
+  // Per-file progress for the active (sequential) upload batch; `null` when no batch is running.
+  const uploadProgress = ref<UploadProgress | null>(null);
 
   // Inline preview state (the panel the component renders in a <pre>).
   const previewTarget = ref<FileEntry | null>(null);
@@ -213,31 +225,50 @@ export function useFileBrowser(getThreadId: () => string | null) {
     }
   }
 
+  /** Uploads flat files (no relative paths) — the drag-drop/file-picker path. */
+  async function upload(files: File[]): Promise<UploadOutcome[]> {
+    return runUploadBatch(files.map((file) => ({ file })));
+  }
+
+  /**
+   * Uploads a folder / relative-path batch: each item carries its `relativePath` (INCLUDING the leaf
+   * name), sent as the multipart `relativePath` field so the server recreates the tree. Duplicate
+   * basenames in different directories upload independently.
+   */
+  async function uploadFolder(items: UploadItem[]): Promise<UploadOutcome[]> {
+    return runUploadBatch(items);
+  }
+
   /**
    * Uploads N files into the directory the batch STARTED in, as N INDEPENDENT sequential requests
    * (one in flight at a time so a large batch never retains multiple 64 MiB buffers). The destination is
    * snapshotted before the loop, so navigating mid-batch never re-targets later files; the loop also stops
-   * if the composable is disposed or the conversation switches.
+   * if the composable is disposed or the conversation switches. A per-file failure never aborts the batch;
+   * only a session-level failure does. Progress is reported per file (completed/total + active name).
    */
-  async function upload(files: File[]): Promise<UploadOutcome[]> {
+  async function runUploadBatch(items: PendingUpload[]): Promise<UploadOutcome[]> {
     const threadId = getThreadId();
-    if (!threadId || files.length === 0) {
+    if (!threadId || items.length === 0) {
       return [];
     }
     const startPath = currentPath.value;
+    const labelOf = (item: PendingUpload): string => item.relativePath ?? item.file.name;
     try {
       const outcomes: UploadOutcome[] = [];
-      for (const file of files) {
+      uploadProgress.value = { completed: 0, total: items.length, activeName: null };
+      for (const item of items) {
         // Stop the batch if the browser was torn down or the conversation changed mid-upload.
         if (disposed || getThreadId() !== threadId) {
           break;
         }
-        outcomes.push(await uploadFile(threadId, startPath, file, lifecycle.signal));
+        uploadProgress.value = { completed: outcomes.length, total: items.length, activeName: labelOf(item) };
+        outcomes.push(await uploadFile(threadId, startPath, item.file, lifecycle.signal, item.relativePath));
+        uploadProgress.value = { completed: outcomes.length, total: items.length, activeName: null };
       }
       return outcomes;
     } catch (e) {
       if (isCancellation(e) || disposed) {
-        return files.map((file) => ({ name: file.name, success: false, error: 'cancelled' }));
+        return items.map((item) => ({ name: labelOf(item), success: false, error: 'cancelled' }));
       }
       if (e instanceof NoSessionError) {
         noSession.value = true;
@@ -245,14 +276,48 @@ export function useFileBrowser(getThreadId: () => string | null) {
         error.value = e instanceof Error ? e.message : 'Failed to upload files';
       }
       console.error('Failed to upload files:', e);
-      return files.map((file) => ({
-        name: file.name,
+      return items.map((item) => ({
+        name: labelOf(item),
         success: false,
         error: e instanceof Error ? e.message : 'upload_failed',
       }));
     } finally {
+      uploadProgress.value = null;
       await reloadIfCurrent(threadId, startPath);
     }
+  }
+
+  /**
+   * Creates a directory named `name` inside the current directory, then reloads so it appears. Server
+   * error codes are mapped to a user-facing {@link error} message (or {@link noSession} for a lost
+   * session). Returns true on success.
+   */
+  async function createDirectory(name: string): Promise<boolean> {
+    const threadId = getThreadId();
+    if (!threadId) {
+      return false;
+    }
+    const startPath = currentPath.value;
+    error.value = null;
+    try {
+      await createDirectoryApi(threadId, startPath, name, lifecycle.signal);
+    } catch (e) {
+      if (isCancellation(e) || disposed) {
+        return false;
+      }
+      if (e instanceof NoSessionError) {
+        noSession.value = true;
+      } else {
+        error.value = describeCreateDirectoryError(e);
+      }
+      console.error('Failed to create directory:', e);
+      // A failed create changed nothing, so DON'T reload: reloading would clobber the error/noSession
+      // state just set here (a successful listing resets both).
+      return false;
+    }
+    // Success: reload so the new folder appears in the current listing.
+    await reloadIfCurrent(threadId, startPath);
+    return true;
   }
 
   /** Deletes an entry (from the directory the mutation started in) then reloads the listing. */
@@ -313,6 +378,7 @@ export function useFileBrowser(getThreadId: () => string | null) {
     isLoading,
     error,
     noSession,
+    uploadProgress,
     previewTarget,
     previewResult,
     load,
@@ -321,6 +387,8 @@ export function useFileBrowser(getThreadId: () => string | null) {
     clearPreview,
     download,
     upload,
+    uploadFolder,
+    createDirectory,
     remove,
     cleanup,
   };
@@ -329,4 +397,28 @@ export function useFileBrowser(getThreadId: () => string | null) {
 /** Joins a directory path and an entry name into a workspace-relative path. */
 function joinPath(dir: string, name: string): string {
   return dir ? `${dir}/${name}` : name;
+}
+
+/** Maps a create-directory failure to a concise, user-facing message based on the server's `code`. */
+function describeCreateDirectoryError(e: unknown): string {
+  const code = e instanceof FileBrowserError ? e.code : null;
+  switch (code) {
+    case 'invalid_folder_name':
+      return 'That folder name isn’t allowed. Use a name without “/” or “..”.';
+    case 'not_found':
+      return 'The current folder no longer exists.';
+    case 'not_a_directory':
+      return 'The target path is not a folder.';
+    case 'ambiguous_path':
+    case 'invalid_path':
+      return 'The folder path is invalid.';
+    case 'create_directory_failed':
+      return 'The folder could not be created.';
+    case 'target_busy':
+      return 'The workspace is busy. Try again in a moment.';
+    case 'gateway_error':
+      return 'The sandbox gateway is unavailable. Try again shortly.';
+    default:
+      return e instanceof Error ? e.message : 'Failed to create folder';
+  }
 }

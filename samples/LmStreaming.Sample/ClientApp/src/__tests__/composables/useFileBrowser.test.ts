@@ -183,6 +183,97 @@ describe('useFileBrowser.upload', () => {
   });
 });
 
+describe('useFileBrowser.uploadFolder', () => {
+  it('sends each file sequentially with its relativePath and aggregates mixed outcomes without aborting', async () => {
+    const bodies: FormData[] = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      const method = (init as RequestInit)?.method;
+      if (method === 'POST') {
+        const body = (init as RequestInit).body as FormData;
+        bodies.push(body);
+        // Fail the second file, succeed the rest — a single failure must NOT abort the batch.
+        if (body.get('relativePath') === 'proj/b/readme.md') {
+          return Promise.resolve(jsonResponse({ code: 'mkdir_failed' }, 422));
+        }
+        return Promise.resolve(jsonResponse({ name: body.get('relativePath'), size: 1 }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing)); // reload
+    });
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const outcomes = await fb.uploadFolder([
+      { file: new File(['1'], 'readme.md'), relativePath: 'proj/a/readme.md' },
+      { file: new File(['2'], 'readme.md'), relativePath: 'proj/b/readme.md' },
+      { file: new File(['3'], 'note.txt'), relativePath: 'proj/note.txt' },
+    ]);
+
+    // Duplicate basenames in different directories BOTH uploaded under distinct relativePaths.
+    expect(bodies.map((b) => b.get('relativePath'))).toEqual([
+      'proj/a/readme.md',
+      'proj/b/readme.md',
+      'proj/note.txt',
+    ]);
+    expect(outcomes).toEqual([
+      { name: 'proj/a/readme.md', success: true },
+      { name: 'proj/b/readme.md', success: false, error: 'mkdir_failed' },
+      { name: 'proj/note.txt', success: true },
+    ]);
+    // 3 uploads + 1 reload.
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    // Progress is cleared once the batch settles.
+    expect(fb.uploadProgress.value).toBeNull();
+  });
+});
+
+describe('useFileBrowser.createDirectory', () => {
+  it('POSTs the folder name to the /directory endpoint under the current path, then reloads', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ path: 'src/docs' })) // create
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+
+    const fb = useFileBrowser(() => 'thread-1');
+    fb.currentPath.value = 'src';
+    const ok = await fb.createDirectory('docs');
+
+    expect(ok).toBe(true);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/conversations/thread-1/files/directory?path=src');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'docs' });
+    // A GET reload followed so the new folder shows.
+    const [reloadUrl, reloadInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    expect(reloadInit.method).toBeUndefined();
+    expect(reloadUrl).toContain('/api/conversations/thread-1/files');
+    expect(fb.error.value).toBeNull();
+  });
+
+  it('maps a 400 invalid_folder_name to a user-facing error and returns false', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ code: 'invalid_folder_name' }, 400)) // create
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const ok = await fb.createDirectory('..');
+
+    expect(ok).toBe(false);
+    expect(fb.error.value).toBeTruthy();
+    expect(fb.noSession.value).toBe(false);
+  });
+
+  it('sets noSession on 409 no_session_yet', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ code: 'no_session_yet' }, 409)) // create
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const ok = await fb.createDirectory('docs');
+
+    expect(ok).toBe(false);
+    expect(fb.noSession.value).toBe(true);
+  });
+});
+
 describe('useFileBrowser.remove', () => {
   it('deletes the entry then reloads the listing', async () => {
     const fetchSpy = vi

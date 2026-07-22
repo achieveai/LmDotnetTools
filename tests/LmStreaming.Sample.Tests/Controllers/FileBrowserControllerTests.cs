@@ -438,7 +438,7 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile(fileName, [1, 2, 3]), CancellationToken.None);
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile(fileName, [1, 2, 3]), relativePath: null, CancellationToken.None);
         result.Should().BeOfType<BadRequestObjectResult>();
     }
 
@@ -448,7 +448,7 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         // A declared over-cap length is rejected before any read (no bytes needed).
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("big.bin", [], declaredLength: FileBrowserLimits.MaxFileBytes + 1), CancellationToken.None);
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("big.bin", [], declaredLength: FileBrowserLimits.MaxFileBytes + 1), relativePath: null, CancellationToken.None);
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
     }
 
@@ -458,7 +458,7 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [Dir("sub")];
         browser.Listings["sub"] = [];
-        var result = await controller.Upload(ThreadId, "sub", new FakeFormFile("note.txt", [9, 8, 7]), CancellationToken.None);
+        var result = await controller.Upload(ThreadId, "sub", new FakeFormFile("note.txt", [9, 8, 7]), relativePath: null, CancellationToken.None);
         result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<UploadResultDto>().Which.Name.Should().Be("note.txt");
         browser.Writes.Should().ContainSingle();
         browser.Writes[0].Path.Should().Be("sub/note.txt");
@@ -471,7 +471,7 @@ public class FileBrowserControllerTests
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         browser.WriteThrows = new SandboxException(SandboxErrorKind.Conflict, "target locked");
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("note.txt", [1]), CancellationToken.None);
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("note.txt", [1]), relativePath: null, CancellationToken.None);
         result.Should().BeOfType<ConflictObjectResult>();
     }
 
@@ -519,6 +519,163 @@ public class FileBrowserControllerTests
         browser.Commands.Should().BeEmpty();
     }
 
+    // -------- Create directory (WI #214) --------
+
+    [Fact]
+    public async Task CreateDirectory_ValidName_RunsMkdirDashP_AtRoot_AndReturns200()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("newdir"), CancellationToken.None);
+        var dto = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which;
+        dto.Path.Should().Be("newdir");
+        // `mkdir -p` makes an existing directory idempotent success; `--` keeps a leading-dash name an operand.
+        browser.Commands.Should().ContainSingle();
+        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "newdir");
+    }
+
+    [Fact]
+    public async Task CreateDirectory_UnderResolvedSubdirectory_UsesServerPath()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("sub")];
+        browser.Listings["sub"] = [];
+        var result = await controller.CreateDirectory(ThreadId, "sub", new CreateDirectoryRequest("child"), CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which.Path.Should().Be("sub/child");
+        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "sub/child");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("C:evil")]
+    [InlineData("a\0b")]
+    public async Task CreateDirectory_InvalidName_Returns400_WithoutRunningCommand(string name)
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest(name), CancellationToken.None);
+        result.Should().BeOfType<BadRequestObjectResult>();
+        browser.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CreateDirectory_MissingBody_Returns400_WithoutRunningCommand()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        var result = await controller.CreateDirectory(ThreadId, "", request: null, CancellationToken.None);
+        result.Should().BeOfType<BadRequestObjectResult>();
+        browser.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CreateDirectory_NonZeroExit_Returns422()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        // A non-zero `mkdir -p` exit (e.g. a file/symlink already occupies the path) is a structured failure.
+        browser.ExecResult = new SandboxCommandResult { ExitCode = 1, StandardOutput = "", StandardError = "File exists", OperationId = "op" };
+        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("clash"), CancellationToken.None);
+        result.Should().BeOfType<UnprocessableEntityObjectResult>();
+    }
+
+    [Fact]
+    public async Task CreateDirectory_NoSession_Returns409()
+    {
+        var (controller, browser) = Build();
+        browser.Resolution = new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null);
+        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("newdir"), CancellationToken.None);
+        result.Should().BeOfType<ConflictObjectResult>();
+        browser.Commands.Should().BeEmpty();
+    }
+
+    // -------- Folder upload: relative-path destination (WI #214) --------
+
+    [Fact]
+    public async Task Upload_WithRelativePath_CreatesParents_AndWritesNestedDestination()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("readme.md", [1, 2, 3]), relativePath: "proj/docs/readme.md", CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>();
+        // Parents are created with `mkdir -p --` before the write; the write lands at the full relative destination.
+        browser.Commands.Should().ContainSingle();
+        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "proj/docs");
+        browser.Writes.Should().ContainSingle();
+        browser.Writes[0].Path.Should().Be("proj/docs/readme.md");
+        browser.Writes[0].Bytes.Should().Equal(1, 2, 3);
+    }
+
+    [Fact]
+    public async Task Upload_WithRelativePath_UnderResolvedTargetDirectory()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("up")];
+        browser.Listings["up"] = [];
+        var result = await controller.Upload(ThreadId, "up", new FakeFormFile("a.txt", [7]), relativePath: "x/a.txt", CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>();
+        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "up/x");
+        browser.Writes[0].Path.Should().Be("up/x/a.txt");
+    }
+
+    [Fact]
+    public async Task Upload_WithSingleSegmentRelativePath_SkipsMkdir_AndWritesAtRoot()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "a.txt", CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>();
+        browser.Commands.Should().BeEmpty();
+        browser.Writes[0].Path.Should().Be("a.txt");
+    }
+
+    [Fact]
+    public async Task Upload_WithRelativePath_EchoesRelativePathAsName()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "d/a.txt", CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<UploadResultDto>().Which.Name.Should().Be("d/a.txt");
+    }
+
+    [Theory]
+    [InlineData("../a.txt")]
+    [InlineData("a/../b.txt")]
+    [InlineData("/abs.txt")]
+    [InlineData("a//b.txt")]
+    [InlineData("a/./b.txt")]
+    [InlineData("a\\b.txt")]
+    [InlineData("C:/x.txt")]
+    [InlineData("a/b\0c.txt")]
+    [InlineData("..")]
+    [InlineData("a/")]
+    public async Task Upload_InvalidRelativePath_Returns400_WithoutCommandOrWrite(string relativePath)
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("leaf.txt", [1, 2]), relativePath, CancellationToken.None);
+        result.Should().BeOfType<BadRequestObjectResult>();
+        browser.Commands.Should().BeEmpty();
+        browser.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Upload_RelativePath_MkdirNonZeroExit_Returns422_WithoutWriting()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [];
+        // A non-directory parent makes `mkdir -p` fail; that file must fail rather than be traversed/replaced.
+        browser.ExecResult = new SandboxCommandResult { ExitCode = 1, StandardOutput = "", StandardError = "Not a directory", OperationId = "op" };
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "afile/a.txt", CancellationToken.None);
+        result.Should().BeOfType<UnprocessableEntityObjectResult>();
+        browser.Writes.Should().BeEmpty();
+    }
+
     // -------- Review-driven boundary tests --------
 
     [Fact]
@@ -529,7 +686,7 @@ public class FileBrowserControllerTests
         // A LYING declared length (small) must not smuggle an over-cap body: the observed streaming count
         // trips independently. The stream yields MaxFileBytes+1 bytes lazily (no source allocation).
         var file = new LazyLargeFormFile("sneaky.bin", streamLength: FileBrowserLimits.MaxFileBytes + 1, declaredLength: 10);
-        var result = await controller.Upload(ThreadId, "", file, CancellationToken.None);
+        var result = await controller.Upload(ThreadId, "", file, relativePath: null, CancellationToken.None);
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
         browser.Writes.Should().BeEmpty();
     }
