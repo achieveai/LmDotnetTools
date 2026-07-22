@@ -182,6 +182,30 @@ public static class UiHelpers
         await page.SendButton().ClickAsync();
     }
 
+    /// <summary>The center-pane conversation tab strip (rendered only when ≥1 sub-agent exists).</summary>
+    public static ILocator ConversationTabs(this IPage page)
+    {
+        return page.GetByTestId("conversation-tabs");
+    }
+
+    /// <summary>A single conversation tab — pass the tab id (<c>main</c> or an agentId via <c>data-tab-id</c>).</summary>
+    public static ILocator ConversationTab(this IPage page, string tabId)
+    {
+        return page.Locator($"[data-testid=\"conversation-tab\"][data-tab-id=\"{tabId}\"]");
+    }
+
+    /// <summary>All sub-agent tabs (every conversation tab except the always-present <c>main</c> tab).</summary>
+    public static ILocator SubAgentTabs(this IPage page)
+    {
+        return page.Locator("[data-testid=\"conversation-tab\"]:not([data-tab-id=\"main\"])");
+    }
+
+    /// <summary>The center-pane sub-agent view (mounted only while a sub-agent tab is active).</summary>
+    public static ILocator SubAgentView(this IPage page)
+    {
+        return page.GetByTestId("subagent-view");
+    }
+
     /// <summary>Header button that opens the marketplace browser modal.</summary>
     public static ILocator MarketplaceButton(this IPage page)
     {

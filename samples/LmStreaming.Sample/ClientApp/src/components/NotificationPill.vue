@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, toRef } from 'vue';
+import { computed, inject, ref, toRef } from 'vue';
 import type { NotificationDisplayData } from '@/types';
+import { GET_AGENT_COLOR, type AgentColorLookup } from '@/utils/agentColors';
 
 /**
  * Presentational pill for an out-of-band notification (async sub-agent completion, sandbox
@@ -56,6 +57,13 @@ function toggle(): void {
     expanded.value = !expanded.value;
   }
 }
+
+// Tint a sub-agent-completion pill with the completing agent's color (its `source_tool_call_id` is the
+// exact agentId) so it matches that agent's tab. Other notification kinds are unchanged.
+const getAgentColor = inject<AgentColorLookup>(GET_AGENT_COLOR, () => null);
+const agentColor = computed<string | null>(() =>
+  data.value.notifyKind === 'subagent-completion' ? getAgentColor(data.value.sourceToolCallId) : null
+);
 </script>
 
 <template>
@@ -63,6 +71,7 @@ function toggle(): void {
     class="notification-pill"
     data-testid="notification-pill"
     :data-notify-kind="data.notifyKind"
+    :style="agentColor ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : undefined"
   >
     <div
       class="notification-header"
