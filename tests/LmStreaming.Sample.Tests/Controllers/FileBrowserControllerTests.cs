@@ -130,6 +130,8 @@ public class FileBrowserControllerTests
 
     private static SandboxDirectoryEntry Dir(string name, bool lossy = false) => new(name, SandboxEntryType.Directory, null, lossy);
 
+    private static SandboxDirectoryEntry Symlink(string name, bool lossy = false) => new(name, SandboxEntryType.Symlink, null, lossy);
+
     // -------- Prologue --------
 
     [Fact]
@@ -522,16 +524,17 @@ public class FileBrowserControllerTests
     // -------- Create directory (WI #214) --------
 
     [Fact]
-    public async Task CreateDirectory_ValidName_RunsMkdirDashP_AtRoot_AndReturns200()
+    public async Task CreateDirectory_ValidName_CreatesWithMkdir_AtRoot_AndReturns200()
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("newdir"), CancellationToken.None);
         var dto = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which;
         dto.Path.Should().Be("newdir");
-        // `mkdir -p` makes an existing directory idempotent success; `--` keeps a leading-dash name an operand.
+        // A single `mkdir --` under the resolved (verified real) directory — NOT `mkdir -p`, which would follow a
+        // symlink in the chain. `--` keeps a leading-dash name an operand.
         browser.Commands.Should().ContainSingle();
-        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "newdir");
+        browser.Commands[0].Arguments.Should().Equal("mkdir", "--", "newdir");
     }
 
     [Fact]
@@ -542,7 +545,39 @@ public class FileBrowserControllerTests
         browser.Listings["sub"] = [];
         var result = await controller.CreateDirectory(ThreadId, "sub", new CreateDirectoryRequest("child"), CancellationToken.None);
         result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which.Path.Should().Be("sub/child");
-        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "sub/child");
+        browser.Commands[0].Arguments.Should().Equal("mkdir", "--", "sub/child");
+    }
+
+    [Fact]
+    public async Task CreateDirectory_ExistingDirectory_IsIdempotentSuccess_WithoutMkdir()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("existing")];
+        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("existing"), CancellationToken.None);
+        // An existing REAL directory is idempotent success — no mkdir is run (server verifies the type first).
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<CreateDirectoryResultDto>().Which.Path.Should().Be("existing");
+        browser.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CreateDirectory_ExistingSymlink_Returns409Conflict_WithoutMkdir()
+    {
+        var (controller, browser) = Build();
+        // #214: an existing symlink at the path must FAIL — never silently 200 by letting `mkdir -p` follow it.
+        browser.Listings[""] = [Symlink("linked")];
+        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("linked"), CancellationToken.None);
+        result.Should().BeOfType<ConflictObjectResult>();
+        browser.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task CreateDirectory_ExistingFile_Returns409Conflict_WithoutMkdir()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [File("readme.md")];
+        var result = await controller.CreateDirectory(ThreadId, "", new CreateDirectoryRequest("readme.md"), CancellationToken.None);
+        result.Should().BeOfType<ConflictObjectResult>();
+        browser.Commands.Should().BeEmpty();
     }
 
     [Theory]
@@ -597,15 +632,18 @@ public class FileBrowserControllerTests
     // -------- Folder upload: relative-path destination (WI #214) --------
 
     [Fact]
-    public async Task Upload_WithRelativePath_CreatesParents_AndWritesNestedDestination()
+    public async Task Upload_WithRelativePath_CreatesParentsOneComponentAtATime_AndWritesNestedDestination()
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
         var result = await controller.Upload(ThreadId, "", new FakeFormFile("readme.md", [1, 2, 3]), relativePath: "proj/docs/readme.md", CancellationToken.None);
         result.Should().BeOfType<OkObjectResult>();
-        // Parents are created with `mkdir -p --` before the write; the write lands at the full relative destination.
-        browser.Commands.Should().ContainSingle();
-        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "proj/docs");
+        // Parents are created ONE component at a time with `mkdir --` (never `mkdir -p`), so no symlink in the
+        // chain can be followed; the write lands at the full relative destination.
+        browser.Commands.Select(c => c.Arguments).Should().SatisfyRespectively(
+            first => first.Should().Equal("mkdir", "--", "proj"),
+            second => second.Should().Equal("mkdir", "--", "proj/docs")
+        );
         browser.Writes.Should().ContainSingle();
         browser.Writes[0].Path.Should().Be("proj/docs/readme.md");
         browser.Writes[0].Bytes.Should().Equal(1, 2, 3);
@@ -619,8 +657,57 @@ public class FileBrowserControllerTests
         browser.Listings["up"] = [];
         var result = await controller.Upload(ThreadId, "up", new FakeFormFile("a.txt", [7]), relativePath: "x/a.txt", CancellationToken.None);
         result.Should().BeOfType<OkObjectResult>();
-        browser.Commands[0].Arguments.Should().Equal("mkdir", "-p", "--", "up/x");
+        browser.Commands.Should().ContainSingle();
+        browser.Commands[0].Arguments.Should().Equal("mkdir", "--", "up/x");
         browser.Writes[0].Path.Should().Be("up/x/a.txt");
+    }
+
+    [Fact]
+    public async Task Upload_WithRelativePath_ReusesExistingRealDirectoryParent_WithoutMkdir()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [Dir("existing")];
+        browser.Listings["existing"] = [];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("n.txt", [1]), relativePath: "existing/n.txt", CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>();
+        // An existing REAL directory parent is reused — no mkdir.
+        browser.Commands.Should().BeEmpty();
+        browser.Writes[0].Path.Should().Be("existing/n.txt");
+    }
+
+    [Fact]
+    public async Task Upload_WithRelativePath_SymlinkParent_Returns409Conflict_WithoutMkdirOrWrite()
+    {
+        var (controller, browser) = Build();
+        // THE security fix: a symlink in the parent chain (`linked/`) is rejected, not traversed — a relative
+        // path can no longer escape the resolved directory THROUGH a symlink.
+        browser.Listings[""] = [Symlink("linked")];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("f.txt", [1]), relativePath: "linked/f.txt", CancellationToken.None);
+        result.Should().BeOfType<ConflictObjectResult>();
+        browser.Commands.Should().BeEmpty();
+        browser.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Upload_WithRelativePath_FileParent_Returns409Conflict_WithoutMkdirOrWrite()
+    {
+        var (controller, browser) = Build();
+        browser.Listings[""] = [File("data")];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("f.txt", [1]), relativePath: "data/f.txt", CancellationToken.None);
+        result.Should().BeOfType<ConflictObjectResult>();
+        browser.Commands.Should().BeEmpty();
+        browser.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Upload_WithRelativePath_SymlinkAtLeaf_Returns409Conflict_WithoutWrite()
+    {
+        var (controller, browser) = Build();
+        // A symlink at the write target itself must not be written THROUGH either.
+        browser.Listings[""] = [Symlink("link.txt")];
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("link.txt", [1]), relativePath: "link.txt", CancellationToken.None);
+        result.Should().BeOfType<ConflictObjectResult>();
+        browser.Writes.Should().BeEmpty();
     }
 
     [Fact]
@@ -669,9 +756,9 @@ public class FileBrowserControllerTests
     {
         var (controller, browser) = Build();
         browser.Listings[""] = [];
-        // A non-directory parent makes `mkdir -p` fail; that file must fail rather than be traversed/replaced.
-        browser.ExecResult = new SandboxCommandResult { ExitCode = 1, StandardOutput = "", StandardError = "Not a directory", OperationId = "op" };
-        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "afile/a.txt", CancellationToken.None);
+        // A failed `mkdir --` (non-zero exit) creating a missing parent surfaces as a structured failure, no write.
+        browser.ExecResult = new SandboxCommandResult { ExitCode = 1, StandardOutput = "", StandardError = "denied", OperationId = "op" };
+        var result = await controller.Upload(ThreadId, "", new FakeFormFile("a.txt", [1]), relativePath: "newdir/a.txt", CancellationToken.None);
         result.Should().BeOfType<UnprocessableEntityObjectResult>();
         browser.Writes.Should().BeEmpty();
     }

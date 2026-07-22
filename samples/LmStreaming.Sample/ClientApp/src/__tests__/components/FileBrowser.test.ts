@@ -9,6 +9,7 @@ import {
   textPreview,
   jsonResponse,
 } from '../fixtures/fileBrowser';
+import { MAX_FOLDER_UPLOAD_FILES } from '@/utils/folderUpload';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -396,6 +397,135 @@ describe('FileBrowser fixed-height list', () => {
 
     const list = wrapper.find('[data-testid="file-browser-list"]');
     expect(list.find('[data-testid="file-browser-empty"]').exists()).toBe(true);
+  });
+
+  // F8: the fixed-height container must stay mounted while loading (loading indicator INSIDE it) so the
+  // panel does not collapse to a one-line div and re-expand on every load/navigation/refresh.
+  it('keeps the fixed-height container mounted (loading indicator inside) while loading', async () => {
+    // A listing fetch that never resolves keeps the browser in its loading state.
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise<Response>(() => {}));
+    const wrapper = mount(FileBrowser, { props: { threadId: 'thread-1' }, attachTo: document.body });
+    await flushPromises();
+
+    const list = wrapper.find('[data-testid="file-browser-list"]');
+    expect(list.exists()).toBe(true);
+    const style = list.attributes('style') ?? '';
+    expect(style).toContain('overflow-y: auto');
+    expect(style).toContain('min-height: 0');
+    expect(style).toMatch(/height:/);
+    // The loading indicator lives INSIDE the stable-height panel, not replacing it.
+    const loading = wrapper.find('[data-testid="file-browser-loading"]');
+    expect(loading.exists()).toBe(true);
+    expect(list.find('[data-testid="file-browser-loading"]').exists()).toBe(true);
+  });
+});
+
+describe('FileBrowser mixed drop (F2)', () => {
+  it('uploads the folder WITHOUT preflight while a colliding loose file triggers the overwrite confirm', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const bodies: FormData[] = [];
+    fetchSpy.mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === 'POST') {
+        bodies.push((init as RequestInit).body as FormData);
+        return Promise.resolve(jsonResponse({ name: 'x', size: 1 }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing));
+    });
+
+    // A loose readme.md (collides with the EXISTING root readme.md) dropped ALONGSIDE a folder.
+    dispatchDrop(wrapper, [dirEntry('proj', [fileEntry('a.txt')]), fileEntry('readme.md')]);
+    await flushPromises();
+
+    // The folder's file uploaded (proj/a.txt), WITHOUT any preflight for it...
+    const folderPaths = bodies.map((b) => b.get('relativePath'));
+    expect(folderPaths).toContain('proj/a.txt');
+    // ...and the loose readme.md is held at the overwrite confirmation (NOT uploaded).
+    expect(wrapper.find('[data-testid="file-browser-overwrite-confirm"]').exists()).toBe(true);
+    expect(folderPaths).not.toContain('readme.md');
+    // No flat (relativePath-less) upload was issued for readme.md while the confirm is pending.
+    expect(bodies.some((b) => !b.get('relativePath'))).toBe(false);
+  });
+});
+
+describe('FileBrowser folder over-limit rejection (F3/F4)', () => {
+  /** N leaf file entries for a fake drag-drop tree. */
+  function manyFileEntries(n: number): ReturnType<typeof fileEntry>[] {
+    return Array.from({ length: n }, (_, i) => fileEntry(`f${i}.txt`));
+  }
+
+  it('rejects an over-limit DROP with a visible error and uploads nothing (F3)', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const postsBefore = fetchSpy.mock.calls.length;
+
+    dispatchDrop(wrapper, [dirEntry('big', manyFileEntries(MAX_FOLDER_UPLOAD_FILES + 1))]);
+    await flushPromises();
+
+    const notice = wrapper.find('[data-testid="file-browser-upload-errors"]');
+    expect(notice.exists()).toBe(true);
+    expect(notice.text()).toContain(String(MAX_FOLDER_UPLOAD_FILES));
+    // No upload POST was issued — the whole selection is rejected, not partially uploaded.
+    const posts = fetchSpy.mock.calls
+      .slice(postsBefore)
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+    expect(posts).toHaveLength(0);
+  });
+
+  it('rejects an over-limit folder PICK with the same visible error and uploads nothing (F4)', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const postsBefore = fetchSpy.mock.calls.length;
+
+    const input = wrapper.find('[data-testid="file-browser-folder-input"]');
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: Array.from({ length: MAX_FOLDER_UPLOAD_FILES + 1 }, (_, i) => relFile(`proj/f${i}.txt`)),
+    });
+    await input.trigger('change');
+    await flushPromises();
+
+    const notice = wrapper.find('[data-testid="file-browser-upload-errors"]');
+    expect(notice.exists()).toBe(true);
+    expect(notice.text()).toContain(String(MAX_FOLDER_UPLOAD_FILES));
+    const posts = fetchSpy.mock.calls
+      .slice(postsBefore)
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST');
+    expect(posts).toHaveLength(0);
+  });
+});
+
+describe('FileBrowser upload single-flight (F5)', () => {
+  it('disables the upload buttons and ignores new drops while a batch is uploading', async () => {
+    const { wrapper, fetchSpy } = await mountBrowser();
+    const pending: Array<{ resolve: (r: Response) => void }> = [];
+    fetchSpy.mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === 'POST') {
+        return new Promise((resolve) => pending.push({ resolve }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing));
+    });
+
+    // Start a flat upload that stays in flight.
+    const input = wrapper.find('[data-testid="file-browser-file-input"]');
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['a'], 'a.txt')],
+    });
+    await input.trigger('change');
+    await flushPromises();
+    expect(pending).toHaveLength(1);
+
+    // The flat "Choose files" button is disabled while a batch runs (the folder button is already
+    // disabled by happy-dom's lack of webkitdirectory, so it isn't a useful discriminator here).
+    expect(wrapper.find('[data-testid="file-browser-upload"]').attributes('disabled')).toBeDefined();
+
+    // A new drop while uploading is IGNORED (no additional POST issued).
+    dispatchDrop(wrapper, [fileEntry('b.txt')]);
+    await flushPromises();
+    expect(pending).toHaveLength(1);
+
+    // Finish the in-flight upload; the buttons re-enable.
+    pending[0].resolve(jsonResponse({ name: 'a.txt', size: 1 }));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="file-browser-upload"]').attributes('disabled')).toBeUndefined();
   });
 });
 

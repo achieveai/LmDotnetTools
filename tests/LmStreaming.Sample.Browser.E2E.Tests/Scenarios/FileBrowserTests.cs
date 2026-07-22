@@ -157,6 +157,74 @@ public sealed class FileBrowserTests
         );
     }
 
+    /// <summary>
+    /// Fixed-height regression (WI #214 review T8): the list container must stay MOUNTED at a stable height while
+    /// a listing is loading — the loading indicator renders INSIDE the fixed-height panel, so initial load and
+    /// every refresh no longer collapse then re-expand it (the layout jump this change removes). Gates the first
+    /// listing response so the loading state is deterministically observable.
+    /// </summary>
+    [Fact]
+    public async Task File_browser_list_container_stays_mounted_at_stable_height_while_loading()
+    {
+        var responder = ScriptedSseResponder
+            .New()
+            .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
+            .Turn(t => t.Text("ok"))
+            .Build();
+        await using var session = await _fixture.OpenAsync("test", responder.HandlerFor("test"));
+        var page = session.Page;
+
+        await page.NewChatButton().ClickAsync();
+        await page.SendMessageAsync("hello");
+        await page.WaitForStreamIdleAsync();
+        await page.AssistantText().WaitForCountAtLeastAsync(1);
+
+        // Hold the FIRST listing response open so the loading state is observable; later calls resolve normally.
+        var listGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstList = true;
+        await page.RouteAsync(
+            url => url.Contains("/api/conversations/", StringComparison.Ordinal) && url.Contains("/files", StringComparison.Ordinal),
+            async route =>
+            {
+                var url = route.Request.Url;
+                if (route.Request.Method == "GET" && !url.Contains("/download", StringComparison.Ordinal) && !url.Contains("/preview", StringComparison.Ordinal))
+                {
+                    if (firstList)
+                    {
+                        firstList = false;
+                        await listGate.Task;
+                    }
+
+                    await route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = ListingJson(6) });
+                }
+                else
+                {
+                    await route.ContinueAsync();
+                }
+            }
+        );
+
+        await page.GetByTestId("file-browser-button").ClickAsync();
+        await page.GetByTestId("file-browser-modal").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+
+        // While loading: the fixed-height list container is mounted with the loading indicator INSIDE it.
+        var list = page.GetByTestId("file-browser-list");
+        await list.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("file-browser-loading").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var loadingHeight = await list.EvaluateAsync<double>("el => el.clientHeight");
+        await session.SaveSuccessScreenshotAsync("FileBrowser.Loading_State");
+
+        // Release the listing; the rows replace the loading indicator inside the SAME container.
+        listGate.SetResult();
+        await page.GetByTestId("file-browser-loading").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+        var loadedHeight = await list.EvaluateAsync<double>("el => el.clientHeight");
+
+        Assert.True(
+            Math.Abs(loadedHeight - loadingHeight) <= 2,
+            $"File list panel height changed between loading ({loadingHeight}px) and loaded ({loadedHeight}px) — the container must stay mounted at a stable height."
+        );
+    }
+
     /// <summary>Builds a camelCase <c>DirectoryListing</c> JSON with two directories and <paramref name="fileCount"/> files.</summary>
     private static string ListingJson(int fileCount)
     {

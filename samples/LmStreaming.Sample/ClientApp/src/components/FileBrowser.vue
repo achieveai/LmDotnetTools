@@ -15,6 +15,7 @@ const {
   error,
   noSession,
   uploadProgress,
+  isUploading,
   previewTarget,
   previewResult,
   load,
@@ -158,42 +159,69 @@ watch(pendingUpload, async (pending) => {
 function onFilesPicked(event: Event): void {
   const input = event.target as HTMLInputElement;
   const files = input.files ? Array.from(input.files) : [];
+  // Reset so picking the same file again re-triggers change.
+  input.value = '';
+  // Ignore new picks while a batch is uploading (single-flight; buttons are also disabled).
+  if (isUploading.value) {
+    return;
+  }
   if (files.length > 0) {
     handleUpload(files);
   }
-  // Reset so picking the same file again re-triggers change.
-  input.value = '';
 }
 
 /** Folder picker (`webkitdirectory`): each file carries its `webkitRelativePath`, so upload as a tree. */
 function onFolderPicked(event: Event): void {
   const input = event.target as HTMLInputElement;
   const files = input.files ? Array.from(input.files) : [];
-  const items = filesFromDirectoryInput(files);
-  if (items.length > 0) {
-    void doFolderUpload(items);
-  }
   input.value = '';
+  if (isUploading.value) {
+    return;
+  }
+  const result = filesFromDirectoryInput(files);
+  if (result.kind === 'over-limit') {
+    reportOverLimit(result.limit);
+    return;
+  }
+  if (result.items.length > 0) {
+    void doFolderUpload(result.items);
+  }
 }
 
 /**
- * A drop resolves to EITHER a flat file batch (loose files, or a platform without directory traversal —
- * kept on today's path WITH the basename overwrite preflight) OR a directory tree (folder upload, no
- * preflight, relative paths preserved).
+ * A drop is SPLIT into a flat file group (loose top-level files — kept on today's path WITH the basename
+ * overwrite preflight) and a directory tree group (folder upload, no preflight, relative paths preserved);
+ * a mixed drop runs BOTH. A tree exceeding the shared file cap rejects the whole drop.
  */
 async function onDrop(event: DragEvent): Promise<void> {
   isDragOver.value = false;
-  if (!event.dataTransfer) {
+  // Ignore drops while a batch is uploading (single-flight).
+  if (!event.dataTransfer || isUploading.value) {
     return;
   }
   const result = await resolveDrop(event.dataTransfer);
-  if (result.kind === 'flat') {
-    if (result.files.length > 0) {
-      handleUpload(result.files);
-    }
-  } else if (result.items.length > 0) {
+  if (result.kind === 'over-limit') {
+    reportOverLimit(result.limit);
+    return;
+  }
+  // Loose files → the flat overwrite preflight; directories → folder upload (no preflight).
+  if (result.files.length > 0) {
+    handleUpload(result.files);
+  }
+  if (result.items.length > 0) {
     void doFolderUpload(result.items);
   }
+}
+
+/**
+ * Rejects an over-limit folder selection (drop or picker): nothing is uploaded and a visible error is
+ * surfaced via the upload-errors notice. Shared by both entry points so the policy is identical.
+ */
+function reportOverLimit(limit: number): void {
+  uploadSummary.value = null;
+  uploadErrors.value =
+    `Too many files: a folder upload is limited to ${limit} files. ` +
+    'Nothing was uploaded — choose a smaller folder.';
 }
 
 /**
@@ -375,13 +403,18 @@ function typeIcon(entry: FileEntry): string {
         @drop.prevent="onDrop"
       >
         <span>Drag files or a folder here to upload, or</span>
-        <button class="fb-upload-btn" data-testid="file-browser-upload" @click="fileInputRef?.click()">
+        <button
+          class="fb-upload-btn"
+          data-testid="file-browser-upload"
+          :disabled="isUploading"
+          @click="fileInputRef?.click()"
+        >
           Choose files
         </button>
         <button
           class="fb-upload-btn"
           data-testid="file-browser-folder-upload"
-          :disabled="!folderPickerSupported"
+          :disabled="!folderPickerSupported || isUploading"
           @click="folderInputRef?.click()"
         >
           Upload folder
@@ -444,12 +477,14 @@ function typeIcon(entry: FileEntry): string {
         {{ uploadErrors }}
       </div>
 
-      <div v-if="isLoading" class="fb-loading" data-testid="file-browser-loading">Loading…</div>
-
-      <ul v-else class="fb-list" :style="listScrollStyle" data-testid="file-browser-list">
-        <li v-if="entries.length === 0" class="fb-empty" data-testid="file-browser-empty">
+      <!-- ONE fixed-height, internally-scrolling container that stays mounted in EVERY state (loading,
+           empty, populated) so the panel never collapses to a one-line div and re-expands on refresh. -->
+      <ul class="fb-list" :style="listScrollStyle" data-testid="file-browser-list">
+        <li v-if="isLoading" class="fb-loading" data-testid="file-browser-loading">Loading…</li>
+        <li v-else-if="entries.length === 0" class="fb-empty" data-testid="file-browser-empty">
           This directory is empty.
         </li>
+        <template v-else>
         <li
           v-for="entry in entries"
           :key="entry.name"
@@ -521,6 +556,7 @@ function typeIcon(entry: FileEntry): string {
             </div>
           </div>
         </li>
+        </template>
       </ul>
 
       <!-- Row-cap notice: entries beyond the server cap were not returned. -->

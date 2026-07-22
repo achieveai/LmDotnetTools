@@ -50,6 +50,12 @@ export function useFileBrowser(getThreadId: () => string | null) {
   const noSession = ref(false);
   // Per-file progress for the active (sequential) upload batch; `null` when no batch is running.
   const uploadProgress = ref<UploadProgress | null>(null);
+  // Number of upload batches currently queued/running. Batches are single-flight (serialized): while any
+  // is active `isUploading` is true so the component disables its upload entry points and ignores drops,
+  // and detached batches (repeated picks/drops, or a mixed drop's two batches) never overlap and clobber
+  // the shared `uploadProgress` or race reloads.
+  const pendingBatches = ref(0);
+  const isUploading = computed(() => pendingBatches.value > 0);
 
   // Inline preview state (the panel the component renders in a <pre>).
   const previewTarget = ref<FileEntry | null>(null);
@@ -239,12 +245,14 @@ export function useFileBrowser(getThreadId: () => string | null) {
     return runUploadBatch(items);
   }
 
+  // Gate for the in-flight batch (a promise that resolves when it finishes). A new batch queues behind it
+  // (single-flight) so two batches never share the single `uploadProgress` or race reloads. When idle it
+  // is null, so the next batch runs WITHOUT an extra tick — its first request still fires synchronously.
+  let inFlightBatch: Promise<void> | null = null;
+
   /**
-   * Uploads N files into the directory the batch STARTED in, as N INDEPENDENT sequential requests
-   * (one in flight at a time so a large batch never retains multiple 64 MiB buffers). The destination is
-   * snapshotted before the loop, so navigating mid-batch never re-targets later files; the loop also stops
-   * if the composable is disposed or the conversation switches. A per-file failure never aborts the batch;
-   * only a session-level failure does. Progress is reported per file (completed/total + active name).
+   * Enqueues an upload batch behind any in-flight one (single-flight) and tracks it for `isUploading`.
+   * The destination is snapshotted here (at enqueue) so navigating mid-batch never re-targets later files.
    */
   async function runUploadBatch(items: PendingUpload[]): Promise<UploadOutcome[]> {
     const threadId = getThreadId();
@@ -252,9 +260,43 @@ export function useFileBrowser(getThreadId: () => string | null) {
       return [];
     }
     const startPath = currentPath.value;
-    const labelOf = (item: PendingUpload): string => item.relativePath ?? item.file.name;
+    pendingBatches.value += 1;
+    const predecessor = inFlightBatch;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    inFlightBatch = gate;
     try {
-      const outcomes: UploadOutcome[] = [];
+      // Only WAIT when another batch is already running; when idle, execute immediately so the first
+      // request is issued synchronously (preserving the eager single-batch behavior).
+      if (predecessor) {
+        await predecessor;
+      }
+      return await executeUploadBatch(threadId, startPath, items);
+    } finally {
+      pendingBatches.value -= 1;
+      release();
+      if (inFlightBatch === gate) {
+        inFlightBatch = null;
+      }
+    }
+  }
+
+  /**
+   * Uploads N files into `startPath` as N INDEPENDENT sequential requests (one in flight at a time so a
+   * large batch never retains multiple 64 MiB buffers). The loop stops if the composable is disposed or
+   * the conversation switches. A per-file failure never aborts the batch; only a session-level failure
+   * does. `outcomes` is accumulated OUTSIDE the try so a mid-batch throw preserves the per-file outcomes
+   * already collected (files that genuinely uploaded stay `success`) and marks ONLY the active +
+   * not-yet-attempted files failed — never the whole batch. Progress is reported per file.
+   */
+  async function executeUploadBatch(
+    threadId: string,
+    startPath: string,
+    items: PendingUpload[]
+  ): Promise<UploadOutcome[]> {
+    const labelOf = (item: PendingUpload): string => item.relativePath ?? item.file.name;
+    const outcomes: UploadOutcome[] = [];
+    try {
       uploadProgress.value = { completed: 0, total: items.length, activeName: null };
       for (const item of items) {
         // Stop the batch if the browser was torn down or the conversation changed mid-upload.
@@ -267,20 +309,21 @@ export function useFileBrowser(getThreadId: () => string | null) {
       }
       return outcomes;
     } catch (e) {
-      if (isCancellation(e) || disposed) {
-        return items.map((item) => ({ name: labelOf(item), success: false, error: 'cancelled' }));
+      const cancelled = isCancellation(e) || disposed;
+      if (!cancelled) {
+        if (e instanceof NoSessionError) {
+          noSession.value = true;
+        } else {
+          error.value = e instanceof Error ? e.message : 'Failed to upload files';
+        }
+        console.error('Failed to upload files:', e);
       }
-      if (e instanceof NoSessionError) {
-        noSession.value = true;
-      } else {
-        error.value = e instanceof Error ? e.message : 'Failed to upload files';
+      // Preserve the outcomes already collected; only the active + remaining items are failed/cancelled.
+      const reason = cancelled ? 'cancelled' : e instanceof Error ? e.message : 'upload_failed';
+      for (let i = outcomes.length; i < items.length; i += 1) {
+        outcomes.push({ name: labelOf(items[i]), success: false, error: reason });
       }
-      console.error('Failed to upload files:', e);
-      return items.map((item) => ({
-        name: labelOf(item),
-        success: false,
-        error: e instanceof Error ? e.message : 'upload_failed',
-      }));
+      return outcomes;
     } finally {
       uploadProgress.value = null;
       await reloadIfCurrent(threadId, startPath);
@@ -379,6 +422,7 @@ export function useFileBrowser(getThreadId: () => string | null) {
     error,
     noSession,
     uploadProgress,
+    isUploading,
     previewTarget,
     previewResult,
     load,
