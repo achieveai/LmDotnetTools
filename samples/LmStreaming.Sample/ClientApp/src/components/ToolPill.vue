@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, inject, ref } from 'vue';
 import type { Component } from 'vue';
 import type { ToolCall } from '@/types';
 import type { ToolCallState } from '@/utils/toolTypes';
 import { resolveRenderer, deriveToolPillState } from '@/utils';
 import { useToolResult } from '@/composables/useToolResult';
+import { GET_AGENT_COLOR, resolveAgentIdFromCall, type AgentColorLookup } from '@/utils/agentColors';
 import CodeBlockRich from '@/components/tools/CodeBlockRich.vue';
 import DiffRich from '@/components/tools/DiffRich.vue';
 import TerminalRich from '@/components/tools/TerminalRich.vue';
@@ -42,6 +43,16 @@ const summary = computed(() => {
 
 /** EXACT raw result string — the frozen `.tool-call-result` contract (never pretty-printed). */
 const rawResult = computed(() => resultMsg.value?.result ?? '');
+
+// Tint a sub-agent CALL pill (Agent / SendMessage / CheckAgent) with the target sub-agent's assigned
+// color so it visually links to that agent's tab. Exact-agentId only — a call we can't resolve to a
+// known agent stays uncolored (unchanged appearance). Purely additive style; testids are untouched.
+const getAgentColor = inject<AgentColorLookup>(GET_AGENT_COLOR, () => null);
+const agentColor = computed<string | null>(() => {
+  if (renderer.value.family !== 'agent') return null;
+  const agentId = resolveAgentIdFromCall(view.value.parsedArgs, rawResult.value);
+  return agentId ? getAgentColor(agentId) : null;
+});
 
 const argEntries = computed(() =>
   view.value.parsedArgs ? Object.entries(view.value.parsedArgs) : []
@@ -89,7 +100,8 @@ async function copyResult() {
 <template>
   <div
     class="tool-pill"
-    :class="[`f-${renderer.family}`, `st-${view.state}`]"
+    :class="[`f-${renderer.family}`, `st-${view.state}`, { 'has-agent-color': agentColor }]"
+    :style="agentColor ? { borderLeftColor: agentColor, borderLeftWidth: '3px' } : undefined"
     data-testid="tool-call-pill"
     :data-tool-name="toolCall.function_name || undefined"
   >

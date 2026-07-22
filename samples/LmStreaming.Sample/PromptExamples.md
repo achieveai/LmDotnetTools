@@ -147,6 +147,55 @@ Expected behavior:
 
 ---
 
+## Sub-Agent Tabs (center-pane, colored)
+
+Drive the **center-pane tab strip**: a sub-agent conversation opens as a tab next to `main`, each
+sub-agent is assigned a stable color (in discovery order — 1st sub-agent → hue 0, 2nd → hue 1, …) that
+tints **both its tab and its inline `Agent`/`SendMessage` call pills** in the parent conversation.
+Selecting a tab swaps the center pane to that child's transcript; `main` returns to the parent.
+
+Requires `test` / `test-anthropic` mode and **General Assistant** (Agent + calculate wired). Prefer
+`run_in_background: true` so each spawn returns a receipt immediately (its `agent_id` lets the pill
+resolve its color exactly) and the child's transcript persists as the tab's replay source.
+
+**Authoring tip:** build these nested-chain prompts with `JSON.stringify` rather than hand-escaping —
+`playwright-scripts/subagent-tabs.mjs` constructs the exact prompt below programmatically, so the
+inner-quote escaping (`\"`) and literal `<|instruction_start|>` tags are correct by construction.
+
+### Two sub-agents → two distinct colored tabs (validated)
+
+One parent turn spawns **two** background sub-agents (`alpha` = a researcher that replies with text;
+`beta` = a general-purpose worker that runs `calculate` then replies). Two colored tabs (`alpha`,
+`beta`) appear alongside `main`; both inline `Agent` pills are tinted to match their tab.
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-two","id_message":"Spawn two background workers","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"researcher","name":"alpha","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"a1\",\"messages\":[{\"text\":\"Alpha reporting: I found three fresh AI papers today.\"}]}]}<|instruction_end|>"}},{"name":"Agent","args":{"subagent_type":"general-purpose","name":"beta","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"b1\",\"messages\":[{\"tool_call\":[{\"name\":\"calculate\",\"args\":{\"a\":40,\"operation\":\"add\",\"b\":2}}]}]},{\"id\":\"b2\",\"messages\":[{\"text\":\"Beta reporting: 40 + 2 = 42.\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent-done","id_message":"Wrap up","messages":[{"text":"Spawned alpha and beta in the background."}]}]}<|instruction_end|>
+
+Expected UI:
+1. Within ~3s (the sub-agent poll) a `main` tab plus an `alpha` and a `beta` tab appear; the two
+   sub-agent tab dots have **different** colors.
+2. In the parent conversation, each `Agent` tool-call pill has a colored **left border** matching its
+   tab (background spawns resolve the exact `agent_id` from the receipt). The two
+   `Sub-agent completed ← Agent …` notification pills are tinted the same way.
+3. Click `alpha` → the center pane shows alpha's transcript ("Alpha reporting: …"); click `beta` →
+   beta's transcript (its `calculate 40 add 2 = 42` pill + "Beta reporting: 40 + 2 = 42."); click
+   `main` → back to the parent conversation.
+
+Known cosmetic quirk (pre-existing, not tab-specific): a sub-agent's own *user* message renders the
+raw nested `<|instruction_start|>…` chain (the parent hides it as "Test instruction sent"; the
+sub-agent transcript does not).
+
+### Richer per-tab transcript (reasoning + multiple tools + text)
+
+A single background sub-agent whose nested chain reasons, calls two tools, then summarizes — so its
+tab holds a substantial transcript (a MetadataPill with a thinking row + two tool pills, then text).
+
+<|instruction_start|>{"instruction_chain":[{"id":"spawn-analyst","id_message":"Spawn a background analyst","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"analyst","run_in_background":true,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"r1\",\"reasoning\":{\"length\":30},\"messages\":[{\"tool_call\":[{\"name\":\"get_weather\",\"args\":{\"location\":\"Tokyo\"}}]}]},{\"id\":\"r2\",\"messages\":[{\"tool_call\":[{\"name\":\"calculate\",\"args\":{\"a\":18,\"operation\":\"multiply\",\"b\":2}}]}]},{\"id\":\"r3\",\"messages\":[{\"text\":\"Analyst: Tokyo checked, 18x2=36. Analysis complete.\"}]}]}<|instruction_end|>"}}]}]},{"id":"analyst-ack","id_message":"Wrap up","messages":[{"text":"Analyst spawned in the background."}]}]}<|instruction_end|>
+
+The browser-observable slice of the two-tab scenario is locked in CI by
+`tests/LmStreaming.Sample.Browser.E2E.Tests/Scenarios/SubAgentTabsTests.cs`.
+
+---
+
 ## Wait / Trigger (Park-and-Wake)
 
 Requires `test` or `test-anthropic` mode. The `Wait` / `CancelWait` / `ListWaits` tools are wired into
