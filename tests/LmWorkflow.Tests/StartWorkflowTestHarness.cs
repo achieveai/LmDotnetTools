@@ -10,7 +10,7 @@ using Moq;
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 
 /// <summary>
-///     Shared scaffolding for the StartWorkflow tool-family tests: scripted controllers, minimal/invalid
+///     Shared scaffolding for the StartWorkflowAgent tool-family tests: scripted controllers, minimal/invalid
 ///     definitions, and empty controller options.
 /// </summary>
 internal static class StartWorkflowTestHarness

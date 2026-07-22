@@ -68,7 +68,7 @@ internal static class BuiltInSubAgentTemplates
     }
 
     /// <summary>
-    /// Builds the node-delegate templates for a StartWorkflow controller loop. These mirror the built-in
+    /// Builds the node-delegate templates for a StartWorkflowAgent controller loop. These mirror the built-in
     /// catalog but declare an EXPLICIT, empty <see cref="SubAgentTemplate.EnabledTools"/> allow-list: a
     /// controller delegate must never inherit the controller's own workflow-state tools
     /// (<c>WorkflowManager</c> asserts this at construction, rejecting an inherit-all template). V1

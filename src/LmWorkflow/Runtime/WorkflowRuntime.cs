@@ -89,8 +89,8 @@ public sealed class WorkflowRuntime
     ///     Creates a runtime. A custom <paramref name="schemaValidator"/> may be injected for tests, and an
     ///     optional <paramref name="logger"/> surfaces otherwise-swallowed best-effort persistence faults.
     ///     Internal: a runtime is only constructed inside the library (via <see cref="WorkflowSession"/> /
-    ///     <see cref="WorkflowManager"/> / <see cref="FromSnapshot"/>) so the controller-isolation invariant
-    ///     cannot be bypassed by newing one up directly.
+    ///     <see cref="WorkflowManager"/> / <see cref="FromSnapshot"/> / <see cref="CreateNew"/>) so
+    ///     construction always goes through one of those blessed, public entry points.
     /// </summary>
     internal WorkflowRuntime(IJsonSchemaValidator? schemaValidator = null, ILogger? logger = null)
     {
@@ -286,6 +286,217 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+    }
+
+    /// <summary>
+    ///     Splices <paramref name="node"/> into the graph: if <paramref name="previousNodeId"/> is given, it is
+    ///     appended to that node's own outgoing edge(s); if <paramref name="nextNodeId"/> is given, it is
+    ///     appended to <paramref name="node"/>'s own outgoing edge(s). At least one of the two is required — an
+    ///     unreachable node is never useful. The candidate definition is validated (see <see cref="LoadDefinition"/>)
+    ///     before it is committed; on failure <see cref="Definition"/> is left untouched.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    ///     No definition is loaded; <paramref name="node"/>'s id already exists; both
+    ///     <paramref name="previousNodeId"/> and <paramref name="nextNodeId"/> are omitted; either id does not
+    ///     resolve to an existing node; or splicing targets a node type whose outgoing edges aren't a plain
+    ///     "next" list (conditional/terminal) — use <c>SetWorkflow</c> to edit those directly instead.
+    /// </exception>
+    /// <exception cref="WorkflowValidationException">The resulting definition failed validation.</exception>
+    public void AddNode(WorkflowNode node, string? previousNodeId, string? nextNodeId)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+
+        WorkflowInstanceSnapshot? snapshot;
+        lock (_lock)
+        {
+            if (Definition is null)
+            {
+                throw new InvalidOperationException("No workflow definition is loaded.");
+            }
+
+            if (FindNodeNoLock(node.Id) is not null)
+            {
+                throw new InvalidOperationException($"Node id '{node.Id}' already exists.");
+            }
+
+            if (string.IsNullOrEmpty(previousNodeId) && string.IsNullOrEmpty(nextNodeId))
+            {
+                throw new InvalidOperationException(
+                    "At least one of 'previousNodeId' or 'nextNodeId' is required so the new node is reachable."
+                );
+            }
+
+            WorkflowNode? mutatedPrevious = null;
+            if (!string.IsNullOrEmpty(previousNodeId))
+            {
+                var previous =
+                    FindNodeNoLock(previousNodeId)
+                    ?? throw new InvalidOperationException($"Node '{previousNodeId}' does not exist.");
+
+                mutatedPrevious = previous switch
+                {
+                    StartNode start => start with { Next = [.. start.Next, node.Id] },
+                    ProceduralNode procedural => procedural with { Next = [.. procedural.Next, node.Id] },
+                    _ => throw new InvalidOperationException(
+                        $"Node '{previousNodeId}' is a {previous.Type} node; splicing via 'previousNodeId' is "
+                            + "only supported for start/procedural nodes. Use SetWorkflow to edit its "
+                            + "branches/else directly."
+                    ),
+                };
+            }
+
+            var newNode = node;
+            if (!string.IsNullOrEmpty(nextNodeId))
+            {
+                if (FindNodeNoLock(nextNodeId) is null)
+                {
+                    throw new InvalidOperationException($"Node '{nextNodeId}' does not exist.");
+                }
+
+                newNode = node switch
+                {
+                    StartNode start => start.Next.Contains(nextNodeId)
+                        ? start
+                        : start with { Next = [.. start.Next, nextNodeId] },
+                    ProceduralNode procedural => procedural.Next.Contains(nextNodeId)
+                        ? procedural
+                        : procedural with { Next = [.. procedural.Next, nextNodeId] },
+                    _ => throw new InvalidOperationException(
+                        $"'{node.Id}' is a {node.Type} node; 'nextNodeId' auto-wiring is only supported for "
+                            + "start/procedural nodes. Fully specify branches/else (or omit nextNodeId for a "
+                            + "terminal) on the node payload."
+                    ),
+                };
+            }
+
+            var candidateNodes = Definition
+                .Nodes.Select(n => mutatedPrevious is not null && n.Id == mutatedPrevious.Id ? mutatedPrevious : n)
+                .Append(newNode)
+                .ToList();
+            var candidate = Definition with { Nodes = candidateNodes };
+            _validator.ValidateAndThrow(candidate);
+
+            Definition = candidate;
+            RebuildNodeIndexNoLock();
+            _outputs[newNode.Id] = new JsonObject();
+
+            snapshot = CaptureSnapshotNoLock();
+        }
+
+        Persist(snapshot);
+    }
+
+    /// <summary>
+    ///     "Removes" the node <paramref name="nodeId"/> by neutering it into a no-op pass-through IN PLACE
+    ///     rather than deleting it from the graph. The node keeps its id and every INBOUND edge, so removal
+    ///     itself can never leave a dangling edge or orphan a predecessor. Only the node's own work is
+    ///     stripped: a <see cref="ProceduralNode"/> loses its task list and its failure/visit-cap edges (a
+    ///     no-op can neither fail nor loop, so its loop cycle becomes 0) and simply advances along its
+    ///     existing <c>next</c>; a <see cref="ConditionalNode"/> "defaults to true", collapsing to a
+    ///     procedural pass-through whose single <c>next</c> is its FIRST branch's target (its <c>else</c>
+    ///     fallback when it declares no branch), dropping the other branches. The candidate definition is
+    ///     validated (see <see cref="LoadDefinition"/>) before it is committed; on failure
+    ///     <see cref="Definition"/> is left untouched.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    ///     No definition is loaded; <paramref name="nodeId"/> does not resolve to an existing node; it is the
+    ///     node the controller is currently positioned on; or it is the start node (the entry point — re-root
+    ///     via <c>SetWorkflow</c>) or a terminal node (no successor to pass through to — edit via
+    ///     <c>SetWorkflow</c>).
+    /// </exception>
+    /// <exception cref="WorkflowValidationException">
+    ///     Neutering the node produced an invalid definition — e.g. dropping a procedural node's
+    ///     <c>onFailure</c> edge, or collapsing a conditional to its first branch, orphaned a node that was
+    ///     reachable only through the dropped edge.
+    /// </exception>
+    public void RemoveNode(string nodeId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(nodeId);
+
+        WorkflowInstanceSnapshot? snapshot;
+        lock (_lock)
+        {
+            if (Definition is null)
+            {
+                throw new InvalidOperationException("No workflow definition is loaded.");
+            }
+
+            var node =
+                FindNodeNoLock(nodeId)
+                ?? throw new InvalidOperationException($"Node '{nodeId}' does not exist.");
+
+            if (nodeId == CurrentNodeId)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot remove node '{nodeId}': the workflow is currently positioned on it."
+                );
+            }
+
+            var neutered = NeuterNode(node);
+
+            var candidateNodes = Definition.Nodes.Select(n => n.Id == nodeId ? neutered : n).ToList();
+            var candidate = Definition with { Nodes = candidateNodes };
+            _validator.ValidateAndThrow(candidate);
+
+            Definition = candidate;
+            RebuildNodeIndexNoLock();
+            // The node persists (its id + inbound edges are unchanged); it just no longer produces output.
+            _outputs[nodeId] = new JsonObject();
+
+            snapshot = CaptureSnapshotNoLock();
+        }
+
+        Persist(snapshot);
+    }
+
+    /// <summary>
+    ///     Builds the no-op replacement for <paramref name="node"/>: a procedural node keeps its id/title and
+    ///     <c>next</c> but loses its task list and failure/visit-cap edges; a conditional collapses to a
+    ///     procedural whose single <c>next</c> is its first branch's target (its "defaults to true" path).
+    ///     Start and terminal nodes have no meaningful no-op form and are rejected.
+    /// </summary>
+    private static WorkflowNode NeuterNode(WorkflowNode node) =>
+        node switch
+        {
+            ProceduralNode procedural => procedural with
+            {
+                TaskList = [],
+                OnFailure = null,
+                MaxVisits = null,
+                OnMaxVisits = null,
+                MaxParallel = null,
+            },
+            ConditionalNode conditional => new ProceduralNode
+            {
+                Id = conditional.Id,
+                Title = conditional.Title,
+                ControllerInstructions = conditional.ControllerInstructions,
+                Next = [FirstConditionalTarget(conditional)],
+                TaskList = [],
+            },
+            StartNode => throw new InvalidOperationException(
+                $"Cannot remove the start node '{node.Id}': it is the workflow entry point. "
+                    + "Re-root the workflow via SetWorkflow instead."
+            ),
+            TerminalNode => throw new InvalidOperationException(
+                $"Cannot remove the terminal node '{node.Id}': it has no successor to pass through to. "
+                    + "Edit the graph via SetWorkflow instead."
+            ),
+            _ => throw new InvalidOperationException(
+                $"Cannot remove node '{node.Id}' of unsupported type {node.Type}."
+            ),
+        };
+
+    /// <summary>
+    ///     The target a no-op'd conditional collapses to: its first branch with a resolvable target,
+    ///     otherwise its <c>else</c> fallback (guaranteed non-empty for a valid conditional).
+    /// </summary>
+    private static string FirstConditionalTarget(ConditionalNode conditional)
+    {
+        var firstBranch = conditional
+            .Branches?.FirstOrDefault(b => !string.IsNullOrEmpty(b.To))
+            ?.To;
+        return !string.IsNullOrEmpty(firstBranch) ? firstBranch : conditional.Else;
     }
 
     /// <summary>Shallow-merges <paramref name="inputs"/> into the inputs channel (caller-supplied seed).</summary>
@@ -847,6 +1058,15 @@ public sealed class WorkflowRuntime
         runtime.RestoreFromSnapshot(snapshot);
         return runtime;
     }
+
+    /// <summary>
+    ///     Creates a fresh, empty runtime for a host that wants a chat agent to author and drive a workflow
+    ///     directly — via <see cref="Tools.WorkflowToolProvider"/> registered on the SAME conversation loop as
+    ///     the agent, rather than inside an isolated <see cref="WorkflowSession"/> controller loop. This is a
+    ///     blessed public entry point alongside <see cref="FromSnapshot"/>.
+    /// </summary>
+    public static WorkflowRuntime CreateNew(IJsonSchemaValidator? schemaValidator = null, ILogger? logger = null) =>
+        new(schemaValidator, logger);
 
     private void RestoreFromSnapshot(WorkflowInstanceSnapshot snapshot)
     {

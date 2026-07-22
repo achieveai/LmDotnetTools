@@ -108,7 +108,7 @@ public sealed class WorkflowCapacityException(int maxConcurrentWorkflows)
 }
 
 /// <summary>
-///     Owns the lifecycle of workflows launched via <c>StartWorkflow</c>: validates the definition, bounds
+///     Owns the lifecycle of workflows launched via <c>StartWorkflowAgent</c>: validates the definition, bounds
 ///     concurrency, spins up an isolated controller loop (via <see cref="WorkflowSession"/>) with a
 ///     restricted tool surface (no <c>SetWorkflow</c>; a controller always gets a pre-authored definition),
 ///     and exposes non-blocking status (<see cref="Check"/>) and blocking wait (<see cref="WaitAsync"/>). An
@@ -216,7 +216,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// <param name="mode">Whether to block for the terminal result (sync) or return a started receipt (async).</param>
     /// <param name="ct">Cancels the caller's wait (sync mode); the run itself is not cancelled by this token.</param>
     /// <param name="originatingToolCallId">
-    ///     The <c>StartWorkflow</c> tool-call id, so an async run's completion notification can be correlated
+    ///     The <c>StartWorkflowAgent</c> tool-call id, so an async run's completion notification can be correlated
     ///     back to the initiating call. Null falls back to <paramref name="workflowId"/>.
     /// </param>
     /// <exception cref="WorkflowValidationException">The definition is invalid.</exception>
@@ -574,7 +574,7 @@ public sealed class WorkflowManager : IAsyncDisposable
             Volatile.Write(ref entry.TerminalSnapshot, result);
 
             // Release the slot as soon as the run ends — BEFORE the possibly-slow notify — so a blocked
-            // notification never holds up a fresh StartWorkflow waiting on the gate. Guarded against a
+            // notification never holds up a fresh StartWorkflowAgent call waiting on the gate. Guarded against a
             // concurrent DisposeAsync having already disposed the gate (belt-and-suspenders: DisposeAsync
             // now awaits this observer before disposing, so this is normally unreachable).
             try
@@ -596,7 +596,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                     NotifyKinds.WorkflowCompletion,
                     detail: BuildNotifyDetail(result),
                     sourceToolName: StartWorkflowToolProvider.StartWorkflowToolName,
-                    // Correlate to the originating StartWorkflow tool call when known; the workflowId is still
+                    // Correlate to the originating StartWorkflowAgent tool call when known; the workflowId is still
                     // carried in the label + detail body.
                     sourceToolCallId: entry.OriginatingToolCallId ?? workflowId,
                     label: workflowId
@@ -763,7 +763,7 @@ public sealed class WorkflowManager : IAsyncDisposable
         /// <summary>The lightweight terminal result, captured at completion. Authoritative once non-null.</summary>
         public WorkflowRunResult? TerminalSnapshot;
 
-        /// <summary>The originating StartWorkflow tool-call id for completion-notify correlation, or null.</summary>
+        /// <summary>The originating StartWorkflowAgent tool-call id for completion-notify correlation, or null.</summary>
         public string? OriginatingToolCallId;
 
         public Task? Observer;

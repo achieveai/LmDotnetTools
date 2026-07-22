@@ -8,7 +8,7 @@ using static AchieveAi.LmDotnetTools.LmWorkflow.Tests.StartWorkflowTestHarness;
 namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 
 /// <summary>
-///     The tool-restriction invariant: a StartWorkflow-launched controller loop exposes exactly the
+///     The tool-restriction invariant: a StartWorkflowAgent-launched controller loop exposes exactly the
 ///     restricted workflow-state + Agent-family tools (never <c>SetWorkflow</c>, never a library <c>Read</c>),
 ///     and a controller sub-agent template set that could leak the workflow tools is rejected at construction.
 ///     (The complementary "controller Agent must not spawn background sub-agents" rail is enforced by

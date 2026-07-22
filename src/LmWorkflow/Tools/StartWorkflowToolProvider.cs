@@ -11,16 +11,17 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 
 /// <summary>
 ///     Exposes the agent-facing workflow launch tools over a <see cref="WorkflowManager"/>:
-///     <c>StartWorkflow</c> (launch a pre-authored definition, sync or async), <c>CheckWorkflow</c>
-///     (non-blocking status), and <c>WaitWorkflow</c> (block until terminal or timeout). These are the ONLY
-///     workflow tools a normal agent should ever see — the authoring/mutation tools
+///     <c>StartWorkflowAgent</c> (delegate a bounded unit of work to an isolated agent running a
+///     pre-authored workflow, sync or async), <c>CheckWorkflow</c> (non-blocking status), and
+///     <c>WaitWorkflow</c> (block until terminal or timeout). These are the ONLY workflow tools a
+///     normal agent should ever see — the authoring/mutation tools
 ///     (<c>GetWorkflow</c>/<c>SetCurrentNode</c>/<c>SetState</c>/<c>SetNotes</c>, and never
 ///     <c>SetWorkflow</c>) live exclusively inside the controller loop the manager spins up.
 /// </summary>
 public sealed class StartWorkflowToolProvider : IFunctionProvider
 {
     /// <summary>The launch tool name.</summary>
-    public const string StartWorkflowToolName = "StartWorkflow";
+    public const string StartWorkflowToolName = "StartWorkflowAgent";
 
     /// <summary>The non-blocking status tool name.</summary>
     public const string CheckWorkflowToolName = "CheckWorkflow";
@@ -67,12 +68,16 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         {
             Name = StartWorkflowToolName,
             Description =
-                "Launch a fully pre-authored workflow definition as a bounded, delegated unit of work, run "
-                + "by an isolated controller agent. By default (mode: sync) this BLOCKS until the workflow "
-                + "reaches a terminal state and returns the terminal result. Set mode: async to return "
-                + "immediately with {workflowId, status:\"started\"}; you'll receive a proactive notification "
-                + "when it finishes, and can poll with CheckWorkflow or block with WaitWorkflow. You supply "
-                + "the complete workflow graph — you cannot author or mutate it once running.",
+                "Run a COMPLETE, already-authored workflow graph as an isolated background job. This is the "
+                + "hand-off step you take AFTER the graph is assembled and validated: if you have the "
+                + "authoring tools (SetWorkflow/GetWorkflow/AddNode/RemoveNode/SetCurrentNode/SetState), "
+                + "build and check the graph with those first, then pass the finished object here to run it "
+                + "independently of this conversation. Prefer mode: async — it returns immediately with "
+                + "{workflowId, status:\"started\"}, you get a proactive notification when it finishes, and "
+                + "you can poll anytime with CheckWorkflow or block for the result with WaitWorkflow. "
+                + "(mode: sync instead BLOCKS this turn until the workflow reaches a terminal state and "
+                + "returns its result.) It runs on its own controller loop, so pass the graph complete; to "
+                + "change it afterward, start a new run with an updated graph.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -118,8 +123,8 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             Name = CheckWorkflowToolName,
             Description =
                 "Check the current status and state snapshot (current node, outputs, notes, and — once "
-                + "terminal — the final result) of a workflow started with StartWorkflow, WITHOUT blocking. "
-                + "Works in either mode and remains available after completion.",
+                + "terminal — the final result) of a workflow started with StartWorkflowAgent, WITHOUT "
+                + "blocking. Works in either mode and remains available after completion.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -146,8 +151,8 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         {
             Name = WaitWorkflowToolName,
             Description =
-                "Block until a workflow started with StartWorkflow reaches a terminal state, or until the "
-                + "optional timeout elapses, then return the final result (or a timeout signal). A timeout is "
+                "Block until a workflow started with StartWorkflowAgent reaches a terminal state, or until "
+                + "the optional timeout elapses, then return the final result (or a timeout signal). A timeout is "
                 + "non-destructive — the workflow keeps running and can be waited on again. NOTE: unlike the "
                 + "Agent tool's turn-bounded wait, this timeout is open-ended, so a long wait suspends this "
                 + "turn's tool dispatch for its full duration; prefer a bounded timeout, or async + "

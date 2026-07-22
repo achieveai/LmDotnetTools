@@ -153,7 +153,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // Agent/CheckAgent tools, preventing unbounded recursive delegation.
             var (contracts, handlers) = functionRegistry.Build();
 
-            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflow/
+            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflowAgent/
             // CheckWorkflow/WaitWorkflow) from the snapshot handed to sub-agents. Unlike the
             // Agent-family tools — excluded structurally because they're registered AFTER this
             // snapshot — these are registered on the parent's own registry BEFORE the loop is

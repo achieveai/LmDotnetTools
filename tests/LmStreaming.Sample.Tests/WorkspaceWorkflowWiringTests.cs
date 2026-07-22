@@ -9,7 +9,7 @@ namespace LmStreaming.Sample.Tests;
 
 /// <summary>
 ///     Covers the Workspace Agent migration off #130's direct <c>SetWorkflow</c>/<c>GetWorkflow</c> wiring
-///     onto the <c>StartWorkflow</c> tool family: the controller node-delegate templates are restricted (so
+///     onto the <c>StartWorkflowAgent</c> tool family: the controller node-delegate templates are restricted (so
 ///     <c>WorkflowManager</c> accepts them), the default conversation templates are inherit-all (which is
 ///     why the launch tools must be excluded from inheritance), and a migrated conversation surface exposes
 ///     the launch tools but NEVER the workflow-state tools.
@@ -48,18 +48,18 @@ public sealed class WorkspaceWorkflowWiringTests
     {
         var defaults = BuiltInSubAgentTemplates.Create(FakeAgent);
 
-        // The default sub-agent templates inherit ALL parent tools — so once StartWorkflow is on the
+        // The default sub-agent templates inherit ALL parent tools — so once StartWorkflowAgent is on the
         // conversation registry, the launch tools would leak into every sub-agent unless excluded. This is
         // exactly what the migration's NonInheritedToolNames = StartWorkflowToolProvider.ToolNames guards.
         defaults.Values.Should().OnlyContain(t => t.EnabledTools == null);
         StartWorkflowToolProvider.ToolNames.Should()
-            .BeEquivalentTo(["StartWorkflow", "CheckWorkflow", "WaitWorkflow"]);
+            .BeEquivalentTo(["StartWorkflowAgent", "CheckWorkflow", "WaitWorkflow"]);
     }
 
     [Fact]
     public async Task MigratedConversation_ExposesLaunchTools_NotWorkflowStateTools()
     {
-        // Reproduce the migrated Workspace Agent wiring: StartWorkflow family on the conversation registry,
+        // Reproduce the migrated Workspace Agent wiring: StartWorkflowAgent family on the conversation registry,
         // default (inherit-all) sub-agent templates, and the launch tools excluded from inheritance.
         var manager = new WorkflowManager(
             FakeAgent,
@@ -84,7 +84,7 @@ public sealed class WorkspaceWorkflowWiringTests
         );
 
         // A normal agent sees the launch tools...
-        loop.RegisteredToolNames.Should().Contain(["StartWorkflow", "CheckWorkflow", "WaitWorkflow"]);
+        loop.RegisteredToolNames.Should().Contain(["StartWorkflowAgent", "CheckWorkflow", "WaitWorkflow"]);
         // ...and NEVER the workflow-state/authoring tools (those live only inside a controller loop).
         loop.RegisteredToolNames.Should()
             .NotContain(["SetWorkflow", "GetWorkflow", "SetCurrentNode", "SetState", "SetNotes"]);

@@ -56,7 +56,7 @@ public static class WorkflowSession
     /// <param name="includeAuthoringTool">
     ///     When <c>true</c> (default) the controller loop exposes the <c>SetWorkflow</c> authoring tool.
     ///     Pass <c>false</c> when the controller always receives a pre-authored <paramref name="definition"/>
-    ///     and must not be able to author/replace it (e.g. a <c>StartWorkflow</c>-launched controller).
+    ///     and must not be able to author/replace it (e.g. a <c>StartWorkflowAgent</c>-launched controller).
     /// </param>
     /// <param name="controllerMaxTurnsPerRun">
     ///     An optional bound on the controller loop's turns per run; <c>null</c> keeps the loop's default (50).

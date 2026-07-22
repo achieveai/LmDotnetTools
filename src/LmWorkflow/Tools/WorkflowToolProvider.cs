@@ -39,6 +39,12 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     /// <summary>The tool name that records a scoped note.</summary>
     public const string SetNotesToolName = "SetNotes";
 
+    /// <summary>The tool name that splices a new node into the graph.</summary>
+    public const string AddNodeToolName = "AddNode";
+
+    /// <summary>The tool name that removes a node from the graph.</summary>
+    public const string RemoveNodeToolName = "RemoveNode";
+
     /// <summary>
     ///     Every workflow-state tool name this provider can expose. These are the authoring/mutation tools
     ///     that must stay confined to a workflow controller loop and never reach a normal agent — a host
@@ -46,7 +52,15 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     ///     Derived from the same name constants <see cref="GetFunctions"/> uses so the two cannot drift.
     /// </summary>
     public static readonly IReadOnlyList<string> AllToolNames =
-        [SetWorkflowToolName, GetWorkflowToolName, SetCurrentNodeToolName, SetStateToolName, SetNotesToolName];
+        [
+            SetWorkflowToolName,
+            GetWorkflowToolName,
+            SetCurrentNodeToolName,
+            SetStateToolName,
+            SetNotesToolName,
+            AddNodeToolName,
+            RemoveNodeToolName,
+        ];
 
     private readonly WorkflowRuntime _runtime;
     private readonly bool _includeSetWorkflow;
@@ -56,14 +70,18 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     /// <param name="includeSetWorkflow">
     ///     When <c>true</c> (default) the provider exposes all five tools including <c>SetWorkflow</c>. When
     ///     <c>false</c> the <c>SetWorkflow</c> authoring tool is omitted — used for a controller that always
-    ///     receives a pre-authored definition (e.g. via <c>StartWorkflow</c>) and so never needs to author or
+    ///     receives a pre-authored definition (e.g. via <c>StartWorkflowAgent</c>) and so never needs to author or
     ///     replace one.
     /// </param>
     /// <remarks>
-    ///     Internal: this provider is only wired inside the library (via <see cref="WorkflowSession"/>) so the
-    ///     workflow-state tools stay confined to a controller loop and never reach a normal agent's registry.
+    ///     Normally wired inside the library (via <see cref="WorkflowSession"/>), which keeps the
+    ///     workflow-state tools confined to an isolated controller loop. A host may also register this
+    ///     provider directly against a <see cref="WorkflowRuntime.CreateNew"/> runtime so a normal agent can
+    ///     author/drive a workflow inline on its own conversation loop; that host should also set
+    ///     <c>SubAgentOptions.NonInheritedToolNames</c> to include <see cref="AllToolNames"/> so a spawned
+    ///     sub-agent can't mutate the same runtime out from under the parent.
     /// </remarks>
-    internal WorkflowToolProvider(WorkflowRuntime runtime, bool includeSetWorkflow = true)
+    public WorkflowToolProvider(WorkflowRuntime runtime, bool includeSetWorkflow = true)
     {
         ArgumentNullException.ThrowIfNull(runtime);
         _runtime = runtime;
@@ -86,6 +104,43 @@ public sealed class WorkflowToolProvider : IFunctionProvider
                 "Author (or replace) the workflow definition and position the controller at the start node.",
                 [Param("definition", "The full workflow definition object.", DefinitionSchema(), required: true)],
                 HandleSetWorkflowAsync
+            );
+
+            yield return Descriptor(
+                AddNodeToolName,
+                "Splice a new node into the graph without re-authoring the whole definition. Supply "
+                    + "'previousNodeId' to append the new node after an existing start/procedural node, "
+                    + "'nextNodeId' to wire the new node's own outgoing edge, or both. At least one is "
+                    + "required so the new node is reachable.",
+                [
+                    Param("node", "The full node object to add.", NodeSchema(), required: true),
+                    Param(
+                        "previousNodeId",
+                        "An existing start/procedural node to append the new node after.",
+                        JsonSchemaObject.String(),
+                        required: false
+                    ),
+                    Param(
+                        "nextNodeId",
+                        "An existing node the new node's own outgoing edge should target.",
+                        JsonSchemaObject.String(),
+                        required: false
+                    ),
+                ],
+                HandleAddNodeAsync
+            );
+
+            yield return Descriptor(
+                RemoveNodeToolName,
+                "Neuter a node into a no-op pass-through. The node keeps its id and every inbound edge "
+                    + "(nothing dangles): a procedural node drops its task list and failure/visit-cap edges "
+                    + "(so it does no work and its loop cycle becomes 0) and just advances along its existing "
+                    + "next; a conditional 'defaults to true', collapsing to its FIRST branch's target and "
+                    + "dropping the others. Fails for the start node, a terminal node, the node the controller "
+                    + "is currently on, or when dropping an edge would orphan a node reachable only through it "
+                    + "(edit those via SetWorkflow first).",
+                [Param("nodeId", "The node id to neuter into a no-op.", JsonSchemaObject.String(), required: true)],
+                HandleRemoveNodeAsync
             );
         }
 
@@ -186,6 +241,99 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             try
             {
                 _runtime.LoadDefinition(definition);
+            }
+            catch (WorkflowValidationException ex)
+            {
+                return Error(string.Join("; ", ex.Errors), "invalid_workflow");
+            }
+
+            return Text(_runtime.GetProjection(null).ToJsonString());
+        }
+    }
+
+    private Task<ToolHandlerResult> HandleAddNodeAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
+        {
+            return Task.FromResult<ToolHandlerResult>(argsError!);
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+
+            if (
+                !root.TryGetProperty("node", out var nodeElement)
+                || nodeElement.ValueKind != JsonValueKind.Object
+            )
+            {
+                return Error("The 'node' object parameter is required.", "invalid_args");
+            }
+
+            WorkflowNode node;
+            try
+            {
+                node =
+                    JsonSerializer.Deserialize<WorkflowNode>(nodeElement.GetRawText(), WorkflowJson.StrictOptions)
+                    ?? throw new JsonException("'node' deserialized to null.");
+            }
+            catch (JsonException ex)
+            {
+                return Error($"The 'node' object is not a valid node: {ex.Message}", "invalid_workflow");
+            }
+
+            var previousNodeId = OptionalString(root, "previousNodeId");
+            var nextNodeId = OptionalString(root, "nextNodeId");
+
+            try
+            {
+                _runtime.AddNode(node, previousNodeId, nextNodeId);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Error(ex.Message, "invalid_transition");
+            }
+            catch (WorkflowValidationException ex)
+            {
+                return Error(string.Join("; ", ex.Errors), "invalid_workflow");
+            }
+
+            return Text(_runtime.GetProjection(null).ToJsonString());
+        }
+    }
+
+    private Task<ToolHandlerResult> HandleRemoveNodeAsync(
+        string argsJson,
+        ToolCallContext context,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!TryParseArgs(argsJson, out var doc, out var argsError))
+        {
+            return Task.FromResult<ToolHandlerResult>(argsError!);
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+
+            var nodeId = OptionalString(root, "nodeId");
+            if (string.IsNullOrEmpty(nodeId))
+            {
+                return Error("The 'nodeId' parameter is required.", "invalid_args");
+            }
+
+            try
+            {
+                _runtime.RemoveNode(nodeId);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Error(ex.Message, "invalid_transition");
             }
             catch (WorkflowValidationException ex)
             {
@@ -373,17 +521,12 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     private static JsonSchemaObject ObjectSchema() => new() { Type = new("object") };
 
     /// <summary>
-    ///     A machine-readable schema for the <c>SetWorkflow</c> <c>definition</c> parameter. It advertises
-    ///     the fields an authoring LLM most needs — <c>objective</c>, <c>nodes[]</c>, and within a
-    ///     procedural node the <c>taskList[]</c> with <c>subagent_type</c> / <c>promptTemplate</c> — so the
-    ///     model reads the field names off the tool schema instead of guessing them. The node/task shapes
-    ///     vary by <c>type</c>, so their objects keep <c>additionalProperties</c> open; the strict authoring
-    ///     deserializer (<see cref="WorkflowJson.DeserializeStrict"/>) is what actually rejects misspelled
-    ///     fields, and this schema is the reference the model uses to get them right in the first place.
+    ///     A machine-readable schema for an authored sub-agent task within a procedural node's
+    ///     <c>taskList</c>. Shared by <see cref="DefinitionSchema"/> and <see cref="NodeSchema"/> so the
+    ///     <c>SetWorkflow</c> and <c>AddNode</c> tool schemas can't drift apart.
     /// </summary>
-    private static JsonSchemaObject DefinitionSchema()
-    {
-        var task = JsonSchemaObject
+    private static JsonSchemaObject TaskSchema() =>
+        JsonSchemaObject
             .Create("object")
             .WithDescription("An authored sub-agent task within a procedural node.")
             .WithProperty("id", JsonSchemaObject.String("Task id, unique within the node."), required: true)
@@ -426,7 +569,13 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             .AllowAdditionalProperties(true)
             .Build();
 
-        var node = JsonSchemaObject
+    /// <summary>
+    ///     A machine-readable schema for a single workflow node. Shared by <see cref="DefinitionSchema"/>
+    ///     (the <c>SetWorkflow</c> <c>nodes[]</c> array) and the <c>AddNode</c> tool's <c>node</c> parameter
+    ///     so the two schemas can't drift apart.
+    /// </summary>
+    private static JsonSchemaObject NodeSchema() =>
+        JsonSchemaObject
             .Create("object")
             .WithDescription("A workflow node. The fields used depend on 'type'.")
             .WithProperty("id", JsonSchemaObject.String("Globally-unique node id."), required: true)
@@ -450,7 +599,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             .WithProperty(
                 "taskList",
                 JsonSchemaObject.Array(
-                    task,
+                    TaskSchema(),
                     "procedural only: the authored sub-agent tasks this node runs. "
                         + "This is the field name — NOT 'tasks'."
                 )
@@ -458,7 +607,17 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             .AllowAdditionalProperties(true)
             .Build();
 
-        return JsonSchemaObject
+    /// <summary>
+    ///     A machine-readable schema for the <c>SetWorkflow</c> <c>definition</c> parameter. It advertises
+    ///     the fields an authoring LLM most needs — <c>objective</c>, <c>nodes[]</c>, and within a
+    ///     procedural node the <c>taskList[]</c> with <c>subagent_type</c> / <c>promptTemplate</c> — so the
+    ///     model reads the field names off the tool schema instead of guessing them. The node/task shapes
+    ///     vary by <c>type</c>, so their objects keep <c>additionalProperties</c> open; the strict authoring
+    ///     deserializer (<see cref="WorkflowJson.DeserializeStrict"/>) is what actually rejects misspelled
+    ///     fields, and this schema is the reference the model uses to get them right in the first place.
+    /// </summary>
+    private static JsonSchemaObject DefinitionSchema() =>
+        JsonSchemaObject
             .Create("object")
             .WithDescription(
                 "A workflow definition: an objective plus a graph of nodes. See the worked example in the "
@@ -471,7 +630,10 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             )
             .WithProperty(
                 "nodes",
-                JsonSchemaObject.Array(node, "The workflow nodes: one start, >=1 terminal, and the rest."),
+                JsonSchemaObject.Array(
+                    NodeSchema(),
+                    "The workflow nodes: one start, >=1 terminal, and the rest."
+                ),
                 required: true
             )
             .WithProperty(
@@ -480,7 +642,6 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             )
             .AllowAdditionalProperties(true)
             .Build();
-    }
 
     /// <summary>
     ///     Parses a handler's raw JSON arguments, returning a structured <c>invalid_args</c> error result

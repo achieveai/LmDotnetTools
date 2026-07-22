@@ -27,6 +27,11 @@ public static class SystemChatModes
     public const string WorkspaceAgentModeId = "workspace-agent";
 
     /// <summary>
+    /// The workflow author mode ID.
+    /// </summary>
+    public const string WorkflowAuthorModeId = "workflow-author";
+
+    /// <summary>
     /// Gets all system-defined chat modes.
     /// </summary>
     public static IReadOnlyList<ChatMode> All { get; } = LoadModes();

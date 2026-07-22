@@ -52,7 +52,7 @@ public class StartWorkflowToolProviderTests
             .GetFunctions()
             .Select(f => f.Contract.Name)
             .Should()
-            .BeEquivalentTo(["StartWorkflow", "CheckWorkflow", "WaitWorkflow"]);
+            .BeEquivalentTo(["StartWorkflowAgent", "CheckWorkflow", "WaitWorkflow"]);
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public class StartWorkflowToolProviderTests
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
 
-        var result = await Invoke(Tool(provider, "StartWorkflow"), StartArgs("x", InvalidNoTerminal, "sync"));
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("x", InvalidNoTerminal, "sync"));
 
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be("invalid_workflow");
@@ -78,7 +78,7 @@ public class StartWorkflowToolProviderTests
     public async Task StartWorkflow_DuplicateId_MapsToDuplicateWorkflow()
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
 
         var first = await Invoke(start, StartArgs("dup", WorkflowFixtures.MinimalValid, "sync"));
         first.Payload.IsError.Should().BeFalse();
@@ -109,7 +109,7 @@ public class StartWorkflowToolProviderTests
         var provider = new StartWorkflowToolProvider(
             NewManager(() => GatedController(gate).Object, maxConcurrentWorkflows: 1, gateWaitTimeout: TimeSpan.FromMilliseconds(200))
         );
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
 
         // Hold the only slot with a gated async workflow.
         var first = await Invoke(start, StartArgs("cap-1", WorkflowFixtures.MinimalValid, "async"));
@@ -127,7 +127,7 @@ public class StartWorkflowToolProviderTests
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
 
-        var result = await Invoke(Tool(provider, "StartWorkflow"), StartArgs("ok", WorkflowFixtures.MinimalValid, "sync"));
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("ok", WorkflowFixtures.MinimalValid, "sync"));
 
         result.Payload.IsError.Should().BeFalse();
         using var doc = JsonDocument.Parse(result.Payload.Text);
@@ -140,7 +140,7 @@ public class StartWorkflowToolProviderTests
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var provider = new StartWorkflowToolProvider(NewManager(() => GatedController(gate).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
         var check = Tool(provider, "CheckWorkflow");
 
         _ = await Invoke(start, StartArgs("chk", WorkflowFixtures.MinimalValid, "async"));
@@ -188,7 +188,7 @@ public class StartWorkflowToolProviderTests
         // The workflow is already terminal, so WaitWorkflow returns immediately regardless of the timeout —
         // this exercises TryReadTimeout's string/clamp paths through the actual handler.
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
         var wait = Tool(provider, "WaitWorkflow");
 
         _ = await Invoke(start, StartArgs("done", WorkflowFixtures.MinimalValid, "sync"));
@@ -213,7 +213,7 @@ public class StartWorkflowToolProviderTests
     {
         // A present-but-invalid timeout must be rejected, not silently collapsed to an unbounded wait.
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
         var wait = Tool(provider, "WaitWorkflow");
 
         _ = await Invoke(start, StartArgs("inv", WorkflowFixtures.MinimalValid, "sync"));
@@ -230,7 +230,7 @@ public class StartWorkflowToolProviderTests
     }
 
     [Theory]
-    [InlineData("StartWorkflow")]
+    [InlineData("StartWorkflowAgent")]
     [InlineData("CheckWorkflow")]
     [InlineData("WaitWorkflow")]
     public async Task Handlers_MalformedJson_ReturnInvalidArgs(string toolName)
