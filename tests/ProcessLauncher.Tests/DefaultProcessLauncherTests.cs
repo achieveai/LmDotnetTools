@@ -6,9 +6,13 @@ namespace AchieveAi.LmDotnetTools.ProcessLauncher.Tests;
 
 /// <summary>
 /// Exercises <see cref="DefaultProcessLauncher"/> end-to-end against a benign
-/// child process. We use <c>dotnet --info</c> as the benign child because it
+/// child process. We use <c>dotnet --version</c> as the benign child because it
 /// is always present in the test environment, prints to stdout, and exits
-/// cleanly on its own.
+/// cleanly on its own — and, unlike <c>dotnet --info</c>, its output is a single
+/// short line that can never fill the redirected stdout/stderr pipe buffer, so a
+/// test that waits for exit without draining the streams cannot deadlock. (`--info`
+/// grows with installed SDKs and crossed that threshold on developer machines,
+/// hanging locally while passing on CI's clean image.)
 /// </summary>
 public class DefaultProcessLauncherTests
 {
@@ -19,7 +23,7 @@ public class DefaultProcessLauncherTests
         {
             Agent = CliAgentKind.Codex,
             ExecutableHint = "dotnet",
-            Arguments = ["--info"],
+            Arguments = ["--version"],
         };
 
         using var handle = DefaultProcessLauncher.Instance.Launch(request);

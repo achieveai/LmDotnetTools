@@ -25,6 +25,15 @@ public sealed class CrossRepoCheckoutTests
         RepoStableId = "R_node_1",
     };
 
+    private static readonly RepoIdentity McqdbDev = new()
+    {
+        Provider = "azure-devops",
+        OrgOrOwner = "mcqdbdev",
+        Project = "MCQdb_Development",
+        RepoName = "MCQdbDEV",
+        RepoStableId = "ado-guid-1",
+    };
+
     [Fact]
     public void StoreSubmoduleAllowList_PermitsTargetRepoAndContracts_DeniesUnrelatedRepos()
     {
@@ -74,6 +83,44 @@ public sealed class CrossRepoCheckoutTests
     }
 
     [Fact]
+    public void StoreSubmoduleAllowList_ReviewedRepoSubmodules_AreAllowed_RegardlessOfConfidentialityGate()
+    {
+        using var db = new TempSqliteDatabase();
+        var options = new CodeReviewDaemonOptions
+        {
+            EnableToolAssistedReview = true,
+            // A store-level sibling (gated) alongside the target's OWN submodules (never gated).
+            CrossRepoSiblings = ["some-sibling"],
+            ReviewedRepoSubmodules = ["LibProfiler", "Microsoft%20Orleans"],
+        };
+        var executor = BuildExecutor(db, options);
+        // A default run carries NO positive trust signal (IsForkPr/IsTargetRepoPublic default true), so
+        // AllowsCrossRepoCoLocation is FALSE — the confidentiality gate is shut.
+        var run = SeedRun();
+        executor.AllowsCrossRepoCoLocation(run, McqdbDev).Should().BeFalse("the gate is shut for an unconfirmed run");
+
+        var rules = executor.BuildStoreSubmoduleAllowList(run, McqdbDev);
+        var policy = DaemonOperationPolicy.BuildForRun(
+            McqdbDev,
+            "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbReview",
+            allowWriteOperations: false,
+            allowedSubmodules: rules);
+
+        // The target's OWN submodules are allow-listed even with the gate shut (unlike CrossRepoSiblings).
+        FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/LibProfiler.git/info/refs?service=git-upload-pack")
+            .IsAllowed.Should().BeTrue("reviewed-repo submodules are the target's own dependencies, not gated");
+        FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/Microsoft%20Orleans.git/info/refs?service=git-upload-pack")
+            .IsAllowed.Should().BeTrue("the URL-encoded name matches its allow rule verbatim");
+
+        // A store-level sibling stays gated (denied) under the same shut gate...
+        FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/some-sibling.git/info/refs?service=git-upload-pack")
+            .IsAllowed.Should().BeFalse("CrossRepoSiblings remain gated by AllowsCrossRepoCoLocation");
+        // ...and an unlisted same-org name is denied — explicit allow-list, never a same-org wildcard.
+        FetchAdo(policy, "/mcqdbdev/MCQdb_Development/_git/UnlistedLib.git/info/refs?service=git-upload-pack")
+            .IsAllowed.Should().BeFalse("only explicitly listed submodules are allowed");
+    }
+
+    [Fact]
     public void StoreSubmoduleAllowList_NotToolAssisted_IsEmpty()
     {
         using var db = new TempSqliteDatabase();
@@ -86,6 +133,9 @@ public sealed class CrossRepoCheckoutTests
 
     private static PolicyDecision Fetch(OperationPolicy policy, string host, string path) =>
         policy.Decide(new OperationRequest(SandboxOperation.FetchSubmodule, "github", host, "GET", path));
+
+    private static PolicyDecision FetchAdo(OperationPolicy policy, string path) =>
+        policy.Decide(new OperationRequest(SandboxOperation.FetchSubmodule, "ado", "dev.azure.com", "GET", path));
 
     private static DaemonReviewStageExecutor BuildExecutor(TempSqliteDatabase db, CodeReviewDaemonOptions options) =>
         new(

@@ -36,6 +36,14 @@ public sealed class ConfidentialityGateTests
         RepoStableId = "R_node_2",
     };
 
+    private static readonly RepoIdentity AdoRepo = new()
+    {
+        Provider = "azure-devops",
+        OrgOrOwner = "mcqdbdev",
+        Project = "MCQdb_Development",
+        RepoName = "MCQdbDEV",
+    };
+
     [Fact]
     public void CoLocation_SameOrgNonFork_Allowed()
     {
@@ -129,6 +137,35 @@ public sealed class ConfidentialityGateTests
                 "/acme/other-service.git/info/refs?service=git-upload-pack"))
             .IsAllowed.Should()
             .BeTrue("the gate confirmed same-trust-domain, so the configured sibling is granted");
+    }
+
+    [Fact]
+    public void StoreSubmoduleAllowList_AdoRepo_AllowsReviewedRepoSubmodule()
+    {
+        // Regression: the allow-list host/path must be provider-aware. An ADO submodule lives at
+        // dev.azure.com/{org}/{project}/_git/{repo}; a github.com rule denies it (live symptom:
+        // "submodule '…MCQdbDEV.git/info/refs' is not on the allow-list"). Assert the reviewed ADO repo's
+        // own submodule is granted with its dev.azure.com host + path.
+        using var db = new TempSqliteDatabase();
+        var executor = BuildExecutor(db, new CodeReviewDaemonOptions { EnableToolAssistedReview = true });
+        var run = SeedRun(isForkPr: false, isTargetRepoPublic: false);
+
+        var rules = executor.BuildStoreSubmoduleAllowList(run, AdoRepo);
+        var policy = DaemonOperationPolicy.BuildForRun(
+            AdoRepo,
+            "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/MCQdbReview",
+            allowWriteOperations: false,
+            allowedSubmodules: rules);
+
+        policy
+            .Decide(new OperationRequest(
+                SandboxOperation.FetchSubmodule,
+                "ado",
+                "dev.azure.com",
+                "GET",
+                "/mcqdbdev/MCQdb_Development/_git/MCQdbDEV.git/info/refs?service=git-upload-pack"))
+            .IsAllowed.Should()
+            .BeTrue("the reviewed ADO repo's own submodule must be allow-listed with its dev.azure.com host/path");
     }
 
     private static DaemonReviewStageExecutor BuildExecutor(TempSqliteDatabase db, CodeReviewDaemonOptions options) =>

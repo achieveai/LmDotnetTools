@@ -183,6 +183,184 @@ describe('useFileBrowser.upload', () => {
   });
 });
 
+describe('useFileBrowser upload single-flight guard (F5)', () => {
+  it('serializes concurrent batches (one POST in flight at a time) without clobbering progress', async () => {
+    const pending: Array<{ resolve: (r: Response) => void }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === 'POST') {
+        return new Promise((resolve) => pending.push({ resolve }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing)); // reload
+    });
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const p1 = fb.upload([new File(['a'], 'a.txt')]);
+    const p2 = fb.upload([new File(['b'], 'b.txt')]); // second batch started while the first is active
+
+    // The guard is active for the whole duration and only ONE upload is in flight (second is queued).
+    expect(fb.isUploading.value).toBe(true);
+    expect(pending).toHaveLength(1);
+    expect(fb.uploadProgress.value?.activeName).toBe('a.txt');
+
+    // Complete batch 1 (upload + its reload); only then does batch 2 issue its POST.
+    pending[0].resolve(jsonResponse({ name: 'a.txt', size: 1 }));
+    await flushPromises();
+    expect(pending).toHaveLength(2);
+    expect(fb.uploadProgress.value?.activeName).toBe('b.txt');
+
+    pending[1].resolve(jsonResponse({ name: 'b.txt', size: 1 }));
+    await flushPromises();
+
+    const [o1, o2] = await Promise.all([p1, p2]);
+    expect(o1).toEqual([{ name: 'a.txt', success: true }]);
+    expect(o2).toEqual([{ name: 'b.txt', success: true }]);
+    // The guard clears and progress is null once BOTH batches settle.
+    expect(fb.isUploading.value).toBe(false);
+    expect(fb.uploadProgress.value).toBeNull();
+  });
+});
+
+describe('useFileBrowser uploadBusy admission barrier (F5 round-2)', () => {
+  it('reports uploadBusy while a flat overwrite confirmation is pending, even with no batch running', () => {
+    const fb = useFileBrowser(() => 'thread-1');
+
+    expect(fb.uploadBusy.value).toBe(false);
+
+    // A pending flat overwrite confirmation makes uploads busy so no folder batch can start under it...
+    fb.setOverwritePending(true);
+    expect(fb.uploadBusy.value).toBe(true);
+    // ...even though no batch is actually running.
+    expect(fb.isUploading.value).toBe(false);
+
+    fb.setOverwritePending(false);
+    expect(fb.uploadBusy.value).toBe(false);
+  });
+});
+
+describe('useFileBrowser upload outcomes on mid-batch throw (F7)', () => {
+  it('preserves already-completed outcomes; marks only the active + remaining files failed', async () => {
+    let postCount = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      if ((init as RequestInit)?.method === 'POST') {
+        postCount += 1;
+        // The SECOND file hits a session-level 409 → uploadFile THROWS, aborting the batch mid-way.
+        if (postCount === 2) {
+          return Promise.resolve(jsonResponse({ code: 'no_session_yet' }, 409));
+        }
+        return Promise.resolve(jsonResponse({ name: `ok${postCount}`, size: 1 }));
+      }
+      // The post-batch reload also reports the session is gone, so `noSession` stays set.
+      return Promise.resolve(jsonResponse(noSessionState)); // reload
+    });
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const outcomes = await fb.upload([
+      new File(['a'], 'a.txt'),
+      new File(['b'], 'b.txt'),
+      new File(['c'], 'c.txt'),
+    ]);
+
+    expect(outcomes).toHaveLength(3);
+    // File #1 already uploaded before the throw → its success is PRESERVED (not reported as failed).
+    expect(outcomes[0].success).toBe(true);
+    // File #2 (the one that threw) and file #3 (never attempted) are both failed — not all three.
+    expect(outcomes[1]).toEqual({ name: 'b.txt', success: false, error: expect.any(String) });
+    expect(outcomes[2]).toEqual({ name: 'c.txt', success: false, error: expect.any(String) });
+    expect(fb.noSession.value).toBe(true);
+  });
+});
+
+describe('useFileBrowser.uploadFolder', () => {
+  it('sends each file sequentially with its relativePath and aggregates mixed outcomes without aborting', async () => {
+    const bodies: FormData[] = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      const method = (init as RequestInit)?.method;
+      if (method === 'POST') {
+        const body = (init as RequestInit).body as FormData;
+        bodies.push(body);
+        // Fail the second file, succeed the rest — a single failure must NOT abort the batch.
+        if (body.get('relativePath') === 'proj/b/readme.md') {
+          return Promise.resolve(jsonResponse({ code: 'mkdir_failed' }, 422));
+        }
+        return Promise.resolve(jsonResponse({ name: body.get('relativePath'), size: 1 }));
+      }
+      return Promise.resolve(jsonResponse(sampleListing)); // reload
+    });
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const outcomes = await fb.uploadFolder([
+      { file: new File(['1'], 'readme.md'), relativePath: 'proj/a/readme.md' },
+      { file: new File(['2'], 'readme.md'), relativePath: 'proj/b/readme.md' },
+      { file: new File(['3'], 'note.txt'), relativePath: 'proj/note.txt' },
+    ]);
+
+    // Duplicate basenames in different directories BOTH uploaded under distinct relativePaths.
+    expect(bodies.map((b) => b.get('relativePath'))).toEqual([
+      'proj/a/readme.md',
+      'proj/b/readme.md',
+      'proj/note.txt',
+    ]);
+    expect(outcomes).toEqual([
+      { name: 'proj/a/readme.md', success: true },
+      { name: 'proj/b/readme.md', success: false, error: 'mkdir_failed' },
+      { name: 'proj/note.txt', success: true },
+    ]);
+    // 3 uploads + 1 reload.
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    // Progress is cleared once the batch settles.
+    expect(fb.uploadProgress.value).toBeNull();
+  });
+});
+
+describe('useFileBrowser.createDirectory', () => {
+  it('POSTs the folder name to the /directory endpoint under the current path, then reloads', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ path: 'src/docs' })) // create
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+
+    const fb = useFileBrowser(() => 'thread-1');
+    fb.currentPath.value = 'src';
+    const ok = await fb.createDirectory('docs');
+
+    expect(ok).toBe(true);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/conversations/thread-1/files/directory?path=src');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'docs' });
+    // A GET reload followed so the new folder shows.
+    const [reloadUrl, reloadInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    expect(reloadInit.method).toBeUndefined();
+    expect(reloadUrl).toContain('/api/conversations/thread-1/files');
+    expect(fb.error.value).toBeNull();
+  });
+
+  it('maps a 400 invalid_folder_name to a user-facing error and returns false', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ code: 'invalid_folder_name' }, 400)) // create
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const ok = await fb.createDirectory('..');
+
+    expect(ok).toBe(false);
+    expect(fb.error.value).toBeTruthy();
+    expect(fb.noSession.value).toBe(false);
+  });
+
+  it('sets noSession on 409 no_session_yet', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ code: 'no_session_yet' }, 409)) // create
+      .mockResolvedValueOnce(jsonResponse(sampleListing)); // reload
+
+    const fb = useFileBrowser(() => 'thread-1');
+    const ok = await fb.createDirectory('docs');
+
+    expect(ok).toBe(false);
+    expect(fb.noSession.value).toBe(true);
+  });
+});
+
 describe('useFileBrowser.remove', () => {
   it('deletes the entry then reloads the listing', async () => {
     const fetchSpy = vi

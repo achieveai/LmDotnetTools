@@ -142,6 +142,45 @@ internal sealed record GitRemoteUrl(GitUrlKind Kind, string Host, string RepoPat
         return new GitRemoteUrl(parent.Kind, parent.Host, resolvedPath, Raw);
     }
 
+    /// <summary>
+    /// The fixed suffix of a legacy Azure DevOps organization host (<c>{org}.visualstudio.com</c>).
+    /// </summary>
+    private const string AdoLegacyHostSuffix = ".visualstudio.com";
+
+    /// <summary>
+    /// Rewrites a legacy Azure DevOps <c>https://{org}.visualstudio.com/{project}/_git/{repo}</c> URL to the
+    /// modern <c>https://dev.azure.com/{org}/{project}/_git/{repo}</c> shape — the org moves from the <b>host</b>
+    /// label into the leading <b>path</b> segment. This is a well-known, fixed ADO URL-shape equivalence (not an
+    /// attacker-controlled mapping), so it is safe to apply unconditionally: it is a pure string transform that
+    /// changes only the URL <i>spelling</i>, never <i>which</i> repo is addressed. It does NOT broaden the
+    /// allow-list — the downstream host+path allow rule still gates which repos may be fetched.
+    /// <para>
+    /// Only an HTTPS <c>*.visualstudio.com</c> URL with a single-label org is transformed; every other URL
+    /// (different host, non-HTTPS transport, relative, or a multi-label <c>a.b.visualstudio.com</c> that is not a
+    /// bare org host) is returned unchanged so the caller's transport/host/path checks stay fail-closed.
+    /// </para>
+    /// </summary>
+    public static GitRemoteUrl CanonicalizeAdoLegacyHost(GitRemoteUrl url)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+
+        if (url.Kind != GitUrlKind.Https
+            || !url.Host.EndsWith(AdoLegacyHostSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+
+        var org = url.Host[..^AdoLegacyHostSuffix.Length];
+        if (org.Length == 0 || org.Contains('.', StringComparison.Ordinal))
+        {
+            // Not a bare "{org}.visualstudio.com" (empty or an extra sub-domain) — leave untouched, fail closed.
+            return url;
+        }
+
+        var rewrittenPath = NormalizeRepoPath($"/{org}{url.RepoPath}");
+        return url with { Host = "dev.azure.com", RepoPath = rewrittenPath };
+    }
+
     private static (string Host, string Path) SplitHostAndPath(string authorityAndPath)
     {
         // Strip optional userinfo.

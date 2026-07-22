@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch, nextTick, computed } from 'vue';
 import { useFileBrowser } from '@/composables/useFileBrowser';
-import type { FileEntry } from '@/types/fileBrowser';
+import type { FileEntry, UploadItem } from '@/types/fileBrowser';
+import { filesFromDirectoryInput, resolveDrop, isDirectoryPickerSupported } from '@/utils/folderUpload';
 
 const props = defineProps<{ threadId: string | null }>();
 
@@ -13,6 +14,9 @@ const {
   isLoading,
   error,
   noSession,
+  uploadProgress,
+  uploadBusy,
+  setOverwritePending,
   previewTarget,
   previewResult,
   load,
@@ -21,9 +25,20 @@ const {
   clearPreview,
   download,
   upload,
+  uploadFolder,
+  createDirectory,
   remove,
   cleanup,
 } = useFileBrowser(() => props.threadId);
+
+// Whether the browser supports the `webkitdirectory` folder picker. When false, the "Upload folder"
+// affordance is disabled with a hint; the flat file picker and drag-drop keep working.
+const folderPickerSupported = isDirectoryPickerSupported();
+
+// Fixed-height, internally-scrolling list panel: a flex child that keeps a STABLE height regardless of
+// the file count (so the modal body no longer grows/shrinks as files come and go). The responsive
+// height sits inline (with a ceiling via the scoped `.fb-list` rule) so it fits inside BaseModal's 90vh.
+const listScrollStyle = { minHeight: '0', overflowY: 'auto', height: '55vh' } as const;
 
 // The entry pending delete confirmation (null when no dialog is open).
 const deleteTarget = ref<FileEntry | null>(null);
@@ -31,17 +46,39 @@ const cancelBtnRef = ref<HTMLButtonElement | null>(null);
 // Files awaiting an advisory overwrite confirmation (their names collide with existing files).
 const pendingUpload = ref<{ files: File[]; colliding: string[] } | null>(null);
 const overwriteKeepBtnRef = ref<HTMLButtonElement | null>(null);
+
+/**
+ * Opens/closes the overwrite confirmation, keeping the composable's `uploadBusy` admission barrier in
+ * lockstep so a folder pick/drop cannot start a batch while the user is still deciding (which would
+ * mutate the directory and make the pending decision stale).
+ */
+function setPendingUpload(pending: { files: File[]; colliding: string[] } | null): void {
+  pendingUpload.value = pending;
+  setOverwritePending(pending !== null);
+}
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const folderInputRef = ref<HTMLInputElement | null>(null);
 const isDragOver = ref(false);
 // Concise summary of the files a batch upload REJECTED (per-file 413/400/409 target_busy), shown as
 // its own notice. `null` when the last upload had no per-file failures.
 const uploadErrors = ref<string | null>(null);
+// Neutral per-batch outcome for a FOLDER upload ("Uploaded X of Y file(s)."). Flat uploads keep their
+// existing behavior (failures only). `null` when no folder upload has completed.
+const uploadSummary = ref<string | null>(null);
 
-// True while a destructive confirmation (delete or overwrite) is open. The background file-browser
-// controls are marked `inert` so keyboard focus (BaseModal's trap skips [inert] subtrees) and pointer
-// interaction stay confined to the confirmation — otherwise Tab would reach breadcrumbs/upload/row
-// buttons behind the overlay and activating another row's Delete would retarget the confirmation.
-const isConfirmOpen = computed(() => deleteTarget.value !== null || pendingUpload.value !== null);
+// New-folder name-entry dialog state.
+const newFolderOpen = ref(false);
+const newFolderName = ref('');
+const newFolderInputRef = ref<HTMLInputElement | null>(null);
+const newFolderNameTrimmed = computed(() => newFolderName.value.trim());
+
+// True while a modal sub-dialog (delete confirm, overwrite confirm, or new-folder entry) is open. The
+// background file-browser controls are marked `inert` so keyboard focus (BaseModal's trap skips [inert]
+// subtrees) and pointer interaction stay confined to the dialog — otherwise Tab would reach
+// breadcrumbs/upload/row buttons behind the overlay and activating another control would retarget it.
+const isConfirmOpen = computed(
+  () => deleteTarget.value !== null || pendingUpload.value !== null || newFolderOpen.value
+);
 
 onMounted(() => {
   void load('');
@@ -133,19 +170,69 @@ watch(pendingUpload, async (pending) => {
 function onFilesPicked(event: Event): void {
   const input = event.target as HTMLInputElement;
   const files = input.files ? Array.from(input.files) : [];
-  if (files.length > 0) {
-    handleUpload(files);
-  }
   // Reset so picking the same file again re-triggers change.
   input.value = '';
-}
-
-function onDrop(event: DragEvent): void {
-  isDragOver.value = false;
-  const files = event.dataTransfer?.files ? Array.from(event.dataTransfer.files) : [];
+  // Ignore new picks while an upload is busy (a batch is running OR an overwrite confirm is pending).
+  if (uploadBusy.value) {
+    return;
+  }
   if (files.length > 0) {
     handleUpload(files);
   }
+}
+
+/** Folder picker (`webkitdirectory`): each file carries its `webkitRelativePath`, so upload as a tree. */
+function onFolderPicked(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const files = input.files ? Array.from(input.files) : [];
+  input.value = '';
+  if (uploadBusy.value) {
+    return;
+  }
+  const result = filesFromDirectoryInput(files);
+  if (result.kind === 'over-limit') {
+    reportOverLimit(result.limit);
+    return;
+  }
+  if (result.items.length > 0) {
+    void doFolderUpload(result.items);
+  }
+}
+
+/**
+ * A drop is SPLIT into a flat file group (loose top-level files — kept on today's path WITH the basename
+ * overwrite preflight) and a directory tree group (folder upload, no preflight, relative paths preserved);
+ * a mixed drop runs BOTH. A tree exceeding the shared file cap rejects the whole drop.
+ */
+async function onDrop(event: DragEvent): Promise<void> {
+  isDragOver.value = false;
+  // Ignore drops while an upload is busy (a batch is running OR an overwrite confirm is pending).
+  if (!event.dataTransfer || uploadBusy.value) {
+    return;
+  }
+  const result = await resolveDrop(event.dataTransfer);
+  if (result.kind === 'over-limit') {
+    reportOverLimit(result.limit);
+    return;
+  }
+  // Loose files → the flat overwrite preflight; directories → folder upload (no preflight).
+  if (result.files.length > 0) {
+    handleUpload(result.files);
+  }
+  if (result.items.length > 0) {
+    void doFolderUpload(result.items);
+  }
+}
+
+/**
+ * Rejects an over-limit folder selection (drop or picker): nothing is uploaded and a visible error is
+ * surfaced via the upload-errors notice. Shared by both entry points so the policy is identical.
+ */
+function reportOverLimit(limit: number): void {
+  uploadSummary.value = null;
+  uploadErrors.value =
+    `Too many files: a folder upload is limited to ${limit} files. ` +
+    'Nothing was uploaded — choose a smaller folder.';
 }
 
 /**
@@ -159,17 +246,22 @@ function handleUpload(files: File[]): void {
   );
   const colliding = files.filter((file) => existing.has(file.name)).map((file) => file.name);
   if (colliding.length > 0) {
-    pendingUpload.value = { files, colliding };
+    setPendingUpload({ files, colliding });
     return;
   }
   void doUpload(files);
 }
 
-/** Overwrite confirmed: upload the whole batch (colliding files are replaced, last-writer-wins). */
+/**
+ * Overwrite confirmed: upload the whole batch (colliding files are replaced, last-writer-wins). The
+ * listing is re-checked (reloaded) FIRST so the decision is applied against the current directory rather
+ * than a stale snapshot (e.g. after a mixed drop's folder batch mutated it while the confirm was open).
+ */
 async function confirmOverwrite(): Promise<void> {
   const pending = pendingUpload.value;
-  pendingUpload.value = null;
+  setPendingUpload(null);
   if (pending) {
+    await load();
     await doUpload(pending.files);
   }
 }
@@ -177,7 +269,7 @@ async function confirmOverwrite(): Promise<void> {
 /** Overwrite declined: skip the colliding files and upload only the non-colliding ones (per-file independence). */
 function cancelOverwrite(): void {
   const pending = pendingUpload.value;
-  pendingUpload.value = null;
+  setPendingUpload(null);
   if (pending) {
     const collidingSet = new Set(pending.colliding);
     const safe = pending.files.filter((file) => !collidingSet.has(file.name));
@@ -195,7 +287,25 @@ function cancelOverwrite(): void {
  */
 async function doUpload(files: File[]): Promise<void> {
   uploadErrors.value = null;
-  const outcomes = await upload(files);
+  uploadSummary.value = null;
+  reportOutcomes(await upload(files));
+}
+
+/**
+ * Uploads a folder / relative-path batch (picker or directory drop). Unlike the flat path, there is NO
+ * basename overwrite preflight (it would mis-collide `a/readme.md` vs `b/readme.md`); the actual
+ * per-file server outcomes are reported instead, plus a neutral "Uploaded X of Y" summary.
+ */
+async function doFolderUpload(items: UploadItem[]): Promise<void> {
+  uploadErrors.value = null;
+  uploadSummary.value = null;
+  const outcomes = await uploadFolder(items);
+  const failedCount = reportOutcomes(outcomes);
+  uploadSummary.value = `Uploaded ${outcomes.length - failedCount} of ${outcomes.length} file(s).`;
+}
+
+/** Surfaces the per-file failures of a batch as the upload-errors notice; returns the failure count. */
+function reportOutcomes(outcomes: { name: string; success: boolean; error?: string }[]): number {
   const failed = outcomes.filter((outcome) => !outcome.success);
   if (failed.length > 0) {
     const detail = failed
@@ -203,7 +313,36 @@ async function doUpload(files: File[]): Promise<void> {
       .join(', ');
     uploadErrors.value = `${failed.length} file(s) failed: ${detail}`;
   }
+  return failed.length;
 }
+
+/** Opens the new-folder name-entry dialog with a blank name. */
+function openNewFolder(): void {
+  newFolderName.value = '';
+  newFolderOpen.value = true;
+}
+
+function cancelNewFolder(): void {
+  newFolderOpen.value = false;
+}
+
+/** Confirms the new-folder dialog: creates the directory (server errors surface via the error notice). */
+async function confirmNewFolder(): Promise<void> {
+  const name = newFolderNameTrimmed.value;
+  if (!name) {
+    return;
+  }
+  newFolderOpen.value = false;
+  await createDirectory(name);
+}
+
+// When the new-folder dialog opens, move focus to its name input.
+watch(newFolderOpen, async (open) => {
+  if (open) {
+    await nextTick();
+    newFolderInputRef.value?.focus();
+  }
+});
 
 function formatSize(size: number | null): string {
   if (size === null) {
@@ -259,7 +398,18 @@ function typeIcon(entry: FileEntry): string {
         </template>
       </nav>
 
-      <!-- Upload: drag-and-drop zone + file picker (both call upload()) -->
+      <!-- Toolbar: directory-level actions. -->
+      <div class="fb-toolbar" data-testid="file-browser-toolbar">
+        <button
+          class="fb-toolbar-btn"
+          data-testid="file-browser-new-folder"
+          @click="openNewFolder"
+        >
+          New folder
+        </button>
+      </div>
+
+      <!-- Upload: drag-and-drop zone + flat file picker + folder picker. -->
       <div
         class="fb-dropzone"
         :class="{ 'fb-dropzone-active': isDragOver }"
@@ -268,9 +418,22 @@ function typeIcon(entry: FileEntry): string {
         @dragleave.prevent="isDragOver = false"
         @drop.prevent="onDrop"
       >
-        <span>Drag files here to upload, or</span>
-        <button class="fb-upload-btn" data-testid="file-browser-upload" @click="fileInputRef?.click()">
+        <span>Drag files or a folder here to upload, or</span>
+        <button
+          class="fb-upload-btn"
+          data-testid="file-browser-upload"
+          :disabled="uploadBusy"
+          @click="fileInputRef?.click()"
+        >
           Choose files
+        </button>
+        <button
+          class="fb-upload-btn"
+          data-testid="file-browser-folder-upload"
+          :disabled="!folderPickerSupported || uploadBusy"
+          @click="folderInputRef?.click()"
+        >
+          Upload folder
         </button>
         <input
           ref="fileInputRef"
@@ -280,9 +443,47 @@ function typeIcon(entry: FileEntry): string {
           data-testid="file-browser-file-input"
           @change="onFilesPicked"
         />
+        <!-- Folder picker: kept in the DOM even when unsupported so the flat picker is unaffected. -->
+        <input
+          ref="folderInputRef"
+          class="fb-file-input"
+          type="file"
+          multiple
+          webkitdirectory
+          data-testid="file-browser-folder-input"
+          @change="onFolderPicked"
+        />
+        <span
+          v-if="!folderPickerSupported"
+          class="fb-folder-unsupported"
+          data-testid="file-browser-folder-unsupported"
+        >
+          Folder upload isn’t supported by this browser — drag a folder in or use “Choose files”.
+        </span>
       </div>
 
       <div v-if="error" class="fb-error" data-testid="file-browser-error">{{ error }}</div>
+
+      <div
+        v-if="uploadProgress"
+        class="fb-progress"
+        data-testid="file-browser-upload-progress"
+      >
+        Uploading {{ uploadProgress.completed }}/{{ uploadProgress.total }}<span
+          v-if="uploadProgress.activeName"
+          class="fb-progress-name"
+        >
+          — {{ uploadProgress.activeName }}</span
+        >
+      </div>
+
+      <div
+        v-if="uploadSummary"
+        class="fb-summary"
+        data-testid="file-browser-upload-summary"
+      >
+        {{ uploadSummary }}
+      </div>
 
       <div
         v-if="uploadErrors"
@@ -292,12 +493,14 @@ function typeIcon(entry: FileEntry): string {
         {{ uploadErrors }}
       </div>
 
-      <div v-if="isLoading" class="fb-loading" data-testid="file-browser-loading">Loading…</div>
-
-      <ul v-else class="fb-list" data-testid="file-browser-list">
-        <li v-if="entries.length === 0" class="fb-empty" data-testid="file-browser-empty">
+      <!-- ONE fixed-height, internally-scrolling container that stays mounted in EVERY state (loading,
+           empty, populated) so the panel never collapses to a one-line div and re-expands on refresh. -->
+      <ul class="fb-list" :style="listScrollStyle" data-testid="file-browser-list">
+        <li v-if="isLoading" class="fb-loading" data-testid="file-browser-loading">Loading…</li>
+        <li v-else-if="entries.length === 0" class="fb-empty" data-testid="file-browser-empty">
           This directory is empty.
         </li>
+        <template v-else>
         <li
           v-for="entry in entries"
           :key="entry.name"
@@ -369,6 +572,7 @@ function typeIcon(entry: FileEntry): string {
             </div>
           </div>
         </li>
+        </template>
       </ul>
 
       <!-- Row-cap notice: entries beyond the server cap were not returned. -->
@@ -445,6 +649,45 @@ function typeIcon(entry: FileEntry): string {
         </div>
       </div>
     </div>
+
+    <!-- New-folder name-entry dialog. -->
+    <div
+      v-if="newFolderOpen"
+      class="fb-confirm-backdrop"
+      data-testid="file-browser-new-folder-dialog"
+      @click.self="cancelNewFolder"
+      @keydown.esc.stop.prevent="cancelNewFolder"
+    >
+      <div class="fb-confirm" role="dialog" aria-modal="true" aria-labelledby="fb-new-folder-title">
+        <p id="fb-new-folder-title" class="fb-confirm-text">New folder</p>
+        <input
+          ref="newFolderInputRef"
+          v-model="newFolderName"
+          class="fb-new-folder-input"
+          type="text"
+          placeholder="Folder name"
+          data-testid="file-browser-new-folder-input"
+          @keydown.enter.prevent="confirmNewFolder"
+        />
+        <div class="fb-confirm-actions">
+          <button
+            class="fb-action"
+            data-testid="file-browser-new-folder-cancel"
+            @click="cancelNewFolder"
+          >
+            Cancel
+          </button>
+          <button
+            class="fb-action fb-action-primary"
+            :disabled="!newFolderNameTrimmed"
+            data-testid="file-browser-new-folder-confirm"
+            @click="confirmNewFolder"
+          >
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -499,9 +742,29 @@ function typeIcon(entry: FileEntry): string {
   color: #999;
 }
 
+.fb-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fb-toolbar-btn {
+  padding: 4px 12px;
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.fb-toolbar-btn:hover {
+  background: #e6e6e6;
+}
+
 .fb-dropzone {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px;
   border: 1px dashed #ccc;
@@ -525,6 +788,16 @@ function typeIcon(entry: FileEntry): string {
   cursor: pointer;
 }
 
+.fb-upload-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.fb-folder-unsupported {
+  color: #999;
+  font-size: 12px;
+}
+
 .fb-file-input {
   display: none;
 }
@@ -535,6 +808,28 @@ function typeIcon(entry: FileEntry): string {
   color: #721c24;
   border-radius: 6px;
   font-size: 13px;
+  /* Long relative-path lists (folder uploads) must wrap, never blow out horizontally. */
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.fb-progress {
+  padding: 8px 12px;
+  background: #e7f1ff;
+  color: #1c4a8a;
+  border-radius: 6px;
+  font-size: 13px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.fb-progress-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.fb-summary {
+  color: #4a7a4a;
+  font-size: 13px;
 }
 
 .fb-loading,
@@ -544,12 +839,15 @@ function typeIcon(entry: FileEntry): string {
   padding: 8px 0;
 }
 
+/* Stable-height, internally-scrolling list panel. The responsive height + overflow + min-height:0 come
+   from the inline `listScrollStyle`; this rule caps it on very tall viewports so it stays within 90vh. */
 .fb-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
+  max-height: 620px;
 }
 
 .fb-row {
@@ -581,6 +879,14 @@ function typeIcon(entry: FileEntry): string {
   color: #333;
   cursor: default;
   text-align: left;
+  /* Allow the flex child to shrink so a long name ellipsizes instead of overflowing the row. */
+  min-width: 0;
+}
+
+.fb-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fb-name-dir {
@@ -702,5 +1008,30 @@ function typeIcon(entry: FileEntry): string {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.fb-new-folder-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.fb-action-primary {
+  background: #2d6cdf;
+  color: white;
+  border-color: #2d6cdf;
+}
+
+.fb-action-primary:hover:not(:disabled) {
+  background: #245ac0;
+}
+
+.fb-action-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

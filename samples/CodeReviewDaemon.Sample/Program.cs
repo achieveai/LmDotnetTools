@@ -25,7 +25,31 @@ if (args is ["reviewbot", "init", ..])
     return await ReviewBotInitCommand.RunAsync(args);
 }
 
-var builder = WebApplication.CreateBuilder(args);
+// ── Config profile selection ─────────────────────────────────────────────────────────────────────
+// `--review <name>` selects the hosting environment so ASP.NET layers `appsettings.<name>.json` over
+// the base config — e.g. `--review mcqdb` loads appsettings.mcqdb.json (ADO daemon), `--review
+// achieveai` loads appsettings.achieveai.json (GitHub daemon). This is the single operator knob:
+// every setting (repo/store/paths/ports/gateway) lives in that one profile file, so no launch env
+// vars are required. Absent the flag, the environment resolves as usual (DOTNET_ENVIRONMENT/default).
+var (reviewProfile, maxPrAgeDaysOverride, hostArgs) = ReviewProfileArgs.Extract(args);
+
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = hostArgs,
+    EnvironmentName = reviewProfile, // null ⇒ default environment resolution (base appsettings only)
+});
+
+// A `--days N` / `--max-pr-age-days N` flag overrides the profile's CodeReviewDaemon:MaxPrAgeDays recency
+// bound for this run. Injected as the last (highest-precedence) config source so it wins over appsettings,
+// and BEFORE the section is bound below.
+if (maxPrAgeDaysOverride is int maxPrAgeDaysFlag)
+{
+    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        [$"{CodeReviewDaemonOptions.SectionName}:{nameof(CodeReviewDaemonOptions.MaxPrAgeDays)}"] =
+            maxPrAgeDaysFlag.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    });
+}
 
 // ── Feature flags ────────────────────────────────────────────────────────────────────────────────
 // Conservative defaults (collect-only, GitHub-only, repo allow-list empty); each flag is an explicit
@@ -34,6 +58,12 @@ var daemonOptions =
     builder.Configuration.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>()
     ?? new CodeReviewDaemonOptions();
 builder.Services.AddSingleton(daemonOptions);
+
+// The ADO org(s) whose legacy {org}.visualstudio.com submodule URLs the host-side git rewrites to
+// dev.azure.com (so the modern ADO credential authenticates the fetch — see HostGitCredentialEnv). Derived
+// from the configured ADO context and shared by every HostGitCommandRunner below; a GitHub-only daemon gets
+// an empty set (no rewrite emitted).
+var hostGitAdoOrgs = DeriveAdoOrgs(daemonOptions);
 
 // Opt-in structured JSONL logging: when CodeReviewDaemon:LogFilePath is set, add a Serilog file sink
 // alongside the console logger so the daemon's own logs are DuckDB-queryable. Unset ⇒ console-only.
@@ -51,14 +81,22 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.LogFilePath))
 // X-Sbx-App-Id/X-Sbx-App-Key headers. A present-but-invalid key fails fast at boot (redacted); an
 // absent key is the keyless AUTH_ENFORCE=off dev path, logged once as a warning after the host is
 // built (never blocking startup, and never logging the key itself).
-var daemonAppId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID") ?? "codereview-daemon";
-var daemonAppKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY");
+var daemonAppId = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_ID")
+    ?? builder.Configuration["SandboxGateway:AppId"] ?? "codereview-daemon";
+var daemonAppKey = Environment.GetEnvironmentVariable("CRD_SANDBOX_APP_KEY")
+    ?? builder.Configuration["SandboxGateway:AppKey"];
 var daemonKeyMissing = string.IsNullOrWhiteSpace(daemonAppKey);
 if (!daemonKeyMissing)
 {
     SandboxCredential.ValidateKeyOrThrow(daemonAppId, daemonAppKey!);
 }
 var daemonCredential = new SandboxCredential(daemonAppId, daemonAppKey ?? string.Empty);
+
+// The already-running sandbox gateway's base URL, resolved once (env overrides config, then the
+// 3000 default). Threaded into every gateway consumer so a profile can set SandboxGateway:BaseUrl
+// and nothing needs CRD_SANDBOX_GATEWAY in env.
+var gatewayBaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
+    ?? builder.Configuration["SandboxGateway:BaseUrl"] ?? "http://127.0.0.1:3000";
 
 // ── OAuth auth-provider services ───────────────────────────────────────────────────────────────
 // Shared with LmStreaming.Sample (see its Program.cs): the sandbox gateway calls back into the
@@ -88,6 +126,11 @@ builder.Services.AddSingleton(sp => new GitHubOAuthProvider(
     new HttpClient(),
     sp.GetRequiredService<ILogger<GitHubOAuthProvider>>()));
 builder.Services.AddSingleton<IOAuthTokenProvider>(sp => sp.GetRequiredService<GitHubOAuthProvider>());
+
+// Startup diagnostics: log the GitHub Copilot model catalog the daemon's credential can see (raw catalog
+// + the routable subset usable as ReviewModelId) so an operator can discover valid model ids on boot.
+// Best-effort and bounded — a discovery failure is logged and never blocks startup.
+builder.Services.AddHostedService<CodeReviewDaemon.Sample.Diagnostics.CopilotModelCatalogLogger>();
 
 // Azure DevOps is opt-in: when EnableAdoProvider is off (default) the provider is never registered,
 // so an "ado" webhook call resolves no provider and is denied as unknown — the daemon stays GitHub-only.
@@ -164,7 +207,7 @@ builder.Services.AddSingleton<ISandboxFileSystem>(sp => sp.GetRequiredService<Sa
 // registration above: the daemon assumes an already-running gateway and never spawns one itself).
 var sandboxGatewayOptions = new SandboxGatewayOptions
 {
-    BaseUrl = Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY") ?? "http://127.0.0.1:3000",
+    BaseUrl = gatewayBaseUrl,
     AutoSpawn = false,
     Marketplaces = string.Join(",", daemonOptions.Marketplaces),
     // Host base directory the (already-running) gateway maps to its container WORKSPACE_BASE_PATH. The
@@ -180,6 +223,13 @@ var sandboxGatewayOptions = new SandboxGatewayOptions
     AppId = daemonAppId,
     AppKey = daemonKeyMissing ? null : daemonAppKey,
 };
+// Per-app workspace rooting (gateway ADR 0028): when the adopted gateway roots workspaces at
+// WORKSPACE_BASE_PATH/<app-dir>/<workspace>, the daemon prepares its store + measures slot paths under that
+// same <app-dir> (derived from AppId) so the app-dir-less workspace field it sends re-roots to the prepared
+// store. Off by default (flat, pre-ADR-0028). sandboxGatewayOptions.WorkspaceBasePath stays the CONFIGURED
+// base (the gateway's own WORKSPACE_BASE_PATH); only the daemon-side prep/relative base gains <app-dir>.
+var effectiveWorkspaceBase = SandboxAppDir.EffectiveBase(
+    sandboxGatewayOptions.WorkspaceBasePath, daemonAppId, daemonOptions.PerAppWorkspaceRooting);
 builder.Services.AddSingleton(sp => new SandboxSessionRegistry(
     new SandboxGatewayLifetime(
         sandboxGatewayOptions,
@@ -205,8 +255,10 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
     daemonCredential,
     // The gateway's host workspace base: a pooled run mounts its leased slot at /workspace by expressing
     // the slot's host path relative to this base (ReviewSessionProvisioner.GetOrCreateForSlotAsync). The
-    // pool root is defaulted under it below so the slot always resolves to a path inside the base.
-    sandboxGatewayOptions.WorkspaceBasePath));
+    // pool root is defaulted under it below so the slot always resolves to a path inside the base. Under
+    // per-app rooting this base already includes <app-dir> (see effectiveWorkspaceBase above).
+    effectiveWorkspaceBase,
+    gatewayBaseUrl));
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
@@ -248,6 +300,10 @@ builder.Services.AddSingleton<IPrProvider>(sp => new GitHubPrProvider(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
     sp.GetRequiredService<ILogger<GitHubPrProvider>>()));
+
+// GitHub review posting is host-side (like ADO below). Agent-owned posting via code-reviewer:post-pr-review was
+// abandoned — the agent loaded the skill but never actually posted — so DaemonReviewStageExecutor.PostAsync posts
+// GitHub reviews through this publisher. Registered unconditionally (every profile reviews GitHub by default).
 builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new GitHubReviewCommentPublisher(
     sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("github"),
     sp.GetRequiredService<GitHubOAuthProvider>(),
@@ -259,10 +315,106 @@ if (daemonOptions.EnableAdoProvider)
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoPrProvider>>()));
+
+    // ADO review posting is host-side (like GitHub above): DaemonReviewStageExecutor.PostAsync posts ADO
+    // reviews through this publisher. Resolve the CONCRETE AdoOAuthProvider, not IOAuthTokenProvider, which is
+    // ambiguous (both GitHub and ADO providers register against it).
     builder.Services.AddSingleton<IReviewCommentPublisher>(sp => new AdoReviewCommentPublisher(
         sp.GetRequiredService<PolicyEnforcedHttpClientFactory>().Create("ado"),
         sp.GetRequiredService<AdoOAuthProvider>(),
         sp.GetRequiredService<ILogger<AdoReviewCommentPublisher>>()));
+}
+
+// Host-side git authenticates to every OAuth provider the daemon is signed in to — GitHub for github.com
+// clones, Azure DevOps for dev.azure.com clones — so a private ADO store/submodule checkout gets a
+// credential just like GitHub. HostGitCommandRunner asks this source per git command; a provider that is
+// not signed in throws and is skipped, so the GitHub-only daemon and the dedicated ADO daemon each inject
+// exactly the credentials their store/target needs. Tokens never touch argv or on-disk git config.
+// Collects the ADO org(s) the daemon is configured against so the host git can key a legacy→modern
+// url.<base>.insteadOf rewrite per org (insteadOf cannot extract the org generically). Sources: the
+// 3-segment {org}/{project}/{repo} EnabledRepos entries and the resolved cross-repo store URL. GitHub-only
+// config (2-segment entries, github.com store) yields an empty set.
+static IReadOnlyList<string> DeriveAdoOrgs(CodeReviewDaemonOptions options)
+{
+    var orgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var entry in options.EnabledRepos)
+    {
+        var segments = (entry ?? string.Empty)
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 3)
+        {
+            orgs.Add(segments[0]); // {org}/{project}/{repo}
+        }
+    }
+
+    foreach (var url in new[] { options.ResolvedStoreUrl, options.CrossRepoStoreUrl })
+    {
+        if (AdoOrgFromUrl(url) is { } org)
+        {
+            orgs.Add(org);
+        }
+    }
+
+    return [.. orgs];
+}
+
+// Extracts the ADO org from an HTTPS store URL in either shape: the leading path segment of a modern
+// dev.azure.com/{org}/... URL, or the host label of a legacy {org}.visualstudio.com URL. Anything else
+// (non-HTTPS, non-ADO host) yields null.
+static string? AdoOrgFromUrl(string? url)
+{
+    if (string.IsNullOrWhiteSpace(url))
+    {
+        return null;
+    }
+
+    var parsed = GitRemoteUrl.Parse(url);
+    if (parsed.Kind != GitUrlKind.Https)
+    {
+        return null;
+    }
+
+    const string legacySuffix = ".visualstudio.com";
+    if (parsed.Host.EndsWith(legacySuffix, StringComparison.OrdinalIgnoreCase))
+    {
+        var org = parsed.Host[..^legacySuffix.Length];
+        return org.Length > 0 && !org.Contains('.', StringComparison.Ordinal) ? org : null;
+    }
+
+    if (string.Equals(parsed.Host, "dev.azure.com", StringComparison.OrdinalIgnoreCase))
+    {
+        var first = parsed.RepoPath.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return string.IsNullOrEmpty(first) ? null : first;
+    }
+
+    return null;
+}
+
+static Func<CancellationToken, Task<IReadOnlyList<GitProviderToken>>> BuildHostGitCredentialsSource(IServiceProvider sp)
+{
+    var providers = sp.GetServices<IOAuthTokenProvider>().ToList();
+    return async ct =>
+    {
+        var tokens = new List<GitProviderToken>(providers.Count);
+        foreach (var provider in providers)
+        {
+            try
+            {
+                var token = await provider.GetAccessTokenAsync(ct: ct).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(token.Value))
+                {
+                    tokens.Add(new GitProviderToken(provider.ProviderId, token.Value));
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Provider not signed in / not configured — skip; its host's clones stay unauthenticated.
+            }
+        }
+
+        return tokens;
+    };
 }
 
 // HOST-side retention workspace (Task 15, design §6 Risk A): the ReviewBot retention push and the KB
@@ -278,10 +430,10 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.ReviewBotRepoUrl))
         var hostRoot = string.IsNullOrWhiteSpace(daemonOptions.WorkspaceHostRoot)
             ? Path.Combine(AppContext.BaseDirectory, "workspaces")
             : daemonOptions.WorkspaceHostRoot;
-        var github = sp.GetRequiredService<GitHubOAuthProvider>();
         var runner = new HostGitCommandRunner(
-            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
-            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+            BuildHostGitCredentialsSource(sp),
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+            hostGitAdoOrgs);
         return new HostRetentionWorkspace(runner, new HostFileSystem(), Path.Combine(hostRoot, "reviewbot"));
     });
 }
@@ -301,18 +453,27 @@ if (daemonOptions.EnableToolAssistedReview
     // base). An explicit ReviewPoolHostRoot override wins; otherwise default under WorkspaceBasePath when
     // it is configured, falling back to a dir beside the binary only when no base path is set (the slot
     // mount then degrades to the per-run mount, which is still correct — just not slot-backed).
-    var poolRoot = !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
-        ? daemonOptions.ReviewPoolHostRoot
-        : !string.IsNullOrWhiteSpace(sandboxGatewayOptions.WorkspaceBasePath)
-            ? Path.Combine(sandboxGatewayOptions.WorkspaceBasePath, "review-pool")
-            : Path.Combine(AppContext.BaseDirectory, "review-pool");
+    // The pool root MUST resolve INSIDE effectiveWorkspaceBase so a leased slot's host path is expressible
+    // relative to that base (the workspace field the gateway re-roots under <app-dir>). Under per-app rooting
+    // the explicit ReviewPoolHostRoot's leaf (e.g. "review-pool-mcqdb") is re-based under <app-dir>; a flat
+    // path would land outside the base and the slot mount would silently degrade to the per-run mount.
+    var poolLeaf = string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
+        ? "review-pool"
+        : Path.GetFileName(daemonOptions.ReviewPoolHostRoot.TrimEnd('/', '\\'));
+    var poolRoot = daemonOptions.PerAppWorkspaceRooting && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
+        ? $"{effectiveWorkspaceBase!.TrimEnd('/', '\\')}/{poolLeaf}"
+        : !string.IsNullOrWhiteSpace(daemonOptions.ReviewPoolHostRoot)
+            ? daemonOptions.ReviewPoolHostRoot
+            : !string.IsNullOrWhiteSpace(effectiveWorkspaceBase)
+                ? Path.Combine(effectiveWorkspaceBase, "review-pool")
+                : Path.Combine(AppContext.BaseDirectory, "review-pool");
 
     builder.Services.AddSingleton(sp =>
     {
-        var github = sp.GetRequiredService<GitHubOAuthProvider>();
         var hostRunner = new HostGitCommandRunner(
-            async ct => (await github.GetAccessTokenAsync(ct: ct).ConfigureAwait(false)).Value,
-            sp.GetRequiredService<ILogger<HostGitCommandRunner>>());
+            BuildHostGitCredentialsSource(sp),
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+            hostGitAdoOrgs);
         var hostFileSystem = new HostFileSystem();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
 
@@ -376,8 +537,13 @@ if (daemonOptions.EnableToolAssistedReview
                     var notesInput = await ReadPrNotesFromBranchAsync(hostGit, sweeperRepoRoot, pr.Branch, innerCt)
                         .ConfigureAwait(false);
                     var profile = DaemonAgentFactory.CreateKnowledgeExtractionProfile();
+                    // KnowledgeModelId (empty ⇒ null ⇒ inherit ReviewModelId) lets the extraction pass run on a
+                    // dedicated model, e.g. claude-opus-4.8, independent of the gpt-* dispatcher.
+                    var knowledgeModelId = string.IsNullOrWhiteSpace(daemonOptions.KnowledgeModelId)
+                        ? null
+                        : daemonOptions.KnowledgeModelId;
                     await using var loop = loopFactory.Create(
-                        profile, modelId: null, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
+                        profile, modelId: knowledgeModelId, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
                     var agent = new KnowledgeAgent(
                         loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
                     var todayUtc = DateTime.UtcNow.ToString(
@@ -420,6 +586,11 @@ if (daemonOptions.EnableToolAssistedReview
             return branches;
         }
 
+        // Persists across sweeps so a stray review/* branch that maps to no configured repo (e.g. a leftover
+        // pushed into this store by another daemon) is warned about ONCE, not on every sweep — one such branch
+        // otherwise floods the log (163x in a single mcqdb run).
+        var warnedOrphanBranches = new HashSet<string>(StringComparer.Ordinal);
+
         return new PrLifecycleSweeper(
             async ct =>
             {
@@ -444,7 +615,8 @@ if (daemonOptions.EnableToolAssistedReview
                 // from this daemon's DB (fresh DB / churn) still has its notes branch resolved when it closes.
                 var reviewBranches = await ListRemoteReviewBranchesAsync(hostGit, sweeperRepoRoot, sweepLogger, ct)
                     .ConfigureAwait(false);
-                return OrphanBranchReconciler.Reconcile(reviewed, reviewBranches, sweepPollTargets, sweepLogger);
+                return OrphanBranchReconciler.Reconcile(
+                    reviewed, reviewBranches, sweepPollTargets, sweepLogger, warnedOrphanBranches);
             },
             (pr, ct) => PrLifecycleSweepSeam.ResolveLifecycleAsync(providers, pr, ct),
             branchManager,
@@ -498,7 +670,17 @@ if (daemonOptions.EnableToolAssistedReview
 // SandboxCredential is a value type, so it cannot be a DI singleton; pass the daemon identity explicitly
 // via ActivatorUtilities (its ctor param is the trailing, type-matched arg) while the rest resolves from DI.
 builder.Services.AddSingleton<IReviewStageExecutor>(sp =>
-    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential));
+    ActivatorUtilities.CreateInstance<DaemonReviewStageExecutor>(sp, daemonCredential, gatewayBaseUrl));
+builder.Services.AddSingleton<ReviewProgressReporter>();
+// In-memory retry governance for the orchestrator: attempt-counting + exponential backoff + park-after-K,
+// so a stuck ContextReady backs off (not the old ~30s hot-loop) and a genuinely stuck commit is parked +
+// alerted. Not persisted — a restart resets it, so a restart retries parked runs.
+builder.Services.AddSingleton(sp => new RetryGovernor(
+    daemonOptions.MaxContextRetries,
+    TimeSpan.FromSeconds(daemonOptions.RetryBackoffBaseSeconds),
+    TimeSpan.FromSeconds(daemonOptions.RetryBackoffCapSeconds),
+    () => DateTimeOffset.UtcNow,
+    sp.GetRequiredService<ILogger<RetryGovernor>>()));
 builder.Services.AddSingleton<PrOrchestrator>();
 // The PR-watching loop. Registering a BackgroundService adds NO route, so the host's mapped routes stay
 // exactly the one webhook below. With the allow-list empty (default) it has no targets and is inert.
@@ -513,20 +695,29 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sweepAsync: sp.GetService<PrLifecycleSweeper>() is { } sweeper ? sweeper.SweepAsync : null));
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
-// The daemon exposes exactly ONE route: POST /api/auth/webhook/{provider} (the gateway's post-auth
-// callback). MVC discovery is restricted to AuthWebhookController so no other route can leak in.
+// The daemon exposes exactly TWO routes, both gateway callbacks authenticated by the same shared
+// secret: POST /api/auth/webhook/{provider} (post-auth callback) and POST /api/discovery/context_discovery
+// (context-discovery callback — returns 200 accept-and-ignore so a non-2xx never tears down the sandbox
+// session). MVC discovery is filtered to exactly those two controllers so no other route can leak in.
 builder.Services
     .AddControllers()
     .ConfigureApplicationPartManager(apm =>
     {
-        // AuthWebhookController lives in LmAgentInfra, a referenced library — not auto-discovered as
-        // an application part — so add it explicitly, then filter discovery to that one controller.
+        // AuthWebhookController lives in LmAgentInfra (a referenced library, not auto-discovered), and
+        // DiscoveryController lives in this daemon assembly; add both parts explicitly (the daemon
+        // assembly may already be present via default population — guard against a duplicate), then
+        // filter discovery to those two controllers.
         apm.ApplicationParts.Add(new AssemblyPart(typeof(AuthWebhookController).Assembly));
+        var daemonAssembly = typeof(CodeReviewDaemon.Sample.Controllers.DiscoveryController).Assembly;
+        if (!apm.ApplicationParts.OfType<AssemblyPart>().Any(p => p.Assembly == daemonAssembly))
+        {
+            apm.ApplicationParts.Add(new AssemblyPart(daemonAssembly));
+        }
         foreach (var existing in apm.FeatureProviders.OfType<Microsoft.AspNetCore.Mvc.Controllers.ControllerFeatureProvider>().ToList())
         {
             _ = apm.FeatureProviders.Remove(existing);
         }
-        apm.FeatureProviders.Add(new WebhookOnlyControllerFeatureProvider());
+        apm.FeatureProviders.Add(new DaemonControllerFeatureProvider());
     });
 
 var app = builder.Build();

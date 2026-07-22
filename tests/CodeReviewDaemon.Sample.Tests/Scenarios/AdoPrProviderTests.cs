@@ -52,12 +52,33 @@ public sealed class AdoPrProviderTests : LoggingTestBase
         }
         """;
 
-    private static PrPollRequest Request(OpaqueCursor? cursor = null) => new()
+    private static PrPollRequest Request(OpaqueCursor? cursor = null, DateTimeOffset? recencyCutoff = null) => new()
     {
         Repo = Repo,
         Scope = "contoso/Platform/widgets:active-prs",
         Cursor = cursor,
+        RecencyCutoff = recencyCutoff,
     };
+
+    // One PR opened before a recency window (needs a last-push lookup) and one opened inside it (does not).
+    private const string DatedPrs = """
+        {
+          "value": [
+            { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+              "sourceRefName": "refs/heads/feature-42",
+              "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } },
+            { "pullRequestId": 50, "status": "active", "creationDate": "2026-07-09T00:00:00Z",
+              "sourceRefName": "refs/heads/feature-50",
+              "lastMergeSourceCommit": { "commitId": "head-50" }, "lastMergeTargetCommit": { "commitId": "base-50" } }
+          ]
+        }
+        """;
+
+    private const string OneOldPr = """
+        { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+            "sourceRefName": "refs/heads/feature-42",
+            "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+        """;
 
     private AdoPrProvider Provider(FakeHttpMessageHandler handler) =>
         new(
@@ -247,5 +268,220 @@ public sealed class AdoPrProviderTests : LoggingTestBase
             .StartWith("https://dev.azure.com/contoso/Platform/_apis/git/repositories/widgets/pullrequests/42");
         request.Uri.Query.Should().Contain("api-version=7.1");
         request.Authorization.Should().StartWith("Basic ", "ADO PATs/bearer tokens are sent via basic auth");
+    }
+
+    [Fact]
+    public async Task RecencyCutoff_resolves_ado_updated_from_the_last_push_for_old_prs_only()
+    {
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pushes", """{ "value": [ { "date": "2026-07-10T12:00:00Z" } ] }""")
+            .OnJson(HttpMethod.Get, "/pullrequests", DatedPrs);
+
+        var page = await Provider(handler)
+            .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        // PR 42 (opened 2026-06-01, before the window) → its source branch's last push (2026-07-10) becomes UpdatedAt.
+        page.PullRequests[0].PrId.Should().Be("42");
+        page.PullRequests[0].UpdatedAt.Should().Be(new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
+        // PR 50 (opened 2026-07-09, inside the window) → no extra call, UpdatedAt stays null.
+        page.PullRequests[1].PrId.Should().Be("50");
+        page.PullRequests[1].UpdatedAt.Should().BeNull();
+
+        handler.CountRequests("feature-42").Should().Be(1, "the old PR's source-branch last push is fetched");
+        handler.CountRequests("feature-50").Should().Be(0, "the recent PR skips the extra call");
+    }
+
+    [Fact]
+    public async Task RecencyCutoff_keeps_an_old_pr_whose_push_date_cannot_be_fetched()
+    {
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pushes", """{"message":"nope"}""", HttpStatusCode.NotFound)
+            .OnJson(HttpMethod.Get, "/pullrequests", OneOldPr);
+
+        var page = await Provider(handler)
+            .ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        // Keep-on-uncertainty WITHOUT fabrication: when the last-push lookup fails for an old PR, the provider
+        // leaves the recency signal indeterminate — BOTH UpdatedAt and CreatedAt null — so
+        // PrPollingService.ApplyRecencyFilter's "activity (UpdatedAt ?? CreatedAt) is null ⇒ keep" path applies.
+        // It must NOT fabricate a boundary timestamp (an earlier `?? cutoff` did, conflating "unknown" with
+        // "active exactly at the cutoff"), nor fall back to the stale opened-date (which would drop a
+        // possibly-active PR).
+        page.PullRequests[0].UpdatedAt.Should().BeNull("an unknown push date must not be fabricated");
+        page.PullRequests[0].CreatedAt.Should().BeNull("the recency signal is indeterminate, so the filter keeps it");
+    }
+
+    [Fact]
+    public async Task RecencyCutoff_keeps_an_old_pr_with_no_source_ref()
+    {
+        // An old PR whose sourceRefName is missing/blank can't be push-dated, so its recency is indeterminate:
+        // both signals null ⇒ ApplyRecencyFilter keeps it, rather than dropping on the stale opened-date. No
+        // push lookup is attempted (there is no ref to query).
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/pullrequests",
+                """
+                { "value": [ { "pullRequestId": 42, "status": "active", "creationDate": "2026-06-01T00:00:00Z",
+                    "lastMergeSourceCommit": { "commitId": "head-42" }, "lastMergeTargetCommit": { "commitId": "base-42" } } ] }
+                """);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        page.PullRequests[0].UpdatedAt.Should().BeNull();
+        page.PullRequests[0].CreatedAt.Should().BeNull("no source ref ⇒ recency indeterminate ⇒ kept");
+        handler.CountRequests("/pushes").Should().Be(0, "no source ref means no push lookup is attempted");
+    }
+
+    [Fact]
+    public async Task No_recency_cutoff_means_no_extra_commit_calls()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullrequests", DatedPrs);
+
+        var page = await Provider(handler).ListOpenPullRequestsAsync(Request(), CancellationToken.None);
+
+        page.PullRequests.Should().OnlyContain(p => p.UpdatedAt == null, "with no window ADO never fetches push dates");
+        handler.CountRequests("/pushes").Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RecencyLookups_run_with_bounded_concurrency()
+    {
+        // Many old PRs each need a /pushes lookup. The lookups must overlap (run concurrently) — a sequential
+        // implementation would show a max concurrency of 1 — but never exceed the provider's concurrency cap.
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        const int oldPrCount = 20;
+        var items = string.Join(",", Enumerable.Range(1, oldPrCount).Select(i =>
+            "{ \"pullRequestId\": " + i + ", \"status\": \"active\", \"creationDate\": \"2026-06-01T00:00:00Z\", "
+            + "\"sourceRefName\": \"refs/heads/f" + i + "\", "
+            + "\"lastMergeSourceCommit\": { \"commitId\": \"h" + i + "\" }, "
+            + "\"lastMergeTargetCommit\": { \"commitId\": \"b" + i + "\" } }"));
+        var prsJson = "{ \"value\": [ " + items + " ] }";
+
+        using var handler = new ConcurrencyTrackingHandler(prsJson);
+        var provider = new AdoPrProvider(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            LoggerFactory.CreateLogger<AdoPrProvider>());
+
+        var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        page.PullRequests.Should().HaveCount(oldPrCount);
+        handler.TotalPushes.Should().Be(oldPrCount, "every eligible old PR receives exactly one /pushes lookup");
+        handler.MaxConcurrentPushes.Should().BeGreaterThan(1, "the per-PR push lookups run concurrently, not sequentially");
+        handler.MaxConcurrentPushes.Should().BeLessThanOrEqualTo(6, "concurrency is bounded by the provider's cap");
+    }
+
+    [Fact]
+    public async Task Timed_out_push_lookup_keeps_the_pr_and_does_not_fault_the_poll()
+    {
+        // An HttpClient timeout surfaces as a TaskCanceledException with the caller's token NOT cancelled. It
+        // must be treated as a failed lookup (recency indeterminate ⇒ keep the PR), NOT propagated to fault the
+        // whole poll via Task.WhenAll.
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        using var handler = new CancelOnPushHandler(OneOldPr);
+        var provider = new AdoPrProvider(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            LoggerFactory.CreateLogger<AdoPrProvider>());
+
+        var page = await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), CancellationToken.None);
+
+        page.PullRequests.Should().ContainSingle();
+        page.PullRequests[0].UpdatedAt.Should().BeNull();
+        page.PullRequests[0].CreatedAt.Should().BeNull("a timed-out push lookup leaves recency indeterminate ⇒ the PR is kept");
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_during_push_lookup_propagates()
+    {
+        // A REAL caller cancellation (the poll was aborted) must propagate, not be swallowed as a failed lookup.
+        var cutoff = new DateTimeOffset(2026, 7, 4, 0, 0, 0, TimeSpan.Zero);
+        using var cts = new CancellationTokenSource();
+        using var handler = new CancelOnPushHandler(OneOldPr, cts);
+        var provider = new AdoPrProvider(
+            new HttpClient(handler),
+            new FakeOAuthTokenProvider("ado", "ado-token-abc"),
+            LoggerFactory.CreateLogger<AdoPrProvider>());
+
+        var act = async () => await provider.ListOpenPullRequestsAsync(Request(recencyCutoff: cutoff), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    /// <summary>
+    /// Returns the PR list for <c>/pullrequests</c>, then simulates a cancellation on the first <c>/pushes</c>
+    /// call: with no <paramref name="cancelOnPush"/> it throws a <see cref="TaskCanceledException"/> WITHOUT
+    /// cancelling the caller's token (an HttpClient timeout); with one, it cancels that token first (a real
+    /// caller cancellation).
+    /// </summary>
+    private sealed class CancelOnPushHandler(string prsJson, CancellationTokenSource? cancelOnPush = null)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.ToString().Contains("/pullrequests", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) });
+            }
+
+            cancelOnPush?.Cancel();
+            throw new TaskCanceledException("simulated push-lookup cancellation");
+        }
+    }
+
+    /// <summary>
+    /// Returns the PR list for <c>/pullrequests</c> and, for each <c>/pushes</c> call, records the total number
+    /// of push lookups and the peak number simultaneously in-flight (holding each briefly so genuine overlap is
+    /// observable).
+    /// </summary>
+    private sealed class ConcurrencyTrackingHandler(string prsJson) : HttpMessageHandler
+    {
+        private readonly object _lock = new();
+        private int _current;
+
+        public int MaxConcurrentPushes { get; private set; }
+
+        public int TotalPushes { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var uri = request.RequestUri!.ToString();
+            if (uri.Contains("/pullrequests", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(prsJson) };
+            }
+
+            lock (_lock)
+            {
+                _current++;
+                TotalPushes++;
+                MaxConcurrentPushes = Math.Max(MaxConcurrentPushes, _current);
+            }
+
+            try
+            {
+                await Task.Delay(30, cancellationToken);
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    _current--;
+                }
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{ \"value\": [ { \"date\": \"2026-07-10T12:00:00Z\" } ] }"),
+            };
+        }
     }
 }

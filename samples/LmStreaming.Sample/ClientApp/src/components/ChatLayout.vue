@@ -14,6 +14,11 @@ import MessageList from './MessageList.vue';
 import PendingMessageQueue from './PendingMessageQueue.vue';
 import ChatInput from './ChatInput.vue';
 import SubAgentListPanel from './SubAgentListPanel.vue';
+import ConversationTabs from './ConversationTabs.vue';
+import SubAgentTranscript from './SubAgentTranscript.vue';
+import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
+import { useConversationTabs } from '@/composables/useConversationTabs';
+import { GET_AGENT_COLOR } from '@/utils/agentColors';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -114,8 +119,41 @@ const subAgentParentThreadId = computed(() =>
     : null
 );
 
-// Provide getResultForToolCall to child components
+// Sub-agent panel state is hoisted HERE (it used to live inside SubAgentListPanel) so the center-pane
+// tabs and the right-side launcher share ONE instance/poller/socket. The tab selector/router drives
+// which conversation the center pane shows. It is bound to subAgentParentThreadId (not the raw
+// chatThreadId) so listSubAgents is never polled before the conversation has actually started.
+const {
+  children: subAgentChildren,
+  focusedAgentId,
+  focusedDisplayItems,
+  isFocusedStreaming,
+  error: subAgentError,
+  startPolling: startSubAgentPolling,
+  focusChild,
+  unfocusChild,
+  sendToFocusedChild,
+  getResultForToolCall: getSubAgentResultForToolCall,
+} = useSubAgentPanel(() => subAgentParentThreadId.value);
+
+const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
+  children: subAgentChildren,
+  focusedAgentId,
+  focusChild,
+  unfocusChild,
+  getParentThreadId: () => chatThreadId.value,
+});
+
+function handleSubAgentSend(text: string): void {
+  sendToFocusedChild(text);
+}
+
+// Provide getResultForToolCall to the MAIN view's pills. The sub-agent view (SubAgentTranscript)
+// shadows this with the child's own resolver for its subtree.
 provide('getResultForToolCall', getResultForToolCall);
+// Provide agentId → color so ToolPill (agent family) and NotificationPill (completion) can tint a
+// sub-agent's inline calls to match its tab.
+provide(GET_AGENT_COLOR, getAgentColor);
 
 const sidebarCollapsed = ref(false);
 const isSwitchingMode = ref(false);
@@ -479,6 +517,8 @@ function checkMobile(): void {
 onMounted(() => {
   checkMobile();
   window.addEventListener('resize', checkMobile);
+  // Poll the active conversation's sub-agents so tabs/launcher populate as children spawn.
+  startSubAgentPolling();
 });
 
 onBeforeUnmount(() => {
@@ -609,43 +649,68 @@ onBeforeUnmount(() => {
           @close="fileBrowserModalOpen = false"
         />
 
-        <MessageList :display-items="displayItems" :is-loading="chatLoading" />
+        <ConversationTabs
+          v-if="tabs.length > 1"
+          :tabs="tabs"
+          :active-tab-id="activeTabId"
+          @select="selectTab"
+        />
 
-        <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
+        <!-- MAIN conversation view: stays mounted (v-show) so its scroll/stream/pill state survives
+             tab detours. Its banners, usage, pending queue and input are main-only by construction. -->
+        <div v-show="activeTabId === 'main'" class="tab-view" data-testid="main-view">
+          <MessageList :display-items="displayItems" :is-loading="chatLoading" />
 
-        <div v-if="error" class="error-banner" data-testid="error-banner">
-          {{ error }}
+          <AuthRequiredBanner :requests="pendingAuthRequests" @dismiss="dismissAuthRequest" />
+
+          <div v-if="error" class="error-banner" data-testid="error-banner">
+            {{ error }}
+          </div>
+
+          <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner" data-testid="usage-banner">
+            Total: {{ cumulativeUsage.totalTokens }} |
+            In: {{ cumulativeUsage.uncachedInputTokens }} |
+            Out: {{ cumulativeUsage.completionTokens }}
+            <template v-if="cumulativeUsage.cachedTokens > 0">
+              | Cached: {{ cumulativeUsage.cachedTokens }}
+            </template>
+            <template v-if="cumulativeUsage.cacheCreationTokens > 0">
+              | Cache created: {{ cumulativeUsage.cacheCreationTokens }}
+            </template>
+          </div>
+
+          <PendingMessageQueue :pending-messages="pendingMessages" />
+
+          <ChatInput
+            :disabled="isSending && !chatLoading"
+            :streaming="chatLoading"
+            @send="handleSend"
+            @cancel="handleCancel"
+          />
         </div>
 
-        <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner" data-testid="usage-banner">
-          Total: {{ cumulativeUsage.totalTokens }} |
-          In: {{ cumulativeUsage.uncachedInputTokens }} |
-          Out: {{ cumulativeUsage.completionTokens }}
-          <template v-if="cumulativeUsage.cachedTokens > 0">
-            | Cached: {{ cumulativeUsage.cachedTokens }}
-          </template>
-          <template v-if="cumulativeUsage.cacheCreationTokens > 0">
-            | Cache created: {{ cumulativeUsage.cacheCreationTokens }}
-          </template>
-        </div>
-
-        <PendingMessageQueue :pending-messages="pendingMessages" />
-
-        <ChatInput
-          :disabled="isSending && !chatLoading"
-          :streaming="chatLoading"
-          @send="handleSend"
-          @cancel="handleCancel"
+        <!-- SUB-AGENT view: mounted only while a sub-agent tab is active; its own error banner + input
+             (routed to the focused child) + child-scoped tool-result provide live inside it. -->
+        <SubAgentTranscript
+          v-if="activeTabId !== 'main'"
+          :active-agent-id="activeTabId"
+          :focused-agent-id="focusedAgentId"
+          :display-items="focusedDisplayItems"
+          :is-streaming="isFocusedStreaming"
+          :error="subAgentError"
+          :get-result-for-tool-call="getSubAgentResultForToolCall"
+          @send="handleSubAgentSend"
         />
       </div>
     </main>
 
-    <!-- Bind the sub-agent panel to the ACTIVE chat thread (useChat's threadId), not the
-         sidebar's currentThreadId: a freshly-started chat runs on useChat's thread before it is
-         ever selected/persisted in the sidebar, and the panel must track where sub-agents spawn.
-         subAgentParentThreadId additionally withholds that id until the conversation has a sidebar
-         entry, so listSubAgents is never polled before the backend has an agent for this thread. -->
-    <SubAgentListPanel :parent-thread-id="subAgentParentThreadId" />
+    <!-- Right-side launcher: shares ChatLayout's hoisted sub-agent state (the panel no longer owns a
+         composable). Clicking a row activates that sub-agent's center-pane tab via selectTab. -->
+    <SubAgentListPanel
+      :children="subAgentChildren"
+      :active-tab-id="activeTabId"
+      @select="selectTab"
+    />
   </div>
 </template>
 
@@ -671,6 +736,15 @@ onBeforeUnmount(() => {
   margin: 0 auto;
   width: 100%;
   background: #fff;
+}
+
+/* A single tab's content column (main or sub-agent view): grows to fill, letting its MessageList
+   scroll and its ChatInput pin to the bottom, exactly as the pre-tabs layout did. */
+.tab-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .chat-header {

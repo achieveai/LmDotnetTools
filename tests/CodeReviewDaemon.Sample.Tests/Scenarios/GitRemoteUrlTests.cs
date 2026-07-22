@@ -80,4 +80,46 @@ public sealed class GitRemoteUrlTests
 
         resolved.Kind.Should().Be(GitUrlKind.Unknown);
     }
+
+    [Fact]
+    public void CanonicalizeAdoLegacyHost_rewrites_visualstudio_com_to_the_modern_dev_azure_shape()
+    {
+        // Legacy {org}.visualstudio.com/{project}/_git/{repo} — org is a HOST label — must reduce to the
+        // exact same (Host, RepoPath) as the modern dev.azure.com/{org}/{project}/_git/{repo} — org is a PATH
+        // segment — so the per-run allow-list (always dev.azure.com) matches either URL form.
+        var legacy = GitRemoteUrl.CanonicalizeAdoLegacyHost(
+            GitRemoteUrl.Parse("https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/LibProfiler"));
+        var modern = GitRemoteUrl.Parse(
+            "https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler");
+
+        legacy.Kind.Should().Be(GitUrlKind.Https);
+        legacy.Host.Should().Be("dev.azure.com");
+        legacy.RepoPath.Should().Be("/mcqdbdev/MCQdb_Development/_git/LibProfiler");
+        (legacy.Host, legacy.RepoPath).Should().Be((modern.Host, modern.RepoPath));
+    }
+
+    [Fact]
+    public void CanonicalizeAdoLegacyHost_preserves_a_url_encoded_repo_segment_verbatim()
+    {
+        // Parse does NOT URL-decode, so the encoded space stays %20 — the config allow-list value must match
+        // this exact spelling (proven in SubmoduleInitializerTests).
+        var canonical = GitRemoteUrl.CanonicalizeAdoLegacyHost(
+            GitRemoteUrl.Parse("https://mcqdbdev.visualstudio.com/MCQdb_Development/_git/Microsoft%20Orleans"));
+
+        canonical.Host.Should().Be("dev.azure.com");
+        canonical.RepoPath.Should().Be("/mcqdbdev/MCQdb_Development/_git/Microsoft%20Orleans");
+    }
+
+    [Theory]
+    [InlineData("https://github.com/acme/widgets.git", "github.com", "/acme/widgets")]
+    [InlineData("https://dev.azure.com/mcqdbdev/MCQdb_Development/_git/LibProfiler",
+        "dev.azure.com", "/mcqdbdev/MCQdb_Development/_git/LibProfiler")]
+    public void CanonicalizeAdoLegacyHost_leaves_non_legacy_urls_untouched(
+        string raw, string expectedHost, string expectedPath)
+    {
+        var canonical = GitRemoteUrl.CanonicalizeAdoLegacyHost(GitRemoteUrl.Parse(raw));
+
+        canonical.Host.Should().Be(expectedHost);
+        canonical.RepoPath.Should().Be(expectedPath);
+    }
 }

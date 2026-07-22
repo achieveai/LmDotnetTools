@@ -97,14 +97,32 @@ internal sealed class ReviewStore : IDisposable
     /// keying identity on it would spawn a fresh run (and a duplicate review) on the very next poll. A
     /// review is scoped to a commit; a new <c>head_sha</c> is what legitimately starts a new run.
     /// </summary>
+    /// <summary>
+    /// Inserts <paramref name="run"/>, or returns the existing row when this reviewed commit already has
+    /// one. A run's identity is the COMMIT: <c>(repo, pr, head_sha, base_sha, review_kind, variant_id)</c>.
+    /// It deliberately excludes <c>mode</c> and <c>trigger_watermark</c>: <c>mode</c> (post vs collect-only)
+    /// is an authorization decision made at post time (<c>EnableCommentPosting</c>), not part of what the
+    /// review IS — keying identity on it would spawn a fresh run (and a redundant re-review of every open
+    /// PR) the moment posting is toggled; <c>trigger_watermark</c> (the PR's <c>updated_at</c>) is mutated
+    /// by the act of posting a comment, so keying on it would spawn a duplicate run on the very next poll.
+    /// The lookup is therefore mode/watermark-agnostic, preferring the furthest-progressed row so a
+    /// completed review short-circuits rather than re-running. A new <c>head_sha</c> is what legitimately
+    /// starts a new run. The store has a single serial writer, so this check-then-insert has no race.
+    /// </summary>
     public ReviewRun CreateOrGetReviewRun(ReviewRun run)
     {
         ArgumentNullException.ThrowIfNull(run);
 
+        var existing = FindReviewRunByIdentity(run);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
         var now = UtcNow();
         using var insert = _connection.CreateCommand();
         insert.CommandText = """
-            INSERT OR IGNORE INTO review_run (
+            INSERT INTO review_run (
                 repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
                 merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
                 feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
@@ -137,12 +155,31 @@ internal sealed class ReviewStore : IDisposable
         _ = insert.Parameters.AddWithValue("$now", now);
         _ = insert.ExecuteNonQuery();
 
+        return FindReviewRunByIdentity(run)!;
+    }
+
+    /// <summary>
+    /// Finds the <c>review_run</c> for a reviewed commit's identity — <c>(repo, pr, head, base, kind,
+    /// variant)</c>, mode/watermark-agnostic (see <see cref="CreateOrGetReviewRun"/>). When more than one
+    /// row exists for the identity (e.g. rows left by an earlier build that keyed identity on mode or
+    /// watermark), the furthest-progressed one wins so a completed review is not needlessly re-run.
+    /// </summary>
+    private ReviewRun? FindReviewRunByIdentity(ReviewRun run)
+    {
         using var select = _connection.CreateCommand();
         select.CommandText = """
             SELECT * FROM review_run
             WHERE repo_id = $repoId AND pr_id = $prId AND head_sha = $head AND base_sha = $base
               AND review_kind = $kind AND variant_id = $variant
-              AND mode = $mode;
+            ORDER BY CASE stage
+                       WHEN 'Posted' THEN 4
+                       WHEN 'Judged' THEN 3
+                       WHEN 'Reviewed' THEN 2
+                       WHEN 'ContextReady' THEN 1
+                       ELSE 0
+                     END DESC,
+                     id DESC
+            LIMIT 1;
             """;
         _ = select.Parameters.AddWithValue("$repoId", run.RepoId);
         _ = select.Parameters.AddWithValue("$prId", run.PrId);
@@ -150,10 +187,8 @@ internal sealed class ReviewStore : IDisposable
         _ = select.Parameters.AddWithValue("$base", run.BaseSha);
         _ = select.Parameters.AddWithValue("$kind", run.ReviewKind);
         _ = select.Parameters.AddWithValue("$variant", run.VariantId);
-        _ = select.Parameters.AddWithValue("$mode", run.Mode);
         using var reader = select.ExecuteReader();
-        _ = reader.Read();
-        return MapReviewRun(reader);
+        return reader.Read() ? MapReviewRun(reader) : null;
     }
 
     public ReviewRun? GetReviewRun(long id)

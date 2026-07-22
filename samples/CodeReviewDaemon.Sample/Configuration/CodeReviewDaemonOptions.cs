@@ -19,6 +19,14 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public bool EnableCommentPosting { get; init; }
 
+    /// <summary>
+    /// When <c>false</c> (default) the daemon does NOT post the host-side single-summary comment: the review
+    /// agent posts its findings inline itself (line-anchored review comments + thread replies) over the egress
+    /// proxy. Enable only as a degraded fallback — it posts one PR-level summary blob instead of inline
+    /// comments, which is strictly inferior. Requires <see cref="EnableCommentPosting"/>.
+    /// </summary>
+    public bool EnableHostSummaryFallback { get; init; }
+
     /// <summary>When <c>false</c> (default) the knowledge-base agent does not run.</summary>
     public bool EnableKnowledgeAgent { get; init; }
 
@@ -81,12 +89,58 @@ internal sealed class CodeReviewDaemonOptions
     public bool RequireSkillSupport { get; init; }
 
     /// <summary>
-    /// Model id the primary review agent runs with (the id sent to the Copilot-backed Anthropic Messages
-    /// backend, e.g. <c>claude-sonnet-5</c>). The poller stamps it onto each review run so the primary
-    /// review has a concrete model — an empty id would be rejected by the provider. The A/B comparison
-    /// (B) variant keeps its own bounded model id and is unaffected by this knob.
+    /// Model id the <b>primary orchestrator loop</b> runs with — the "dispatcher / state" agent that reads
+    /// the diff, dispatches the <c>code-reviewer:*</c> review sub-agents, holds the review's conversation
+    /// state, and synthesizes the final posted review (the id sent to the Copilot backend, e.g.
+    /// <c>claude-sonnet-5</c> or <c>gpt-5.6-luna</c>). The poller stamps it onto each review run so the
+    /// primary review has a concrete model — an empty id would be rejected by the provider. The deep review
+    /// passes can run on a different model via <see cref="SubAgentModelId"/>; the A/B comparison (B) variant
+    /// keeps its own bounded model id and is unaffected by this knob.
     /// </summary>
     public string ReviewModelId { get; init; } = "claude-sonnet-5";
+
+    /// <summary>
+    /// Model id the discovered <c>code-reviewer:*</c> <b>review sub-agents</b> run with — the agents that do
+    /// the focused, deep review passes the primary loop dispatches. Empty (default) ⇒ sub-agents inherit the
+    /// primary loop's model (<see cref="ReviewModelId"/>), exactly as before. Set it to split the two roles:
+    /// a stronger model for the actual reviewing (e.g. <c>gpt-5.6-sol</c>) while the orchestrator/dispatcher
+    /// runs a lighter one (<see cref="ReviewModelId"/>, e.g. <c>gpt-5.6-luna</c>). When set it overrides
+    /// whatever <c>model:</c> a discovered sub-agent's markdown declares. It must be served by the same
+    /// Copilot backend the daemon uses (a <c>gpt-*</c>/<c>o*</c> id routes through OpenAI Responses, a
+    /// <c>claude-*</c> id through Anthropic Messages) — an unsupported slug is rejected with
+    /// <c>model_not_supported</c>.
+    /// </summary>
+    public string SubAgentModelId { get; init; } = "";
+
+    /// <summary>
+    /// Bigger-context model the <b>primary review loop</b> escalates to when a review attempt fails with a
+    /// context-window overflow (the diff + all fanned-out sub-agent results exceed <see cref="ReviewModelId"/>'s
+    /// window). On overflow the loop retries on a FRESH thread with this model (keeping the tool context), then
+    /// falls back to diff-only on it if it still overflows. Default <c>gpt-5.6-terra</c> (the largest-window
+    /// sibling of <c>gpt-5.6-luna</c>/<c>-sol</c>). Empty ⇒ no model escalation (fall straight back to diff-only
+    /// on <see cref="ReviewModelId"/>). Must be served by the same Copilot backend as the review model.
+    /// </summary>
+    public string OverflowEscalationModelId { get; init; } = "gpt-5.6-terra";
+
+    /// <summary>
+    /// Maximum number of discovered <c>code-reviewer:*</c> sub-agents the review loop may run concurrently
+    /// (maps to the library's <c>SubAgentOptions.MaxConcurrentSubAgents</c>). Once this many are in flight the
+    /// dispatcher blocks with "Max concurrent sub-agents (N) reached" until one completes, so a higher value
+    /// lets a deep review parallelize more of its focused passes — at the cost of more simultaneous model
+    /// calls and gateway load. Defaults to the library default of 5.
+    /// </summary>
+    public int MaxConcurrentSubAgents { get; init; } = 5;
+
+    /// <summary>
+    /// Model id the at-close <b>knowledge-extraction agent</b> runs with (<see cref="EnableKnowledgeAgent"/>) —
+    /// the gated pass that distils a merged PR's review notes into the Knowledge Base. Empty (default) ⇒ the
+    /// extraction loop inherits the primary <see cref="ReviewModelId"/>, exactly as before. Set it to run the
+    /// extraction on a dedicated model — e.g. a stronger writer like <c>claude-opus-4.8</c> — independent of
+    /// the dispatcher. Like the other model knobs it must be served by the daemon's Copilot backend (a
+    /// <c>claude-*</c> id routes through Anthropic Messages, a <c>gpt-*</c>/<c>o*</c> id through OpenAI
+    /// Responses); an unsupported slug — or an empty request model — is rejected with <c>model_not_supported</c>.
+    /// </summary>
+    public string KnowledgeModelId { get; init; } = "";
 
     /// <summary>
     /// Model id for the collect-only A/B comparison (B) variant (<see cref="EnableABVariants"/>). Must be a
@@ -116,6 +170,16 @@ internal sealed class CodeReviewDaemonOptions
     /// scaffolding consumes more of the budget than a single-pass diff review.
     /// </summary>
     public int ReviewMaxTokens { get; init; } = 32000;
+
+    /// <summary>
+    /// Maximum turns the primary review agent's multi-turn loop may take before it is stopped (the per-run
+    /// cap handed to the review loop). The tool-assisted path reads across the checkout, loads skills, and
+    /// dispatches sub-agents, so a large PR can exhaust the library default (50) before the loop ever writes
+    /// its review — yielding an empty review that then posts nothing. Raised so big diffs have the headroom
+    /// to finish. Applies to every loop this daemon's loop factory creates (review, judge, knowledge, and the
+    /// A/B variant arm); the review sub-agents are bounded separately by their own template cap.
+    /// </summary>
+    public int ReviewMaxTurns { get; init; } = 150;
 
     /// <summary>
     /// Reasoning effort for the review agent's adaptive-thinking model (<c>output_config.effort</c>:
@@ -162,6 +226,17 @@ internal sealed class CodeReviewDaemonOptions
     public int MaxPagesPerPoll { get; init; } = 10;
 
     /// <summary>
+    /// When &gt; 0, the poller only reviews PRs whose recency signal falls within this many days: GitHub
+    /// uses the PR's <c>updated_at</c> (true last activity); ADO's PR list has no last-activity field, so it
+    /// uses <c>creationDate</c> and — for PRs opened before the window — the source branch's last-push time
+    /// (the tip commit's date), fetched per-PR so an old-but-recently-pushed PR is still reviewed. A PR the
+    /// provider gives no date for is always kept (never silently skipped). 0 (default) disables the filter —
+    /// every open PR is reviewed. Overridable per run with the <c>--days N</c> / <c>--max-pr-age-days N</c>
+    /// command-line flag, which wins over this value.
+    /// </summary>
+    public int MaxPrAgeDays { get; init; }
+
+    /// <summary>
     /// When <c>false</c> (default) the daemon runs the diff-only review (empty tool registry, no
     /// sub-agents, boot-lifetime sandbox session) exactly as before. Enabling it provisions a per-run
     /// sandbox session, exposes the read-only MCP tools + <c>Skill</c>, and dispatches the
@@ -204,6 +279,27 @@ internal sealed class CodeReviewDaemonOptions
     public IReadOnlyList<string> CrossRepoSiblings { get; init; } = [];
 
     /// <summary>
+    /// The reviewed repo's OWN first-party nested submodule repo names — the <c>_git/&lt;name&gt;</c> (ADO) or
+    /// <c>&lt;name&gt;</c> (GitHub) URL path segments its <c>.gitmodules</c> declares. Each is added to the run's
+    /// submodule allow-list under the same org/owner (+ project, for ADO) as the reviewed repo, so the
+    /// tool-assisted review can initialize and read the target's own dependency graph. Empty (default) ⇒ none.
+    /// <para>
+    /// Unlike <see cref="CrossRepoSiblings"/> (store-level sibling repos co-located for extra cross-repo
+    /// context), these are the <b>target's own</b> dependencies — needed to build and understand it — so they
+    /// are added <b>unconditionally</b> and are NOT gated by
+    /// <c>DaemonReviewStageExecutor.AllowsCrossRepoCoLocation</c>'s fork/public confidentiality check. The
+    /// allow-list stays fail-closed: only the exact names listed here are permitted; a submodule an attacker
+    /// adds — or repoints an existing path to — any other name/host is still denied.
+    /// </para>
+    /// <para>
+    /// Names are matched against the parsed request URL path, which is NOT URL-decoded, so a URL-encoded
+    /// segment must be listed exactly as it appears in the URL (e.g. <c>Microsoft%20Orleans</c>, not
+    /// <c>Microsoft Orleans</c>).
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> ReviewedRepoSubmodules { get; init; } = [];
+
+    /// <summary>
     /// Remote URL of the <c>AchieveAiReviews</c> cross-repo store to check out as the review superproject:
     /// the reviewed repo is a submodule under <c>repos/&lt;RepoName&gt;</c> alongside the shared
     /// <c>Contracts/</c> layer and sibling repos. When a tool-assisted run's reviewed repo is a submodule of
@@ -222,8 +318,32 @@ internal sealed class CodeReviewDaemonOptions
     /// <summary>Host root the review-checkout pool slots live under; defaults beside the binary.</summary>
     public string? ReviewPoolHostRoot { get; init; }
 
+    /// <summary>
+    /// Whether the sandbox gateway roots every workspace at <c>WORKSPACE_BASE_PATH/&lt;app-dir&gt;/&lt;workspace&gt;</c>
+    /// (SandboxedOstoolsMcpServer ADR 0028). When <c>true</c>, the daemon prepares its pooled store — and measures
+    /// slot paths — under <c>&lt;app-dir&gt;</c> (derived from <c>SandboxGateway:AppId</c>) so the app-dir-less
+    /// <c>workspace</c> field it sends re-roots to the prepared store instead of an empty gateway-created dir.
+    /// Default <c>false</c> = pre-ADR-0028 flat behavior, matching a gateway image that predates per-app rooting;
+    /// set <c>true</c> only against a gateway that does the per-app rooting.
+    /// </summary>
+    public bool PerAppWorkspaceRooting { get; init; }
+
     /// <summary>Ephemeral scratch dir name (sibling of the store clone), wiped per lease.</summary>
     public string ScratchDirName { get; init; } = "scratch";
+
+    /// <summary>
+    /// Maximum ContextReady attempts (including the re-clone escalation) before a run is parked with a
+    /// greppable alert instead of retried forever. Retry state is in-memory, so a daemon restart resets it —
+    /// a restart retries parked runs. Default 5.
+    /// </summary>
+    public int MaxContextRetries { get; init; } = 5;
+
+    /// <summary>First retry backoff after a failed run, doubling each attempt up to the cap. Default 30s —
+    /// replaces the old ~30s hot-loop that re-ran a stuck run every poll.</summary>
+    public int RetryBackoffBaseSeconds { get; init; } = 30;
+
+    /// <summary>Ceiling for the exponential retry backoff. Default 900s (15m).</summary>
+    public int RetryBackoffCapSeconds { get; init; } = 900;
 
     /// <summary>When true, the reviewer gets scoped Write/Edit/Bash to take PR notes + do
     /// file-level diffs (code stays read-only; writes scoped to the PR notes dir + scratch).</summary>

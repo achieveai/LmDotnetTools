@@ -175,10 +175,19 @@ export async function uploadFile(
   threadId: string,
   path: string,
   file: File,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  relativePath?: string
 ): Promise<UploadOutcome> {
   const form = new FormData();
   form.append('file', file);
+  // Folder / relative-path uploads carry the file's path (INCLUDING the leaf name); the server writes
+  // it relative to `path` and echoes it back as `name`. Flat uploads omit it (today's behavior).
+  if (relativePath) {
+    form.append('relativePath', relativePath);
+  }
+  // The outcome label: for a folder upload use the relativePath so duplicate basenames in different
+  // directories (e.g. `a/readme.md` vs `b/readme.md`) stay distinguishable in per-file reporting.
+  const label = relativePath ?? file.name;
   const response = await fetch(filesUrl(threadId, path), {
     method: 'POST',
     body: form,
@@ -202,7 +211,34 @@ export async function uploadFile(
       : response.status === 400
         ? code ?? 'invalid_file_name'
         : code ?? `upload_failed_${response.status}`;
-  return { name: file.name, success: false, error };
+  return { name: label, success: false, error };
+}
+
+/**
+ * Creates a directory named `name` inside `parentPath`.
+ * @returns The resolved workspace-relative path of the new directory (`<resolvedParent>/<name>`).
+ * @throws {NoSessionError} on 409 no_session_yet.
+ * @throws {CredentialConflictError} on 409 caller_credential_conflict.
+ * @throws {FileBrowserError} on other non-ok statuses (400 invalid_folder_name/not_a_directory/
+ *   ambiguous_path/invalid_path, 404 not_found, 409 target_busy, 422 create_directory_failed,
+ *   502 gateway_error) — each carrying the server's structured `code`.
+ */
+export async function createDirectory(
+  threadId: string,
+  parentPath: string,
+  name: string,
+  signal?: AbortSignal
+): Promise<{ path: string }> {
+  const response = await fetch(filesUrl(threadId, parentPath, '/directory'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+    signal,
+  });
+  if (response.ok) {
+    return (await response.json()) as { path: string };
+  }
+  throw await classifyFailure(response, 'create directory');
 }
 
 /**

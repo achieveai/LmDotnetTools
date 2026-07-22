@@ -335,8 +335,21 @@ public class SubAgentToolProvider : IFunctionProvider
             ?? throw new ArgumentException(
                 "The 'agent_id' parameter is required.");
 
-        return Task.FromResult<ToolHandlerResult>(
-            ToolHandlerResult.FromText(_manager.Peek(agentId)));
+        // An unknown/stale/mistyped agent id is a MODEL mistake (e.g. polling with the wrong id), not a host
+        // fault — return a helpful tool result listing the valid ids rather than throwing, which would surface
+        // as an "Error executing tool call" and derail the loop.
+        if (!_manager.TryPeek(agentId, out var status))
+        {
+            var known = _manager.KnownAgentIds();
+            var hint = known.Count > 0
+                ? $"No sub-agent with id '{agentId}'. Poll one of the ids the Agent tool returned: "
+                    + $"{string.Join(", ", known)}."
+                : $"No sub-agent with id '{agentId}'. No sub-agents are currently tracked — a synchronous Agent "
+                    + "call returns its result inline (CheckAgent is unnecessary), and any background agents have completed.";
+            return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromError(hint, "unknown_agent"));
+        }
+
+        return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(status));
     }
 
     private static string? GetOptionalString(

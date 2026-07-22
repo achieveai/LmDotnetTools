@@ -22,6 +22,7 @@ internal sealed class PrPollingService : BackgroundService
     private readonly ILogger<PrPollingService> _logger;
     private readonly TimeSpan _pollInterval;
     private readonly Func<CancellationToken, Task>? _sweepAsync;
+    private readonly TimeProvider _timeProvider;
 
     public PrPollingService(
         IEnumerable<PrPollTarget> targets,
@@ -30,7 +31,8 @@ internal sealed class PrPollingService : BackgroundService
         PrOrchestrator orchestrator,
         ILogger<PrPollingService> logger,
         TimeSpan? pollInterval = null,
-        Func<CancellationToken, Task>? sweepAsync = null)
+        Func<CancellationToken, Task>? sweepAsync = null,
+        TimeProvider? timeProvider = null)
     {
         _targets = [.. targets];
         _providers = [.. providers];
@@ -39,6 +41,7 @@ internal sealed class PrPollingService : BackgroundService
         _logger = logger;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(30);
         _sweepAsync = sweepAsync;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -127,17 +130,25 @@ internal sealed class PrPollingService : BackgroundService
         }
 
         var cursorResult = _store.ReadCursor(target.Provider, target.Scope, CursorVersion);
+
+        // The recency-window cutoff, computed once so the provider (which may fetch a per-PR activity
+        // signal for borderline PRs) and the filter below agree on the same instant.
+        var cutoff = target.MaxPrAgeDays > 0
+            ? _timeProvider.GetUtcNow() - TimeSpan.FromDays(target.MaxPrAgeDays)
+            : (DateTimeOffset?)null;
+
         var page = await provider.ListOpenPullRequestsAsync(
             new PrPollRequest
             {
                 Repo = target.Repo,
                 Scope = target.Scope,
                 Cursor = cursorResult.ShouldResync ? null : cursorResult.Cursor,
+                RecencyCutoff = cutoff,
             },
             cancellationToken);
 
         var repoId = _store.EnsureRepo(target.Repo);
-        foreach (var pr in page.PullRequests)
+        foreach (var pr in ApplyRecencyFilter(target, cutoff, page.PullRequests))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -179,5 +190,47 @@ internal sealed class PrPollingService : BackgroundService
         }
 
         _store.SaveCursor(page.NextCursor);
+    }
+
+    /// <summary>
+    /// Applies the operator recency bound (<see cref="PrPollTarget.MaxPrAgeDays"/>): drops PRs whose last
+    /// activity (GitHub <c>updated_at</c>; ADO the source branch's last push, resolved by the provider) or,
+    /// as a fallback, opened date is older than the window. A PR the provider gave no date for is kept — the
+    /// filter never silently drops a PR it can't date. When the bound is off (<paramref name="cutoff"/> is
+    /// null) the full list passes through unchanged. The cursor still advances off the full page, so
+    /// filtering here never strands the poll's high-water mark.
+    /// </summary>
+    private IReadOnlyList<PullRequestDescriptor> ApplyRecencyFilter(
+        PrPollTarget target,
+        DateTimeOffset? cutoff,
+        IReadOnlyList<PullRequestDescriptor> pullRequests)
+    {
+        if (cutoff is null || pullRequests.Count == 0)
+        {
+            return pullRequests;
+        }
+
+        var kept = new List<PullRequestDescriptor>(pullRequests.Count);
+        foreach (var pr in pullRequests)
+        {
+            var activity = pr.UpdatedAt ?? pr.CreatedAt;
+            if (activity is null || activity.Value >= cutoff.Value)
+            {
+                kept.Add(pr);
+            }
+        }
+
+        if (kept.Count < pullRequests.Count)
+        {
+            _logger.LogInformation(
+                "Recency filter ({Days}d) on {Scope}: reviewing {Kept} of {Total} open PR(s); {Skipped} outside the window.",
+                target.MaxPrAgeDays,
+                target.Scope,
+                kept.Count,
+                pullRequests.Count,
+                pullRequests.Count - kept.Count);
+        }
+
+        return kept;
     }
 }

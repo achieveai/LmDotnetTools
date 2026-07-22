@@ -41,6 +41,20 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// inspect the <see cref="FakeMultiTurnAgent.ReceivedInputs"/> the executor sent each one.</summary>
     public List<FakeMultiTurnAgent> CreatedAgents { get; } = [];
 
+    /// <summary>When set, a tool-assisted <see cref="Create"/> (non-null <c>toolContext</c>) returns an agent
+    /// that THROWS this exception instead of scripted text — models the model API rejecting the accumulated
+    /// tool-assisted context (e.g. a context-window 400) so the executor's diff-only degrade is exercised.
+    /// The diff-only path (null <c>toolContext</c>) still returns scripted text.</summary>
+    public Exception? ThrowWhenToolAssisted { get; set; }
+
+    /// <summary>When set, <see cref="ThrowWhenToolAssisted"/> fires ONLY for a tool-assisted <see cref="Create"/>
+    /// whose <c>modelId</c> equals this value — models a smaller model overflowing while the escalation model
+    /// (e.g. gpt-5.6-terra) succeeds. When null it fires for every tool-assisted Create regardless of model.</summary>
+    public string? ThrowOnlyForModel { get; set; }
+
+    /// <summary>Model ids passed to <see cref="Create"/>, in call order (null = the run's configured model).</summary>
+    public List<string?> ModelIds { get; } = [];
+
     public IMultiTurnAgent Create(
         AgentProfile profile,
         string? modelId,
@@ -53,6 +67,15 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         ThreadIds.Add(threadId);
         ReasoningEfforts.Add(reasoningEffort);
         ToolContexts.Add(toolContext);
+        ModelIds.Add(modelId);
+
+        if (toolContext is not null && ThrowWhenToolAssisted is not null
+            && (ThrowOnlyForModel is null || string.Equals(modelId, ThrowOnlyForModel, StringComparison.Ordinal)))
+        {
+            var throwing = FakeMultiTurnAgent.Throwing($"run-{profile.Id}-overflow", ThrowWhenToolAssisted);
+            CreatedAgents.Add(throwing);
+            return throwing;
+        }
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";

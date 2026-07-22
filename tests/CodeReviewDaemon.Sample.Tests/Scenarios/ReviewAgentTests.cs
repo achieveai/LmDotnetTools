@@ -31,7 +31,7 @@ public sealed class ReviewAgentTests : LoggingTestBase
         var agent = new FakeMultiTurnAgent(RunId);
         var sut = Create(agent);
 
-        _ = await sut.ReviewAsync("Review this diff:\n- changed Foo.cs", CancellationToken.None);
+        _ = await sut.ReviewAsync("Review this diff:\n- changed Foo.cs", postEnforcementPrompt: null, CancellationToken.None);
 
         agent.ReceivedInputs.Should().ContainSingle();
         var sent = agent.ReceivedInputs[0].Messages.Should().ContainSingle().Subject;
@@ -53,7 +53,7 @@ public sealed class ReviewAgentTests : LoggingTestBase
             }
         );
 
-        var result = await Create(agent).ReviewAsync("diff", CancellationToken.None);
+        var result = await Create(agent).ReviewAsync("diff", postEnforcementPrompt: null, CancellationToken.None);
 
         result.ReviewText.Should().Be("## Review\nMust: null check missing in Foo.cs:10");
         result.RunId.Should().Be(RunId);
@@ -69,7 +69,7 @@ public sealed class ReviewAgentTests : LoggingTestBase
             new TextMessage { Text = "The review body.", Role = Role.Assistant, RunId = RunId }
         );
 
-        var result = await Create(agent).ReviewAsync("diff", CancellationToken.None);
+        var result = await Create(agent).ReviewAsync("diff", postEnforcementPrompt: null, CancellationToken.None);
 
         result.ReviewText.Should().Be("The review body.");
     }
@@ -83,7 +83,7 @@ public sealed class ReviewAgentTests : LoggingTestBase
             new TextMessage { Text = "Second.", Role = Role.Assistant, RunId = RunId }
         );
 
-        var result = await Create(agent).ReviewAsync("diff", CancellationToken.None);
+        var result = await Create(agent).ReviewAsync("diff", postEnforcementPrompt: null, CancellationToken.None);
 
         result.ReviewText.Should().Be("First.\nSecond.");
     }
@@ -102,7 +102,7 @@ public sealed class ReviewAgentTests : LoggingTestBase
             new TextUpdateMessage { Text = "Approve with comments.", Role = Role.Assistant, GenerationId = "g3" }
         );
 
-        var result = await Create(agent).ReviewAsync("diff", CancellationToken.None);
+        var result = await Create(agent).ReviewAsync("diff", postEnforcementPrompt: null, CancellationToken.None);
 
         result.ReviewText.Should().Be("## Review\nApprove with comments.");
         result.ReviewText.Should().NotContain("Let me check").And.NotContain("Sub-agents returned empty");
@@ -116,7 +116,7 @@ public sealed class ReviewAgentTests : LoggingTestBase
             new TextMessage { Text = "let me think...", Role = Role.Assistant, IsThinking = true }
         );
 
-        var result = await Create(agent).ReviewAsync("diff", CancellationToken.None);
+        var result = await Create(agent).ReviewAsync("diff", postEnforcementPrompt: null, CancellationToken.None);
 
         result.ReviewText.Should().BeEmpty();
         // RunId falls back to the agent's CurrentRunId when no assistant TextMessage carried one.
@@ -131,8 +131,40 @@ public sealed class ReviewAgentTests : LoggingTestBase
     {
         var sut = Create(new FakeMultiTurnAgent(RunId));
 
-        var act = () => sut.ReviewAsync(input!, CancellationToken.None);
+        var act = () => sut.ReviewAsync(input!, postEnforcementPrompt: null, CancellationToken.None);
 
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task ReviewAsync_drives_a_post_enforcement_turn_after_the_review_when_a_prompt_is_supplied()
+    {
+        // The review agent reliably writes the review but often skips POSTING it (observed live). When posting
+        // is authorized the daemon supplies a post-enforcement prompt, and ReviewAgent must drive it as a
+        // SECOND turn on the same conversation so the agent actually posts — while the returned artifact stays
+        // the FIRST turn's review text (the enforcement turn is only for the posting side-effect).
+        var agent = new FakeMultiTurnAgent(
+            RunId,
+            new TextMessage { Text = "the review body", Role = Role.Assistant, RunId = RunId });
+
+        var result = await Create(agent).ReviewAsync("review input", "You have not posted — post it NOW.", CancellationToken.None);
+
+        agent.ReceivedInputs.Should().HaveCount(2, "the review turn, then a post-enforcement turn");
+        agent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text.Should().Be("review input");
+        agent.ReceivedInputs[1].Messages.OfType<TextMessage>().Single().Text.Should().Be("You have not posted — post it NOW.");
+        result.ReviewText.Should().Be("the review body", "the artifact is the review from turn 1, not the enforcement reply");
+    }
+
+    [Fact]
+    public async Task ReviewAsync_does_not_drive_an_enforcement_turn_when_no_prompt_is_supplied()
+    {
+        // Collect-only runs (posting not authorized) pass no enforcement prompt and must send exactly one turn.
+        var agent = new FakeMultiTurnAgent(
+            RunId,
+            new TextMessage { Text = "the review body", Role = Role.Assistant, RunId = RunId });
+
+        _ = await Create(agent).ReviewAsync("review input", postEnforcementPrompt: null, CancellationToken.None);
+
+        agent.ReceivedInputs.Should().ContainSingle("collect-only runs send only the review turn");
     }
 }

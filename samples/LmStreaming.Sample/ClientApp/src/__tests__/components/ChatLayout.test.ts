@@ -135,6 +135,8 @@ vi.mock('@/composables/useChat', async () => {
       markStreamIdle: sharedMocks.markStreamIdle,
       markStreamLoading: sharedMocks.markStreamLoading,
       getResultForToolCall: vi.fn(() => null),
+      // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
+      threadId: ref('thread-1'),
     }),
   };
 });
@@ -182,6 +184,7 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
       focusedAgentId: ref<string | null>(null),
       focusedDisplayItems: ref([]),
       isFocusedStreaming: ref(false),
+      error: ref<string | null>(null),
       startPolling: vi.fn(),
       stopPolling: vi.fn(),
       refreshChildren: vi.fn(async () => {}),
