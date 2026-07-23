@@ -49,6 +49,25 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void ReviewProfile_Prompt_EncodesTheFourReviewRequirements()
+    {
+        // The user's standing rules for how Revobot reviews/posts (see memory
+        // revobot-review-posting-requirements): (1) review the FULL PR; (2/5) judge resolution from each thread's
+        // conversation, not just a status hint; (3) weigh comments from ALL authors (bots + humans); (4) answer a
+        // question directed at the bot; (6) the existing-comments block is split past-vs-new. Rendered with
+        // should_post=true (posting step present).
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        prompt.Should().Contain("FULL PR"); // (1) review the whole PR, not just a sample/delta
+        prompt.Should().MatchRegex("(?i)ALL AUTHORS"); // (3) consider other bots + humans
+        prompt.Should().MatchRegex("(?i)resolved"); // (2/5) resolution judgment, not blind re-post
+        prompt.Should().Contain("[status]"); // (5) status is a HINT — the LLM decides resolution
+        prompt.Should().Contain("New comments since your last review"); // (6) the two-part split
+        prompt.Should().MatchRegex("(?i)ANSWER any question"); // (4) a question aimed at the bot must be answered
+    }
+
+    [Fact]
     public void CreateReviewProfile_grants_no_built_in_tools_and_defers_the_mcp_allow_list()
     {
         var profile = DaemonAgentFactory.CreateReviewProfile();
@@ -167,7 +186,7 @@ public sealed class DaemonAgentFactoryTests
     public void ReviewProfile_Prompt_InstructsSkillSubAgentsAndInjectionSafety()
     {
         // Render with should_post=true so the posting step (step 5) is present; a GitHub run (is_ado unset)
-        // posts inline via the code-reviewer:post-pr-review skill.
+        // reviews via the code-reviewer:pr-review skill and its sub-agents.
         var prompt = DaemonAgentFactory.CreateReviewProfile(
             new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
 
@@ -175,8 +194,25 @@ public sealed class DaemonAgentFactoryTests
         prompt.Should().Contain("Skill"); // via the Skill tool
         prompt.Should().Contain("Contracts/"); // cross-repo reading
         prompt.Should().MatchRegex("(?i)injection|untrusted"); // injection framing
-        prompt.Should().Contain("code-reviewer:post-pr-review"); // the agent posts inline via the post-pr-review skill
         prompt.Should().MatchRegex("(?i)inline"); // findings must be posted inline, not as one summary
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_MandatesOneBatchedGithubReview_AndForbidsPerCommentPosting()
+    {
+        // Regression (empty-review spam, live #215/#219): GitHub posting MUST be ONE batched POST /reviews
+        // carrying all findings in comments[]. The per-comment POST /pulls/{pr}/comments endpoint is forbidden
+        // because GitHub wraps each standalone review comment in its OWN empty-bodied review (N findings → N
+        // empty reviews), and the post-pr-review skill — which posts per-comment — must NOT be used to POST on
+        // GitHub. Rendered with should_post=true and is_ado unset (a GitHub run).
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        prompt.Should().MatchRegex("(?i)EXACTLY ONE review"); // one batched review per run
+        prompt.Should().Contain("FORBIDDEN"); // the per-comment endpoint is called out as forbidden
+        prompt.Should().MatchRegex("(?i)empty.{0,40}review"); // ...because it creates empty reviews
+        prompt.Should().Contain("Do NOT use the code-reviewer:post-pr-review skill to POST"); // no skill posting on GitHub
+        prompt.Should().NotContain("You MAY use the code-reviewer:post-pr-review"); // the old permission is gone
     }
 
     [Fact]

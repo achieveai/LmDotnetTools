@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -1313,27 +1314,128 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return reviewInput;
         }
 
-        var lines = existing
-            .Take(MaxExistingCommentsListed)
-            .Select(c => c.Path is { Length: > 0 }
-                ? $"- {c.Path}:{c.Line ?? "?"} — {c.Body}"
-                : $"- (PR summary) — {c.Body}");
-        var listed = string.Join('\n', lines);
-        var truncated = existing.Count > MaxExistingCommentsListed
-            ? $"\n… and {existing.Count - MaxExistingCommentsListed} more already-posted comment(s) not shown."
-            : string.Empty;
+        // Cutoff for "new since the last review": the most recent comment the review bot itself posted. The
+        // DB has no per-run timestamp, and the bot's own findings are stamped when it last reviewed, so anything
+        // posted after them is discussion added since. Null (bot never commented) ⇒ nothing is "new".
+        var cutoff = existing
+            .Where(IsBotAuthored)
+            .Select(c => c.PublishedAt)
+            .Where(t => t.HasValue)
+            .DefaultIfEmpty(null)
+            .Max();
+
+        // Group comments into threads (a finding + its replies) so the reviewer reads each full conversation and
+        // judges resolution itself. Comments with no thread id stay standalone (the index keeps them distinct).
+        static bool IsNewer(DateTimeOffset? latest, DateTimeOffset? cut) =>
+            cut is not null && latest is not null && latest > cut;
+        var groups = existing
+            .Select((c, i) => (Comment: c, Index: i))
+            .GroupBy(x => x.Comment.ThreadId is { Length: > 0 } t ? $"t:{t}" : $"i:{x.Index}")
+            .Select(g => (Comments: g.Select(x => x.Comment).ToList(), Latest: g.Max(x => x.Comment.PublishedAt)))
+            .ToList();
+        var pastThreads = groups.Where(g => !IsNewer(g.Latest, cutoff)).Select(g => g.Comments).ToList();
+        var newThreads = groups.Where(g => IsNewer(g.Latest, cutoff)).Select(g => g.Comments).ToList();
+        var newComments = newThreads.Sum(t => t.Count);
 
         _logger.LogInformation(
-            "Run {RunId}: prepending {Count} already-posted PR comment(s) for delta-only review.", run.Id, existing.Count);
+            "Run {RunId}: prepending {Count} already-posted PR comment(s) ({New} new since last review) for delta-only review.",
+            run.Id, existing.Count, newComments);
 
-        return "## Already posted on this PR — do NOT repeat these\n\n"
-            + "The comments/reviews below are ALREADY on this PR. Your job on this run is to add only what is NEW:\n"
-            + "- For a finding already covered below, do NOT post a new comment. Reply in-thread ONLY if you have a "
-            + "material update; otherwise leave it.\n"
-            + "- Post a NEW inline comment ONLY for an issue that is not already listed here.\n"
-            + "- If you have NOTHING new to add beyond what is already posted, do NOT submit a new review — make "
-            + "your final review exactly \"No new findings since the last review.\" and post nothing.\n\n"
-            + $"{listed}{truncated}\n\n{reviewInput}";
+        return "## Already posted on this PR — from ALL authors (other bots, humans, and you)\n\n"
+            + "Below is the existing discussion, grouped into threads (a finding plus its replies) and split into "
+            + "what was there during PAST reviews vs. what is NEW since your last review. Each thread shows a "
+            + "[status: …] hint, but YOU decide if it is resolved:\n"
+            + "- Judge for yourself whether a thread is RESOLVED by reading its conversation — a reply saying it was "
+            + "fixed (a commit sha, \"done\", \"handled\") or code that now addresses it means resolved, whatever the "
+            + "status hint says.\n"
+            + "- Do NOT re-post a finding that already exists as an UNRESOLVED thread from ANY author (bot or human); "
+            + "reply in-thread only if you have a material update. A thread you judge RESOLVED may be raised again "
+            + "ONLY if the issue genuinely still persists in the current code.\n"
+            + "- If any thread has a question or request directed at YOU (the review bot), ANSWER it as an in-thread "
+            + "reply — required, not optional. Look hardest in the \"New since your last review\" section.\n"
+            + "- If you have NOTHING new to add and no question directed at you to answer, post NOTHING and make your "
+            + "final review exactly \"No new findings since the last review.\"\n\n"
+            + "### Comments during past reviews\n"
+            + $"{RenderThreads(pastThreads, MaxExistingCommentsListed)}\n\n"
+            + "### New comments since your last review — focus here\n"
+            + $"{RenderThreads(newThreads, MaxExistingCommentsListed)}\n\n"
+            + reviewInput;
+    }
+
+    /// <summary>True when a comment was posted by the review bot itself — its body carries a bot prefix such as
+    /// <c>[Revobot (MCQdb)]</c> or a historical <c>[…bot]</c> name (matched loosely so renames still count).</summary>
+    private bool IsBotAuthored(ExistingReviewComment comment)
+    {
+        var body = comment.Body?.TrimStart() ?? string.Empty;
+        if (body.Length == 0 || body[0] != '[')
+        {
+            return false;
+        }
+
+        var end = body.IndexOf(']');
+        if (end <= 1)
+        {
+            return false;
+        }
+
+        var prefix = body[1..end];
+        return prefix.Contains("bot", StringComparison.OrdinalIgnoreCase)
+            || (_options.BotName is { Length: > 0 } name && prefix.Contains(name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Renders threads as conversations for the "## Already posted" block: one bullet per thread with its
+    /// location + status hint, then an indented line per comment (author, date, body). Bounded by
+    /// <paramref name="maxComments"/> total; the tail is summarized as a count so the section never runs away.
+    /// </summary>
+    private static string RenderThreads(IReadOnlyList<List<ExistingReviewComment>> threads, int maxComments)
+    {
+        if (threads.Count == 0)
+        {
+            return "(none)";
+        }
+
+        var sb = new StringBuilder();
+        var shown = 0;
+        var omitted = 0;
+        foreach (var thread in threads)
+        {
+            if (thread.Count == 0)
+            {
+                continue;
+            }
+
+            if (shown >= maxComments)
+            {
+                omitted += thread.Count;
+                continue;
+            }
+
+            var head = thread[0];
+            var where = head.Path is { Length: > 0 } ? $"{head.Path}:{head.Line ?? "?"}" : "(PR-level)";
+            var status = head.IsActive ? "active" : "resolved";
+            sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
+            foreach (var c in thread)
+            {
+                if (shown >= maxComments)
+                {
+                    omitted++;
+                    continue;
+                }
+
+                var author = c.Author is { Length: > 0 } ? c.Author : "unknown";
+                var when = c.PublishedAt is { } t ? $", {t:yyyy-MM-dd}" : string.Empty;
+                sb.Append("    - (").Append(author).Append(when).Append(") ").Append(c.Body).Append('\n');
+                shown++;
+            }
+        }
+
+        if (omitted > 0)
+        {
+            sb.Append("… and ").Append(omitted).Append(" more comment(s) not shown.\n");
+        }
+
+        return sb.ToString().TrimEnd('\n');
     }
 
     private async Task RunPrimaryReviewAsync(

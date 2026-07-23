@@ -123,6 +123,8 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
         foreach (var thread in document.RootElement.GetProperty("value").EnumerateArray())
         {
             var (path, line) = ThreadLocation(thread);
+            var isActive = ThreadIsActive(thread);
+            var threadId = thread.TryGetProperty("id", out var tid) ? tid.GetRawText() : null;
             if (!thread.TryGetProperty("comments", out var comments) || comments.ValueKind is not JsonValueKind.Array)
             {
                 continue;
@@ -138,11 +140,41 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
                     continue;
                 }
 
-                results.Add(new ExistingReviewComment(path, line, Trim(content), AuthorOf(comment)));
+                results.Add(new ExistingReviewComment(
+                    path, line, Trim(content), AuthorOf(comment), isActive, PublishedAtOf(comment), threadId));
             }
         }
 
         return results;
+    }
+
+    /// <summary>Reads the comment's <c>publishedDate</c> (ISO-8601) — used to order past vs. new comments.</summary>
+    private static DateTimeOffset? PublishedAtOf(JsonElement comment) =>
+        comment.TryGetProperty("publishedDate", out var p) && p.ValueKind is JsonValueKind.String
+            && DateTimeOffset.TryParse(p.GetString(), CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+            ? dt
+            : null;
+
+    /// <summary>
+    /// True when the thread is still OPEN — status <c>active</c> or <c>pending</c> (or absent/unknown, which
+    /// we treat as active so a possibly-open finding is never re-posted). <c>fixed</c>/<c>closed</c>/
+    /// <c>wontFix</c>/<c>byDesign</c> mean the thread was acted on, so a recurring issue there MAY be re-raised.
+    /// ADO returns <c>status</c> as a string; older payloads use the numeric enum (1=active, 6=pending).
+    /// </summary>
+    private static bool ThreadIsActive(JsonElement thread)
+    {
+        if (!thread.TryGetProperty("status", out var s))
+        {
+            return true;
+        }
+
+        return s.ValueKind switch
+        {
+            JsonValueKind.String => s.GetString() is "active" or "pending" or "unknown" or null,
+            JsonValueKind.Number => s.GetInt32() is 1 or 6,
+            _ => true,
+        };
     }
 
     private static (string? Path, string? Line) ThreadLocation(JsonElement thread)

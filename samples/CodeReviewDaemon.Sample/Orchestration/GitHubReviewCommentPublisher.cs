@@ -115,7 +115,9 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
                     continue;
                 }
 
-                results.Add(new ExistingReviewComment(GetString(comment, "path"), LineOf(comment), Trim(body), AuthorOf(comment)));
+                results.Add(new ExistingReviewComment(
+                    GetString(comment, "path"), LineOf(comment), Trim(body), AuthorOf(comment),
+                    IsActive: true, PublishedAt: TimeOf(comment, "created_at"), ThreadId: ThreadIdOf(comment)));
             }
 
             if (count < 100)
@@ -130,7 +132,8 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             var body = GetString(review, "body");
             if (!string.IsNullOrWhiteSpace(body))
             {
-                results.Add(new ExistingReviewComment(null, null, Trim(body), AuthorOf(review)));
+                results.Add(new ExistingReviewComment(
+                    null, null, Trim(body), AuthorOf(review), IsActive: true, PublishedAt: TimeOf(review, "submitted_at")));
             }
         }
 
@@ -166,6 +169,30 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 
     private static string? AuthorOf(JsonElement element) =>
         element.TryGetProperty("user", out var u) && u.ValueKind is JsonValueKind.Object ? GetString(u, "login") : null;
+
+    /// <summary>Reads an ISO-8601 timestamp field (e.g. <c>created_at</c>/<c>submitted_at</c>) — orders past vs. new.</summary>
+    private static DateTimeOffset? TimeOf(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String
+            && DateTimeOffset.TryParse(v.GetString(), CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+            ? dt
+            : null;
+
+    /// <summary>
+    /// The thread a review comment belongs to: its reply-root (<c>in_reply_to_id</c>) if it is a reply,
+    /// otherwise its own <c>id</c> — so a finding and its replies group under one conversation.
+    /// </summary>
+    private static string? ThreadIdOf(JsonElement comment)
+    {
+        if (comment.TryGetProperty("in_reply_to_id", out var r) && r.ValueKind is JsonValueKind.Number)
+        {
+            return r.GetInt64().ToString(CultureInfo.InvariantCulture);
+        }
+
+        return comment.TryGetProperty("id", out var id) && id.ValueKind is JsonValueKind.Number
+            ? id.GetInt64().ToString(CultureInfo.InvariantCulture)
+            : null;
+    }
 
     private static string Trim(string body)
     {

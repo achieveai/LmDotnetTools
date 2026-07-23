@@ -59,5 +59,19 @@ internal sealed record PostedComment(string ProviderResponseId);
 /// A review comment already present on a PR. <see cref="Path"/>/<see cref="Line"/> are set for an inline
 /// finding and null for a PR-level summary/issue comment. <see cref="Body"/> is the (possibly trimmed)
 /// comment text; <see cref="Author"/> is the login/display name that posted it (bot or human).
+/// <see cref="IsActive"/> is true when the comment/thread is still OPEN (unresolved / not acted on) — the
+/// daemon must not re-post a finding that matches an ACTIVE comment, whereas a RESOLVED one may be re-raised
+/// if the issue persists. ADO exposes thread status directly; GitHub's REST list cannot tell resolved from
+/// open for review comments, so those default to active (conservative — never re-post a possibly-open one).
+/// <see cref="PublishedAt"/> is when the comment was posted (used to split "past reviews" from "new since
+/// the last review"); <see cref="ThreadId"/> groups the comments of one thread so the reviewer sees the full
+/// conversation (finding + replies) and can judge for itself whether the thread was resolved.
 /// </summary>
-internal sealed record ExistingReviewComment(string? Path, string? Line, string Body, string? Author);
+internal sealed record ExistingReviewComment(
+    string? Path,
+    string? Line,
+    string Body,
+    string? Author,
+    bool IsActive = true,
+    DateTimeOffset? PublishedAt = null,
+    string? ThreadId = null);

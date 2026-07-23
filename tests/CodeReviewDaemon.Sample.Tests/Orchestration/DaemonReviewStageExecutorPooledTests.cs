@@ -207,10 +207,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // Simulate a PR that already has prior review comments — the daemon fetches them HOST-side (via the
         // provider's IReviewCommentPublisher) and folds them into the review INPUT so the reviewer adds only
         // genuinely NEW findings instead of re-posting a full review every run (the "45 reviews on one PR" bug).
+        // The block must surface each comment's ACTIVE/RESOLVED status and its author (from ANY author — other
+        // bots and humans), and instruct the reviewer to answer questions directed at it.
         fixture.Publisher.ExistingComments.Add(
-            new ExistingReviewComment("src/Foo.cs", "42", "Must — null deref EXISTING-FINDING", "revobot"));
+            new ExistingReviewComment("src/Foo.cs", "42", "Must — null deref EXISTING-FINDING", "revobot", IsActive: true));
         fixture.Publisher.ExistingComments.Add(
-            new ExistingReviewComment(null, null, "Reviewed PR — 1 Must EXISTING-SUMMARY", "revobot"));
+            new ExistingReviewComment("src/Bar.cs", "7", "Should — extract EXISTING-RESOLVED", "alice", IsActive: false));
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
@@ -218,11 +220,52 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Already posted on this PR", "existing comments are prepended as a labelled dedup block");
-        text.Should().Contain("src/Foo.cs:42");
+        text.Should().Contain("from ALL authors", "the reviewer must consider comments from other bots and humans too");
+        text.Should().Contain("Comments during past reviews", "the block is split into past vs new");
+        text.Should().Contain("New comments since your last review", "…so new discussion is called out for focus");
+        text.Should().Contain("src/Foo.cs:42 [status: active]", "an open thread shows its location + status hint");
+        text.Should().Contain("(revobot", "each comment is attributed to its author");
+        text.Should().Contain("src/Bar.cs:7 [status: resolved]", "a resolved thread is tagged resolved");
+        text.Should().Contain("(alice", "a human author is attributed too");
         text.Should().Contain("EXISTING-FINDING");
-        text.Should().Contain("EXISTING-SUMMARY");
+        text.Should().Contain("EXISTING-RESOLVED");
+        text.Should().Contain("ANSWER it as an in-thread reply", "a question directed at the bot must be answered");
         text.Should().Contain(
             "No new findings since the last review", "the reviewer is told to post nothing when there is nothing new");
+    }
+
+    [Fact]
+    public async Task Reviewed_splits_existing_comments_into_past_reviews_and_new_since_last_review()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The cutoff is the bot's most recent finding: a "[…bot…]"-prefixed comment (here "[Revobot] …"). A human
+        // comment posted AFTER it belongs under "New comments since your last review"; the bot's own older finding
+        // belongs under "Comments during past reviews". Different thread ids keep them as separate threads.
+        var botFindingTime = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+        var humanReplyTime = DateTimeOffset.Parse("2026-07-21T09:00:00Z");
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "[Revobot] PAST-BOT-FINDING", "revobot", IsActive: true,
+            PublishedAt: botFindingTime, ThreadId: "th-bot"));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "20", "Alice asks: NEW-HUMAN-QUESTION for the bot?", "alice", IsActive: true,
+            PublishedAt: humanReplyTime, ThreadId: "th-human"));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var pastIdx = text.IndexOf("Comments during past reviews", StringComparison.Ordinal);
+        var newIdx = text.IndexOf("New comments since your last review", StringComparison.Ordinal);
+        var pastFindingIdx = text.IndexOf("PAST-BOT-FINDING", StringComparison.Ordinal);
+        var newQuestionIdx = text.IndexOf("NEW-HUMAN-QUESTION", StringComparison.Ordinal);
+
+        pastIdx.Should().BeGreaterThan(0);
+        newIdx.Should().BeGreaterThan(pastIdx, "the new-comments section comes after the past-reviews section");
+        pastFindingIdx.Should().BeInRange(pastIdx, newIdx, "the bot's older finding sits under past reviews");
+        newQuestionIdx.Should().BeGreaterThan(newIdx, "the later human question sits under new-since-last-review");
     }
 
     [Fact]

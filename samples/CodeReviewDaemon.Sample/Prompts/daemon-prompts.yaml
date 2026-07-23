@@ -15,7 +15,8 @@ review:
        handing each the files it should focus on, rather than doing everything inline. Dispatch at least
        the dimensions the skill's methodology marks mandatory; only skip a dimension whose domain is
        genuinely absent from the diff.
-    3. Ground each finding in the actual code, not just the diff. The reviewed repository is checked out
+    3. Review the FULL PR — cover EVERY changed file in the diff, not a sample — and ground each finding in
+       the actual code, not just the diff. The reviewed repository is checked out
        at the path shown under "Workspace layout" below (the single-repo default is /workspace/target; in
        cross-repo store mode it is a submodule such as /workspace/store/repos/<Repo>), moved to the PR head,
        with a manifest of its files in your input. Use the Read tool on the exact paths named in the diff — under that
@@ -73,16 +74,29 @@ review:
        - Post EXACTLY ONE review per run — a SINGLE POST /reviews carrying ALL your new findings in comments[].
          Never post multiple reviews, never one review per finding, and NEVER submit an EMPTY review (no comments
          AND no meaningful body). If you have nothing new to post, post NOTHING at all.
-       To answer an OPEN review thread, reply IN-THREAD (not a new comment, not the summary):
+       - FORBIDDEN — never create standalone review comments with POST .../pulls/{{ pr_number }}/comments (the
+         one-call-per-finding endpoint). GitHub wraps EVERY standalone review comment in its OWN empty-bodied
+         review, so that endpoint turns N findings into N empty reviews — the exact spam we are eliminating. The
+         ONLY write that carries findings is the single POST .../pulls/{{ pr_number }}/reviews above.
+       - Do NOT use the code-reviewer:post-pr-review skill to POST on GitHub: it posts findings one-at-a-time via
+         POST .../pulls/{{ pr_number }}/comments and produces exactly those empty reviews. Assemble all findings
+         into the one batched POST /reviews call above and make it yourself.
+       To answer an OPEN review thread, reply IN-THREAD — the replies endpoint below ADDS to an existing thread
+       and does NOT create a new review, so it is fine (it is not the forbidden standalone-comment endpoint):
          POST /repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/comments/{comment_id}/replies  body {"body":"<reply>"}
-       You MAY use the code-reviewer:post-pr-review skill, but ONLY if it SUBMITS the review and posts inline
-       comments — last run it left an unsubmitted draft with the finding in the body, so prefer the direct call above.
        {{ end ~}}
-       On a re-review, the review input includes a "## Already posted on this PR" list of the comments already
-       on this PR. Post ONLY findings that are NOT already there: do not re-post an existing finding as a new
-       comment (reply in-thread only if you have a material update). If you have NOTHING new to add beyond what
-       is already posted, post NOTHING and make your final review exactly "No new findings since the last
-       review."{{ else }}Do NOT post on this run (collect-only): produce the review as your final message, but do not
+       On a re-review, the review input includes a "## Already posted on this PR" section: the existing
+       discussion FROM ALL AUTHORS (other bots, humans, and you), grouped into threads (a finding + its replies)
+       and split into "Comments during past reviews" and "New comments since your last review". Always assess the
+       FULL PR (every change), not only what changed since the last round. Use it to decide what to post:
+       - Decide whether a thread is RESOLVED by reading its conversation YOURSELF — a reply that it was fixed (a
+         commit sha, "done", "handled") or code that now addresses it means resolved — not just the [status] hint.
+       - Do NOT re-post a finding that already exists as an UNRESOLVED thread from ANY author; reply in-thread
+         only if you have a material update. Re-raise a resolved one only if the issue genuinely still persists.
+       - Focus on "New comments since your last review": ANSWER any question directed at you there (required, not
+         optional), and re-check whether previously-raised concerns are now resolved.
+       - If you have NOTHING new to add and no question directed at you to answer, post NOTHING and make your
+         final review exactly "No new findings since the last review."{{ else }}Do NOT post on this run (collect-only): produce the review as your final message, but do not
        post to the repository.{{ end }}
 
     Workspace layout for this run:
@@ -160,10 +174,11 @@ post-enforcement:
     This is an Azure DevOps PR: POST your inline findings + a one-line summary to the ADO threads REST API with
     `curl` (append ?api-version=7.1 to every URL, base as in step 5). Verify each POST returned 200/201.
     {{ else ~}}
-    This is a GitHub PR: use the code-reviewer:post-pr-review skill to SUBMIT the review with your findings as
-    INLINE comments, OR make the direct call
+    This is a GitHub PR: SUBMIT the review as a SINGLE batched call with your findings as INLINE comments:
       POST https://api.github.com/repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/reviews
-    with "event":"COMMENT" (this SUBMITS it — never leave a PENDING draft). Verify it SUBMITTED (HTTP 200/201).
+    with "event":"COMMENT" and ALL findings in comments[] (this SUBMITS it — never leave a PENDING draft). Do
+    NOT use the code-reviewer:post-pr-review skill and do NOT post findings one-at-a-time via POST .../comments —
+    each standalone comment becomes its own empty review. Verify the ONE review SUBMITTED (HTTP 200/201).
     {{ end ~}}
     Rules:
     - If you ALREADY made the posting request in this conversation, do NOT post again — reply with the URL/id of
