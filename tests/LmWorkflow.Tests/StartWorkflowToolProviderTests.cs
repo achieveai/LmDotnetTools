@@ -311,4 +311,59 @@ public class StartWorkflowToolProviderTests
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be("invalid_args");
     }
+
+    [Fact]
+    public void StartWorkflowAgent_AdvertisesProviderAndModelParams()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        Tool(provider, "StartWorkflowAgent")
+            .Contract.Parameters!.Select(p => p.Name)
+            .Should()
+            .Contain(["provider", "model"]);
+    }
+
+    [Fact]
+    public async Task StartWorkflowAgent_UnknownProvider_ReturnsInvalidProvider()
+    {
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object),
+            validatePreferredProvider: p => p == "nope" ? "Unknown provider 'nope'." : null
+        );
+        var args = new JsonObject
+        {
+            ["workflowId"] = "p-bad",
+            ["workflow"] = JsonNode.Parse(WorkflowFixtures.MinimalValid),
+            ["mode"] = "async",
+            ["provider"] = "nope",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_provider");
+    }
+
+    [Fact]
+    public async Task StartWorkflowAgent_ProviderAndModel_AreAcceptedAndForwarded()
+    {
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object),
+            validatePreferredProvider: _ => null
+        );
+        var args = new JsonObject
+        {
+            ["workflowId"] = "p-ok",
+            ["workflow"] = JsonNode.Parse(WorkflowFixtures.MinimalValid),
+            ["mode"] = "async",
+            ["provider"] = "test-anthropic",
+            ["model"] = "custom-model",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("started");
+    }
 }

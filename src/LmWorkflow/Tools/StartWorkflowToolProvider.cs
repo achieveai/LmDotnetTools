@@ -40,12 +40,24 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     };
 
     private readonly WorkflowManager _manager;
+    private readonly Func<string, string?>? _validatePreferredProvider;
 
     /// <summary>Creates the provider over <paramref name="manager"/>.</summary>
-    public StartWorkflowToolProvider(WorkflowManager manager)
+    /// <param name="manager">The workflow manager this tool family drives.</param>
+    /// <param name="validatePreferredProvider">
+    ///     Optional validator for a caller-supplied <c>provider</c> argument: returns an error string when the
+    ///     provider is unknown/unavailable, or null when it is acceptable. Keeps this provider-agnostic — the
+    ///     host injects a <c>ProviderRegistry</c>-backed check. Null skips validation (any non-null provider is
+    ///     forwarded and the manager's profile factory decides).
+    /// </param>
+    public StartWorkflowToolProvider(
+        WorkflowManager manager,
+        Func<string, string?>? validatePreferredProvider = null
+    )
     {
         ArgumentNullException.ThrowIfNull(manager);
         _manager = manager;
+        _validatePreferredProvider = validatePreferredProvider;
     }
 
     /// <inheritdoc />
@@ -104,6 +116,24 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                     Name = "mode",
                     Description = "Either \"sync\" (default, blocks for the terminal result) or \"async\".",
                     ParameterType = new JsonSchemaObject { Type = new("string"), Enum = ["sync", "async"] },
+                    IsRequired = false,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "provider",
+                    Description =
+                        "Optional preferred provider id to run this workflow's controller AND its delegate "
+                        + "sub-agents on. Omit to use this conversation's provider.",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
+                    IsRequired = false,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "model",
+                    Description =
+                        "Optional model id for the workflow controller loop. Omit to use the configured "
+                        + "controller model.",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
             ],
@@ -245,10 +275,31 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
 
             var mode = ParseMode(GetOptionalString(root, "mode"));
 
+            var provider = GetOptionalString(root, "provider");
+            var model = GetOptionalString(root, "model");
+
+            // Validate a caller-supplied provider before starting (keeps a bad id from silently falling back).
+            if (!string.IsNullOrWhiteSpace(provider) && _validatePreferredProvider is not null)
+            {
+                var providerError = _validatePreferredProvider(provider);
+                if (!string.IsNullOrEmpty(providerError))
+                {
+                    return ToolHandlerResult.FromError(providerError, "invalid_provider");
+                }
+            }
+
             try
             {
                 var result = await _manager
-                    .StartAsync(workflowId, definition, mode, cancellationToken, context.ToolCallId)
+                    .StartAsync(
+                        workflowId,
+                        definition,
+                        mode,
+                        cancellationToken,
+                        context.ToolCallId,
+                        preferredProvider: provider,
+                        preferredModel: model
+                    )
                     .ConfigureAwait(false);
                 return ToolHandlerResult.FromText(Serialize(result));
             }

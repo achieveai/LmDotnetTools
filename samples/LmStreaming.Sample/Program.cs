@@ -1275,6 +1275,17 @@ try
                         ThreadId = isTestMode ? threadId : null,
                     };
 
+                    // Deterministic mock-workflow testing: enable the workflow tool family for the SCRIPTED
+                    // mock providers (test / test-anthropic) in default mode WITHOUT a sandbox. The workflow
+                    // wiring below is sandbox-independent (it uses subAgentFactory / subAgentOptions / the
+                    // late-bound agent — never sandboxSession), and delegates inherit the conversation's mock
+                    // tools via the transparency snapshot. Scoped strictly to test providers, so a real-provider
+                    // default conversation never gets an unsandboxed WorkflowManager.
+                    if (!workspaceWorkflowEnabled && normalizedProviderId is "test" or "test-anthropic")
+                    {
+                        workspaceWorkflowEnabled = true;
+                    }
+
                     // Wire the StartWorkflowAgent tool family onto the conversation registry (Workspace Agent
                     // mode). Declared before the loop ctor so the launch tools are registered before the
                     // sub-agent snapshot is taken; the completion notifier is late-bound to `agent` (assigned
@@ -1298,27 +1309,34 @@ try
                                 ? configuredCap
                                 : 8;
 
-                        var controllerSubAgentOptions = new SubAgentOptions
+                        // Build the controller delegate options for a given provider — so a StartWorkflowAgent
+                        // run with a preferred provider spawns its delegates on THAT provider (agent factory
+                        // bound to it). The fixed default below uses the conversation's provider.
+                        SubAgentOptions BuildControllerOptions(string providerId)
                         {
-                            Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(subAgentFactory),
-                            MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
-                            // Structural transparency guard: keep the controller's own workflow-state/launch
-                            // tools OUT of the snapshot its delegates inherit, so an inherit-all delegate
-                            // template can never drive/mutate the workflow it is a task of. The transparent
-                            // domain tools are merged in separately via ExternalInheritableTools (below).
-                            NonInheritedToolNames =
-                            [
-                                .. WorkflowToolProvider.AllToolNames,
-                                .. StartWorkflowToolProvider.ToolNames,
-                            ],
-                        };
+                            var opts = new SubAgentOptions
+                            {
+                                Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
+                                    () => agentFactory(providerId)
+                                ),
+                                MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+                                // Structural transparency guard: keep the controller's own workflow-state/launch
+                                // tools OUT of the snapshot its delegates inherit, so an inherit-all delegate
+                                // template can never drive/mutate the workflow it is a task of. The transparent
+                                // domain tools are merged in separately via ExternalInheritableTools (below).
+                                NonInheritedToolNames =
+                                [
+                                    .. WorkflowToolProvider.AllToolNames,
+                                    .. StartWorkflowToolProvider.ToolNames,
+                                ],
+                            };
 
-                        // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
-                        // nested workflow tab survives a page reload (live streaming works regardless).
-                        controllerSubAgentOptions = ApplyDefaultSubAgentStore(
-                            controllerSubAgentOptions,
-                            conversationStore
-                        );
+                            // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
+                            // nested workflow tab survives a page reload (live streaming works regardless).
+                            return ApplyDefaultSubAgentStore(opts, conversationStore);
+                        }
+
+                        var controllerSubAgentOptions = BuildControllerOptions(normalizedProviderId);
 
                         var workflowManager = new WorkflowManager(
                             controllerAgentFactory: subAgentFactory,
@@ -1357,10 +1375,25 @@ try
                             // viewable after the run completes. Non-owning so controller teardown never disposes
                             // the shared store.
                             controllerConversationStore:
-                                new LmStreaming.Sample.Persistence.NonOwningConversationStore(conversationStore)
+                                new LmStreaming.Sample.Persistence.NonOwningConversationStore(conversationStore),
+                            // A StartWorkflowAgent run may pass a preferred provider; build its controller agent
+                            // AND delegate templates on that provider. Validation happens on the tool (below);
+                            // this factory trusts the id. Must be agentFactory-buildable (openai/anthropic/test/
+                            // test-anthropic/discovered Copilot) — CLI providers throw ProviderUnavailableException,
+                            // surfaced as invalid_provider by the validator.
+                            controllerProfileByProvider: providerId => new WorkflowControllerProfile(
+                                () => agentFactory(providerId),
+                                BuildControllerOptions(providerId)
+                            )
                         );
 
-                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(workflowManager));
+                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(
+                            workflowManager,
+                            validatePreferredProvider: p =>
+                                !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
+                                : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
+                                : null
+                        ));
                         ownedResources = [.. ownedResources ?? [], workflowManager];
 
                         // Publish this conversation's WorkflowManager so /subagents + the sub-agent WebSocket

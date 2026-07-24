@@ -1,10 +1,13 @@
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using FluentAssertions;
+using Moq;
 using Xunit;
 using static AchieveAi.LmDotnetTools.LmWorkflow.Tests.StartWorkflowTestHarness;
 
@@ -171,6 +174,131 @@ public class WorkflowManagerRollupTests
         // after the run completes and the controller loop is disposed.
         var messages = await store.LoadMessagesAsync("workflow-wf-view");
         messages.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task StartAsync_WithPreferredProvider_InvokesProfileFactory_AndItsControllerDrivesTheRun()
+    {
+        string? capturedProvider = null;
+        var profileController = ScriptedController(DriveMinimalToTerminal);
+
+        await using var manager = new WorkflowManager(
+            // The fixed default must NOT be used when a preferred provider is supplied: NeverComplete would
+            // hang the run, so a completed result proves the PROFILE's controller drove it.
+            controllerAgentFactory: () => ScriptedController(NeverComplete).Object,
+            controllerSubAgentOptions: EmptyControllerOptions(),
+            controllerProfileByProvider: providerId =>
+            {
+                capturedProvider = providerId;
+                return new WorkflowControllerProfile(() => profileController.Object, EmptyControllerOptions());
+            }
+        );
+
+        var result = await manager.StartAsync(
+            "wf-provider",
+            MinimalDefinition(),
+            WorkflowStartMode.Sync,
+            preferredProvider: "test-anthropic"
+        );
+
+        result.Status.Should().Be("completed");
+        capturedProvider.Should().Be("test-anthropic");
+    }
+
+    [Fact]
+    public async Task StartAsync_WithoutPreferredProvider_UsesTheFixedDefaultFactory()
+    {
+        var factoryInvoked = false;
+        var controller = ScriptedController(DriveMinimalToTerminal);
+
+        await using var manager = new WorkflowManager(
+            controllerAgentFactory: () => controller.Object,
+            controllerSubAgentOptions: EmptyControllerOptions(),
+            controllerProfileByProvider: _ =>
+            {
+                factoryInvoked = true;
+                return new WorkflowControllerProfile(() => controller.Object, EmptyControllerOptions());
+            }
+        );
+
+        var result = await manager.StartAsync("wf-default", MinimalDefinition(), WorkflowStartMode.Sync);
+
+        result.Status.Should().Be("completed");
+        factoryInvoked.Should().BeFalse("no preferred provider was supplied, so the profile factory is not called");
+    }
+
+    [Fact]
+    public async Task StartAsync_WithPreferredModel_FoldsOntoControllerDefaultOptions()
+    {
+        GenerateReplyOptions? capturedOptions = null;
+        var controller = new Mock<IStreamingAgent>();
+        var turn = 0;
+        controller
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, opts, _) => capturedOptions ??= opts
+            )
+            .Returns(() => Task.FromResult(ToAsyncEnumerable([DriveMinimalToTerminal(++turn)])));
+
+        await using var manager = new WorkflowManager(
+            () => controller.Object,
+            EmptyControllerOptions(),
+            controllerDefaultOptions: new GenerateReplyOptions { ModelId = "configured-model" }
+        );
+
+        _ = await manager.StartAsync(
+            "wf-model",
+            MinimalDefinition(),
+            WorkflowStartMode.Sync,
+            preferredModel: "preferred-model"
+        );
+
+        capturedOptions.Should().NotBeNull();
+        capturedOptions!.ModelId.Should().Be("preferred-model");
+    }
+
+    [Fact]
+    public async Task StartAsync_WithProfile_ThatDoesNotExcludeWorkflowTools_ThrowsPerRun()
+    {
+        // The per-run profile's options are built OUTSIDE the ctor, so the structural exclusion is re-asserted
+        // when the run resolves the profile — a profile whose (non-empty) templates could inherit the workflow
+        // tools (no NonInheritedToolNames) must be rejected before the controller loop is built.
+        var unexcludedOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["gp"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "gp",
+                    AgentFactory = () => ScriptedController(DriveMinimalToTerminal).Object,
+                },
+            },
+        };
+
+        await using var manager = new WorkflowManager(
+            controllerAgentFactory: () => ScriptedController(DriveMinimalToTerminal).Object,
+            controllerSubAgentOptions: EmptyControllerOptions(),
+            controllerProfileByProvider: _ => new WorkflowControllerProfile(
+                () => ScriptedController(DriveMinimalToTerminal).Object,
+                unexcludedOptions
+            )
+        );
+
+        var act = async () =>
+            await manager.StartAsync(
+                "wf-bad-profile",
+                MinimalDefinition(),
+                WorkflowStartMode.Sync,
+                preferredProvider: "test"
+            );
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*NonInheritedToolNames*");
     }
 
     /// <summary>Turn 1 reports a provider usage message alongside the routing tool call; turn 2 ends the run.</summary>

@@ -113,6 +113,21 @@ public sealed record WorkflowRunSummary
     public DateTimeOffset? LastActivityUtc { get; init; }
 }
 
+/// <summary>
+///     Everything provider-specific for one workflow run, resolved together so they stay consistent: a
+///     fresh controller <see cref="IStreamingAgent"/> built on the requested provider, and the delegate
+///     <see cref="SubAgentOptions"/> whose templates target that SAME provider. A host that supports a
+///     per-run preferred provider supplies a <c>Func&lt;string, WorkflowControllerProfile&gt;</c> to
+///     <see cref="WorkflowManager"/>; the manager keeps no provider knowledge itself.
+/// </summary>
+/// <param name="ControllerAgentFactory">Builds a fresh controller agent on the requested provider.</param>
+/// <param name="ControllerSubAgentOptions">The delegate options (templates on the same provider); must
+///     still exclude the workflow/launch tools from inheritance — this is re-asserted per run.</param>
+public sealed record WorkflowControllerProfile(
+    Func<IStreamingAgent> ControllerAgentFactory,
+    SubAgentOptions ControllerSubAgentOptions
+);
+
 /// <summary>Thrown when a <c>workflowId</c> is already reserved (in flight or completed but still queryable).</summary>
 public sealed class DuplicateWorkflowException(string workflowId)
     : Exception($"A workflow with id '{workflowId}' already exists. Choose a distinct workflowId.")
@@ -179,6 +194,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly Func<IUsageSink?>? _rootUsageSink;
     private readonly Func<InheritableToolSnapshot?>? _inheritedToolSnapshot;
     private readonly IConversationStore? _controllerConversationStore;
+    private readonly Func<string, WorkflowControllerProfile>? _controllerProfileByProvider;
 
     private readonly WorkflowValidator _validator = new();
     private readonly ConcurrentDictionary<string, WorkflowEntry> _workflows = new(StringComparer.Ordinal);
@@ -240,6 +256,14 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     live-only (streamable during the run, empty afterwards). The host should pass a NON-OWNING wrapper
     ///     over its shared store so controller teardown never disposes it.
     /// </param>
+    /// <param name="controllerProfileByProvider">
+    ///     Optional factory that resolves a <see cref="WorkflowControllerProfile"/> for a preferred provider id
+    ///     passed to <see cref="StartAsync"/>. When a run supplies a preferred provider AND this factory is
+    ///     present, the run's controller agent AND its delegate templates are built from the profile (so both
+    ///     run on the chosen provider); otherwise the fixed <paramref name="controllerAgentFactory"/> /
+    ///     <paramref name="controllerSubAgentOptions"/> (the conversation's provider) are used. The manager
+    ///     stays provider-agnostic — it only invokes this <c>Func&lt;string, ...&gt;</c>.
+    /// </param>
     public WorkflowManager(
         Func<IStreamingAgent> controllerAgentFactory,
         SubAgentOptions controllerSubAgentOptions,
@@ -252,7 +276,8 @@ public sealed class WorkflowManager : IAsyncDisposable
         IJsonSchemaValidator? schemaValidator = null,
         Func<IUsageSink?>? rootUsageSink = null,
         Func<InheritableToolSnapshot?>? inheritedToolSnapshot = null,
-        IConversationStore? controllerConversationStore = null
+        IConversationStore? controllerConversationStore = null,
+        Func<string, WorkflowControllerProfile>? controllerProfileByProvider = null
     )
     {
         ArgumentNullException.ThrowIfNull(controllerAgentFactory);
@@ -274,6 +299,7 @@ public sealed class WorkflowManager : IAsyncDisposable
         _rootUsageSink = rootUsageSink;
         _inheritedToolSnapshot = inheritedToolSnapshot;
         _controllerConversationStore = controllerConversationStore;
+        _controllerProfileByProvider = controllerProfileByProvider;
         _concurrencyGate = new SemaphoreSlim(maxConcurrentWorkflows, maxConcurrentWorkflows);
     }
 
@@ -291,6 +317,15 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     The <c>StartWorkflowAgent</c> tool-call id, so an async run's completion notification can be correlated
     ///     back to the initiating call. Null falls back to <paramref name="workflowId"/>.
     /// </param>
+    /// <param name="preferredProvider">
+    ///     Optional provider id to run this run's controller AND delegates on. Honored only when a
+    ///     <c>controllerProfileByProvider</c> factory was supplied; otherwise ignored and the conversation's
+    ///     provider is used. The manager does not validate it — the caller (tool handler) should.
+    /// </param>
+    /// <param name="preferredModel">
+    ///     Optional model id for the controller loop, folded onto the configured controller defaults
+    ///     (<c>ModelId</c> wins; other defaults preserved). Null keeps the configured controller model.
+    /// </param>
     /// <exception cref="WorkflowValidationException">The definition is invalid.</exception>
     /// <exception cref="DuplicateWorkflowException"><paramref name="workflowId"/> is already reserved.</exception>
     /// <exception cref="WorkflowCapacityException">No concurrency slot freed up within the wait window.</exception>
@@ -300,7 +335,9 @@ public sealed class WorkflowManager : IAsyncDisposable
         WorkflowDefinition definition,
         WorkflowStartMode mode,
         CancellationToken ct = default,
-        string? originatingToolCallId = null
+        string? originatingToolCallId = null,
+        string? preferredProvider = null,
+        string? preferredModel = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
@@ -355,10 +392,34 @@ public sealed class WorkflowManager : IAsyncDisposable
             // late-binding rationale as rootUsageSink above). Threaded onto the controller's
             // SubAgentOptions so the controller's delegate sub-agents inherit those tools
             // transparently; the workflow-state/launch tools stay excluded via NonInheritedToolNames.
+            // Resolve the per-run provider profile when a preferred provider is supplied AND a profile factory
+            // exists; otherwise use the fixed, conversation-default controller agent + delegate options
+            // (unchanged behavior). The profile's controller agent and delegate templates target the same
+            // provider.
+            var profile =
+                !string.IsNullOrWhiteSpace(preferredProvider) && _controllerProfileByProvider is not null
+                    ? _controllerProfileByProvider(preferredProvider)
+                    : null;
+
+            var baseOptions = profile?.ControllerSubAgentOptions ?? _controllerSubAgentOptions;
+            if (profile is not null)
+            {
+                // Per-run templates were built outside the ctor, so re-assert the structural exclusion here
+                // (the ctor only validated the fixed default options).
+                AssertRestrictedControllerTemplates(baseOptions);
+            }
+
+            var controllerAgentFactory = profile?.ControllerAgentFactory ?? _controllerAgentFactory;
+
+            // Fold a per-run model override onto the configured controller defaults (ModelId wins).
+            var runControllerDefaultOptions = string.IsNullOrWhiteSpace(preferredModel)
+                ? _controllerDefaultOptions
+                : (_controllerDefaultOptions ?? new GenerateReplyOptions()) with { ModelId = preferredModel };
+
             var inheritedTools = _inheritedToolSnapshot?.Invoke();
             var controllerSubAgentOptions = inheritedTools is null
-                ? _controllerSubAgentOptions
-                : _controllerSubAgentOptions with { ExternalInheritableTools = inheritedTools };
+                ? baseOptions
+                : baseOptions with { ExternalInheritableTools = inheritedTools };
 
             // Observability: record how many tools this run's delegates will transparently inherit from the
             // launching conversation (content-free — a count, no tool arguments or task text).
@@ -375,7 +436,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                     inputs: null,
                     definition: definition,
                     subAgentOptions: controllerSubAgentOptions,
-                    controllerAgent: _controllerAgentFactory(),
+                    controllerAgent: controllerAgentFactory(),
                     threadId: $"workflow-{workflowId}",
                     store: null,
                     instanceId: workflowId,
@@ -384,7 +445,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                     schemaValidator: _schemaValidator,
                     includeAuthoringTool: false,
                     controllerMaxTurnsPerRun: _controllerMaxTurnsPerRun,
-                    controllerDefaultOptions: _controllerDefaultOptions,
+                    controllerDefaultOptions: runControllerDefaultOptions,
                     usageSink: rootUsageSink,
                     ct: CancellationToken.None
                 )
