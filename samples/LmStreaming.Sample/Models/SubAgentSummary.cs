@@ -11,6 +11,12 @@ public sealed record SubAgentSummary
     /// <summary>Stable id assigned to the sub-agent at spawn time.</summary>
     public required string AgentId { get; init; }
 
+    /// <summary>
+    ///     What kind of child this row represents: <c>subagent</c> (an Agent-tool spawn, the default) or
+    ///     <c>workflow</c> (a StartWorkflowAgent run whose isolated controller loop is surfaced as a tab).
+    /// </summary>
+    public string Kind { get; init; } = "subagent";
+
     /// <summary>Caller-supplied display name, or null when the spawn provided none.</summary>
     public string? Name { get; init; }
 

@@ -72,6 +72,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // and run completion / disposal can await a final flush (#196).
     private UsagePersistenceWriter? _usageWriter;
     private readonly object _usageWriterLock = new();
+
+    // Terminal completeness stamped on the persisted usage aggregate (#196). InProgress while the loop is
+    // live; advanced to Complete on a clean terminal flush, or Partial when the run faulted so some incurred
+    // usage may not have been captured. Guarded by _usageWriterLock; the writer delegate reads it at write
+    // time so the terminal flush persists the terminal state. Merged monotonically by
+    // ConversationUsageProjection.MaxCompleteness, so a stale InProgress write can never regress it.
+    private UsageCompleteness _usageCompleteness = UsageCompleteness.InProgress;
     private volatile bool _isDisposed;
 
     // Set once run-ledger reconciliation has run for this process instance, so RunAsync never
@@ -387,8 +394,64 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         lock (_usageWriterLock)
         {
             return _usageWriter ??= new UsagePersistenceWriter(
-                ct => ConversationUsageProjection.SaveAsync(store, ledger.Snapshot(), ledger.SnapshotRecords(), ct),
-                onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId));
+                    ct => ConversationUsageProjection.SaveAsync(store, ledger.Snapshot(CurrentUsageCompleteness), ledger.SnapshotRecords(), ct),
+                    onError: ex => Logger.LogWarning(ex, "Failed to persist usage snapshot for thread {ThreadId}", ThreadId));
+        }
+    }
+
+    /// <summary>Current terminal-completeness state to stamp on the persisted aggregate (thread-safe read).</summary>
+    private UsageCompleteness CurrentUsageCompleteness
+    {
+        get
+        {
+            lock (_usageWriterLock)
+            {
+                return _usageCompleteness;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Advances the persisted usage completeness. A terminal run outcome (<paramref name="force"/> = true)
+    /// sets it authoritatively — including a fault's Partial, which a later disposal flush must not upgrade.
+    /// A best-effort caller (disposal, <paramref name="force"/> = false) only advances it from the live
+    /// InProgress default, so it can stamp Complete when no run-level outcome was recorded without clobbering
+    /// a run's Partial (#196).
+    /// </summary>
+    private void SetUsageCompleteness(UsageCompleteness completeness, bool force)
+    {
+        lock (_usageWriterLock)
+        {
+            if (force || _usageCompleteness == UsageCompleteness.InProgress)
+            {
+                _usageCompleteness = completeness;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Broadcasts a live conversation-usage frame to the current run's subscribers whenever the folded
+    /// aggregate changes, so the client usage banner reflects sub-agent / workflow descendant spend live
+    /// rather than only after a reload of the persisted aggregate (#196, BUG 1). Wired as the usage ledger's
+    /// aggregate-changed callback. The frame is transient (<see cref="ITransientMessage"/>): never buffered,
+    /// added to history, or persisted — a reconnecting client restores the authoritative figure from the
+    /// persisted aggregate. Best-effort and non-blocking; a publish fault must never fault the usage path.
+    /// </summary>
+    protected void PublishUsageAggregateFrame(ConversationUsageAggregate aggregate)
+    {
+        if (aggregate is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var frame = ConversationUsageMessage.FromAggregate(aggregate, ThreadId);
+            _ = PublishToAllAsync(frame, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Failed to publish live usage frame for thread {ThreadId}", ThreadId);
         }
     }
 
@@ -406,6 +469,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         try
         {
+            // Force a fresh write of the latest snapshot — including the terminal completeness just set —
+            // rather than only draining an already-pending observation. A terminal flush with nothing
+            // pending would otherwise never persist the Complete/Partial state (#196, BUG 2).
+            writer.Schedule();
             var durable = await writer.FlushAsync();
             if (!durable)
             {
@@ -1118,53 +1185,59 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         List<KeyValuePair<string, Channel<IMessage>>> targets;
         lock (_replayLock)
         {
-            // Maintain the in-flight run's replay buffer. A RunAssignmentMessage for a NEW run opens a
-            // fresh buffer; RunCompletedMessage closes it (after which a joining subscriber must NOT
-            // replay it — the client already has completed messages via persisted REST history, so
-            // replaying would duplicate). A same-run injection assignment (WasInjected, same RunId — e.g.
-            // an out-of-band NotifyMessage folded into the active run) must NOT clear the buffer, or a
-            // client reconnecting after the injection would lose the run's earlier deltas. Snapshotting
-            // subscribers under the SAME lock SubscribeAsync uses to register + snapshot the buffer
-            // guarantees this message reaches each subscriber exactly once (replay XOR live).
-            if (message is RunAssignmentMessage ram)
+            // Transient live-only frames (e.g. the conversation usage banner frame) are never buffered: a
+            // reconnecting client restores their state from an authoritative source, and buffering them would
+            // consume the bounded replay buffer and risk evicting the run's real deltas (#196).
+            if (message is not ITransientMessage)
             {
-                var incomingRunId = ram.Assignment?.RunId;
-                if (!_replayRunActive || !string.Equals(incomingRunId, _replayRunId, StringComparison.Ordinal))
+                // Maintain the in-flight run's replay buffer. A RunAssignmentMessage for a NEW run opens a
+                // fresh buffer; RunCompletedMessage closes it (after which a joining subscriber must NOT
+                // replay it — the client already has completed messages via persisted REST history, so
+                // replaying would duplicate). A same-run injection assignment (WasInjected, same RunId — e.g.
+                // an out-of-band NotifyMessage folded into the active run) must NOT clear the buffer, or a
+                // client reconnecting after the injection would lose the run's earlier deltas. Snapshotting
+                // subscribers under the SAME lock SubscribeAsync uses to register + snapshot the buffer
+                // guarantees this message reaches each subscriber exactly once (replay XOR live).
+                if (message is RunAssignmentMessage ram)
                 {
+                    var incomingRunId = ram.Assignment?.RunId;
+                    if (!_replayRunActive || !string.Equals(incomingRunId, _replayRunId, StringComparison.Ordinal))
+                    {
+                        _replayBuffer.Clear();
+                        _replayBufferBytes = 0;
+                        _replayRunActive = true;
+                        _replayBufferTruncated = false;
+                        _replayRunId = incomingRunId;
+                    }
+                }
+
+                if (_replayRunActive)
+                {
+                    if (_replayBuffer.Count < _maxReplayBufferSize && _replayBufferBytes < _maxReplayBufferBytes)
+                    {
+                        _replayBuffer.Add(message);
+                        _replayBufferBytes += EstimateMessageBytes(message);
+                    }
+                    else if (!_replayBufferTruncated)
+                    {
+                        _replayBufferTruncated = true;
+                        Logger.LogWarning(
+                            "In-flight replay buffer hit its cap ({CountCap} messages / {ByteCap} bytes); a client "
+                                + "reconnecting mid-run may miss the earliest deltas of this run (persisted history "
+                                + "still covers its completed messages).",
+                            _maxReplayBufferSize,
+                            _maxReplayBufferBytes);
+                    }
+                }
+
+                if (message is RunCompletedMessage)
+                {
+                    _replayRunActive = false;
+                    // Free the buffered run now that it can no longer be replayed (replay is gated on
+                    // _replayRunActive). A subscriber joining after completion uses persisted history.
                     _replayBuffer.Clear();
                     _replayBufferBytes = 0;
-                    _replayRunActive = true;
-                    _replayBufferTruncated = false;
-                    _replayRunId = incomingRunId;
                 }
-            }
-
-            if (_replayRunActive)
-            {
-                if (_replayBuffer.Count < _maxReplayBufferSize && _replayBufferBytes < _maxReplayBufferBytes)
-                {
-                    _replayBuffer.Add(message);
-                    _replayBufferBytes += EstimateMessageBytes(message);
-                }
-                else if (!_replayBufferTruncated)
-                {
-                    _replayBufferTruncated = true;
-                    Logger.LogWarning(
-                        "In-flight replay buffer hit its cap ({CountCap} messages / {ByteCap} bytes); a client "
-                            + "reconnecting mid-run may miss the earliest deltas of this run (persisted history "
-                            + "still covers its completed messages).",
-                        _maxReplayBufferSize,
-                        _maxReplayBufferBytes);
-                }
-            }
-
-            if (message is RunCompletedMessage)
-            {
-                _replayRunActive = false;
-                // Free the buffered run now that it can no longer be replayed (replay is gated on
-                // _replayRunActive). A subscriber joining after completion uses persisted history.
-                _replayBuffer.Clear();
-                _replayBufferBytes = 0;
             }
 
             targets = [.. _outputSubscribers];
@@ -1330,11 +1403,28 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         try
         {
             await _runTask;
+
+            // Clean terminal exit (loop returned, incl. a deliberate cancellation): every provider call
+            // this loop observed is captured, so the conversation's usage is Complete (#196, BUG 2).
+            SetUsageCompleteness(UsageCompleteness.Complete, force: true);
+        }
+        catch (OperationCanceledException)
+        {
+            // A deliberate stop/dispose surfaced as cancellation — captured usage is durable; still Complete.
+            SetUsageCompleteness(UsageCompleteness.Complete, force: true);
+            throw;
+        }
+        catch
+        {
+            // The run faulted: usage up to the fault is captured, but some incurred usage may be missing.
+            SetUsageCompleteness(UsageCompleteness.Partial, force: true);
+            throw;
         }
         finally
         {
-            // Guarantee the conversation's final usage snapshot is durable before the run returns — a
-            // completed/cancelled run must not leave the latest aggregate only in memory (#196).
+            // Guarantee the conversation's final usage snapshot (and its terminal completeness) is durable
+            // before the run returns — a completed/cancelled run must not leave the latest aggregate only in
+            // memory (#196).
             await FlushUsageAsync();
         }
     }
@@ -1390,6 +1480,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _isDisposed = true;
 
         await StopAsync();
+
+        // Disposal is a terminal boundary: if no run-level outcome stamped completeness (e.g. the loop was
+        // disposed without RunAsync having reached its finally, or only descendant usage was relayed), mark
+        // Complete — but never upgrade a run's Partial. force: false only advances from InProgress (#196).
+        SetUsageCompleteness(UsageCompleteness.Complete, force: false);
 
         // Final durability boundary: flush any usage write scheduled by a late/background descendant that
         // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).

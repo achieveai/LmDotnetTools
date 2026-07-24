@@ -44,6 +44,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
     public SubAgentManager? SubAgentManager { get; }
 
+    /// <summary>
+    ///     This loop's own usage sink (its <c>UsageLedger</c>), or null when usage accounting is disabled.
+    ///     Exposed so a host can fold an out-of-band descendant loop's usage (e.g. an isolated
+    ///     StartWorkflowAgent controller) into THIS conversation's total by handing this sink to that
+    ///     descendant's <c>externalUsageSink</c>.
+    /// </summary>
+    public IUsageSink? UsageSink => UsageLedger;
+
     /// <inheritdoc />
     /// <remarks>
     /// Delegates to <see cref="SubAgents.SubAgentManager.TryDeliverToRunningAsync"/>. A loop with no
@@ -117,6 +125,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional public-pricing resolver for conversation-wide usage accounting (#196). When supplied,
     ///     the usage ledger fills an estimated public cost per model; null still captures token totals.
     /// </param>
+    /// <param name="externalUsageSink">
+    ///     Optional external root sink this loop's usage ledger forwards every record to (#196). When this
+    ///     loop is itself a nested root — e.g. an isolated workflow controller loop — set it to the parent
+    ///     conversation's sink so the loop's own turns AND every descendant (its sub-agents relay into this
+    ///     loop's ledger) fold into the parent's total. Null keeps usage scoped to this loop only.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -133,7 +147,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ILoggerFactory? loggerFactory = null,
         bool persistRunLedger = false,
         TriggerOptions? triggerOptions = null,
-        IPricingResolver? pricingResolver = null)
+        IPricingResolver? pricingResolver = null,
+        IUsageSink? externalUsageSink = null)
         : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger, persistRunLedger: persistRunLedger)
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
@@ -141,8 +156,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         // Conversation-wide usage accounting (#196): one ledger per root conversation, shared below with
         // the SubAgentManager so the primary loop's own usage and every descendant's usage accumulate
-        // into a single root total. Usage is captured in MultiTurnAgentBase.AddToHistory.
-        UsageLedger = new UsageLedger(threadId, pricingResolver);
+        // into a single root total. Usage is captured in MultiTurnAgentBase.AddToHistory. When an external
+        // sink is supplied (a nested-root loop, e.g. a workflow controller), the ledger also forwards each
+        // record there so this whole subtree folds into the parent conversation's total.
+        UsageLedger = new UsageLedger(
+            threadId,
+            pricingResolver,
+            forwardTo: externalUsageSink,
+            onAggregateUpdated: PublishUsageAggregateFrame);
 
         // When sub-agent orchestration is configured, snapshot the current tools
         // and register Agent/CheckAgent tools before building the middleware stack.
@@ -153,7 +174,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // Agent/CheckAgent tools, preventing unbounded recursive delegation.
             var (contracts, handlers) = functionRegistry.Build();
 
-            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflow/
+            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflowAgent/
             // CheckWorkflow/WaitWorkflow) from the snapshot handed to sub-agents. Unlike the
             // Agent-family tools — excluded structurally because they're registered AFTER this
             // snapshot — these are registered on the parent's own registry BEFORE the loop is
@@ -161,7 +182,58 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // sub-agent whose template sets EnabledTools = null. Filtering the snapshot copy does
             // not touch the parent's own tool set (built from the full registry below).
             var inheritableContracts =
-                FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames);
+                FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames)
+                    .ToList();
+
+            // Transparency seam (WorkflowAgent): a nested-root loop — a workflow controller — runs on
+            // its own isolated, workflow-only registry, yet its delegate sub-agents must inherit the
+            // tools of the first non-WorkflowAgent ancestor (the launching conversation). Those
+            // ancestor tools arrive via ExternalInheritableTools and are merged into the snapshot
+            // handed to THIS loop's sub-agents. The loop's OWN advertised tools (built from the full
+            // registry below) are untouched, so the controller surface stays workflow-only. Skip any
+            // name excluded from inheritance or already present, so an external tool can never shadow
+            // a control-plane tool.
+            if (subAgentOptions.ExternalInheritableTools is { } externalTools)
+            {
+                var excluded = subAgentOptions.NonInheritedToolNames is { } names
+                    ? new HashSet<string>(names, StringComparer.Ordinal)
+                    : new HashSet<string>(StringComparer.Ordinal);
+                var present = new HashSet<string>(
+                    inheritableContracts.Select(c => c.Name),
+                    StringComparer.Ordinal);
+                var mergedHandlers = new Dictionary<string, ToolHandler>(handlers);
+                var beforeMerge = inheritableContracts.Count;
+
+                foreach (var contract in externalTools.Contracts)
+                {
+                    if (excluded.Contains(contract.Name)
+                        || present.Contains(contract.Name)
+                        || !externalTools.Handlers.TryGetValue(contract.Name, out var handler))
+                    {
+                        continue;
+                    }
+
+                    inheritableContracts.Add(contract);
+                    mergedHandlers[contract.Name] = handler;
+                    _ = present.Add(contract.Name);
+                }
+
+                handlers = mergedHandlers;
+
+                // Observability (content-free: counts only, no task/prompt text): make the transparency
+                // merge traceable in the logs so "did the delegate inherit the ancestor's tools?" is
+                // answerable from JSONL rather than inferred from the /subagents API.
+                var mergedCount = inheritableContracts.Count - beforeMerge;
+                logger?.LogDebug(
+                    "Merged external inheritable tools into the sub-agent snapshot for {ThreadId}: "
+                        + "offered {OfferedCount}, merged {MergedCount}, skipped {SkippedCount}, "
+                        + "inheritable total {InheritableTotal}.",
+                    threadId,
+                    externalTools.Contracts.Count,
+                    mergedCount,
+                    externalTools.Contracts.Count - mergedCount,
+                    inheritableContracts.Count);
+            }
 
             // Use the caller-supplied source when present (so an outer owner — typically
             // a sandbox session registry — can activate discovered subagents mid-session

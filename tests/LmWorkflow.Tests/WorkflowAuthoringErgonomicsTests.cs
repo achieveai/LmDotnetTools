@@ -29,10 +29,10 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 /// </summary>
 public class WorkflowAuthoringErgonomicsTests
 {
-    // ---- Fix A: SetWorkflow advertises a usable nested schema ----------------------------------
+    // ---- Fix A: SetWorkflow advertises a usable flat-step schema -------------------------------
 
     [Fact]
-    public void SetWorkflow_DefinitionParameter_ExposesNestedNodeAndTaskListSchema()
+    public void SetWorkflow_DefinitionParameter_ExposesTheFlatStepSchema()
     {
         var definition = SetWorkflowDefinitionSchema();
 
@@ -40,19 +40,14 @@ public class WorkflowAuthoringErgonomicsTests
         JsonSchemaObject.GetJsonPrimaryType(definition).Should().Be("object");
         definition.Properties.Should().NotBeNull("the LLM needs a machine-readable field list");
         definition.Properties!.Should().ContainKey("objective");
-        definition.Properties.Should().ContainKey("nodes");
+        definition.Properties.Should().ContainKey("steps");
 
-        // Drill into nodes[].taskList[] — the exact path the model kept guessing wrong.
-        var nodeSchema = definition.Properties!["nodes"].Items;
-        nodeSchema.Should().NotBeNull("nodes must advertise an item schema");
-        nodeSchema!.Properties.Should().NotBeNull();
-        nodeSchema.Properties!.Should().ContainKey("taskList");
-
-        var taskSchema = nodeSchema.Properties!["taskList"].Items;
-        taskSchema.Should().NotBeNull("taskList must advertise its task item schema");
-        taskSchema!.Properties.Should().NotBeNull();
-        taskSchema.Properties!.Should().ContainKey("subagent_type");
-        taskSchema.Properties.Should().ContainKey("promptTemplate");
+        // Drill into steps[] — the flat, uniform step shape (id/kind + kind-specific fields like
+        // agent/prompt), which replaced the internal polymorphic node schema the model kept guessing wrong.
+        var stepSchema = definition.Properties!["steps"].Items;
+        stepSchema.Should().NotBeNull("steps must advertise an item schema");
+        stepSchema!.Properties.Should().NotBeNull();
+        stepSchema.Properties!.Should().ContainKeys("id", "kind", "agent", "prompt");
     }
 
     // ---- Fix C: a misspelled task field is rejected loudly, naming the field -------------------

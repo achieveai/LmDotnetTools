@@ -114,4 +114,31 @@ describe('useConversationTabs', () => {
     expect(api.activeTabId.value).toBe(MAIN_TAB_ID);
     expect(unfocusChild).toHaveBeenCalled();
   });
+
+  it('renders a kind:"workflow" entry as a tab tagged "workflow" (not dropped)', () => {
+    const { api } = harness([
+      child('a1'),
+      child('wf1', { kind: 'workflow', name: 'Nightly report', threadId: 'workflow-wf1' }),
+    ]);
+    const tabs = api.tabs.value;
+    // Both the sub-agent and the workflow appear as tabs alongside main — nothing filters the workflow.
+    expect(tabs.map((t) => t.id)).toEqual([MAIN_TAB_ID, 'a1', 'wf1']);
+    expect(tabs[1]).toMatchObject({ kind: 'subagent', label: 'Agent a1' });
+    expect(tabs[2]).toMatchObject({ kind: 'workflow', label: 'Nightly report' });
+    // A workflow gets a discovery-order hue like any child.
+    expect(tabs[2].color).toBe(AGENT_HUES[1]);
+  });
+
+  it('a missing kind is treated as a sub-agent tab', () => {
+    const { api } = harness([child('a1')]); // child() sets no kind
+    expect(api.tabs.value[1].kind).toBe('subagent');
+  });
+
+  it('selecting a workflow tab focuses it via the same sub-agent transport (focusChild)', async () => {
+    const { api, focusChild } = harness([child('wf1', { kind: 'workflow', threadId: 'workflow-wf1' })]);
+    await api.selectTab('wf1');
+    // Reuses the EXISTING sub-agent focus path keyed by agentId — no workflow-specific transport.
+    expect(focusChild).toHaveBeenCalledWith('wf1');
+    expect(api.activeTabId.value).toBe('wf1');
+  });
 });

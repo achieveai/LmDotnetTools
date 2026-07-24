@@ -11,16 +11,17 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 
 /// <summary>
 ///     Exposes the agent-facing workflow launch tools over a <see cref="WorkflowManager"/>:
-///     <c>StartWorkflow</c> (launch a pre-authored definition, sync or async), <c>CheckWorkflow</c>
-///     (non-blocking status), and <c>WaitWorkflow</c> (block until terminal or timeout). These are the ONLY
-///     workflow tools a normal agent should ever see — the authoring/mutation tools
+///     <c>StartWorkflowAgent</c> (delegate a bounded unit of work to an isolated agent running a
+///     pre-authored workflow, sync or async), <c>CheckWorkflow</c> (non-blocking status), and
+///     <c>WaitWorkflow</c> (block until terminal or timeout). These are the ONLY workflow tools a
+///     normal agent should ever see — the authoring/mutation tools
 ///     (<c>GetWorkflow</c>/<c>SetCurrentNode</c>/<c>SetState</c>/<c>SetNotes</c>, and never
 ///     <c>SetWorkflow</c>) live exclusively inside the controller loop the manager spins up.
 /// </summary>
 public sealed class StartWorkflowToolProvider : IFunctionProvider
 {
     /// <summary>The launch tool name.</summary>
-    public const string StartWorkflowToolName = "StartWorkflow";
+    public const string StartWorkflowToolName = "StartWorkflowAgent";
 
     /// <summary>The non-blocking status tool name.</summary>
     public const string CheckWorkflowToolName = "CheckWorkflow";
@@ -39,12 +40,24 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     };
 
     private readonly WorkflowManager _manager;
+    private readonly Func<string, string?>? _validatePreferredProvider;
 
     /// <summary>Creates the provider over <paramref name="manager"/>.</summary>
-    public StartWorkflowToolProvider(WorkflowManager manager)
+    /// <param name="manager">The workflow manager this tool family drives.</param>
+    /// <param name="validatePreferredProvider">
+    ///     Optional validator for a caller-supplied <c>provider</c> argument: returns an error string when the
+    ///     provider is unknown/unavailable, or null when it is acceptable. Keeps this provider-agnostic — the
+    ///     host injects a <c>ProviderRegistry</c>-backed check. Null skips validation (any non-null provider is
+    ///     forwarded and the manager's profile factory decides).
+    /// </param>
+    public StartWorkflowToolProvider(
+        WorkflowManager manager,
+        Func<string, string?>? validatePreferredProvider = null
+    )
     {
         ArgumentNullException.ThrowIfNull(manager);
         _manager = manager;
+        _validatePreferredProvider = validatePreferredProvider;
     }
 
     /// <inheritdoc />
@@ -67,12 +80,16 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         {
             Name = StartWorkflowToolName,
             Description =
-                "Launch a fully pre-authored workflow definition as a bounded, delegated unit of work, run "
-                + "by an isolated controller agent. By default (mode: sync) this BLOCKS until the workflow "
-                + "reaches a terminal state and returns the terminal result. Set mode: async to return "
-                + "immediately with {workflowId, status:\"started\"}; you'll receive a proactive notification "
-                + "when it finishes, and can poll with CheckWorkflow or block with WaitWorkflow. You supply "
-                + "the complete workflow graph — you cannot author or mutate it once running.",
+                "Run a COMPLETE, already-authored workflow graph as an isolated background job. This is the "
+                + "hand-off step you take AFTER the graph is assembled and validated: if you have the "
+                + "authoring tools (SetWorkflow/GetWorkflow/AddNode/RemoveNode/SetCurrentNode/SetState), "
+                + "build and check the graph with those first, then pass the finished object here to run it "
+                + "independently of this conversation. Prefer mode: async — it returns immediately with "
+                + "{workflowId, status:\"started\"}, you get a proactive notification when it finishes, and "
+                + "you can poll anytime with CheckWorkflow or block for the result with WaitWorkflow. "
+                + "(mode: sync instead BLOCKS this turn until the workflow reaches a terminal state and "
+                + "returns its result.) It runs on its own controller loop, so pass the graph complete; to "
+                + "change it afterward, start a new run with an updated graph.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -88,9 +105,10 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 {
                     Name = "workflow",
                     Description =
-                        "The full, pre-authored workflow definition object (objective + a graph of nodes: "
-                        + "one start, >=1 terminal, and the rest).",
-                    ParameterType = new JsonSchemaObject { Type = new("object") },
+                        "The complete workflow to run, in the flat step DSL: an 'objective' plus a list of "
+                        + "'steps', each with an 'id', a 'kind' (start/agent/parallel/branch/end), and its "
+                        + "kind-specific fields. Author and validate it before starting; follow the provided schema.",
+                    ParameterType = SimpleWorkflowSchema.Workflow(),
                     IsRequired = true,
                 },
                 new FunctionParameterContract
@@ -98,6 +116,24 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                     Name = "mode",
                     Description = "Either \"sync\" (default, blocks for the terminal result) or \"async\".",
                     ParameterType = new JsonSchemaObject { Type = new("string"), Enum = ["sync", "async"] },
+                    IsRequired = false,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "provider",
+                    Description =
+                        "Optional preferred provider id to run this workflow's controller AND its delegate "
+                        + "sub-agents on. Omit to use this conversation's provider.",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
+                    IsRequired = false,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "model",
+                    Description =
+                        "Optional model id for the workflow controller loop. Omit to use the configured "
+                        + "controller model.",
+                    ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
             ],
@@ -118,8 +154,8 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             Name = CheckWorkflowToolName,
             Description =
                 "Check the current status and state snapshot (current node, outputs, notes, and — once "
-                + "terminal — the final result) of a workflow started with StartWorkflow, WITHOUT blocking. "
-                + "Works in either mode and remains available after completion.",
+                + "terminal — the final result) of a workflow started with StartWorkflowAgent, WITHOUT "
+                + "blocking. Works in either mode and remains available after completion.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -146,8 +182,8 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
         {
             Name = WaitWorkflowToolName,
             Description =
-                "Block until a workflow started with StartWorkflow reaches a terminal state, or until the "
-                + "optional timeout elapses, then return the final result (or a timeout signal). A timeout is "
+                "Block until a workflow started with StartWorkflowAgent reaches a terminal state, or until "
+                + "the optional timeout elapses, then return the final result (or a timeout signal). A timeout is "
                 + "non-destructive — the workflow keeps running and can be waited on again. NOTE: unlike the "
                 + "Agent tool's turn-bounded wait, this timeout is open-ended, so a long wait suspends this "
                 + "turn's tool dispatch for its full duration; prefer a bounded timeout, or async + "
@@ -218,9 +254,16 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             WorkflowDefinition definition;
             try
             {
-                // Strict deserialize so a misspelled/invented field is rejected by name rather than silently
-                // dropped — matching SetWorkflow's authoring path.
-                definition = WorkflowJson.DeserializeStrict(workflowElement.GetRawText());
+                // The model authors in the flat SimpleWorkflow DSL (advertised on the tool schema); a legacy
+                // internal-shaped {"nodes":[...]} definition is still accepted (FromToolArgument).
+                definition = SimpleWorkflowTranslator.FromToolArgument(workflowElement);
+            }
+            catch (WorkflowValidationException ex)
+            {
+                return ToolHandlerResult.FromError(
+                    "The workflow definition is invalid: " + string.Join("; ", ex.Errors),
+                    "invalid_workflow"
+                );
             }
             catch (JsonException ex)
             {
@@ -232,10 +275,31 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
 
             var mode = ParseMode(GetOptionalString(root, "mode"));
 
+            var provider = GetOptionalString(root, "provider");
+            var model = GetOptionalString(root, "model");
+
+            // Validate a caller-supplied provider before starting (keeps a bad id from silently falling back).
+            if (!string.IsNullOrWhiteSpace(provider) && _validatePreferredProvider is not null)
+            {
+                var providerError = _validatePreferredProvider(provider);
+                if (!string.IsNullOrEmpty(providerError))
+                {
+                    return ToolHandlerResult.FromError(providerError, "invalid_provider");
+                }
+            }
+
             try
             {
                 var result = await _manager
-                    .StartAsync(workflowId, definition, mode, cancellationToken, context.ToolCallId)
+                    .StartAsync(
+                        workflowId,
+                        definition,
+                        mode,
+                        cancellationToken,
+                        context.ToolCallId,
+                        preferredProvider: provider,
+                        preferredModel: model
+                    )
                     .ConfigureAwait(false);
                 return ToolHandlerResult.FromText(Serialize(result));
             }

@@ -268,6 +268,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "notify";
         }
 
+        if (type == typeof(ConversationUsageMessage))
+        {
+            return "conversation_usage";
+        }
+
         // If not a known type, fallback to name conversion
         var typeName = type.Name;
 
@@ -415,6 +420,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "text_with_citations" => typeof(TextWithCitationsMessage),
             "composite" => typeof(CompositeMessage),
             "notify" => typeof(NotifyMessage),
+            "conversation_usage" => typeof(ConversationUsageMessage),
             _ => null,
         };
     }

@@ -43,3 +43,5 @@ What improved, what became more complex, and what future work this implies.
 ## Index
 
 * [0001 — Route all programmatic sandbox gateway access through the typed SDK](0001-route-gateway-access-through-sandbox-sdk.md)
+* [0002 — WorkflowAgent controller transparency and sub-agent tool inheritance](0002-workflow-controller-transparency.md)
+* [0003 — Per-conversation usage/cost collector shared by every agent](0003-per-conversation-usage-collector.md)

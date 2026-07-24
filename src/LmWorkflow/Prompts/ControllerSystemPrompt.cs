@@ -34,7 +34,9 @@ public static class ControllerSystemPrompt
         - SetNotes(scope, key, value): record a scoped note for later reference.
         - Agent(subagent_type, prompt, name, ...): the shared sub-agent tool. This is how a task is
           actually executed. The runtime correlates the result back to the task by the name argument, so
-          it MUST be set exactly (see the core loop).
+          it MUST be set exactly (see the core loop). Delegates you spawn inherit the launching
+          conversation's tools (e.g. filesystem, source control, web) — so write each task's prompt to
+          instruct the delegate to USE those tools to do real work, not to reason about it abstractly.
 
         NODE TYPES — what to do at each
         - start: the entry point. It has a single next target; route straight to it with SetCurrentNode.

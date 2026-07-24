@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using FluentAssertions;
@@ -25,6 +26,45 @@ public class WorkflowRuntimeTests
     {
         var runtime = LoadedRuntime();
         runtime.AdvanceTo("start", "analyze", null);
+        return runtime;
+    }
+
+    /// <summary>A variant of <see cref="LoadedRuntime"/> with a definition-level <c>onBudgetExhausted</c>
+    /// escape node ("escape") that is reachable ONLY via that field, not via any node's "next" edges.</summary>
+    private static WorkflowRuntime LoadedRuntimeWithBudgetEscape()
+    {
+        var runtime = new WorkflowRuntime();
+        var baseDefinition = WorkflowJson.Deserialize(Phase3Fixtures.LinearBlockingAgent);
+        var withEscape = baseDefinition with
+        {
+            Nodes = [.. baseDefinition.Nodes, new TerminalNode { Id = "escape", Title = "Escape" }],
+            OnBudgetExhausted = "escape",
+        };
+        runtime.LoadDefinition(withEscape);
+        return runtime;
+    }
+
+    /// <summary>A variant of <see cref="LoadedRuntime"/> where "analyze" transitions into a
+    /// <see cref="ConditionalNode"/> ("gate") that falls back to "done", so a previously-existing
+    /// conditional node is available as an <c>AddNode</c> splice target.</summary>
+    private static WorkflowRuntime LoadedRuntimeWithConditionalNode()
+    {
+        var runtime = new WorkflowRuntime();
+        var baseDefinition = WorkflowJson.Deserialize(Phase3Fixtures.LinearBlockingAgent);
+        var analyze = (ProceduralNode)baseDefinition.Nodes.Single(n => n.Id == "analyze");
+        var rewiredAnalyze = analyze with { Next = ["gate"] };
+        var gate = new ConditionalNode
+        {
+            Id = "gate",
+            Title = "Gate",
+            Branches = [],
+            Else = "done",
+        };
+        var withGate = baseDefinition with
+        {
+            Nodes = [.. baseDefinition.Nodes.Where(n => n.Id != "analyze"), rewiredAnalyze, gate],
+        };
+        runtime.LoadDefinition(withGate);
         return runtime;
     }
 
@@ -288,6 +328,196 @@ public class WorkflowRuntimeTests
         unmatched.Should().Contain("unmatched_10"); // oldest retained (boundary)
         unmatched.Should().NotContain("unmatched_9"); // dropped
         unmatched.Should().NotContain("unmatched_0"); // dropped
+    }
+
+    [Fact]
+    public void AddNode_ViaPreviousNodeIdOnly_AppendsToPreviousNextAndSeedsOutputs()
+    {
+        var runtime = LoadedRuntime();
+
+        runtime.AddNode(new TerminalNode { Id = "extra", Title = "Extra" }, previousNodeId: "analyze", nextNodeId: null);
+
+        var analyze = runtime.Definition!.Nodes.Single(n => n.Id == "analyze");
+        analyze.Should().BeOfType<ProceduralNode>().Which.Next.Should().Contain("extra");
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra");
+        runtime.Outputs.Should().ContainKey("extra");
+        runtime.Outputs["extra"].Should().BeOfType<JsonObject>().Which.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddNode_ViaNextNodeIdOnly_ThrowsForUnreachableNewNode()
+    {
+        var runtime = LoadedRuntime();
+
+        // "nextNodeId" alone only wires an OUTGOING edge from the new node; with no "previousNodeId" it
+        // gets no incoming edge, so it can never be reachable from "start".
+        var act = () => runtime.AddNode(
+            new ProceduralNode { Id = "spare", Title = "Spare", Next = [] },
+            previousNodeId: null,
+            nextNodeId: "done");
+
+        act.Should().Throw<WorkflowValidationException>().WithMessage("*unreachable*");
+        runtime.Definition!.Nodes.Should().NotContain(n => n.Id == "spare");
+    }
+
+    [Fact]
+    public void AddNode_ViaBothPreviousAndNextNodeId_WiresIncomingAndOutgoingEdges()
+    {
+        var runtime = LoadedRuntime();
+
+        runtime.AddNode(
+            new ProceduralNode { Id = "extra", Title = "Extra", Next = [] },
+            previousNodeId: "analyze",
+            nextNodeId: "done");
+
+        var analyze = runtime.Definition!.Nodes.Single(n => n.Id == "analyze");
+        analyze.Should().BeOfType<ProceduralNode>().Which.Next.Should().Contain("extra");
+        var extra = runtime.Definition!.Nodes.Single(n => n.Id == "extra");
+        extra.Should().BeOfType<ProceduralNode>().Which.Next.Should().Contain("done");
+    }
+
+    [Fact]
+    public void AddNode_BothPreviousAndNextOmitted_ThrowsInvalidOperationException()
+    {
+        var runtime = LoadedRuntime();
+
+        var act = () =>
+            runtime.AddNode(new TerminalNode { Id = "extra", Title = "Extra" }, previousNodeId: null, nextNodeId: null);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*At least one of*");
+        runtime.Definition!.Nodes.Should().NotContain(n => n.Id == "extra");
+    }
+
+    [Fact]
+    public void AddNode_DuplicateId_ThrowsInvalidOperationException()
+    {
+        var runtime = LoadedRuntime();
+
+        var act = () =>
+            runtime.AddNode(new TerminalNode { Id = "analyze", Title = "Duplicate" }, previousNodeId: "start", nextNodeId: null);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*already exists*");
+    }
+
+    [Fact]
+    public void AddNode_PreviousIsConditionalNode_ThrowsInvalidOperationException()
+    {
+        var runtime = LoadedRuntimeWithConditionalNode();
+
+        var act = () =>
+            runtime.AddNode(new TerminalNode { Id = "extra", Title = "Extra" }, previousNodeId: "gate", nextNodeId: null);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*SetWorkflow*");
+        runtime.Definition!.Nodes.Should().NotContain(n => n.Id == "extra");
+    }
+
+    [Fact]
+    public void RemoveNode_CurrentNode_ThrowsInvalidOperationException()
+    {
+        var runtime = RuntimeAtAnalyze();
+
+        var act = () => runtime.RemoveNode("analyze");
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*currently positioned*");
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "analyze");
+    }
+
+    [Fact]
+    public void RemoveNode_ProceduralNode_NeutersToNoOpPassThrough_PreservingIdAndNext()
+    {
+        var runtime = LoadedRuntime(); // start → analyze(proc, one task, next=[done]) → done; current = start.
+
+        runtime.RemoveNode("analyze");
+
+        // The node is NOT deleted — it stays in the graph, keeps its id and inbound edge (start → analyze),
+        // but loses its task list and just advances along its existing "next".
+        var analyze = runtime.Definition!.Nodes.Single(n => n.Id == "analyze");
+        var proc = analyze.Should().BeOfType<ProceduralNode>().Which;
+        proc.TaskList.Should().BeEmpty();
+        proc.Next.Should().ContainSingle().Which.Should().Be("done");
+    }
+
+    [Fact]
+    public void RemoveNode_TerminalNode_ThrowsInvalidOperationException()
+    {
+        // "escape" is a terminal node reachable only via the definition-level onBudgetExhausted edge.
+        var runtime = LoadedRuntimeWithBudgetEscape();
+
+        var act = () => runtime.RemoveNode("escape");
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*terminal*");
+        runtime.Definition!.Nodes.Single(n => n.Id == "escape").Should().BeOfType<TerminalNode>();
+    }
+
+    [Fact]
+    public void RemoveNode_ConditionalNode_CollapsesToFirstBranch_DefaultsTrue()
+    {
+        // start → gate(conditional: branch → keep, else → other) → keep(proc, next=[other]) → other → done.
+        // "other" is reachable via the kept branch's own chain, so collapsing gate to its FIRST branch
+        // ("keep") and dropping the else does NOT orphan it.
+        const string json = """
+            {
+              "schemaVersion": 1,
+              "objective": "conditional collapse",
+              "nodes": [
+                { "id": "start", "type": "start", "title": "Start", "next": ["gate"] },
+                {
+                  "id": "gate",
+                  "type": "conditional",
+                  "title": "Gate",
+                  "branches": [ { "when": "keep it", "to": "keep" } ],
+                  "else": "other"
+                },
+                { "id": "keep", "type": "procedural", "title": "Keep", "next": ["other"] },
+                { "id": "other", "type": "procedural", "title": "Other", "next": ["done"] },
+                { "id": "done", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(json));
+
+        runtime.RemoveNode("gate");
+
+        // The conditional is now a procedural pass-through whose single "next" is its first branch's target.
+        var gate = runtime.Definition!.Nodes.Single(n => n.Id == "gate");
+        var proc = gate.Should().BeOfType<ProceduralNode>().Which;
+        proc.TaskList.Should().BeEmpty();
+        proc.Next.Should().ContainSingle().Which.Should().Be("keep");
+    }
+
+    [Fact]
+    public void RemoveNode_ConditionalCollapseOrphansElseSubtree_ThrowsValidationException()
+    {
+        // Here "orphan" is reachable ONLY via gate's else; collapsing gate to its first branch ("keep")
+        // drops the else edge, so "orphan" becomes unreachable and the validator rejects the removal.
+        const string json = """
+            {
+              "schemaVersion": 1,
+              "objective": "conditional collapse orphan",
+              "nodes": [
+                { "id": "start", "type": "start", "title": "Start", "next": ["gate"] },
+                {
+                  "id": "gate",
+                  "type": "conditional",
+                  "title": "Gate",
+                  "branches": [ { "when": "keep it", "to": "keep" } ],
+                  "else": "orphan"
+                },
+                { "id": "keep", "type": "procedural", "title": "Keep", "next": ["done"] },
+                { "id": "orphan", "type": "terminal", "title": "Orphan" },
+                { "id": "done", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """;
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(json));
+
+        var act = () => runtime.RemoveNode("gate");
+
+        act.Should().Throw<WorkflowValidationException>().WithMessage("*unreachable*");
+        // Left untouched: gate is still a conditional (the failed candidate was never committed).
+        runtime.Definition!.Nodes.Single(n => n.Id == "gate").Should().BeOfType<ConditionalNode>();
     }
 
     private static string StatusOf(WorkflowRuntime runtime, string unitName) =>

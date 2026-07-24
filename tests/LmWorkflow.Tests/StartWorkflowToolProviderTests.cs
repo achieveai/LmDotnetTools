@@ -52,7 +52,7 @@ public class StartWorkflowToolProviderTests
             .GetFunctions()
             .Select(f => f.Contract.Name)
             .Should()
-            .BeEquivalentTo(["StartWorkflow", "CheckWorkflow", "WaitWorkflow"]);
+            .BeEquivalentTo(["StartWorkflowAgent", "CheckWorkflow", "WaitWorkflow"]);
     }
 
     [Fact]
@@ -64,11 +64,80 @@ public class StartWorkflowToolProviderTests
     }
 
     [Fact]
+    public void StartWorkflowAgent_WorkflowParam_AdvertisesTheFlatStepSchema()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var workflowSchema = Tool(provider, "StartWorkflowAgent")
+            .Contract.Parameters!.Single(p => p.Name == "workflow")
+            .ParameterType;
+
+        // Regression: the param must advertise the flat step DSL (objective + steps[...] with kind-specific
+        // fields), not a bare object and not the internal node union — otherwise the model guesses field
+        // names and the strict translator rejects its graph (the workspace-agent authoring bug).
+        workflowSchema.Properties.Should().NotBeNull();
+        workflowSchema.Properties!.Should().ContainKeys("objective", "steps");
+
+        var stepSchema = workflowSchema.Properties!["steps"].Items;
+        stepSchema.Should().NotBeNull();
+        stepSchema!.Properties!.Should().ContainKeys("id", "kind", "agent", "prompt", "next", "agents", "branches");
+    }
+
+    [Fact]
+    public async Task StartWorkflow_AuthoredInTheFlatDsl_IsAcceptedAndTranslated()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        const string dsl = """
+            { "objective": "trivial", "steps": [
+              { "id": "start", "kind": "start", "next": "done" },
+              { "id": "done", "kind": "end" }
+            ] }
+            """;
+        var args = new JsonObject
+        {
+            ["workflowId"] = "dsl-start",
+            ["workflow"] = JsonNode.Parse(dsl),
+            ["mode"] = "async",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        // The flat DSL translated + validated + started — the path that used to fail on a bare-object schema.
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("started");
+    }
+
+    [Fact]
+    public async Task StartWorkflow_DslMissingAgentFields_ReturnsInvalidWorkflow()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        const string dsl = """
+            { "objective": "x", "steps": [
+              { "id": "start", "kind": "start", "next": "a" },
+              { "id": "a", "kind": "agent", "next": "done" },
+              { "id": "done", "kind": "end" }
+            ] }
+            """;
+        var args = new JsonObject
+        {
+            ["workflowId"] = "dsl-bad",
+            ["workflow"] = JsonNode.Parse(dsl),
+            ["mode"] = "sync",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+    }
+
+    [Fact]
     public async Task StartWorkflow_InvalidDefinition_MapsToInvalidWorkflow()
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
 
-        var result = await Invoke(Tool(provider, "StartWorkflow"), StartArgs("x", InvalidNoTerminal, "sync"));
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("x", InvalidNoTerminal, "sync"));
 
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be("invalid_workflow");
@@ -78,7 +147,7 @@ public class StartWorkflowToolProviderTests
     public async Task StartWorkflow_DuplicateId_MapsToDuplicateWorkflow()
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
 
         var first = await Invoke(start, StartArgs("dup", WorkflowFixtures.MinimalValid, "sync"));
         first.Payload.IsError.Should().BeFalse();
@@ -109,7 +178,7 @@ public class StartWorkflowToolProviderTests
         var provider = new StartWorkflowToolProvider(
             NewManager(() => GatedController(gate).Object, maxConcurrentWorkflows: 1, gateWaitTimeout: TimeSpan.FromMilliseconds(200))
         );
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
 
         // Hold the only slot with a gated async workflow.
         var first = await Invoke(start, StartArgs("cap-1", WorkflowFixtures.MinimalValid, "async"));
@@ -127,7 +196,7 @@ public class StartWorkflowToolProviderTests
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
 
-        var result = await Invoke(Tool(provider, "StartWorkflow"), StartArgs("ok", WorkflowFixtures.MinimalValid, "sync"));
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), StartArgs("ok", WorkflowFixtures.MinimalValid, "sync"));
 
         result.Payload.IsError.Should().BeFalse();
         using var doc = JsonDocument.Parse(result.Payload.Text);
@@ -140,7 +209,7 @@ public class StartWorkflowToolProviderTests
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var provider = new StartWorkflowToolProvider(NewManager(() => GatedController(gate).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
         var check = Tool(provider, "CheckWorkflow");
 
         _ = await Invoke(start, StartArgs("chk", WorkflowFixtures.MinimalValid, "async"));
@@ -188,7 +257,7 @@ public class StartWorkflowToolProviderTests
         // The workflow is already terminal, so WaitWorkflow returns immediately regardless of the timeout —
         // this exercises TryReadTimeout's string/clamp paths through the actual handler.
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
         var wait = Tool(provider, "WaitWorkflow");
 
         _ = await Invoke(start, StartArgs("done", WorkflowFixtures.MinimalValid, "sync"));
@@ -213,7 +282,7 @@ public class StartWorkflowToolProviderTests
     {
         // A present-but-invalid timeout must be rejected, not silently collapsed to an unbounded wait.
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
-        var start = Tool(provider, "StartWorkflow");
+        var start = Tool(provider, "StartWorkflowAgent");
         var wait = Tool(provider, "WaitWorkflow");
 
         _ = await Invoke(start, StartArgs("inv", WorkflowFixtures.MinimalValid, "sync"));
@@ -230,7 +299,7 @@ public class StartWorkflowToolProviderTests
     }
 
     [Theory]
-    [InlineData("StartWorkflow")]
+    [InlineData("StartWorkflowAgent")]
     [InlineData("CheckWorkflow")]
     [InlineData("WaitWorkflow")]
     public async Task Handlers_MalformedJson_ReturnInvalidArgs(string toolName)
@@ -241,5 +310,60 @@ public class StartWorkflowToolProviderTests
 
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be("invalid_args");
+    }
+
+    [Fact]
+    public void StartWorkflowAgent_AdvertisesProviderAndModelParams()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        Tool(provider, "StartWorkflowAgent")
+            .Contract.Parameters!.Select(p => p.Name)
+            .Should()
+            .Contain(["provider", "model"]);
+    }
+
+    [Fact]
+    public async Task StartWorkflowAgent_UnknownProvider_ReturnsInvalidProvider()
+    {
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object),
+            validatePreferredProvider: p => p == "nope" ? "Unknown provider 'nope'." : null
+        );
+        var args = new JsonObject
+        {
+            ["workflowId"] = "p-bad",
+            ["workflow"] = JsonNode.Parse(WorkflowFixtures.MinimalValid),
+            ["mode"] = "async",
+            ["provider"] = "nope",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_provider");
+    }
+
+    [Fact]
+    public async Task StartWorkflowAgent_ProviderAndModel_AreAcceptedAndForwarded()
+    {
+        var provider = new StartWorkflowToolProvider(
+            NewManager(() => ScriptedController(DriveMinimalToTerminal).Object),
+            validatePreferredProvider: _ => null
+        );
+        var args = new JsonObject
+        {
+            ["workflowId"] = "p-ok",
+            ["workflow"] = JsonNode.Parse(WorkflowFixtures.MinimalValid),
+            ["mode"] = "async",
+            ["provider"] = "test-anthropic",
+            ["model"] = "custom-model",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("started");
     }
 }

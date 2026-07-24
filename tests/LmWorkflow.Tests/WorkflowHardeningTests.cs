@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -165,6 +166,248 @@ public class WorkflowHardeningTests
 
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be("invalid_state_write");
+    }
+
+    // ---- FIX: AddNode/RemoveNode tool descriptors + handler error mapping -----------------------
+
+    [Fact]
+    public void AllToolNames_IncludesAddNodeAndRemoveNode()
+    {
+        WorkflowToolProvider.AllToolNames.Should().Contain(["AddNode", "RemoveNode"]);
+    }
+
+    [Fact]
+    public async Task AddNode_MissingNodeParam_ReturnsInvalidArgs()
+    {
+        var args = new JsonObject { ["previousNodeId"] = "s" };
+        var result = await Invoke(Tool(new WorkflowRuntime(), "AddNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_args");
+    }
+
+    [Fact]
+    public async Task AddNode_MalformedNodeObject_ReturnsInvalidWorkflow()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(WorkflowFixtures.MinimalValid));
+
+        // 'kind' is not a recognized field name for a node's type discriminator ('type' is).
+        var args = new JsonObject
+        {
+            ["node"] = JsonNode.Parse("""{ "id": "extra", "kind": "terminal", "title": "Extra" }"""),
+            ["previousNodeId"] = "s",
+        };
+        var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+    }
+
+    [Fact]
+    public async Task AddNode_BothPreviousAndNextOmitted_ReturnsInvalidTransition()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(WorkflowFixtures.MinimalValid));
+
+        var args = new JsonObject
+        {
+            ["node"] = JsonNode.Parse("""{ "id": "extra", "type": "terminal", "title": "Extra" }"""),
+        };
+        var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_transition");
+    }
+
+    [Fact]
+    public async Task AddNode_ValidSplice_ReturnsUpdatedProjection()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(MergeGuardWorkflow));
+
+        // "proc" is a procedural node (>= 1 'next' allowed), unlike a start node (exactly 1 required),
+        // so appending a second outgoing edge here doesn't trip the node-structure validator.
+        var args = new JsonObject
+        {
+            ["node"] = JsonNode.Parse("""{ "id": "extra", "type": "terminal", "title": "Extra" }"""),
+            ["previousNodeId"] = "proc",
+        };
+        var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeFalse();
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra");
+    }
+
+    [Fact]
+    public async Task RemoveNode_MissingNodeIdParam_ReturnsInvalidArgs()
+    {
+        var result = await Invoke(Tool(new WorkflowRuntime(), "RemoveNode"), "{}");
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_args");
+    }
+
+    [Fact]
+    public async Task RemoveNode_TerminalNode_ReturnsInvalidTransition()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(WorkflowFixtures.MinimalValid));
+
+        // "t" is a terminal node — it has no successor to pass through to, so it can't be no-op'd.
+        var args = new JsonObject { ["nodeId"] = "t" };
+        var result = await Invoke(Tool(runtime, "RemoveNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_transition");
+    }
+
+    [Fact]
+    public async Task RemoveNode_ProceduralNode_NoOps_ReturnsUpdatedProjection()
+    {
+        var runtime = new WorkflowRuntime();
+        // start → analyze(proc, one task, next=[done]) → done; analyze declares no onFailure edge, so
+        // neutering it (dropping its tasks) leaves every other node reachable.
+        runtime.LoadDefinition(WorkflowJson.Deserialize(Phase3Fixtures.LinearBlockingAgent));
+
+        var args = new JsonObject { ["nodeId"] = "analyze" };
+        var result = await Invoke(Tool(runtime, "RemoveNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeFalse();
+        var analyze = runtime.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "analyze");
+        analyze.TaskList.Should().BeEmpty();
+        analyze.Next.Should().ContainSingle().Which.Should().Be("done");
+    }
+
+    [Fact]
+    public async Task RemoveNode_ProceduralWhoseOnFailureTargetBecomesOrphan_ReturnsInvalidWorkflow()
+    {
+        var runtime = new WorkflowRuntime();
+        // In MergeGuardWorkflow the terminal "fail" is reachable ONLY via proc.onFailure. Neutering "proc"
+        // drops that edge, so "fail" becomes unreachable and the candidate fails validation.
+        runtime.LoadDefinition(WorkflowJson.Deserialize(MergeGuardWorkflow));
+
+        var args = new JsonObject { ["nodeId"] = "proc" };
+        var result = await Invoke(Tool(runtime, "RemoveNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+    }
+
+    [Fact]
+    public async Task RemoveNode_CurrentNode_ReturnsInvalidTransition()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(WorkflowFixtures.MinimalValid));
+
+        // LoadDefinition positions the controller on the start node ("s").
+        var args = new JsonObject { ["nodeId"] = "s" };
+        var result = await Invoke(Tool(runtime, "RemoveNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_transition");
+    }
+
+    // ---- DSL authoring path (flat SimpleWorkflow) through the tools --------------------------------
+
+    [Fact]
+    public async Task SetWorkflow_AuthoredInTheFlatDsl_LoadsSuccessfully()
+    {
+        var runtime = new WorkflowRuntime();
+        var args = new JsonObject
+        {
+            ["definition"] = JsonNode.Parse(
+                """
+                { "objective": "review", "steps": [
+                  { "id": "start", "kind": "start", "next": "work" },
+                  { "id": "work", "kind": "agent", "agent": "gp", "prompt": "Do it.", "next": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            ),
+        };
+
+        var result = await Invoke(Tool(runtime, "SetWorkflow"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeFalse();
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "start" && n is StartNode);
+        runtime.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "work").TaskList!.Single()
+            .SubagentType.Should()
+            .Be("gp");
+    }
+
+    [Fact]
+    public async Task SetWorkflow_DslMissingAgentFields_ReturnsInvalidWorkflow()
+    {
+        var runtime = new WorkflowRuntime();
+        var args = new JsonObject
+        {
+            ["definition"] = JsonNode.Parse(
+                """
+                { "objective": "x", "steps": [
+                  { "id": "start", "kind": "start", "next": "a" },
+                  { "id": "a", "kind": "agent", "next": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            ),
+        };
+
+        var result = await Invoke(Tool(runtime, "SetWorkflow"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+    }
+
+    [Fact]
+    public async Task AddNode_FlatDslStep_SplicesIn()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(MergeGuardWorkflow));
+
+        var args = new JsonObject
+        {
+            ["node"] = JsonNode.Parse("""{ "id": "extra", "kind": "end" }"""),
+            ["previousNodeId"] = "proc",
+        };
+
+        var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeFalse();
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra" && n is TerminalNode);
+    }
+
+    [Fact]
+    public async Task GetWorkflow_ReadsTheGraphBackAsFlatDslSteps()
+    {
+        var runtime = new WorkflowRuntime();
+        _ = await Invoke(
+            Tool(runtime, "SetWorkflow"),
+            new JsonObject
+            {
+                ["definition"] = JsonNode.Parse(
+                    """
+                    { "objective": "o", "steps": [
+                      { "id": "start", "kind": "start", "next": "work" },
+                      { "id": "work", "kind": "agent", "agent": "gp", "prompt": "Do it.", "saveAs": "out", "next": "done" },
+                      { "id": "done", "kind": "end" }
+                    ] }
+                    """
+                ),
+            }.ToJsonString()
+        );
+
+        var result = await Invoke(Tool(runtime, "GetWorkflow"), "{}");
+
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        var steps = doc.RootElement.GetProperty("workflow").GetProperty("steps");
+        steps.GetArrayLength().Should().Be(3);
+        // The graph reads back in the SAME flat DSL shape (kind/agent/saveAs), not the internal node shape.
+        var work = steps.EnumerateArray().Single(s => s.GetProperty("id").GetString() == "work");
+        work.GetProperty("kind").GetString().Should().Be("agent");
+        work.GetProperty("agent").GetString().Should().Be("gp");
+        work.GetProperty("saveAs").GetString().Should().Be("out");
     }
 
     private static FunctionDescriptor Tool(WorkflowRuntime runtime, string name) =>

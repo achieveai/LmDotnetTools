@@ -84,6 +84,7 @@ const {
   isSending,
   error,
   cumulativeUsage,
+  cumulativeCost,
   pendingMessages,
   pendingAuthRequests,
   dismissAuthRequest,
@@ -108,9 +109,36 @@ async function handleCancel(): Promise<void> {
   await cancelStream();
 }
 
+// Conversation-wide cost for the usage banner (#196). Prefers a provider-reported figure over the public
+// estimate; renders null (no configured rate — e.g. flat-rate Copilot) as nothing rather than a bogus $0.
+const usageCostDisplay = computed(() => {
+  const c = cumulativeCost.value;
+  const micros = c.providerReportedCostMicros ?? c.estimatedCostMicros;
+  if (micros == null) return null;
+  const amount = (micros / 1_000_000).toFixed(4);
+  const prefix = c.currency === 'USD' ? '$' : `${c.currency} `;
+  const label = c.providerReportedCostMicros != null ? 'Cost' : 'Est. cost';
+  return `${label}: ${prefix}${amount}`;
+});
+
+// A freshly-created thread (New Chat / handleNewChat) gets `chatThreadId` immediately, well before
+// any message is sent — the backend's agent pool has no entry for it yet, so polling /subagents would
+// 404-spam. Gate the sub-agent poll on the conversation having actually STARTED: it has rendered items
+// (a message was sent or an existing conversation was loaded) OR it already has a sidebar entry. A
+// fresh, empty New Chat matches neither, so the poll stays idle until the first message; every started
+// conversation (including the E2E's scripted send) opens the gate so its sub-agent tabs surface.
+const subAgentParentThreadId = computed(() =>
+  chatThreadId.value &&
+  (displayItems.value.length > 0 ||
+    conversations.value.some((c) => c.threadId === chatThreadId.value))
+    ? chatThreadId.value
+    : null
+);
+
 // Sub-agent panel state is hoisted HERE (it used to live inside SubAgentListPanel) so the center-pane
 // tabs and the right-side launcher share ONE instance/poller/socket. The tab selector/router drives
-// which conversation the center pane shows.
+// which conversation the center pane shows. It is bound to subAgentParentThreadId (not the raw
+// chatThreadId) so listSubAgents is never polled before the conversation has actually started.
 const {
   children: subAgentChildren,
   focusedAgentId,
@@ -122,7 +150,7 @@ const {
   unfocusChild,
   sendToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
-} = useSubAgentPanel(() => chatThreadId.value);
+} = useSubAgentPanel(() => subAgentParentThreadId.value);
 
 const { activeTabId, tabs, selectTab, getAgentColor } = useConversationTabs({
   children: subAgentChildren,
@@ -655,7 +683,12 @@ onBeforeUnmount(() => {
             {{ error }}
           </div>
 
-          <div v-if="cumulativeUsage.totalTokens > 0" class="usage-banner" data-testid="usage-banner">
+          <div
+            v-if="cumulativeUsage.totalTokens > 0"
+            class="usage-banner"
+            data-testid="usage-banner"
+            title="Total sums per-call input tokens, so the cached prompt prefix is re-counted every turn; it already includes usage spent inside sub-agents and workflow tasks. In = fresh (uncached) input this conversation."
+          >
             Total: {{ cumulativeUsage.totalTokens }} |
             In: {{ cumulativeUsage.uncachedInputTokens }} |
             Out: {{ cumulativeUsage.completionTokens }}
@@ -664,6 +697,9 @@ onBeforeUnmount(() => {
             </template>
             <template v-if="cumulativeUsage.cacheCreationTokens > 0">
               | Cache created: {{ cumulativeUsage.cacheCreationTokens }}
+            </template>
+            <template v-if="usageCostDisplay">
+              | {{ usageCostDisplay }}
             </template>
           </div>
 

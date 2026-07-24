@@ -603,6 +603,24 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       // spinner and (when budget remained) started the one-shot auto-resume, so just bail without
       // double-resuming.
       if (socketClosedDuringFocus || connection.socket.readyState !== WebSocket.OPEN) {
+        // Exception: a COMPLETED read-only child (e.g. a workflow delegate whose controller loop was
+        // released, so the live stream reports subagent_unavailable) has no socket to adopt, but its
+        // transcript still lives in the store. Render that persisted history read-only instead of
+        // leaving the tab blank + a scary "unavailable" banner. Scoped to the terminal-error case
+        // (terminalErrorSeen ⇒ no auto-resume is pending to render it later) with actual history.
+        if (terminalErrorSeen && persisted.length > 0) {
+          for (const pm of persisted) {
+            rehydratePersisted(pm);
+          }
+          attachPersistedToolResults();
+          rebuildFocusedDisplayItems();
+          error.value = null;
+          log.debug('focusChild: rendered completed child from persisted history (no live socket)', {
+            agentId,
+            count: persisted.length,
+          });
+          return;
+        }
         log.debug('focusChild: socket closed during history load; not adopting dead connection', { agentId });
         return;
       }

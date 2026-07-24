@@ -16,10 +16,12 @@ vi.mock('@/api/wsClient', () => ({
 
 const conversationsMocks = vi.hoisted(() => ({
   loadConversationMessages: vi.fn(),
+  getConversationUsage: vi.fn(),
 }));
 
 vi.mock('@/api/conversationsApi', () => ({
   loadConversationMessages: conversationsMocks.loadConversationMessages,
+  getConversationUsage: conversationsMocks.getConversationUsage,
 }));
 
 describe('isTestInstruction', () => {
@@ -774,5 +776,182 @@ describe('useChat concurrent tool-call grouping', () => {
       (pills[0] as { items: unknown[] }).items,
       'two single-call ToolsCallMessages with distinct ids must not collide'
     ).toHaveLength(2);
+  });
+});
+
+describe('useChat usage banner (#196)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    conversationsMocks.getConversationUsage.mockReset();
+
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => ({
+      socket: { readyState: WebSocket.OPEN },
+      connectionId: `ws-${Date.now()}`,
+      threadId: options.threadId,
+      isConnected: true,
+    }));
+  });
+
+  function aggregate(totalTokens: number) {
+    return {
+      rootConversationId: 't1',
+      schemaVersion: 1,
+      foldedRevision: 9,
+      completeness: 'Complete',
+      perModel: [
+        {
+          modelId: 'm',
+          inputTokens: 1000,
+          outputTokens: 140,
+          cacheReadTokens: 100,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 1140,
+          attemptCount: 5,
+        },
+      ],
+      totalTokens,
+      currency: 'USD',
+    };
+  }
+
+  it('SETs the banner to the folded conversation total from a live usage frame (subtree visible live)', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('hi');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    // The main turn's own usage arrives as a UsageMessage and accumulates.
+    options.onMessage({
+      $type: MessageType.Usage,
+      role: 'assistant',
+      usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
+      generationId: 'gen-1',
+    });
+    expect(chat.cumulativeUsage.value.totalTokens).toBe(140);
+
+    // A folded frame carrying sub-agent / workflow descendant spend SETs the banner (not +=): if it
+    // accumulated, the total would be 140 + 1140 = 1280. The whole point is that descendant spend the main
+    // stream never carried as UsageMessages now shows live.
+    options.onMessage({
+      $type: MessageType.ConversationUsage,
+      role: 'assistant',
+      threadId: 't1',
+      totalTokens: 1140,
+      promptTokens: 1000,
+      uncachedInputTokens: 900,
+      completionTokens: 140,
+      cachedTokens: 100,
+      cacheCreationTokens: 0,
+      completeness: 'InProgress',
+    });
+
+    expect(chat.cumulativeUsage.value.totalTokens).toBe(1140);
+    expect(chat.cumulativeUsage.value.uncachedInputTokens).toBe(900);
+    expect(chat.cumulativeUsage.value.completionTokens).toBe(140);
+    expect(chat.cumulativeUsage.value.cachedTokens).toBe(100);
+  });
+
+  it('surfaces cost from a frame when a rate is known, and stays null (unavailable) otherwise', async () => {
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('hi');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    // No cost on the frame (e.g. flat-rate Copilot, no configured rate) → banner cost stays null.
+    options.onMessage({
+      $type: MessageType.ConversationUsage,
+      role: 'assistant',
+      threadId: 't1',
+      totalTokens: 140,
+      promptTokens: 100,
+      uncachedInputTokens: 100,
+      completionTokens: 40,
+      cachedTokens: 0,
+      cacheCreationTokens: 0,
+      completeness: 'InProgress',
+    });
+    expect(chat.cumulativeCost.value.estimatedCostMicros).toBeNull();
+
+    // A later frame carrying an estimated cost (a model WITH a configured rate) surfaces it.
+    options.onMessage({
+      $type: MessageType.ConversationUsage,
+      role: 'assistant',
+      threadId: 't1',
+      totalTokens: 240,
+      promptTokens: 200,
+      uncachedInputTokens: 200,
+      completionTokens: 40,
+      cachedTokens: 0,
+      cacheCreationTokens: 0,
+      completeness: 'InProgress',
+      estimatedCostMicros: 4567,
+      currency: 'USD',
+    });
+    expect(chat.cumulativeCost.value.estimatedCostMicros).toBe(4567);
+    expect(chat.cumulativeCost.value.currency).toBe('USD');
+  });
+
+  it('reconciles the banner upward from the persisted aggregate on run completion', async () => {
+    conversationsMocks.getConversationUsage.mockResolvedValue(aggregate(1140));
+
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('hi');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    // Banner starts low — only the main turn's own usage was seen live (a dropped frame case).
+    options.onMessage({
+      $type: MessageType.Usage,
+      role: 'assistant',
+      usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
+      generationId: 'gen-1',
+    });
+    expect(chat.cumulativeUsage.value.totalTokens).toBe(140);
+
+    options.onMessage({
+      $type: MessageType.RunCompleted,
+      role: 'assistant',
+      completedRunId: 'run-1',
+      isError: false,
+    });
+
+    await vi.waitFor(() => expect(chat.cumulativeUsage.value.totalTokens).toBe(1140));
+    expect(conversationsMocks.getConversationUsage).toHaveBeenCalled();
+    expect(chat.cumulativeUsage.value.completionTokens).toBe(140);
+  });
+
+  it('does not downgrade a fresher live banner when the persisted read is stale', async () => {
+    // Persisted aggregate lags the live frames (fire-and-forget write still in flight).
+    conversationsMocks.getConversationUsage.mockResolvedValue(aggregate(500));
+
+    const chat = useChat({ getModeId: () => 'default' });
+    await chat.sendMessage('hi');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    options.onMessage({
+      $type: MessageType.ConversationUsage,
+      role: 'assistant',
+      threadId: 't1',
+      totalTokens: 1140,
+      promptTokens: 1000,
+      uncachedInputTokens: 900,
+      completionTokens: 140,
+      cachedTokens: 100,
+      cacheCreationTokens: 0,
+      completeness: 'InProgress',
+    });
+    expect(chat.cumulativeUsage.value.totalTokens).toBe(1140);
+
+    options.onMessage({
+      $type: MessageType.RunCompleted,
+      role: 'assistant',
+      completedRunId: 'run-1',
+      isError: false,
+    });
+
+    // Let the fire-and-forget reconcile run; the monotonic guard must keep the fresher live figure.
+    await vi.waitFor(() => expect(conversationsMocks.getConversationUsage).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(chat.cumulativeUsage.value.totalTokens).toBe(1140);
   });
 });

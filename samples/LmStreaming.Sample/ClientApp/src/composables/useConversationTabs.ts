@@ -5,14 +5,14 @@ import { hueForIndex, type AgentColorLookup } from '@/utils/agentColors';
 /** The id of the always-present top-level tab. */
 export const MAIN_TAB_ID = 'main';
 
-/** One entry in the center-pane tab strip: the `main` conversation or a sub-agent. */
+/** One entry in the center-pane tab strip: the `main` conversation, a sub-agent, or a workflow run. */
 export interface ConversationTab {
-  /** `'main'` for the top-level agent, else the sub-agent's `agentId`. */
+  /** `'main'` for the top-level agent, else the sub-agent's / workflow's `agentId`. */
   id: string;
-  /** Display label: `'main'`, or the sub-agent's `name || template`. */
+  /** Display label: `'main'`, or the child's `name || template`. */
   label: string;
-  kind: 'main' | 'subagent';
-  /** Assigned hue for a sub-agent, or null for the neutral `main` tab. */
+  kind: 'main' | 'subagent' | 'workflow';
+  /** Assigned hue for a sub-agent/workflow, or null for the neutral `main` tab. */
   color: string | null;
   status?: SubAgentStatus;
 }
@@ -87,10 +87,13 @@ export function useConversationTabs(deps: ConversationTabsDeps) {
       { id: MAIN_TAB_ID, label: 'main', kind: 'main', color: null },
     ];
     for (const child of children.value) {
+      // Workflow runs arrive in the SAME children list as sub-agents (kind: 'workflow'); surface them
+      // as tabs identically, only tagging the kind so the strip can badge them distinctly. A missing
+      // kind (older server) is treated as a plain sub-agent.
       list.push({
         id: child.agentId,
         label: child.name || child.template,
-        kind: 'subagent',
+        kind: child.kind === 'workflow' ? 'workflow' : 'subagent',
         color: getAgentColor(child.agentId),
         status: child.status,
       });

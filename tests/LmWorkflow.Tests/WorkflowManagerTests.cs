@@ -68,7 +68,7 @@ public class WorkflowManagerTests
         var notify = await notified.Task.WaitAsync(Timeout);
         notify.NotifyKind.Should().Be(NotifyKinds.WorkflowCompletion);
         notify.SourceToolCallId.Should().Be("wf-async");
-        notify.SourceToolName.Should().Be("StartWorkflow");
+        notify.SourceToolName.Should().Be("StartWorkflowAgent");
     }
 
     [Fact]
@@ -312,7 +312,7 @@ public class WorkflowManagerTests
         _ = await manager.StartAsync("wf-corr", MinimalDefinition(), WorkflowStartMode.Async, default, "toolcall-123");
 
         var notify = await notified.Task.WaitAsync(Timeout);
-        // Correlated to the originating StartWorkflow tool call, not the workflowId.
+        // Correlated to the originating StartWorkflowAgent tool call, not the workflowId.
         notify.SourceToolCallId.Should().Be("toolcall-123");
         notify.Label.Should().Be("wf-corr");
     }

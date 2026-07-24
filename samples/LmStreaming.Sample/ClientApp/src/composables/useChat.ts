@@ -29,9 +29,11 @@ import {
   isServerToolResultMessage,
   isTextWithCitationsMessage,
   isNotifyMessage,
+  isConversationUsageMessage,
   normalizeReasoningVisibility,
 } from '@/types';
 import { sendChatMessage } from '@/api/chatClient';
+import type { ConversationUsageAggregate } from '@/api/conversationsApi';
 import { useMessageMerger } from './useMessageMerger';
 import { getMergeKey } from './messageMergeKey';
 import { buildDisplayItems } from './messageDisplay';
@@ -146,9 +148,65 @@ export function useChat(options: UseChatOptions = {}) {
     cachedTokens: 0,
     cacheCreationTokens: 0,
   });
+  // Conversation-wide cost (#196), kept separate from the token tuple so the token-accumulation path stays
+  // untouched. Populated only from authoritative folded sources (the live usage frame / the persisted
+  // aggregate); null when no contributing model had a known rate (rendered as "unavailable", never $0).
+  const cumulativeCost = ref<{
+    estimatedCostMicros: number | null;
+    providerReportedCostMicros: number | null;
+    currency: string;
+  }>({ estimatedCostMicros: null, providerReportedCostMicros: null, currency: 'USD' });
   const transport = ref<TransportType>(initialTransport);
   const threadId = ref<string | null>(null);
   const currentRunId = ref<string | null>(null);
+
+  /**
+   * Replaces the usage banner with a folded conversation-wide aggregate (#196). The authoritative source
+   * for BOTH the reload path and the run-complete reconcile — SET (not accumulate) so the live and reload
+   * views agree by construction. Uncached input is normalized PER MODEL ROW before summing (matching the
+   * live rule) so a mix of rows (some with cacheRead > input) is handled correctly.
+   */
+  function applyAggregateToBanner(aggregate: ConversationUsageAggregate): void {
+    const input = aggregate.perModel.reduce((sum, m) => sum + m.inputTokens, 0);
+    const output = aggregate.perModel.reduce((sum, m) => sum + m.outputTokens, 0);
+    const cached = aggregate.perModel.reduce((sum, m) => sum + m.cacheReadTokens, 0);
+    const cacheCreation = aggregate.perModel.reduce((sum, m) => sum + m.cacheWriteTokens, 0);
+    const uncachedInputTokens = aggregate.perModel.reduce(
+      (sum, m) => sum + uncachedInput(m.inputTokens, m.cacheReadTokens),
+      0,
+    );
+    cumulativeUsage.value = {
+      promptTokens: input,
+      uncachedInputTokens,
+      completionTokens: output,
+      totalTokens: aggregate.totalTokens,
+      cachedTokens: cached,
+      cacheCreationTokens: cacheCreation,
+    };
+    cumulativeCost.value = {
+      estimatedCostMicros: aggregate.estimatedPublicCostMicros ?? null,
+      providerReportedCostMicros: aggregate.providerReportedCostMicros ?? null,
+      currency: aggregate.currency ?? 'USD',
+    };
+  }
+
+  /**
+   * Re-reads the authoritative persisted aggregate after a run completes and reconciles the banner with it
+   * (#196, hybrid). Guards against downgrading: applies only when the server's total is >= the current
+   * banner, so a still-in-flight fire-and-forget persist (a lower stale read) can never lower a fresher
+   * live figure, while a banner left low by a dropped live frame is corrected upward.
+   */
+  async function reconcileUsageFromServer(id: string): Promise<void> {
+    try {
+      const { getConversationUsage } = await import('@/api/conversationsApi');
+      const aggregate = await getConversationUsage(id);
+      if (aggregate && aggregate.totalTokens >= cumulativeUsage.value.totalTokens) {
+        applyAggregateToBanner(aggregate);
+      }
+    } catch (e) {
+      log.warn('Failed to reconcile usage banner after run completion', { error: String(e) });
+    }
+  }
 
   // Content turn epoch (BUG #8 + text interleaving). The server now mints a per-turn generationId so
   // live streams are unambiguous, but this stays as defense-in-depth AND to render conversations
@@ -395,6 +453,14 @@ export function useChat(options: UseChatOptions = {}) {
         message.isStreaming = false;
       }
     }
+
+    // Reconcile the banner with the authoritative persisted aggregate (which includes sub-agent / workflow
+    // descendant spend) now that the run is done — the final authority behind the live frames (#196,
+    // hybrid). Fire-and-forget: banner reconciliation must not block run-completion handling.
+    const reconcileId = threadId.value;
+    if (reconcileId) {
+      void reconcileUsageFromServer(reconcileId);
+    }
   }
 
   /**
@@ -420,6 +486,26 @@ export function useChat(options: UseChatOptions = {}) {
         totalTokens: cumulativeUsage.value.totalTokens + totalTokens,
         cachedTokens: cumulativeUsage.value.cachedTokens + cachedTokens,
         cacheCreationTokens: cumulativeUsage.value.cacheCreationTokens + cacheCreationTokens,
+      };
+      return;
+    }
+
+    // Live conversation-wide usage frame (#196): totals folded across sub-agents / workflow descendants.
+    // SET the banner from the pre-computed tuple (authoritative) rather than accumulating — this is what
+    // surfaces descendant spend live, and it self-heals any per-turn UsageMessage accumulation drift.
+    if (isConversationUsageMessage(msg)) {
+      cumulativeUsage.value = {
+        promptTokens: msg.promptTokens,
+        uncachedInputTokens: msg.uncachedInputTokens,
+        completionTokens: msg.completionTokens,
+        totalTokens: msg.totalTokens,
+        cachedTokens: msg.cachedTokens,
+        cacheCreationTokens: msg.cacheCreationTokens,
+      };
+      cumulativeCost.value = {
+        estimatedCostMicros: msg.estimatedCostMicros ?? null,
+        providerReportedCostMicros: msg.providerReportedCostMicros ?? null,
+        currency: msg.currency ?? 'USD',
       };
       return;
     }
@@ -935,6 +1021,7 @@ export function useChat(options: UseChatOptions = {}) {
     messageOrder.value = [];
     usage.value = null;
     cumulativeUsage.value = { promptTokens: 0, uncachedInputTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 };
+    cumulativeCost.value = { estimatedCostMicros: null, providerReportedCostMicros: null, currency: 'USD' };
     error.value = null;
     threadId.value = null;
     currentRunId.value = null;
@@ -1122,24 +1209,7 @@ export function useChat(options: UseChatOptions = {}) {
       const { getConversationUsage } = await import('@/api/conversationsApi');
       const usageAggregate = await getConversationUsage(existingThreadId);
       if (usageAggregate) {
-        const input = usageAggregate.perModel.reduce((sum, m) => sum + m.inputTokens, 0);
-        const output = usageAggregate.perModel.reduce((sum, m) => sum + m.outputTokens, 0);
-        const cached = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheReadTokens, 0);
-        const cacheCreation = usageAggregate.perModel.reduce((sum, m) => sum + m.cacheWriteTokens, 0);
-        // Normalize uncached input PER MODEL ROW (then sum), matching the live rule — summing input/cached
-        // across rows first would mis-handle a mix where cacheRead exceeds input for only some rows.
-        const uncachedInputTokens = usageAggregate.perModel.reduce(
-          (sum, m) => sum + uncachedInput(m.inputTokens, m.cacheReadTokens),
-          0,
-        );
-        cumulativeUsage.value = {
-          promptTokens: input,
-          uncachedInputTokens,
-          completionTokens: output,
-          totalTokens: usageAggregate.totalTokens,
-          cachedTokens: cached,
-          cacheCreationTokens: cacheCreation,
-        };
+        applyAggregateToBanner(usageAggregate);
       }
     } catch (e) {
       log.warn('Failed to restore persisted usage banner', { error: String(e) });
@@ -1167,6 +1237,7 @@ export function useChat(options: UseChatOptions = {}) {
     error,
     usage,
     cumulativeUsage,
+    cumulativeCost,
     transport,
     threadId,
     currentRunId,

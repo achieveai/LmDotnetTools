@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -1086,6 +1087,16 @@ public sealed class SubAgentManager : IAsyncDisposable
         return _source.Templates.Keys.ToList().AsReadOnly();
     }
 
+    /// <summary>
+    /// Snapshot the tools this manager hands down on a spawn: the already-filtered inheritable
+    /// contracts (they exclude the parent loop's <see cref="SubAgentOptions.NonInheritedToolNames"/>
+    /// and the Agent-family tools) paired with the handler map they resolve against. Used by a
+    /// WorkflowAgent controller to inherit a non-WorkflowAgent ancestor's tools transparently — see
+    /// <see cref="InheritableToolSnapshot"/> and <see cref="SubAgentOptions.ExternalInheritableTools"/>.
+    /// </summary>
+    public InheritableToolSnapshot GetInheritableToolSnapshot() =>
+        new(_parentContracts, new ReadOnlyDictionary<string, ToolHandler>(_parentHandlers));
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
@@ -1265,6 +1276,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             var registry = new FunctionRegistry();
             var enabledSet = BuildEnabledToolSet(
                 template.EnabledTools, addTools, removeTools);
+            var inheritedToolNames = new List<string>();
 
             foreach (var contract in _parentContracts)
             {
@@ -1279,13 +1291,25 @@ public sealed class SubAgentManager : IAsyncDisposable
                 }
 
                 _ = registry.AddFunction(contract, handler, "ParentTools");
+                inheritedToolNames.Add(contract.Name);
             }
+
+            // Observability: the effective tool set this sub-agent inherited from its parent. Tool names
+            // are content-free system identifiers (no task/prompt/EUII), and this is the boundary that
+            // answers "did the delegate actually receive the tools?" — key for workflow transparency.
+            _logger.LogDebug(
+                "Sub-agent {AgentId} (template {Template}) inherited {InheritedToolCount} parent tool(s): {InheritedToolNames}",
+                agentId,
+                template.Name,
+                inheritedToolNames.Count,
+                inheritedToolNames
+            );
 
             return (
                 new MultiTurnAgentLoop(
                     providerAgent,
                     registry,
-                    threadId: $"subagent-{agentId}",
+                    threadId: SubAgentThreadId(agentId),
                     systemPrompt: template.SystemPrompt,
                     defaultOptions: defaultOptions,
                     maxTurnsPerRun: template.MaxTurnsPerRun,
@@ -1765,9 +1789,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     private UsageRecord BuildDescendantUsageRecord(UsageMessage message, SubAgentState state) =>
         UsageRecordMapper.FromUsageMessage(
             message,
-            state.AgentId,
+            // Use the sub-agent's OWN-loop thread id (not the bare agent id) so the relayed record shares
+            // one canonical ProviderAttemptId with the sub-agent's own-loop usage capture, which keys under
+            // this same thread id. Two id-spaces for one provider call would be a cross-conversation dedup
+            // landmine (#196, BUG 3).
+            SubAgentThreadId(state.AgentId),
             UsageExecutionKind.SubAgent,
             state.EffectiveModelId ?? _parentModelId);
+
+    /// <summary>
+    /// Builds the conversation thread id for a sub-agent's own loop from its agent id. Centralized so the
+    /// sub-agent loop construction and the descendant usage relay stamp the SAME id, keeping one canonical
+    /// <see cref="UsageRecord.ProviderAttemptId"/> per provider call across the own-loop and relay paths.
+    /// </summary>
+    internal static string SubAgentThreadId(string agentId) => $"subagent-{agentId}";
 
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {
