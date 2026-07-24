@@ -24,6 +24,8 @@ export const MessageType = {
   TextWithCitations: 'text_with_citations',
   // Out-of-band notification (async sub-agent completion, context discovery, monitors, timers)
   Notify: 'notify',
+  // Live-only conversation-wide usage frame (folded across sub-agents/workflow descendants, #196)
+  ConversationUsage: 'conversation_usage',
 } as const;
 
 export type MessageTypeValue = (typeof MessageType)[keyof typeof MessageType];
@@ -384,6 +386,31 @@ export interface NotificationDisplayData {
 }
 
 /**
+ * ConversationUsageMessage matching C# ConversationUsageMessage.cs (#196).
+ *
+ * A live-only frame carrying the conversation-wide token totals (and cost, when known) folded across the
+ * WHOLE conversation tree — the primary loop's own turns plus every sub-agent / workflow descendant. The
+ * backend broadcasts it whenever the folded aggregate changes so the usage banner reflects descendant
+ * spend live rather than only after a reload. The token fields are the pre-computed banner tuple (including
+ * the per-model uncached-input normalization), so the client SETs the banner from them directly. Transient:
+ * never persisted — the authoritative figure survives reload via `GET /conversations/{id}/usage`.
+ */
+export interface ConversationUsageMessage extends IMessage {
+  $type: typeof MessageType.ConversationUsage;
+  totalTokens: number;
+  promptTokens: number;
+  uncachedInputTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  cacheCreationTokens: number;
+  /** 'InProgress' | 'Partial' | 'Complete'. */
+  completeness: string;
+  estimatedCostMicros?: number | null;
+  providerReportedCostMicros?: number | null;
+  currency?: string;
+}
+
+/**
  * Union type for all message types
  */
 export type Message =
@@ -404,7 +431,8 @@ export type Message =
   | ServerToolUseMessage
   | ServerToolResultMessage
   | TextWithCitationsMessage
-  | NotifyMessage;
+  | NotifyMessage
+  | ConversationUsageMessage;
 
 // Type guard functions
 
@@ -482,6 +510,10 @@ export function isTextWithCitationsMessage(msg: IMessage): msg is TextWithCitati
 
 export function isNotifyMessage(msg: IMessage): msg is NotifyMessage {
   return msg.$type === MessageType.Notify;
+}
+
+export function isConversationUsageMessage(msg: IMessage): msg is ConversationUsageMessage {
+  return msg.$type === MessageType.ConversationUsage;
 }
 
 /**

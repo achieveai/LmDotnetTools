@@ -159,7 +159,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // into a single root total. Usage is captured in MultiTurnAgentBase.AddToHistory. When an external
         // sink is supplied (a nested-root loop, e.g. a workflow controller), the ledger also forwards each
         // record there so this whole subtree folds into the parent conversation's total.
-        UsageLedger = new UsageLedger(threadId, pricingResolver, forwardTo: externalUsageSink);
+        UsageLedger = new UsageLedger(
+            threadId,
+            pricingResolver,
+            forwardTo: externalUsageSink,
+            onAggregateUpdated: PublishUsageAggregateFrame);
 
         // When sub-agent orchestration is configured, snapshot the current tools
         // and register Agent/CheckAgent tools before building the middleware stack.

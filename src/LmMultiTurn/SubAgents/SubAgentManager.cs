@@ -1309,7 +1309,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 new MultiTurnAgentLoop(
                     providerAgent,
                     registry,
-                    threadId: $"subagent-{agentId}",
+                    threadId: SubAgentThreadId(agentId),
                     systemPrompt: template.SystemPrompt,
                     defaultOptions: defaultOptions,
                     maxTurnsPerRun: template.MaxTurnsPerRun,
@@ -1789,9 +1789,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     private UsageRecord BuildDescendantUsageRecord(UsageMessage message, SubAgentState state) =>
         UsageRecordMapper.FromUsageMessage(
             message,
-            state.AgentId,
+            // Use the sub-agent's OWN-loop thread id (not the bare agent id) so the relayed record shares
+            // one canonical ProviderAttemptId with the sub-agent's own-loop usage capture, which keys under
+            // this same thread id. Two id-spaces for one provider call would be a cross-conversation dedup
+            // landmine (#196, BUG 3).
+            SubAgentThreadId(state.AgentId),
             UsageExecutionKind.SubAgent,
             state.EffectiveModelId ?? _parentModelId);
+
+    /// <summary>
+    /// Builds the conversation thread id for a sub-agent's own loop from its agent id. Centralized so the
+    /// sub-agent loop construction and the descendant usage relay stamp the SAME id, keeping one canonical
+    /// <see cref="UsageRecord.ProviderAttemptId"/> per provider call across the own-loop and relay paths.
+    /// </summary>
+    internal static string SubAgentThreadId(string agentId) => $"subagent-{agentId}";
 
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {

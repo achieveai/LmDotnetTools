@@ -142,6 +142,59 @@ public class SubAgentManagerUsageRelayTests : IAsyncLifetime
         captured!.RequestedModel.Should().Be("sub-model-sol");
     }
 
+    [Fact]
+    public async Task DescendantUsage_AttemptId_MatchesSubAgentOwnLoopThreadId()
+    {
+        // The parent-relay record and the sub-agent's OWN-loop usage capture describe the SAME provider
+        // call, so they must share one ProviderAttemptId. The own loop keys usage under its thread id
+        // ("subagent-{agentId}"); the relay must key it identically (not the bare agent id) or the same
+        // call is recorded under two ids — a cross-conversation dedup landmine (#196, BUG 3).
+        UsageRecord? captured = null;
+        var sink = new Mock<IUsageSink>();
+        sink.Setup(s => s.RecordUsage(It.IsAny<UsageRecord>())).Callback<UsageRecord>(r => captured = r);
+
+        SetupSubAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                GenerationId = "gen-1",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+
+        var agentId = await SpawnAsync(sink.Object);
+        _ = await _manager!.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        captured.Should().NotBeNull();
+        captured!.ProviderAttemptId.Should().Be($"subagent-{agentId}:gen-1");
+    }
+
+    [Fact]
+    public async Task DescendantUsage_FiresLedgerAggregateUpdated_WithDescendantTotal()
+    {
+        // The relay folds descendant usage into the root ledger, which fires its aggregate-changed callback
+        // — the source of the live usage banner frame. This is what makes sub-agent spend appear live in the
+        // parent banner rather than only after a reload of the persisted aggregate (#196, BUG 1b).
+        var totals = new List<long>();
+        var ledger = new UsageLedger(
+            "root-conv",
+            onAggregateUpdated: aggregate => totals.Add(aggregate.TotalTokens));
+
+        SetupSubAgentResponse([
+            new UsageMessage
+            {
+                Usage = new Usage { PromptTokens = 100, CompletionTokens = 40 },
+                GenerationId = "gen-1",
+            },
+            new TextMessage { Text = "done", Role = Role.Assistant },
+        ]);
+
+        var agentId = await SpawnAsync(ledger);
+        _ = await _manager!.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        totals.Should().Contain(140);
+    }
+
     private SubAgentOptions CreateOptionsWithTemplateModel(string templateModel) =>
         new()
         {

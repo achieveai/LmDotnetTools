@@ -15,6 +15,7 @@ public sealed class UsageLedger : IUsageSink
     private readonly RevisionWatermark _watermark = new();
     private readonly IPricingResolver? _pricingResolver;
     private readonly IUsageSink? _forwardTo;
+    private readonly Action<ConversationUsageAggregate>? _onAggregateUpdated;
 
     /// <summary>Creates a ledger scoped to a single root conversation.</summary>
     /// <param name="rootConversationId">The root conversation to accumulate usage for.</param>
@@ -29,14 +30,22 @@ public sealed class UsageLedger : IUsageSink
     ///     The forwarded record keeps its <see cref="UsageRecord.ProviderAttemptId" />, so the parent sink
     ///     dedups it the same way and re-stamps its own root id/revision. Null keeps the historical behaviour.
     /// </param>
+    /// <param name="onAggregateUpdated">
+    ///     Optional callback invoked (outside the ledger lock, with an InProgress snapshot) after every
+    ///     accepted observation, so the owning loop can broadcast a live usage frame to the parent run's
+    ///     subscribers as descendant spend folds in (#196). Terminal completeness is not the ledger's concern
+    ///     — it is stamped by the owner's persist path — so live snapshots are always InProgress here.
+    /// </param>
     public UsageLedger(
         string rootConversationId,
         IPricingResolver? pricingResolver = null,
-        IUsageSink? forwardTo = null)
+        IUsageSink? forwardTo = null,
+        Action<ConversationUsageAggregate>? onAggregateUpdated = null)
     {
         RootConversationId = rootConversationId;
         _pricingResolver = pricingResolver;
         _forwardTo = forwardTo;
+        _onAggregateUpdated = onAggregateUpdated;
     }
 
     /// <summary>The root conversation this ledger accumulates usage for.</summary>
@@ -78,6 +87,11 @@ public sealed class UsageLedger : IUsageSink
         // record keeps the same ProviderAttemptId, so the parent re-merges idempotently and re-stamps its
         // own root id/revision — cumulative streaming updates collapse to one billable record there too.
         _forwardTo?.RecordUsage(merged);
+
+        // Notify observers (e.g. the owning loop, which broadcasts a live usage frame to the parent run's
+        // subscribers) that the folded aggregate changed. Fired OUTSIDE the lock with an InProgress snapshot;
+        // terminal Complete/Partial is stamped by the owner's persist path, not by these live updates (#196).
+        _onAggregateUpdated?.Invoke(Snapshot());
 
         return merged;
     }

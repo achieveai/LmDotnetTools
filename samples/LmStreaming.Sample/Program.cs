@@ -17,6 +17,7 @@ using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -569,6 +570,9 @@ try
     var llmQueryMcpExamType = builder.Configuration["LlmQueryMcp:ExamType"] ?? "NeetPG";
 
     // Register the MultiTurnAgentPool with provider- and mode-aware factory
+    _ = builder.Services.AddSingleton<IPricingResolver>(sp =>
+        AppSettingsPricingResolver.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
+
     _ = builder.Services.AddSingleton(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
@@ -580,6 +584,10 @@ try
         // call site below). ThreadId is per-thread via context.ThreadId inside that factory.
         var notifyWaitStore = sp.GetRequiredService<INotifyWaitStore>();
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
+        // Conversation-wide usage cost (#196): resolves an estimated public cost per model when a rate is
+        // configured under "Pricing:Models". Empty by default, so flat-rate Copilot ids resolve to null
+        // cost ("unavailable") — the correct state — while any model with a configured rate gets a cost.
+        var pricingResolver = sp.GetRequiredService<IPricingResolver>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
@@ -1458,6 +1466,9 @@ try
                         subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory,
                         persistRunLedger: true,
+                        // Estimated public cost per model for conversation-wide usage accounting (#196).
+                        // Null-resolving for models without a configured rate (cost shows "unavailable").
+                        pricingResolver: pricingResolver,
                         // Enable the Wait/CancelWait/ListWaits park-and-wake tools plus the sample
                         // trigger sources (file_tail/schedule/subagent, and sandbox-gated process) for the
                         // MOCK providers only. Real providers are left untouched (triggerOptions: null) so
