@@ -109,12 +109,15 @@ async function handleCancel(): Promise<void> {
 }
 
 // A freshly-created thread (New Chat / handleNewChat) gets `chatThreadId` immediately, well before
-// any message is sent — the backend's agent pool has no entry for it yet. Gate the sub-agent panel
-// on the same "has a sidebar entry" signal already used for provider/mode switching (added by
-// handleSend only after the first message is actually dispatched) so listSubAgents is never called
-// for a conversation that hasn't started.
+// any message is sent — the backend's agent pool has no entry for it yet, so polling /subagents would
+// 404-spam. Gate the sub-agent poll on the conversation having actually STARTED: it has rendered items
+// (a message was sent or an existing conversation was loaded) OR it already has a sidebar entry. A
+// fresh, empty New Chat matches neither, so the poll stays idle until the first message; every started
+// conversation (including the E2E's scripted send) opens the gate so its sub-agent tabs surface.
 const subAgentParentThreadId = computed(() =>
-  chatThreadId.value && conversations.value.some((c) => c.threadId === chatThreadId.value)
+  chatThreadId.value &&
+  (displayItems.value.length > 0 ||
+    conversations.value.some((c) => c.threadId === chatThreadId.value))
     ? chatThreadId.value
     : null
 );

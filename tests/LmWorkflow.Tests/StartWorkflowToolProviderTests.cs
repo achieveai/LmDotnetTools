@@ -64,6 +64,75 @@ public class StartWorkflowToolProviderTests
     }
 
     [Fact]
+    public void StartWorkflowAgent_WorkflowParam_AdvertisesTheFlatStepSchema()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var workflowSchema = Tool(provider, "StartWorkflowAgent")
+            .Contract.Parameters!.Single(p => p.Name == "workflow")
+            .ParameterType;
+
+        // Regression: the param must advertise the flat step DSL (objective + steps[...] with kind-specific
+        // fields), not a bare object and not the internal node union — otherwise the model guesses field
+        // names and the strict translator rejects its graph (the workspace-agent authoring bug).
+        workflowSchema.Properties.Should().NotBeNull();
+        workflowSchema.Properties!.Should().ContainKeys("objective", "steps");
+
+        var stepSchema = workflowSchema.Properties!["steps"].Items;
+        stepSchema.Should().NotBeNull();
+        stepSchema!.Properties!.Should().ContainKeys("id", "kind", "agent", "prompt", "next", "agents", "branches");
+    }
+
+    [Fact]
+    public async Task StartWorkflow_AuthoredInTheFlatDsl_IsAcceptedAndTranslated()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        const string dsl = """
+            { "objective": "trivial", "steps": [
+              { "id": "start", "kind": "start", "next": "done" },
+              { "id": "done", "kind": "end" }
+            ] }
+            """;
+        var args = new JsonObject
+        {
+            ["workflowId"] = "dsl-start",
+            ["workflow"] = JsonNode.Parse(dsl),
+            ["mode"] = "async",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        // The flat DSL translated + validated + started — the path that used to fail on a bare-object schema.
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        doc.RootElement.GetProperty("status").GetString().Should().Be("started");
+    }
+
+    [Fact]
+    public async Task StartWorkflow_DslMissingAgentFields_ReturnsInvalidWorkflow()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+        const string dsl = """
+            { "objective": "x", "steps": [
+              { "id": "start", "kind": "start", "next": "a" },
+              { "id": "a", "kind": "agent", "next": "done" },
+              { "id": "done", "kind": "end" }
+            ] }
+            """;
+        var args = new JsonObject
+        {
+            ["workflowId"] = "dsl-bad",
+            ["workflow"] = JsonNode.Parse(dsl),
+            ["mode"] = "sync",
+        }.ToJsonString();
+
+        var result = await Invoke(Tool(provider, "StartWorkflowAgent"), args);
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+    }
+
+    [Fact]
     public async Task StartWorkflow_InvalidDefinition_MapsToInvalidWorkflow()
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));

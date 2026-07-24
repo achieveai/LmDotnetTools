@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -305,6 +306,108 @@ public class WorkflowHardeningTests
 
         result.Payload.IsError.Should().BeTrue();
         result.Payload.ErrorCode.Should().Be("invalid_transition");
+    }
+
+    // ---- DSL authoring path (flat SimpleWorkflow) through the tools --------------------------------
+
+    [Fact]
+    public async Task SetWorkflow_AuthoredInTheFlatDsl_LoadsSuccessfully()
+    {
+        var runtime = new WorkflowRuntime();
+        var args = new JsonObject
+        {
+            ["definition"] = JsonNode.Parse(
+                """
+                { "objective": "review", "steps": [
+                  { "id": "start", "kind": "start", "next": "work" },
+                  { "id": "work", "kind": "agent", "agent": "gp", "prompt": "Do it.", "next": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            ),
+        };
+
+        var result = await Invoke(Tool(runtime, "SetWorkflow"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeFalse();
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "start" && n is StartNode);
+        runtime.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "work").TaskList!.Single()
+            .SubagentType.Should()
+            .Be("gp");
+    }
+
+    [Fact]
+    public async Task SetWorkflow_DslMissingAgentFields_ReturnsInvalidWorkflow()
+    {
+        var runtime = new WorkflowRuntime();
+        var args = new JsonObject
+        {
+            ["definition"] = JsonNode.Parse(
+                """
+                { "objective": "x", "steps": [
+                  { "id": "start", "kind": "start", "next": "a" },
+                  { "id": "a", "kind": "agent", "next": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            ),
+        };
+
+        var result = await Invoke(Tool(runtime, "SetWorkflow"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+    }
+
+    [Fact]
+    public async Task AddNode_FlatDslStep_SplicesIn()
+    {
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(MergeGuardWorkflow));
+
+        var args = new JsonObject
+        {
+            ["node"] = JsonNode.Parse("""{ "id": "extra", "kind": "end" }"""),
+            ["previousNodeId"] = "proc",
+        };
+
+        var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeFalse();
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra" && n is TerminalNode);
+    }
+
+    [Fact]
+    public async Task GetWorkflow_ReadsTheGraphBackAsFlatDslSteps()
+    {
+        var runtime = new WorkflowRuntime();
+        _ = await Invoke(
+            Tool(runtime, "SetWorkflow"),
+            new JsonObject
+            {
+                ["definition"] = JsonNode.Parse(
+                    """
+                    { "objective": "o", "steps": [
+                      { "id": "start", "kind": "start", "next": "work" },
+                      { "id": "work", "kind": "agent", "agent": "gp", "prompt": "Do it.", "saveAs": "out", "next": "done" },
+                      { "id": "done", "kind": "end" }
+                    ] }
+                    """
+                ),
+            }.ToJsonString()
+        );
+
+        var result = await Invoke(Tool(runtime, "GetWorkflow"), "{}");
+
+        result.Payload.IsError.Should().BeFalse();
+        using var doc = JsonDocument.Parse(result.Payload.Text);
+        var steps = doc.RootElement.GetProperty("workflow").GetProperty("steps");
+        steps.GetArrayLength().Should().Be(3);
+        // The graph reads back in the SAME flat DSL shape (kind/agent/saveAs), not the internal node shape.
+        var work = steps.EnumerateArray().Single(s => s.GetProperty("id").GetString() == "work");
+        work.GetProperty("kind").GetString().Should().Be("agent");
+        work.GetProperty("agent").GetString().Should().Be("gp");
+        work.GetProperty("saveAs").GetString().Should().Be("out");
     }
 
     private static FunctionDescriptor Tool(WorkflowRuntime runtime, string name) =>

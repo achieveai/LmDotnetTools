@@ -163,6 +163,12 @@ try
     // and what the per-process default is. Read once at startup; shared via DI singleton.
     _ = builder.Services.AddSingleton<IFileSystemProbe, FileSystemProbe>();
 
+    // Side-table so the read-only /subagents endpoint + sub-agent WebSocket can surface a conversation's
+    // StartWorkflowAgent runs (isolated controller loops, owned by a per-conversation WorkflowManager the
+    // agent loop can't reference) as center-pane tabs.
+    _ = builder.Services.AddSingleton(_ => new WorkflowRunRegistry(
+        Path.Combine(AppContext.BaseDirectory, "conversations", "workflow-index")));
+
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
     // dependency below reads its IsRunning flag for availability gating.
@@ -1296,7 +1302,23 @@ try
                         {
                             Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(subAgentFactory),
                             MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+                            // Structural transparency guard: keep the controller's own workflow-state/launch
+                            // tools OUT of the snapshot its delegates inherit, so an inherit-all delegate
+                            // template can never drive/mutate the workflow it is a task of. The transparent
+                            // domain tools are merged in separately via ExternalInheritableTools (below).
+                            NonInheritedToolNames =
+                            [
+                                .. WorkflowToolProvider.AllToolNames,
+                                .. StartWorkflowToolProvider.ToolNames,
+                            ],
                         };
+
+                        // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
+                        // nested workflow tab survives a page reload (live streaming works regardless).
+                        controllerSubAgentOptions = ApplyDefaultSubAgentStore(
+                            controllerSubAgentOptions,
+                            conversationStore
+                        );
 
                         var workflowManager = new WorkflowManager(
                             controllerAgentFactory: subAgentFactory,
@@ -1316,11 +1338,36 @@ try
                             },
                             maxConcurrentWorkflows: maxConcurrentWorkflows,
                             controllerDefaultOptions: new GenerateReplyOptions { ModelId = controllerModelId },
-                            logger: loggerFactory.CreateLogger<WorkflowManager>()
+                            logger: loggerFactory.CreateLogger<WorkflowManager>(),
+                            // Fold a StartWorkflowAgent run's controller + task usage into THIS conversation's
+                            // total. Late-bound because the WorkflowManager is created before the root `agent`
+                            // loop (whose UsageSink is the conversation's ledger) exists.
+                            rootUsageSink: () =>
+                            {
+                                var conversation = agent;
+                                return conversation?.UsageSink;
+                            },
+                            // Transparency (Rules 1 & 2): a run's delegate sub-agents inherit THIS conversation's
+                            // tools — the launching conversation is the first non-WorkflowAgent ancestor, and its
+                            // SubAgentManager snapshot is already the sandbox tools MINUS the workflow/launch
+                            // tools. Late-bound for the same reason as rootUsageSink.
+                            inheritedToolSnapshot: () => agent?.SubAgentManager?.GetInheritableToolSnapshot(),
+                            // Persist the controller loop's OWN conversation (the workflow agent's orchestration
+                            // turns) to the shared store under the workflow-{id} thread so the ⚙ workflow tab is
+                            // viewable after the run completes. Non-owning so controller teardown never disposes
+                            // the shared store.
+                            controllerConversationStore:
+                                new LmStreaming.Sample.Persistence.NonOwningConversationStore(conversationStore)
                         );
 
                         _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(workflowManager));
                         ownedResources = [.. ownedResources ?? [], workflowManager];
+
+                        // Publish this conversation's WorkflowManager so /subagents + the sub-agent WebSocket
+                        // can surface its runs as tabs. Safe to leave a stale entry: WorkflowManager.DisposeAsync
+                        // clears its runs, so ListRuns/TryGetRunLoop return empty/false after teardown, and the
+                        // entry is overwritten if the conversation's agent is recreated.
+                        sp.GetRequiredService<WorkflowRunRegistry>().Register(threadId, workflowManager);
 
                         // Keep the launch tools (and, for Workflow Author mode, the direct authoring/state
                         // tools too) out of sub-agent inheritance so a spawned sub-agent can't launch a

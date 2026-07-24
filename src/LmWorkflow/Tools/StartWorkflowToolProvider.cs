@@ -93,9 +93,10 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 {
                     Name = "workflow",
                     Description =
-                        "The full, pre-authored workflow definition object (objective + a graph of nodes: "
-                        + "one start, >=1 terminal, and the rest).",
-                    ParameterType = new JsonSchemaObject { Type = new("object") },
+                        "The complete workflow to run, in the flat step DSL: an 'objective' plus a list of "
+                        + "'steps', each with an 'id', a 'kind' (start/agent/parallel/branch/end), and its "
+                        + "kind-specific fields. Author and validate it before starting; follow the provided schema.",
+                    ParameterType = SimpleWorkflowSchema.Workflow(),
                     IsRequired = true,
                 },
                 new FunctionParameterContract
@@ -223,9 +224,16 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
             WorkflowDefinition definition;
             try
             {
-                // Strict deserialize so a misspelled/invented field is rejected by name rather than silently
-                // dropped — matching SetWorkflow's authoring path.
-                definition = WorkflowJson.DeserializeStrict(workflowElement.GetRawText());
+                // The model authors in the flat SimpleWorkflow DSL (advertised on the tool schema); a legacy
+                // internal-shaped {"nodes":[...]} definition is still accepted (FromToolArgument).
+                definition = SimpleWorkflowTranslator.FromToolArgument(workflowElement);
+            }
+            catch (WorkflowValidationException ex)
+            {
+                return ToolHandlerResult.FromError(
+                    "The workflow definition is invalid: " + string.Join("; ", ex.Errors),
+                    "invalid_workflow"
+                );
             }
             catch (JsonException ex)
             {

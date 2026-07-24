@@ -14,6 +14,7 @@ public sealed class UsageLedger : IUsageSink
     private readonly Dictionary<string, UsageRecord> _byAttempt = new(StringComparer.Ordinal);
     private readonly RevisionWatermark _watermark = new();
     private readonly IPricingResolver? _pricingResolver;
+    private readonly IUsageSink? _forwardTo;
 
     /// <summary>Creates a ledger scoped to a single root conversation.</summary>
     /// <param name="rootConversationId">The root conversation to accumulate usage for.</param>
@@ -21,10 +22,21 @@ public sealed class UsageLedger : IUsageSink
     ///     Optional public-pricing resolver. When supplied, an observation that arrives without an estimated
     ///     public cost has one filled in from the resolved rates for its effective model.
     /// </param>
-    public UsageLedger(string rootConversationId, IPricingResolver? pricingResolver = null)
+    /// <param name="forwardTo">
+    ///     Optional external root sink each merged record is also relayed to, so a nested root conversation
+    ///     (e.g. a workflow controller loop) can fold its whole subtree's usage — its own turns AND every
+    ///     descendant that already relays into THIS ledger — into a parent conversation's total (issue #196).
+    ///     The forwarded record keeps its <see cref="UsageRecord.ProviderAttemptId" />, so the parent sink
+    ///     dedups it the same way and re-stamps its own root id/revision. Null keeps the historical behaviour.
+    /// </param>
+    public UsageLedger(
+        string rootConversationId,
+        IPricingResolver? pricingResolver = null,
+        IUsageSink? forwardTo = null)
     {
         RootConversationId = rootConversationId;
         _pricingResolver = pricingResolver;
+        _forwardTo = forwardTo;
     }
 
     /// <summary>The root conversation this ledger accumulates usage for.</summary>
@@ -46,10 +58,11 @@ public sealed class UsageLedger : IUsageSink
     {
         ArgumentNullException.ThrowIfNull(observation);
 
+        UsageRecord merged;
         lock (_gate)
         {
             _ = _byAttempt.TryGetValue(observation.ProviderAttemptId, out var existing);
-            var merged = Merge(existing, observation);
+            merged = Merge(existing, observation);
             var revision = _watermark.Allocate();
 
             // The ledger is scoped to one root conversation, so every observation it receives is
@@ -58,8 +71,15 @@ public sealed class UsageLedger : IUsageSink
             merged = WithEstimatedCost(merged);
             _byAttempt[observation.ProviderAttemptId] = merged;
             _watermark.Commit(revision);
-            return merged;
         }
+
+        // Relay the merged record to an optional external root sink OUTSIDE the lock, so a slow parent
+        // sink never blocks concurrent usage updates on this ledger. Forwarding the merged (cumulative)
+        // record keeps the same ProviderAttemptId, so the parent re-merges idempotently and re-stamps its
+        // own root id/revision — cumulative streaming updates collapse to one billable record there too.
+        _forwardTo?.RecordUsage(merged);
+
+        return merged;
     }
 
     /// <summary>

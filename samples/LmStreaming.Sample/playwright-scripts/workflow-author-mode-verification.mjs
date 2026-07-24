@@ -41,33 +41,26 @@ async (page) => {
   const WORKFLOW_ID = 'verify-start-workflow-agent-1';
 
   const setWorkflowDef = {
-    schemaVersion: 1,
     objective: 'Summarize a topic using a sub-agent',
-    nodes: [
-      { id: 'start', type: 'start', title: 'Start', next: ['research'] },
+    steps: [
+      { id: 'start', kind: 'start', next: 'research' },
       {
         id: 'research',
-        type: 'procedural',
-        title: 'Research the topic',
-        taskList: [
-          {
-            id: 't1',
-            subagent_type: 'general-purpose',
-            promptTemplate: 'Research {{topic}} and summarize the key points.',
-          },
-        ],
-        next: ['done'],
+        kind: 'agent',
+        agent: 'general-purpose',
+        prompt: 'Research {{topic}} and summarize the key points.',
+        saveAs: 'summary',
+        next: 'done',
       },
-      { id: 'done', type: 'terminal', title: 'Done' },
+      { id: 'done', kind: 'end' },
     ],
   };
 
   const trivialAsyncDef = {
-    schemaVersion: 1,
     objective: 'trivial start-to-terminal workflow for an async StartWorkflowAgent smoke check',
-    nodes: [
-      { id: 'start', type: 'start', title: 'Start', next: ['done'] },
-      { id: 'done', type: 'terminal', title: 'Done' },
+    steps: [
+      { id: 'start', kind: 'start', next: 'done' },
+      { id: 'done', kind: 'end' },
     ],
   };
 
@@ -112,12 +105,10 @@ async (page) => {
                 args: {
                   node: {
                     id: 'extra',
-                    type: 'procedural',
-                    title: 'Extra',
-                    taskList: [
-                      { id: 'e1', subagent_type: 'general-purpose', promptTemplate: 'Do extra work.' },
-                    ],
-                    next: ['done'],
+                    kind: 'agent',
+                    agent: 'general-purpose',
+                    prompt: 'Do extra work.',
+                    next: 'done',
                   },
                   previousNodeId: 'research',
                 },

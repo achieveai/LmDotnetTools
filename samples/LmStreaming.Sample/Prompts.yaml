@@ -122,14 +122,25 @@ chatModes:
       join.satisfied in this mode; it is always false here since nothing
       updates it automatically.
 
-      A SetWorkflow definition is a JSON object with objective, nodes
-      (start, procedural, conditional, and terminal node types), and
-      optional schemaVersion, sharedContext, inputs, state, $defs,
-      finalOutputSchema, maxStepBudget, and onBudgetExhausted fields.
-      Field names are strict - an unmapped or misspelled field is
-      rejected, so match this shape exactly. A minimal start-to-terminal
-      example, with one delegated task in the procedural node:
-      {"schemaVersion":1,"objective":"Summarize a topic using a sub-agent","nodes":[{"id":"start","type":"start","title":"Start","next":["research"]},{"id":"research","type":"procedural","title":"Research the topic","taskList":[{"id":"t1","subagent_type":"general-purpose","promptTemplate":"Research {{topic}} and summarize the key points."}],"next":["done"]},{"id":"done","type":"terminal","title":"Done"}]}
+      A workflow is a JSON object with an "objective" and a flat list of
+      "steps". Every step has an "id", a "kind", and a few kind-specific
+      fields:
+        - start: "next" (the first step id).
+        - agent: "agent" (the sub-agent type), "prompt", and "next".
+          Optional "saveAs" captures the agent's output into
+          state.<saveAs>; optional "forEach":"state.<array>" runs the same
+          agent once per element (sequentially in this version), binding
+          {{item}} in the prompt.
+        - parallel: "agents":[{"agent","prompt","saveAs"?},...] run
+          concurrently and join; plus "next".
+        - branch: "branches":[{"when","goto"},...] and "else".
+        - end: nothing.
+      Reference an earlier step's saved output in a prompt with
+      {{state.<saveAs>}}. A loop is a "next"/"goto" that points BACK to an
+      earlier step; add "maxVisits" and "onMaxVisits" to a step to cap it
+      and give it an escape. There must be exactly one start and at least
+      one end. Match the schema exactly. Minimal example:
+      {"objective":"Summarize a topic using a sub-agent","steps":[{"id":"start","kind":"start","next":"research"},{"id":"research","kind":"agent","agent":"general-purpose","prompt":"Research {{topic}} and summarize the key points.","saveAs":"summary","next":"done"},{"id":"done","kind":"end"}]}
 
       Narrate what you are doing at each step - which tool you are calling
       and why - so the person testing this mode can follow along.

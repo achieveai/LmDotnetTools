@@ -32,6 +32,9 @@ const sharedMocks = vi.hoisted(() => ({
   resumeStreamIfActive: vi.fn(async () => {}),
   markStreamIdle: vi.fn(),
   markStreamLoading: vi.fn(),
+  // Captures the thread-id getter ChatLayout passes to useSubAgentPanel, so a test can assert the
+  // start-gating (the getter returns null until the conversation has a sidebar entry).
+  subAgentThreadGetter: null as (() => string | null) | null,
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -179,20 +182,27 @@ vi.mock('@/api/conversationsApi', () => ({
 vi.mock('@/composables/useSubAgentPanel', async () => {
   const { ref } = await import('vue');
   return {
-    useSubAgentPanel: () => ({
-      children: ref([]),
-      focusedAgentId: ref<string | null>(null),
-      focusedDisplayItems: ref([]),
-      isFocusedStreaming: ref(false),
-      error: ref<string | null>(null),
-      startPolling: vi.fn(),
-      stopPolling: vi.fn(),
-      refreshChildren: vi.fn(async () => {}),
-      focusChild: vi.fn(async () => {}),
-      unfocusChild: vi.fn(async () => {}),
-      sendToFocusedChild: vi.fn(),
-      getResultForToolCall: vi.fn(() => null),
-    }),
+    useSubAgentPanel: (getParentThreadId?: () => string | null) => {
+      // Capture the gating getter so the start-gating tests can evaluate it directly (the panel no
+      // longer receives a parentThreadId prop after the #221 tabs refactor).
+      if (getParentThreadId) {
+        sharedMocks.subAgentThreadGetter = getParentThreadId;
+      }
+      return {
+        children: ref([]),
+        focusedAgentId: ref<string | null>(null),
+        focusedDisplayItems: ref([]),
+        isFocusedStreaming: ref(false),
+        error: ref<string | null>(null),
+        startPolling: vi.fn(),
+        stopPolling: vi.fn(),
+        refreshChildren: vi.fn(async () => {}),
+        focusChild: vi.fn(async () => {}),
+        unfocusChild: vi.fn(async () => {}),
+        sendToFocusedChild: vi.fn(),
+        getResultForToolCall: vi.fn(() => null),
+      };
+    },
   };
 });
 
@@ -571,11 +581,12 @@ describe('ChatLayout ?threadId= deep link', () => {
 
 // Regression: a freshly-created chat (handleNewChat) assigns useChat's threadId immediately,
 // well before any message is sent, but the backend's agent pool has no entry for that thread
-// yet. Passing that id straight to SubAgentListPanel made it poll listSubAgents immediately and
-// hit a 404 ("unknown_thread") on every new conversation. The panel must not receive a
-// parentThreadId until the conversation has a sidebar entry (added by handleSend only after the
-// first message is actually dispatched) — mirrors the same start-gating already used for mode
-// and provider switching above.
+// yet. Feeding that id straight to useSubAgentPanel made it poll listSubAgents immediately and
+// hit a 404 ("unknown_thread") on every new conversation. After the #221 tabs refactor the gating
+// moved off a SubAgentListPanel prop onto the getter ChatLayout passes to useSubAgentPanel
+// (`() => subAgentParentThreadId.value`), which stays null until the conversation has a sidebar
+// entry (added by handleSend only after the first message is dispatched) — mirroring the same
+// start-gating used for mode and provider switching above.
 describe('ChatLayout sub-agent panel start-gating', () => {
   const mountLayout = () =>
     mount(ChatLayout, {
@@ -593,25 +604,28 @@ describe('ChatLayout sub-agent panel start-gating', () => {
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
+    sharedMocks.subAgentThreadGetter = null;
   });
 
   it('withholds the thread id from the sub-agent panel on a fresh, messageless conversation', async () => {
     sharedMocks.currentThreadId = 'thread-new';
     sharedMocks.conversations = [];
 
-    const wrapper = mountLayout();
+    mountLayout();
     await flushPromises();
 
-    expect(wrapper.findComponent(SubAgentListPanel).props('parentThreadId')).toBeNull();
+    expect(sharedMocks.subAgentThreadGetter).not.toBeNull();
+    expect(sharedMocks.subAgentThreadGetter!()).toBeNull();
   });
 
   it('passes the thread id to the sub-agent panel once the conversation has a sidebar entry', async () => {
     sharedMocks.currentThreadId = 'thread-1';
     sharedMocks.conversations = [{ threadId: 'thread-1' }];
 
-    const wrapper = mountLayout();
+    mountLayout();
     await flushPromises();
 
-    expect(wrapper.findComponent(SubAgentListPanel).props('parentThreadId')).toBe('thread-1');
+    expect(sharedMocks.subAgentThreadGetter).not.toBeNull();
+    expect(sharedMocks.subAgentThreadGetter!()).toBe('thread-1');
   });
 });

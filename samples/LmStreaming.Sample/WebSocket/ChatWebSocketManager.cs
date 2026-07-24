@@ -31,6 +31,7 @@ public sealed class ChatWebSocketManager
 
     private readonly MultiTurnAgentPool _agentPool;
     private readonly WebSocketConnectionRegistry _connectionRegistry;
+    private readonly Services.WorkflowRunRegistry _workflowRunRegistry;
     private readonly PendingAuthCoordinator _pendingAuth;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<ChatWebSocketManager> _logger;
@@ -55,11 +56,13 @@ public sealed class ChatWebSocketManager
     public ChatWebSocketManager(
         MultiTurnAgentPool agentPool,
         WebSocketConnectionRegistry connectionRegistry,
+        Services.WorkflowRunRegistry workflowRunRegistry,
         PendingAuthCoordinator pendingAuth,
         ILogger<ChatWebSocketManager> logger)
     {
         _agentPool = agentPool ?? throw new ArgumentNullException(nameof(agentPool));
         _connectionRegistry = connectionRegistry ?? throw new ArgumentNullException(nameof(connectionRegistry));
+        _workflowRunRegistry = workflowRunRegistry ?? throw new ArgumentNullException(nameof(workflowRunRegistry));
         _pendingAuth = pendingAuth ?? throw new ArgumentNullException(nameof(pendingAuth));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
@@ -258,11 +261,52 @@ public sealed class ChatWebSocketManager
         var connection = _connectionRegistry.Register($"subagent-{agentId}", webSocket);
         try
         {
-            if (!_agentPool.TryGet(parentThreadId, out var parentAgent)
-                || parentAgent is not MultiTurnAgentLoop loop
-                || loop.SubAgentManager is not { } subAgentManager
-                || !subAgentManager.TryGetAgent(agentId, out var childAgent)
-                || childAgent is null)
+            using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            // Resolve the stream: an Agent-tool sub-agent (via its parent's SubAgentManager) OR a
+            // StartWorkflowAgent run's isolated controller loop (via this conversation's WorkflowManager).
+            System.Collections.Generic.IAsyncEnumerable<AchieveAi.LmDotnetTools.LmCore.Messages.IMessage>? stream = null;
+            SubAgentManager? subAgentManager = null;
+
+            if (_agentPool.TryGet(parentThreadId, out var parentAgent)
+                && parentAgent is MultiTurnAgentLoop loop
+                && loop.SubAgentManager is { } sam
+                && sam.TryGetAgent(agentId, out var childAgent)
+                && childAgent is not null)
+            {
+                subAgentManager = sam;
+
+                // Stream via the manager's restart-spanning enumerable rather than a single captured
+                // instance: relaying a follow-up to a FINISHED owned-provider child restarts it (disposing
+                // the old loop and swapping in a fresh one), and this enumerable re-resolves + re-subscribes
+                // internally so the focused client keeps receiving the restarted turn's frames.
+                stream = sam.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token);
+            }
+            else if (_workflowRunRegistry.TryGet(parentThreadId, out var workflowManager)
+                && workflowManager is not null
+                && workflowManager.TryGetRunLoop(agentId, out var controllerLoop)
+                && controllerLoop is not null)
+            {
+                // A StartWorkflowAgent run: stream the isolated controller loop's own conversation, the
+                // same way the main /ws pump subscribes to a loop. The tab is read-only.
+                stream = controllerLoop.SubscribeAsync(connectionCts.Token);
+            }
+            else if (_workflowRunRegistry.TryGet(parentThreadId, out var nestingManager)
+                && nestingManager is not null
+                && nestingManager.TryGetRunLoopOwningSubAgent(agentId, out var ownerLoop)
+                && ownerLoop?.SubAgentManager is { } nestedManager
+                && nestedManager.TryGetAgent(agentId, out var nestedAgent)
+                && nestedAgent is not null)
+            {
+                // A nested delegate spawned BY a running controller: stream it through the controller's
+                // own SubAgentManager, same as a top-level sub-agent (restart-spanning, follow-ups relay).
+                // Branch order is safe: the run branch above treats agentId as a workflowId, and an opaque
+                // workflowId never collides with a delegate's 12-char id, so control falls through here.
+                subAgentManager = nestedManager;
+                stream = nestedManager.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token);
+            }
+
+            if (stream is null)
             {
                 _logger.LogWarning(
                     "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId}",
@@ -273,23 +317,18 @@ public sealed class ChatWebSocketManager
                 return;
             }
 
-            using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-            // Stream via the manager's restart-spanning enumerable rather than a single captured
-            // instance: relaying a follow-up to a FINISHED owned-provider child restarts it (disposing
-            // the old loop and swapping in a fresh one), and this enumerable re-resolves + re-subscribes
-            // internally so the focused client keeps receiving the restarted turn's frames. The sub-agent
-            // wrapper reuses the shared frame pump (the {"$type":"done"} sentinel after
+            // The sub-agent wrapper reuses the shared frame pump (the {"$type":"done"} sentinel after
             // RunCompletedMessage) but adds failure-to-structured-error handling scoped to this path.
             // This is a presentation-only view, so no recording.
-            var subscriptionTask = PumpSubAgentStreamAsync(
-                connection,
-                subAgentManager.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token),
-                agentId,
-                connectionCts.Token);
+            var subscriptionTask = PumpSubAgentStreamAsync(connection, stream, agentId, connectionCts.Token);
 
-            var receiveTask = ReceiveSubAgentMessagesFromClientAsync(
-                webSocket, connection, subAgentManager, agentId, connectionCts.Token);
+            // Follow-up messages relay only to an Agent-tool sub-agent; a workflow tab is read-only, so its
+            // receive loop just drains client frames to detect disconnect.
+            var receiveTask = subAgentManager is not null
+                ? ReceiveSubAgentMessagesFromClientAsync(
+                    webSocket, connection, subAgentManager, agentId, connectionCts.Token)
+                : ReceiveTextMessagesAsync(
+                    webSocket, $"workflow {agentId}", (_, _) => Task.CompletedTask, connectionCts.Token);
 
             try
             {

@@ -163,6 +163,7 @@ public class ConversationsController(
     IWorkspaceStore workspaceStore,
     ProviderRegistry providerRegistry,
     ConversationStatusResolver statusResolver,
+    WorkflowRunRegistry workflowRunRegistry,
     ILogger<ConversationsController> logger) : ControllerBase
 {
     /// <summary>
@@ -372,30 +373,96 @@ public class ConversationsController(
     [HttpGet("{threadId}/subagents")]
     public IActionResult ListSubAgents(string threadId)
     {
-        if (!agentPool.TryGet(threadId, out var agent) || agent is null)
+        var summaries = new List<SubAgentSummary>();
+        var isLive = agentPool.TryGet(threadId, out var agent) && agent is not null;
+
+        // Agent-tool sub-agents (the historical /subagents contents) — LIVE-ONLY: they live on the main
+        // conversation loop's SubAgentManager, so they're gone after a restart until the loop is rehydrated.
+        if (isLive && agent is MultiTurnAgentLoop loop && loop.SubAgentManager is { } subAgentManager)
+        {
+            summaries.AddRange(
+                subAgentManager.ListAgents()
+                    .Select(s => new SubAgentSummary
+                    {
+                        AgentId = s.AgentId,
+                        Kind = "subagent",
+                        Name = s.Name,
+                        Template = s.TemplateName,
+                        Task = s.Task,
+                        Status = s.Status.ToString().ToLowerInvariant(),
+                        ThreadId = s.ThreadId,
+                        LastActivityUtc = s.LastActivityUtc,
+                    })
+            );
+        }
+
+        // StartWorkflowAgent runs + their delegates. The live snapshot (when the WorkflowManager is present)
+        // is write-through-persisted to a small on-disk index, and the response is the union of live ∪
+        // persisted (live wins) — so completed workflow/delegate tabs SURVIVE A SERVER RESTART that evicts
+        // the in-memory manager. Delegate transcripts already persist as subagent-{id} threads, so a
+        // persisted tab replays read-only.
+        var workflowTabs = new List<SubAgentSummary>();
+        if (isLive && workflowRunRegistry.TryGet(threadId, out var workflowManager) && workflowManager is not null)
+        {
+            workflowTabs.AddRange(
+                workflowManager.ListRuns()
+                    .Select(r => new SubAgentSummary
+                    {
+                        AgentId = r.WorkflowId,
+                        Kind = "workflow",
+                        Name = r.Objective,
+                        Template = "workflow",
+                        Task = r.Objective,
+                        Status = r.Status,
+                        ThreadId = $"workflow-{r.WorkflowId}",
+                        LastActivityUtc = r.LastActivityUtc ?? r.StartedUtc,
+                    })
+            );
+
+            foreach (var run in workflowManager.ListRuns())
+            {
+                workflowTabs.AddRange(
+                    workflowManager.ListRunDelegates(run.WorkflowId)
+                        .Select(s => new SubAgentSummary
+                        {
+                            AgentId = s.AgentId,
+                            Kind = "subagent",
+                            Name = s.Name,
+                            Template = s.TemplateName,
+                            Task = s.Task,
+                            Status = s.Status.ToString().ToLowerInvariant(),
+                            ThreadId = s.ThreadId,
+                            LastActivityUtc = s.LastActivityUtc,
+                        })
+                );
+            }
+
+            // Write-through: fold this live snapshot into the durable index (upsert, never deletes).
+            workflowRunRegistry.PersistTabs(threadId, workflowTabs);
+        }
+
+        // Merge live workflow tabs with the persisted index (live wins on Kind+AgentId), so a restart that
+        // evicted the in-memory runs still surfaces them from disk.
+        var mergedWorkflow = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
+        foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId))
+        {
+            mergedWorkflow[(tab.Kind, tab.AgentId)] = tab;
+        }
+
+        foreach (var tab in workflowTabs)
+        {
+            mergedWorkflow[(tab.Kind, tab.AgentId)] = tab;
+        }
+
+        summaries.AddRange(mergedWorkflow.Values);
+
+        // 404 only when the conversation is neither live NOR has any persisted workflow tabs to replay.
+        if (!isLive && mergedWorkflow.Count == 0)
         {
             return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
-        if (agent is not MultiTurnAgentLoop loop || loop.SubAgentManager is null)
-        {
-            return Ok(Array.Empty<SubAgentSummary>());
-        }
-
-        var summaries = loop.SubAgentManager.ListAgents()
-            .Select(s => new SubAgentSummary
-            {
-                AgentId = s.AgentId,
-                Name = s.Name,
-                Template = s.TemplateName,
-                Task = s.Task,
-                Status = s.Status.ToString().ToLowerInvariant(),
-                ThreadId = s.ThreadId,
-                LastActivityUtc = s.LastActivityUtc,
-            })
-            .ToArray();
-
-        return Ok(summaries);
+        return Ok(summaries.ToArray());
     }
 
     /// <summary>

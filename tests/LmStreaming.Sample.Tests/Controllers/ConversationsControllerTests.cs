@@ -33,6 +33,7 @@ public class ConversationsControllerTests
             workspaceStore ?? Mock.Of<IWorkspaceStore>(),
             providerRegistry ?? new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
+            new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance);
     }
 

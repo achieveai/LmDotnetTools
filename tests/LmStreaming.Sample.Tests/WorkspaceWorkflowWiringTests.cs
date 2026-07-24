@@ -9,10 +9,10 @@ namespace LmStreaming.Sample.Tests;
 
 /// <summary>
 ///     Covers the Workspace Agent migration off #130's direct <c>SetWorkflow</c>/<c>GetWorkflow</c> wiring
-///     onto the <c>StartWorkflowAgent</c> tool family: the controller node-delegate templates are restricted (so
-///     <c>WorkflowManager</c> accepts them), the default conversation templates are inherit-all (which is
-///     why the launch tools must be excluded from inheritance), and a migrated conversation surface exposes
-///     the launch tools but NEVER the workflow-state tools.
+///     onto the <c>StartWorkflowAgent</c> tool family: the controller node-delegate templates are inherit-all
+///     (transparent), the workflow-state/launch tools are excluded from inheritance structurally (via
+///     <c>NonInheritedToolNames</c>, which <c>WorkflowManager</c> asserts), and a migrated conversation
+///     surface exposes the launch tools but NEVER the workflow-state tools.
 /// </summary>
 public sealed class WorkspaceWorkflowWiringTests
 {
@@ -21,26 +21,46 @@ public sealed class WorkspaceWorkflowWiringTests
     private static readonly HashSet<string> WorkflowAndLaunchToolNames =
         [.. WorkflowToolProvider.AllToolNames, .. StartWorkflowToolProvider.ToolNames];
 
+    private static SubAgentOptions RestrictedControllerOptions() =>
+        new()
+        {
+            Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(FakeAgent),
+            NonInheritedToolNames = [.. WorkflowAndLaunchToolNames],
+        };
+
     [Fact]
-    public void ControllerTemplates_AreRestricted_AndAcceptedByWorkflowManager()
+    public void ControllerTemplates_AreInheritAll_AndAcceptedByWorkflowManager_WithStructuralExclusion()
     {
         var templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(FakeAgent);
 
         templates.Should().NotBeEmpty();
         foreach (var (name, template) in templates)
         {
-            template.EnabledTools.Should().NotBeNull($"controller template '{name}' must not be inherit-all");
-            template.EnabledTools!.Should()
-                .NotIntersectWith(WorkflowAndLaunchToolNames, $"controller template '{name}' must not leak workflow tools");
+            // Transparency: controller delegates are inherit-all; the workflow tools are excluded
+            // structurally via NonInheritedToolNames, not via a per-template allow-list.
+            template.EnabledTools.Should().BeNull($"controller template '{name}' should be inherit-all (transparent)");
         }
 
-        // WorkflowManager asserts the restricted-template invariant at construction; these must pass.
+        // WorkflowManager asserts the structural exclusion at construction; options that exclude the
+        // workflow/launch tools from inheritance must be accepted.
+        var act = () => new WorkflowManager(FakeAgent, RestrictedControllerOptions());
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void WorkflowManager_RejectsControllerOptions_WithoutStructuralExclusion()
+    {
+        // Inherit-all templates WITHOUT excluding the workflow tools from inheritance is the
+        // misconfiguration the assertion now guards.
         var act = () =>
             new WorkflowManager(
                 FakeAgent,
-                new SubAgentOptions { Templates = templates }
+                new SubAgentOptions
+                {
+                    Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(FakeAgent),
+                }
             );
-        act.Should().NotThrow();
+        act.Should().Throw<ArgumentException>().WithMessage("*NonInheritedToolNames*");
     }
 
     [Fact]
@@ -61,10 +81,7 @@ public sealed class WorkspaceWorkflowWiringTests
     {
         // Reproduce the migrated Workspace Agent wiring: StartWorkflowAgent family on the conversation registry,
         // default (inherit-all) sub-agent templates, and the launch tools excluded from inheritance.
-        var manager = new WorkflowManager(
-            FakeAgent,
-            new SubAgentOptions { Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(FakeAgent) }
-        );
+        var manager = new WorkflowManager(FakeAgent, RestrictedControllerOptions());
 
         var registry = new FunctionRegistry();
         _ = registry.AddProvider(new StartWorkflowToolProvider(manager));

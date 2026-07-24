@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
@@ -65,6 +66,11 @@ public static class WorkflowSession
     ///     Optional request defaults (notably <c>ModelId</c>) for the controller loop, so the controller runs
     ///     on a fixed, pre-configured model rather than the provider agent's hardcoded default.
     /// </param>
+    /// <param name="usageSink">
+    ///     Optional external root usage sink (issue #196). When supplied, the controller loop's own turns AND
+    ///     its task sub-agents' usage fold into it, so an isolated workflow run's token spend rolls up into the
+    ///     originating conversation's total. Null keeps usage scoped to the controller loop only.
+    /// </param>
     /// <param name="ct">A cancellation token bound to the run.</param>
     public static Task<WorkflowRunHandle> StartAsync(
         string objective,
@@ -81,6 +87,7 @@ public static class WorkflowSession
         bool includeAuthoringTool = true,
         int? controllerMaxTurnsPerRun = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
+        IUsageSink? usageSink = null,
         CancellationToken ct = default
     )
     {
@@ -115,7 +122,9 @@ public static class WorkflowSession
             conversationStore,
             includeAuthoringTool,
             controllerMaxTurnsPerRun,
-            controllerDefaultOptions
+            controllerDefaultOptions,
+            usageSink,
+            logger
         );
         return Task.FromResult(BeginRun(loop, runtime, objective, ct));
     }
@@ -167,7 +176,7 @@ public static class WorkflowSession
         var runtime = WorkflowRuntime.FromSnapshot(snapshot, schemaValidator, logger);
         runtime.AttachStore(store, instanceId);
 
-        var loop = BuildLoop(controllerAgent, runtime, threadId, subAgentOptions, conversationStore);
+        var loop = BuildLoop(controllerAgent, runtime, threadId, subAgentOptions, conversationStore, logger: logger);
 
         // Restore the controller's prior conversation BEFORE driving so it continues with full context.
         // Doing it explicitly here also marks recovery complete so RunAsync does not re-recover.
@@ -188,7 +197,9 @@ public static class WorkflowSession
         IConversationStore? conversationStore,
         bool includeAuthoringTool = true,
         int? maxTurnsPerRun = null,
-        GenerateReplyOptions? controllerDefaultOptions = null
+        GenerateReplyOptions? controllerDefaultOptions = null,
+        IUsageSink? usageSink = null,
+        ILogger? logger = null
     )
     {
         var registry = new FunctionRegistry();
@@ -205,8 +216,37 @@ public static class WorkflowSession
             // Fall back to MultiTurnAgentLoop's own default (50) when the caller does not bound it.
             maxTurnsPerRun: maxTurnsPerRun ?? 50,
             store: conversationStore,
-            subAgentOptions: subAgentOptions
+            subAgentOptions: subAgentOptions,
+            // Give the isolated controller loop (and its SubAgentManager) a logger so their structured logs —
+            // notably the tool-transparency merge and per-delegate inherited-tool set — reach the same sink as
+            // the rest of the workflow. The loop wants ILogger<MultiTurnAgentLoop>; adapt the workflow's
+            // non-generic logger (category preserved).
+            logger: logger is null ? null : new ControllerLoopLogger<MultiTurnAgentLoop>(logger),
+            // Fold the isolated controller loop's own turns AND its task sub-agents' usage into the
+            // originating conversation's root sink when one is supplied (#196).
+            externalUsageSink: usageSink
         );
+    }
+
+    /// <summary>
+    ///     Adapts the workflow's non-generic <see cref="ILogger"/> to the <see cref="ILogger{T}"/> the
+    ///     controller loop's ctor expects, so the loop's and its SubAgentManager's structured logs flow to the
+    ///     same sink. The wrapped logger's category is preserved (it is already a workflow-category logger).
+    /// </summary>
+    private sealed class ControllerLoopLogger<T>(ILogger inner) : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => inner.BeginScope(state);
+
+        public bool IsEnabled(LogLevel logLevel) => inner.IsEnabled(logLevel);
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        ) => inner.Log(logLevel, eventId, state, exception, formatter);
     }
 
     /// <summary>Starts the loop, drives + observes it from a single ordered consumer, and wraps a handle.</summary>

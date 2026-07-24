@@ -64,6 +64,27 @@ internal static class StartWorkflowTestHarness
     }
 
     /// <summary>
+    ///     A controller that returns a SEQUENCE of scripted messages per turn — e.g. a provider
+    ///     <c>UsageMessage</c> emitted alongside the driving tool call — so a single turn can both report usage
+    ///     and advance the workflow.
+    /// </summary>
+    public static Mock<IStreamingAgent> ScriptedControllerMulti(Func<int, IReadOnlyList<IMessage>> script)
+    {
+        var controller = new Mock<IStreamingAgent>();
+        var turn = 0;
+        controller
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns(() => Task.FromResult(ToAsyncEnumerable([.. script(++turn)])));
+        return controller;
+    }
+
+    /// <summary>
     ///     A controller whose FIRST turn blocks until <paramref name="gate"/> is released, then drives the
     ///     minimal workflow to its terminal. Used to hold a workflow "running" for Check/Wait/capacity tests.
     /// </summary>

@@ -18,6 +18,13 @@ public sealed class ConversationsControllerSubAgentsTests
 {
     private static ConversationsController CreateController(MultiTurnAgentPool pool)
     {
+        return CreateController(pool, new WorkflowRunRegistry());
+    }
+
+    private static ConversationsController CreateController(
+        MultiTurnAgentPool pool,
+        WorkflowRunRegistry workflowRunRegistry)
+    {
         return new ConversationsController(
             Mock.Of<IConversationStore>(),
             pool,
@@ -25,6 +32,7 @@ public sealed class ConversationsControllerSubAgentsTests
             Mock.Of<IWorkspaceStore>(),
             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             new ConversationStatusResolver(Mock.Of<IConversationStore>(), new InMemoryConversationStore()),
+            workflowRunRegistry,
             NullLogger<ConversationsController>.Instance);
     }
 
@@ -133,6 +141,66 @@ public sealed class ConversationsControllerSubAgentsTests
         beta.Task.Should().Be("second task");
         beta.Status.Should().Be("running");
         beta.ThreadId.Should().Be($"subagent-{betaId}");
+    }
+
+    [Fact]
+    public async Task ListSubAgents_ReturnsPersistedWorkflowTabs_ForNonLiveConversation_SurvivingRestart()
+    {
+        // A conversation whose live loop was evicted by a server restart, but whose workflow + delegate
+        // tabs were written through to the durable index. The endpoint must surface them (200) instead of
+        // 404 — that's what makes workflow tabs survive a restart.
+        var indexDir = Path.Combine(Path.GetTempPath(), "wf-index-ctrl-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var registry = new WorkflowRunRegistry(indexDir);
+            var threadId = "thread-restarted";
+            registry.PersistTabs(
+                threadId,
+                [
+                    new SubAgentSummary
+                    {
+                        AgentId = "wf-1",
+                        Kind = "workflow",
+                        Name = "Review PR",
+                        Template = "workflow",
+                        Task = "Review PR",
+                        Status = "completed",
+                        ThreadId = "workflow-wf-1",
+                    },
+                    new SubAgentSummary
+                    {
+                        AgentId = "del-1",
+                        Kind = "subagent",
+                        Name = "read:task",
+                        Template = "general-purpose",
+                        Task = "read the file",
+                        Status = "completed",
+                        ThreadId = "subagent-del-1",
+                    },
+                ]);
+
+            // Pool has NO live loop for this thread (restart evicted it) — TryGet returns false.
+            await using var pool = CreateFakeAgentPool();
+            var controller = CreateController(pool, registry);
+
+            var result = controller.ListSubAgents(threadId);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value).ToList();
+            summaries.Select(s => s.AgentId).Should().BeEquivalentTo(["wf-1", "del-1"]);
+            summaries.Single(s => s.AgentId == "del-1").ThreadId.Should().Be("subagent-del-1");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(indexDir, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort temp cleanup.
+            }
+        }
     }
 
     private static string ParseAgentId(string spawnJson)

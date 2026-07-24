@@ -5,7 +5,10 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
@@ -80,6 +83,36 @@ public sealed record WorkflowRunResult
     public JsonObject? Notes { get; init; }
 }
 
+/// <summary>
+///     A lightweight, presentation-only snapshot of one tracked workflow run, returned by
+///     <see cref="WorkflowManager.ListRuns"/>. Carries no live handles, so it is safe to hand to a host UI
+///     enumerating active/finished runs (e.g. as tabs) without exposing the run graph.
+/// </summary>
+public sealed record WorkflowRunSummary
+{
+    /// <summary>The caller-supplied opaque workflow handle.</summary>
+    public required string WorkflowId { get; init; }
+
+    /// <summary>The run's objective (from its definition), or the <see cref="WorkflowId"/> when none is set.</summary>
+    public required string Objective { get; init; }
+
+    /// <summary>One of the <see cref="WorkflowStatuses"/> values (running/completed/failed).</summary>
+    public required string Status { get; init; }
+
+    /// <summary>The node the controller is currently (or was last) positioned on, when known.</summary>
+    public string? CurrentNodeId { get; init; }
+
+    /// <summary>When the run was reserved/started.</summary>
+    public required DateTimeOffset StartedUtc { get; init; }
+
+    /// <summary>
+    ///     The run's last observed activity — its start while running, or the terminal transition once it
+    ///     finishes. The manager does not observe intermediate controller turns, so a running run reports its
+    ///     start time as the recency floor.
+    /// </summary>
+    public DateTimeOffset? LastActivityUtc { get; init; }
+}
+
 /// <summary>Thrown when a <c>workflowId</c> is already reserved (in flight or completed but still queryable).</summary>
 public sealed class DuplicateWorkflowException(string workflowId)
     : Exception($"A workflow with id '{workflowId}' already exists. Choose a distinct workflowId.")
@@ -143,6 +176,9 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly GenerateReplyOptions? _controllerDefaultOptions;
     private readonly ILogger _logger;
     private readonly IJsonSchemaValidator? _schemaValidator;
+    private readonly Func<IUsageSink?>? _rootUsageSink;
+    private readonly Func<InheritableToolSnapshot?>? _inheritedToolSnapshot;
+    private readonly IConversationStore? _controllerConversationStore;
 
     private readonly WorkflowValidator _validator = new();
     private readonly ConcurrentDictionary<string, WorkflowEntry> _workflows = new(StringComparer.Ordinal);
@@ -156,9 +192,12 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     default) and closes over it here — the controller model is never taken from the calling agent.
     /// </param>
     /// <param name="controllerSubAgentOptions">
-    ///     The sub-agent templates a controller may delegate node work to. Every template MUST declare an
-    ///     explicit <c>EnabledTools</c> allow-list that omits the workflow-state/launch tools, so a
-    ///     node-delegate can never inherit the controller's own workflow tools; this is asserted here.
+    ///     The sub-agent templates a controller may delegate node work to. The options MUST exclude the
+    ///     workflow-state/launch tools from inheritance via
+    ///     <see cref="SubAgentOptions.NonInheritedToolNames"/>, so a node-delegate can never inherit the
+    ///     controller's own workflow tools even with an inherit-all (<c>EnabledTools = null</c>)
+    ///     template; this is asserted here. Delegates otherwise inherit the launching conversation's
+    ///     tools transparently — see <paramref name="inheritedToolSnapshot"/>.
     /// </param>
     /// <param name="completionNotifier">
     ///     Optional sink that delivers the proactive completion <see cref="NotifyMessage"/> to the originating
@@ -174,6 +213,33 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// </param>
     /// <param name="logger">Optional logger.</param>
     /// <param name="schemaValidator">Optional JSON-Schema validator forwarded to the runtime.</param>
+    /// <param name="rootUsageSink">
+    ///     Optional LATE-BOUND getter for the originating conversation's root usage sink (issue #196). It is
+    ///     resolved once per run at <see cref="StartAsync"/> time (not at construction), so a host that creates
+    ///     the manager BEFORE its root conversation loop exists can pass e.g. <c>() =&gt; agent?.UsageSink</c>.
+    ///     When it resolves to a non-null sink, that run's controller loop folds BOTH its own driving turns AND
+    ///     its task sub-agents' usage into it, so an isolated StartWorkflowAgent run's token spend rolls up into
+    ///     the originating conversation's total. Null (or a getter returning null) keeps each run's usage scoped
+    ///     to its own controller loop.
+    /// </param>
+    /// <param name="inheritedToolSnapshot">
+    ///     Optional LATE-BOUND getter for the launching conversation's inheritable tool snapshot (the tools its
+    ///     own sub-agents inherit). Resolved once per run at <see cref="StartAsync"/> time — same late-binding
+    ///     rationale as <paramref name="rootUsageSink"/> — and threaded onto the run's controller
+    ///     <see cref="SubAgentOptions.ExternalInheritableTools"/> so the controller's delegate sub-agents
+    ///     inherit those tools transparently (the workflow-state/launch tools are still excluded structurally
+    ///     via <see cref="SubAgentOptions.NonInheritedToolNames"/>). A host with sandbox tools passes e.g.
+    ///     <c>() =&gt; agent?.SubAgentManager?.GetInheritableToolSnapshot()</c>. Null keeps delegates
+    ///     reasoning-only (the controller registry carries no domain tools to inherit).
+    /// </param>
+    /// <param name="controllerConversationStore">
+    ///     Optional conversation store for the controller loop so the workflow agent's OWN conversation (its
+    ///     orchestration turns — GetWorkflow / SetCurrentNode / Agent spawns) is persisted under the
+    ///     <c>workflow-{id}</c> thread and can be viewed (via the messages endpoint / the ⚙ workflow tab) after
+    ///     the run completes and the loop is disposed. Null (the default) keeps the controller conversation
+    ///     live-only (streamable during the run, empty afterwards). The host should pass a NON-OWNING wrapper
+    ///     over its shared store so controller teardown never disposes it.
+    /// </param>
     public WorkflowManager(
         Func<IStreamingAgent> controllerAgentFactory,
         SubAgentOptions controllerSubAgentOptions,
@@ -183,7 +249,10 @@ public sealed class WorkflowManager : IAsyncDisposable
         TimeSpan? gateWaitTimeout = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
         ILogger? logger = null,
-        IJsonSchemaValidator? schemaValidator = null
+        IJsonSchemaValidator? schemaValidator = null,
+        Func<IUsageSink?>? rootUsageSink = null,
+        Func<InheritableToolSnapshot?>? inheritedToolSnapshot = null,
+        IConversationStore? controllerConversationStore = null
     )
     {
         ArgumentNullException.ThrowIfNull(controllerAgentFactory);
@@ -202,6 +271,9 @@ public sealed class WorkflowManager : IAsyncDisposable
         _controllerDefaultOptions = controllerDefaultOptions;
         _logger = logger ?? NullLogger.Instance;
         _schemaValidator = schemaValidator;
+        _rootUsageSink = rootUsageSink;
+        _inheritedToolSnapshot = inheritedToolSnapshot;
+        _controllerConversationStore = controllerConversationStore;
         _concurrencyGate = new SemaphoreSlim(maxConcurrentWorkflows, maxConcurrentWorkflows);
     }
 
@@ -241,7 +313,14 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         // Reserve the id slot atomically BEFORE the (effectively synchronous) start, closing the duplicate
         // TOCTOU: two concurrent starts for the same id cannot both pass the check.
-        var entry = new WorkflowEntry { OriginatingToolCallId = originatingToolCallId };
+        var startedUtc = DateTimeOffset.UtcNow;
+        var entry = new WorkflowEntry
+        {
+            OriginatingToolCallId = originatingToolCallId,
+            Objective = definition.Objective,
+            StartedUtc = startedUtc,
+            LastActivityUtcTicks = startedUtc.UtcTicks,
+        };
         if (!_workflows.TryAdd(workflowId, entry))
         {
             throw new DuplicateWorkflowException(workflowId);
@@ -266,22 +345,47 @@ public sealed class WorkflowManager : IAsyncDisposable
 
             gateAcquired = true;
 
+            // Resolve the originating conversation's root usage sink ONCE per run, now that a start is
+            // actually proceeding. Late-bound (issue #196): a host may construct this manager before its root
+            // conversation loop exists, so the sink is fetched here rather than at construction. A null getter
+            // (or one that resolves to null) leaves this run's usage scoped to its own controller loop.
+            var rootUsageSink = _rootUsageSink?.Invoke();
+
+            // Resolve the launching conversation's inheritable tool snapshot ONCE per run (same
+            // late-binding rationale as rootUsageSink above). Threaded onto the controller's
+            // SubAgentOptions so the controller's delegate sub-agents inherit those tools
+            // transparently; the workflow-state/launch tools stay excluded via NonInheritedToolNames.
+            var inheritedTools = _inheritedToolSnapshot?.Invoke();
+            var controllerSubAgentOptions = inheritedTools is null
+                ? _controllerSubAgentOptions
+                : _controllerSubAgentOptions with { ExternalInheritableTools = inheritedTools };
+
+            // Observability: record how many tools this run's delegates will transparently inherit from the
+            // launching conversation (content-free — a count, no tool arguments or task text).
+            _logger.LogDebug(
+                "Workflow {WorkflowId}: resolved {InheritedToolCount} inherited tool(s) for its delegates "
+                    + "from the launching conversation.",
+                workflowId,
+                inheritedTools?.Contracts.Count ?? 0
+            );
+
             handle = await WorkflowSession
                 .StartAsync(
                     objective: StartObjective,
                     inputs: null,
                     definition: definition,
-                    subAgentOptions: _controllerSubAgentOptions,
+                    subAgentOptions: controllerSubAgentOptions,
                     controllerAgent: _controllerAgentFactory(),
                     threadId: $"workflow-{workflowId}",
                     store: null,
                     instanceId: workflowId,
-                    conversationStore: null,
+                    conversationStore: _controllerConversationStore,
                     logger: _logger is NullLogger ? null : _logger,
                     schemaValidator: _schemaValidator,
                     includeAuthoringTool: false,
                     controllerMaxTurnsPerRun: _controllerMaxTurnsPerRun,
                     controllerDefaultOptions: _controllerDefaultOptions,
+                    usageSink: rootUsageSink,
                     ct: CancellationToken.None
                 )
                 .ConfigureAwait(false);
@@ -472,6 +576,118 @@ public sealed class WorkflowManager : IAsyncDisposable
         return handle.Completion.IsCompleted ? BuildResult(workflowId, handle) : Timeout(workflowId, handle);
     }
 
+    /// <summary>
+    ///     Returns a lightweight per-run summary for every tracked workflow (running, completed, or failed)
+    ///     WITHOUT blocking — a presentation seam for a host listing active runs. Order is unspecified, and no
+    ///     live run graph is exposed; a completed run is answered from its retained terminal snapshot.
+    /// </summary>
+    public IReadOnlyList<WorkflowRunSummary> ListRuns()
+    {
+        var summaries = new List<WorkflowRunSummary>(_workflows.Count);
+        foreach (var (workflowId, entry) in _workflows)
+        {
+            // A captured terminal snapshot is authoritative once present (the handle may already be released);
+            // otherwise a known entry is running — whether its handle is published yet or the completion
+            // handoff is mid-flight — never "unknown" for a genuinely tracked id.
+            var terminal = Volatile.Read(ref entry.TerminalSnapshot);
+            var handle = Volatile.Read(ref entry.Handle);
+            var status = terminal?.Status ?? WorkflowStatuses.Running;
+            var currentNodeId = terminal?.CurrentNodeId ?? handle?.CurrentNodeId;
+
+            summaries.Add(
+                new WorkflowRunSummary
+                {
+                    WorkflowId = workflowId,
+                    Objective = string.IsNullOrWhiteSpace(entry.Objective) ? workflowId : entry.Objective,
+                    Status = status,
+                    CurrentNodeId = currentNodeId,
+                    StartedUtc = entry.StartedUtc,
+                    LastActivityUtc = new DateTimeOffset(
+                        Volatile.Read(ref entry.LastActivityUtcTicks),
+                        TimeSpan.Zero
+                    ),
+                }
+            );
+        }
+
+        return summaries;
+    }
+
+    /// <summary>
+    ///     Exposes the live controller <see cref="MultiTurnAgentLoop"/> for a running workflow so a host can
+    ///     subscribe to and stream its conversation. Returns <c>false</c> for an unknown id OR a run that has
+    ///     completed and had its heavy graph released (the loop is no longer live). The returned loop is owned
+    ///     by the run — the caller MUST NOT dispose it.
+    /// </summary>
+    public bool TryGetRunLoop(string workflowId, out MultiTurnAgentLoop? loop)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
+
+        if (_workflows.TryGetValue(workflowId, out var entry)
+            && Volatile.Read(ref entry.Handle) is { } handle)
+        {
+            loop = handle.Loop;
+            return true;
+        }
+
+        loop = null;
+        return false;
+    }
+
+    /// <summary>
+    ///     The delegate sub-agents of a run, for surfacing as nested tabs. Returns the LIVE controller loop's
+    ///     delegates while running, or the snapshot retained at completion once the loop is released — so a
+    ///     completed run's delegate tabs (and their persisted transcripts) remain listable, matching how a
+    ///     conversation's own sub-agent tabs persist. Empty for an unknown run or one that spawned no delegates.
+    /// </summary>
+    /// <param name="workflowId">The run whose delegate sub-agents to list.</param>
+    public IReadOnlyList<SubAgentSnapshot> ListRunDelegates(string workflowId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
+
+        if (!_workflows.TryGetValue(workflowId, out var entry))
+        {
+            return [];
+        }
+
+        // Prefer the live loop (running run) so in-flight status/activity is current; fall back to the
+        // snapshot retained at completion once the heavy graph has been released.
+        if (Volatile.Read(ref entry.Handle) is { } handle
+            && handle.Loop.SubAgentManager is { } manager)
+        {
+            return manager.ListAgents();
+        }
+
+        return Volatile.Read(ref entry.RetainedDelegates) ?? [];
+    }
+
+    /// <summary>
+    ///     Finds the running controller loop whose <see cref="SubAgentManager"/> owns the given delegate
+    ///     sub-agent id, so a host can stream a nested workflow delegate (spawned BY a controller) the same
+    ///     way it streams a top-level sub-agent. Symmetric with <see cref="TryGetRunLoop"/>, but keyed by a
+    ///     delegate agent id rather than a workflow id. Returns false when no live run owns the id.
+    /// </summary>
+    /// <param name="subAgentId">The delegate sub-agent id (as listed by the controller's SubAgentManager).</param>
+    /// <param name="loop">The owning controller loop when found; otherwise null.</param>
+    public bool TryGetRunLoopOwningSubAgent(string subAgentId, out MultiTurnAgentLoop? loop)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subAgentId);
+
+        foreach (var entry in _workflows.Values)
+        {
+            if (Volatile.Read(ref entry.Handle) is { } handle
+                && handle.Loop.SubAgentManager is { } subAgentManager
+                && subAgentManager.TryGetAgent(subAgentId, out _))
+            {
+                loop = handle.Loop;
+                return true;
+            }
+        }
+
+        loop = null;
+        return false;
+    }
+
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
@@ -503,46 +719,50 @@ public sealed class WorkflowManager : IAsyncDisposable
     }
 
     /// <summary>
-    ///     Rejects a controller sub-agent template set that would let a node-delegate inherit the controller's
-    ///     workflow tools: an <c>EnabledTools = null</c> (inherit-all) template, or one that explicitly enables
-    ///     any workflow-state/launch tool. Called at construction so misconfiguration fails fast, before any
-    ///     controller loop is built.
+    ///     Asserts the controller sub-agent options exclude the workflow-state/launch tools from inheritance
+    ///     via <see cref="SubAgentOptions.NonInheritedToolNames"/>. That structural exclusion is what keeps a
+    ///     node-delegate from inheriting the controller's own workflow tools even under an inherit-all
+    ///     (<c>EnabledTools = null</c>) template — the tools are filtered out of the controller's inheritable
+    ///     snapshot before any template allow-list is applied, and before any transparently-inherited ancestor
+    ///     tools are merged. Called at construction so misconfiguration fails fast, before any controller loop
+    ///     is built.
     /// </summary>
     internal static void AssertRestrictedControllerTemplates(SubAgentOptions options)
     {
-        var forbidden = new HashSet<string>(StringComparer.Ordinal);
+        // No delegate templates ⇒ no sub-agent can be spawned ⇒ nothing can inherit the workflow tools,
+        // so the exclusion is moot. This keeps a controller that never delegates (e.g. a purely
+        // graph-driving run) valid without forcing a redundant NonInheritedToolNames.
+        if (options.Templates.Count == 0)
+        {
+            return;
+        }
+
+        var required = new HashSet<string>(StringComparer.Ordinal);
         foreach (var name in WorkflowToolProvider.AllToolNames)
         {
-            _ = forbidden.Add(name);
+            _ = required.Add(name);
         }
 
         foreach (var name in StartWorkflowToolProvider.ToolNames)
         {
-            _ = forbidden.Add(name);
+            _ = required.Add(name);
         }
 
-        foreach (var (templateName, template) in options.Templates)
-        {
-            if (template.EnabledTools is null)
-            {
-                throw new ArgumentException(
-                    $"Controller sub-agent template '{templateName}' must declare an explicit EnabledTools "
-                        + "allow-list; a null (inherit-all) list would let the node-delegate inherit the "
-                        + "controller's workflow-state tools.",
-                    nameof(options)
-                );
-            }
+        var excluded = options.NonInheritedToolNames is { } names
+            ? new HashSet<string>(names, StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
 
-            var leaked = template.EnabledTools.Where(forbidden.Contains).ToList();
-            if (leaked.Count > 0)
-            {
-                throw new ArgumentException(
-                    $"Controller sub-agent template '{templateName}' must not enable workflow tools: "
-                        + string.Join(", ", leaked)
-                        + ".",
-                    nameof(options)
-                );
-            }
+        var missing = required.Where(n => !excluded.Contains(n)).ToList();
+        if (missing.Count > 0)
+        {
+            throw new ArgumentException(
+                "Controller sub-agent options must exclude the workflow-state/launch tools from inheritance "
+                    + "(via SubAgentOptions.NonInheritedToolNames) so a node-delegate can never inherit the "
+                    + "controller's own workflow tools: "
+                    + string.Join(", ", missing)
+                    + ".",
+                nameof(options)
+            );
         }
     }
 
@@ -572,6 +792,27 @@ public sealed class WorkflowManager : IAsyncDisposable
             // answer from it and the heavy WorkflowRunHandle → WorkflowRuntime graph can be released below.
             var result = BuildResult(workflowId, handle);
             Volatile.Write(ref entry.TerminalSnapshot, result);
+
+            // Snapshot the controller's delegate sub-agents BEFORE the loop is disposed below, so their tabs
+            // (and their already-persisted subagent-{id} transcripts) stay listable after the run completes —
+            // parity with a conversation's own sub-agent tabs, which persist for the conversation's lifetime.
+            var delegates = handle.Loop.SubAgentManager?.ListAgents();
+            if (delegates is { Count: > 0 })
+            {
+                Volatile.Write(ref entry.RetainedDelegates, delegates);
+            }
+
+            // Observability: how many delegates this run produced (retained for post-completion tab
+            // surfacing). Content-free — a count only.
+            _logger.LogDebug(
+                "Workflow {WorkflowId} completed with {DelegateCount} delegate(s) retained for tab surfacing.",
+                workflowId,
+                delegates?.Count ?? 0
+            );
+
+            // Stamp the terminal transition as the run's last activity so ListRuns reports a meaningful
+            // recency for a finished run (the manager does not observe intermediate controller turns).
+            Volatile.Write(ref entry.LastActivityUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
 
             // Release the slot as soon as the run ends — BEFORE the possibly-slow notify — so a blocked
             // notification never holds up a fresh StartWorkflowAgent call waiting on the gate. Guarded against a
@@ -765,6 +1006,23 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         /// <summary>The originating StartWorkflowAgent tool-call id for completion-notify correlation, or null.</summary>
         public string? OriginatingToolCallId;
+
+        /// <summary>The run's objective (from its definition), for presentation via ListRuns. Set once at
+        /// reservation, before the entry is published; immutable thereafter.</summary>
+        public string? Objective;
+
+        /// <summary>When the run was reserved/started. Set once at reservation, before the entry is published;
+        /// immutable thereafter.</summary>
+        public DateTimeOffset StartedUtc;
+
+        /// <summary>UTC ticks of the run's last observed activity: the start time while running, then the
+        /// terminal transition once it finishes. Read/written via <see cref="Volatile"/>.</summary>
+        public long LastActivityUtcTicks;
+
+        /// <summary>The controller's delegate sub-agents, snapshotted at completion (before the loop is
+        /// released) so a finished run's delegate tabs — and their persisted transcripts — remain listable,
+        /// matching how a conversation's own sub-agent tabs persist. Read/written via <see cref="Volatile"/>.</summary>
+        public IReadOnlyList<SubAgentSnapshot>? RetainedDelegates;
 
         public Task? Observer;
         public int NotifySent;

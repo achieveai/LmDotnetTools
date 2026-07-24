@@ -17,6 +17,12 @@ function hueFor(tab: ConversationTab): string {
   return tab.color ?? MAIN_TAB_COLOR;
 }
 
+/** Tooltip text: prefix workflow tabs with "Workflow: " so their kind reads even when the badge is off-screen. */
+function tabTitle(tab: ConversationTab): string {
+  const base = tab.kind === 'workflow' ? `Workflow: ${tab.label}` : tab.label;
+  return tab.status ? `${base} · ${tab.status}` : base;
+}
+
 function tabStyle(tab: ConversationTab): Record<string, string> {
   const hue = hueFor(tab);
   const active = tab.id === props.activeTabId;
@@ -40,11 +46,20 @@ function tabStyle(tab: ConversationTab): Record<string, string> {
       :aria-selected="tab.id === activeTabId"
       data-testid="conversation-tab"
       :data-tab-id="tab.id"
-      :title="tab.status ? `${tab.label} · ${tab.status}` : tab.label"
+      :data-tab-kind="tab.kind"
+      :title="tabTitle(tab)"
       :style="tabStyle(tab)"
       @click="emit('select', tab.id)"
     >
       <span class="conversation-tab__dot" :style="{ background: hueFor(tab) }" aria-hidden="true" />
+      <span
+        v-if="tab.kind === 'workflow'"
+        class="conversation-tab__badge"
+        data-testid="workflow-tab-badge"
+        title="Workflow run"
+        aria-label="Workflow run"
+        >⚙</span
+      >
       <span class="conversation-tab__label">{{ tab.label }}</span>
     </button>
   </div>
@@ -94,6 +109,13 @@ function tabStyle(tab: ConversationTab): Record<string, string> {
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+
+.conversation-tab__badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.8;
 }
 
 .conversation-tab__label {

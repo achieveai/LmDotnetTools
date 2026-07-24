@@ -545,6 +545,7 @@ public sealed class ChatWebSocketManagerSubAgentTests
       new(
         pool,
         new WebSocketConnectionRegistry(),
+        new LmStreaming.Sample.Services.WorkflowRunRegistry(),
         new PendingAuthCoordinator(Mock.Of<IAuthEventNotifier>(), new AuthOptions(), NullLogger<PendingAuthCoordinator>.Instance),
         logger ?? NullLogger<ChatWebSocketManager>.Instance);
 
