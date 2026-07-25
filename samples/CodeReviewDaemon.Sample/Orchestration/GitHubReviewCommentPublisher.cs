@@ -174,7 +174,7 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
     private static DateTimeOffset? TimeOf(JsonElement element, string name) =>
         element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String
             && DateTimeOffset.TryParse(v.GetString(), CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+                DateTimeStyles.RoundtripKind, out var dt)
             ? dt
             : null;
 

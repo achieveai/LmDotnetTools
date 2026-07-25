@@ -152,7 +152,7 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
     private static DateTimeOffset? PublishedAtOf(JsonElement comment) =>
         comment.TryGetProperty("publishedDate", out var p) && p.ValueKind is JsonValueKind.String
             && DateTimeOffset.TryParse(p.GetString(), CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+                DateTimeStyles.RoundtripKind, out var dt)
             ? dt
             : null;
 

@@ -1274,6 +1274,26 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// that has accumulated many prior review comments).</summary>
     private const int MaxExistingCommentsListed = 120;
 
+    /// <summary>Static guidance header for the "already posted" block: how the reviewer must read the existing
+    /// threads (judge resolution itself, never re-post an active finding from ANY author, answer questions
+    /// directed at it). The two rendered thread lists (past / new) are appended after this.</summary>
+    private const string ExistingCommentsGuidance =
+        "## Already posted on this PR — from ALL authors (other bots, humans, and you)\n\n"
+        + "Below is the existing discussion, grouped into threads (a finding plus its replies) and split into "
+        + "what was there during PAST reviews vs. what is NEW since your last review. Each thread shows a "
+        + "[status: …] hint, but YOU decide if it is resolved:\n"
+        + "- Judge for yourself whether a thread is RESOLVED by reading its conversation — a reply saying it was "
+        + "fixed (a commit sha, \"done\", \"handled\") or code that now addresses it means resolved, whatever the "
+        + "status hint says.\n"
+        + "- Do NOT re-post a finding that already exists as an UNRESOLVED thread from ANY author (bot or human); "
+        + "reply in-thread only if you have a material update. A thread you judge RESOLVED may be raised again "
+        + "ONLY if the issue genuinely still persists in the current code.\n"
+        + "- If any thread has a question or request directed at YOU (the review bot), ANSWER it as an in-thread "
+        + "reply — required, not optional. Look hardest in the \"New since your last review\" section.\n"
+        + "- If you have NOTHING new to add and no question directed at you to answer, post NOTHING and make your "
+        + "final review exactly \"No new findings since the last review.\"\n\n"
+        + "### Comments during past reviews\n";
+
     /// <summary>
     /// Best-effort prepends a list of the review comments ALREADY on the PR (inline findings + review summaries)
     /// so the reviewer posts only genuinely NEW findings instead of re-posting a full review every run (the
@@ -1325,40 +1345,27 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             .Max();
 
         // Group comments into threads (a finding + its replies) so the reviewer reads each full conversation and
-        // judges resolution itself. Comments with no thread id stay standalone (the index keeps them distinct).
-        static bool IsNewer(DateTimeOffset? latest, DateTimeOffset? cut) =>
-            cut is not null && latest is not null && latest > cut;
-        var groups = existing
-            .Select((c, i) => (Comment: c, Index: i))
-            .GroupBy(x => x.Comment.ThreadId is { Length: > 0 } t ? $"t:{t}" : $"i:{x.Index}")
-            .Select(g => (Comments: g.Select(x => x.Comment).ToList(), Latest: g.Max(x => x.Comment.PublishedAt)))
+        // judges resolution itself; comments with no thread id stay standalone (the index keeps them distinct). A
+        // thread is "new" when its latest comment lands after the cutoff.
+        var threads = existing
+            .Select((c, i) => (Comment: c, Key: c.ThreadId is { Length: > 0 } t ? $"t:{t}" : $"i:{i}"))
+            .GroupBy(x => x.Key, x => x.Comment)
+            .Select(g => g.ToList())
             .ToList();
-        var pastThreads = groups.Where(g => !IsNewer(g.Latest, cutoff)).Select(g => g.Comments).ToList();
-        var newThreads = groups.Where(g => IsNewer(g.Latest, cutoff)).Select(g => g.Comments).ToList();
-        var newComments = newThreads.Sum(t => t.Count);
+        bool IsNew(List<ExistingReviewComment> thread) =>
+            cutoff is { } cut && thread.Max(c => c.PublishedAt) is { } latest && latest > cut;
+        var pastThreads = threads.Where(t => !IsNew(t)).ToList();
+        var newThreads = threads.Where(IsNew).ToList();
 
         _logger.LogInformation(
             "Run {RunId}: prepending {Count} already-posted PR comment(s) ({New} new since last review) for delta-only review.",
-            run.Id, existing.Count, newComments);
+            run.Id, existing.Count, newThreads.Sum(t => t.Count));
 
-        return "## Already posted on this PR — from ALL authors (other bots, humans, and you)\n\n"
-            + "Below is the existing discussion, grouped into threads (a finding plus its replies) and split into "
-            + "what was there during PAST reviews vs. what is NEW since your last review. Each thread shows a "
-            + "[status: …] hint, but YOU decide if it is resolved:\n"
-            + "- Judge for yourself whether a thread is RESOLVED by reading its conversation — a reply saying it was "
-            + "fixed (a commit sha, \"done\", \"handled\") or code that now addresses it means resolved, whatever the "
-            + "status hint says.\n"
-            + "- Do NOT re-post a finding that already exists as an UNRESOLVED thread from ANY author (bot or human); "
-            + "reply in-thread only if you have a material update. A thread you judge RESOLVED may be raised again "
-            + "ONLY if the issue genuinely still persists in the current code.\n"
-            + "- If any thread has a question or request directed at YOU (the review bot), ANSWER it as an in-thread "
-            + "reply — required, not optional. Look hardest in the \"New since your last review\" section.\n"
-            + "- If you have NOTHING new to add and no question directed at you to answer, post NOTHING and make your "
-            + "final review exactly \"No new findings since the last review.\"\n\n"
-            + "### Comments during past reviews\n"
-            + $"{RenderThreads(pastThreads, MaxExistingCommentsListed)}\n\n"
-            + "### New comments since your last review — focus here\n"
-            + $"{RenderThreads(newThreads, MaxExistingCommentsListed)}\n\n"
+        return ExistingCommentsGuidance
+            + RenderThreads(pastThreads, MaxExistingCommentsListed)
+            + "\n\n### New comments since your last review — focus here\n"
+            + RenderThreads(newThreads, MaxExistingCommentsListed)
+            + "\n\n"
             + reviewInput;
     }
 
@@ -1385,8 +1392,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// Renders threads as conversations for the "## Already posted" block: one bullet per thread with its
-    /// location + status hint, then an indented line per comment (author, date, body). Bounded by
-    /// <paramref name="maxComments"/> total; the tail is summarized as a count so the section never runs away.
+    /// location + status hint, then an indented line per comment (author, date, body). Stops starting new threads
+    /// once <paramref name="maxComments"/> is reached (a started thread renders whole, so a conversation is never
+    /// cut mid-way); the remainder is summarized as a count so the section never runs away.
     /// </summary>
     private static string RenderThreads(IReadOnlyList<List<ExistingReviewComment>> threads, int maxComments)
     {
@@ -1417,12 +1425,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
             foreach (var c in thread)
             {
-                if (shown >= maxComments)
-                {
-                    omitted++;
-                    continue;
-                }
-
                 var author = c.Author is { Length: > 0 } ? c.Author : "unknown";
                 var when = c.PublishedAt is { } t ? $", {t:yyyy-MM-dd}" : string.Empty;
                 sb.Append("    - (").Append(author).Append(when).Append(") ").Append(c.Body).Append('\n');
