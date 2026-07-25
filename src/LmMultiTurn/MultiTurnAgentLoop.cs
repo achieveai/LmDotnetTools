@@ -531,6 +531,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     {
         var turnCount = 0;
 
+        // Tracks WHY the loop stopped. The trailing `turnCount >= MaxTurnsPerRun` test is also true
+        // when a turn broke naturally (or on a deferral) exactly AT the budget boundary, so it can't
+        // by itself distinguish a genuine cap hit. Only a genuine cap hit — the while-condition going
+        // false with the last turn still holding tool calls — needs the synthesizing wrap-up turn.
+        var brokeEarly = false;
+
         while (turnCount < MaxTurnsPerRun)
         {
             ct.ThrowIfCancellationRequested();
@@ -613,20 +619,140 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
                     runId,
                     _deferred.Values.Count(d => d.GenerationId == turnGenerationId));
+                brokeEarly = true;
                 break;
             }
 
             if (!hasToolCalls)
             {
                 Logger.LogDebug("No tool calls in turn {Turn}, run complete", turnCount);
+                brokeEarly = true;
                 break;
             }
         }
 
-        if (turnCount >= MaxTurnsPerRun)
+        // Only a genuine cap hit reaches here without brokeEarly: the loop ran out of turn budget
+        // while the last turn still emitted tool calls, so the run would otherwise end on a tool
+        // result mid-stream. Run one synthesizing wrap-up turn so the run always terminates on an
+        // assistant status message. The natural-completion and deferral-pause exits set brokeEarly
+        // (they already end on assistant text or intentionally park for auto-resume), so they skip
+        // this — even when they happen to land exactly on the budget boundary.
+        if (!brokeEarly && turnCount >= MaxTurnsPerRun)
         {
-            Logger.LogWarning("Max turns ({MaxTurns}) reached for run {RunId}", MaxTurnsPerRun, runId);
+            Logger.LogWarning(
+                "Max turns ({MaxTurns}) reached for run {RunId}; running a wrap-up turn to return a final status",
+                MaxTurnsPerRun,
+                runId);
+            await ExecuteWrapUpTurnAsync(runId, ct);
         }
+    }
+
+    /// <summary>
+    /// Runs a single final turn after a run exhausts its turn budget, so the run ends on a
+    /// synthesizing assistant status message instead of a bare tool result left mid-stream.
+    /// </summary>
+    /// <remarks>
+    /// The loop — not the provider — executes tools, so a text-only close is guaranteed here without
+    /// relying on <c>ToolChoice</c> (which is serialized inconsistently across providers and would
+    /// 400 on Anthropic). This turn simply does not route any tool call the model emits: it is not
+    /// executed and not added to history (persisting a dangling <c>tool_use</c> with no matching
+    /// <c>tool_result</c> would break a later resume on providers that require the pair). A transient
+    /// wrap-up instruction is appended to the SENT messages only — never to history — so the persisted
+    /// transcript is not polluted with a synthetic "you hit the limit" user turn. If the model returns
+    /// no usable text, a deterministic fallback status is published so the run never dead-ends on a
+    /// tool result.
+    /// </remarks>
+    private async Task ExecuteWrapUpTurnAsync(string runId, CancellationToken ct)
+    {
+        // A distinct turn gets its own generationId (turn 1 reuses the run's id; every later turn,
+        // this wrap-up included, gets a fresh one) so its messages don't collide with earlier turns
+        // on the client merge key kind-runId-generationId-messageOrderIdx.
+        var wrapUpGenerationId = Guid.NewGuid().ToString("N");
+
+        var options = DefaultOptions with
+        {
+            RunId = runId,
+            ThreadId = ThreadId,
+            GenerationId = wrapUpGenerationId,
+        };
+
+        // Ephemeral instruction, appended to the sent messages only (NOT AddToHistory). Anthropic
+        // merges consecutive same-role messages, so a Role.User instruction after the final
+        // tool_result (also a user-role turn) is safe cross-provider.
+        var wrapUpInstruction = new TextMessage
+        {
+            Text =
+                "You have reached the maximum number of tool-use turns for this run. Do not call any "
+                + "more tools. Write a concise final message that summarizes what you accomplished, "
+                + "the current status, and any remaining or unfinished work so nothing is left "
+                + "mid-stream.",
+            Role = Role.User,
+        };
+
+        var messagesToSend = GetMessagesWithSystemPrompt().Concat([wrapUpInstruction]);
+
+        IAsyncEnumerable<IMessage> stream;
+        try
+        {
+            stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The wrap-up is best-effort: if the model call itself fails, still close the run on a
+            // deterministic status rather than propagating (which would fail the whole run) or
+            // leaving it on a tool result.
+            Logger.LogWarning(ex, "Wrap-up model turn failed for run {RunId}; publishing fallback status", runId);
+            await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
+            return;
+        }
+
+        var producedText = false;
+        await foreach (var msg in stream.WithCancellation(ct))
+        {
+            // Drop any tool call the model emits despite the instruction: do not execute it and do
+            // not persist it. Not executing guarantees the turn adds no new work and ends on text;
+            // not persisting avoids a dangling tool_use with no tool_result that would break a later
+            // resume. It was already surfaced to subscribers by the in-pipeline publishing middleware
+            // (result-less pill), which is cosmetic and rare.
+            if (msg is ToolCallMessage or ToolsCallMessage or ToolCallUpdateMessage or ToolsCallUpdateMessage)
+            {
+                continue;
+            }
+
+            AddToHistory(msg);
+
+            // A finalized, non-thinking, non-blank text message counts as a real wrap-up.
+            if (msg is TextMessage { IsThinking: false } text && !string.IsNullOrWhiteSpace(text.Text))
+            {
+                producedText = true;
+            }
+        }
+
+        if (!producedText)
+        {
+            await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Publishes and records a deterministic final assistant status so a wrapped-up run always ends
+    /// on an assistant message even when the model produced no usable text. Stamped via
+    /// <see cref="MessageExtensions.WithIds(IMessage, string?, string?, string?, string?)"/> so its
+    /// client merge key is consistent with the rest of the run.
+    /// </summary>
+    private async Task PublishWrapUpFallbackAsync(string runId, string generationId, CancellationToken ct)
+    {
+        var fallback = new TextMessage
+        {
+            Text =
+                "This run reached its maximum number of tool-use turns and was stopped before the "
+                + "task was fully completed. Some work may be unfinished — please review the steps "
+                + "above and continue if needed.",
+            Role = Role.Assistant,
+        }.WithIds(runId, parentRunId: null, threadId: ThreadId, generationId: generationId);
+
+        AddToHistory(fallback);
+        await PublishToAllAsync(fallback, ct);
     }
 
     /// <summary>

@@ -27,11 +27,13 @@ public sealed class WorkspaceSubAgentLoader
 
     /// <summary>
     /// Per-spawn turn cap shared by every sample sub-agent template (built-in and discovered).
-    /// Centralised so the three call sites stay aligned and so a future bump is one edit, not
-    /// three drifting literals. Lower than <see cref="SubAgentTemplate"/>'s built-in default of
-    /// 50 because the sample's middleware path is single-provider and each turn is full-cost.
+    /// Centralised so the call sites stay aligned and so a future bump is one edit, not several
+    /// drifting literals. Set above <see cref="SubAgentTemplate"/>'s built-in default of 50: the
+    /// sample's real workloads (PR-context gathering, review lenses) routinely need 30+ tool calls,
+    /// and when a run hits the cap the loop just stops without a synthesizing final turn — so too
+    /// tight a budget silently truncates the sub-agent with no text output at all.
     /// </summary>
-    internal const int DefaultMaxTurnsPerRun = 25;
+    internal const int DefaultMaxTurnsPerRun = 75;
 
     private readonly SandboxSessionRegistry _registry;
     private readonly ILogger<WorkspaceSubAgentLoader> _logger;
