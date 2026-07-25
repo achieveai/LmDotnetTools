@@ -118,9 +118,9 @@ review:
     {{ end ~}}
     {{ if is_rereview ~}}
     This is a RE-REVIEW (round {{ review_round }}) of this PR. It was last reviewed at commit
-    {{ prev_commit }}; the current head is {{ new_commit }}. Focus on what changed since
-    {{ prev_commit }} and re-check any prior findings, rather than re-reviewing the whole PR from
-    scratch.
+    {{ prev_commit }}; the current head is {{ new_commit }}. Still assess the FULL PR (every changed file —
+    never skip unchanged portions), but PRIORITIZE what changed since {{ prev_commit }} and re-check any prior
+    findings; rely on your earlier context below rather than re-collecting it from scratch.
     {{ if has_prior_files ~}}
     Your prior context and findings from earlier rounds are in these files — Read them first and build
     on them instead of re-collecting context:

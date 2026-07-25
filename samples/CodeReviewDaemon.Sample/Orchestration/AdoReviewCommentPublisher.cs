@@ -132,6 +132,11 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
 
             foreach (var comment in comments.EnumerateArray())
             {
+                if (!IsActionableComment(comment))
+                {
+                    continue; // ADO system activity (votes/merges/reviewer updates) + deleted comments — not discussion.
+                }
+
                 var content = comment.TryGetProperty("content", out var c) && c.ValueKind is JsonValueKind.String
                     ? c.GetString()
                     : null;
@@ -146,6 +151,20 @@ internal sealed class AdoReviewCommentPublisher : IReviewCommentPublisher
         }
 
         return results;
+    }
+
+    /// <summary>False for ADO non-discussion entries: system activity (merge attempts, reviewer updates, votes all
+    /// carry <c>commentType: "system"</c>) and deleted comments. Those are non-blank but not review discussion, so
+    /// excluding them stops them consuming the bounded existing-comment budget and displacing real findings.</summary>
+    private static bool IsActionableComment(JsonElement comment)
+    {
+        if (comment.TryGetProperty("isDeleted", out var del) && del.ValueKind is JsonValueKind.True)
+        {
+            return false;
+        }
+
+        return !(comment.TryGetProperty("commentType", out var ct) && ct.ValueKind is JsonValueKind.String
+            && string.Equals(ct.GetString(), "system", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>Reads the comment's <c>publishedDate</c> (ISO-8601) — used to order past vs. new comments.</summary>

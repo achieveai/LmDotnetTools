@@ -119,7 +119,8 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
         });
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/pulls/7/comments", comments)
-            .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews);
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 
@@ -132,11 +133,70 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ListExisting_excludes_pending_draft_reviews()
+    {
+        // GitHub's reviews list includes PENDING (unsubmitted) drafts. Treating a draft body as posted discussion
+        // lets a stale draft from a failed posting run suppress the valid submitted replacement — so it is skipped.
+        var reviews = JsonSerializer.Serialize(new object[]
+        {
+            new { body = "Reviewed PR 7 — submitted", user = new { login = "revobot" }, state = "COMMENTED", submitted_at = "2026-07-20T10:00:00Z" },
+            new { body = "draft in progress — do not dedup", user = new { login = "revobot" }, state = "PENDING" },
+        });
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(e => e.Body.Contains("submitted"));
+        existing.Should().NotContain(
+            e => e.Body.Contains("draft in progress"), "a PENDING/unsubmitted draft must not seed dedup");
+    }
+
+    [Fact]
+    public async Task ListExisting_folds_in_pr_conversation_issue_comments()
+    {
+        // The publisher posts its SUMMARY via /issues/{pr}/comments, and humans ask questions there; those must
+        // reach dedup/reply handling, so the scan now merges that endpoint (PR-level, no path/line).
+        var issueComments = JsonSerializer.Serialize(new object[]
+        {
+            new { id = 900, body = "## Re-Review Summary: PR #7", user = new { login = "revobot" }, created_at = "2026-07-20T10:00:00Z" },
+            new { id = 901, body = "@revobot is this still needed?", user = new { login = "alice" }, created_at = "2026-07-21T09:00:00Z" },
+        });
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/issues/7/comments", issueComments);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("Re-Review Summary") && e.Author == "revobot");
+        existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("still needed") && e.Author == "alice");
+    }
+
+    [Fact]
+    public async Task ListExisting_requests_inline_comments_newest_first()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        handler.Requests.Should().Contain(
+            r => r.Uri.ToString().Contains("/pulls/7/comments") && r.Uri.ToString().Contains("direction=desc"),
+            "inline comments must be fetched newest-first so the page cap keeps recent findings, not the oldest");
+    }
+
+    [Fact]
     public async Task ListExisting_returns_empty_for_a_pr_with_no_comments()
     {
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "/pulls/7/comments", "[]")
-            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]");
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", "[]")
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
 
         var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
 

@@ -229,6 +229,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         text.Should().Contain("(alice", "a human author is attributed too");
         text.Should().Contain("EXISTING-FINDING");
         text.Should().Contain("EXISTING-RESOLVED");
+        text.Should().Contain(
+            "UNTRUSTED DATA", "existing comment bodies must be framed as untrusted quoted data (prompt-injection defense)");
+        text.Should().Contain(
+            "«Must — null deref EXISTING-FINDING»", "each untrusted body is wrapped in guillemet delimiters");
         text.Should().Contain("ANSWER it as an in-thread reply", "a question directed at the bot must be answered");
         text.Should().Contain(
             "No new findings since the last review", "the reviewer is told to post nothing when there is nothing new");

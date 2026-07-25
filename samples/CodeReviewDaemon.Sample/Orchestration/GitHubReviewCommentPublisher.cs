@@ -100,13 +100,17 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         ArgumentNullException.ThrowIfNull(target);
 
         var results = new List<ExistingReviewComment>();
-        var pullsBase = $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/pulls/{target.PrId}";
+        var repoBase = $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}";
+        var pullsBase = $"{repoBase}/pulls/{target.PrId}";
 
-        // Inline review comments — the actual per-line findings. Paginated (100/page), bounded by MaxListPages.
+        // Inline review comments — the actual per-line findings. Fetched NEWEST-first (sort=created&direction=desc)
+        // so that once a PR exceeds the MaxListPages cap we keep the most RECENT findings/replies (which drive
+        // dedup + reply handling) rather than the oldest. Paginated 100/page.
         for (var page = 1; page <= MaxListPages; page++)
         {
             var count = 0;
-            await foreach (var comment in EnumerateAsync($"{pullsBase}/comments?per_page=100&page={page}", cancellationToken))
+            await foreach (var comment in EnumerateAsync(
+                $"{pullsBase}/comments?per_page=100&page={page}&sort=created&direction=desc", cancellationToken))
             {
                 count++;
                 var body = GetString(comment, "body");
@@ -126,9 +130,16 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             }
         }
 
-        // Review-level summaries (one page is plenty — the top-level "Reviewed PR X…" bodies).
+        // Review-level summaries (the top-level "Reviewed PR X…" bodies). Skip PENDING/unsubmitted drafts: a draft
+        // is not posted discussion, and treating its body as such lets a stale draft from a failed posting run
+        // suppress the valid submitted replacement on the next review.
         await foreach (var review in EnumerateAsync($"{pullsBase}/reviews?per_page=100", cancellationToken))
         {
+            if (IsPendingReview(review))
+            {
+                continue;
+            }
+
             var body = GetString(review, "body");
             if (!string.IsNullOrWhiteSpace(body))
             {
@@ -137,8 +148,29 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             }
         }
 
+        // Ordinary PR-conversation (issue) comments — this publisher posts its summaries via /issues/{pr}/comments,
+        // so prior summaries AND the human PR-conversation (questions directed at the bot) live here, not on the
+        // review-comment endpoints; fold them into the model so dedup/reply handling can see them. PR-level (no
+        // path/line).
+        await foreach (var comment in EnumerateAsync($"{repoBase}/issues/{target.PrId}/comments?per_page=100", cancellationToken))
+        {
+            var body = GetString(comment, "body");
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                results.Add(new ExistingReviewComment(
+                    null, null, Trim(body), AuthorOf(comment), IsActive: true,
+                    PublishedAt: TimeOf(comment, "created_at"), ThreadId: ThreadIdOf(comment)));
+            }
+        }
+
         return results;
     }
+
+    /// <summary>True when a review is an unsubmitted PENDING draft (GitHub reports <c>state == "PENDING"</c> and
+    /// no <c>submitted_at</c>). A draft is not posted discussion, so it must never seed dedup — otherwise a stale
+    /// draft left by a failed posting run could suppress the valid submitted review on the next pass.</summary>
+    private static bool IsPendingReview(JsonElement review) =>
+        string.Equals(GetString(review, "state"), "PENDING", StringComparison.OrdinalIgnoreCase);
 
     private async IAsyncEnumerable<JsonElement> EnumerateAsync(
         string url,

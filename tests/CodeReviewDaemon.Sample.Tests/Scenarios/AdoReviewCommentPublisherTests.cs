@@ -171,4 +171,31 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
         existing.Should().ContainSingle(e => e.Body.Contains("already fixed") && !e.IsActive);
         existing.Should().ContainSingle(e => e.Body.Contains("no status field") && e.IsActive);
     }
+
+    [Fact]
+    public async Task ListExisting_skips_system_activity_and_deleted_comments()
+    {
+        // ADO threads also carry non-discussion entries: system activity (merges/votes/reviewer updates all use
+        // commentType "system") and deleted comments. Those are non-blank but not review discussion, so they must
+        // not consume the bounded existing-comment budget and displace real findings/questions.
+        var threads = JsonSerializer.Serialize(new
+        {
+            value = new object[]
+            {
+                new { status = "active", comments = new object[]
+                {
+                    new { content = "REAL-FINDING here", commentType = "text", author = new { displayName = "Revobot" } },
+                    new { content = "Gautam voted -5", commentType = "system", author = new { displayName = "Azure DevOps" } },
+                    new { content = "DELETED-BODY", commentType = "text", isDeleted = true, author = new { displayName = "alice" } },
+                } },
+            },
+        });
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(e => e.Body.Contains("REAL-FINDING"));
+        existing.Should().NotContain(e => e.Body.Contains("voted"), "system activity is not review discussion");
+        existing.Should().NotContain(e => e.Body.Contains("DELETED-BODY"), "deleted comments are excluded");
+    }
 }
