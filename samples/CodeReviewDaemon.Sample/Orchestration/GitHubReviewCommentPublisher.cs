@@ -103,9 +103,36 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
         var repoBase = $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}";
         var pullsBase = $"{repoBase}/pulls/{target.PrId}";
 
+        // Review-level summaries (the top-level "Reviewed PR X…" bodies). Fetched FIRST so we can collect the ids of
+        // PENDING/unsubmitted drafts before scanning inline comments below. Skip PENDING drafts: a draft is not
+        // posted discussion, and treating its body as such lets a stale draft from a failed posting run suppress the
+        // valid submitted replacement on the next review.
+        var pendingReviewIds = new HashSet<long>();
+        await foreach (var review in EnumerateAsync($"{pullsBase}/reviews?per_page=100", cancellationToken))
+        {
+            if (IsPendingReview(review))
+            {
+                if (LongOf(review, "id") is { } pendingId)
+                {
+                    pendingReviewIds.Add(pendingId);
+                }
+
+                continue;
+            }
+
+            var body = GetString(review, "body");
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                results.Add(new ExistingReviewComment(
+                    null, null, Trim(body), AuthorOf(review), IsActive: true, PublishedAt: TimeOf(review, "submitted_at")));
+            }
+        }
+
         // Inline review comments — the actual per-line findings. Fetched NEWEST-first (sort=created&direction=desc)
         // so that once a PR exceeds the MaxListPages cap we keep the most RECENT findings/replies (which drive
-        // dedup + reply handling) rather than the oldest. Paginated 100/page.
+        // dedup + reply handling) rather than the oldest. Paginated 100/page. A comment whose pull_request_review_id
+        // belongs to a PENDING draft (above) is skipped — GitHub still returns the draft's per-line comments to the
+        // authenticated author, and letting one seed dedup would suppress its valid submitted replacement.
         for (var page = 1; page <= MaxListPages; page++)
         {
             var count = 0;
@@ -119,6 +146,11 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
                     continue;
                 }
 
+                if (LongOf(comment, "pull_request_review_id") is { } reviewId && pendingReviewIds.Contains(reviewId))
+                {
+                    continue; // belongs to an unsubmitted draft review
+                }
+
                 results.Add(new ExistingReviewComment(
                     GetString(comment, "path"), LineOf(comment), Trim(body), AuthorOf(comment),
                     IsActive: true, PublishedAt: TimeOf(comment, "created_at"), ThreadId: ThreadIdOf(comment)));
@@ -127,24 +159,6 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
             if (count < 100)
             {
                 break; // last page reached
-            }
-        }
-
-        // Review-level summaries (the top-level "Reviewed PR X…" bodies). Skip PENDING/unsubmitted drafts: a draft
-        // is not posted discussion, and treating its body as such lets a stale draft from a failed posting run
-        // suppress the valid submitted replacement on the next review.
-        await foreach (var review in EnumerateAsync($"{pullsBase}/reviews?per_page=100", cancellationToken))
-        {
-            if (IsPendingReview(review))
-            {
-                continue;
-            }
-
-            var body = GetString(review, "body");
-            if (!string.IsNullOrWhiteSpace(body))
-            {
-                results.Add(new ExistingReviewComment(
-                    null, null, Trim(body), AuthorOf(review), IsActive: true, PublishedAt: TimeOf(review, "submitted_at")));
             }
         }
 
@@ -191,6 +205,13 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 
     private static string? GetString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>Reads a numeric field (e.g. a review's <c>id</c> or a comment's <c>pull_request_review_id</c>) as a
+    /// long, so inline comments can be correlated back to the PENDING draft review they belong to.</summary>
+    private static long? LongOf(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.Number && v.TryGetInt64(out var n)
+            ? n
+            : null;
 
     private static string? LineOf(JsonElement comment) =>
         comment.TryGetProperty("line", out var l) && l.ValueKind is JsonValueKind.Number

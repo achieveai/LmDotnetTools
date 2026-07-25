@@ -176,6 +176,37 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ListExisting_excludes_inline_comments_belonging_to_a_pending_review()
+    {
+        // A failed posting run can leave a PENDING (draft) review whose inline comments are still returned to the
+        // authenticated author by GET /pulls/{pr}/comments. Excluding only the draft's summary body is not enough —
+        // its per-line drafts must also be dropped, else a stale draft finding suppresses its valid submitted
+        // replacement. Correlate pull_request_review_id against the PENDING review ids and drop matching inline
+        // comments.
+        var reviews = JsonSerializer.Serialize(new object[]
+        {
+            new { id = 5001, body = "", user = new { login = "revobot" }, state = "PENDING" },
+            new { id = 5002, body = "submitted review", user = new { login = "revobot" }, state = "COMMENTED", submitted_at = "2026-07-20T10:00:00Z" },
+        });
+        var comments = JsonSerializer.Serialize(new object[]
+        {
+            new { body = "DRAFT-inline-finding", path = "src/Foo.cs", line = 3, pull_request_review_id = 5001, user = new { login = "revobot" }, created_at = "2026-07-20T09:00:00Z" },
+            new { body = "SUBMITTED-inline-finding", path = "src/Foo.cs", line = 9, pull_request_review_id = 5002, user = new { login = "revobot" }, created_at = "2026-07-20T10:00:00Z" },
+        });
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/pulls/7/comments", comments)
+            .OnJson(HttpMethod.Get, "/pulls/7/reviews", reviews)
+            .OnJson(HttpMethod.Get, "/issues/7/comments", "[]");
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(e => e.Body.Contains("SUBMITTED-inline-finding"));
+        existing.Should().NotContain(
+            e => e.Body.Contains("DRAFT-inline-finding"),
+            "inline comments belonging to a PENDING draft review must not seed dedup");
+    }
+
+    [Fact]
     public async Task ListExisting_requests_inline_comments_newest_first()
     {
         var handler = new FakeHttpMessageHandler()
