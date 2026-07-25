@@ -25,8 +25,16 @@ public sealed class ConversationsControllerSubAgentsTests
         MultiTurnAgentPool pool,
         WorkflowRunRegistry workflowRunRegistry)
     {
+        return CreateController(pool, workflowRunRegistry, Mock.Of<IConversationStore>());
+    }
+
+    private static ConversationsController CreateController(
+        MultiTurnAgentPool pool,
+        WorkflowRunRegistry workflowRunRegistry,
+        IConversationStore store)
+    {
         return new ConversationsController(
-            Mock.Of<IConversationStore>(),
+            store,
             pool,
             Mock.Of<IChatModeStore>(),
             Mock.Of<IWorkspaceStore>(),
@@ -56,12 +64,34 @@ public sealed class ConversationsControllerSubAgentsTests
         await using var pool = CreateFakeAgentPool();
         var controller = CreateController(pool);
 
-        var result = controller.ListSubAgents("does-not-exist");
+        var result = await controller.ListSubAgents("does-not-exist");
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         var payload = JsonSerializer.Serialize(notFound.Value);
         payload.Should().Contain("unknown_thread");
         payload.Should().Contain("does-not-exist");
+    }
+
+    [Fact]
+    public async Task ListSubAgents_ReturnsEmptyArray_ForKnownIdleThreadWithNoSubAgents()
+    {
+        // A persisted conversation that is NOT live in the pool and never spawned a sub-agent or
+        // workflow (e.g. a plain chat the user reopened). It must answer 200 with an empty list — not
+        // 404 — so the client's 3s sub-agent poll doesn't spuriously log "Failed to list sub-agents".
+        var threadId = "thread-known-idle";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
+
+        await using var pool = CreateFakeAgentPool(); // no live loop for this thread
+        var controller = CreateController(pool, new WorkflowRunRegistry(), store);
+
+        var result = await controller.ListSubAgents(threadId);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value);
+        summaries.Should().BeEmpty();
     }
 
     [Fact]
@@ -74,7 +104,7 @@ public sealed class ConversationsControllerSubAgentsTests
 
         var controller = CreateController(pool);
 
-        var result = controller.ListSubAgents(threadId);
+        var result = await controller.ListSubAgents(threadId);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value);
@@ -122,7 +152,7 @@ public sealed class ConversationsControllerSubAgentsTests
 
         var controller = CreateController(pool);
 
-        var result = controller.ListSubAgents(threadId);
+        var result = await controller.ListSubAgents(threadId);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value).ToList();
@@ -183,7 +213,7 @@ public sealed class ConversationsControllerSubAgentsTests
             await using var pool = CreateFakeAgentPool();
             var controller = CreateController(pool, registry);
 
-            var result = controller.ListSubAgents(threadId);
+            var result = await controller.ListSubAgents(threadId);
 
             var ok = Assert.IsType<OkObjectResult>(result);
             var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value).ToList();

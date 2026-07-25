@@ -371,7 +371,7 @@ public class ConversationsController(
     /// <c>SubAgentManager.ListAgents()</c> snapshot projected to <see cref="SubAgentSummary"/>.
     /// </summary>
     [HttpGet("{threadId}/subagents")]
-    public IActionResult ListSubAgents(string threadId)
+    public async Task<IActionResult> ListSubAgents(string threadId, CancellationToken ct = default)
     {
         var summaries = new List<SubAgentSummary>();
         var isLive = agentPool.TryGet(threadId, out var agent) && agent is not null;
@@ -456,10 +456,21 @@ public class ConversationsController(
 
         summaries.AddRange(mergedWorkflow.Values);
 
-        // 404 only when the conversation is neither live NOR has any persisted workflow tabs to replay.
+        // A live conversation, or one with persisted workflow tabs, always answers 200. Otherwise the
+        // conversation is idle (evicted from the pool, or reopened but not yet messaged this session)
+        // and has no children to project — but it may still be a KNOWN thread on disk. Distinguish
+        // "known but idle with no sub-agents" (→ empty 200, the common case: a plain chat you reopened)
+        // from a genuinely unknown thread (→ 404) by consulting the store. Without this, every idle
+        // conversation with no sub-agents gets a spurious 404 and the client's sub-agent panel logs
+        // "Failed to list sub-agents" on every 3s poll. The store is only touched on this cold path,
+        // so the live hot path is unchanged.
         if (!isLive && mergedWorkflow.Count == 0)
         {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            var metadata = await store.LoadMetadataAsync(threadId, ct);
+            if (metadata is null)
+            {
+                return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            }
         }
 
         return Ok(summaries.ToArray());
