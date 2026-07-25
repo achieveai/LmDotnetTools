@@ -1350,11 +1350,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         // Group comments into threads (a finding + its replies) so the reviewer reads each full conversation and
         // judges resolution itself; comments with no thread id stay standalone (the index keeps them distinct). A
-        // thread is "new" when its latest comment lands after the cutoff.
+        // thread is "new" when its latest comment lands after the cutoff. Each thread is ordered OLDEST-first
+        // (root finding → replies) so the reviewer reads it in conversation order — the provider fetch is
+        // newest-first (to keep recent activity under the page cap), which would otherwise render replies before
+        // their root and invert the "still broken → fixed → original finding" signal used to judge resolution.
         var threads = existing
             .Select((c, i) => (Comment: c, Key: c.ThreadId is { Length: > 0 } t ? $"t:{t}" : $"i:{i}"))
             .GroupBy(x => x.Key, x => x.Comment)
-            .Select(g => g.ToList())
+            .Select(g => g.OrderBy(c => c.PublishedAt ?? DateTimeOffset.MinValue).ToList())
             .ToList();
         bool IsNew(List<ExistingReviewComment> thread) =>
             cutoff is { } cut && thread.Max(c => c.PublishedAt) is { } latest && latest > cut;

@@ -273,6 +273,38 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_renders_each_thread_oldest_first_even_when_fetched_newest_first()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // GitHub inline comments are fetched NEWEST-first (so the page cap keeps the most recent activity). Within a
+        // single thread that reverses the conversation — the reviewer is told to read root-finding → replies to judge
+        // resolution, so each thread must render OLDEST-first regardless of fetch order. Seed reply-before-root to
+        // mirror the descending fetch and assert the root finding renders before its later reply.
+        var rootTime = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+        var replyTime = DateTimeOffset.Parse("2026-07-22T15:00:00Z");
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "REPLY-fixed-in-abc123", "alice", IsActive: true,
+            PublishedAt: replyTime, ThreadId: "th-1"));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "ROOT-null-deref-finding", "revobot", IsActive: true,
+            PublishedAt: rootTime, ThreadId: "th-1"));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var rootIdx = text.IndexOf("ROOT-null-deref-finding", StringComparison.Ordinal);
+        var replyIdx = text.IndexOf("REPLY-fixed-in-abc123", StringComparison.Ordinal);
+        rootIdx.Should().BeGreaterThan(0, "the root finding must be rendered");
+        replyIdx.Should().BeGreaterThan(
+            rootIdx,
+            "within a thread the root finding renders before its later reply so the reviewer reads the conversation in order");
+    }
+
+    [Fact]
     public async Task Reviewed_skips_the_existing_comments_block_when_the_pr_has_none()
     {
         using var fixture = Fixture.Create();
