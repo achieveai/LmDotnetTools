@@ -151,13 +151,35 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Snapshot the live source view so a concurrent TryRegister cannot make the
         // diagnostic Available list inconsistent with the lookup that produced template.
         var templates = _source.Templates;
-        if (!templates.TryGetValue(templateName, out var template))
+        if (!TryResolveTemplateName(templateName, templates, out var resolvedName, out var suggestions))
         {
-            throw new ArgumentException(
-                $"Unknown template '{templateName}'. " +
-                $"Available: {string.Join(", ", templates.Keys)}",
-                nameof(templateName));
+            // Ambiguous (several agents share the requested skill segment) vs genuinely unknown get
+            // different, actionable messages so the caller (a controller/parent LLM) can self-correct
+            // by re-calling with an EXACT name rather than collapsing to general-purpose. Both surface
+            // as a recoverable {error} tool result (see SubAgentToolProvider.HandleAgentToolAsync).
+            var message = suggestions.Count > 0
+                ? $"Ambiguous subagent_type '{templateName}'. It matches multiple agents: "
+                    + $"{string.Join(", ", suggestions)}. Re-call Agent with one of these EXACT names."
+                : $"Unknown template '{templateName}'. "
+                    + $"Available: {string.Join(", ", templates.Keys)}";
+            // No paramName: this message is surfaced verbatim to the calling LLM as a recoverable
+            // tool error, so the ArgumentException "(Parameter 'templateName')" suffix is just noise.
+            throw new ArgumentException(message);
         }
+
+        // Resolution may have mapped a bare/mis-prefixed request onto the real registered key
+        // (e.g. 'logging-review' -> 'debugging:logging-review'). Use the resolved key for the
+        // lookup AND for every downstream record (state, receipts, relay) so telemetry and the
+        // parent see the actual template that ran.
+        if (!string.Equals(resolvedName, templateName, StringComparison.Ordinal))
+        {
+            _logger.LogInformation(
+                "Resolved subagent_type '{Requested}' to registered template '{Resolved}' by name match",
+                templateName, resolvedName);
+        }
+
+        templateName = resolvedName;
+        var template = templates[resolvedName];
 
         if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
         {
@@ -277,6 +299,101 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Parent relay is suppressed (NotifyParentOnCompletion=false) so the result
         // flows back only as this tool result, in the same parent turn.
         return await AwaitCompletionAsync(state, ct);
+    }
+
+    /// <summary>
+    /// Resolves a caller-requested <paramref name="requested"/> subagent_type onto a registered
+    /// template key, tolerating the common mismatch where an authored workflow or a parent LLM omits
+    /// or misstates the <c>plugin:</c> prefix (e.g. asks for <c>logging-review</c> or
+    /// <c>code-reviewer:logging-review</c> when the registered key is <c>debugging:logging-review</c>).
+    /// Without this, an exact-match miss threw "Unknown template", and controller LLMs then silently
+    /// collapsed to <c>general-purpose</c> — the specialised agent the workflow asked for never ran.
+    /// </summary>
+    /// <remarks>
+    /// Resolution order, most-specific first (exact always wins, so fully-qualified names and the
+    /// built-ins are never re-routed):
+    /// <list type="number">
+    ///   <item>Exact (ordinal) key match.</item>
+    ///   <item>Case-insensitive exact key match.</item>
+    ///   <item>Skill-segment match: the segment after the LAST <c>':'</c> of the request compared
+    ///   case-insensitively against each key's own last-<c>':'</c> segment. A UNIQUE match
+    ///   auto-resolves; SEVERAL matches are returned as <paramref name="suggestions"/> so the caller
+    ///   can re-issue with an exact name (an LLM decides which; a deterministic caller sees the list).</item>
+    /// </list>
+    /// </remarks>
+    /// <param name="requested">The requested subagent_type (may be bare or mis-prefixed).</param>
+    /// <param name="templates">The live template snapshot to resolve against.</param>
+    /// <param name="resolved">The registered key to spawn, when resolution succeeds.</param>
+    /// <param name="suggestions">
+    /// Candidate keys when the request is ambiguous (several agents share its skill segment); empty
+    /// when the request is simply unknown. Only meaningful when the method returns false.
+    /// </param>
+    /// <returns>True when <paramref name="requested"/> resolves to exactly one template.</returns>
+    internal static bool TryResolveTemplateName(
+        string requested,
+        IReadOnlyDictionary<string, SubAgentTemplate> templates,
+        out string resolved,
+        out IReadOnlyList<string> suggestions)
+    {
+        ArgumentNullException.ThrowIfNull(templates);
+        resolved = string.Empty;
+        suggestions = [];
+
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            return false;
+        }
+
+        // 1. Exact ordinal match — the fast, unchanged path for correct names.
+        if (templates.ContainsKey(requested))
+        {
+            resolved = requested;
+            return true;
+        }
+
+        // 2. Case-insensitive exact match.
+        foreach (var key in templates.Keys)
+        {
+            if (string.Equals(key, requested, StringComparison.OrdinalIgnoreCase))
+            {
+                resolved = key;
+                return true;
+            }
+        }
+
+        // 3. Skill-segment match (the plugin-prefix-insensitive case). Compare the part after the
+        //    last ':' on both sides so 'logging-review' and 'code-reviewer:logging-review' both
+        //    match the registered 'debugging:logging-review'.
+        var requestedSegment = LastSegment(requested);
+        var segmentMatches = new List<string>();
+        foreach (var key in templates.Keys)
+        {
+            if (string.Equals(LastSegment(key), requestedSegment, StringComparison.OrdinalIgnoreCase))
+            {
+                segmentMatches.Add(key);
+            }
+        }
+
+        if (segmentMatches.Count == 1)
+        {
+            resolved = segmentMatches[0];
+            return true;
+        }
+
+        if (segmentMatches.Count > 1)
+        {
+            // Ambiguous: hand the candidates back so the caller can re-issue with an exact name.
+            suggestions = segmentMatches;
+        }
+
+        return false;
+    }
+
+    /// <summary>The segment after the last <c>':'</c> in <paramref name="key"/> (the whole string when none).</summary>
+    private static string LastSegment(string key)
+    {
+        var idx = key.LastIndexOf(':');
+        return idx >= 0 && idx < key.Length - 1 ? key[(idx + 1)..] : key;
     }
 
     /// <summary>

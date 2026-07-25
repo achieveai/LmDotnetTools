@@ -290,6 +290,14 @@ public class SubAgentToolProvider : IFunctionProvider
 
             return ToolHandlerResult.FromText(result);
         }
+        catch (ArgumentException ex)
+        {
+            // An unknown or ambiguous subagent_type is a MODEL mistake (a bare/mis-prefixed name, or
+            // one that matches several agents), not a host fault. Return the actionable message as a
+            // recoverable tool result — listing the valid/suggested names — so the caller re-issues
+            // with an exact name instead of silently collapsing to general-purpose.
+            return ToolHandlerResult.FromError(ex.Message, "unknown_subagent_type");
+        }
         catch (SubAgentExecutionException ex)
         {
             return ToolHandlerResult.FromError(ex.Message, "subagent_failed");

@@ -57,6 +57,17 @@ public static class ControllerSystemPrompt
         3. Poll GetWorkflow until join.satisfied is true.
         4. Call SetCurrentNode to move to the next node.
 
+        CHOOSING A SUBAGENT_TYPE (when a name does not resolve)
+        - subagent_type names are often written WITHOUT their plugin prefix (e.g. "logging-review"
+          instead of "debugging:logging-review"). The runtime resolves an unambiguous name for you
+          automatically, so keep using the unit's verbatim name first.
+        - If the Agent tool returns an error with code unknown_subagent_type, READ the error: it either
+          lists the Available agent names, or (when several agents share the skill name) lists the
+          matching candidates as suggestions. Pick the agent whose name BEST matches what the task needs
+          and re-call Agent with that EXACT subagent_type — keeping the same name and prompt arguments.
+        - Do NOT silently fall back to general-purpose when a more specific agent was clearly intended.
+          general-purpose is the deliberate last resort — use it only when no listed agent fits the task.
+
         JOINS
         - Do not route onward from a procedural node until its join reports satisfied. For an all-join
           that means every unit validated; for an any-join it means at least one validated.

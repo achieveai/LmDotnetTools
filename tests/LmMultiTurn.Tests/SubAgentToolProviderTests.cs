@@ -158,6 +158,26 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HandleAgentToolAsync_UnknownSubagentType_ReturnsRecoverableError()
+    {
+        // An unresolvable subagent_type (no exact match, no unique skill-segment match) is a MODEL
+        // mistake, not a host fault: the handler must return a recoverable error result listing the
+        // available agents — NOT throw — so the loop hands the LLM the catalog to self-correct with
+        // instead of the run collapsing to general-purpose.
+        var agentHandler = GetHandler("Agent");
+        var args = JsonSerializer.Serialize(
+            new { subagent_type = "no-such-agent", prompt = "do something" });
+
+        var result = await agentHandler(args, new ToolCallContext(), CancellationToken.None);
+
+        var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("unknown_subagent_type");
+        resolved.Payload.Text.Should().Contain("Unknown template")
+            .And.Contain("researcher").And.Contain("coder");
+    }
+
+    [Fact]
     public async Task HandleSendMessageToolAsync_MissingTarget_ThrowsArgumentException()
     {
         // Arrange

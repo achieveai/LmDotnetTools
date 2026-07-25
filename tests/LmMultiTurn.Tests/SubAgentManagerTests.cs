@@ -140,6 +140,117 @@ public class SubAgentManagerTests : IAsyncLifetime
             .WithMessage("*Unknown template*non-existent-template*");
     }
 
+    // --- subagent_type resolution (plugin-prefix tolerance) -------------------------------------
+    // Authored workflows and controller LLMs routinely reference an agent by a bare or mis-prefixed
+    // name (e.g. 'logging-review' or 'code-reviewer:logging-review' when the registered key is
+    // 'debugging:logging-review'). TryResolveTemplateName recovers the intended template so the run
+    // does not silently collapse to general-purpose. These tests pin every resolution branch.
+
+    [Theory]
+    [InlineData("debugging:logging-review")] // exact
+    [InlineData("Debugging:Logging-Review")] // case-insensitive exact
+    [InlineData("logging-review")]           // bare skill segment
+    [InlineData("code-reviewer:logging-review")] // wrong plugin prefix, right segment
+    public void TryResolveTemplateName_ResolvesToQualifiedKey(string requested)
+    {
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["debugging:logging-review"] = MakeTemplate(),
+            ["general-purpose"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            requested, templates, out var resolved, out var suggestions);
+
+        ok.Should().BeTrue();
+        resolved.Should().Be("debugging:logging-review");
+        suggestions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryResolveTemplateName_ExactMatchWinsOverSegment()
+    {
+        // A key that IS an exact (ordinal) match must never be re-routed by segment logic,
+        // even when another key shares its trailing skill segment.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["review"] = MakeTemplate(),
+            ["code-reviewer:review"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            "review", templates, out var resolved, out var suggestions);
+
+        ok.Should().BeTrue();
+        resolved.Should().Be("review");
+        suggestions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryResolveTemplateName_AmbiguousSegment_ReturnsSuggestions()
+    {
+        // Two agents share the 'logging-review' segment under different plugins: the request is
+        // genuinely ambiguous, so it must NOT auto-resolve; both candidates come back as suggestions.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["debugging:logging-review"] = MakeTemplate(),
+            ["code-reviewer:logging-review"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            "logging-review", templates, out var resolved, out var suggestions);
+
+        ok.Should().BeFalse();
+        resolved.Should().BeEmpty();
+        suggestions.Should().BeEquivalentTo(
+            ["debugging:logging-review", "code-reviewer:logging-review"]);
+    }
+
+    [Fact]
+    public void TryResolveTemplateName_Unknown_ReturnsFalseWithNoSuggestions()
+    {
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["debugging:logging-review"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            "totally-unrelated", templates, out var resolved, out var suggestions);
+
+        ok.Should().BeFalse();
+        resolved.Should().BeEmpty();
+        suggestions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ResolvesBareName_AndRuns()
+    {
+        // End-to-end: a bare 'test-agent'-segment name registered under a plugin prefix must spawn.
+        SetupSubAgentResponse([
+            new TextMessage { Text = "resolved result", Role = Role.Assistant },
+        ]);
+        _manager = CreateManager(qualifiedTemplateKey: "debugging:test-agent");
+
+        var result = await _manager.SpawnAsync("test-agent", "Do some work");
+
+        result.Should().Be("resolved result");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_AmbiguousName_ThrowsWithSuggestions()
+    {
+        // When the requested segment matches several registered agents, SpawnAsync throws an
+        // actionable message listing the candidates so the controller can re-issue an exact name.
+        _manager = CreateManagerWithTemplates(
+            "debugging:logging-review", "code-reviewer:logging-review");
+
+        var act = () => _manager.SpawnAsync("logging-review", "task");
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*Ambiguous subagent_type*logging-review*"
+                + "debugging:logging-review*code-reviewer:logging-review*");
+    }
+
     [Fact]
     public async Task SpawnAsync_EnforcesConcurrencyLimit()
     {
@@ -864,11 +975,13 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Creates a SubAgentManager with the test's mock sub-agent and parent.
+    /// Creates a SubAgentManager with the test's mock sub-agent and parent. When
+    /// <paramref name="qualifiedTemplateKey"/> is supplied, the single template is registered under
+    /// that key instead of "test-agent" (used to exercise plugin-prefix resolution).
     /// </summary>
-    private SubAgentManager CreateManager(int maxConcurrent = 5)
+    private SubAgentManager CreateManager(int maxConcurrent = 5, string? qualifiedTemplateKey = null)
     {
-        var options = CreateOptions(maxConcurrent);
+        var options = CreateOptions(maxConcurrent, qualifiedTemplateKey);
         return new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
@@ -878,22 +991,43 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Creates SubAgentOptions with a single "test-agent" template
-    /// backed by the mock sub-agent.
+    /// Creates a SubAgentManager whose source registers a template under each of the given keys
+    /// (all backed by the mock sub-agent). Used to build ambiguous-segment resolution scenarios.
     /// </summary>
-    private SubAgentOptions CreateOptions(int maxConcurrent = 5)
+    private SubAgentManager CreateManagerWithTemplates(params string[] templateKeys)
     {
-        var template = new SubAgentTemplate
+        var templates = templateKeys.ToDictionary(key => key, _ => MakeTemplate());
+        var options = new SubAgentOptions
         {
-            SystemPrompt = "You are a test agent.",
-            AgentFactory = () => _subAgentMock.Object,
+            Templates = templates,
+            MaxConcurrentSubAgents = 5,
         };
+        return new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates));
+    }
 
+    /// <summary>A minimal template backed by the shared mock sub-agent.</summary>
+    private SubAgentTemplate MakeTemplate() => new()
+    {
+        SystemPrompt = "You are a test agent.",
+        AgentFactory = () => _subAgentMock.Object,
+    };
+
+    /// <summary>
+    /// Creates SubAgentOptions with a single template backed by the mock sub-agent, keyed by
+    /// <paramref name="qualifiedTemplateKey"/> when given (defaults to "test-agent").
+    /// </summary>
+    private SubAgentOptions CreateOptions(int maxConcurrent = 5, string? qualifiedTemplateKey = null)
+    {
         return new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate>
             {
-                ["test-agent"] = template,
+                [qualifiedTemplateKey ?? "test-agent"] = MakeTemplate(),
             },
             MaxConcurrentSubAgents = maxConcurrent,
         };
