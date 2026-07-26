@@ -221,16 +221,36 @@ public sealed class DaemonAgentFactoryTests
         // Regression (empty-review spam, live #224): the old guidance told the agent that replying via
         // POST /pulls/{pr}/comments/{comment_id}/replies "does NOT create a new review, so it is fine" — that
         // is FALSE. GitHub wraps EACH reply in its own submitted, empty-bodied COMMENTED review (proven on #224:
-        // six replies → six empty reviews). The corrected GitHub guidance must (a) drop that false claim, (b)
-        // fold an answer to an open review thread into the SAME single batched POST /reviews as an inline
-        // comment (never the /replies endpoint), and (c) answer a PR-CONVERSATION issue comment via the
-        // wrapper-free POST /issues/{pr}/comments. Rendered with should_post=true and is_ado unset (a GitHub run).
+        // six replies → six empty reviews). The corrected GitHub guidance must (a) drop that false claim and (b)
+        // call out the /replies endpoint as empty-review spam. Rendered with should_post=true and is_ado unset.
         var prompt = DaemonAgentFactory.CreateReviewProfile(
             new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
 
         prompt.Should().NotContain("does NOT create a new review"); // the false "replies are safe" claim is gone
         prompt.Should().MatchRegex("(?is)replies.{0,200}empty"); // the /replies endpoint is now called out as empty-review spam
         prompt.Should().Contain("issues/"); // PR-conversation answers route through the wrapper-free issue-comments endpoint
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_DoesNotClaimBatchedCommentsCanReplyInThread()
+    {
+        // Regression (PR #226 Must, comment 3651558773): the first #224 fix replaced the /replies endpoint with
+        // "fold your answer into the SAME single batched POST /reviews: add a comments[] entry anchored to that
+        // thread's file+line". That is ALSO wrong — the batched comments[] array has NO in_reply_to field, so an
+        // entry at the old path/line opens a NEW top-level thread (GitHubReviewCommentPublisher.ThreadIdOf groups
+        // it under its own id), leaving the original thread active; and an outdated original line 422s the whole
+        // batch. There is no REST way to reply in-thread without an empty-review wrapper, so the prompt must NOT
+        // claim comments[] answers/continues an existing thread. A prior-thread answer must route to the review
+        // SUMMARY BODY or the wrapper-free POST /issues/{pr}/comments; comments[] carries NEW in-diff findings only.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        // The flawed "anchor a comments[] reply to the old thread's line" instruction must be gone.
+        prompt.Should().NotContain("anchored to that thread's file+line");
+        // The prompt must state comments[] cannot reply in-thread (no in_reply_to on the batched endpoint).
+        prompt.Should().MatchRegex("(?is)comments\\[\\].{0,160}(cannot|can't|does not|do not|no in_reply_to).{0,160}(thread|reply)");
+        // A prior-thread answer routes to the summary body or the wrapper-free issues endpoint, not a fake reply.
+        prompt.Should().MatchRegex("(?is)(summary body|issues/)");
     }
 
     [Fact]

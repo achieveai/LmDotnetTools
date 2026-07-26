@@ -82,12 +82,20 @@ review:
        - Do NOT use the code-reviewer:post-pr-review skill to POST on GitHub: it posts findings one-at-a-time via
          POST .../pulls/{{ pr_number }}/comments and produces exactly those empty reviews. Assemble all findings
          into the one batched POST /reviews call above and make it yourself.
-       To ANSWER an OPEN review thread (a prior finding you are replying to), do NOT use the /replies endpoint —
-       it makes an empty review (see above). Instead fold your answer into the SAME single batched POST /reviews:
-       add a comments[] entry anchored to that thread's file+line whose body opens by naming the thread it answers
-       (e.g. "Re: <finding> —"). A PR-CONVERSATION issue comment (a question in the PR's main conversation, not on a
-       code line — its id is an issue-comment id, not a review-comment id, so it CANNOT be answered on any review
-       endpoint) is answered EITHER by a line in the POST /reviews summary body OR by ONE wrapper-free comment:
+       comments[] carries NEW findings on lines in THIS PR's diff ONLY — it CANNOT reply in-thread and must NOT be
+       used to answer a prior thread. The batched POST /reviews comments[] array has NO in_reply_to field, so an
+       entry placed at an old thread's file+line does NOT continue that thread — GitHub opens a brand-new top-level
+       thread there (a "Re:" prefix is just text), the original stays open, and if that old line is no longer in the
+       diff the whole review 422s and NOTHING posts. There is no REST way to reply inside an existing thread without
+       an empty-review wrapper, so do not try to fake one.
+       To ANSWER an OPEN review thread (a prior finding you are replying to), do NOT use the /replies endpoint (it
+       makes an empty review, see above) and do NOT anchor a comments[] entry to that thread. Put your answer in the
+       POST /reviews SUMMARY BODY instead — one line per thread, naming the thread it answers (e.g. "Re: <finding> —
+       fixed in <sha>"). That body ships inside the same single non-empty review (which also carries your new
+       comments[] findings), so it costs no extra review and creates no empty one. A PR-CONVERSATION issue comment (a
+       question in the PR's main conversation, not on a code line — its id is an issue-comment id, not a
+       review-comment id, so it CANNOT be answered on any review endpoint) is answered EITHER by a line in that same
+       summary body OR by ONE wrapper-free comment:
          POST /repos/{{ gh_owner }}/{{ gh_repo }}/issues/{{ pr_number }}/comments  body {"body":"<answer>"}
        That issues endpoint is a PR-conversation comment, not a review, so it never creates an empty review.
        {{ end ~}}
