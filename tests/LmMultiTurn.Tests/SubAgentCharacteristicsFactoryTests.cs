@@ -76,6 +76,132 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task SpawnAsync_InheritedEffortAppliedOnParentModelReuse()
+    {
+        // Parent-model reuse with no per-template effort and no model choice: the sub-agent inherits the
+        // parent's reasoning floor (Option A — fixed High) so it thinks like the launching conversation.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "shared-model",
+            inheritedEffort: ReasoningEffort.High
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedCharacteristics!.Effort.Should().Be(ReasoningEffort.High);
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SpawnAsync_TemplateEffortOverridesInheritedEffort()
+    {
+        // "less thinking" wins: a template that lowered its own Effort keeps that value over the inherited floor.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            Effort = ReasoningEffort.Low,
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "shared-model",
+            inheritedEffort: ReasoningEffort.High
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedCharacteristics!.Effort.Should().Be(ReasoningEffort.Low);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitModelOverrideSuppressesInheritedEffort()
+    {
+        // "different model" wins: an explicit model choice leaves reasoning un-nudged (null effort).
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "shared-model",
+            inheritedEffort: ReasoningEffort.High
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model");
+
+        receivedCharacteristics!.Effort.Should().BeNull();
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SpawnAsync_PlainPathSeedsInheritedReasoningWhenNoModelOverride()
+    {
+        // Plain-path delegate (no characteristics factory) inherits the parent's PRE-SHAPED reasoning.
+        GenerateReplyOptions? receivedOptions = null;
+        var providerAgent = CreateRespondingAgent(options => receivedOptions = options);
+        var inheritedReasoning = ImmutableDictionary<string, object?>.Empty.Add("Thinking", "budget");
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => providerAgent.Object,
+        };
+        await using var manager = CreateManager(template, inheritedReasoning: inheritedReasoning);
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        receivedOptions.Should().NotBeNull();
+        receivedOptions!.ExtraProperties.Should().Contain("Thinking", "budget");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_PlainPathDoesNotSeedInheritedReasoningWhenModelOverridden()
+    {
+        // A different model may use a different transport than the shaped metadata targets, so an explicit
+        // model override skips the inherited pre-shaped reasoning.
+        GenerateReplyOptions? receivedOptions = null;
+        var providerAgent = CreateRespondingAgent(options => receivedOptions = options);
+        var inheritedReasoning = ImmutableDictionary<string, object?>.Empty.Add("Thinking", "budget");
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => providerAgent.Object,
+        };
+        await using var manager = CreateManager(template, inheritedReasoning: inheritedReasoning);
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model");
+
+        receivedOptions.Should().NotBeNull();
+        receivedOptions!.ExtraProperties.Should().NotContainKey("Thinking");
+    }
+
+    [Fact]
     public async Task SpawnAsync_ExplicitTemplateModelEqualToParentMarksSelectionAsExplicit()
     {
         SubAgentCharacteristics? receivedCharacteristics = null;
@@ -243,11 +369,18 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         legacyFactoryCalls.Should().Be(1);
     }
 
-    private SubAgentManager CreateManager(SubAgentTemplate template, string? parentModelId = null)
+    private SubAgentManager CreateManager(
+        SubAgentTemplate template,
+        string? parentModelId = null,
+        ReasoningEffort? inheritedEffort = null,
+        ImmutableDictionary<string, object?>? inheritedReasoning = null
+    )
     {
         var options = new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
+            InheritedEffort = inheritedEffort,
+            InheritedReasoning = inheritedReasoning,
         };
 
         return new SubAgentManager(

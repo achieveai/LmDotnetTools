@@ -17,7 +17,14 @@ public static class SimpleWorkflowSchema
             .Create("object")
             .WithDescription(
                 "A workflow: an 'objective' plus a flat list of 'steps'. Exactly one step has kind 'start' "
-                    + "and at least one has kind 'end'. See the worked example in the system prompt."
+                    + "and at least one has kind 'end'. Concurrency lives in the GRAPH, not in a prompt: when a "
+                    + "step's work is really several independent checks, express it as ONE 'parallel' step whose "
+                    + "'agents' each run a check — do NOT write one 'agent' step that tells its sub-agent to "
+                    + "'dispatch'/'spawn'/'delegate to' other agents (a step's sub-agent cannot spawn further "
+                    + "sub-agents, so that instruction silently collapses to one agent doing everything alone). "
+                    + "Gather shared context once (an early 'agent' step with 'saveAs') and pass it to each lane "
+                    + "via {{state.<saveAs>}} instead of re-deriving it per step. See the worked example in the "
+                    + "system prompt."
             )
             .WithProperty("objective", JsonSchemaObject.String("The high-level objective the workflow pursues."), required: true)
             .WithProperty("steps", JsonSchemaObject.Array(Step(), "The workflow steps."), required: true)
@@ -40,7 +47,10 @@ public static class SimpleWorkflowSchema
                 new JsonSchemaObject
                 {
                     Type = new("string"),
-                    Description = "The step kind.",
+                    Description =
+                        "The step kind. Use 'parallel' (NOT several 'agent' steps, and NOT one 'agent' step "
+                        + "instructed to run others) whenever multiple independent sub-agents should work at "
+                        + "once — it is the only kind that fans work out concurrently.",
                     Enum = ["start", "agent", "parallel", "branch", "end"],
                 },
                 required: true
@@ -66,7 +76,9 @@ public static class SimpleWorkflowSchema
                 "prompt",
                 JsonSchemaObject.String(
                     "agent steps: the prompt for the sub-agent. Use {{item}} inside a forEach step; reference "
-                        + "an earlier step's saved output with {{state.<saveAs>}}."
+                        + "an earlier step's saved output with {{state.<saveAs>}}. Write it as work for ONE "
+                        + "sub-agent — do NOT tell it to dispatch/spawn/delegate to other agents (it cannot); to "
+                        + "run several agents at once, use a 'parallel' step instead."
                 )
             )
             .WithProperty(
@@ -85,7 +97,7 @@ public static class SimpleWorkflowSchema
             )
             .WithProperty(
                 "agents",
-                JsonSchemaObject.Array(Agent(), "parallel steps: the sub-agents to run concurrently; the step joins when all finish.")
+                JsonSchemaObject.Array(Agent(), "parallel steps: the sub-agents to run concurrently, each its own lane; the step joins when all finish. This is how you fan work out to several specialists at once — give each lane a distinct 'agent'/'prompt' (and 'saveAs' to capture its result).")
             )
             .WithProperty("branches", JsonSchemaObject.Array(Branch(), "branch steps: ordered conditions; the first that holds wins."))
             .WithProperty(

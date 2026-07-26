@@ -390,6 +390,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         if (segmentMatches.Count > 1)
         {
             // Ambiguous: hand the candidates back so the caller can re-issue with an exact name.
+            // Sort ordinally so the suggestion order (and the message built from it) is deterministic:
+            // the live snapshot is an ImmutableDictionary whose key iteration order follows per-process
+            // randomized string hashing, so an unsorted list would vary run-to-run.
+            segmentMatches.Sort(StringComparer.Ordinal);
             suggestions = segmentMatches;
         }
 
@@ -1357,12 +1361,21 @@ public sealed class SubAgentManager : IAsyncDisposable
                 var modelId = string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
                     ? null
                     : defaultOptions.ModelId;
+                var modelExplicitlySelected =
+                    !string.IsNullOrWhiteSpace(modelOverride)
+                    || template.IsModelExplicitlySelected;
+                // Inherit the parent's reasoning floor ONLY when this sub-agent made no model choice of its
+                // own (parent-model reuse). A template that lowered its Effort keeps that value; one that
+                // pins or tier-resolves a model is left un-nudged — "less thinking or a different model"
+                // overrides the inherited floor (see SubAgentOptions.InheritedEffort).
+                var effectiveEffort = template.Effort
+                    ?? (modelExplicitlySelected || template.IsModelTierResolved
+                        ? null
+                        : _options.InheritedEffort);
                 var provider = characteristicsFactory(
-                    new SubAgentCharacteristics(modelId, template.Effort)
+                    new SubAgentCharacteristics(modelId, effectiveEffort)
                     {
-                        IsModelExplicitlySelected =
-                            !string.IsNullOrWhiteSpace(modelOverride)
-                            || template.IsModelExplicitlySelected,
+                        IsModelExplicitlySelected = modelExplicitlySelected,
                         IsModelTierResolved = template.IsModelTierResolved,
                     });
                 providerAgent = provider.Agent;
@@ -1388,6 +1401,21 @@ public sealed class SubAgentManager : IAsyncDisposable
             else
             {
                 providerAgent = template.AgentFactory();
+
+                // A plain-path delegate (a template with no characteristics factory — e.g. a WorkflowAgent
+                // controller's transparent delegate) inherits the parent's PRE-SHAPED reasoning so it thinks
+                // like the launching conversation. Applied only when the delegate made no model override (a
+                // different model may use a different transport than the shaped metadata targets) and carries
+                // no reasoning of its own, so a template that set ExtraProperties still wins.
+                if (_options.InheritedReasoning is { Count: > 0 } inheritedReasoning
+                    && string.IsNullOrWhiteSpace(modelOverride)
+                    && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0))
+                {
+                    defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
+                    {
+                        ExtraProperties = inheritedReasoning,
+                    };
+                }
             }
 
             // Determine conversation store

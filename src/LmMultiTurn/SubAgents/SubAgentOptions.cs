@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -48,4 +50,28 @@ public record SubAgentOptions
     /// control-plane tool. See <see cref="InheritableToolSnapshot"/>.
     /// </summary>
     public InheritableToolSnapshot? ExternalInheritableTools { get; init; }
+
+    /// <summary>
+    /// Reasoning-effort floor a spawned sub-agent inherits from the parent conversation when its template
+    /// pins no <see cref="SubAgentTemplate.Effort"/> and it makes no model choice of its own (parent-model
+    /// reuse). The host sets this to the parent's effort (e.g. <c>High</c>) so an ordinary sub-agent thinks
+    /// like the launching conversation instead of falling back to the model's un-nudged default. It is
+    /// applied ONLY on the parent-model path: a template that lowers its own <c>Effort</c>, or that pins /
+    /// tier-resolves a model, overrides the floor ("less thinking or a different model" wins). Null (default)
+    /// = no inherited floor, so every non-host consumer keeps the previous behavior. This is the
+    /// characteristics-path counterpart to <see cref="InheritedReasoning"/> (which serves the plain path).
+    /// </summary>
+    public ReasoningEffort? InheritedEffort { get; init; }
+
+    /// <summary>
+    /// Pre-shaped reasoning metadata a plain-path delegate inherits when its template carries no
+    /// <see cref="SubAgentTemplate.CharacteristicsAgentFactory"/> (e.g. a WorkflowAgent controller's
+    /// transparent delegate) and no reasoning of its own. Unlike <see cref="InheritedEffort"/> — an abstract
+    /// effort re-shaped per child model — this is a concrete, already-transport-shaped dictionary because a
+    /// plain delegate runs on the SAME model/transport as its controller, so the host can shape it once. It
+    /// is seeded onto the delegate's <c>GenerateReplyOptions.ExtraProperties</c> only when the delegate made
+    /// no model override (a different model may use a different transport). Null/empty (default) = no
+    /// inherited reasoning, so ordinary sub-agent paths (which leave this unset) are unaffected.
+    /// </summary>
+    public ImmutableDictionary<string, object?>? InheritedReasoning { get; init; }
 }

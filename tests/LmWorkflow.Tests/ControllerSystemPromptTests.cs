@@ -34,4 +34,18 @@ public class ControllerSystemPromptTests
         prompt.Should().Contain("general-purpose");
         prompt.Should().Contain("plugin prefix");
     }
+
+    [Fact]
+    public void Default_GuidesUpgradingAGenericDefaultToASpecialist()
+    {
+        // Lever 2: a parallel lane authored WITHOUT an explicit agent defaults to general-purpose. The
+        // controller must re-reason the subagent_type from the unit's prompt and UPGRADE that generic
+        // default to a better-matching listed specialist, keeping name and prompt exact (the join
+        // correlates on name only, not subagent_type). Guard the guidance so a prompt edit can't drop it.
+        var prompt = ControllerSystemPrompt.Default;
+
+        prompt.Should().Contain("UPGRADE");
+        prompt.Should().Contain("name and prompt EXACTLY");
+        prompt.Should().Contain("NOT part of the result correlation");
+    }
 }

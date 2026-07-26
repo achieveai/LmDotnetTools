@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -261,6 +262,94 @@ public class WorkflowManagerRollupTests
 
         capturedOptions.Should().NotBeNull();
         capturedOptions!.ModelId.Should().Be("preferred-model");
+    }
+
+    [Fact]
+    public async Task StartAsync_WithProfile_AdoptsProfileControllerReasoning()
+    {
+        // A per-run provider profile carries reasoning already shaped for THAT provider's transport; the
+        // controller loop must run with it — this is how the controller inherits the parent's thinking.
+        GenerateReplyOptions? capturedOptions = null;
+        var turn = 0;
+        var profileController = new Mock<IStreamingAgent>();
+        profileController
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, opts, _) => capturedOptions ??= opts
+            )
+            .Returns(() => Task.FromResult(ToAsyncEnumerable([DriveMinimalToTerminal(++turn)])));
+        var shapedReasoning = ImmutableDictionary<string, object?>.Empty.Add("OutputConfig", "shaped-for-provider");
+
+        await using var manager = new WorkflowManager(
+            // The fixed default's reasoning must NOT leak in: NeverComplete would hang, so a captured
+            // profile-reasoning value proves the PROFILE's controller (and its reasoning) drove the run.
+            controllerAgentFactory: () => ScriptedController(NeverComplete).Object,
+            controllerSubAgentOptions: EmptyControllerOptions(),
+            controllerProfileByProvider: _ => new WorkflowControllerProfile(
+                () => profileController.Object,
+                EmptyControllerOptions(),
+                shapedReasoning
+            )
+        );
+
+        _ = await manager.StartAsync(
+            "wf-profile-reasoning",
+            MinimalDefinition(),
+            WorkflowStartMode.Sync,
+            preferredProvider: "test-anthropic"
+        );
+
+        capturedOptions.Should().NotBeNull();
+        capturedOptions!.ExtraProperties.Should().Contain("OutputConfig", "shaped-for-provider");
+    }
+
+    [Fact]
+    public async Task StartAsync_WithPreferredModel_AndNoProfile_ClearsInheritedReasoning()
+    {
+        // A model-only override with no profile to reshape must NOT carry the default provider's reasoning:
+        // a different model may use a different transport, so a classic Anthropic budget would 400. Clear it.
+        GenerateReplyOptions? capturedOptions = null;
+        var turn = 0;
+        var controller = new Mock<IStreamingAgent>();
+        controller
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, opts, _) => capturedOptions ??= opts
+            )
+            .Returns(() => Task.FromResult(ToAsyncEnumerable([DriveMinimalToTerminal(++turn)])));
+
+        await using var manager = new WorkflowManager(
+            () => controller.Object,
+            EmptyControllerOptions(),
+            controllerDefaultOptions: new GenerateReplyOptions
+            {
+                ModelId = "configured-model",
+                ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("Thinking", "budget"),
+            }
+        );
+
+        _ = await manager.StartAsync(
+            "wf-model-clears-reasoning",
+            MinimalDefinition(),
+            WorkflowStartMode.Sync,
+            preferredModel: "preferred-model"
+        );
+
+        capturedOptions.Should().NotBeNull();
+        capturedOptions!.ModelId.Should().Be("preferred-model");
+        capturedOptions.ExtraProperties.Should().BeEmpty();
     }
 
     [Fact]

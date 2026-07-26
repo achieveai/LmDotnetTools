@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -123,9 +124,19 @@ public sealed record WorkflowRunSummary
 /// <param name="ControllerAgentFactory">Builds a fresh controller agent on the requested provider.</param>
 /// <param name="ControllerSubAgentOptions">The delegate options (templates on the same provider); must
 ///     still exclude the workflow/launch tools from inheritance — this is re-asserted per run.</param>
+/// <param name="ControllerReasoningExtraProperties">
+///     Reasoning metadata for the controller loop, ALREADY shaped for this provider's model/transport (the
+///     host inherits the parent conversation's thinking as a fixed effort floor and shapes it per provider).
+///     Applied to the run's controller <c>GenerateReplyOptions.ExtraProperties</c> in
+///     <see cref="WorkflowManager.StartAsync"/> so a preferred-provider run's orchestrator reasons on the
+///     correct transport instead of carrying the default provider's (possibly incompatible) reasoning. Null
+///     (default) = the host supplies no per-provider reasoning; the manager then clears ExtraProperties on a
+///     model-only override to avoid a transport mismatch, and otherwise leaves the fixed default untouched.
+/// </param>
 public sealed record WorkflowControllerProfile(
     Func<IStreamingAgent> ControllerAgentFactory,
-    SubAgentOptions ControllerSubAgentOptions
+    SubAgentOptions ControllerSubAgentOptions,
+    ImmutableDictionary<string, object?>? ControllerReasoningExtraProperties = null
 );
 
 /// <summary>Thrown when a <c>workflowId</c> is already reserved (in flight or completed but still queryable).</summary>
@@ -415,6 +426,24 @@ public sealed class WorkflowManager : IAsyncDisposable
             var runControllerDefaultOptions = string.IsNullOrWhiteSpace(preferredModel)
                 ? _controllerDefaultOptions
                 : (_controllerDefaultOptions ?? new GenerateReplyOptions()) with { ModelId = preferredModel };
+
+            // Reasoning must follow the controller's actual model/transport. When the run has a provider profile,
+            // adopt its pre-shaped reasoning (the host inherited the parent's thinking as a fixed effort floor and
+            // shaped it for THIS provider). Otherwise, if the run only overrode the MODEL (no profile to reshape),
+            // clear the inherited reasoning to Empty rather than carry the default provider's — a different model
+            // may use a different transport, and sending e.g. a classic Anthropic Thinking budget to a Responses/
+            // adaptive model is a transport mismatch (HTTP 400). With neither a profile nor a model override, the
+            // fixed default's reasoning (set by the host at construction) is left untouched.
+            if (profile?.ControllerReasoningExtraProperties is { } profileReasoning)
+            {
+                runControllerDefaultOptions =
+                    (runControllerDefaultOptions ?? new GenerateReplyOptions()) with { ExtraProperties = profileReasoning };
+            }
+            else if (!string.IsNullOrWhiteSpace(preferredModel))
+            {
+                runControllerDefaultOptions =
+                    runControllerDefaultOptions! with { ExtraProperties = ImmutableDictionary<string, object?>.Empty };
+            }
 
             var inheritedTools = _inheritedToolSnapshot?.Invoke();
             var controllerSubAgentOptions = inheritedTools is null

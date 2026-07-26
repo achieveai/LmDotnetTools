@@ -142,6 +142,35 @@ chatModes:
       one end. Match the schema exactly. Minimal example:
       {"objective":"Summarize a topic using a sub-agent","steps":[{"id":"start","kind":"start","next":"research"},{"id":"research","kind":"agent","agent":"general-purpose","prompt":"Research {{topic}} and summarize the key points.","saveAs":"summary","next":"done"},{"id":"done","kind":"end"}]}
 
+      FAN WORK OUT WITH A parallel STEP, NOT INSIDE AN agent PROMPT. A
+      parallel step is the ONLY way several agents run at once: each entry in
+      its "agents" array is its own concurrent lane. A single agent step
+      delegates to exactly ONE sub-agent, and that sub-agent CANNOT spawn
+      further sub-agents of its own - so an agent prompt that says to
+      "dispatch", "spawn", "delegate to", or "run" other agents cannot do
+      that; it silently collapses into one sub-agent trying to do everything
+      sequentially. Whenever you catch a step handing work to several
+      specialists, REWRITE it: lift the fan-out UP into a parallel step whose
+      "agents" list names each specialist as a separate lane (swap
+      general-purpose for whatever specialized sub-agent type fits that lane),
+      gather any shared context ONCE in an earlier step and pass it to every
+      lane via {{state.<saveAs>}} instead of re-deriving it per lane, then add
+      a later step that reads all the lanes' saved outputs and combines them.
+      Treat authoring as iterative, not one-shot: after SetWorkflow, read the
+      graph back with GetWorkflow and revise it with AddNode/RemoveNode or
+      another SetWorkflow until the GRAPH - not any single prompt - is what
+      expresses the concurrency.
+
+      Worked example - gather context once, fan out to three concurrent lanes,
+      synthesize, then branch (a made-up team-offsite planner, shown only for
+      shape):
+      {"objective":"Plan a weekend team offsite and give a go/no-go recommendation","steps":[{"id":"start","kind":"start","next":"gather"},{"id":"gather","kind":"agent","agent":"general-purpose","prompt":"Find 3 candidate venues for a 20-person weekend offsite with dates, cost, and capacity. Return them as a list.","saveAs":"venues","next":"evaluate"},{"id":"evaluate","kind":"parallel","agents":[{"agent":"general-purpose","prompt":"Given these venues: {{state.venues}} - score each on budget fit and flag any over $8000.","saveAs":"budgetReview"},{"agent":"general-purpose","prompt":"Given these venues: {{state.venues}} - score each on travel time and logistics for the team.","saveAs":"logisticsReview"},{"agent":"general-purpose","prompt":"Given these venues: {{state.venues}} - score each on available team activities.","saveAs":"activitiesReview"}],"next":"synthesize"},{"id":"synthesize","kind":"agent","agent":"general-purpose","prompt":"Rank the venues using the budget ({{state.budgetReview}}), logistics ({{state.logisticsReview}}), and activities ({{state.activitiesReview}}) reviews, and recommend one with a clear go or no-go.","saveAs":"recommendation","next":"decide"},{"id":"decide","kind":"branch","branches":[{"when":"the recommendation is a clear go","goto":"done"}],"else":"gather","maxVisits":3,"onMaxVisits":"done"},{"id":"done","kind":"end"}]}
+      Here the three reviews run concurrently in one parallel step (not three
+      agent steps, and NOT one agent told to "review it three ways"), every
+      lane reuses the single {{state.venues}} gather, synthesize reads all
+      three saved reviews, and decide loops back to gather at most 3 times
+      before escaping to done.
+
       Narrate what you are doing at each step - which tool you are calling
       and why - so the person testing this mode can follow along.
     enabledTools: []

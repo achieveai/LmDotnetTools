@@ -83,6 +83,14 @@ internal sealed class SubAgentModelResolver
             return null;
         }
 
+        // NOTE: candidates are matched against the discovered Copilot catalog ONLY
+        // (TryGetCopilotModel). Anthropic-compat family ids discovered via
+        // AnthropicCompatProviders.DiscoverFromEnv (e.g. "deepseek-v4-pro") live in a
+        // separate catalog reachable only through ProviderRegistry.TryGetAnthropicCompatModel,
+        // so such a candidate is silently skipped and the tier falls through to the next entry.
+        // Today that is harmless (Copilot ids precede it in every configured tier), but to make
+        // an anthropic-compat model selectable on its own, add a second lookup here that also
+        // consults TryGetAnthropicCompatModel and returns its provider id when present.
         foreach (var candidate in candidates)
         {
             if (string.IsNullOrWhiteSpace(candidate) || !_catalog.TryGetCopilotModel(candidate, out var model))

@@ -107,7 +107,13 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                     Description =
                         "The complete workflow to run, in the flat step DSL: an 'objective' plus a list of "
                         + "'steps', each with an 'id', a 'kind' (start/agent/parallel/branch/end), and its "
-                        + "kind-specific fields. Author and validate it before starting; follow the provided schema.",
+                        + "kind-specific fields. Author and validate it before starting; follow the provided "
+                        + "schema. Put concurrency in the GRAPH: when the work is several independent checks, "
+                        + "model them as ONE 'parallel' step with an 'agents' lane per check — never as one "
+                        + "'agent' step whose prompt tells the sub-agent to dispatch/spawn/delegate to other "
+                        + "agents (a step's sub-agent cannot spawn sub-agents, so that collapses to a single "
+                        + "agent doing shallow work). Gather shared context once and pass it to each lane via "
+                        + "saveAs/{{state.<saveAs>}}.",
                     ParameterType = SimpleWorkflowSchema.Workflow(),
                     IsRequired = true,
                 },

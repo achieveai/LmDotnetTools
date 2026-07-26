@@ -248,7 +248,7 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         await act.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*Ambiguous subagent_type*logging-review*"
-                + "debugging:logging-review*code-reviewer:logging-review*");
+                + "code-reviewer:logging-review*debugging:logging-review*");
     }
 
     [Fact]

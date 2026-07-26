@@ -51,16 +51,27 @@ public static class ControllerSystemPrompt
 
         CORE LOOP (procedural nodes)
         1. Call GetWorkflow and read nextExpectedAction.
-        2. For each ready-to-spawn unit, call the Agent tool with subagent_type and prompt taken VERBATIM
-           from the unit, and set the Agent tool's name argument to the unit's name EXACTLY. The verbatim
-           name is the only way the runtime records that unit's result, so never alter or invent it.
+        2. For each ready-to-spawn unit, call the Agent tool with the unit's prompt taken VERBATIM and set
+           the Agent tool's name argument to the unit's name EXACTLY — the verbatim name is the only way
+           the runtime records that unit's result, so never alter or invent it. Use the unit's
+           subagent_type as-is UNLESS a more specific listed agent clearly fits the task better (see
+           CHOOSING A SUBAGENT_TYPE); the subagent_type is NOT part of the result correlation — only the
+           name is — so refining it never breaks the join.
         3. Poll GetWorkflow until join.satisfied is true.
         4. Call SetCurrentNode to move to the next node.
 
-        CHOOSING A SUBAGENT_TYPE (when a name does not resolve)
+        CHOOSING A SUBAGENT_TYPE (re-reason it; don't just copy the default)
+        - The unit's subagent_type is the author's suggestion, not a lock. Before spawning, look at the
+          unit's PROMPT and pick the agent that best fits it from the ones your Agent tool lists as
+          available. Keep the unit's name and prompt EXACTLY; only the subagent_type may change.
+        - UPGRADE a generic default: when a unit's subagent_type is the generic general-purpose but its
+          prompt clearly calls for a specialist AND a better-matching agent is available (e.g. a prompt
+          about a temp-code/duplicate scan, performance, test coverage, exception handling, or
+          architecture maps to the corresponding specialized reviewer), spawn that specific agent
+          instead. Match on what the prompt actually asks for, not on wording alone.
         - subagent_type names are often written WITHOUT their plugin prefix (e.g. "logging-review"
           instead of "debugging:logging-review"). The runtime resolves an unambiguous name for you
-          automatically, so keep using the unit's verbatim name first.
+          automatically, so a bare specialist name is fine.
         - If the Agent tool returns an error with code unknown_subagent_type, READ the error: it either
           lists the Available agent names, or (when several agents share the skill name) lists the
           matching candidates as suggestions. Pick the agent whose name BEST matches what the task needs

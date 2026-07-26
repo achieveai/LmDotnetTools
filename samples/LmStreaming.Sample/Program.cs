@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Reasoning;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
@@ -1223,7 +1224,11 @@ try
                         providerAgent,
                         model => CreateCopilotModelAgent(model, loggerFactory),
                         loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
-                        parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null)
+                        parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null,
+                        // Parent-model-reuse fallback: a classic Copilot Anthropic parent (advertises no
+                        // efforts, so Copilot shaping is empty) or a non-Copilot parent still passes its OWN
+                        // reasoning (e.g. a classic Thinking budget) to an inherited-model sub-agent.
+                        parentReasoningExtraProperties: extraProperties)
                         .Create;
                     var subAgentOptions = BuildSubAgentOptionsAsync(
                             isTestMode,
@@ -1238,6 +1243,22 @@ try
                             loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
                         .GetAwaiter()
                         .GetResult();
+
+                    // Ordinary conversation sub-agents (characteristics path) inherit the parent's thinking as
+                    // an effort FLOOR (Option A: High) — applied only when the parent can itself think, so an
+                    // inherited-model sub-agent reasons like the launching conversation instead of running
+                    // un-nudged. A template that lowers its own Effort, pins a model, or tier-resolves one
+                    // overrides the floor (SubAgentManager). The parent "can think" when it has classic
+                    // reasoning metadata OR is an adaptive Copilot model (which reasons via output_config.effort
+                    // and therefore carries no classic extraProperties). The plain-path counterpart
+                    // (InheritedReasoning) is seeded on the controller's own options, not here.
+                    var parentCanThink =
+                        !extraProperties.IsEmpty
+                        || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
+                    if (subAgentOptions is not null && parentCanThink)
+                    {
+                        subAgentOptions = subAgentOptions with { InheritedEffort = ReasoningEffort.High };
+                    }
 
                     // When a sandbox session is active, share the catalog with the session
                     // registry so the context-discovery webhook can activate newly discovered
@@ -1353,6 +1374,16 @@ try
                                     .. WorkflowToolProvider.AllToolNames,
                                     .. StartWorkflowToolProvider.ToolNames,
                                 ],
+                                // Controller delegates take the PLAIN path (CreateWorkflowControllerTemplates
+                                // sets CharacteristicsAgentFactory = null) and run on the controller's own model,
+                                // so they inherit its already-transport-shaped reasoning (Option A: High floor).
+                                // Keyed off `providerId` — the run's provider — so a preferred-provider run's
+                                // delegates think on that provider's transport. For Copilot, providerId == model id.
+                                InheritedReasoning = BuildControllerReasoningExtraProperties(
+                                    providerRegistry,
+                                    providerId,
+                                    providerId
+                                ),
                             };
 
                             // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
@@ -1379,7 +1410,19 @@ try
                                 }
                             },
                             maxConcurrentWorkflows: maxConcurrentWorkflows,
-                            controllerDefaultOptions: new GenerateReplyOptions { ModelId = controllerModelId },
+                            controllerDefaultOptions: new GenerateReplyOptions
+                            {
+                                ModelId = controllerModelId,
+                                // The controller loop inherits the parent's reasoning (Option A: fixed High
+                                // floor), shaped for its OWN model so the orchestrator thinks instead of
+                                // running un-nudged. A per-run preferred-model override reshapes this in
+                                // WorkflowManager.StartAsync via the profile's ControllerReasoningExtraProperties.
+                                ExtraProperties = BuildControllerReasoningExtraProperties(
+                                    providerRegistry,
+                                    controllerModelId,
+                                    normalizedProviderId
+                                ),
+                            },
                             logger: loggerFactory.CreateLogger<WorkflowManager>(),
                             // Fold a StartWorkflowAgent run's controller + task usage into THIS conversation's
                             // total. Late-bound because the WorkflowManager is created before the root `agent`
@@ -1407,7 +1450,12 @@ try
                             // surfaced as invalid_provider by the validator.
                             controllerProfileByProvider: providerId => new WorkflowControllerProfile(
                                 () => agentFactory(providerId),
-                                BuildControllerOptions(providerId)
+                                BuildControllerOptions(providerId),
+                                // Shape the parent's inherited thinking (Option A: High floor) for THIS run's
+                                // provider/model so a preferred-provider controller reasons on the correct
+                                // transport. For Copilot, providerId == model id; non-Copilot falls back to the
+                                // provider-id reasoning mapping.
+                                BuildControllerReasoningExtraProperties(providerRegistry, providerId, providerId)
                             )
                         );
 
@@ -1849,8 +1897,51 @@ public partial class Program
     }
 
     /// <summary>
-    ///     Creates a test-mode agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
+    ///     Builds the reasoning metadata for a StartWorkflowAgent CONTROLLER loop (and its plain-path
+    ///     delegates), shaped for the controller's own model so the orchestrator thinks at the parent's
+    ///     level instead of running un-nudged (the observed "acts as dumb as it acts" starvation). The
+    ///     controller inherits a fixed <paramref name="effort"/> floor (Option A: High when the parent can
+    ///     think) rather than a copied dictionary, because the controller may run on a per-run preferred
+    ///     model whose transport differs from the conversation's.
+    ///     <para>
+    ///     Resolution mirrors <see cref="BuildReasoningExtraProperties"/> but keyed off the CONTROLLER model:
+    ///     an adaptive Copilot Claude model reasons via <c>output_config.effort</c> (Shape emits it); a
+    ///     classic Copilot Claude model advertises no efforts, so Shape is empty and we fall back to the
+    ///     classic thinking budget for its transport; a non-Copilot controller model uses the provider-id
+    ///     mapping. Returns <see cref="ImmutableDictionary{TKey,TValue}.Empty"/> only when the resolved
+    ///     model/provider genuinely carries no reasoning surface.
+    ///     </para>
     /// </summary>
+    internal static ImmutableDictionary<string, object?> BuildControllerReasoningExtraProperties(
+        ProviderRegistry providerRegistry,
+        string copilotModelKey,
+        string fallbackProviderId,
+        ReasoningEffort effort = ReasoningEffort.High)
+    {
+        ArgumentNullException.ThrowIfNull(providerRegistry);
+
+        if (
+            !string.IsNullOrWhiteSpace(copilotModelKey)
+            && providerRegistry.TryGetCopilotModel(copilotModelKey, out var copilotModel)
+        )
+        {
+            var shaped = CopilotReasoningShaper.Shape(copilotModel, effort);
+            if (shaped.Count > 0)
+            {
+                return shaped;
+            }
+
+            // Classic Copilot Claude advertises no efforts (Shape empty); fall back to the classic
+            // thinking budget shaped for its transport (adaptive short-circuits to Empty inside).
+            return BuildReasoningExtraProperties(
+                fallbackProviderId,
+                copilotModel.Transport,
+                copilotModel.SupportsAdaptiveThinking
+            );
+        }
+
+        return BuildReasoningExtraProperties(fallbackProviderId);
+    }
     private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
     {
         var testHandler = testAgentBuilder.CreateHandler("test", loggerFactory);

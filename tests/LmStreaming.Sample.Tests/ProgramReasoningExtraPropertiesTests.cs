@@ -2,7 +2,10 @@ using System.Collections.Immutable;
 using System.Reflection;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
+using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests;
 
@@ -82,6 +85,114 @@ public sealed class ProgramReasoningExtraPropertiesTests
     public void Other_providers_get_no_reasoning_extra_properties(string providerId)
     {
         var props = Build(providerId);
+
+        props.Should().BeEmpty();
+    }
+
+    // ---- Controller reasoning shaping (BuildControllerReasoningExtraProperties) ----
+    // The controller inherits the parent's thinking at a fixed High floor (Option A), shaped for the
+    // controller model's own transport. A Copilot model that advertises efforts is shaped directly
+    // (OutputConfig / Reasoning); a classic Copilot Anthropic model (no advertised efforts) and a
+    // non-Copilot provider fall back to the plain provider→reasoning wiring.
+
+    private static ImmutableDictionary<string, object?> BuildController(
+        ProviderRegistry providerRegistry,
+        string copilotModelKey,
+        string fallbackProviderId,
+        ReasoningEffort effort = ReasoningEffort.High)
+    {
+        var programType = typeof(LmStreaming.Sample.Controllers.DiagnosticsController)
+            .Assembly.GetType("Program");
+        programType.Should().NotBeNull();
+        var method = programType!.GetMethod(
+            "BuildControllerReasoningExtraProperties",
+            BindingFlags.NonPublic | BindingFlags.Static
+        );
+        method.Should().NotBeNull("Program must expose the controller reasoning shaping helper");
+        return (ImmutableDictionary<string, object?>)method!.Invoke(
+            null,
+            [providerRegistry, copilotModelKey, fallbackProviderId, effort]
+        )!;
+    }
+
+    private static ProviderRegistry RegistryWith(params CopilotModelInfo[] copilotModels) =>
+        new(new FakeFileSystemProbe(), () => false, copilotModels);
+
+    [Fact]
+    public void Controller_effort_advertising_copilot_anthropic_model_gets_output_config_effort()
+    {
+        var registry = RegistryWith(
+            new CopilotModelInfo(
+                "claude-opus-4.8",
+                "Claude Opus 4.8",
+                CopilotModelVendor.Anthropic,
+                CopilotModelTransport.Anthropic,
+                SupportsAdaptiveThinking: true
+            )
+            {
+                ReasoningEfforts = ["low", "medium", "high"],
+            }
+        );
+
+        var props = BuildController(registry, "claude-opus-4.8", "claude-opus-4.8");
+
+        props.Should().ContainKey("OutputConfig");
+        props["OutputConfig"].Should().BeOfType<AnthropicOutputConfig>().Which.Effort.Should().Be("high");
+    }
+
+    [Fact]
+    public void Controller_effort_advertising_copilot_responses_model_gets_reasoning_effort()
+    {
+        var registry = RegistryWith(
+            new CopilotModelInfo("gpt-5.5", "GPT-5.5", CopilotModelVendor.OpenAI, CopilotModelTransport.Responses)
+            {
+                ReasoningEfforts = ["low", "medium", "high"],
+            }
+        );
+
+        var props = BuildController(registry, "gpt-5.5", "gpt-5.5");
+
+        props.Should().ContainKey("Reasoning");
+        props["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which.Effort.Should().Be("high");
+    }
+
+    [Fact]
+    public void Controller_classic_copilot_anthropic_model_falls_back_to_thinking_budget()
+    {
+        // A classic Copilot Anthropic model advertises no selectable effort, so Copilot shaping is
+        // empty; the controller must still inherit the classic Thinking budget for that transport.
+        var registry = RegistryWith(
+            new CopilotModelInfo(
+                "claude-sonnet-4.5",
+                "Claude Sonnet 4.5",
+                CopilotModelVendor.Anthropic,
+                CopilotModelTransport.Anthropic
+            )
+        );
+
+        var props = BuildController(registry, "claude-sonnet-4.5", "claude-sonnet-4.5");
+
+        props.Should().ContainKey("Thinking");
+        props["Thinking"].Should().BeOfType<AnthropicThinking>();
+    }
+
+    [Fact]
+    public void Controller_non_copilot_anthropic_provider_gets_thinking_budget()
+    {
+        var registry = RegistryWith();
+
+        var props = BuildController(registry, "anthropic", "anthropic");
+
+        props.Should().ContainKey("Thinking");
+        props["Thinking"].Should().BeOfType<AnthropicThinking>();
+    }
+
+    [Fact]
+    public void Controller_non_copilot_openai_provider_gets_no_reasoning()
+    {
+        var registry = RegistryWith();
+
+        var props = BuildController(registry, "openai", "openai");
 
         props.Should().BeEmpty();
     }
