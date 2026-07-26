@@ -51,4 +51,13 @@ internal sealed class FakeReviewCommentPublisher : IReviewCommentPublisher
         _byKey[idempotencyKey] = comment;
         return Task.FromResult(comment);
     }
+
+    /// <summary>Comments returned by <see cref="ListExistingReviewCommentsAsync"/> — seed to simulate a PR that
+    /// already has prior review comments (the delta-awareness path).</summary>
+    public List<ExistingReviewComment> ExistingComments { get; } = [];
+
+    public Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
+        ReviewCommentTarget target,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<ExistingReviewComment>>([.. ExistingComments]);
 }

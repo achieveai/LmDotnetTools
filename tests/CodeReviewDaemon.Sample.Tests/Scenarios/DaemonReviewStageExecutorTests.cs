@@ -617,6 +617,23 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Posted_does_not_host_post_the_no_new_findings_sentinel()
+    {
+        // The prompt's "nothing new to post" decision surfaces as the non-empty sentinel text
+        // "No new findings since the last review." The host summary fallback must treat that as a no-post (not
+        // publish it as a PR comment) — otherwise the post-nothing contract is violated and re-review noise
+        // reappears via the host path even when the agent correctly posted nothing.
+        using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = "No new findings since the last review.";
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        fixture.AdoPublisher!.PostedBodies.Should().BeEmpty(
+            "the no-new-findings sentinel is a deliberate no-post, so the host fallback must not publish it");
+    }
+
+    [Fact]
     public async Task Posted_prefixes_the_posted_comment_with_the_configured_bot_name()
     {
         using var fixture = Fixture.Ado(
