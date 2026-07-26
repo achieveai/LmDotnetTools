@@ -82,7 +82,9 @@ async (page) => {
     while (Date.now() < deadline) {
       last = await getLabel();
       if (regex.test(last ?? '')) return last;
-      await new Promise((r) => setTimeout(r, intervalMs));
+      // NB: the browser_run_code_unsafe eval context has NO global setTimeout — use Playwright's
+      // page.waitForTimeout(ms) for the poll interval (a bare setTimeout throws ReferenceError here).
+      await page.waitForTimeout(intervalMs);
     }
     return last;
   }
