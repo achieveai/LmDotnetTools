@@ -75,15 +75,21 @@ review:
          Never post multiple reviews, never one review per finding, and NEVER submit an EMPTY review (no comments
          AND no meaningful body). If you have nothing new to post, post NOTHING at all.
        - FORBIDDEN — never create standalone review comments with POST .../pulls/{{ pr_number }}/comments (the
-         one-call-per-finding endpoint). GitHub wraps EVERY standalone review comment in its OWN empty-bodied
-         review, so that endpoint turns N findings into N empty reviews — the exact spam we are eliminating. The
-         ONLY write that carries findings is the single POST .../pulls/{{ pr_number }}/reviews above.
+         one-call-per-finding endpoint) and never reply with POST .../pulls/{{ pr_number }}/comments/{comment_id}/replies.
+         GitHub wraps EVERY write to either review-comment endpoint in its OWN submitted, empty-bodied review, so a
+         standalone comment OR a thread reply each turns into one empty review — the exact spam we are eliminating.
+         The ONLY write that carries findings is the single POST .../pulls/{{ pr_number }}/reviews above.
        - Do NOT use the code-reviewer:post-pr-review skill to POST on GitHub: it posts findings one-at-a-time via
          POST .../pulls/{{ pr_number }}/comments and produces exactly those empty reviews. Assemble all findings
          into the one batched POST /reviews call above and make it yourself.
-       To answer an OPEN review thread, reply IN-THREAD — the replies endpoint below ADDS to an existing thread
-       and does NOT create a new review, so it is fine (it is not the forbidden standalone-comment endpoint):
-         POST /repos/{{ gh_owner }}/{{ gh_repo }}/pulls/{{ pr_number }}/comments/{comment_id}/replies  body {"body":"<reply>"}
+       To ANSWER an OPEN review thread (a prior finding you are replying to), do NOT use the /replies endpoint —
+       it makes an empty review (see above). Instead fold your answer into the SAME single batched POST /reviews:
+       add a comments[] entry anchored to that thread's file+line whose body opens by naming the thread it answers
+       (e.g. "Re: <finding> —"). A PR-CONVERSATION issue comment (a question in the PR's main conversation, not on a
+       code line — its id is an issue-comment id, not a review-comment id, so it CANNOT be answered on any review
+       endpoint) is answered EITHER by a line in the POST /reviews summary body OR by ONE wrapper-free comment:
+         POST /repos/{{ gh_owner }}/{{ gh_repo }}/issues/{{ pr_number }}/comments  body {"body":"<answer>"}
+       That issues endpoint is a PR-conversation comment, not a review, so it never creates an empty review.
        {{ end ~}}
        On a re-review, the review input includes a "## Already posted on this PR" section: the existing
        discussion FROM ALL AUTHORS (other bots, humans, and you), grouped into threads (a finding + its replies)

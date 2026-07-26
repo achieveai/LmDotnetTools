@@ -216,6 +216,24 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void ReviewProfile_Prompt_RoutesGithubThreadAnswers_WithoutTheEmptyReviewSpammingRepliesEndpoint()
+    {
+        // Regression (empty-review spam, live #224): the old guidance told the agent that replying via
+        // POST /pulls/{pr}/comments/{comment_id}/replies "does NOT create a new review, so it is fine" — that
+        // is FALSE. GitHub wraps EACH reply in its own submitted, empty-bodied COMMENTED review (proven on #224:
+        // six replies → six empty reviews). The corrected GitHub guidance must (a) drop that false claim, (b)
+        // fold an answer to an open review thread into the SAME single batched POST /reviews as an inline
+        // comment (never the /replies endpoint), and (c) answer a PR-CONVERSATION issue comment via the
+        // wrapper-free POST /issues/{pr}/comments. Rendered with should_post=true and is_ado unset (a GitHub run).
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        prompt.Should().NotContain("does NOT create a new review"); // the false "replies are safe" claim is gone
+        prompt.Should().MatchRegex("(?is)replies.{0,200}empty"); // the /replies endpoint is now called out as empty-review spam
+        prompt.Should().Contain("issues/"); // PR-conversation answers route through the wrapper-free issue-comments endpoint
+    }
+
+    [Fact]
     public void ReviewProfile_Prompt_GroundsViaReadByPathAndAvoidsRootGlob()
     {
         // The gateway's Glob/Grep cannot enumerate the repo root reliably, so the reviewer must ground via
