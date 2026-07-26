@@ -104,6 +104,32 @@ public sealed class GitHubReviewCommentPublisherTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task PostReviewComment_never_uses_the_empty_review_spawning_review_comment_endpoints()
+    {
+        // API-level contract (regression, live #224): GitHub wraps EVERY write to a review-comment endpoint —
+        // standalone POST /pulls/{pr}/comments AND POST /pulls/{pr}/comments/{id}/replies — in its own submitted,
+        // empty-bodied COMMENTED review (six #224 replies produced six empty reviews). The host publisher must
+        // therefore post ONLY through the wrapper-free issue-comments endpoint. Prompt-text assertions cannot
+        // catch a regression here; this pins the actual HTTP the publisher emits.
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post, "/issues/7/comments", """{"id":777}""", HttpStatusCode.Created);
+
+        await Publisher(handler).PostReviewCommentAsync(Target, Key, "## Review\nfinding", CancellationToken.None);
+
+        var post = handler.Requests.Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
+        post.Uri.ToString().Should().Be(
+            "https://api.github.com/repos/acme/widgets/issues/7/comments",
+            "the only wrapper-free write is the issue-comments endpoint");
+        handler.Requests.Should().NotContain(
+            r => r.Uri.ToString().Contains("/replies", StringComparison.Ordinal),
+            "POST .../comments/{id}/replies wraps each reply in its own empty review — the #224 spam");
+        handler.Requests.Should().NotContain(
+            r => r.Uri.ToString().Contains("/pulls/", StringComparison.Ordinal)
+                && r.Uri.ToString().Contains("/comments", StringComparison.Ordinal),
+            "standalone POST /pulls/{pr}/comments also wraps each write in an empty review");
+    }
+
+    [Fact]
     public async Task ListExisting_returns_inline_findings_and_review_summaries()
     {
         var comments = JsonSerializer.Serialize(new object[]
