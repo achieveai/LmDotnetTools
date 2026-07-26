@@ -47,6 +47,89 @@ public sealed class WorkspaceWorkflowWiringTests
         act.Should().NotThrow();
     }
 
+    /// <summary>
+    ///     Builds an "enriched" catalog like the one a normal conversation gets from the workspace/marketplace
+    ///     discovery tiers: the two built-ins PLUS a discovered plugin sub-agent. The controller must share this
+    ///     SAME catalog so a workflow delegate can spawn a discovered <c>subagent_type</c> — not just the two
+    ///     built-ins. Every entry is inherit-all (<c>EnabledTools = null</c>), as both discovery tiers produce.
+    /// </summary>
+    private static Dictionary<string, SubAgentTemplate> EnrichedCatalog(Func<IStreamingAgent> agentFactory)
+    {
+        var catalog = BuiltInSubAgentTemplates.Create(agentFactory);
+        catalog["code-reviewer:performance-review"] = new SubAgentTemplate
+        {
+            Name = "Performance review",
+            Description = "Discovered marketplace sub-agent (performance review).",
+            SystemPrompt = "You review code for performance issues.",
+            AgentFactory = agentFactory,
+            // Inherit-all, exactly as WorkspaceSubAgentLoader / MarketplaceSubAgentLoader emit.
+            EnabledTools = null,
+        };
+        return catalog;
+    }
+
+    [Fact]
+    public void WorkflowControllerTemplates_ShareEnrichedCatalog_NotJustBuiltins()
+    {
+        // The regression: a workflow controller could only spawn general-purpose + researcher, so a delegate
+        // asking for a discovered plugin subagent_type got "Unknown template … Available: general-purpose,
+        // researcher". The controller must be seeded from the SAME enriched catalog the primary agent uses.
+        var enriched = EnrichedCatalog(FakeAgent);
+
+        var controllerTemplates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(enriched, FakeAgent);
+
+        controllerTemplates.Keys.Should().Contain(
+            "code-reviewer:performance-review",
+            "the controller must share the primary agent's discovered/marketplace catalog, not only the built-ins");
+        controllerTemplates.Keys.Should().Contain(["general-purpose", "researcher"]);
+    }
+
+    [Fact]
+    public void WorkflowControllerTemplates_FromEnrichedCatalog_StayInheritAll_AndPassStructuralGuard()
+    {
+        var enriched = EnrichedCatalog(FakeAgent);
+
+        var controllerTemplates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(enriched, FakeAgent);
+
+        // Every controller delegate — built-in AND discovered — must remain transparent (inherit-all), so the
+        // structural NonInheritedToolNames exclusion (not a per-template allow-list) is what fences off the
+        // workflow tools. A discovered template that pinned EnabledTools would break that contract.
+        foreach (var (name, template) in controllerTemplates)
+        {
+            template.EnabledTools.Should().BeNull($"controller template '{name}' must be inherit-all (transparent)");
+        }
+
+        // The enriched controller options must still satisfy WorkflowManager's construction-time guard.
+        var options = new SubAgentOptions
+        {
+            Templates = controllerTemplates,
+            NonInheritedToolNames = [.. WorkflowAndLaunchToolNames],
+        };
+        var act = () => new WorkflowManager(FakeAgent, options);
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void WorkflowControllerTemplates_RebindEnrichedEntries_ToProviderFactory()
+    {
+        // A StartWorkflowAgent run with a preferred provider must spawn its delegates on THAT provider. The
+        // enriched catalog was built with the conversation's factory; the controller overload must rebind every
+        // entry's AgentFactory to the controller/provider factory so a discovered delegate uses it too.
+        var conversationAgent = Mock.Of<IStreamingAgent>();
+        var providerAgent = Mock.Of<IStreamingAgent>();
+
+        var enriched = EnrichedCatalog(() => conversationAgent);
+        var controllerTemplates =
+            BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(enriched, () => providerAgent);
+
+        foreach (var (name, template) in controllerTemplates)
+        {
+            template.AgentFactory().Should().BeSameAs(
+                providerAgent,
+                $"controller template '{name}' must spawn on the controller's provider factory");
+        }
+    }
+
     [Fact]
     public void WorkflowManager_RejectsControllerOptions_WithoutStructuralExclusion()
     {

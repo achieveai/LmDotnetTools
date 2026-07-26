@@ -48,6 +48,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 {
     private readonly IMultiTurnAgent _parentAgent;
     private readonly string? _parentModelId;
+    private readonly int? _parentMaxToken;
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
     private readonly IDictionary<string, ToolHandler> _parentHandlers;
     private readonly SubAgentOptions _options;
@@ -106,6 +107,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         MutableSubAgentTemplateSource source,
         ILogger? logger = null,
         string? parentModelId = null,
+        int? parentMaxToken = null,
         IUsageSink? usageSink = null,
         Func<Task>? persistUsageAsync = null)
     {
@@ -126,6 +128,11 @@ public sealed class SubAgentManager : IAsyncDisposable
         // The parent's model, inherited by sub-agents whose template/override sets none (see
         // ResolveSubAgentOptions). Null when the parent has no model (e.g. CLI-backed parents).
         _parentModelId = parentModelId;
+        // The parent's effective per-turn output budget, inherited by sub-agents whose template sets
+        // none — so a delegate gets the same headroom as the conversation that spawned it instead of the
+        // provider's 4096 default that truncates tool-call JSON. Null when the parent carried no budget
+        // (the MultiTurnAgentBase floor then applies at the sub-agent loop's own ctor).
+        _parentMaxToken = parentMaxToken;
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
             options.MaxConcurrentSubAgents);
@@ -1334,11 +1341,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 TestAgentFactoryOverride(agentId, template),
                 null,
                 TestOwnedProviderOverride?.Invoke(agentId, template),
-                ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId)?.ModelId);
+                ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId, _parentMaxToken)?.ModelId);
         }
 
-        // Resolve the sub-agent's options with model inheritance (override > template > parent).
-        var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId);
+        // Resolve the sub-agent's options with model + budget inheritance (override > template > parent).
+        var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId, _parentMaxToken);
         IStreamingAgent providerAgent;
         IStreamingAgent? ownedProviderAgent = null;
         IConversationStore? store = null;
@@ -1499,14 +1506,19 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// (e.g. the built-in sub-agents) from letting the provider agent use its hardcoded default model,
     /// which often isn't valid on the parent's backend (observed: a sub-agent sending
     /// <c>claude-3-sonnet-20240229</c> to a backend that only serves the parent's model → HTTP 400
-    /// <c>model_not_supported</c>). Any other template option fields are preserved. Returns null only
-    /// when no model is available anywhere AND the template carried no options, so the previous
+    /// <c>model_not_supported</c>). The per-turn output budget inherits the same way: the template's own
+    /// <see cref="GenerateReplyOptions.MaxToken"/> wins, else the parent's effective budget
+    /// (<paramref name="parentMaxToken"/>) — so a delegate gets the spawning conversation's headroom
+    /// instead of the provider's 4096 default, which truncates a tool-call's argument JSON at
+    /// <c>stop_reason=max_tokens</c>. Any other template option fields are preserved. Returns null only
+    /// when nothing is available anywhere AND the template carried no options, so the previous
     /// "inherit the provider's own defaults" behavior is unchanged when there is genuinely nothing to set.
     /// </summary>
     internal static GenerateReplyOptions? ResolveSubAgentOptions(
         GenerateReplyOptions? templateDefaults,
         string? modelOverride,
-        string? parentModelId)
+        string? parentModelId,
+        int? parentMaxToken = null)
     {
         var templateModel = templateDefaults?.ModelId;
         var model = !string.IsNullOrWhiteSpace(modelOverride)
@@ -1515,9 +1527,30 @@ public sealed class SubAgentManager : IAsyncDisposable
                 ? templateModel
                 : parentModelId;
 
-        return string.IsNullOrWhiteSpace(model)
-            ? templateDefaults
-            : (templateDefaults ?? new GenerateReplyOptions()) with { ModelId = model };
+        var hasModel = !string.IsNullOrWhiteSpace(model);
+        // Only apply an inherited budget when the template didn't set its own — the template always wins.
+        var inheritBudget = templateDefaults?.MaxToken is null && parentMaxToken is not null;
+
+        if (!hasModel && !inheritBudget)
+        {
+            // Nothing to set — preserve the exact previous behavior (return the template unchanged, null
+            // included) so a genuinely empty resolution still yields the provider's own defaults.
+            return templateDefaults;
+        }
+
+        var resolved = templateDefaults ?? new GenerateReplyOptions();
+        if (hasModel)
+        {
+            // hasModel == !IsNullOrWhiteSpace(model), so model is non-null here (the compiler can't infer it).
+            resolved = resolved with { ModelId = model! };
+        }
+
+        if (inheritBudget)
+        {
+            resolved = resolved with { MaxToken = parentMaxToken };
+        }
+
+        return resolved;
     }
 
     /// <summary>

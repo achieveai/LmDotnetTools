@@ -139,8 +139,11 @@ public class SimpleWorkflowTranslationTests
     }
 
     [Fact]
-    public void AgentStep_MissingAgentPromptNext_ThrowsOneBatchedReadableError()
+    public void AgentStep_MissingPrompt_ThrowsOneBatchedReadableError()
     {
+        // 'prompt' has no sane default (an agent with no instructions is meaningless), so it stays
+        // required. 'agent' and 'next' DO have sane defaults and no longer error — see the
+        // OmittedNext_* / OmittedAgent_* tests below.
         var wf = Parse(
             """
             { "objective": "o", "steps": [
@@ -154,10 +157,147 @@ public class SimpleWorkflowTranslationTests
         var act = () => wf.ToDefinition();
 
         var ex = act.Should().Throw<WorkflowValidationException>().Which;
-        ex.Errors.Should().Contain(e => e.Contains("'a'") && e.Contains("'agent'"));
         ex.Errors.Should().Contain(e => e.Contains("'a'") && e.Contains("'prompt'"));
-        ex.Errors.Should().Contain(e => e.Contains("'a'") && e.Contains("'next'"));
+        ex.Errors.Should().NotContain(e => e.Contains("'agent'"));
+        ex.Errors.Should().NotContain(e => e.Contains("'next'"));
     }
+
+    /// <summary>
+    ///     Regression for the real StartWorkflowAgent rejection observed in the lmstreaming.sample run
+    ///     (workflow <c>pr-11194-review-only-20260724</c>): the model authored a linear pipeline and omitted
+    ///     <c>next</c> on three steps, relying on declaration order. The advertised tool schema marks
+    ///     <c>next</c> OPTIONAL, so the definition was schema-valid, yet translation rejected it with
+    ///     "Step 'setup' needs a 'next'.; Step 'consolidate' needs a 'next'.; Step 'grade' needs a 'next'.".
+    ///     An omitted <c>next</c> must fall through to the NEXT DECLARED STEP — never become a dead end,
+    ///     which would silently truncate the workflow after 'setup' and skip the whole review.
+    /// </summary>
+    [Fact]
+    public void OmittedNext_FallsThroughToTheNextDeclaredStep_ReproOfRejectedPr11194Workflow()
+    {
+        const string json = """
+            {
+              "objective": "Review-only code review of PR #11194.",
+              "steps": [
+                { "id": "start", "kind": "start", "next": "setup" },
+                { "id": "setup", "kind": "agent", "agent": "general-purpose", "saveAs": "setup",
+                  "prompt": "Prepare the isolated PR review context." },
+                { "id": "reviewers", "kind": "parallel", "next": "consolidate", "agents": [
+                    { "agent": "general-purpose", "saveAs": "correctness", "prompt": "Correctness pass." },
+                    { "agent": "general-purpose", "saveAs": "tests", "prompt": "Test-coverage pass." }
+                  ] },
+                { "id": "consolidate", "kind": "agent", "agent": "general-purpose", "saveAs": "consolidated",
+                  "prompt": "Consolidate {{state.correctness}} and {{state.tests}}." },
+                { "id": "grade", "kind": "agent", "agent": "general-purpose",
+                  "prompt": "Grade the consolidated review." },
+                { "id": "end", "kind": "end" }
+              ]
+            }
+            """;
+
+        var def = Parse(json).ToDefinition();
+
+        // The same validator StartWorkflowAgent runs must accept it.
+        new WorkflowValidator().ValidateAndThrow(def);
+
+        // Every omitted 'next' resolved to the following step in declaration order.
+        Next(def, "setup").Should().Equal("reviewers");
+        Next(def, "consolidate").Should().Equal("grade");
+        Next(def, "grade").Should().Equal("end");
+
+        // Explicit edges are untouched.
+        Next(def, "start").Should().Equal("setup");
+        Next(def, "reviewers").Should().Equal("consolidate");
+    }
+
+    [Fact]
+    public void OmittedNext_OnTheLastStep_BecomesTerminal_ReusingTheDeclaredEnd()
+    {
+        var def = Parse(
+            """
+            { "objective": "o", "steps": [
+              { "id": "s", "kind": "start", "next": "a" },
+              { "id": "done", "kind": "end" },
+              { "id": "a", "kind": "agent", "agent": "general-purpose", "prompt": "work" }
+            ] }
+            """
+        ).ToDefinition();
+
+        new WorkflowValidator().ValidateAndThrow(def);
+
+        // 'a' is last in declaration order, so it terminates at the workflow's declared end.
+        Next(def, "a").Should().Equal("done");
+    }
+
+    [Fact]
+    public void OmittedNext_OnTheLastStep_SynthesizesATerminal_WhenNoneWasDeclared()
+    {
+        var def = Parse(
+            """
+            { "objective": "o", "steps": [
+              { "id": "s", "kind": "start", "next": "a" },
+              { "id": "a", "kind": "agent", "agent": "general-purpose", "prompt": "work" }
+            ] }
+            """
+        ).ToDefinition();
+
+        new WorkflowValidator().ValidateAndThrow(def);
+
+        var terminal = def.Nodes.OfType<TerminalNode>().Should().ContainSingle().Which;
+        Next(def, "a").Should().Equal(terminal.Id);
+    }
+
+    [Fact]
+    public void OmittedAgent_DefaultsToGeneralPurpose_OnAgentStepsAndParallelMembers()
+    {
+        var def = Parse(
+            """
+            { "objective": "o", "steps": [
+              { "id": "s", "kind": "start", "next": "a" },
+              { "id": "a", "kind": "agent", "prompt": "solo work", "next": "p" },
+              { "id": "p", "kind": "parallel", "next": "e", "agents": [
+                  { "prompt": "member work" }
+                ] },
+              { "id": "e", "kind": "end" }
+            ] }
+            """
+        ).ToDefinition();
+
+        new WorkflowValidator().ValidateAndThrow(def);
+
+        Task(def, "a").SubagentType.Should().Be("general-purpose");
+        Task(def, "p").SubagentType.Should().Be("general-purpose");
+    }
+
+    [Fact]
+    public void OmittedElse_OnABranch_FallsThroughToTheNextDeclaredStep()
+    {
+        var def = Parse(
+            """
+            { "objective": "o", "steps": [
+              { "id": "s", "kind": "start", "next": "b" },
+              { "id": "b", "kind": "branch",
+                "branches": [ { "when": "blocking findings", "goto": "blocked" } ] },
+              { "id": "cleanup", "kind": "agent", "agent": "general-purpose", "prompt": "clean up", "next": "blocked" },
+              { "id": "blocked", "kind": "end" }
+            ] }
+            """
+        ).ToDefinition();
+
+        new WorkflowValidator().ValidateAndThrow(def);
+
+        def.Nodes.OfType<ConditionalNode>().Single(n => n.Id == "b").Else.Should().Be("cleanup");
+    }
+
+    private static IReadOnlyList<string> Next(WorkflowDefinition def, string id) =>
+        def.Nodes.Single(n => n.Id == id) switch
+        {
+            StartNode s => s.Next,
+            ProceduralNode p => p.Next,
+            _ => [],
+        };
+
+    private static WorkflowTask Task(WorkflowDefinition def, string id) =>
+        def.Nodes.OfType<ProceduralNode>().Single(n => n.Id == id).TaskList![0];
 
     [Fact]
     public void UnknownKind_IsRejected_WithTheAllowedKindsListed()

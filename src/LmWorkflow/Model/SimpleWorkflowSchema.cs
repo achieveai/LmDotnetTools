@@ -28,7 +28,12 @@ public static class SimpleWorkflowSchema
     public static JsonSchemaObject Step() =>
         JsonSchemaObject
             .Create("object")
-            .WithDescription("One workflow step. The fields used depend on 'kind'.")
+            .WithDescription(
+                "One workflow step. The fields used depend on 'kind'. Only 'id' and 'kind' are always "
+                    + "required; per kind, an agent/parallel step needs a 'prompt' (agents[].prompt for "
+                    + "parallel) and a branch step needs at least one 'branches' entry. Every other field is "
+                    + "genuinely optional and defaults sensibly — see each field's description."
+            )
             .WithProperty("id", JsonSchemaObject.String("Unique step id."), required: true)
             .WithProperty(
                 "kind",
@@ -44,10 +49,19 @@ public static class SimpleWorkflowSchema
             .WithProperty(
                 "next",
                 JsonSchemaObject.String(
-                    "start/agent/parallel: the next step id. May point BACK to an earlier step to form a loop."
+                    "start/agent/parallel: the next step id. May point BACK to an earlier step to form a "
+                        + "loop. OPTIONAL — omit it to simply continue with the next step you declared, or "
+                        + "omit it on the last step to end the workflow."
                 )
             )
-            .WithProperty("agent", JsonSchemaObject.String("agent steps: the sub-agent type to delegate to."))
+            .WithProperty(
+                "agent",
+                JsonSchemaObject.String(
+                    "agent steps: the sub-agent type to delegate to. OPTIONAL — defaults to 'general-purpose'. "
+                        + "Name a specific agent whenever one fits the task; leave it out only when any "
+                        + "capable agent will do."
+                )
+            )
             .WithProperty(
                 "prompt",
                 JsonSchemaObject.String(
@@ -74,7 +88,13 @@ public static class SimpleWorkflowSchema
                 JsonSchemaObject.Array(Agent(), "parallel steps: the sub-agents to run concurrently; the step joins when all finish.")
             )
             .WithProperty("branches", JsonSchemaObject.Array(Branch(), "branch steps: ordered conditions; the first that holds wins."))
-            .WithProperty("else", JsonSchemaObject.String("branch steps: the fallback step id when no branch holds."))
+            .WithProperty(
+                "else",
+                JsonSchemaObject.String(
+                    "branch steps: the fallback step id when no branch holds. OPTIONAL — follows the same "
+                        + "fall-through rule as 'next'."
+                )
+            )
             .WithProperty("maxVisits", JsonSchemaObject.Integer("optional loop cap: the maximum times this step may be entered."))
             .WithProperty("onMaxVisits", JsonSchemaObject.String("optional loop escape: the step id to go to once maxVisits is exceeded."))
             .AllowAdditionalProperties(true)
@@ -83,7 +103,12 @@ public static class SimpleWorkflowSchema
     private static JsonSchemaObject Agent() =>
         JsonSchemaObject
             .Create("object")
-            .WithProperty("agent", JsonSchemaObject.String("The sub-agent type to delegate to."), required: true)
+            .WithProperty(
+                "agent",
+                JsonSchemaObject.String(
+                    "The sub-agent type to delegate to. OPTIONAL — defaults to 'general-purpose'."
+                )
+            )
             .WithProperty("prompt", JsonSchemaObject.String("The prompt for the sub-agent."), required: true)
             .WithProperty("saveAs", JsonSchemaObject.String("optional: capture this agent's output into state.<saveAs>."))
             .AllowAdditionalProperties(true)

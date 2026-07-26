@@ -80,4 +80,46 @@ internal static class BuiltInSubAgentTemplates
     public static Dictionary<string, SubAgentTemplate> CreateWorkflowControllerTemplates(
         Func<IStreamingAgent> providerAgentFactory
     ) => Create(providerAgentFactory);
+
+    /// <summary>
+    /// Builds the controller node-delegate templates from the launching conversation's ALREADY-ENRICHED
+    /// catalog — the built-ins PLUS every workspace-discovered and marketplace sub-agent the primary agent
+    /// can spawn — so a StartWorkflowAgent delegate can spawn the SAME <c>subagent_type</c>s the primary
+    /// agent and its sub-agents can (not just <c>general-purpose</c>/<c>researcher</c>). This closes the gap
+    /// where a workflow delegate requesting a plugin type (e.g. <c>code-reviewer:*</c>) failed with
+    /// "Unknown template … Available: general-purpose, researcher".
+    /// </summary>
+    /// <param name="enrichedCatalog">
+    /// The conversation's enriched template catalog (built-ins + discovered + marketplace). Every entry is
+    /// expected to be inherit-all (<see cref="SubAgentTemplate.EnabledTools"/> = null), as both discovery
+    /// tiers produce, so the controller's structural workflow-tool exclusion — not a per-template allow-list —
+    /// stays the sole fence, and <c>WorkflowManager.AssertRestrictedControllerTemplates</c> accepts them.
+    /// </param>
+    /// <param name="providerAgentFactory">
+    /// The controller/provider agent factory. Each entry's <see cref="SubAgentTemplate.AgentFactory"/> is
+    /// rebound to this so a workflow run with a preferred provider spawns its delegates on THAT provider
+    /// (mirroring the per-provider binding the normal conversation path applies). Any characteristics-based
+    /// factory carried by an enriched entry is dropped here: the original controller catalog
+    /// (<see cref="Create"/>) never set one, so controller delegates have always spawned via the plain
+    /// provider factory — resetting it keeps that contract and prevents the enriched closure (which captured
+    /// the CONVERSATION's factory for inherited-model spawns) from routing a controller delegate back onto the
+    /// launching conversation's provider.
+    /// </param>
+    public static Dictionary<string, SubAgentTemplate> CreateWorkflowControllerTemplates(
+        IReadOnlyDictionary<string, SubAgentTemplate> enrichedCatalog,
+        Func<IStreamingAgent> providerAgentFactory
+    )
+    {
+        ArgumentNullException.ThrowIfNull(enrichedCatalog);
+        ArgumentNullException.ThrowIfNull(providerAgentFactory);
+
+        return enrichedCatalog.ToDictionary(
+            entry => entry.Key,
+            entry => entry.Value with
+            {
+                AgentFactory = providerAgentFactory,
+                CharacteristicsAgentFactory = null,
+            },
+            StringComparer.Ordinal);
+    }
 }

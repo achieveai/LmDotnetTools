@@ -20,6 +20,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 {
     #region Fields
 
+    /// <summary>
+    /// Per-turn output-budget floor applied when a loop is constructed without an explicit
+    /// <see cref="GenerateReplyOptions.MaxToken"/>. Chosen to match the main agent's own budget so
+    /// sub-agents and workflow-controller loops get the same headroom instead of the provider's raw
+    /// 4096 default, which truncates tool-call argument JSON at <c>stop_reason=max_tokens</c>. Filling a
+    /// null budget only; any explicit MaxToken (including a smaller one) is preserved.
+    /// </summary>
+    internal const int DefaultMaxTokenFloor = 8192;
+
     private readonly int _outputChannelCapacity;
     private readonly int _inputChannelCapacity;
 
@@ -237,7 +246,21 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _outputChannelCapacity = outputChannelCapacity;
         _maxReplayBufferSize = maxReplayBufferSize;
         _maxReplayBufferBytes = maxReplayBufferBytes;
-        DefaultOptions = defaultOptions ?? new GenerateReplyOptions();
+
+        // Per-turn output-budget floor. When no MaxToken is configured, the provider falls back to its
+        // raw 4096 default (AnthropicRequest: MaxTokens = options?.MaxToken ?? 4096). A single turn that
+        // emits a real file body (Write.content) or script (Bash.command) as a tool_use argument then
+        // exhausts that budget: the provider stops with stop_reason=max_tokens and truncates the streaming
+        // tool-call JSON mid-string, so the loop executes corrupt args. The main agent already dodges this
+        // by setting MaxToken explicitly (8192); sub-agents and the workflow-controller loop are built with
+        // options carrying only a model id, so they inherited the 4096 ceiling and their Write/Bash calls
+        // consistently failed. Filling ONLY a null MaxToken here is non-breaking: any explicit budget
+        // (including the main agent's) is preserved, and it never touches ModelId (empty ModelId still lets
+        // the provider pick its default model — this sets budget only, never clobbers model selection).
+        var baseOptions = defaultOptions ?? new GenerateReplyOptions();
+        DefaultOptions = baseOptions.MaxToken is null
+            ? baseOptions with { MaxToken = DefaultMaxTokenFloor }
+            : baseOptions;
         Store = store;
         Logger = logger ?? NullLogger.Instance;
 

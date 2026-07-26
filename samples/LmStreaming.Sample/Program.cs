@@ -1322,11 +1322,27 @@ try
                         // bound to it). The fixed default below uses the conversation's provider.
                         SubAgentOptions BuildControllerOptions(string providerId)
                         {
+                            // Share the launching conversation's ENRICHED catalog (built-ins + workspace-discovered
+                            // + marketplace) with the controller so a workflow delegate can spawn the SAME
+                            // subagent_types the primary agent and its sub-agents can — not just general-purpose/
+                            // researcher (the bug: a delegate asking for a plugin type got "Unknown template …
+                            // Available: general-purpose, researcher"). Prefer the LIVE shared source so mid-session
+                            // context-discovery registrations flow into the controller too; fall back to the static
+                            // enriched snapshot; both are supersets of the built-ins. With neither (no sandbox AND
+                            // no sub-agent options) fall back to the built-ins-only catalog.
+                            var enrichedCatalog = sharedSubAgentSource?.Templates ?? subAgentOptions?.Templates;
+                            var controllerTemplates = enrichedCatalog is not null
+                                ? BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
+                                    enrichedCatalog,
+                                    () => agentFactory(providerId)
+                                )
+                                : BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
+                                    () => agentFactory(providerId)
+                                );
+
                             var opts = new SubAgentOptions
                             {
-                                Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
-                                    () => agentFactory(providerId)
-                                ),
+                                Templates = controllerTemplates,
                                 MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
                                 // Structural transparency guard: keep the controller's own workflow-state/launch
                                 // tools OUT of the snapshot its delegates inherit, so an inherit-all delegate

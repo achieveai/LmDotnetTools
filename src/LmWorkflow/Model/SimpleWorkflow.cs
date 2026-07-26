@@ -79,10 +79,17 @@ public sealed record SimpleStep
     /// <summary>The step kind: <c>start</c>, <c>agent</c>, <c>parallel</c>, <c>branch</c>, or <c>end</c>.</summary>
     public string Kind { get; init; } = string.Empty;
 
-    /// <summary>The next step id (for <c>start</c>, <c>agent</c>, and <c>parallel</c> steps). May point BACK to an earlier step to form a loop.</summary>
+    /// <summary>
+    ///     The next step id (for <c>start</c>, <c>agent</c>, and <c>parallel</c> steps). May point BACK to an
+    ///     earlier step to form a loop. Optional: omit it to continue with the NEXT DECLARED STEP; omit it on
+    ///     the last step to end the workflow.
+    /// </summary>
     public string? Next { get; init; }
 
-    /// <summary><c>agent</c> steps: the sub-agent type to delegate to.</summary>
+    /// <summary>
+    ///     <c>agent</c> steps: the sub-agent type to delegate to. Optional — defaults to
+    ///     <see cref="SimpleWorkflowTranslator.DefaultSubagentType"/> when any capable agent will do.
+    /// </summary>
     public string? Agent { get; init; }
 
     /// <summary><c>agent</c> steps: the prompt handed to the sub-agent. Use <c>{{item}}</c> inside a <c>forEach</c> step.</summary>
@@ -107,7 +114,10 @@ public sealed record SimpleStep
     /// <summary><c>branch</c> steps: the ordered conditions; the first that holds wins.</summary>
     public IReadOnlyList<SimpleBranch>? Branches { get; init; }
 
-    /// <summary><c>branch</c> steps: the fallback step id when no branch holds.</summary>
+    /// <summary>
+    ///     <c>branch</c> steps: the fallback step id when no branch holds. Optional — follows the same
+    ///     fall-through rule as <see cref="Next"/>.
+    /// </summary>
     public string? Else { get; init; }
 
     /// <summary>Optional loop guard (<c>agent</c>/<c>parallel</c>/<c>branch</c> steps): the maximum times this step may be entered.</summary>
@@ -120,7 +130,10 @@ public sealed record SimpleStep
 /// <summary>One sub-agent within a <c>parallel</c> step.</summary>
 public sealed record SimpleAgent
 {
-    /// <summary>The sub-agent type to delegate to.</summary>
+    /// <summary>
+    ///     The sub-agent type to delegate to. Optional — defaults to
+    ///     <see cref="SimpleWorkflowTranslator.DefaultSubagentType"/> when any capable agent will do.
+    /// </summary>
     public string Agent { get; init; } = string.Empty;
 
     /// <summary>The prompt handed to the sub-agent.</summary>
@@ -144,12 +157,27 @@ public sealed record SimpleBranch
 public static class SimpleWorkflowTranslator
 {
     /// <summary>
+    ///     The sub-agent type used when a step delegates without naming one. Leaving <c>agent</c> out is a
+    ///     legitimate authoring choice ("any capable agent will do"), not an error, so it defaults here rather
+    ///     than being forced on the author.
+    /// </summary>
+    public const string DefaultSubagentType = "general-purpose";
+
+    /// <summary>
     ///     Builds a <see cref="WorkflowDefinition"/> from <paramref name="workflow"/>. Kind names are matched
     ///     case-insensitively and a few friendly aliases are accepted (<c>task</c>=agent, <c>fanout</c>=parallel,
     ///     <c>if</c>=branch, <c>terminal</c>=end). Shape errors are accumulated and thrown together so the model
     ///     can fix them in one pass; graph-level errors (dangling/unreachable edges) are left to
     ///     <see cref="WorkflowValidator"/> on the resulting definition.
     /// </summary>
+    /// <remarks>
+    ///     Only fields with no sensible default are required — <c>prompt</c> on a delegating step, a non-empty
+    ///     <c>agents</c>/<c>branches</c> list. Everything the schema advertises as optional really is optional:
+    ///     an omitted <c>next</c>/<c>else</c> falls through to the next declared step and an omitted
+    ///     <c>agent</c> becomes <see cref="DefaultSubagentType"/>. That mismatch — a schema-valid workflow
+    ///     rejected by hidden required-field rules — is what made a real StartWorkflowAgent call fail with
+    ///     "Step 'setup' needs a 'next'."
+    /// </remarks>
     /// <exception cref="WorkflowValidationException">One or more steps are missing fields required for their kind.</exception>
     public static WorkflowDefinition ToDefinition(SimpleWorkflow workflow)
     {
@@ -181,14 +209,54 @@ public static class SimpleWorkflowTranslator
             }
         }
 
-        var nodes = new List<WorkflowNode>(steps.Count);
-        foreach (var step in steps)
+        // A step that leaves its outgoing edge out CONTINUES WITH THE NEXT DECLARED STEP: declaration order
+        // is exactly what a model means by omitting it (verified against the real rejected workflow, where
+        // every omitted 'next' matched the following step). Treating it as a dead end instead would silently
+        // truncate the workflow — far worse than the loud rejection this replaces. The LAST step has nothing
+        // to fall through to, so it ends the workflow: at the declared terminal if there is one, otherwise at
+        // one synthesized here (the validator requires a reachable terminal). Resolved LAZILY so a workflow
+        // that never needs the fallback — a pure loop, say — never gets an unreachable terminal bolted on.
+        TerminalNode? synthesizedTerminal = null;
+        string? endOfWorkflowId = null;
+
+        string EndOfWorkflow()
         {
-            var node = BuildNode(step, errors);
+            if (endOfWorkflowId is not null)
+            {
+                return endOfWorkflowId;
+            }
+
+            var declared = steps.FirstOrDefault(s =>
+                IsTerminalKind(s.Kind) && !string.IsNullOrWhiteSpace(s.Id)
+            );
+            if (declared is not null)
+            {
+                return endOfWorkflowId = declared.Id;
+            }
+
+            var synthesizedId = UniqueId("end", seenIds);
+            synthesizedTerminal = new TerminalNode { Id = synthesizedId, Title = synthesizedId };
+            return endOfWorkflowId = synthesizedId;
+        }
+
+        var nodes = new List<WorkflowNode>(steps.Count);
+        for (var i = 0; i < steps.Count; i++)
+        {
+            var index = i;
+            var node = BuildNode(
+                steps[index],
+                errors,
+                () => index + 1 < steps.Count ? steps[index + 1].Id : EndOfWorkflow()
+            );
             if (node is not null)
             {
                 nodes.Add(node);
             }
+        }
+
+        if (synthesizedTerminal is not null)
+        {
+            nodes.Add(synthesizedTerminal);
         }
 
         if (errors.Count > 0)
@@ -206,7 +274,9 @@ public static class SimpleWorkflowTranslator
 
     /// <summary>
     ///     Translates a SINGLE step into its internal node (for the <c>AddNode</c> graph-editing tool). The
-    ///     caller wires the node into the graph (splicing edges); this only maps the step's own fields.
+    ///     caller wires the node into the graph (splicing edges); this only maps the step's own fields. There
+    ///     is no surrounding sequence here, so an omitted <c>next</c>/<c>else</c> stays unset for the caller
+    ///     to splice — an edge it never splices is caught by the graph validator on the resulting definition.
     /// </summary>
     /// <exception cref="WorkflowValidationException">The step is missing fields required for its kind, or has an unknown kind.</exception>
     public static WorkflowNode ToNode(SimpleStep step)
@@ -264,30 +334,34 @@ public static class SimpleWorkflowTranslator
             ?? throw new JsonException("'node' deserialized to null.");
     }
 
-    /// <summary>Maps one step's own fields to its internal node; accumulates shape errors, returns null for an unknown kind.</summary>
-    private static WorkflowNode? BuildNode(SimpleStep step, List<string> errors)
+    /// <summary>
+    ///     Maps one step's own fields to its internal node; accumulates shape errors, returns null for an
+    ///     unknown kind. <paramref name="fallThrough"/> supplies the implicit outgoing edge for a step that
+    ///     omitted one; it is null on the single-step <see cref="ToNode"/> path, where the caller splices the
+    ///     edge instead, and is invoked only when the step actually left the edge out.
+    /// </summary>
+    private static WorkflowNode? BuildNode(SimpleStep step, List<string> errors, Func<string>? fallThrough = null)
     {
         var id = step.Id;
         var title = string.IsNullOrWhiteSpace(step.Title) ? id : step.Title.Trim();
-        var kind = (step.Kind ?? string.Empty).Trim().ToLowerInvariant();
+        var kind = NormalizeKind(step.Kind);
 
         switch (kind)
         {
             case "start":
-                RequireField(errors, id, "next", step.Next);
-                return new StartNode { Id = id, Title = title, Next = ToList(step.Next) };
+                return new StartNode { Id = id, Title = title, Next = ToList(ResolveNext(step.Next, fallThrough)) };
 
             case "agent":
             case "task":
-                RequireField(errors, id, "next", step.Next);
-                RequireField(errors, id, "agent", step.Agent);
+                // 'prompt' stays required — a sub-agent with no instructions has nothing to do, and there is
+                // no honest default for it. 'agent' and 'next' both have one, so they don't.
                 RequireField(errors, id, "prompt", step.Prompt);
                 var fanOut = !string.IsNullOrWhiteSpace(step.ForEach);
                 return new ProceduralNode
                 {
                     Id = id,
                     Title = title,
-                    Next = ToList(step.Next),
+                    Next = ToList(ResolveNext(step.Next, fallThrough)),
                     MaxVisits = step.MaxVisits,
                     OnMaxVisits = NullIfBlank(step.OnMaxVisits),
                     TaskList =
@@ -295,7 +369,7 @@ public static class SimpleWorkflowTranslator
                         new WorkflowTask
                         {
                             Id = $"{id}:task",
-                            SubagentType = step.Agent,
+                            SubagentType = SubagentTypeOrDefault(step.Agent),
                             PromptTemplate = step.Prompt ?? string.Empty,
                             ForEach = NullIfBlank(step.ForEach),
                             // V1 runs a forEach fan-out SEQUENTIALLY (the validator rejects parallel=true).
@@ -308,7 +382,6 @@ public static class SimpleWorkflowTranslator
 
             case "parallel":
             case "fanout":
-                RequireField(errors, id, "next", step.Next);
                 var agents = step.Agents ?? [];
                 if (agents.Count == 0)
                 {
@@ -319,11 +392,6 @@ public static class SimpleWorkflowTranslator
                 for (var ai = 0; ai < agents.Count; ai++)
                 {
                     var member = agents[ai];
-                    if (string.IsNullOrWhiteSpace(member.Agent))
-                    {
-                        errors.Add($"Parallel step '{id}' agent #{ai + 1} needs an 'agent'.");
-                    }
-
                     if (string.IsNullOrWhiteSpace(member.Prompt))
                     {
                         errors.Add($"Parallel step '{id}' agent #{ai + 1} needs a 'prompt'.");
@@ -333,7 +401,7 @@ public static class SimpleWorkflowTranslator
                         new WorkflowTask
                         {
                             Id = $"{id}:task{ai + 1}",
-                            SubagentType = member.Agent,
+                            SubagentType = SubagentTypeOrDefault(member.Agent),
                             PromptTemplate = member.Prompt,
                             Writes = MakeWrites(member.SaveAs, fanOut: false),
                         }
@@ -344,7 +412,7 @@ public static class SimpleWorkflowTranslator
                 {
                     Id = id,
                     Title = title,
-                    Next = ToList(step.Next),
+                    Next = ToList(ResolveNext(step.Next, fallThrough)),
                     MaxVisits = step.MaxVisits,
                     OnMaxVisits = NullIfBlank(step.OnMaxVisits),
                     TaskList = tasks,
@@ -358,7 +426,6 @@ public static class SimpleWorkflowTranslator
                     errors.Add($"Branch step '{id}' needs at least one 'branches' entry.");
                 }
 
-                RequireField(errors, id, "else", step.Else);
                 return new ConditionalNode
                 {
                     Id = id,
@@ -371,7 +438,7 @@ public static class SimpleWorkflowTranslator
                             To = b.Goto ?? string.Empty,
                         }),
                     ],
-                    Else = step.Else ?? string.Empty,
+                    Else = ResolveNext(step.Else, fallThrough) ?? string.Empty,
                     MaxVisits = step.MaxVisits,
                     OnMaxVisits = NullIfBlank(step.OnMaxVisits),
                 };
@@ -498,6 +565,40 @@ public static class SimpleWorkflowTranslator
         if (string.IsNullOrWhiteSpace(value))
         {
             errors.Add($"Step '{stepId}' needs a '{field}'.");
+        }
+    }
+
+    /// <summary>The step kind, normalized for matching (trimmed, lower-cased); aliases are resolved by the caller.</summary>
+    private static string NormalizeKind(string? kind) => (kind ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static bool IsTerminalKind(string? kind) => NormalizeKind(kind) is "end" or "terminal";
+
+    /// <summary>
+    ///     The step's own outgoing target, or — when it left one out — the implicit fall-through supplied by
+    ///     the caller (null where there is no surrounding sequence to fall through to).
+    /// </summary>
+    private static string? ResolveNext(string? declared, Func<string>? fallThrough) =>
+        string.IsNullOrWhiteSpace(declared) ? fallThrough?.Invoke() : declared;
+
+    /// <summary>The sub-agent type to delegate to, defaulting when the author left the choice open.</summary>
+    private static string SubagentTypeOrDefault(string? agent) =>
+        string.IsNullOrWhiteSpace(agent) ? DefaultSubagentType : agent;
+
+    /// <summary><paramref name="preferred"/> if free, otherwise the first numbered variant that is; reserves the result.</summary>
+    private static string UniqueId(string preferred, HashSet<string> taken)
+    {
+        if (taken.Add(preferred))
+        {
+            return preferred;
+        }
+
+        for (var n = 2; ; n++)
+        {
+            var candidate = $"{preferred}{n}";
+            if (taken.Add(candidate))
+            {
+                return candidate;
+            }
         }
     }
 

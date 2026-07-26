@@ -39,6 +39,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
 
+    /// <summary>
+    /// Names of the tools that declare at least one required parameter, snapshot at construction from
+    /// the same registry the handlers came from. Consulted by the tool-dispatch guard in
+    /// <see cref="ExecuteToolCallAsync"/> so an empty argument payload is rejected only for tools that
+    /// actually need arguments — a genuinely parameterless tool called with empty args still runs.
+    /// Ordinal, matching the handler-dictionary lookup.
+    /// </summary>
+    private readonly HashSet<string> _functionsRequiringArgs;
+
     /// <summary>The sub-agent manager for this loop, or null when no sub-agent options were supplied.
     /// Exposed so a host-side trigger source (e.g. the sample's subagent-completion source) can observe
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
@@ -252,6 +261,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // Sub-agents whose template/override sets no model inherit the parent's model, so a
                 // built-in template doesn't fall back to the provider's stale hardcoded default.
                 parentModelId: DefaultOptions.ModelId,
+                // Sub-agents whose template sets no budget inherit the parent's effective per-turn output
+                // budget (never null here — MultiTurnAgentBase floors it), so a delegate's Write/Bash
+                // tool_use JSON isn't truncated by the provider's 4096 default (stop_reason=max_tokens).
+                parentMaxToken: DefaultOptions.MaxToken,
                 // Share the root ledger so descendant usage folds into the same conversation total (#196).
                 usageSink: UsageLedger,
                 // Persist immediately on each descendant observation (covers late/background descendants).
@@ -289,6 +302,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // Build tool call components from registry
         var (toolCallMiddleware, finalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
         _toolHandlers = finalHandlers;
+
+        // Snapshot which tools declare a required parameter so the dispatch guard in
+        // ExecuteToolCallAsync can reject an empty/truncated argument payload for a tool that needs
+        // args (e.g. Write/Bash) while still letting a genuinely parameterless tool run with empty
+        // args. Sourced from the same registry the handlers came from, so names line up with
+        // _toolHandlers (Build() applies the same collision-renaming BuildToolCallComponents does).
+        var (registeredContracts, _) = functionRegistry.Build();
+        _functionsRequiringArgs = new HashSet<string>(
+            registeredContracts
+                .Where(c => c.Parameters?.Any(p => p.IsRequired) == true)
+                .Select(c => c.Name),
+            StringComparer.Ordinal);
 
         // Create publishing middleware that publishes to subscribers
         // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
@@ -1085,6 +1110,44 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             {
                 ToolCallId = toolCall.ToolCallId,
             };
+
+            // Truncation guard: when the provider hits its per-turn output ceiling it stops with
+            // stop_reason=max_tokens and cuts the streaming tool_use argument JSON off mid-string (or
+            // emits nothing at all). Executing a side-effecting tool — Write a file, run a Bash command —
+            // with those corrupt/empty args is the actual harm. For a tool that declares a required
+            // parameter, refuse to dispatch when the payload is empty/whitespace or not well-formed JSON,
+            // returning a recoverable, LLM-visible error so the run survives and the model can retry.
+            // Parameterless tools are exempt (empty args are legitimate for them).
+            if (_functionsRequiringArgs.Contains(toolCall.FunctionName)
+                && !ArgumentsAreWellFormed(functionArgs))
+            {
+                Logger.LogWarning(
+                    "Rejecting tool call '{FunctionName}' with malformed/empty arguments (likely truncated " +
+                    "at the provider max_tokens ceiling). Returning a recoverable error to the LLM. " +
+                    "ToolCallId: {ToolCallId}, ArgsLength: {ArgsLength}",
+                    toolCall.FunctionName,
+                    toolCall.ToolCallId,
+                    toolCall.FunctionArgs?.Length ?? 0);
+
+                return new ToolCallResultMessage
+                {
+                    ToolCallId = toolCall.ToolCallId,
+                    ToolName = toolCall.FunctionName,
+                    Result = JsonSerializer.Serialize(new
+                    {
+                        error =
+                            $"Malformed arguments for '{toolCall.FunctionName}': the tool-call argument JSON was "
+                            + "empty or not well-formed (it may have been truncated). Re-issue the tool call with "
+                            + "complete, valid JSON arguments.",
+                    }),
+                    IsError = true,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
+                    Role = Role.User,
+                    FromAgent = toolCall.FromAgent,
+                    GenerationId = toolCall.GenerationId,
+                };
+            }
+
             var result = await handler(functionArgs, ctx, ct);
             return BuildResultMessage(toolCall, result);
         }
@@ -1110,6 +1173,33 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 FromAgent = toolCall.FromAgent,
                 GenerationId = toolCall.GenerationId,
             };
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="functionArgs"/> is a non-empty, well-formed JSON document — the
+    /// precondition for dispatching a tool that declares required parameters. Empty/whitespace text
+    /// (Bash args arriving as 0 bytes) and a truncated fragment (Write args cut off mid-string at the
+    /// max_tokens ceiling, so the JSON never closes) both return false. A well-formed but incomplete
+    /// object (missing a required field) still parses here and is left to the handler's own
+    /// deserialization to surface — this guard targets the truncation failure mode, not schema
+    /// validation.
+    /// </summary>
+    private static bool ArgumentsAreWellFormed(string functionArgs)
+    {
+        if (string.IsNullOrWhiteSpace(functionArgs))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var _ = JsonDocument.Parse(functionArgs);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 
