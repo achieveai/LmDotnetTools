@@ -19,7 +19,7 @@ public enum ProxyRouteKind
     /// <summary>Forward the body to Copilot essentially unchanged.</summary>
     Passthrough,
 
-    /// <summary>Rewrite an Anthropic Messages request into an OpenAI Responses request, and the reply back.</summary>
+    /// <summary>Rewrite an Anthropic Messages request into an OpenAI Responses request, and translate the reply back.</summary>
     TranslateAnthropicToResponses,
 }
 
@@ -51,8 +51,8 @@ public static class ModelRouter
     ///     Returns null when the model cannot serve that dialect at all; the caller answers 404.
     ///
     ///     A model with NO endpoint metadata (pinned via COPILOT_ANTHROPIC_MODEL, or discovered from a
-    ///     legacy /models shape) is treated as Anthropic-Messages-capable and nothing else, which is
-    ///     precisely how this proxy behaved before endpoint metadata existed.
+    ///     legacy /models shape) is treated as capable of Anthropic Messages and Chat Completions, but
+    ///     not Responses — we cannot claim Responses support we have not seen advertised.
     /// </summary>
     public static ModelRoute? Resolve(ProxyDialect dialect, ProxyModelInfo model)
     {

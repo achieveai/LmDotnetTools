@@ -454,7 +454,8 @@ public static class ProxyModelResolver
             var pinned = modelOverride.Trim();
 
             // DEVIATION D1: pinning still short-circuits discovery. Vendor and endpoints are unknown, and an
-            // empty endpoint list means "no metadata", which routes as Anthropic Messages — today's behavior.
+            // empty endpoint list means "no metadata", which routes as Anthropic Messages and Chat Completions,
+            // but not Responses — we cannot claim Responses support we have not seen advertised.
             return new ProxyModelCatalog(pinned, [new ProxyModelInfo(pinned, string.Empty, [])]);
         }
 

@@ -75,10 +75,21 @@ public class ModelRouteTests
     }
 
     [Fact]
+    public void A_pinned_model_is_treated_as_chat_completions_capable()
+    {
+        var route = ModelRouter.Resolve(ProxyDialect.ChatCompletions, NoMetadata);
+
+        route.Should().NotBeNull();
+        route!.Kind.Should().Be(ProxyRouteKind.Passthrough);
+        route.UpstreamPath.Should().Be("/chat/completions");
+    }
+
+    [Fact]
     public void Servable_lists_the_ids_that_can_serve_a_dialect()
     {
         var catalog = new ProxyModelCatalog("claude-opus-4.8", [Dual, ResponsesOnly, ResponsesAndChat]);
 
+        ModelRouter.Servable(ProxyDialect.AnthropicMessages, catalog).Should().Equal("claude-opus-4.8", "gpt-5.3-codex", "gpt-5.4");
         ModelRouter.Servable(ProxyDialect.Responses, catalog).Should().Equal("gpt-5.3-codex", "gpt-5.4");
         ModelRouter.Servable(ProxyDialect.ChatCompletions, catalog).Should().Equal("claude-opus-4.8", "gpt-5.4");
     }
