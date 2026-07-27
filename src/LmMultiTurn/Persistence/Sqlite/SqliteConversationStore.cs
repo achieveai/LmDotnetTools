@@ -5,10 +5,12 @@ using Microsoft.Data.Sqlite;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 
 /// <summary>
-/// SQLite implementation of <see cref="IConversationStore"/> and <see cref="IRunLedgerStore"/>.
+/// SQLite implementation of <see cref="IConversationStore"/>, <see cref="IRunLedgerStore"/> and
+/// <see cref="IRunLifecycleStore"/>.
 /// Uses a factory pattern for connection pooling and lazy schema initialization.
 /// </summary>
-public sealed class SqliteConversationStore : IConversationStore, IRunLedgerStore, IAsyncDisposable
+public sealed class SqliteConversationStore
+    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IAsyncDisposable
 {
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly bool _ownsFactory;
@@ -514,6 +516,335 @@ public sealed class SqliteConversationStore : IConversationStore, IRunLedgerStor
     }
 
     /// <inheritdoc />
+    public async Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        RunLifecycleGuards.ValidateStart(state);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+
+        // The WHERE clause on the upsert is what refuses to resurrect a terminal run: the insert
+        // conflicts, the update matches no row, and the affected count comes back zero.
+        command.CommandText = """
+            INSERT INTO run_lifecycle (
+                run_id, thread_id, generation_id, parent_run_id, parent_thread_id,
+                spawning_tool_call_id, sub_agent_id, cause_kind, cause_tool_call_id,
+                phase, outcome, turn_count, started_at, updated_at, terminal_at)
+            VALUES (
+                $run_id, $thread_id, $generation_id, $parent_run_id, $parent_thread_id,
+                $spawning_tool_call_id, $sub_agent_id, $cause_kind, $cause_tool_call_id,
+                $phase, NULL, $turn_count, $started_at, $started_at, NULL)
+            ON CONFLICT(run_id) DO UPDATE SET
+                thread_id = excluded.thread_id,
+                generation_id = excluded.generation_id,
+                parent_run_id = excluded.parent_run_id,
+                parent_thread_id = excluded.parent_thread_id,
+                spawning_tool_call_id = excluded.spawning_tool_call_id,
+                sub_agent_id = excluded.sub_agent_id,
+                cause_kind = excluded.cause_kind,
+                cause_tool_call_id = excluded.cause_tool_call_id,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at
+            WHERE run_lifecycle.phase = $running;
+            """;
+
+        _ = command.Parameters.AddWithValue("$run_id", state.RunId);
+        _ = command.Parameters.AddWithValue("$thread_id", state.ThreadId);
+        _ = command.Parameters.AddWithValue("$generation_id", state.GenerationId);
+        _ = command.Parameters.AddWithValue("$parent_run_id", (object?)state.ParentRunId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$parent_thread_id", (object?)state.ParentThreadId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$spawning_tool_call_id",
+            (object?)state.SpawningToolCallId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$sub_agent_id", (object?)state.SubAgentId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$cause_kind", state.CauseKind);
+        _ = command.Parameters.AddWithValue(
+            "$cause_tool_call_id",
+            (object?)state.CauseToolCallId ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue("$phase", nameof(RunLifecyclePhase.Running));
+        _ = command.Parameters.AddWithValue("$running", nameof(RunLifecyclePhase.Running));
+        _ = command.Parameters.AddWithValue("$turn_count", state.TurnCount);
+        _ = command.Parameters.AddWithValue("$started_at", state.StartedAt.ToUnixTimeMilliseconds());
+
+        var affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (affected == 0)
+        {
+            throw new InvalidOperationException(
+                $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<RunLifecycleState?> LoadRunLifecycleAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"{RunLifecycleSelectSql} WHERE run_id = $run_id;";
+        _ = command.Parameters.AddWithValue("$run_id", runId);
+
+        RunLifecycleState? state = null;
+        await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            if (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                state = ReadRunLifecycle(reader);
+            }
+        }
+
+        if (state == null)
+        {
+            return null;
+        }
+
+        var deferrals = await LoadDeferredCallsAsync(connection, [state.RunId], ct)
+            .ConfigureAwait(false);
+        return Attach(state, deferrals);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
+        string threadId,
+        CancellationToken ct = default) =>
+        ListRunLifecycleCoreAsync(threadId, runningOnly: false, ct);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
+        string threadId,
+        CancellationToken ct = default) =>
+        ListRunLifecycleCoreAsync(threadId, runningOnly: true, ct);
+
+    /// <inheritdoc />
+    public async Task<bool> TryMarkRunTerminalAsync(
+        string runId,
+        string outcome,
+        int turnCount,
+        DateTimeOffset terminalAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+        ArgumentException.ThrowIfNullOrEmpty(outcome);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+
+        // One conditional UPDATE, not a read followed by a write: the phase predicate is what makes
+        // exactly one of two concurrent terminalizations see a row count of 1.
+        command.CommandText = """
+            UPDATE run_lifecycle
+            SET phase = $terminal,
+                outcome = $outcome,
+                turn_count = $turn_count,
+                terminal_at = $terminal_at,
+                updated_at = $terminal_at
+            WHERE run_id = $run_id AND phase = $running;
+            """;
+
+        _ = command.Parameters.AddWithValue("$terminal", nameof(RunLifecyclePhase.Terminal));
+        _ = command.Parameters.AddWithValue("$running", nameof(RunLifecyclePhase.Running));
+        _ = command.Parameters.AddWithValue("$outcome", outcome);
+        _ = command.Parameters.AddWithValue("$turn_count", turnCount);
+        _ = command.Parameters.AddWithValue("$terminal_at", terminalAt.ToUnixTimeMilliseconds());
+        _ = command.Parameters.AddWithValue("$run_id", runId);
+
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+    }
+
+    /// <inheritdoc />
+    public async Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
+        string runId,
+        DeferredToolCallRecord record,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+        ArgumentNullException.ThrowIfNull(record);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var transaction = connection.BeginTransaction();
+        try
+        {
+            var threadId = await ReadScalarStringAsync(
+                connection,
+                transaction,
+                "SELECT thread_id FROM run_lifecycle WHERE run_id = $run_id;",
+                [("$run_id", runId)],
+                ct).ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    $"Run '{runId}' was never recorded as started; cannot record deferral "
+                        + $"'{record.ToolCallId}'.");
+
+            var existing = await LoadDeferredCallAsync(
+                connection,
+                transaction,
+                threadId,
+                record.ToolCallId,
+                ct).ConfigureAwait(false);
+            if (existing != null)
+            {
+                transaction.Commit();
+                return existing;
+            }
+
+            using var countCommand = connection.CreateCommand();
+            countCommand.Transaction = transaction;
+            countCommand.CommandText =
+                "SELECT COUNT(*) FROM run_deferred_calls WHERE run_id = $run_id;";
+            _ = countCommand.Parameters.AddWithValue("$run_id", runId);
+            var ordinal = Convert.ToInt32(
+                await countCommand.ExecuteScalarAsync(ct).ConfigureAwait(false),
+                System.Globalization.CultureInfo.InvariantCulture) + 1;
+
+            using var insertCommand = connection.CreateCommand();
+            insertCommand.Transaction = transaction;
+            insertCommand.CommandText = """
+                INSERT INTO run_deferred_calls (
+                    thread_id, tool_call_id, run_id, tool_name, generation_id, ordinal,
+                    deferred_at, resolved_at, resolution_fingerprint, child_run_id)
+                VALUES (
+                    $thread_id, $tool_call_id, $run_id, $tool_name, $generation_id, $ordinal,
+                    $deferred_at, NULL, NULL, NULL);
+                """;
+            _ = insertCommand.Parameters.AddWithValue("$thread_id", threadId);
+            _ = insertCommand.Parameters.AddWithValue("$tool_call_id", record.ToolCallId);
+            _ = insertCommand.Parameters.AddWithValue("$run_id", runId);
+            _ = insertCommand.Parameters.AddWithValue("$tool_name", record.ToolName);
+            _ = insertCommand.Parameters.AddWithValue(
+                "$generation_id",
+                (object?)record.GenerationId ?? DBNull.Value);
+            _ = insertCommand.Parameters.AddWithValue("$ordinal", ordinal);
+            _ = insertCommand.Parameters.AddWithValue(
+                "$deferred_at",
+                record.DeferredAt.ToUnixTimeMilliseconds());
+            _ = await insertCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            await TouchRunAsync(connection, transaction, runId, record.DeferredAt, ct)
+                .ConfigureAwait(false);
+
+            transaction.Commit();
+            return record with { Ordinal = ordinal };
+        }
+        catch
+        {
+            RollbackQuietly(transaction);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
+        string threadId,
+        string toolCallId,
+        string resolutionFingerprint,
+        string? childRunId,
+        DateTimeOffset resolvedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(toolCallId);
+        ArgumentException.ThrowIfNullOrEmpty(resolutionFingerprint);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var transaction = connection.BeginTransaction();
+        try
+        {
+            using var updateCommand = connection.CreateCommand();
+            updateCommand.Transaction = transaction;
+
+            // `resolved_at IS NULL` is the guard: a second resolution updates nothing and falls
+            // through to the read below, which decides whether it was a retry or a disagreement.
+            updateCommand.CommandText = """
+                UPDATE run_deferred_calls
+                SET resolved_at = $resolved_at,
+                    resolution_fingerprint = $fingerprint,
+                    child_run_id = $child_run_id
+                WHERE thread_id = $thread_id
+                  AND tool_call_id = $tool_call_id
+                  AND resolved_at IS NULL;
+                """;
+            _ = updateCommand.Parameters.AddWithValue(
+                "$resolved_at",
+                resolvedAt.ToUnixTimeMilliseconds());
+            _ = updateCommand.Parameters.AddWithValue("$fingerprint", resolutionFingerprint);
+            _ = updateCommand.Parameters.AddWithValue(
+                "$child_run_id",
+                (object?)childRunId ?? DBNull.Value);
+            _ = updateCommand.Parameters.AddWithValue("$thread_id", threadId);
+            _ = updateCommand.Parameters.AddWithValue("$tool_call_id", toolCallId);
+
+            DeferredResolutionOutcome outcome;
+            if (await updateCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1)
+            {
+                var owningRunId = await ReadScalarStringAsync(
+                    connection,
+                    transaction,
+                    """
+                    SELECT run_id FROM run_deferred_calls
+                    WHERE thread_id = $thread_id AND tool_call_id = $tool_call_id;
+                    """,
+                    [("$thread_id", threadId), ("$tool_call_id", toolCallId)],
+                    ct).ConfigureAwait(false);
+                if (owningRunId != null)
+                {
+                    await TouchRunAsync(connection, transaction, owningRunId, resolvedAt, ct)
+                        .ConfigureAwait(false);
+                }
+
+                outcome = DeferredResolutionOutcome.Resolved;
+            }
+            else
+            {
+                var committed = await LoadDeferredCallAsync(
+                    connection,
+                    transaction,
+                    threadId,
+                    toolCallId,
+                    ct).ConfigureAwait(false);
+
+                outcome = committed == null
+                    ? DeferredResolutionOutcome.NotFound
+                    : string.Equals(
+                        committed.ResolutionFingerprint,
+                        resolutionFingerprint,
+                        StringComparison.Ordinal)
+                        ? DeferredResolutionOutcome.Duplicate
+                        : DeferredResolutionOutcome.Conflict;
+            }
+
+            transaction.Commit();
+            return outcome;
+        }
+        catch
+        {
+            RollbackQuietly(transaction);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -573,6 +904,224 @@ public sealed class SqliteConversationStore : IConversationStore, IRunLedgerStor
             MessageJson = reader.GetString(10),
         };
     }
+
+    private const string RunLifecycleSelectSql = """
+        SELECT run_id, thread_id, generation_id, parent_run_id, parent_thread_id,
+               spawning_tool_call_id, sub_agent_id, cause_kind, cause_tool_call_id,
+               phase, outcome, turn_count, started_at, updated_at, terminal_at
+        FROM run_lifecycle
+        """;
+
+    private const string RunDeferredCallSelectSql = """
+        SELECT tool_call_id, tool_name, generation_id, ordinal,
+               deferred_at, resolved_at, resolution_fingerprint, child_run_id, run_id
+        FROM run_deferred_calls
+        """;
+
+    private async Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleCoreAsync(
+        string threadId,
+        bool runningOnly,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var command = connection.CreateCommand();
+        // run_id breaks ties so two runs started in the same millisecond come back in a fixed
+        // order rather than whatever order the table scan happens to produce.
+        command.CommandText = runningOnly
+            ? $"{RunLifecycleSelectSql} WHERE thread_id = $thread_id AND phase = $running ORDER BY started_at, run_id;"
+            : $"{RunLifecycleSelectSql} WHERE thread_id = $thread_id ORDER BY started_at DESC, run_id;";
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        if (runningOnly)
+        {
+            _ = command.Parameters.AddWithValue("$running", nameof(RunLifecyclePhase.Running));
+        }
+
+        var states = new List<RunLifecycleState>();
+        await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                states.Add(ReadRunLifecycle(reader));
+            }
+        }
+
+        if (states.Count == 0)
+        {
+            return states;
+        }
+
+        var deferrals = await LoadDeferredCallsAsync(
+            connection,
+            [.. states.Select(s => s.RunId)],
+            ct).ConfigureAwait(false);
+
+        return [.. states.Select(s => Attach(s, deferrals))];
+    }
+
+    /// <summary>
+    /// Reads every deferral belonging to the given runs, grouped by run and ordered within each.
+    /// </summary>
+    /// <remarks>
+    /// One query for the whole set rather than one per run: listing a thread's lifecycle is a
+    /// read the status surfaces do often, and a per-run round trip turns it into N+1.
+    /// </remarks>
+    private static async Task<Dictionary<string, List<DeferredToolCallRecord>>> LoadDeferredCallsAsync(
+        SqliteConnection connection,
+        IReadOnlyList<string> runIds,
+        CancellationToken ct)
+    {
+        var byRun = new Dictionary<string, List<DeferredToolCallRecord>>(StringComparer.Ordinal);
+        if (runIds.Count == 0)
+        {
+            return byRun;
+        }
+
+        using var command = connection.CreateCommand();
+        var placeholders = new string[runIds.Count];
+        for (var i = 0; i < runIds.Count; i++)
+        {
+            placeholders[i] = $"$run_{i}";
+            _ = command.Parameters.AddWithValue(placeholders[i], runIds[i]);
+        }
+
+        command.CommandText =
+            $"{RunDeferredCallSelectSql} WHERE run_id IN ({string.Join(", ", placeholders)}) ORDER BY ordinal;";
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var runId = reader.GetString(8);
+            if (!byRun.TryGetValue(runId, out var records))
+            {
+                records = [];
+                byRun[runId] = records;
+            }
+
+            records.Add(ReadDeferredCall(reader));
+        }
+
+        return byRun;
+    }
+
+    private static async Task<DeferredToolCallRecord?> LoadDeferredCallAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string threadId,
+        string toolCallId,
+        CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            $"{RunDeferredCallSelectSql} WHERE thread_id = $thread_id AND tool_call_id = $tool_call_id;";
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$tool_call_id", toolCallId);
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadDeferredCall(reader) : null;
+    }
+
+    private static async Task<string?> ReadScalarStringAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        IReadOnlyList<(string Name, string Value)> parameters,
+        CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        foreach (var (name, value) in parameters)
+        {
+            _ = command.Parameters.AddWithValue(name, value);
+        }
+
+        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
+    }
+
+    /// <summary>
+    /// Advances a run's <c>updated_at</c> so a reader can tell a run that is still moving from one
+    /// that has been sitting on an unresolved deferral since it started.
+    /// </summary>
+    private static async Task TouchRunAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        DateTimeOffset at,
+        CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "UPDATE run_lifecycle SET updated_at = $updated_at WHERE run_id = $run_id;";
+        _ = command.Parameters.AddWithValue("$updated_at", at.ToUnixTimeMilliseconds());
+        _ = command.Parameters.AddWithValue("$run_id", runId);
+
+        _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    private static void RollbackQuietly(SqliteTransaction transaction)
+    {
+        try
+        {
+            transaction.Rollback();
+        }
+        catch
+        {
+            // Swallow: a rollback failure (typically a connection that is already broken) must not
+            // replace the original exception, which is the one the caller needs to diagnose.
+        }
+    }
+
+    private static RunLifecycleState Attach(
+        RunLifecycleState state,
+        IReadOnlyDictionary<string, List<DeferredToolCallRecord>> deferrals) =>
+        deferrals.TryGetValue(state.RunId, out var records)
+            ? state with { DeferredToolCalls = records }
+            : state;
+
+    private static RunLifecycleState ReadRunLifecycle(SqliteDataReader reader) =>
+        new()
+        {
+            RunId = reader.GetString(0),
+            ThreadId = reader.GetString(1),
+            GenerationId = reader.GetString(2),
+            ParentRunId = reader.IsDBNull(3) ? null : reader.GetString(3),
+            ParentThreadId = reader.IsDBNull(4) ? null : reader.GetString(4),
+            SpawningToolCallId = reader.IsDBNull(5) ? null : reader.GetString(5),
+            SubAgentId = reader.IsDBNull(6) ? null : reader.GetString(6),
+            CauseKind = reader.GetString(7),
+            CauseToolCallId = reader.IsDBNull(8) ? null : reader.GetString(8),
+            Phase = Enum.Parse<RunLifecyclePhase>(reader.GetString(9)),
+            Outcome = reader.IsDBNull(10) ? null : reader.GetString(10),
+            TurnCount = reader.GetInt32(11),
+            StartedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(12)),
+            UpdatedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(13)),
+            TerminalAt = reader.IsDBNull(14)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)),
+        };
+
+    private static DeferredToolCallRecord ReadDeferredCall(SqliteDataReader reader) =>
+        new()
+        {
+            ToolCallId = reader.GetString(0),
+            ToolName = reader.GetString(1),
+            GenerationId = reader.IsDBNull(2) ? null : reader.GetString(2),
+            Ordinal = reader.GetInt32(3),
+            DeferredAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
+            ResolvedAt = reader.IsDBNull(5)
+                ? null
+                : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+            ResolutionFingerprint = reader.IsDBNull(6) ? null : reader.GetString(6),
+            ChildRunId = reader.IsDBNull(7) ? null : reader.GetString(7),
+        };
 
     private static RunLedgerEntry ReadRunLedgerEntry(SqliteDataReader reader)
     {

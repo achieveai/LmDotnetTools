@@ -6,12 +6,16 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// File-based implementation of IConversationStore.
 /// Stores messages and metadata as JSON files in a directory structure.
 /// </summary>
-public sealed class FileConversationStore : IConversationStore, IRunLedgerStore
+public sealed class FileConversationStore : IConversationStore, IRunLedgerStore, IRunLifecycleStore
 {
     private const string MessagesFileName = "messages.json";
     private const string MetadataFileName = "metadata.json";
     private const string RunsFileName = "runs.json";
     private const string AcceptedInputsFileName = "accepted-inputs.json";
+
+    // Deliberately a separate file from runs.json: the run ledger's shape is part of the status
+    // API's contract, and lifecycle observation must be addable without rewriting it.
+    private const string RunLifecycleFileName = "run-lifecycle.json";
 
     private readonly string _baseDirectory;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -444,6 +448,318 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore
         {
             _ = _lock.Release();
         }
+    }
+
+    /// <inheritdoc />
+    public async Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        RunLifecycleGuards.ValidateStart(state);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var threadDir = GetThreadDirectory(state.ThreadId);
+            _ = Directory.CreateDirectory(threadDir);
+
+            var file = Path.Combine(threadDir, RunLifecycleFileName);
+            var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct) ?? [];
+
+            var idx = runs.FindIndex(r => r.RunId == state.RunId);
+            if (idx >= 0)
+            {
+                if (runs[idx].Phase == RunLifecyclePhase.Terminal)
+                {
+                    throw new InvalidOperationException(
+                        $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
+                }
+
+                runs[idx] = state with { UpdatedAt = state.StartedAt };
+            }
+            else
+            {
+                runs.Add(state with { UpdatedAt = state.StartedAt });
+            }
+
+            await WriteJsonFileAsync(file, runs, ct);
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<RunLifecycleState?> LoadRunLifecycleAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            if (!Directory.Exists(_baseDirectory))
+            {
+                return null;
+            }
+
+            // Same absence of a runId→threadId index as the run ledger: scan each thread's file.
+            foreach (var dir in Directory.GetDirectories(_baseDirectory))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var file = Path.Combine(dir, RunLifecycleFileName);
+                var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct);
+                var match = runs?.FirstOrDefault(r => r.RunId == runId);
+                if (match != null)
+                {
+                    return match;
+                }
+            }
+
+            return null;
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var runs = await LoadThreadLifecycleAsync(threadId, ct);
+            return
+            [
+                .. runs
+                    .OrderByDescending(r => r.StartedAt)
+                    .ThenBy(r => r.RunId, StringComparer.Ordinal),
+            ];
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var runs = await LoadThreadLifecycleAsync(threadId, ct);
+            return
+            [
+                .. runs
+                    .Where(r => r.Phase == RunLifecyclePhase.Running)
+                    .OrderBy(r => r.StartedAt)
+                    .ThenBy(r => r.RunId, StringComparer.Ordinal),
+            ];
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> TryMarkRunTerminalAsync(
+        string runId,
+        string outcome,
+        int turnCount,
+        DateTimeOffset terminalAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+        ArgumentException.ThrowIfNullOrEmpty(outcome);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var located = await LocateRunAsync(runId, ct);
+            if (located == null)
+            {
+                return false;
+            }
+
+            var (file, runs, idx) = located.Value;
+            if (runs[idx].Phase == RunLifecyclePhase.Terminal)
+            {
+                return false;
+            }
+
+            runs[idx] = runs[idx] with
+            {
+                Phase = RunLifecyclePhase.Terminal,
+                Outcome = outcome,
+                TurnCount = turnCount,
+                TerminalAt = terminalAt,
+                UpdatedAt = terminalAt,
+            };
+
+            await WriteJsonFileAsync(file, runs, ct);
+            return true;
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
+        string runId,
+        DeferredToolCallRecord record,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runId);
+        ArgumentNullException.ThrowIfNull(record);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var located = await LocateRunAsync(runId, ct)
+                ?? throw new InvalidOperationException(
+                    $"Run '{runId}' was never recorded as started; cannot record deferral "
+                        + $"'{record.ToolCallId}'.");
+
+            var (file, runs, idx) = located;
+            var state = runs[idx];
+
+            var already = state.DeferredToolCalls.FirstOrDefault(d => d.ToolCallId == record.ToolCallId);
+            if (already != null)
+            {
+                return already;
+            }
+
+            var committed = record with { Ordinal = state.DeferredToolCalls.Count + 1 };
+            runs[idx] = state with
+            {
+                DeferredToolCalls = [.. state.DeferredToolCalls, committed],
+                UpdatedAt = record.DeferredAt,
+            };
+
+            await WriteJsonFileAsync(file, runs, ct);
+            return committed;
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
+        string threadId,
+        string toolCallId,
+        string resolutionFingerprint,
+        string? childRunId,
+        DateTimeOffset resolvedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(toolCallId);
+        ArgumentException.ThrowIfNullOrEmpty(resolutionFingerprint);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var file = Path.Combine(GetThreadDirectory(threadId), RunLifecycleFileName);
+            var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct) ?? [];
+
+            for (var runIdx = 0; runIdx < runs.Count; runIdx++)
+            {
+                var callIdx = RunLifecycleGuards.IndexOfDeferral(runs[runIdx], toolCallId);
+                if (callIdx < 0)
+                {
+                    continue;
+                }
+
+                var existing = runs[runIdx].DeferredToolCalls[callIdx];
+                if (existing.IsResolved)
+                {
+                    return string.Equals(
+                        existing.ResolutionFingerprint,
+                        resolutionFingerprint,
+                        StringComparison.Ordinal)
+                        ? DeferredResolutionOutcome.Duplicate
+                        : DeferredResolutionOutcome.Conflict;
+                }
+
+                var updated = runs[runIdx].DeferredToolCalls.ToArray();
+                updated[callIdx] = existing with
+                {
+                    ResolvedAt = resolvedAt,
+                    ResolutionFingerprint = resolutionFingerprint,
+                    ChildRunId = childRunId,
+                };
+
+                runs[runIdx] = runs[runIdx] with
+                {
+                    DeferredToolCalls = updated,
+                    UpdatedAt = resolvedAt,
+                };
+
+                await WriteJsonFileAsync(file, runs, ct);
+                return DeferredResolutionOutcome.Resolved;
+            }
+
+            return DeferredResolutionOutcome.NotFound;
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
+    private async Task<List<RunLifecycleState>> LoadThreadLifecycleAsync(
+        string threadId,
+        CancellationToken ct)
+    {
+        var file = Path.Combine(GetThreadDirectory(threadId), RunLifecycleFileName);
+        return await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct) ?? [];
+    }
+
+    /// <summary>
+    /// Finds the thread file holding a run, its deserialized contents, and the run's index in it.
+    /// Callers already hold <c>_lock</c>.
+    /// </summary>
+    private async Task<(string File, List<RunLifecycleState> Runs, int Index)?> LocateRunAsync(
+        string runId,
+        CancellationToken ct)
+    {
+        if (!Directory.Exists(_baseDirectory))
+        {
+            return null;
+        }
+
+        foreach (var dir in Directory.GetDirectories(_baseDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var file = Path.Combine(dir, RunLifecycleFileName);
+            var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct);
+            var idx = runs?.FindIndex(r => r.RunId == runId) ?? -1;
+            if (idx >= 0)
+            {
+                return (file, runs!, idx);
+            }
+        }
+
+        return null;
     }
 
     private string GetThreadDirectory(string threadId)
