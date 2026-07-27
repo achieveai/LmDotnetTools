@@ -57,6 +57,10 @@ async (page) => {
 
     const review = reviews[0];
     link = `${BASE}/?threadId=${review.threadId}&focus=1`;
+    // The PR number the daemon put in the title ("Review PR #222 — …"). Focus mode strips every picker
+    // and the sidebar, so this header is the ONLY thing telling a judge which PR they are looking at —
+    // asserting merely that it is non-empty would pass on a placeholder or a neighbouring review.
+    const prNumber = (String(review.title ?? '').match(/#(\d+)/) ?? [])[1] ?? null;
 
     // ── 2. Follow the posted deep-link ─────────────────────────────────────────────────────────────
     await page.goto(link);
@@ -73,6 +77,8 @@ async (page) => {
     const groups = await page.locator('[data-testid="assistant-message-group"]').count();
     const opened = {
       threadId: review.threadId,
+      listedTitle: String(review.title ?? ''),
+      prNumber,
       headerTitle: headerTitle.trim(),
       assistantGroups: groups,
       sidebar: await present('.conversation-sidebar'),
@@ -83,7 +89,14 @@ async (page) => {
       conversationTabs: await present('[data-testid="conversation-tabs"]'),
     };
 
-    record('deep-link opens the deep-linked thread (header titled)', opened.headerTitle.length > 0, opened);
+    record(
+      'the review conversation is titled with its PR number',
+      prNumber !== null,
+      opened);
+    record(
+      'deep-link opens the deep-linked thread (header names that PR)',
+      prNumber !== null && opened.headerTitle.includes(`#${prNumber}`),
+      opened);
     record('deep-link renders the hosted review transcript', opened.assistantGroups > 0, opened);
     record('focus=1 hides the ConversationSidebar', !opened.sidebar, opened);
     record('focus=1 hides the header-actions cluster', !opened.headerActions, opened);
