@@ -77,7 +77,7 @@ at startup in one of two modes:
    discovered ids is forwarded **unchanged** (normalized to the catalog's casing); anything else
    falls back to the default.
 
-`GET /v1/models` on the proxy returns an Anthropic-shaped list of every id in the catalog (one entry
+`GET /v1/models` on the proxy returns a dual-dialect union list of every id in the catalog (one entry
 in pinned mode, every discovered `/v1/messages`-capable id in discovered mode).
 
 ## Point a client at the proxy

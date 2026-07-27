@@ -161,9 +161,37 @@ public sealed class ModelDiscoveryPassthroughTests
         first.GetProperty("object").GetString().Should().Be("model", "OpenAI clients key off this");
         first.GetProperty("id").GetString().Should().NotBeNullOrWhiteSpace();
         first.GetProperty("display_name").GetString().Should().NotBeNullOrWhiteSpace();
-        first.GetProperty("owned_by").GetString().Should().NotBeNullOrWhiteSpace();
+        first
+            .GetProperty("owned_by")
+            .GetString()
+            .Should()
+            .Be("copilot", "DiscoveryJson entries carry no \"vendor\" key, so owned_by falls back");
         first.GetProperty("created").GetInt64().Should().BeGreaterThan(0);
         first.GetProperty("created_at").GetString().Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task Models_endpoint_passes_a_populated_vendor_through_as_owned_by()
+    {
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) =>
+                req.Method == HttpMethod.Get && req.RequestUri!.AbsolutePath == "/models"
+                    ? Task.FromResult(TestUpstream.Json(RealModelsResponseJson))
+                    : Task.FromResult(TestUpstream.Json("{}")),
+            model: null
+        );
+        using var client = factory.CreateClient();
+
+        using var doc = JsonDocument.Parse(await client.GetStringAsync("/v1/models"));
+        var first = doc.RootElement.GetProperty("data")[0];
+
+        // The real fixture's first servable entry is claude-opus-4.6 with "vendor":"Anthropic".
+        first.GetProperty("id").GetString().Should().Be("claude-opus-4.6");
+        first
+            .GetProperty("owned_by")
+            .GetString()
+            .Should()
+            .Be("Anthropic", "a populated vendor should pass through unchanged, not fall back to \"copilot\"");
     }
 
     [Fact]

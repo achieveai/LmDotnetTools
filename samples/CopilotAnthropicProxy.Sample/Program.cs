@@ -200,7 +200,7 @@ app.Use(
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", model = catalog.Default }));
 
-// GET /v1/models — Anthropic-shaped list of every available (/v1/messages-capable) model.
+// GET /v1/models — dual-dialect union list of every available (servable) model.
 app.MapGet(
     "/v1/models",
     () => Results.Content(ProxyHttp.BuildModelsStub(catalog.Models), "application/json", Encoding.UTF8)
