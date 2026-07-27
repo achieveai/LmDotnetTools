@@ -122,12 +122,31 @@ async (page) => {
           agentId: n.getAttribute('data-agent-id'),
           text: (n.textContent ?? '').replace(/\s+/g, ' ').trim(),
         })));
-      const reviewers = children.filter((c) => c.text.includes('code-reviewer:'));
-
       record('the sub-agent panel lists the children that ran', children.length > 0, { children });
-      record('the listed sub-agents are the code-reviewer:* reviewers', reviewers.length > 0, {
-        children,
-      });
+
+      // The panel renders name + task + status, NOT the template id — so "are these the reviewers?"
+      // has to be answered from the listing API, then cross-checked against what the DOM actually
+      // rendered. A generic roster (general-purpose/researcher only) means the workspace marketplace
+      // never reached the gateway.
+      const listed = await page.evaluate(async (threadId) => {
+        const res = await fetch(`/api/conversations/${threadId}/subagents`);
+        if (!res.ok) return { error: `GET subagents -> ${res.status}` };
+        return { items: await res.json() };
+      }, review.threadId);
+      const api = Array.isArray(listed.items) ? listed.items : [];
+      const reviewers = api.filter((c) => String(c.template ?? '').startsWith('code-reviewer:'));
+      const domIds = new Set(children.map((c) => c.agentId));
+      const missingFromDom = api.filter((c) => !domIds.has(c.agentId)).map((c) => c.agentId);
+      record(
+        'the listed sub-agents are the code-reviewer:* reviewers',
+        reviewers.length > 0 && missingFromDom.length === 0,
+        {
+          listedError: listed.error ?? null,
+          templates: api.map((c) => c.template),
+          reviewers: reviewers.length,
+          domCount: children.length,
+          missingFromDom,
+        });
 
       // Opening one must render ITS transcript, not an empty shell — that is what a judge reads.
       if (children.length > 0) {
@@ -138,13 +157,14 @@ async (page) => {
           .waitFor({ state: 'visible', timeout: 20000 })
           .then(() => true)
           .catch(() => false);
-        // The child's transcript is a MessageList, so its content is the usual message groups.
-        const items = await page
-          .locator(
-            '[data-testid="subagent-transcript"] [data-testid="assistant-message-group"], ' +
-              '[data-testid="subagent-transcript"] [data-testid="user-message-group"]')
-          .count()
-          .catch(() => 0);
+        // The child's transcript is a MessageList, so its content is the usual message groups. The
+        // container renders as soon as the child is focused but its history is fetched afterwards —
+        // wait for content rather than counting into the load window.
+        const groupsLocator = page.locator(
+          '[data-testid="subagent-transcript"] [data-testid="assistant-message-group"], ' +
+            '[data-testid="subagent-transcript"] [data-testid="user-message-group"]');
+        await groupsLocator.first().waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
+        const items = await groupsLocator.count().catch(() => 0);
         const childError = await page
           .locator('[data-testid="subagent-error"]')
           .first()

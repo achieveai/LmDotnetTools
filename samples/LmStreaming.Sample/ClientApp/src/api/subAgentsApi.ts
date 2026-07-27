@@ -1,7 +1,9 @@
 /**
- * Status of a sub-agent, mirroring the backend `SubAgentSummary.status` values.
+ * Status of a sub-agent, mirroring the backend `SubAgentSummary.status` values. `persisted` is the
+ * marker for a child rebuilt from the conversation store (`SubAgentProvenance.PersistedStatus`) —
+ * its parent is no longer in the agent pool, so its live lifecycle can no longer be observed.
  */
-export type SubAgentStatus = 'running' | 'completed' | 'error' | 'stopped';
+export type SubAgentStatus = 'running' | 'completed' | 'error' | 'stopped' | 'persisted';
 
 /**
  * A conversation's sub-agent as summarized by
