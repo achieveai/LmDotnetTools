@@ -80,8 +80,15 @@ internal sealed class S2SReviewWorkspacePreparer
         var workspaceId = await EnsureWorkspaceAsync(run, leaf, marketplaces, cancellationToken)
             .ConfigureAwait(false);
 
-        return new PreparedReviewWorkspace(leaf, workspaceId);
+        return new PreparedReviewWorkspace(leaf, workspaceId, hostDir);
     }
+
+    /// <summary>
+    /// The host-process git this preparer clones with. Exposed so the caller can run further READ-ONLY git
+    /// (the bounded diff + file manifest) against the checkout that was just prepared, instead of cloning a
+    /// second copy of the same repo inside a daemon-owned sandbox.
+    /// </summary>
+    internal GitRunner HostGit => _hostGit;
 
     /// <summary>
     /// The single-segment host/workspace leaf for a PR. Runs the PR number through the SAME sanitization
@@ -210,7 +217,9 @@ internal sealed class S2SReviewWorkspacePreparer
 
 /// <summary>
 /// The result of <see cref="S2SReviewWorkspacePreparer.PrepareAsync"/>: the single-segment
-/// <see cref="Leaf"/> the checkout was cloned into (= LmStreaming's stored <c>DirectoryRelPath</c>) and
-/// the <see cref="WorkspaceId"/> the factory provisions the conversation against.
+/// <see cref="Leaf"/> the checkout was cloned into (= LmStreaming's stored <c>DirectoryRelPath</c>), the
+/// <see cref="WorkspaceId"/> the factory provisions the conversation against, and the <see cref="HostDir"/>
+/// the checkout actually lives at on this host (<c>{WorkspaceBasePath}/{Leaf}</c>) — the directory the
+/// gateway mounts for the hosted review, and the one the daemon takes its bounded diff from.
 /// </summary>
-internal sealed record PreparedReviewWorkspace(string Leaf, string WorkspaceId);
+internal sealed record PreparedReviewWorkspace(string Leaf, string WorkspaceId, string HostDir);

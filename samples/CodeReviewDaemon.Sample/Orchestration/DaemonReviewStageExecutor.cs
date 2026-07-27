@@ -75,6 +75,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// the tool-assisted store path; the single-repo path clones straight into <see cref="TargetRoot"/>.</summary>
     private const string StoreRoot = "/workspace/store";
 
+    /// <summary>Where the hosted (S2S) review sees its checkout: LmStreaming's gateway mounts a workspace's
+    /// directory at the container workspace root, so the leaf the preparer cloned into is <c>/workspace</c>
+    /// from inside the review conversation — NOT <see cref="TargetRoot"/>, which is the daemon's own per-run
+    /// clone path.</summary>
+    private const string S2SCheckoutRoot = "/workspace";
+
     /// <summary>The container mount point the leased pool slot is exposed at (design §4.1): the slot's
     /// <c>store/</c> child is <see cref="StoreRoot"/> and its <c>scratch/</c> child is a sibling outside the
     /// git tree. The daemon's host-side git operates on the slot's HOST paths; the review agent's MCP tools
@@ -145,13 +151,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly S2SReviewWorkspacePreparer? _preparer;
 
     /// <summary>
-    /// Per-run prepared LmStreaming workspace id (run id → workspaceId), populated by
-    /// <see cref="EnsurePreparedWorkspaceAsync"/> only on the S2S path. Held in memory (like
+    /// Per-run prepared LmStreaming workspace (run id → leaf + workspaceId + host checkout dir), populated by
+    /// <see cref="EnsurePreparedAsync"/> only on the S2S path. Held in memory (like
     /// <see cref="_leasedReviews"/>) so the several <c>_loopFactory.Create</c> sites of one run share ONE clone
     /// + workspace instead of re-preparing per call; the preparer is itself idempotent (clone-probe skips, and
     /// the workspace lookup reuses), so a resume after a restart re-prepares cheaply against the same leaf.
     /// </summary>
-    private readonly ConcurrentDictionary<long, string> _preparedWorkspaces = new();
+    private readonly ConcurrentDictionary<long, PreparedReviewWorkspace> _preparedWorkspaces = new();
 
     /// <summary>Host lifetime, used to stop the daemon when a session lacks code-reviewer skill/agent
     /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
@@ -406,6 +412,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
+        // S2S path: the review runs inside LmStreaming against a workspace whose checkout the preparer clones
+        // HOST-side under the shared gateway base — so the tree this stage needs for the bounded diff already
+        // exists on this host. Diff it there rather than cloning a second copy inside a daemon-owned sandbox:
+        // the diff-only boot session has no workspace mount at all, and a per-run sandbox would duplicate the
+        // very checkout LmStreaming is about to mount.
+        if (_preparer is not null)
+        {
+            await FetchContextFromPreparedCheckoutAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         // Pooled scoped-writable path (Layer 1): lease a warm slot, prepare it host-side (branch reuse
         // carries prior notes), diff the prepared submodule host-side, and persist the context. When the
         // reviewed repo is not a submodule of the store — or the pooled path isn't wired — this returns
@@ -459,6 +476,54 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             "Run {RunId}: persisted {Kind} ({Length} char diff, {Files} manifest files) from {TargetDir} (store={Store}).",
             run.Id, ContextArtifactKind, boundedDiff.Length, ManifestFileCount(fileManifest),
             layout.TargetDir, layout.StoreRoot ?? "(single-repo)");
+    }
+
+    /// <summary>
+    /// The S2S ContextReady phase: ensure this run's LmStreaming workspace (which host-clones the PR checkout
+    /// under the shared gateway base), then take the bounded diff + file manifest from that same clone with the
+    /// preparer's host git. The persisted <c>TargetDir</c> is the <b>container</b> root the hosted agent sees —
+    /// a gateway-mounted workspace lands at <see cref="S2SCheckoutRoot"/> — not this host path, so the prompt's
+    /// <c>checkout_root</c> names a directory that exists for the agent reading it.
+    /// </summary>
+    private async Task FetchContextFromPreparedCheckoutAsync(
+        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
+    {
+        var prepared = await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Run {run.Id}: the S2S review workspace was not prepared (no preparer wired).");
+
+        var git = _preparer!.HostGit;
+        var diff = await git
+            .RunAsync(
+                ["-C", prepared.HostDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
+                prepared.HostDir,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!diff.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Fetching the diff for run {run.Id} from the prepared S2S checkout failed "
+                + $"(exit {diff.ExitCode}): {diff.Stderr}");
+        }
+
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var fileManifest = await BuildFileManifestAsync(git, prepared.HostDir, cancellationToken).ConfigureAwait(false);
+
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ContextArtifactSchemaVersion,
+            ArtifactKind = ContextArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, S2SCheckoutRoot, null)),
+        });
+
+        _logger.LogInformation(
+            "Run {RunId}: persisted {Kind} ({Length} char diff, {Files} manifest files) from the prepared S2S "
+                + "checkout {HostDir} (the hosted agent reads it at {ContainerRoot}).",
+            run.Id, ContextArtifactKind, boundedDiff.Length, ManifestFileCount(fileManifest),
+            prepared.HostDir, S2SCheckoutRoot);
     }
 
     /// <summary>Whether the pooled scoped-writable review path is wired and enabled: tool-assisted +
@@ -1610,10 +1675,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // hosted conversation binds to the PR checkout + code-reviewer marketplace. Null on the in-process path,
         // where the live/fake factory ignores it. The escalation-ladder retries share the same workspace (a fresh
         // THREAD reloads no history but reviews the same code) — only the daemon-internal threadId differs.
-        _preparedWorkspaces.TryGetValue(run.Id, out var workspaceId);
+        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
-            workspaceId: workspaceId);
+            workspaceId: prepared?.WorkspaceId);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
         // Only when authorized to post: the follow-up turn that forces the agent to actually deliver its review.
         var postEnforcement = shouldPost ? DaemonAgentFactory.CreatePostEnforcementPrompt(variables) : null;
@@ -1675,10 +1740,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Same prepared S2S workspace as the primary arm (cached at ReviewAsync entry); null in-process. The
         // comparison arm stays diff-only in its prompt, but on S2S it still provisions against the PR workspace
         // (the factory requires one) — a distinct conversation the deep-link machinery does not link.
-        _preparedWorkspaces.TryGetValue(run.Id, out var workspaceId);
+        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId),
-            _options.VariantReasoningEffort, workspaceId: workspaceId);
+            _options.VariantReasoningEffort, workspaceId: prepared?.WorkspaceId);
         var reviewer = new VariantReviewer(loop, _store, _loggerFactory.CreateLogger<VariantReviewer>());
         _ = await reviewer.ReviewAsync(run.Id, provider, _comparisonVariant, reviewInput, cancellationToken)
             .ConfigureAwait(false);
@@ -2092,6 +2157,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// where callers pass no workspaceId and the live/fake factory ignores it.
     /// </summary>
     private async Task<string?> EnsurePreparedWorkspaceAsync(
+        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken) =>
+        (await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false))?.WorkspaceId;
+
+    /// <summary>
+    /// The full prepared workspace (leaf + workspace id + host checkout dir) behind
+    /// <see cref="EnsurePreparedWorkspaceAsync"/>. Callers that only need the id use that wrapper; the context
+    /// stage needs the host dir too, because on the S2S path the bounded diff is taken from this same clone.
+    /// </summary>
+    private async Task<PreparedReviewWorkspace?> EnsurePreparedAsync(
         ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
     {
         if (_preparer is null)
@@ -2105,8 +2179,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         var prepared = await _preparer.PrepareAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
-        _preparedWorkspaces[run.Id] = prepared.WorkspaceId;
-        return prepared.WorkspaceId;
+        _preparedWorkspaces[run.Id] = prepared;
+        return prepared;
     }
 
     /// <summary>
