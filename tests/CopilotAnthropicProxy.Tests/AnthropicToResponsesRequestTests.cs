@@ -45,6 +45,30 @@ public class AnthropicToResponsesRequestTests
         result.GetProperty("max_output_tokens").GetInt32().Should().Be(AnthropicToResponsesRequest.MinimumOutputTokens);
     }
 
+    [Theory]
+    [InlineData(1, 16)]
+    [InlineData(15, 16)]
+    [InlineData(16, 16)]
+    [InlineData(17, 17)]
+    public void Clamps_max_tokens_at_the_minimum_output_tokens_boundary(int maxTokens, int expected)
+    {
+        var result = TranslateToElement(
+            $$"""{"model":"m","max_tokens":{{maxTokens}},"messages":[{"role":"user","content":"Hi"}]}"""
+        );
+
+        result.GetProperty("max_output_tokens").GetInt32().Should().Be(expected);
+    }
+
+    [Fact]
+    public void Defaults_stream_to_false_when_absent()
+    {
+        var result = TranslateToElement(
+            """{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"Hi"}]}"""
+        );
+
+        result.GetProperty("stream").GetBoolean().Should().BeFalse();
+    }
+
     [Fact]
     public void Flattens_a_system_block_array_into_instructions()
     {
@@ -125,6 +149,76 @@ public class AnthropicToResponsesRequestTests
         tools[0].GetProperty("parameters").GetProperty("type").GetString().Should().Be("object");
 
         result.GetProperty("tool_choice").GetString().Should().Be("required");
+    }
+
+    [Theory]
+    [InlineData("auto", "auto")]
+    [InlineData("none", "none")]
+    public void Maps_tool_choice_auto_and_none(string anthropicType, string expected)
+    {
+        var result = TranslateToElement(
+            $$$"""
+            {"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+             "tools":[{"name":"get_weather","input_schema":{"type":"object"}}],
+             "tool_choice":{"type":"{{{anthropicType}}}"}}
+            """
+        );
+
+        result.GetProperty("tool_choice").GetString().Should().Be(expected);
+    }
+
+    [Fact]
+    public void Maps_tool_choice_naming_a_specific_tool()
+    {
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+             "tools":[{"name":"get_weather","input_schema":{"type":"object"}}],
+             "tool_choice":{"type":"tool","name":"get_weather"}}
+            """
+        );
+
+        var toolChoice = result.GetProperty("tool_choice");
+        toolChoice.GetProperty("type").GetString().Should().Be("function");
+        toolChoice.GetProperty("name").GetString().Should().Be("get_weather");
+    }
+
+    [Fact]
+    public void Omits_tool_choice_when_no_function_tools_survive_filtering()
+    {
+        // Every tool here is a server tool (no input_schema), so BuildTools produces an empty array.
+        // Emitting `tool_choice` alongside an absent `tools` is a Responses 400 ("'tool_choice' is
+        // only allowed when 'tools' are specified") — a legal Anthropic request must not become that.
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+             "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}],
+             "tool_choice":{"type":"any"}}
+            """
+        );
+
+        result.TryGetProperty("tools", out _).Should().BeFalse();
+        result.TryGetProperty("tool_choice", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Omits_tool_choice_naming_a_tool_that_filtering_dropped()
+    {
+        // tool_choice names the server tool that BuildTools' input_schema filter removed from `tools`.
+        // Forwarding {"type":"function","name":"web_search"} would point Responses at a tool that no
+        // longer exists in the request, so the safer behavior is to omit tool_choice entirely.
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+             "tools":[
+               {"name":"get_weather","input_schema":{"type":"object"}},
+               {"type":"web_search_20250305","name":"web_search","max_uses":8}],
+             "tool_choice":{"type":"tool","name":"web_search"}}
+            """
+        );
+
+        result.GetProperty("tools").GetArrayLength().Should().Be(1, "only get_weather survives the filter");
+        result.TryGetProperty("tool_choice", out _).Should().BeFalse();
     }
 
     [Fact]

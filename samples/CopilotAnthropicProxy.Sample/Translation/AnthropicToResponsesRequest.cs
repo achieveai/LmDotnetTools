@@ -69,14 +69,18 @@ public static class AnthropicToResponsesRequest
             }
         }
 
-        if (BuildTools(source["tools"] as JsonArray) is { Count: > 0 } tools)
+        // tool_choice is only considered when a non-empty tools array actually made it into the
+        // request — the Responses API rejects tool_choice when tools is absent, and BuildToolChoice
+        // additionally checks a "tool" choice's name against what survived BuildTools' filter.
+        var tools = BuildTools(source["tools"] as JsonArray);
+        if (tools is { Count: > 0 })
         {
             target["tools"] = tools;
-        }
 
-        if (BuildToolChoice(source["tool_choice"]) is { } toolChoice)
-        {
-            target["tool_choice"] = toolChoice;
+            if (BuildToolChoice(source["tool_choice"], tools) is { } toolChoice)
+            {
+                target["tool_choice"] = toolChoice;
+            }
         }
 
         return target;
@@ -277,8 +281,13 @@ public static class AnthropicToResponsesRequest
         return mapped;
     }
 
-    /// <summary>Maps Anthropic's tool_choice onto the Responses spelling.</summary>
-    private static JsonNode? BuildToolChoice(JsonNode? toolChoice)
+    /// <summary>
+    ///     Maps Anthropic's tool_choice onto the Responses spelling. <paramref name="tools"/> is the
+    ///     already-filtered array BuildTools produced — a "tool" choice naming an entry that filter
+    ///     dropped (a server tool, e.g. web_search) resolves to null rather than pointing Responses at
+    ///     a tool that no longer exists in the request.
+    /// </summary>
+    private static JsonNode? BuildToolChoice(JsonNode? toolChoice, JsonArray tools)
     {
         if (toolChoice is not JsonObject choice)
         {
@@ -290,8 +299,22 @@ public static class AnthropicToResponsesRequest
             "auto" => JsonValue.Create("auto"),
             "none" => JsonValue.Create("none"),
             "any" => JsonValue.Create("required"),
-            "tool" => new JsonObject { ["type"] = "function", ["name"] = choice["name"]?.GetValue<string>() ?? "" },
+            "tool" => NamedToolChoice(choice["name"]?.GetValue<string>(), tools),
             _ => null,
         };
+    }
+
+    /// <summary>
+    ///     Builds the Responses <c>{"type":"function","name":...}</c> choice shape, but only when
+    ///     <paramref name="name"/> is one of the function tools that survived BuildTools' filter.
+    /// </summary>
+    private static JsonObject? NamedToolChoice(string? name, JsonArray tools)
+    {
+        if (string.IsNullOrEmpty(name) || !tools.OfType<JsonObject>().Any(t => t["name"]?.GetValue<string>() == name))
+        {
+            return null;
+        }
+
+        return new JsonObject { ["type"] = "function", ["name"] = name };
     }
 }
