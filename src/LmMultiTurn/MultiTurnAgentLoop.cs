@@ -357,13 +357,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     // Execute turns - poll for new input between turns
                     await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
 
-                    // Complete run - simple loop has no pending messages
+                    // Complete the run, reporting the input that arrived WHILE it was running. The
+                    // outer loop drains that input into a follow-on run through this same
+                    // agent/provider, so the completion is not terminal — and consumers act on that:
+                    // SubAgentManager disposes a sub-agent's owned provider only on a terminal
+                    // completion. Reporting 0 here while input was queued disposed the provider under
+                    // the follow-on run, whose first request then threw ObjectDisposedException.
                     await CompleteRunAsync(
                         assignment.RunId,
                         assignment.GenerationId,
                         wasForked: isExplicitFork,
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                        pendingMessageCount: 0,
+                        pendingMessageCount: PendingInputCount,
                         ct: ct);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -407,11 +412,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                             + "window; reduce scope or use a bigger-window model)"
                         : ex.Message;
 
+                    // Same pending-input reporting as the success path: a failed run is still followed
+                    // by a run for whatever queued up while it ran, so the provider must survive it.
                     await CompleteRunAsync(
                         assignment.RunId,
                         assignment.GenerationId,
                         wasForked: isExplicitFork,
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                        pendingMessageCount: PendingInputCount,
                         isError: true,
                         errorMessage: errorMessage,
                         ct: ct);

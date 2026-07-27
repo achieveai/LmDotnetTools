@@ -772,6 +772,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     protected ChannelReader<QueuedInput> InputReader => _inputChannel.Reader;
 
     /// <summary>
+    /// Number of queued input batches that have arrived but not yet been assigned to a run. This is
+    /// what <see cref="RunCompletedMessage.PendingMessageCount"/> reports, and consumers act on it:
+    /// <c>SubAgentManager</c> treats a completion with pending input as NON-terminal and therefore
+    /// does NOT dispose the sub-agent's owned provider agent, because the loop is about to start a
+    /// follow-on run through that same provider. Reporting 0 while input is queued disposes the
+    /// provider out from under the next run (its first request throws
+    /// <see cref="ObjectDisposedException"/> on the underlying <c>HttpClient</c>).
+    /// </summary>
+    protected int PendingInputCount => _inputChannel.Reader.CanCount ? _inputChannel.Reader.Count : 0;
+
+    /// <summary>
     /// Posts a pre-built <see cref="QueuedInput"/> directly to the input channel, preserving
     /// any non-default fields (including <see cref="QueuedInput.Resume"/>). Used by
     /// <c>MultiTurnAgentLoop</c> to enqueue internal resume sentinels for deferred-tool
