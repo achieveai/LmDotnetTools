@@ -1104,11 +1104,11 @@ public sealed class WorkflowRuntime
 
         if (renderFailure is not null)
         {
-            _completion.TrySetException(renderFailure);
+            _ = _completion.TrySetException(renderFailure);
             return;
         }
 
-        _completion.TrySetResult();
+        _ = _completion.TrySetResult();
     }
 
     /// <summary>Faults <see cref="Completion"/> with <paramref name="ex"/> (controller run threw).</summary>

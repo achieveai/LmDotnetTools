@@ -13,6 +13,12 @@ internal sealed class SubAgentModelResolver
     private readonly ILogger<SubAgentModelResolver> _logger;
     private readonly ConcurrentDictionary<string, byte> _loggedConditions = new(StringComparer.OrdinalIgnoreCase);
 
+    // The sanctioned override set, computed once from the tier configuration against the discovered
+    // catalog: an ordered, de-duplicated list for the Agent-tool menu and a case-insensitive membership
+    // set for the runtime guard. Both hold canonical catalog ids. See BuildAllowedModelSet.
+    private readonly IReadOnlyList<string> _allowedModelIds;
+    private readonly HashSet<string> _allowedModelIdSet;
+
     public SubAgentModelResolver(
         ProviderRegistry catalog,
         SubAgentIntelligenceOptions options,
@@ -26,6 +32,72 @@ internal sealed class SubAgentModelResolver
         _catalog = catalog;
         _options = options;
         _logger = logger;
+        (_allowedModelIds, _allowedModelIdSet) = BuildAllowedModelSet(catalog, options);
+    }
+
+    /// <summary>
+    /// The Copilot model ids a sub-agent's <c>model</c> override may name, surfaced to the Agent tool
+    /// descriptor so the controller/parent LLM picks a sanctioned id instead of inventing one or reaching
+    /// for an arbitrary (possibly expensive) catalog model. This is the TIER-CONFIGURED allowed set — the
+    /// distinct, routable Copilot models named across <c>SubAgentIntelligence:Tiers</c> — NOT the whole
+    /// discovered catalog: an override is a knob to move a delegate between the SAME tiers the deployment
+    /// already sanctions, so anything outside those tiers is deliberately unavailable. Empty when no tiers
+    /// are configured (overrides disabled). Same set <see cref="IsKnownModel"/> accepts at runtime.
+    /// </summary>
+    internal IReadOnlyList<string> AvailableModelIds => _allowedModelIds;
+
+    /// <summary>
+    /// True when <paramref name="modelId"/> names a model in the tier-configured allowed set (see
+    /// <see cref="AvailableModelIds"/>) — the runtime guard for a sub-agent's free-form <c>model</c>
+    /// override, matched case-insensitively against the discovered catalog's canonical id. An override
+    /// that fails this check is dropped by the manager (it falls back to the tier/parent model) instead of
+    /// running an unsanctioned model or hard-failing at the provider. A real catalog id that no tier
+    /// sanctions returns false on purpose: it kept sub-agents burning tokens on models the deployment
+    /// never opted into. Anthropic-compat family ids are intentionally not accepted here — the same
+    /// Copilot-only scope as tier routing (see <see cref="TryGetRoutableModel"/>); extend both together if
+    /// that changes.
+    /// </summary>
+    internal bool IsKnownModel(string? modelId) =>
+        !string.IsNullOrWhiteSpace(modelId)
+        && _catalog.TryGetCopilotModel(modelId, out var model)
+        && _allowedModelIdSet.Contains(model.Id);
+
+    // Collapses the tier configuration into the sanctioned override set: every distinct candidate named
+    // across all tiers that resolves to a ROUTABLE (Anthropic|Responses) Copilot catalog model, keyed by
+    // its canonical catalog id (so casing/aliases normalize and a model listed in several tiers appears
+    // once). Walking tiers weakest-first gives a stable, cheapest-first advertised order. This is the same
+    // Copilot-only, routable filter TryGetRoutableModel applies to tier resolution, so the menu, the
+    // runtime guard, and what a tier can actually resolve to never diverge.
+    private static (IReadOnlyList<string> Ordered, HashSet<string> Set) BuildAllowedModelSet(
+        ProviderRegistry catalog,
+        SubAgentIntelligenceOptions options
+    )
+    {
+        var ordered = new List<string>();
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var tier in options.Tiers.OrderBy(pair => pair.Key))
+        {
+            foreach (var candidate in tier.Value)
+            {
+                if (string.IsNullOrWhiteSpace(candidate) || !catalog.TryGetCopilotModel(candidate, out var model))
+                {
+                    continue;
+                }
+
+                if (model.Transport is not (CopilotModelTransport.Anthropic or CopilotModelTransport.Responses))
+                {
+                    continue;
+                }
+
+                if (set.Add(model.Id))
+                {
+                    ordered.Add(model.Id);
+                }
+            }
+        }
+
+        return (ordered, set);
     }
 
     /// <summary>

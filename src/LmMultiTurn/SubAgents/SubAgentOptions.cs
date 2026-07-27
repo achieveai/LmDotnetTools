@@ -101,4 +101,30 @@ public record SubAgentOptions
     /// same-transport tiers and every non-host consumer keep the previous behavior.
     /// </summary>
     public Func<string, IStreamingAgent>? TierAgentFactory { get; init; }
+
+    /// <summary>
+    /// Host-supplied predicate that validates a spawn's explicit <c>model</c> override (the <c>Agent</c>
+    /// tool's <c>model</c> argument) against the host's model catalog, returning <c>true</c> when the id
+    /// names a model the host can actually build a provider for. The <c>model</c> argument is an
+    /// unconstrained free-form string, so a parent/controller LLM can fill it with an invented id
+    /// (e.g. <c>"gpt-5"</c>), a value that belongs in another field (a <c>subagent_type</c> like
+    /// <c>"general-purpose"</c>, or a placeholder like <c>"none"</c>), or a plain typo. Passed straight
+    /// through, such a value becomes the request model and hard-fails at the provider with a BadRequest —
+    /// a wasted spawn plus its tokens and a retry storm. When this validator is set and REJECTS an
+    /// override, the manager DROPS it (logs once) and falls through to tier/parent resolution exactly as
+    /// if no override had been given. The library is catalog-agnostic, so the host owns the check (e.g.
+    /// against the discovered Copilot catalog). Null (default) = no validation, so every non-host consumer
+    /// keeps the previous pass-through behavior. Pairs with <see cref="AvailableModelIds"/>, which surfaces
+    /// the same valid ids to the tool descriptor so the LLM is steered to a real id in the first place.
+    /// </summary>
+    public Func<string, bool>? ModelOverrideValidator { get; init; }
+
+    /// <summary>
+    /// The concrete model ids a spawn's <c>model</c> override may name, surfaced to the <c>Agent</c> tool
+    /// descriptor so the parent/controller LLM picks a real id instead of inventing one. This is the
+    /// descriptor-facing counterpart to <see cref="ModelOverrideValidator"/> (which enforces the same set
+    /// at runtime); hosts should wire both from one source. Null/empty (default) = the tool descriptor
+    /// keeps its generic "defaults to the template's configured model" wording and lists no ids.
+    /// </summary>
+    public IReadOnlyCollection<string>? AvailableModelIds { get; init; }
 }

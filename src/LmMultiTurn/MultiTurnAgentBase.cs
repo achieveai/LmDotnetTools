@@ -827,6 +827,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <summary>
+    /// Marks conversation-history recovery as already satisfied so <see cref="RunAsync"/> will NOT
+    /// auto-recover persisted messages for this thread on startup. Use for a FRESH run that must begin
+    /// with empty context even when a prior run persisted messages under the same thread id — e.g. a
+    /// StartWorkflowAgent controller launch whose caller-chosen workflow id collides with an earlier
+    /// run's thread in a shared conversation store. The deliberate resume path calls
+    /// <see cref="RecoverAsync"/> instead (which also sets this flag). Idempotent; call BEFORE
+    /// <see cref="RunAsync"/>.
+    /// </summary>
+    public void SuppressHistoryRecovery() => _historyRecovered = true;
+
+    /// <summary>
     /// Called from <see cref="RecoverAsync"/> after history has been restored from the store.
     /// Override to rebuild any in-memory state derived from history (e.g., a deferred-tool
     /// registry on the loop).

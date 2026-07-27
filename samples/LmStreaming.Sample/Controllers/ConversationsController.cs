@@ -414,7 +414,10 @@ public class ConversationsController(
                         Template = "workflow",
                         Task = r.Objective,
                         Status = r.Status,
-                        ThreadId = $"workflow-{r.WorkflowId}",
+                        // The controller thread is conversation-scoped (workflow-{id}-{conversationId}); use the
+                        // run's real ThreadId so the ⚙ tab opens the ACTUAL persisted thread, not a stale
+                        // reconstruction. Fall back to the legacy shape only for a run with no scoped id.
+                        ThreadId = r.ThreadId ?? $"workflow-{r.WorkflowId}",
                         LastActivityUtc = r.LastActivityUtc ?? r.StartedUtc,
                     })
             );

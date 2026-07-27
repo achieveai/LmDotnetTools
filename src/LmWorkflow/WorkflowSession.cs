@@ -126,6 +126,14 @@ public static class WorkflowSession
             usageSink,
             logger
         );
+
+        // A fresh workflow launch must begin with an EMPTY controller conversation. The controller thread
+        // id is workflow-{workflowId} (caller-chosen); if it collides with an earlier run's thread in the
+        // shared conversation store, MultiTurnAgentBase.RunAsync would otherwise auto-recover that PRIOR
+        // run's messages and the controller would "inherit" a previous workflow conversation. Recovery is
+        // reserved for the deliberate ResumeAsync path, which calls RecoverAsync explicitly.
+        loop.SuppressHistoryRecovery();
+
         return Task.FromResult(BeginRun(loop, runtime, objective, TryBuildRepairer(subAgentOptions, logger), ct));
     }
 

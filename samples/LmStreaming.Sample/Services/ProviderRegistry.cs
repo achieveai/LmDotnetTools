@@ -238,6 +238,16 @@ public sealed class ProviderRegistry : AchieveAi.LmDotnetTools.LmAgentInfra.IPro
     }
 
     /// <summary>
+    ///     The raw ids of every discovered GitHub Copilot model, ordered for stable display. Feeds the
+    ///     sub-agent <c>model</c>-override guard: the same set is surfaced to the Agent tool descriptor
+    ///     (<c>AvailableModelIds</c>) so the controller picks a real id, and enforced at runtime
+    ///     (<c>ModelOverrideValidator</c>) so an unknown id is dropped instead of hard-failing at the
+    ///     provider. Empty when no Copilot token resolved (or discovery failed).
+    /// </summary>
+    public IReadOnlyList<string> CopilotModelIds =>
+        [.. _copilotModelsById.Keys.OrderBy(id => id, StringComparer.OrdinalIgnoreCase)];
+
+    /// <summary>
     ///     Resolves the Anthropic-compatible provider-family model (e.g. a discovered DeepSeek model)
     ///     backing a provider id, if any. Returns <c>false</c> for every other provider id, letting
     ///     callers keep their existing behavior and only branch into compat-family wiring (base URL,

@@ -340,19 +340,24 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task SpawnAsync_ExplicitModelWithTier_PlainPath_SkipsTierResolutionAndAgentFactory()
+    public async Task SpawnAsync_ExplicitModelWithTier_PlainPath_SkipsResolverButBuildsTransportCorrectProviderViaTierAgentFactory()
     {
-        // An explicit model override always wins over a tier: the resolver and TierAgentFactory are not
-        // consulted, the plain template provider runs on the override, and (since a model was chosen) the
-        // inherited reasoning is not seeded.
-        GenerateReplyOptions? templateAgentOptions = null;
-        var templateAgent = CreateRespondingAgent(options => templateAgentOptions = options);
+        // An explicit model override wins over a tier, so the tier RESOLVER is never consulted. But the
+        // override still needs a provider whose TRANSPORT matches it: on the plain path the override is
+        // built via TierAgentFactory for the override id (transport-correct) rather than the plain
+        // template.AgentFactory() (which builds the controller's transport — a cross-transport override
+        // there POSTs to the wrong endpoint and hard-fails at the provider with a BadRequest). Since a
+        // model was chosen, the parent's pre-shaped inherited reasoning is not seeded.
+        GenerateReplyOptions? tierAgentOptions = null;
+        var tierAgent = CreateRespondingAgent(options => tierAgentOptions = options);
+        string? tierFactoryRequestedModel = null;
         var inheritedReasoning = ImmutableDictionary<string, object?>.Empty.Add("Thinking", "budget");
         var resolverCalls = 0;
         var template = new SubAgentTemplate
         {
             SystemPrompt = "You are a test agent.",
-            AgentFactory = () => templateAgent.Object,
+            AgentFactory = () =>
+                throw new InvalidOperationException("Plain template factory must NOT run for a cross-transport override."),
         };
         await using var manager = CreateManager(
             template,
@@ -363,16 +368,20 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
                 resolverCalls++;
                 return "tier-model";
             },
-            tierAgentFactory: _ =>
-                throw new InvalidOperationException("TierAgentFactory must NOT run when an explicit model wins.")
+            tierAgentFactory: model =>
+            {
+                tierFactoryRequestedModel = model;
+                return tierAgent.Object;
+            }
         );
 
         _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model", modelIntelligence: 3);
 
         resolverCalls.Should().Be(0, "an explicit model override short-circuits tier resolution");
-        templateAgentOptions.Should().NotBeNull();
-        templateAgentOptions!.ModelId.Should().Be("spawn-model");
-        templateAgentOptions.ExtraProperties.Should().NotContainKey("Thinking");
+        tierFactoryRequestedModel.Should().Be("spawn-model", "the override is built transport-correctly for its own id");
+        tierAgentOptions.Should().NotBeNull("the tier-built provider is the agent that runs");
+        tierAgentOptions!.ModelId.Should().Be("spawn-model");
+        tierAgentOptions.ExtraProperties.Should().NotContainKey("Thinking");
     }
 
     [Fact]

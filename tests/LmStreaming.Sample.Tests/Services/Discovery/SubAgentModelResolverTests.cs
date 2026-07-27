@@ -208,6 +208,91 @@ public sealed class SubAgentModelResolverTests
         logger.Entries.Count(entry => entry.Level == LogLevel.Warning).Should().Be(1);
     }
 
+    [Fact]
+    public void IsKnownModel_TrueOnlyForTierSanctionedRoutableCatalogModel()
+    {
+        // The runtime guard behind the Agent tool's free-form `model` override is scoped to the
+        // TIER-CONFIGURED allowed set, NOT the whole catalog. A tier-sanctioned routable model passes
+        // (case-insensitively); a real catalog id that no tier sanctions (gpt-5.4), an unroutable tier
+        // candidate, an invented id, a subagent_type, a placeholder, and null all fail so the manager
+        // drops them — the sub-agent inherits the parent/tier model instead of burning tokens on a model
+        // the deployment never sanctioned.
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]>
+            {
+                [1] = ["gpt-5.6-luna", "unsupported-model"],
+                [5] = ["claude-opus-5"],
+            },
+            Model("gpt-5.6-luna", CopilotModelTransport.Responses),
+            Model("claude-opus-5", CopilotModelTransport.Anthropic),
+            Model("gpt-5.4", CopilotModelTransport.Responses), // real catalog id sanctioned by NO tier
+            Model("unsupported-model", CopilotModelTransport.Unsupported) // tier candidate, but unroutable
+        );
+
+        resolver.IsKnownModel("gpt-5.6-luna").Should().BeTrue();
+        resolver.IsKnownModel("GPT-5.6-LUNA").Should().BeTrue("catalog lookup is case-insensitive");
+        resolver.IsKnownModel("claude-opus-5").Should().BeTrue();
+        resolver.IsKnownModel("gpt-5.4").Should().BeFalse("a real catalog id no tier sanctions is out of scope");
+        resolver.IsKnownModel("unsupported-model").Should().BeFalse("an unroutable tier candidate is not selectable");
+        resolver.IsKnownModel("gpt-5").Should().BeFalse("an invented id is not in the catalog");
+        resolver.IsKnownModel("general-purpose").Should().BeFalse("a subagent_type is not a model id");
+        resolver.IsKnownModel("none").Should().BeFalse("a placeholder is not a model id");
+        resolver.IsKnownModel(null).Should().BeFalse();
+        resolver.IsKnownModel("   ").Should().BeFalse();
+    }
+
+    [Fact]
+    public void AvailableModelIds_ReturnsTierSanctionedRoutableIdsOnly()
+    {
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]>
+            {
+                [1] = ["gpt-5.6-luna", "unsupported-model"],
+                [5] = ["claude-opus-5"],
+            },
+            Model("gpt-5.6-luna", CopilotModelTransport.Responses),
+            Model("claude-opus-5", CopilotModelTransport.Anthropic),
+            Model("gpt-5.4", CopilotModelTransport.Responses),
+            Model("unsupported-model", CopilotModelTransport.Unsupported)
+        );
+
+        // Only the tier-configured, routable ids are advertised — the full catalog (gpt-5.4) and the
+        // unroutable tier candidate are excluded.
+        resolver.AvailableModelIds.Should().BeEquivalentTo(["gpt-5.6-luna", "claude-opus-5"]);
+    }
+
+    [Fact]
+    public void AvailableModelIds_DedupesAcrossTiersAndCanonicalizesCasing()
+    {
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]>
+            {
+                [1] = ["gpt-5.6-luna"],
+                [3] = ["GPT-5.6-LUNA", "claude-sonnet-5"],
+            },
+            Model("gpt-5.6-luna", CopilotModelTransport.Responses),
+            Model("claude-sonnet-5", CopilotModelTransport.Anthropic)
+        );
+
+        resolver.AvailableModelIds.Should().BeEquivalentTo(["gpt-5.6-luna", "claude-sonnet-5"]);
+        resolver.AvailableModelIds.Should().OnlyHaveUniqueItems("a model configured in several tiers is advertised once");
+    }
+
+    [Fact]
+    public void EmptyTiers_DisablesOverrides_NoAvailableIdsAndNothingKnown()
+    {
+        // With no tiers configured there is no sanctioned set, so overrides are disabled entirely: nothing
+        // is advertised and every override is dropped (the sub-agent inherits the parent model), even a
+        // real catalog id.
+        var resolver = CreateResolver([], Model("gpt-5.6-luna", CopilotModelTransport.Responses));
+
+        resolver.AvailableModelIds.Should().BeEmpty();
+        resolver
+            .IsKnownModel("gpt-5.6-luna")
+            .Should()
+            .BeFalse("no tier sanctions it, so even a real catalog id is dropped");
+    }
+
     private static SubAgentModelResolver CreateResolver(
         Dictionary<int, string[]> tiers,
         params CopilotModelInfo[] models

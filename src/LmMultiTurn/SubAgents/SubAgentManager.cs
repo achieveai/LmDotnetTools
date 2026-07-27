@@ -139,6 +139,14 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// The concrete model ids a spawn's <c>model</c> override may name, surfaced to the <c>Agent</c> tool
+    /// descriptor (<see cref="SubAgentToolProvider"/>) so the parent/controller LLM picks a real id
+    /// instead of inventing one. Sourced from <see cref="SubAgentOptions.AvailableModelIds"/>; null/empty
+    /// when the host supplied none.
+    /// </summary>
+    internal IReadOnlyCollection<string>? AvailableModelIds => _options.AvailableModelIds;
+
+    /// <summary>
     /// Spawn a new sub-agent from a named template.
     /// When <paramref name="runInBackground"/> is false (default), blocks until the
     /// sub-agent's run completes and returns its final answer as the result. When true,
@@ -202,7 +210,13 @@ public sealed class SubAgentManager : IAsyncDisposable
         // one that actually releases the slot.
         var gateGuard = new GateReleaseGuard();
 
-        var agentId = Guid.NewGuid().ToString("N")[..12];
+        // A spawned agent's id has TWO parts, mirroring the workflow controller's identity: a per-spawn
+        // guid (uniqueness) and a conversation tag derived from the parent (launching) conversation's
+        // thread id. The tag is deterministic (same conversation -> same tag) and content-free, so ids
+        // born in different conversations are visibly distinct and never confused, while the guid keeps
+        // each spawn unique. Guid stays FIRST so the readable-name suffix (agentId[..6]) and any short
+        // display slice remain per-spawn distinct rather than collapsing onto a shared conversation prefix.
+        var agentId = Guid.NewGuid().ToString("N")[..12] + "-" + ConversationTag(_parentAgent.ThreadId);
 
         // Every spawned agent gets a human-readable handle. When the caller omits `name`
         // (a controller/loop that forgot, or a direct spawn), derive a readable one from the
@@ -1372,6 +1386,27 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? removeTools,
         int? modelIntelligence = null)
     {
+        // Guard the free-form `model` override before anything downstream consumes it. The Agent tool
+        // exposes `model` as an unconstrained string, so a parent/controller LLM can fill it with an
+        // invented id (e.g. "gpt-5", "o3-mini"), a value that belongs in another field ("general-purpose"
+        // is a subagent_type; "none" is a placeholder), or a plain typo. Passed straight through, such a
+        // value becomes the request model and hard-fails at the provider with a BadRequest — a wasted
+        // spawn plus its tokens and a retry storm. When the host supplied a validator and the override
+        // does not validate, DROP it (log once) and fall through to tier/parent resolution exactly as if
+        // no override had been given. With no validator (the default) the override passes through
+        // unchanged, so every non-host consumer keeps the previous behavior.
+        if (!string.IsNullOrWhiteSpace(modelOverride)
+            && _options.ModelOverrideValidator is { } isKnownModel
+            && !isKnownModel(modelOverride))
+        {
+            _logger.LogWarning(
+                "Sub-agent {AgentId} requested unknown model override {ModelOverride}; ignoring it and "
+                + "falling back to the tier/parent model",
+                agentId,
+                modelOverride);
+            modelOverride = null;
+        }
+
         // A per-spawn model-intelligence tier resolves to a concrete model ONLY when the spawn set no
         // explicit model override (an explicit model always wins over a tier) AND the host supplied a
         // tier resolver. The resolved id is then fed into option resolution as if it were the requested
@@ -1451,16 +1486,19 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
             else
             {
-                // A per-spawn tier that resolved to a concrete model needs a provider whose TRANSPORT
-                // matches that model: the plain template.AgentFactory() builds the parent/controller's
-                // transport, which may differ from the tier model's (e.g. an Anthropic-transport controller
-                // resolving a Responses-transport tier), so it would send the request to the wrong endpoint.
-                // When the host supplied a tier agent factory, build the transport-correct provider for the
-                // resolved model and own it for disposal; otherwise fall back to the template's provider
-                // (same-transport tiers and every no-tier spawn are unaffected).
-                if (tierResolvedModel is not null && _options.TierAgentFactory is { } tierAgentFactory)
+                // A concrete model chosen for this spawn — either a validated `model` override or a
+                // per-spawn tier that resolved to a model — needs a provider whose TRANSPORT matches that
+                // model. The plain template.AgentFactory() builds the parent/controller's transport, which
+                // may differ from the chosen model's (e.g. an Anthropic-transport controller resolving a
+                // Responses-transport model, or a Responses-transport controller handed an Anthropic-model
+                // override), so it would POST the request to the wrong endpoint and hard-fail with a provider
+                // BadRequest (unsupported_api_for_model) plus a retry storm. When the host supplied a tier
+                // agent factory, build the transport-correct provider for the effective model and own it for
+                // disposal; otherwise fall back to the template's provider (same-transport choices and every
+                // parent-model-reuse spawn are unaffected).
+                if (!string.IsNullOrWhiteSpace(effectiveModel) && _options.TierAgentFactory is { } tierAgentFactory)
                 {
-                    providerAgent = tierAgentFactory(tierResolvedModel);
+                    providerAgent = tierAgentFactory(effectiveModel);
                     ownedProviderAgent = providerAgent;
                 }
                 else
@@ -2048,6 +2086,34 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <see cref="UsageRecord.ProviderAttemptId"/> per provider call across the own-loop and relay paths.
     /// </summary>
     internal static string SubAgentThreadId(string agentId) => $"subagent-{agentId}";
+
+    /// <summary>
+    /// Derives the fixed-width (8 hex) conversation tag that scopes a spawned sub-agent's id to the
+    /// LAUNCHING conversation, from the parent agent's thread id. Deterministic (same parent thread id
+    /// always yields the same tag, so it is stable across a conversation and its resumes) and content-free
+    /// (a hash, not the raw id — sub-agent ids are compact handles that nest and are never resumed by id,
+    /// so a compact digest is preferred over the raw conversation id used for the resumable controller
+    /// thread). A null/empty parent thread id (e.g. a CLI-backed parent with no thread) yields a stable
+    /// zero tag so the id shape is uniform. Uses FNV-1a/32 — no cryptographic strength is needed, only a
+    /// deterministic, well-distributed short digest.
+    /// </summary>
+    internal static string ConversationTag(string? parentThreadId)
+    {
+        const uint FnvOffsetBasis = 2166136261;
+        const uint FnvPrime = 16777619;
+
+        var hash = FnvOffsetBasis;
+        if (!string.IsNullOrEmpty(parentThreadId))
+        {
+            foreach (var c in parentThreadId)
+            {
+                hash ^= c;
+                hash *= FnvPrime;
+            }
+        }
+
+        return hash.ToString("x8");
+    }
 
     private static SubAgentTurnSummary? CreateTurnSummary(IMessage msg)
     {

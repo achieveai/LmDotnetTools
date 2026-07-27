@@ -1256,6 +1256,12 @@ try
                         subAgentOptions = subAgentOptions with
                         {
                             TierModelResolver = tier => subAgentModelResolver.ResolveClimbing(null, tier),
+                            // Guard the Agent tool's free-form `model` override: validate it against the
+                            // discovered Copilot catalog (drop unknown ids → inherit parent instead of a
+                            // provider BadRequest) and surface the valid ids in the tool descriptor so the
+                            // LLM picks a real one in the first place.
+                            ModelOverrideValidator = subAgentModelResolver.IsKnownModel,
+                            AvailableModelIds = subAgentModelResolver.AvailableModelIds,
                         };
                     }
 
@@ -1409,6 +1415,17 @@ try
                                 TierModelResolver = tier =>
                                     sp.GetRequiredService<SubAgentModelResolver>().ResolveClimbing(null, tier),
                                 TierAgentFactory = agentFactory,
+                                // Guard the controller delegate's free-form `model` override: the plain path
+                                // sends `defaultOptions.ModelId` straight to the controller's transport, so an
+                                // invented/mis-filled id (e.g. "gpt-5", or the subagent_type "general-purpose")
+                                // hard-fails with a provider BadRequest and burns a spawn + retries. Validate it
+                                // against the discovered Copilot catalog (drop unknown → inherit the controller
+                                // model) and list the valid ids in the tool descriptor so the controller stops
+                                // inventing them.
+                                ModelOverrideValidator =
+                                    sp.GetRequiredService<SubAgentModelResolver>().IsKnownModel,
+                                AvailableModelIds =
+                                    sp.GetRequiredService<SubAgentModelResolver>().AvailableModelIds,
                             };
 
                             // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
@@ -1481,7 +1498,14 @@ try
                                 // transport. For Copilot, providerId == model id; non-Copilot falls back to the
                                 // provider-id reasoning mapping.
                                 BuildControllerReasoningExtraProperties(providerRegistry, providerId, providerId)
-                            )
+                            ),
+                            // Scope the controller's persistence thread to THIS conversation so a human-chosen
+                            // (non-unique) workflowId can never map two different conversations onto the same
+                            // shared-store thread and inherit each other's controller history. The conversation
+                            // id is already unique/time-based, so the scoped thread is deterministic and resume
+                            // reconstructs it. Late-bound for the same reason as rootUsageSink (the manager is
+                            // built before the root `agent` loop exists).
+                            launchConversationId: () => agent?.ThreadId
                         );
 
                         _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(

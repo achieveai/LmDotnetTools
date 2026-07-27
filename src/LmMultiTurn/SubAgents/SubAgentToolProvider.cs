@@ -113,9 +113,7 @@ public class SubAgentToolProvider : IFunctionProvider
                 new FunctionParameterContract
                 {
                     Name = "model",
-                    Description =
-                        "Optional model id override for this sub-agent "
-                        + "(defaults to the template's configured model).",
+                    Description = BuildModelOverrideDescription(_manager.AvailableModelIds),
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
@@ -246,6 +244,36 @@ public class SubAgentToolProvider : IFunctionProvider
             Handler = HandleCheckAgentToolAsync,
             ProviderName = ProviderName,
         };
+    }
+
+    /// <summary>
+    /// Builds the <c>model</c> parameter description for the Agent tool. When the host surfaced the set of
+    /// valid model ids (<see cref="SubAgentManager.AvailableModelIds"/>) the description lists them and
+    /// spells out that this field is neither a <c>subagent_type</c> nor a capability tier — the two fields
+    /// LLMs most often confuse it with — so the parent stops inventing ids or cross-filling from another
+    /// argument. With no id list it keeps the generic wording (previous behavior). Pairs with the runtime
+    /// <see cref="SubAgentOptions.ModelOverrideValidator"/>, which drops any id not in this set.
+    /// </summary>
+    private static string BuildModelOverrideDescription(IReadOnlyCollection<string>? availableModelIds)
+    {
+        // Usually OMIT this — a sub-agent inherits the right model from its template/the parent
+        // automatically, which is almost always correct. Only set it to deliberately run this ONE
+        // sub-agent on a different model.
+        const string lead =
+            "Optional model id override for this sub-agent. Usually OMIT this — the sub-agent inherits "
+            + "the correct model automatically; set it only to deliberately run this one sub-agent on a "
+            + "different model. This is a MODEL ID, not a subagent_type (that is the separate "
+            + "'subagent_type' argument) and not a capability tier (use 'modelIntelligence' for that).";
+
+        if (availableModelIds is { Count: > 0 })
+        {
+            return lead
+                + " If set, it MUST be exactly one of: "
+                + string.Join(", ", availableModelIds)
+                + ". Any other value is ignored and the sub-agent keeps its inherited model.";
+        }
+
+        return lead + " Defaults to the template's configured model.";
     }
 
     /// <summary>

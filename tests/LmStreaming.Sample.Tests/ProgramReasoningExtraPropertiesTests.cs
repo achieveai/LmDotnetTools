@@ -153,7 +153,11 @@ public sealed class ProgramReasoningExtraPropertiesTests
         var props = BuildController(registry, "gpt-5.5", "gpt-5.5");
 
         props.Should().ContainKey("Reasoning");
-        props["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which.Effort.Should().Be("high");
+        var reasoning = props["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
+        reasoning.Effort.Should().Be("high");
+        // The controller must also request a displayable summary, or its thinking comes back
+        // encrypted-only and never renders (the sub-agent/controller "no thinking traces" bug).
+        reasoning.Summary.Should().Be("auto");
     }
 
     [Fact]

@@ -73,12 +73,11 @@ public sealed class CharacteristicsAgentFactoryTests
         }
         else
         {
-            result
-                .ExtraProperties["Reasoning"]
-                .Should()
-                .BeOfType<ResponseReasoningOptions>()
-                .Which.Effort.Should()
-                .Be("medium");
+            var reasoning = result.ExtraProperties["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
+            reasoning.Effort.Should().Be("medium");
+            // A sub-agent must also request a displayable summary, else its thinking comes back
+            // encrypted-only and never renders (the sub-agent "no thinking traces" bug).
+            reasoning.Summary.Should().Be("auto");
         }
     }
 
@@ -99,12 +98,9 @@ public sealed class CharacteristicsAgentFactoryTests
 
         result.Agent.Should().BeSameAs(parentAgent);
         result.OwnsAgent.Should().BeFalse();
-        result
-            .ExtraProperties["Reasoning"]
-            .Should()
-            .BeOfType<ResponseReasoningOptions>()
-            .Which.Effort.Should()
-            .Be("medium");
+        var reasoning = result.ExtraProperties["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
+        reasoning.Effort.Should().Be("medium");
+        reasoning.Summary.Should().Be("auto");
         modelFactory.Verify(factoryCall => factoryCall(It.IsAny<CopilotModelInfo>()), Times.Never);
     }
 

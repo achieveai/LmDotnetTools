@@ -94,6 +94,14 @@ public sealed record WorkflowRunSummary
     /// <summary>The caller-supplied opaque workflow handle.</summary>
     public required string WorkflowId { get; init; }
 
+    /// <summary>
+    ///     The controller loop's ACTUAL persistence thread id — <c>workflow-{workflowId}-{conversationId}</c>
+    ///     when the run was launched by a conversation, else the legacy <c>workflow-{workflowId}</c>. A host
+    ///     surfacing the run (e.g. the ⚙ workflow tab) MUST use this rather than reconstructing
+    ///     <c>workflow-{workflowId}</c>, which no longer matches the persisted thread once conversation-scoped.
+    /// </summary>
+    public string? ThreadId { get; init; }
+
     /// <summary>The run's objective (from its definition), or the <see cref="WorkflowId"/> when none is set.</summary>
     public required string Objective { get; init; }
 
@@ -206,6 +214,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly Func<InheritableToolSnapshot?>? _inheritedToolSnapshot;
     private readonly IConversationStore? _controllerConversationStore;
     private readonly Func<string, WorkflowControllerProfile>? _controllerProfileByProvider;
+    private readonly Func<string?>? _launchConversationId;
 
     private readonly WorkflowValidator _validator = new();
     private readonly ConcurrentDictionary<string, WorkflowEntry> _workflows = new(StringComparer.Ordinal);
@@ -275,6 +284,18 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     <paramref name="controllerSubAgentOptions"/> (the conversation's provider) are used. The manager
     ///     stays provider-agnostic — it only invokes this <c>Func&lt;string, ...&gt;</c>.
     /// </param>
+    /// <param name="launchConversationId">
+    ///     Optional LATE-BOUND getter for the id of the conversation that launches a run (same late-binding
+    ///     rationale as <paramref name="rootUsageSink"/> — the host may construct this manager before its root
+    ///     loop exists, so it passes e.g. <c>() =&gt; agent?.ThreadId</c>). Resolved once per run at
+    ///     <see cref="StartAsync"/> time and folded into the controller's persistence thread id
+    ///     (<c>workflow-{workflowId}-{conversationId}</c>) so a human-chosen, non-unique <c>workflowId</c> can
+    ///     never map two DIFFERENT conversations onto the same shared-store thread and inherit each other's
+    ///     controller history. The scope is the conversation id itself (already unique/time-based), so it is
+    ///     deterministic: re-launching/​resuming the SAME conversation reconstructs the SAME thread id. Null (or
+    ///     a getter returning null/blank) keeps the legacy unscoped <c>workflow-{workflowId}</c> thread — e.g.
+    ///     headless/test hosts with no launching conversation.
+    /// </param>
     public WorkflowManager(
         Func<IStreamingAgent> controllerAgentFactory,
         SubAgentOptions controllerSubAgentOptions,
@@ -288,7 +309,8 @@ public sealed class WorkflowManager : IAsyncDisposable
         Func<IUsageSink?>? rootUsageSink = null,
         Func<InheritableToolSnapshot?>? inheritedToolSnapshot = null,
         IConversationStore? controllerConversationStore = null,
-        Func<string, WorkflowControllerProfile>? controllerProfileByProvider = null
+        Func<string, WorkflowControllerProfile>? controllerProfileByProvider = null,
+        Func<string?>? launchConversationId = null
     )
     {
         ArgumentNullException.ThrowIfNull(controllerAgentFactory);
@@ -311,6 +333,7 @@ public sealed class WorkflowManager : IAsyncDisposable
         _inheritedToolSnapshot = inheritedToolSnapshot;
         _controllerConversationStore = controllerConversationStore;
         _controllerProfileByProvider = controllerProfileByProvider;
+        _launchConversationId = launchConversationId;
         _concurrencyGate = new SemaphoreSlim(maxConcurrentWorkflows, maxConcurrentWorkflows);
     }
 
@@ -362,10 +385,19 @@ public sealed class WorkflowManager : IAsyncDisposable
         // Reserve the id slot atomically BEFORE the (effectively synchronous) start, closing the duplicate
         // TOCTOU: two concurrent starts for the same id cannot both pass the check.
         var startedUtc = DateTimeOffset.UtcNow;
+
+        // Scope the controller's persistence thread to the launching conversation so a human-chosen, non-unique
+        // workflowId can never map two DIFFERENT conversations onto the same shared-store thread (which would let
+        // a fresh run inherit a prior run's controller history). Resolved at reservation time — the launching
+        // conversation is fixed at the call — and deterministic, so resuming the SAME conversation reconstructs
+        // the SAME thread id. A host with no launching conversation keeps the legacy unscoped workflow-{id}.
+        var controllerThreadId = ComposeControllerThreadId(workflowId, _launchConversationId?.Invoke());
+
         var entry = new WorkflowEntry
         {
             OriginatingToolCallId = originatingToolCallId,
             Objective = definition.Objective,
+            ThreadId = controllerThreadId,
             StartedUtc = startedUtc,
             LastActivityUtcTicks = startedUtc.UtcTicks,
         };
@@ -466,7 +498,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                     definition: definition,
                     subAgentOptions: controllerSubAgentOptions,
                     controllerAgent: controllerAgentFactory(),
-                    threadId: $"workflow-{workflowId}",
+                    threadId: controllerThreadId,
                     store: null,
                     instanceId: workflowId,
                     conversationStore: _controllerConversationStore,
@@ -688,6 +720,7 @@ public sealed class WorkflowManager : IAsyncDisposable
                 new WorkflowRunSummary
                 {
                     WorkflowId = workflowId,
+                    ThreadId = entry.ThreadId,
                     Objective = string.IsNullOrWhiteSpace(entry.Objective) ? workflowId : entry.Objective,
                     Status = status,
                     CurrentNodeId = currentNodeId,
@@ -1084,6 +1117,18 @@ public sealed class WorkflowManager : IAsyncDisposable
             .Replace(">", "&gt;")
             .Replace("\"", "&quot;");
 
+    /// <summary>
+    ///     Builds the controller loop's persistence thread id. The <c>workflow-</c> prefix is load-bearing
+    ///     (a host filters main-list threads by it), and the id stays the first-segment human handle; the
+    ///     launching conversation id — already unique/time-based, so no hashing is needed — is appended when
+    ///     present so distinct conversations reusing one readable <paramref name="workflowId"/> never collide.
+    ///     A blank/absent conversation id keeps the legacy unscoped thread for backward compatibility.
+    /// </summary>
+    private static string ComposeControllerThreadId(string workflowId, string? launchConversationId) =>
+        string.IsNullOrWhiteSpace(launchConversationId)
+            ? $"workflow-{workflowId}"
+            : $"workflow-{workflowId}-{launchConversationId}";
+
     /// <summary>A tracked workflow: a lightweight terminal snapshot plus the live run handle (released once
     /// terminal) and one-shot notify/dispose guards. Fields are published/read via <see cref="Volatile"/>.</summary>
     private sealed class WorkflowEntry
@@ -1096,6 +1141,11 @@ public sealed class WorkflowManager : IAsyncDisposable
 
         /// <summary>The originating StartWorkflowAgent tool-call id for completion-notify correlation, or null.</summary>
         public string? OriginatingToolCallId;
+
+        /// <summary>The controller loop's conversation-scoped persistence thread id (see
+        /// <see cref="ComposeControllerThreadId"/>). Set once at reservation, before the entry is published;
+        /// immutable thereafter. Surfaced via <see cref="ListRuns"/> so the host uses the real thread id.</summary>
+        public string? ThreadId;
 
         /// <summary>The run's objective (from its definition), for presentation via ListRuns. Set once at
         /// reservation, before the entry is published; immutable thereafter.</summary>
