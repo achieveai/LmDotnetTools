@@ -203,6 +203,15 @@ public sealed class SubAgentManager : IAsyncDisposable
         var gateGuard = new GateReleaseGuard();
 
         var agentId = Guid.NewGuid().ToString("N")[..12];
+
+        // Every spawned agent gets a human-readable handle. When the caller omits `name`
+        // (a controller/loop that forgot, or a direct spawn), derive a readable one from the
+        // resolved template so the agent never surfaces in telemetry - or as a SendMessage
+        // target - as a bare guid. An explicitly supplied name is always kept verbatim.
+        var effectiveName = string.IsNullOrWhiteSpace(name)
+            ? DeriveReadableName(templateName, agentId)
+            : name;
+
         SubAgentState? state = null;
 
         try
@@ -229,15 +238,15 @@ public sealed class SubAgentManager : IAsyncDisposable
                 AddTools = addTools,
                 RemoveTools = removeTools,
                 Store = store,
-                Name = name,
+                Name = effectiveName,
                 NotifyParentOnCompletion = runInBackground,
             };
             state.SetOwnedProviderAgent(ownedProviderAgent);
 
             _agents[agentId] = state;
-            if (!string.IsNullOrWhiteSpace(name))
+            if (!string.IsNullOrWhiteSpace(effectiveName))
             {
-                if (_namesToIds.TryGetValue(name, out var existingId)
+                if (_namesToIds.TryGetValue(effectiveName, out var existingId)
                     && existingId != agentId
                     && _agents.ContainsKey(existingId))
                 {
@@ -245,10 +254,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                         "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
                             + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
                             + "address the new agent.",
-                        name, existingId, agentId);
+                        effectiveName, existingId, agentId);
                 }
 
-                _namesToIds[name] = agentId;
+                _namesToIds[effectiveName] = agentId;
             }
 
             // Start the agent loop in the background
@@ -283,7 +292,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // started (e.g. agent.SendAsync threw). Roll back the partial registration so a
                 // failed spawn never lingers in Peek/SendMessage lookups, then cancel + observe
                 // any started run/monitor tasks so they don't leak as orphaned background work.
-                await CleanupFailedSpawnAsync(agentId, name, state, gateGuard);
+                await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard);
             }
 
             throw;
@@ -299,7 +308,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             return JsonSerializer.Serialize(new
             {
                 agent_id = agentId,
-                name,
+                name = effectiveName,
                 template = templateName,
                 status = "spawned",
             });
@@ -408,6 +417,25 @@ public sealed class SubAgentManager : IAsyncDisposable
     {
         var idx = key.LastIndexOf(':');
         return idx >= 0 && idx < key.Length - 1 ? key[(idx + 1)..] : key;
+    }
+
+    /// <summary>
+    /// Builds a short, human-readable handle for a sub-agent whose caller did not supply a
+    /// <c>name</c>. Uses the resolved template's last <c>':'</c> segment (dropping any plugin prefix,
+    /// e.g. <c>code-reviewer:performance-review</c> -&gt; <c>performance-review</c>) plus a short slice
+    /// of the agent id for uniqueness, so the agent surfaces in telemetry and is addressable by
+    /// SendMessage as e.g. <c>performance-review-1a2b3c</c> rather than a bare guid.
+    /// </summary>
+    private static string DeriveReadableName(string templateName, string agentId)
+    {
+        var role = LastSegment(templateName);
+        if (string.IsNullOrWhiteSpace(role))
+        {
+            role = "agent";
+        }
+
+        var suffix = agentId.Length >= 6 ? agentId[..6] : agentId;
+        return $"{role}-{suffix}";
     }
 
     /// <summary>

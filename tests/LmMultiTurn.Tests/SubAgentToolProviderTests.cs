@@ -128,6 +128,49 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public void AgentDescriptor_SteersTowardReusingLiveSubAgentsViaSendMessage()
+    {
+        // Act
+        var agent = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "Agent");
+
+        // Assert: the Agent description nudges the controller/loop to CONTINUE a still-live
+        // sub-agent with SendMessage before spawning a brand-new one for the same/follow-up work.
+        var description = agent.Contract.Description!;
+        description.Should().Contain("SendMessage");
+        description.Should().Contain("before spawning a NEW sub-agent");
+    }
+
+    [Fact]
+    public void AgentDescriptor_NameParameter_AsksForAReadableHandleAndNotesAutoDerivedFallback()
+    {
+        // Act
+        var agent = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "Agent");
+        var nameParam = agent.Contract.Parameters!.First(p => p.Name == "name");
+
+        // Assert: guidance asks for a short human-readable handle and documents that the host
+        // auto-derives one when omitted (so no agent ever surfaces as a bare id).
+        var desc = nameParam.Description!;
+        desc.Should().Contain("human-readable");
+        desc.Should().Contain("auto-derived");
+    }
+
+    [Fact]
+    public void SendMessageDescriptor_PrefersContinuationOverSpawningANewAgent()
+    {
+        // Act
+        var sendMessage = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "SendMessage");
+
+        // Assert: SendMessage steers the model to prefer continuing an existing agent over
+        // spawning a fresh one when it already has the context for the work.
+        var description = sendMessage.Contract.Description!;
+        description.Should().Contain("PREFER THIS");
+        description.Should().Contain("spawning a new Agent");
+    }
+
+    [Fact]
     public async Task HandleAgentToolAsync_MissingPrompt_ThrowsArgumentException()
     {
         // Arrange

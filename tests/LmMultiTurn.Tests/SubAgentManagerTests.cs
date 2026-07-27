@@ -513,6 +513,65 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SpawnAsync_WithoutName_DerivesReadableNameFromSubagentType_AndIsAddressableBySendMessage()
+    {
+        // Arrange: blocking agent stays Running so it can receive a follow-up message
+        var blockingTcs = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(blockingTcs);
+
+        _manager = CreateManager();
+
+        // Act: spawn WITHOUT a caller-supplied name. Every agent must still surface a
+        // human-readable handle (derived from the subagent_type) rather than only an opaque id.
+        var spawnJson = await _manager.SpawnAsync(
+            "test-agent", "initial task", runInBackground: true);
+
+        // Assert: a readable name was derived from the template and is not just the raw id.
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var spawnRoot = spawnDoc.RootElement;
+        var derivedName = spawnRoot.GetProperty("name").GetString();
+        var agentId = spawnRoot.GetProperty("agent_id").GetString();
+
+        derivedName.Should().NotBeNullOrWhiteSpace();
+        derivedName.Should().StartWith("test-agent-");
+        derivedName.Should().NotBe(agentId);
+
+        // And the derived name is a first-class handle: SendMessage can address the agent by it.
+        var resumeJson = await _manager.SendMessageAsync(
+            derivedName!, "follow-up message", runInBackground: true);
+
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        var resumeRoot = resumeDoc.RootElement;
+        resumeRoot.GetProperty("name").GetString().Should().Be(derivedName);
+        resumeRoot.GetProperty("status").GetString().Should().Be("message_sent");
+
+        // Cleanup
+        blockingTcs.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_WithExplicitName_KeepsItVerbatim_NoDerivedFallback()
+    {
+        // Arrange
+        var blockingTcs = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(blockingTcs);
+
+        _manager = CreateManager();
+
+        // Act: an explicitly supplied name must be kept exactly - the readable-name fallback
+        // only fills in when the caller omits a name; it never rewrites a caller's choice.
+        var spawnJson = await _manager.SpawnAsync(
+            "test-agent", "initial task", name: "custom-name", runInBackground: true);
+
+        // Assert
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        spawnDoc.RootElement.GetProperty("name").GetString().Should().Be("custom-name");
+
+        // Cleanup
+        blockingTcs.SetResult(true);
+    }
+
+    [Fact]
     public async Task SendMessageAsync_InjectIntoRunningBackgroundAgent_DoesNotOverReleaseConcurrencyGate()
     {
         // Regression guard for the gate single-release invariant. A background sub-agent

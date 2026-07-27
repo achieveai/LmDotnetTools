@@ -62,8 +62,13 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "message. Use background mode for long-running work you want to run "
                 + "while you keep working, or to fan out several sub-agents at once.\n\n"
                 + "Each sub-agent starts fresh and does NOT see your conversation history, "
-                + "so make the prompt self-contained. Use SendMessage to continue an "
-                + "existing sub-agent with a follow-up.\n\n"
+                + "so make the prompt self-contained.\n\n"
+                + "PREFER CONTINUING AN EXISTING SUB-AGENT: before spawning a NEW sub-agent, "
+                + "check whether one you already spawned is still live and already has the "
+                + "context for this work — if so, continue it with SendMessage instead of "
+                + "spawning a fresh agent for the same or a follow-up task. Only spawn a new "
+                + "agent when no suitable live agent exists, or when you deliberately want "
+                + "independent/parallel work.\n\n"
                 + BuildTemplateCatalog(templates),
             Parameters =
             [
@@ -97,8 +102,11 @@ public class SubAgentToolProvider : IFunctionProvider
                 {
                     Name = "name",
                     Description =
-                        "Optional handle to address this sub-agent later via "
-                        + "SendMessage instead of using its generated id.",
+                        "Recommended: a short, human-readable, unique handle for this "
+                        + "sub-agent (e.g. 'auth-reviewer', 'db-migrator') so it is easy to "
+                        + "identify in progress/telemetry and to address later via SendMessage. "
+                        + "Optional — if omitted, a readable name is auto-derived from the "
+                        + "subagent_type.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
@@ -165,7 +173,9 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             Name = "SendMessage",
             Description =
-                "Continue an existing sub-agent with a follow-up message. Address it "
+                "Continue an existing sub-agent with a follow-up message — PREFER THIS over "
+                + "spawning a new Agent when you are iterating on, correcting, or extending "
+                + "work a still-live sub-agent already has the context for. Address it "
                 + "by the id returned from Agent, or by the name you gave it when "
                 + "spawning. By default BLOCKS until the continued run finishes and "
                 + "returns its final answer; set run_in_background: true to return "
