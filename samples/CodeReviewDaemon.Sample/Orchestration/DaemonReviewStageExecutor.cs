@@ -249,6 +249,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return null;
         }
 
+        // On the S2S path the review runs inside a conversation the REVIEW HOST owns: its tools, MCP
+        // transport and code-reviewer:* sub-agent catalog come from the gateway session that host provisions
+        // against the mounted workspace. A daemon-side session here would mount the same slot a second time
+        // and risks the boot-session collision noted below, so there is nothing for this method to build.
+        // NOTE: the RequireSkillSupport fail-fast lives further down THIS method, so it does not apply on
+        // S2S — a review host whose marketplace stops surfacing code-reviewer:* degrades quietly instead.
+        if (_options.UseS2SReviewAgent)
+        {
+            return null;
+        }
+
         try
         {
             // A pooled run mounts the agent session OVER the leased slot (so /workspace == the slot and
@@ -398,7 +409,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // finally without running the Posted-stage cleanup — can't leave session-side work racing the next
             // lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a no-op when no
             // session was provisioned, and harmless if the Posted stage already destroyed it.
-            if (_options.EnableToolAssistedReview && _provisioner is not null)
+            // (Skipped on S2S: BuildToolContextAsync returns before provisioning anything, so the daemon owns
+            // no session — the container belongs to the review host. DestroyAsync is a documented no-op there,
+            // but state the invariant at the call site rather than leaving it to be inferred.)
+            if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
             {
                 await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
             }
@@ -412,24 +426,30 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
-        // S2S path: the review runs inside LmStreaming against a workspace whose checkout the preparer clones
-        // HOST-side under the shared gateway base — so the tree this stage needs for the bounded diff already
-        // exists on this host. Diff it there rather than cloning a second copy inside a daemon-owned sandbox:
-        // the diff-only boot session has no workspace mount at all, and a per-run sandbox would duplicate the
-        // very checkout LmStreaming is about to mount.
-        if (_preparer is not null)
-        {
-            await FetchContextFromPreparedCheckoutAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
         // Pooled scoped-writable path (Layer 1): lease a warm slot, prepare it host-side (branch reuse
         // carries prior notes), diff the prepared submodule host-side, and persist the context. When the
         // reviewed repo is not a submodule of the store — or the pooled path isn't wired — this returns
-        // false and the existing per-run/diff-only checkout below runs unchanged (degrade intact, §7).
+        // false and one of the degrades below runs unchanged (degrade intact, §7).
+        //
+        // This is tried FIRST, including on the S2S path: the pooled slot is the RICHER workspace (the
+        // cross-repo store, the Knowledge Base, and the PR's own accumulated notes dir), and on S2S the leased
+        // slot is what gets mounted into the hosted conversation. The prepared-checkout branch below is a bare
+        // per-PR clone — the correct degrade for a repo that is not a submodule of the store, but strictly
+        // less than the slot, so it must not pre-empt it.
         if (UsePooledReview
             && await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false))
         {
+            return;
+        }
+
+        // S2S degrade: the review runs inside LmStreaming against a workspace whose checkout the preparer
+        // clones HOST-side under the shared gateway base — so the tree this stage needs for the bounded diff
+        // already exists on this host. Diff it there rather than cloning a second copy inside a daemon-owned
+        // sandbox: the diff-only boot session has no workspace mount at all, and a per-run sandbox would
+        // duplicate the very checkout LmStreaming is about to mount.
+        if (_preparer is not null)
+        {
+            await FetchContextFromPreparedCheckoutAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -1085,10 +1105,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// Builds the review prompt's templated workspace-layout variables (design: prompt migration). The
-    /// <c>notes_dir</c>/<c>has_notes</c> pair is derived from <paramref name="toolContext"/> — the SAME
-    /// <see cref="ReviewToolContext.NotesDir"/> that scopes the agent's Write/Edit/Bash tools
-    /// (<see cref="ResolvePooledWriteScope"/>) — never a parallel recomputation, so the prompt can never
-    /// tell the agent to write somewhere its tools don't actually allow.
+    /// <c>notes_dir</c>/<c>has_notes</c> pair comes from <paramref name="notesDir"/>, which every caller takes
+    /// from <see cref="ResolvePooledWriteScope"/> — the SAME single source that scopes the in-process agent's
+    /// Write/Edit/Bash tools — never a parallel recomputation, so the prompt can never tell the agent to write
+    /// somewhere its tools don't actually allow.
+    /// <para>
+    /// Taking the value from the write scope rather than the tool context is what keeps the notes/PR-memory
+    /// behaviour alive on the S2S path, where the daemon builds no tool context at all (the hosted conversation
+    /// owns the tools) but the pooled lease — and therefore the notes dir — is exactly the same.
+    /// </para>
     /// <para>
     /// The re-review variables (<paramref name="prevHeadSha"/>, <paramref name="reviewRound"/>,
     /// <paramref name="priorNotesFiles"/>) are looked up/listed by the caller (<see cref="RunPrimaryReviewAsync"/>
@@ -1103,13 +1128,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         bool shouldPost,
         string? checkoutRoot,
         string? storeRoot,
-        ReviewToolContext? toolContext,
+        string? notesDir,
         string headSha,
         string? prevHeadSha,
         int reviewRound,
         IReadOnlyList<string> priorNotesFiles)
     {
-        var notesDir = toolContext?.NotesDir;
         var isRereview = !string.IsNullOrWhiteSpace(prevHeadSha);
         return new Dictionary<string, object>
         {
@@ -1647,8 +1671,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         CancellationToken cancellationToken,
         string? modelOverride = null)
     {
+        // The notes dir comes from the pooled write scope, NOT from the tool context. The two are the same
+        // value in-process (the tool context is built from this very scope), but on S2S there is no tool
+        // context — the hosted conversation owns the tools — while the lease, and therefore the notes dir the
+        // slot mounts at /workspace/store/PRs/..., is unchanged. Sourcing it here is what keeps per-PR notes,
+        // re-review memory and the "ONLY writable location" directive alive on both paths.
+        var notesDir = ResolvePooledWriteScope(run).NotesDir;
         var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
-            run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
+            run, notesDir, cancellationToken).ConfigureAwait(false);
         var (repo, provider) = ResolveRepo(run);
         // Posting is AGENT-owned and INLINE: the review agent posts its findings as line-anchored comments
         // (and replies to open threads) via the provider REST API / the code-reviewer:post-pr-review skill over
@@ -1664,7 +1694,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var shouldPost = _options.EnableCommentPosting && !_options.UseS2SReviewAgent;
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
-            toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
+            notesDir, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
         var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
@@ -2151,12 +2181,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// On the S2S path (<see cref="_preparer"/> non-null) ensures this run's LmStreaming review workspace exists
-    /// — cloning the PR checkout to the shared gateway host and minting/reusing the workspace — and caches it in
-    /// <see cref="_preparedWorkspaces"/> so every <c>_loopFactory.Create</c> site of the run shares one
-    /// preparation. Returns the prepared workspace (leaf + workspace id + host checkout dir + PR id), or
-    /// <c>null</c> on the in-process path (no preparer wired), where callers pass no workspace and the
-    /// live/fake factory ignores it. The context stage needs the host dir, because on the S2S path the bounded
-    /// diff is taken from this same clone; the S2S factory needs the PR id to title the hosted conversation.
+    /// and caches it in <see cref="_preparedWorkspaces"/> so every <c>_loopFactory.Create</c> site of the run —
+    /// review, judge, variant arm, escalation retry — shares one preparation, and therefore one container.
+    /// Returns the prepared workspace (leaf + workspace id + host dir + PR id), or <c>null</c> on the in-process
+    /// path (no preparer wired), where callers pass no workspace and the live/fake factory ignores it.
+    /// <para>
+    /// Two sources, in preference order. When the context stage leased a pooled slot, that slot IS the
+    /// workspace (<c>AdoptSlotAsync</c>): it is already prepared — store, Knowledge Base, PR notes branch, PR
+    /// head checked out — so this only names it to LmStreaming, runs no git, and the hosted agent's
+    /// <c>/workspace/store/...</c> paths line up with what the pooled stage recorded. Absent a lease the
+    /// preparer host-clones a bare per-PR checkout, the degrade for a repo that is not a store submodule; the
+    /// context stage then takes its bounded diff from that same clone.
+    /// </para>
     /// </summary>
     private async Task<PreparedReviewWorkspace?> EnsurePreparedAsync(
         ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
@@ -2171,7 +2207,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return cached;
         }
 
-        var prepared = await _preparer.PrepareAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        var prepared = _leasedReviews.TryGetValue(run.Id, out var lease)
+            ? await _preparer.AdoptSlotAsync(lease.Slot, run, cancellationToken).ConfigureAwait(false)
+            : await _preparer.PrepareAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         _preparedWorkspaces[run.Id] = prepared;
         return prepared;
     }

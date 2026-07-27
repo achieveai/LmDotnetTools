@@ -175,9 +175,12 @@ var databasePath = string.IsNullOrWhiteSpace(daemonOptions.DatabasePath)
     ? Path.Combine(AppContext.BaseDirectory, "review.db")
     : daemonOptions.DatabasePath;
 var dbConnectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
-// Singleton: ReviewStore wraps one SqliteConnection. Its single accessor is the serial PrPollingService
-// loop (each PR is orchestrated to completion before the next), so concurrent use never arises today.
-// Any future fan-out (parallel arms, a second poller) MUST serialize access before sharing this store.
+// Singleton: ReviewStore wraps one SqliteConnection. Its single accessor is still the serial
+// PrPollingService loop (each PR is orchestrated to completion before the next), so concurrent use does
+// not arise today — but the store now serializes access itself (every operation runs under an internal
+// gate held across command-plus-reader), so a future fan-out (parallel arms, a second poller) can share
+// this singleton without corrupting the connection. Isolation of the review WORKSPACES is separate and
+// already in place: each concurrent review leases its own pooled slot.
 builder.Services.AddSingleton(_ => new ReviewStore(dbConnectionString));
 
 // Sandbox: all deterministic git/fs work runs in the gateway via the typed SandboxClient SDK, wrapped

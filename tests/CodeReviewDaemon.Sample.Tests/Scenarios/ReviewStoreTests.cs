@@ -485,6 +485,63 @@ public sealed class ReviewStoreTests
         store.GetRepo(9999).Should().BeNull();
     }
 
+    // ── concurrency ───────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Concurrent_readers_and_writers_neither_throw_nor_lose_rows()
+    {
+        // The store wraps ONE SqliteConnection, which is not thread-safe; every operation now runs under
+        // the store's gate, held across command-plus-reader.
+        //
+        // Read this as a SMOKE test, not a race detector. The unguarded failure is real but rare: probed
+        // at 24 threads × 400 iterations it threw ArgumentOutOfRangeException from Microsoft.Data.Sqlite's
+        // internal per-connection command list exactly ONCE in 9,600 operations (with the gate: zero).
+        // Reproducing that here would mean a ~5-minute probabilistic test — flaky by construction — so
+        // this pins the cheap, deterministic half instead: concurrent readers and writers complete and
+        // every row lands. The rare-throw evidence lives in the ReviewStore <remarks>. The poller is still
+        // serial; this pins that the STORE is no longer the reason it has to be.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var runId = SeedRun(store);
+        const int Workers = 8;
+        const int PerWorker = 25;
+
+        // An async gate rather than a Barrier: workers are released simultaneously without first parking
+        // eight thread-pool threads, so the contention is real even on a small pool.
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var work = Enumerable.Range(0, Workers)
+            .Select(worker => Task.Run(async () =>
+            {
+                await start.Task;
+                for (var i = 0; i < PerWorker; i++)
+                {
+                    _ = store.AddArtifact(new ReviewArtifact
+                    {
+                        ReviewRunId = runId,
+                        ArtifactSchemaVersion = 1,
+                        ArtifactKind = "review",
+                        Provider = "github",
+                        Payload = $"{{\"worker\":{worker},\"i\":{i}}}",
+                    });
+
+                    // Readers that STREAM while the other workers write — the case a per-command lock
+                    // would still get wrong.
+                    _ = store.GetArtifacts(runId);
+                    _ = store.GetReviewRun(runId);
+                    _ = await store.ListReviewedPrsAsync(CancellationToken.None);
+                }
+            }))
+            .ToList();
+
+        start.SetResult();
+        var drain = async () => await Task.WhenAll(work);
+
+        _ = await drain.Should().NotThrowAsync("every operation serializes on the store's gate");
+        store.GetArtifacts(runId).Should().HaveCount(
+            Workers * PerWorker, "no write was lost, duplicated, or rolled back by a racing command");
+    }
+
     // ── shared fixtures ───────────────────────────────────────────────────────────────────────────
 
     private static RepoIdentity SampleRepo() => new()

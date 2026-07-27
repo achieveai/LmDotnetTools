@@ -1,3 +1,4 @@
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Workspace;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -145,5 +146,61 @@ public class ReviewSlotPoolTests : IDisposable
         File.Exists(Path.Combine(slot.StorePath, "corrupt-marker.txt"))
             .Should().BeFalse("the corrupt store is wiped before re-cloning");
         File.Exists(Path.Combine(slot.StorePath, ".cloned")).Should().BeTrue("the re-clone produced a fresh store");
+    }
+
+    [Fact]
+    public async Task LeaseAsync_WithACustomSlotPrefix_NamesTheSlotDirWithIt()
+    {
+        // The S2S path puts slot dirs DIRECTLY under the workspace base (they must be single path
+        // segments there), so it distinguishes them with a prefix instead of a `review-pool/` parent.
+        var clone = CountingCloneCallback(out _);
+        var pool = new ReviewSlotPool(
+            maxSlots: 1,
+            _hostRoot,
+            "scratch",
+            clone,
+            NullLogger<ReviewSlotPool>.Instance,
+            slotDirPrefix: "review-slot-");
+
+        var slot = await pool.LeaseAsync(default);
+
+        pool.SlotDirectoryName(0).Should().Be("review-slot-0");
+        slot.HostPath.Should().Be(Path.Combine(_hostRoot, "review-slot-0"));
+        slot.StorePath.Should().Be(Path.Combine(slot.HostPath, "store"),
+            "the store stays a direct child, so the gateway's /workspace mount exposes it as /workspace/store");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(17)]
+    public void SlotDirectoryName_OnTheS2SPath_SurvivesLmStreamingsSanitizerUnchanged(int index)
+    {
+        // The silent-failure guard: a slot dir the sanitizer renames would have LmStreaming mount a
+        // different, EMPTY directory — the hosted agent then reviews nothing and reports no findings
+        // rather than failing. Startup asserts this; this test pins the naming scheme that satisfies it.
+        var clone = CountingCloneCallback(out _);
+        var pool = new ReviewSlotPool(
+            maxSlots: 1,
+            _hostRoot,
+            "scratch",
+            clone,
+            NullLogger<ReviewSlotPool>.Instance,
+            slotDirPrefix: "review-slot-");
+
+        var name = pool.SlotDirectoryName(index);
+
+        S2SReviewWorkspacePreparer.SanitizeLeaf(name).Should().Be(name);
+    }
+
+    [Fact]
+    public void Ctor_WithABlankSlotPrefix_ThrowsArgumentException()
+    {
+        var clone = CountingCloneCallback(out _);
+
+        var act = () => new ReviewSlotPool(
+            1, _hostRoot, "scratch", clone, NullLogger<ReviewSlotPool>.Instance, slotDirPrefix: "  ");
+
+        act.Should().Throw<ArgumentException>();
     }
 }

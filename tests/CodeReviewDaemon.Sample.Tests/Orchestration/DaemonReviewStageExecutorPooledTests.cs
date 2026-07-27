@@ -1,11 +1,13 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -25,6 +27,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private const string Branch = "review/lmdotnettools-118";
     private const string NotesRelPath = "PRs/lmdotnettools-118";
     private const string SubmoduleRelPath = "repos/LmDotnetTools";
+
+    /// <summary>The S2S review host this fixture's deep-links point at (never production's 5050).</summary>
+    private const string LmStreamingBaseUrl = "http://localhost:5051";
+
+    /// <summary>The deep-link the Posted stage must append on the S2S path. <c>fake-thread</c> is
+    /// <see cref="FakeMultiTurnAgent.ThreadId"/> — standing in for the id LmStreaming MINTS at provision, which
+    /// is deliberately NOT the daemon's own <c>review-run-{id}-primary</c> thread id.</summary>
+    private const string S2SDeepLink = $"{LmStreamingBaseUrl}/?threadId=fake-thread&focus=1";
 
     [Fact]
     public async Task ContextReady_leases_a_slot_prepares_it_and_diffs_the_prepared_target()
@@ -657,6 +667,85 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.ReturnCount.Should().Be(1, "the slot is still returned after the strip");
     }
 
+    [Fact]
+    public async Task S2S_review_has_no_daemon_tool_context_yet_still_scopes_the_prompt_to_the_pooled_notes_dir()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The pooled path is tried FIRST on S2S too: the slot carries the store, the Knowledge Base and the
+        // PR's own notes dir, so it is the richer workspace to mount into the hosted conversation.
+        fixture.Pool.LeaseCount.Should().Be(1);
+        fixture.Factory.ToolContexts.Should().ContainSingle().Which.Should().BeNull(
+            "the hosted conversation owns its tools, so the daemon builds no tool context on S2S");
+
+        // The regression guard: notes_dir/has_notes/has_store come from the pooled WRITE SCOPE, not from the
+        // tool context. Sourcing them from the (null) tool context would render them empty HERE and silently
+        // strip per-PR notes, re-review memory and the "only writable location" directive from the hosted
+        // review — the review would still run and still look fine, which is why it needs pinning.
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().Contain($"/workspace/store/{NotesRelPath}");
+        profile.SystemPrompt.Should().Contain("cross-repo store at /workspace/store");
+        profile.SystemPrompt.Should().Contain($"/workspace/store/{SubmoduleRelPath}");
+        profile.SystemPrompt.Should().MatchRegex("(?i)only writable location");
+    }
+
+    [Fact]
+    public async Task S2S_binds_the_hosted_conversation_to_the_leased_slots_own_workspace()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The central design move: the leased slot IS the workspace LmStreaming mounts at /workspace, so every
+        // container path the pooled stage computed (/workspace/store/...) is correct verbatim inside the hosted
+        // conversation. Preparing a separate per-PR clone instead would mount a tree with no store at all.
+        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be("ws-slot-0");
+        var created = fixture.S2SHandler.Requests
+            .Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
+        created.Body.Should().Contain(
+            "\"directoryRelPath\":\"review-slot-0\"", "the workspace names the slot ROOT leaf, not a child of it");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "adoption is pure naming — re-running git here would fight the pool's preparer for the same tree");
+    }
+
+    [Fact]
+    public async Task S2S_posts_host_side_with_the_deep_link_once_and_still_commits_only_the_notes_dir()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // Agent-inline posting is forced OFF on S2S (the hosted agent is domain-agnostic and cannot reach a
+        // GitHub/ADO PR) even though posting is authorized — so no post-enforcement turn is driven…
+        fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
+            .ReceivedInputs.Should().ContainSingle("S2S drives the review turn only — never the post-enforcement turn");
+
+        // …and the host-side publisher is the ONLY delivery path, carrying the deep-link back to the hosted
+        // conversation (the whole point of the S2S path: a human can open the review and its sub-agent tree).
+        fixture.Publisher.PostCount.Should().Be(1);
+        var body = fixture.Publisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Split(S2SDeepLink, StringSplitOptions.None).Length.Should().Be(
+            2, "the deep link is appended exactly once — a duplicated link means the body was assembled twice");
+        body.Should().NotContain(
+            $"review-run-{run.Id}",
+            "the link carries the id LmStreaming minted, not the daemon's own thread id (which resolves to nothing)");
+
+        // The commit gate is unchanged by S2S: still ONLY the PR notes dir, never `add -A`.
+        var commands = fixture.HostRunner.Commands.Select(Join).ToList();
+        commands.Should().Contain(a => a.Contains($"add -- {NotesRelPath}"));
+        commands.Should().NotContain(a => a.Contains("add -A"));
+        fixture.HostFileSystem.Writes.Should().Contain(
+            p => p.Contains($"/{NotesRelPath}/") && p.EndsWith("review.md"));
+        fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned on the terminal stage on S2S too");
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
@@ -672,8 +761,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         private readonly TempSqliteDatabase _db;
         private readonly CodeReviewDaemonOptions _options;
         private readonly ReviewSlotWorkspace _slotWorkspace;
+        private readonly HttpClient? _s2sHttp;
+        private readonly S2SReviewWorkspacePreparer? _s2sPreparer;
 
-        private Fixture()
+        private Fixture(bool s2s)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -682,10 +773,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
             HostRunner = new FakeSandboxCommandRunner()
                 .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
+            // On S2S the slot dir doubles as the LmStreaming workspace leaf, so the pool is configured with the
+            // single-segment "review-slot-" prefix Program.cs forces there (a "review-pool/slot-0" style name
+            // would be FLATTENED by the workspace-directory sanitizer into a different, empty directory).
+            var slotPrefix = s2s ? "review-slot-" : "slot-";
             HostFileSystem = new FakeSandboxFileSystem().Seed(
-                "/pool/slot-0/store/.gitmodules",
+                $"/pool/{slotPrefix}0/store/.gitmodules",
                 "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
-            Pool = new FakeReviewSlotPool("/pool");
+            Pool = new FakeReviewSlotPool("/pool", slotPrefix);
             Preparer = new FakeReviewSlotPreparer();
 
             // Shared cleanup-order log so a test can assert the session is destroyed before the slot is returned.
@@ -697,8 +792,33 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 EnableToolAssistedReview = true,
                 EnableReviewerWrites = true,
                 CrossRepoStoreUrl = StoreUrl,
+                UseS2SReviewAgent = s2s,
+                LmStreamingBaseUrl = s2s ? LmStreamingBaseUrl : null,
+                // Host-side posting is the ONLY delivery path on S2S, so the S2S fixture authorizes it — that is
+                // what makes the posted body (and its deep-link) observable on the fake publisher.
+                EnableCommentPosting = s2s,
             };
             _slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
+
+            if (s2s)
+            {
+                // The REAL preparer over a scripted LmStreaming: the executor must ADOPT the leased slot (naming
+                // it as the workspace, running no git) rather than host-cloning a bare per-PR checkout.
+                S2SHandler = new FakeHttpMessageHandler()
+                    .OnJson(HttpMethod.Get, "api/workspaces", "[]")
+                    .OnJson(
+                        HttpMethod.Post,
+                        "api/workspaces",
+                        "{\"id\":\"ws-slot-0\",\"name\":\"Review slot 0\",\"directoryRelPath\":\"review-slot-0\","
+                            + "\"marketplaces\":[\"code-reviewer\"]}");
+                _s2sHttp = new HttpClient(S2SHandler) { BaseAddress = new Uri(LmStreamingBaseUrl + "/") };
+                _s2sPreparer = new S2SReviewWorkspacePreparer(
+                    new LmStreamingS2SClient(_s2sHttp, "secret", "app-id", "app-key"),
+                    new GitRunner(S2SGit),
+                    "/pool",
+                    reviewMarketplace: "code-reviewer",
+                    NullLogger<S2SReviewWorkspacePreparer>.Instance);
+            }
 
             Executor = BuildExecutor();
         }
@@ -718,7 +838,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 [Publisher],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
-                slotWorkspace: _slotWorkspace);
+                slotWorkspace: _slotWorkspace,
+                preparer: _s2sPreparer);
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
@@ -733,7 +854,19 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeReviewSlotPreparer Preparer { get; }
         public DaemonReviewStageExecutor Executor { get; }
 
-        public static Fixture Create() => new();
+        /// <summary>The scripted LmStreaming S2S endpoint (S2S fixture only) — lets a test assert the workspace
+        /// the daemon named to the review host.</summary>
+        public FakeHttpMessageHandler S2SHandler { get; } = new();
+
+        /// <summary>The git the S2S preparer runs through (S2S fixture only). Adoption must leave it EMPTY.</summary>
+        public FakeSandboxCommandRunner S2SGit { get; } = new();
+
+        public static Fixture Create() => new(s2s: false);
+
+        /// <summary>The S2S variant: the review runs in an LmStreaming-hosted conversation mounted over the
+        /// leased slot, the daemon builds no tool context, and the Posted stage delivers the review host-side
+        /// with the deep-link back to that conversation.</summary>
+        public static Fixture CreateS2S() => new(s2s: true);
 
         public ReviewRun SeedRun()
         {
@@ -762,6 +895,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public void Dispose()
         {
+            _s2sHttp?.Dispose();
             Store.Dispose();
             _db.Dispose();
         }
@@ -772,9 +906,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class FakeReviewSlotPool : IReviewSlotPool
     {
         private readonly string _root;
+        private readonly string _dirPrefix;
         private int _next;
 
-        public FakeReviewSlotPool(string root) => _root = root;
+        /// <summary>
+        /// <paramref name="dirPrefix"/> mirrors the real pool's slot-directory prefix: <c>slot-</c> in-process,
+        /// <c>review-slot-</c> on S2S (where the slot dir doubles as the LmStreaming workspace leaf).
+        /// </summary>
+        public FakeReviewSlotPool(string root, string dirPrefix = "slot-")
+        {
+            _root = root;
+            _dirPrefix = dirPrefix;
+        }
 
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
@@ -789,7 +932,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             LeaseCount++;
             var index = _next++;
-            var host = $"{_root}/slot-{index}";
+            var host = $"{_root}/{_dirPrefix}{index}";
             return Task.FromResult(new ReviewSlot(index, host, $"{host}/store", $"{host}/scratch"));
         }
 
