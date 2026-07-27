@@ -139,36 +139,25 @@ public class DeferredToolExecutionTests
 
         // Subscribe so we can wait for run completions.
         var subscriberMessages = new List<IMessage>();
-        var subscribeTcs = new TaskCompletionSource<bool>();
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var runCompleteCount = 0;
-        _ = Task.Run(async () =>
+        _ = ObserveAsync(loop, msg =>
         {
-            try
+            subscriberMessages.Add(msg);
+            if (msg is RunCompletedMessage)
             {
-                subscribeTcs.SetResult(true);
-                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                runCompleteCount++;
+                if (runCompleteCount == 1)
                 {
-                    subscriberMessages.Add(msg);
-                    if (msg is RunCompletedMessage)
-                    {
-                        runCompleteCount++;
-                        if (runCompleteCount == 1)
-                        {
-                            firstRunCompleted.TrySetResult(true);
-                        }
-                        else if (runCompleteCount == 2)
-                        {
-                            secondRunCompleted.TrySetResult(true);
-                        }
-                    }
+                    firstRunCompleted.TrySetResult(true);
+                }
+                else if (runCompleteCount == 2)
+                {
+                    secondRunCompleted.TrySetResult(true);
                 }
             }
-            catch (OperationCanceledException) { }
         }, cts.Token);
-
-        await subscribeTcs.Task;
 
         // Send the first user input — kicks off run 1.
         await loop.SendAsync([new TextMessage { Text = "Start the long op", Role = Role.User }]);
@@ -258,21 +247,18 @@ public class DeferredToolExecutionTests
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = Task.Run(async () =>
+        _ = ObserveAsync(loop, msg =>
         {
-            await foreach (var msg in loop.SubscribeAsync(cts.Token))
+            if (msg is RunCompletedMessage)
             {
-                if (msg is RunCompletedMessage)
+                completedRuns++;
+                if (completedRuns == 1)
                 {
-                    completedRuns++;
-                    if (completedRuns == 1)
-                    {
-                        firstRunCompleted.TrySetResult(true);
-                    }
-                    else if (completedRuns == 2)
-                    {
-                        secondRunCompleted.TrySetResult(true);
-                    }
+                    firstRunCompleted.TrySetResult(true);
+                }
+                else if (completedRuns == 2)
+                {
+                    secondRunCompleted.TrySetResult(true);
                 }
             }
         }, cts.Token);
@@ -351,17 +337,14 @@ public class DeferredToolExecutionTests
 
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = Task.Run(async () =>
+        _ = ObserveAsync(loop, msg =>
         {
-            await foreach (var msg in loop.SubscribeAsync(cts.Token))
+            if (msg is RunCompletedMessage)
             {
-                if (msg is RunCompletedMessage)
+                completedRuns++;
+                if (completedRuns == 1)
                 {
-                    completedRuns++;
-                    if (completedRuns == 1)
-                    {
-                        firstRunCompleted.TrySetResult(true);
-                    }
+                    firstRunCompleted.TrySetResult(true);
                 }
             }
         }, cts.Token);
@@ -544,21 +527,18 @@ public class DeferredToolExecutionTests
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = Task.Run(async () =>
+        _ = ObserveAsync(loop, msg =>
         {
-            await foreach (var msg in loop.SubscribeAsync(cts.Token))
+            if (msg is RunCompletedMessage)
             {
-                if (msg is RunCompletedMessage)
+                completedRuns++;
+                if (completedRuns == 1)
                 {
-                    completedRuns++;
-                    if (completedRuns == 1)
-                    {
-                        firstRunCompleted.TrySetResult(true);
-                    }
-                    else if (completedRuns == 2)
-                    {
-                        secondRunCompleted.TrySetResult(true);
-                    }
+                    firstRunCompleted.TrySetResult(true);
+                }
+                else if (completedRuns == 2)
+                {
+                    secondRunCompleted.TrySetResult(true);
                 }
             }
         }, cts.Token);
@@ -984,6 +964,53 @@ public class DeferredToolExecutionTests
             .Where(m => m.IsError && m.Result.Contains("OperationCanceled", StringComparison.OrdinalIgnoreCase));
         swallowedCancel.Should().BeEmpty(
             "OperationCanceledException must propagate, not be serialized into an LLM-visible error");
+    }
+
+    /// <summary>
+    /// Attaches a subscriber to <paramref name="loop"/> and consumes its output in the background,
+    /// returning only once the subscription is registered.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="MultiTurnAgentBase.SubscribeAsync"/> registers the subscriber inside the iterator
+    /// body, and that body does not run until the first <c>MoveNextAsync</c>. Kicking that first
+    /// move here, on the calling thread, means registration has happened by the time this method
+    /// returns, so the caller can start a run without racing it. Leaving registration to a
+    /// fire-and-forget <see cref="Task.Run(Func{Task}, CancellationToken)"/> loses that race under
+    /// load: a subscriber attaching after a run completed gets no replay, so the completion signal
+    /// the test then waits on never arrives and it fails on a timeout rather than on its subject.
+    /// </remarks>
+    private static Task ObserveAsync(
+        MultiTurnAgentLoop loop,
+        Action<IMessage> onMessage,
+        CancellationToken ct)
+    {
+        var messages = loop.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+        var first = messages.MoveNextAsync();
+
+        // Not `ct`: a cancelled token would skip this body entirely, leaving the subscription
+        // attached and the pending move unobserved.
+        return Task.Run(async () =>
+        {
+            try
+            {
+                for (
+                    var hasMessage = await first;
+                    hasMessage;
+                    hasMessage = await messages.MoveNextAsync()
+                )
+                {
+                    onMessage(messages.Current);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancelling the token is how these tests end the subscription.
+            }
+            finally
+            {
+                await messages.DisposeAsync();
+            }
+        }, CancellationToken.None);
     }
 
     private void SetupOneTurnResponse(IMessage message)
