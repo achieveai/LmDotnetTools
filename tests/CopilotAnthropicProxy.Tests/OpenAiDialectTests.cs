@@ -150,9 +150,43 @@ public class OpenAiDialectTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
         using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var message = error.RootElement.GetProperty("error").GetProperty("message").GetString();
+        error.RootElement.TryGetProperty("type", out _).Should().BeFalse("an OpenAI error has no top-level type");
+
+        var err = error.RootElement.GetProperty("error");
+        err.GetProperty("type").GetString().Should().Be("not_found_error");
+        err.GetProperty("param").ValueKind.Should().Be(JsonValueKind.Null);
+        err.GetProperty("code").ValueKind.Should().Be(JsonValueKind.Null);
+
+        var message = err.GetProperty("message").GetString();
         message.Should().Contain("claude-opus-4.8");
         message.Should().Contain("gpt-5.4").And.Contain("gpt-5.3-codex", "the 404 must name what IS servable");
+    }
+
+    [Fact]
+    public async Task Messages_returns_a_translation_specific_404_for_a_responses_only_model()
+    {
+        await using var factory = Factory((_, _) => throw new InvalidOperationException("must not be forwarded"));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            new { model = "gpt-5.3-codex", messages = Array.Empty<object>() }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var message = error.RootElement.GetProperty("error").GetProperty("message").GetString();
+        message.Should().Contain("gpt-5.3-codex");
+        message
+            .Should()
+            .Contain("translat", "gpt-5.3-codex needs Anthropic-to-Responses translation, not a plain routing miss");
+        message
+            .Should()
+            .NotContain(
+                "available",
+                "a model pending translation support must not be described as available on this endpoint"
+            );
     }
 
     [Fact]

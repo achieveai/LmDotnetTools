@@ -847,10 +847,7 @@ internal static class ProxyHttp
         var modelInfo = catalog.Find(outboundModel) ?? new ProxyModelInfo(outboundModel, string.Empty, []);
         var route = ModelRouter.Resolve(dialect, modelInfo);
 
-        // TranslateAnthropicToResponses is not implemented yet (Task 9 wires the translator into
-        // /v1/messages) — treat it exactly like a routing miss rather than forwarding an untranslated
-        // Anthropic body to the Responses endpoint.
-        if (route is null || route.Kind != ProxyRouteKind.Passthrough)
+        if (route is null)
         {
             var alternatives = ModelRouter.Servable(dialect, catalog);
             await WriteErrorAsync(
@@ -860,6 +857,27 @@ internal static class ProxyHttp
                     "not_found_error",
                     $"Model '{outboundModel}' is not available on this endpoint. "
                         + $"Models that are: {(alternatives.Count == 0 ? "(none)" : string.Join(", ", alternatives))}."
+                )
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // TranslateAnthropicToResponses is not implemented yet (Task 9 wires the translator into
+        // /v1/messages). ModelRouter.Servable would list this model as "available" for this dialect
+        // (Resolve returns a non-null route for it), so reusing the generic "not available … Models
+        // that are: …" message above would be actively misleading — it would name the very model that
+        // was just rejected as one of the alternatives. This gets its own honest text instead, and the
+        // whole branch disappears cleanly once Task 9 wires the translator in.
+        if (route.Kind != ProxyRouteKind.Passthrough)
+        {
+            await WriteErrorAsync(
+                    ctx,
+                    dialect,
+                    StatusCodes.Status404NotFound,
+                    "not_found_error",
+                    $"Model '{outboundModel}' can only be reached via OpenAI Responses on this Copilot "
+                        + "account, and translating Anthropic Messages requests to Responses is not "
+                        + "implemented yet."
                 )
                 .ConfigureAwait(false);
             return;
