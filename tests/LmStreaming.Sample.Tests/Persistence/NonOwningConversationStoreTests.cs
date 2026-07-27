@@ -1,3 +1,6 @@
+using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+
 namespace LmStreaming.Sample.Tests.Persistence;
 
 /// <summary>
@@ -57,5 +60,73 @@ public sealed class NonOwningConversationStoreTests
 
         var fromWrapper = await wrapper.ListAcceptedInputIdsAsync(ThreadId);
         fromWrapper.Should().Contain("input-1");
+    }
+
+    private static NonOwningConversationStore WithProvenance(
+        IConversationStore underlying,
+        string childThreadId,
+        string parentThreadId) =>
+        new(
+            underlying,
+            childThreadId,
+            () => SubAgentProvenance.Build(
+                parentThreadId,
+                new SubAgentSnapshot(
+                    AgentId: "child-1",
+                    Name: "alpha",
+                    TemplateName: "code-reviewer:security",
+                    Task: "check auth",
+                    Status: SubAgentStatus.Running,
+                    ThreadId: childThreadId,
+                    LastActivityUtc: null)));
+
+    [Fact]
+    public async Task NonOwningWrapper_StampsProvenance_OnBothMetadataWritePaths()
+    {
+        var underlying = new InMemoryConversationStore();
+        var wrapper = WithProvenance(underlying, ThreadId, "thread-parent");
+
+        await wrapper.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
+
+        var saved = await underlying.LoadMetadataAsync(ThreadId);
+        SubAgentProvenance.TryProject(saved!, "thread-parent")!.Template
+            .Should().Be("code-reviewer:security");
+
+        // UpdateMetadataAsync is the path MultiTurnAgentBase actually takes after each run, and it must
+        // preserve properties the caller set as well as add the stamp.
+        await wrapper.UpdateMetadataAsync(
+            ThreadId,
+            existing => (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
+            {
+                LastUpdated = 2,
+                Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
+                    .SetItem("usage.records", "kept"),
+            });
+
+        var updated = await underlying.LoadMetadataAsync(ThreadId);
+        updated!.Properties!["usage.records"].Should().Be("kept");
+        SubAgentProvenance.TryProject(updated, "thread-parent")!.Name.Should().Be("alpha");
+    }
+
+    /// <summary>
+    /// A child's store is also written to on behalf of OTHER threads — the conversation usage
+    /// projection persists under the ROOT conversation id. Those writes must not be stamped, or the
+    /// root would list itself as its own child.
+    /// </summary>
+    [Fact]
+    public async Task NonOwningWrapper_DoesNotStamp_WritesForOtherThreads()
+    {
+        var underlying = new InMemoryConversationStore();
+        var wrapper = WithProvenance(underlying, ThreadId, "thread-parent");
+
+        await wrapper.SaveMetadataAsync(
+            "thread-root",
+            new ThreadMetadata { ThreadId = "thread-root", LastUpdated = 1 });
+
+        var saved = await underlying.LoadMetadataAsync("thread-root");
+        (saved!.Properties?.ContainsKey(SubAgentProvenance.ParentThreadIdKey) ?? false)
+            .Should().BeFalse();
     }
 }

@@ -1267,7 +1267,19 @@ try
                     // template-specified store still wins.
                     if (subAgentOptions is not null)
                     {
-                        subAgentOptions = ApplyDefaultSubAgentStore(subAgentOptions, conversationStore);
+                        subAgentOptions = ApplyDefaultSubAgentStore(
+                            subAgentOptions,
+                            conversationStore,
+                            parentThreadId: threadId,
+                            // Late-bound on `agent` like the trigger/workflow closures above: the manager
+                            // only exists once the loop below is constructed, which is always before a
+                            // child writes metadata.
+                            describeChild: childThreadId => agent?.SubAgentManager
+                                ?.ListAgents()
+                                .FirstOrDefault(s => string.Equals(
+                                    s.ThreadId,
+                                    childThreadId,
+                                    StringComparison.Ordinal)));
                     }
 
                     agent = new MultiTurnAgentLoop(
@@ -2212,9 +2224,23 @@ public partial class Program
     /// <see cref="IAsyncDisposable"/>, and every child shares this one application-wide store.
     /// </para>
     /// </summary>
+    /// <param name="options">The sub-agent options to fill the store fallback on.</param>
+    /// <param name="store">The sample's shared conversation store.</param>
+    /// <param name="parentThreadId">
+    /// The spawning conversation. When supplied, every child's metadata write is stamped with the
+    /// durable parent link (see <see cref="LmStreaming.Sample.Persistence.SubAgentProvenance"/>) so the
+    /// sub-agent roster can be rebuilt from the store after the parent leaves the agent pool.
+    /// </param>
+    /// <param name="describeChild">
+    /// Resolves the live manager's snapshot for a child thread id, supplying the name/template/task
+    /// that exist only in memory. Called per metadata write because the manager does not exist yet
+    /// when the options are built.
+    /// </param>
     public static SubAgentOptions ApplyDefaultSubAgentStore(
         SubAgentOptions options,
-        IConversationStore store)
+        IConversationStore store,
+        string? parentThreadId = null,
+        Func<string, SubAgentSnapshot?>? describeChild = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(store);
@@ -2227,8 +2253,15 @@ public partial class Program
             ? options
             : options with
             {
-                DefaultConversationStoreFactory = _ =>
-                    new LmStreaming.Sample.Persistence.NonOwningConversationStore(store),
+                DefaultConversationStoreFactory = childThreadId =>
+                    new LmStreaming.Sample.Persistence.NonOwningConversationStore(
+                        store,
+                        provenanceThreadId: parentThreadId is null ? null : childThreadId,
+                        provenance: parentThreadId is null
+                            ? null
+                            : () => LmStreaming.Sample.Persistence.SubAgentProvenance.Build(
+                                parentThreadId,
+                                describeChild?.Invoke(childThreadId))),
             };
     }
 

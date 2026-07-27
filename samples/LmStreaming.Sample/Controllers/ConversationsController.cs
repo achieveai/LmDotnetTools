@@ -371,37 +371,117 @@ public class ConversationsController(
     /// <summary>
     /// Read-only presentation listing of the sub-agents a conversation's parent agent has spawned.
     /// The Vue client polls this to render a conversation's children; it never spawns, sends to,
-    /// stops, or otherwise mutates a sub-agent (WI #194). Returns 404 for an unknown thread, an
-    /// empty array for a conversation whose agent has no sub-agent support, otherwise the
-    /// <c>SubAgentManager.ListAgents()</c> snapshot projected to <see cref="SubAgentSummary"/>.
+    /// stops, or otherwise mutates a sub-agent (WI #194).
+    /// <para>
+    /// The roster is the UNION of the live <c>SubAgentManager.ListAgents()</c> snapshot and the
+    /// children reconstructed from persisted metadata (<see cref="SubAgentProvenance"/>), keyed by
+    /// agent id with the live entry winning — it carries real lifecycle status and the manager is the
+    /// authority while it exists. The persisted half is what makes a shared link to a FINISHED
+    /// conversation work: the manager's parent→child mapping is in-memory only, so once the run ends
+    /// and the parent leaves the agent pool (or the host restarts) the children's transcripts are
+    /// still on disk but nothing else says whose children they are. It also covers a parent the pool
+    /// re-created on demand, whose fresh manager has an empty registry.
+    /// </para>
+    /// Returns 404 only when the thread is unknown everywhere — not in the pool, no persisted
+    /// metadata, and no persisted children.
     /// </summary>
     [HttpGet("{threadId}/subagents")]
-    public IActionResult ListSubAgents(string threadId)
+    public async Task<IActionResult> ListSubAgents(string threadId, CancellationToken ct = default)
     {
-        if (!agentPool.TryGet(threadId, out var agent) || agent is null)
+        SubAgentSummary[] live = agentPool.TryGet(threadId, out var agent)
+            && agent is MultiTurnAgentLoop { SubAgentManager: not null } loop
+                ? [.. loop.SubAgentManager.ListAgents()
+                    .Select(s => new SubAgentSummary
+                    {
+                        AgentId = s.AgentId,
+                        Name = s.Name,
+                        Template = s.TemplateName,
+                        Task = s.Task,
+                        Status = s.Status.ToString().ToLowerInvariant(),
+                        ThreadId = s.ThreadId,
+                        LastActivityUtc = s.LastActivityUtc,
+                    })]
+                : [];
+
+        var persisted = await LoadPersistedSubAgentsAsync(threadId, ct);
+
+        if (live.Length == 0 && persisted.Count == 0)
         {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            // Nothing to list. Distinguish "this conversation has no sub-agents" from "this
+            // conversation does not exist" — the client shows the panel for the former and an
+            // unknown-thread error for the latter.
+            var known = agent is not null || await store.LoadMetadataAsync(threadId, ct) is not null;
+            return known
+                ? Ok(Array.Empty<SubAgentSummary>())
+                : NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
-        if (agent is not MultiTurnAgentLoop loop || loop.SubAgentManager is null)
+        var merged = new Dictionary<string, SubAgentSummary>(StringComparer.Ordinal);
+        foreach (var child in persisted)
         {
-            return Ok(Array.Empty<SubAgentSummary>());
+            merged[child.AgentId] = child;
         }
 
-        var summaries = loop.SubAgentManager.ListAgents()
-            .Select(s => new SubAgentSummary
-            {
-                AgentId = s.AgentId,
-                Name = s.Name,
-                Template = s.TemplateName,
-                Task = s.Task,
-                Status = s.Status.ToString().ToLowerInvariant(),
-                ThreadId = s.ThreadId,
-                LastActivityUtc = s.LastActivityUtc,
-            })
+        foreach (var child in live)
+        {
+            merged[child.AgentId] = child;
+        }
+
+        // Deterministic order: newest activity first, ties broken by thread id so the panel does not
+        // reshuffle between polls (persisted children can share a metadata timestamp).
+        var summaries = merged.Values
+            .OrderByDescending(s => s.LastActivityUtc ?? DateTimeOffset.MinValue)
+            .ThenBy(s => s.ThreadId, StringComparer.Ordinal)
             .ToArray();
 
         return Ok(summaries);
+    }
+
+    /// <summary>
+    /// Page size and total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
+    /// no property index, so rebuilding the roster means scanning thread metadata; the cap bounds the
+    /// work on a long-lived store and truncation is logged rather than silently swallowed.
+    /// </summary>
+    private const int SubAgentScanPageSize = 200;
+    private const int SubAgentScanMaxThreads = 2000;
+
+    private async Task<IReadOnlyList<SubAgentSummary>> LoadPersistedSubAgentsAsync(
+        string threadId,
+        CancellationToken ct)
+    {
+        var found = new List<SubAgentSummary>();
+        var scanned = 0;
+
+        while (scanned < SubAgentScanMaxThreads)
+        {
+            var page = await store.ListThreadsAsync(SubAgentScanPageSize, scanned, ct);
+            if (page.Count == 0)
+            {
+                return found;
+            }
+
+            scanned += page.Count;
+            foreach (var metadata in page)
+            {
+                var child = SubAgentProvenance.TryProject(metadata, threadId);
+                if (child is not null)
+                {
+                    found.Add(child);
+                }
+            }
+
+            if (page.Count < SubAgentScanPageSize)
+            {
+                return found;
+            }
+        }
+
+        logger.LogWarning(
+            "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
+                + "children persisted beyond that point are not listed.",
+            threadId,
+            SubAgentScanMaxThreads);
+        return found;
     }
 
     /// <summary>
