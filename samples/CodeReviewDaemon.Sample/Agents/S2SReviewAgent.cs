@@ -46,6 +46,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _pollMaxInterval;
     private readonly TimeSpan _terminalConfirmDelay;
+    private readonly TimeSpan _interruptedGrace;
     private readonly TimeSpan _overallTimeout;
     private readonly ILogger<S2SReviewAgent> _logger;
 
@@ -62,7 +63,8 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         TimeSpan? pollInterval = null,
         TimeSpan? pollMaxInterval = null,
         TimeSpan? overallTimeout = null,
-        TimeSpan? terminalConfirmDelay = null)
+        TimeSpan? terminalConfirmDelay = null,
+        TimeSpan? interruptedGrace = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
@@ -80,9 +82,11 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         _pollMaxInterval = pollMaxInterval ?? TimeSpan.FromSeconds(15);
         _overallTimeout = overallTimeout ?? TimeSpan.FromMinutes(30);
 
-        // Short, fixed re-poll used only to confirm a terminal status (see PollToTerminalAsync) — deliberately
-        // NOT the backed-off interval, so confirming a genuinely finished run costs ~2s, not another ceiling.
+        // Cadence and window for settling an ambiguous Interrupted reading (see SettleInterruptedAsync). The
+        // grace is generous because waiting one out is free — an Interrupted status never carries review text,
+        // so the only cost of patience is latency on a review that has genuinely died.
         _terminalConfirmDelay = terminalConfirmDelay ?? TimeSpan.FromSeconds(2);
+        _interruptedGrace = interruptedGrace ?? TimeSpan.FromSeconds(60);
     }
 
     /// <summary>The server-minted run id from the last polled status (null before the first run completes).</summary>
@@ -198,52 +202,52 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
     /// <see cref="_pollMaxInterval"/> and an overall <see cref="_overallTimeout"/>. Throws
     /// <see cref="TimeoutException"/> if the run does not finish in time.
     /// <para>
-    /// <b>A terminal status only counts once it is stable.</b> The review host can bind an input to a run,
-    /// interrupt that run, and restart the SAME input under a NEW run id — observed live: the first poll after
-    /// send returned <c>Interrupted</c> for a run that never produced a message, while the real work ran (and
-    /// completed, with the review text) under a different run id seconds later. Accepting the first terminal
-    /// reading therefore abandons a review that is about to succeed. So a terminal reading is only returned
-    /// after a confirming re-poll agrees on BOTH the status and the run id; a changed run id (or a status that
-    /// went back to running) means the host restarted the input and we keep waiting.
+    /// <b><c>Interrupted</c> is not taken at face value.</b> The host records an input as accepted before the
+    /// agent loop drains it, and a run-ledger reconciliation that lands in that gap synthesizes an
+    /// <c>Interrupted</c> row for the not-yet-drained input; the loop then drains it and starts the REAL run
+    /// under a different run id, which status-by-inputId resolves to (newest row wins). Observed live: the
+    /// first poll after send read <c>Interrupted</c> for a run that never produced a message, while the real
+    /// run completed with the review text moments later. Waiting an <c>Interrupted</c> reading out is free —
+    /// the host never attaches response text to it — so we re-poll through <see cref="_interruptedGrace"/>
+    /// before believing it. <c>Completed</c>/<c>Errored</c> carry resolved text and are returned immediately.
     /// </para>
     /// </summary>
     private async Task<S2SStatusResult> PollToTerminalAsync(string threadId, string inputId, CancellationToken ct)
     {
         var deadline = DateTimeOffset.UtcNow + _overallTimeout;
         var interval = _pollInterval;
+        var status = new S2SStatusResult("NotStarted", null, null);
 
         while (true)
         {
             ct.ThrowIfCancellationRequested();
 
-            var status = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
-            if (TerminalStatuses.Contains(status.Status))
-            {
-                await Task.Delay(_terminalConfirmDelay, ct).ConfigureAwait(false);
-                var confirm = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
-
-                if (TerminalStatuses.Contains(confirm.Status)
-                    && string.Equals(confirm.RunId, status.RunId, StringComparison.Ordinal))
-                {
-                    return confirm;
-                }
-
-                _logger.LogInformation(
-                    "S2S review on thread {ThreadId} read a transient terminal status {Status} (run {RunId}); the "
-                        + "host re-ran the input as {ConfirmStatus} (run {ConfirmRunId}). Continuing to poll.",
-                    threadId,
-                    status.Status,
-                    status.RunId,
-                    confirm.Status,
-                    confirm.RunId);
-                status = confirm;
-            }
-
             if (DateTimeOffset.UtcNow >= deadline)
             {
                 throw new TimeoutException(
                     $"S2S review run on thread {threadId} did not reach a terminal status within "
-                    + $"{_overallTimeout.TotalMinutes:0} minutes (last status: {status.Status}).");
+                    + $"{_overallTimeout.TotalMinutes:0} minutes (last status: {status.Status})."
+                );
+            }
+
+            status = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
+
+            if (IsInterrupted(status))
+            {
+                var settled = await SettleInterruptedAsync(threadId, inputId, status, ct).ConfigureAwait(false);
+                if (settled is not null)
+                {
+                    return settled;
+                }
+
+                // Superseded: the input is bound to a different run now. Re-poll it at once, tightly.
+                interval = _pollInterval;
+                continue;
+            }
+
+            if (TerminalStatuses.Contains(status.Status))
+            {
+                return status;
             }
 
             await Task.Delay(interval, ct).ConfigureAwait(false);
@@ -252,6 +256,56 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
             var next = interval + interval;
             interval = next > _pollMaxInterval ? _pollMaxInterval : next;
         }
+    }
+
+    private static bool IsInterrupted(S2SStatusResult status) =>
+        string.Equals(status.Status, "Interrupted", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Decides whether an <c>Interrupted</c> reading is the input's real outcome. Re-polls every
+    /// <see cref="_terminalConfirmDelay"/> for up to <see cref="_interruptedGrace"/>: returns the reading (the
+    /// run really is dead — a lost input whose run will never restart) if it stays <c>Interrupted</c> on the
+    /// SAME run id for the whole window, or <c>null</c> as soon as the input moves to a different run, meaning
+    /// the caller should keep polling that run.
+    /// </summary>
+    private async Task<S2SStatusResult?> SettleInterruptedAsync(
+        string threadId,
+        string inputId,
+        S2SStatusResult interrupted,
+        CancellationToken ct
+    )
+    {
+        var graceEnd = DateTimeOffset.UtcNow + _interruptedGrace;
+
+        while (DateTimeOffset.UtcNow < graceEnd)
+        {
+            await Task.Delay(_terminalConfirmDelay, ct).ConfigureAwait(false);
+
+            var next = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
+            if (IsInterrupted(next) && string.Equals(next.RunId, interrupted.RunId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            _logger.LogInformation(
+                "S2S review on thread {ThreadId} read a superseded Interrupted run {RunId}; the host re-bound the "
+                    + "input to run {NextRunId} (status {NextStatus}). Continuing to poll.",
+                threadId,
+                interrupted.RunId,
+                next.RunId,
+                next.Status
+            );
+            return null;
+        }
+
+        _logger.LogWarning(
+            "S2S review on thread {ThreadId} stayed Interrupted on run {RunId} for {GraceSeconds:0}s; treating it "
+                + "as the input's final state.",
+            threadId,
+            interrupted.RunId,
+            _interruptedGrace.TotalSeconds
+        );
+        return interrupted;
     }
 
     /// <summary>Concatenates the user turn's non-empty text messages (the collector sends exactly one).</summary>

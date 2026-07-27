@@ -29,7 +29,8 @@ public sealed class S2SReviewAgentTests
             pollInterval: TimeSpan.FromMilliseconds(1),
             pollMaxInterval: TimeSpan.FromMilliseconds(1),
             overallTimeout: TimeSpan.FromSeconds(5),
-            terminalConfirmDelay: TimeSpan.FromMilliseconds(1));
+            terminalConfirmDelay: TimeSpan.FromMilliseconds(1),
+            interruptedGrace: TimeSpan.FromMilliseconds(50));
 
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
         new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
@@ -100,10 +101,10 @@ public sealed class S2SReviewAgentTests
     public async Task ExecuteRunAsync_keeps_polling_when_the_host_interrupts_and_re_runs_the_same_input()
     {
         // Live regression (PR #222 bring-up): the FIRST poll after send read Interrupted for a run that never
-        // produced a message, because the review host had already interrupted that run and restarted the SAME
-        // input under a new run id — which then completed with the real review text. Taking the first terminal
-        // reading at face value abandoned a review that was seconds from succeeding, so a terminal status is
-        // only accepted once a confirming re-poll agrees on both the status AND the run id.
+        // produced a message — the host had synthesized that row for an input it had accepted but not yet
+        // drained, then bound the SAME input to a real run that completed with the review text. Taking the
+        // Interrupted reading at face value abandoned a review that was seconds from succeeding, so an
+        // Interrupted status is only believed once it holds on the same run id through the grace window.
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnSequence(
@@ -125,5 +126,26 @@ public sealed class S2SReviewAgentTests
             "One new medium finding.",
             "the superseded Interrupted run must not end the poll — the re-run carries the review");
         agent.CurrentRunId.Should().Be("run-real");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_accepts_an_Interrupted_run_that_holds_through_the_grace_window()
+    {
+        // The other half of the Interrupted contract: an input whose run really is dead (nothing ever re-binds
+        // it) must not hold the review open to the overall timeout. Once the same run id keeps reading
+        // Interrupted for the whole grace window it is taken as the input's final state — no text, ids intact.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Interrupted\",\"runId\":\"run-dead\"}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-dead\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+        var agent = NewAgent(client, title: null);
+
+        var messages = await DriveAsync(agent, "review this PR");
+
+        messages.Should().BeEmpty("an Interrupted run never carries response text");
+        agent.ThreadId.Should().Be("thread-dead");
+        agent.CurrentRunId.Should().Be("run-dead");
     }
 }
