@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,8 +13,9 @@ public sealed class ModelResolverTests
 {
     /// <summary>
     ///     A real (sanitized) <c>GET /models</c> response body captured from
-    ///     <c>api.enterprise.githubcopilot.com</c> — 34 models, of which 7 support <c>/v1/messages</c>,
-    ///     including three concurrent <c>claude-opus-*</c> versions (4.6, 4.7, 4.8) in that upstream order.
+    ///     <c>api.enterprise.githubcopilot.com</c> — 34 models, of which 13 are servable (advertise a
+    ///     reachable endpoint and a non-excluded vendor), including three concurrent <c>claude-opus-*</c>
+    ///     versions (4.6, 4.7, 4.8) in that upstream order.
     /// </summary>
     private static string RealModelsResponseJson =>
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "copilot-models-real-response.json"));
@@ -49,32 +51,54 @@ public sealed class ModelResolverTests
     }
 
     [Fact]
-    public void ParseMessagesCapableModelIds_keeps_only_ids_whose_supported_endpoints_include_v1_messages()
+    public void ParseServableModels_keeps_models_with_a_reachable_endpoint_and_a_servable_vendor()
     {
         const string json = """
-            {"data":[
-                {"id":"claude-opus-4.8","supported_endpoints":["/v1/messages","/chat/completions"]},
-                {"id":"claude-sonnet-4.5","supported_endpoints":["/v1/messages"]},
-                {"id":"gpt-5.4","supported_endpoints":["/responses","ws:/responses"]},
-                {"id":"gemini-2.5-pro","supported_endpoints":["/chat/completions"]},
-                {"id":"gpt-4o"}
-            ]}
-            """;
+        {"data":[
+          {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages","/chat/completions"]},
+          {"id":"gpt-5.3-codex","vendor":"OpenAI","supported_endpoints":["/responses","ws:/responses"]},
+          {"id":"gemini-3.5-flash","vendor":"Google","supported_endpoints":["/chat/completions"]},
+          {"id":"mai-code-1-flash-picker","vendor":"Microsoft","supported_endpoints":["/responses"]},
+          {"id":"text-embedding-3-small","vendor":"Azure OpenAI","supported_endpoints":[]}
+        ]}
+        """;
 
-        ProxyModelResolver.ParseMessagesCapableModelIds(json).Should().Equal("claude-opus-4.8", "claude-sonnet-4.5");
+        var models = ProxyModelResolver.ParseServableModels(json);
+
+        models.Select(m => m.Id).Should().Equal("claude-opus-4.8", "gpt-5.3-codex");
+        models[0].Vendor.Should().Be("Anthropic");
+        models[0].Supports(CopilotModelsResponse.MessagesEndpoint).Should().BeTrue();
+        models[0].Supports(CopilotModelsResponse.ResponsesEndpoint).Should().BeFalse();
+        models[0].IsAnthropic.Should().BeTrue();
+        models[1].Supports(CopilotModelsResponse.ResponsesEndpoint).Should().BeTrue();
+        models[1].IsAnthropic.Should().BeFalse();
     }
 
     [Fact]
-    public void ParseMessagesCapableModelIds_falls_back_to_id_only_when_no_entry_has_endpoint_metadata()
+    public void ParseServableModels_falls_back_to_every_id_when_no_entry_has_endpoint_metadata()
     {
         const string json = """
-            {"data":[
-                {"id":"claude-opus-4.8"},
-                {"id":"claude-sonnet-4.5"}
-            ]}
-            """;
+        {"data":[{"id":"claude-opus-4.8"},{"id":"claude-sonnet-4.5"}]}
+        """;
 
-        ProxyModelResolver.ParseMessagesCapableModelIds(json).Should().Equal("claude-opus-4.8", "claude-sonnet-4.5");
+        var models = ProxyModelResolver.ParseServableModels(json);
+
+        models.Select(m => m.Id).Should().Equal("claude-opus-4.8", "claude-sonnet-4.5");
+        models.Should().OnlyContain(m => m.Endpoints.Count == 0, "no-metadata entries carry no endpoints");
+    }
+
+    [Fact]
+    public void Catalog_find_is_case_insensitive_and_returns_null_for_unknown_ids()
+    {
+        var catalog = new ProxyModelCatalog(
+            "claude-opus-4.8",
+            [new ProxyModelInfo("claude-opus-4.8", "Anthropic", [CopilotModelsResponse.MessagesEndpoint])]
+        );
+
+        catalog.Find("CLAUDE-OPUS-4.8")!.Id.Should().Be("claude-opus-4.8");
+        catalog.Find("nope").Should().BeNull();
+        catalog.Find(null).Should().BeNull();
+        catalog.Available.Should().Equal("claude-opus-4.8");
     }
 
     [Fact]
@@ -115,7 +139,7 @@ public sealed class ModelResolverTests
         );
 
         catalog.Default.Should().Be("claude-opus-4.8");
-        catalog.Available.Should().Equal("claude-sonnet-4.5", "claude-opus-4.8");
+        catalog.Available.Should().Equal("gpt-4o", "claude-sonnet-4.5", "claude-opus-4.8");
     }
 
     [Fact]
@@ -212,10 +236,11 @@ public sealed class ModelResolverTests
     }
 
     [Fact]
-    public void ParseMessagesCapableModelIds_matches_the_real_captured_copilot_response()
+    public void ParseServableModels_matches_the_real_captured_copilot_response()
     {
         ProxyModelResolver
-            .ParseMessagesCapableModelIds(RealModelsResponseJson)
+            .ParseServableModels(RealModelsResponseJson)
+            .Select(m => m.Id)
             .Should()
             .Equal(
                 "claude-opus-4.6",
@@ -223,6 +248,12 @@ public sealed class ModelResolverTests
                 "claude-opus-4.8",
                 "claude-sonnet-4.6",
                 "claude-sonnet-5",
+                "gpt-5.3-codex",
+                "gpt-5.4-mini",
+                "gpt-5.4-nano",
+                "gpt-5.4",
+                "gpt-5.5",
+                "gpt-5-mini",
                 "claude-sonnet-4.5",
                 "claude-haiku-4.5"
             );
@@ -249,6 +280,12 @@ public sealed class ModelResolverTests
                 "claude-opus-4.8",
                 "claude-sonnet-4.6",
                 "claude-sonnet-5",
+                "gpt-5.3-codex",
+                "gpt-5.4-mini",
+                "gpt-5.4-nano",
+                "gpt-5.4",
+                "gpt-5.5",
+                "gpt-5-mini",
                 "claude-sonnet-4.5",
                 "claude-haiku-4.5"
             );
@@ -265,7 +302,13 @@ public sealed class ModelResolverTests
         string expected
     )
     {
-        var catalog = new ProxyModelCatalog("claude-opus-4.8", ["claude-sonnet-4.5", "claude-opus-4.8"]);
+        var catalog = new ProxyModelCatalog(
+            "claude-opus-4.8",
+            [
+                new ProxyModelInfo("claude-sonnet-4.5", "Anthropic", [CopilotModelsResponse.MessagesEndpoint]),
+                new ProxyModelInfo("claude-opus-4.8", "Anthropic", [CopilotModelsResponse.MessagesEndpoint]),
+            ]
+        );
 
         ProxyModelResolver.SelectOutboundModel(incoming, catalog).Should().Be(expected);
     }
@@ -273,7 +316,13 @@ public sealed class ModelResolverTests
     [Fact]
     public void SelectOutboundModel_passes_through_a_non_default_available_model()
     {
-        var catalog = new ProxyModelCatalog("claude-opus-4.8", ["claude-sonnet-4.5", "claude-opus-4.8"]);
+        var catalog = new ProxyModelCatalog(
+            "claude-opus-4.8",
+            [
+                new ProxyModelInfo("claude-sonnet-4.5", "Anthropic", [CopilotModelsResponse.MessagesEndpoint]),
+                new ProxyModelInfo("claude-opus-4.8", "Anthropic", [CopilotModelsResponse.MessagesEndpoint]),
+            ]
+        );
 
         ProxyModelResolver.SelectOutboundModel("claude-sonnet-4.5", catalog).Should().Be("claude-sonnet-4.5");
     }

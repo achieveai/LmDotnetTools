@@ -203,7 +203,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", model = catalog
 // GET /v1/models — Anthropic-shaped list of every available (/v1/messages-capable) model.
 app.MapGet(
     "/v1/models",
-    () => Results.Content(ProxyHttp.BuildModelsStub(catalog.Available), "application/json", Encoding.UTF8)
+    () => Results.Content(ProxyHttp.BuildModelsStub(catalog.Models), "application/json", Encoding.UTF8)
 );
 
 // POST /v1/messages and /v1/messages/count_tokens — the forward path.
@@ -395,10 +395,41 @@ public static class ProxyGuard
 // =============================================================================
 
 /// <summary>
-///     The resolved outbound model set: <see cref="Default"/> is used when a request's model is missing or
-///     unrecognized; <see cref="Available"/> lists every model the proxy will pass through unchanged.
+///     One servable Copilot model: its id, its vendor, and the transports it advertises.
+///     An EMPTY <paramref name="Endpoints"/> list means "no metadata" — either the model came from a
+///     <c>/models</c> response that carried no <c>supported_endpoints</c> at all, or the catalog was
+///     pinned via <c>COPILOT_ANTHROPIC_MODEL</c>. Callers treat that as Anthropic-Messages-capable,
+///     which is exactly how the proxy behaved before endpoint metadata existed.
 /// </summary>
-public sealed record ProxyModelCatalog(string Default, IReadOnlyList<string> Available);
+public sealed record ProxyModelInfo(string Id, string Vendor, IReadOnlyList<string> Endpoints)
+{
+    /// <summary>True when this model advertises <paramref name="endpoint"/> (case-insensitive).</summary>
+    public bool Supports(string endpoint) => Endpoints.Contains(endpoint, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    ///     True for Anthropic models. Falls back to the id when the vendor is unknown, so a pinned
+    ///     Claude model is still recognised as Anthropic and keeps its <c>max_tokens</c> spelling.
+    /// </summary>
+    public bool IsAnthropic =>
+        Vendor.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+        || (Vendor.Length == 0 && Id.Contains("claude", StringComparison.OrdinalIgnoreCase));
+}
+
+/// <summary>The models this proxy will serve, plus the id used when a request names an unknown model.</summary>
+public sealed record ProxyModelCatalog(string Default, IReadOnlyList<ProxyModelInfo> Models)
+{
+    /// <summary>
+    ///     Every available model id, in upstream order. Computed rather than cached so a
+    ///     <c>with</c>-expression cannot leave it stale; only startup logging and tests read it.
+    /// </summary>
+    public IReadOnlyList<string> Available => [.. Models.Select(m => m.Id)];
+
+    /// <summary>Case-insensitive lookup. Null when the id is absent, blank, or null.</summary>
+    public ProxyModelInfo? Find(string? id) =>
+        string.IsNullOrWhiteSpace(id)
+            ? null
+            : Models.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+}
 
 /// <summary>Resolves the outbound Copilot model catalog and rewrites the inbound request's model field.</summary>
 public static class ProxyModelResolver
@@ -421,26 +452,36 @@ public static class ProxyModelResolver
         if (!string.IsNullOrWhiteSpace(modelOverride))
         {
             var pinned = modelOverride.Trim();
-            return new ProxyModelCatalog(pinned, [pinned]);
+
+            // DEVIATION D1: pinning still short-circuits discovery. Vendor and endpoints are unknown, and an
+            // empty endpoint list means "no metadata", which routes as Anthropic Messages — today's behavior.
+            return new ProxyModelCatalog(pinned, [new ProxyModelInfo(pinned, string.Empty, [])]);
         }
 
-        using var response = await client.GetAsync("/models", cancellationToken);
+        using var response = await client.GetAsync("/models", cancellationToken).ConfigureAwait(false);
         _ = response.EnsureSuccessStatusCode();
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var availableIds = ParseMessagesCapableModelIds(json);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
-        var claudeIds = availableIds.Where(id => id.Contains("claude", StringComparison.OrdinalIgnoreCase)).ToList();
+        var models = ParseServableModels(json);
+
+        // The default is the fallback for the Anthropic surface, so it must be able to serve /v1/messages.
+        // A chat-completions-only model named "opus" is servable, but it cannot be the default.
+        var claudeIds = models
+            .Where(m => m.Endpoints.Count == 0 || m.Supports(CopilotModelsResponse.MessagesEndpoint))
+            .Select(m => m.Id)
+            .Where(id => id.Contains("claude", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
         var opus = PickHighestVersionOpusId(claudeIds);
-        if (opus is not null)
+        if (opus is null)
         {
-            return new ProxyModelCatalog(opus, availableIds);
+            throw new InvalidOperationException(
+                "No Claude Opus model is available on this Copilot account. Messages-capable Claude models: "
+                    + (claudeIds.Count == 0 ? "(none)" : string.Join(", ", claudeIds))
+            );
         }
 
-        throw new InvalidOperationException(
-            "No Copilot 'opus' Claude model was found. Available Claude models: "
-                + (claudeIds.Count > 0 ? string.Join(", ", claudeIds) : "(none)")
-                + ". Set COPILOT_ANTHROPIC_MODEL to the exact id you want."
-        );
+        return new ProxyModelCatalog(opus, models);
     }
 
     /// <summary>
@@ -491,29 +532,49 @@ public static class ProxyModelResolver
         return ids;
     }
 
+    /// <summary><c>POST /chat/completions</c> — the OpenAI Chat Completions transport.</summary>
+    public const string ChatCompletionsEndpoint = "/chat/completions";
+
+    /// <summary>The transports this proxy knows how to forward to.</summary>
+    private static readonly string[] ReachableEndpoints =
+    [
+        CopilotModelsResponse.MessagesEndpoint,
+        ChatCompletionsEndpoint,
+        CopilotModelsResponse.ResponsesEndpoint,
+    ];
+
     /// <summary>
-    ///     Extracts ids for models whose <c>supported_endpoints</c> includes <c>/v1/messages</c> — the only
-    ///     ones this Anthropic-Messages-shaped proxy can forward to. Copilot also serves GPT/Gemini models
-    ///     that only support <c>/responses</c> or <c>/chat/completions</c>; those are excluded. If no entry
-    ///     in the response carries <c>supported_endpoints</c> metadata at all (an older or alternative
-    ///     Copilot-compatible <c>/models</c> shape), falls back to <see cref="ParseModelIds"/> — id-only,
-    ///     no endpoint filtering — rather than treating every model as unsupported and failing startup.
+    ///     Vendors this proxy refuses to serve. A DENYLIST, not an allowlist: several <c>/models</c>
+    ///     shapes omit <c>vendor</c> entirely, and an allowlist would silently drop all of them. The
+    ///     advertised endpoint list is the real capability signal; vendor only vetoes.
+    ///     Google is excluded by user decision (2026-07-27); Microsoft's <c>mai-code-*</c> is a
+    ///     Copilot-internal router rather than a chat model.
     /// </summary>
-    public static IReadOnlyList<string> ParseMessagesCapableModelIds(string json)
+    private static readonly string[] ExcludedVendors = ["Google", "Microsoft"];
+
+    /// <summary>
+    ///     Parses a Copilot <c>/models</c> response into the models this proxy will serve, preserving
+    ///     upstream order.
+    ///
+    ///     A model is kept when it advertises at least one endpoint in <see cref="ReachableEndpoints"/>
+    ///     and its vendor is not in <see cref="ExcludedVendors"/>. Entries advertising NO endpoints are
+    ///     dropped — that set includes <c>text-embedding-*</c>, which must never surface as a chat model.
+    ///
+    ///     The no-metadata fallback is deliberately per RESPONSE, not per entry: only when NOT ONE entry
+    ///     carries <c>supported_endpoints</c> do we conclude the response uses an older shape and keep
+    ///     every id. Otherwise a partially-annotated response would resurrect the embedding models.
+    /// </summary>
+    public static IReadOnlyList<ProxyModelInfo> ParseServableModels(string json)
     {
         using var doc = JsonDocument.Parse(json);
         var entries = CopilotModelsResponse.EnumerateModelEntries(doc.RootElement).ToList();
 
-        // The fallback is per RESPONSE, not per entry: if NO entry carries supported_endpoints metadata
-        // at all (an older/alternative Copilot-compatible /models shape), fall back to id-only rather
-        // than treating every model as unsupported and failing startup. If ANY entry declares it, filter
-        // the whole response to the /v1/messages-capable ids.
         if (!entries.Any(CopilotModelsResponse.HasSupportedEndpoints))
         {
-            return ParseModelIds(json);
+            return [.. ParseModelIds(json).Select(id => new ProxyModelInfo(id, string.Empty, []))];
         }
 
-        var ids = new List<string>();
+        var models = new List<ProxyModelInfo>();
         foreach (var item in entries)
         {
             var id = CopilotModelsResponse.GetString(item, "id");
@@ -522,36 +583,32 @@ public static class ProxyModelResolver
                 continue;
             }
 
-            if (CopilotModelsResponse.SupportsEndpoint(item, CopilotModelsResponse.MessagesEndpoint))
+            var vendor = CopilotModelsResponse.GetString(item, "vendor") ?? string.Empty;
+            if (ExcludedVendors.Contains(vendor, StringComparer.OrdinalIgnoreCase))
             {
-                ids.Add(id);
+                continue;
             }
+
+            var endpoints = ReachableEndpoints.Where(e => CopilotModelsResponse.SupportsEndpoint(item, e)).ToArray();
+            if (endpoints.Length == 0)
+            {
+                continue;
+            }
+
+            models.Add(new ProxyModelInfo(id, vendor, endpoints));
         }
 
-        return ids;
+        return models;
     }
 
     /// <summary>
-    ///     Picks the outbound model for a single request: <paramref name="incomingModel"/> passes through
-    ///     unchanged (normalized to the catalog's exact casing) when it matches one of
-    ///     <paramref name="catalog"/>'s available ids; otherwise falls back to the catalog's default.
+    ///     Maps the model a client asked for onto a model this proxy serves. Unknown ids fall back to the
+    ///     catalog default (DEVIATION D2) — the dialect check downstream runs against the RESOLVED model.
     /// </summary>
     public static string SelectOutboundModel(string? incomingModel, ProxyModelCatalog catalog)
     {
         ArgumentNullException.ThrowIfNull(catalog);
-
-        if (!string.IsNullOrWhiteSpace(incomingModel))
-        {
-            var match = catalog.Available.FirstOrDefault(id =>
-                string.Equals(id, incomingModel, StringComparison.OrdinalIgnoreCase)
-            );
-            if (match is not null)
-            {
-                return match;
-            }
-        }
-
-        return catalog.Default;
+        return catalog.Find(incomingModel)?.Id ?? catalog.Default;
     }
 
     /// <summary>Peeks at the JSON body's <c>model</c> field without mutating it. Null on any parse failure.</summary>
@@ -1068,14 +1125,14 @@ internal static class ProxyHttp
     ///     Builds the Anthropic-shaped GET /v1/models response listing every available model.
     ///     <paramref name="models"/> must be non-empty (the catalog always resolves at least one).
     /// </summary>
-    public static string BuildModelsStub(IReadOnlyList<string> models)
+    public static string BuildModelsStub(IReadOnlyList<ProxyModelInfo> models)
     {
         var data = models
             .Select(model => new
             {
                 type = "model",
-                id = model,
-                display_name = model,
+                id = model.Id,
+                display_name = model.Id,
                 created_at = "2025-01-01T00:00:00Z",
             })
             .ToArray();
@@ -1085,8 +1142,8 @@ internal static class ProxyHttp
             {
                 data,
                 has_more = false,
-                first_id = models[0],
-                last_id = models[^1],
+                first_id = models[0].Id,
+                last_id = models[^1].Id,
             }
         );
     }
