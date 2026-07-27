@@ -206,16 +206,58 @@ app.MapGet(
     () => Results.Content(ProxyHttp.BuildModelsStub(catalog.Models), "application/json", Encoding.UTF8)
 );
 
-// POST /v1/messages and /v1/messages/count_tokens — the forward path.
-app.MapPost(
-    "/v1/messages",
-    ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, config.KeepAliveInterval, isCountTokens: false)
-);
+// Each POST also binds its un-prefixed twin. Base-URL conventions differ per client: Claude Code
+// appends /v1/messages to a bare host, the AI SDK appends only /messages to a ".../v1" base, and
+// Codex joins "{base}/responses". Binding both forms removes a whole class of misconfiguration.
+foreach (var path in new[] { "/v1/messages", "/messages" })
+{
+    _ = app.MapPost(
+        path,
+        ctx =>
+            ProxyHttp.ForwardAsync(
+                ctx,
+                catalog,
+                config.IdleTimeout,
+                config.KeepAliveInterval,
+                ProxyDialect.AnthropicMessages
+            )
+    );
+    _ = app.MapPost(
+        $"{path}/count_tokens",
+        ctx =>
+            ProxyHttp.ForwardAsync(
+                ctx,
+                catalog,
+                config.IdleTimeout,
+                config.KeepAliveInterval,
+                ProxyDialect.AnthropicMessages,
+                isCountTokens: true
+            )
+    );
+}
 
-app.MapPost(
-    "/v1/messages/count_tokens",
-    ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, config.KeepAliveInterval, isCountTokens: true)
-);
+foreach (var path in new[] { "/v1/chat/completions", "/chat/completions" })
+{
+    _ = app.MapPost(
+        path,
+        ctx =>
+            ProxyHttp.ForwardAsync(
+                ctx,
+                catalog,
+                config.IdleTimeout,
+                config.KeepAliveInterval,
+                ProxyDialect.ChatCompletions
+            )
+    );
+}
+
+foreach (var path in new[] { "/v1/responses", "/responses" })
+{
+    _ = app.MapPost(
+        path,
+        ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, config.KeepAliveInterval, ProxyDialect.Responses)
+    );
+}
 
 // /mcp and /mcp/readonly — transparent MCP (Streamable HTTP) proxy. Every HTTP method is routed
 // here (not just GET/POST/DELETE) so an unsupported method gets ProxyMcp's own MCP/JSON-RPC-shaped
@@ -682,7 +724,13 @@ public static class ProxyModelResolver
     ///     blocks, and every other unknown field are preserved verbatim.
     /// </summary>
     /// <returns>True on success; false when the body is missing, not JSON, or not a JSON object.</returns>
-    public static bool TryRewriteModel(byte[] body, string model, out byte[] rewritten, out string? incomingModel)
+    public static bool TryRewriteModel(
+        byte[] body,
+        string model,
+        out byte[] rewritten,
+        out string? incomingModel,
+        bool renameMaxTokens = false
+    )
     {
         ArgumentNullException.ThrowIfNull(body);
         ArgumentNullException.ThrowIfNull(model);
@@ -721,6 +769,21 @@ public static class ProxyModelResolver
 
         obj["model"] = model;
         _ = obj.Remove("context_management");
+
+        // GPT models on Copilot reject `max_tokens` on /chat/completions and demand
+        // `max_completion_tokens` — live-confirmed 2026-07-27. Claude models accept `max_tokens` on the
+        // same endpoint, so this is keyed on the model, not the route. Clone before removing: a JsonNode
+        // cannot be re-parented while it still belongs to the object.
+        if (renameMaxTokens && obj["max_tokens"] is { } maxTokens)
+        {
+            var clonedMaxTokens = maxTokens.DeepClone();
+            _ = obj.Remove("max_tokens");
+            if (!obj.ContainsKey("max_completion_tokens"))
+            {
+                obj["max_completion_tokens"] = clonedMaxTokens;
+            }
+        }
+
         rewritten = JsonSerializer.SerializeToUtf8Bytes(obj);
         return true;
     }
@@ -752,13 +815,14 @@ internal static class ProxyHttp
         "Content-Type",
     };
 
-    /// <summary>Forwards POST /v1/messages (and count_tokens) to Copilot and streams the response back.</summary>
+    /// <summary>Forwards a request to Copilot in the given dialect and streams the response back.</summary>
     public static async Task ForwardAsync(
         HttpContext ctx,
         ProxyModelCatalog catalog,
         TimeSpan idleTimeout,
         TimeSpan keepAliveInterval,
-        bool isCountTokens
+        ProxyDialect dialect,
+        bool isCountTokens = false
     )
     {
         var services = ctx.RequestServices;
@@ -775,15 +839,47 @@ internal static class ProxyHttp
         }
 
         // 2) Pass the requested model through unchanged when it's one of the available ids; otherwise fall
-        //    back to the catalog's default. Then rewrite the body (raw JSON). Parse failure -> 400 (do NOT
-        //    call upstream).
+        //    back to the catalog's default. Resolve the route for this dialect and reject a mismatch.
         var outboundModel = ProxyModelResolver.SelectOutboundModel(ProxyModelResolver.PeekModel(inboundBody), catalog);
+
+        // A model resolved via the default/family fallback may not be in the catalog at all (pinned mode);
+        // treat it as metadata-free, which routes as Anthropic Messages.
+        var modelInfo = catalog.Find(outboundModel) ?? new ProxyModelInfo(outboundModel, string.Empty, []);
+        var route = ModelRouter.Resolve(dialect, modelInfo);
+
+        // TranslateAnthropicToResponses is not implemented yet (Task 9 wires the translator into
+        // /v1/messages) — treat it exactly like a routing miss rather than forwarding an untranslated
+        // Anthropic body to the Responses endpoint.
+        if (route is null || route.Kind != ProxyRouteKind.Passthrough)
+        {
+            var alternatives = ModelRouter.Servable(dialect, catalog);
+            await WriteErrorAsync(
+                    ctx,
+                    dialect,
+                    StatusCodes.Status404NotFound,
+                    "not_found_error",
+                    $"Model '{outboundModel}' is not available on this endpoint. "
+                        + $"Models that are: {(alternatives.Count == 0 ? "(none)" : string.Join(", ", alternatives))}."
+                )
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // 3) Rewrite the body (raw JSON). Parse failure -> 400 (do NOT call upstream).
+        var renameMaxTokens = dialect == ProxyDialect.ChatCompletions && !modelInfo.IsAnthropic;
         if (
-            !ProxyModelResolver.TryRewriteModel(inboundBody, outboundModel, out var outboundBody, out var incomingModel)
+            !ProxyModelResolver.TryRewriteModel(
+                inboundBody,
+                outboundModel,
+                out var outboundBody,
+                out var incomingModel,
+                renameMaxTokens
+            )
         )
         {
-            await WriteAnthropicErrorAsync(
+            await WriteErrorAsync(
                 ctx,
+                dialect,
                 StatusCodes.Status400BadRequest,
                 "invalid_request_error",
                 "Request body must be a non-empty JSON object."
@@ -791,8 +887,8 @@ internal static class ProxyHttp
             return;
         }
 
-        // 3) Build a fresh upstream request with the positive request-header allowlist.
-        var upstreamPath = isCountTokens ? "/v1/messages/count_tokens" : "/v1/messages";
+        // 4) Build a fresh upstream request with the positive request-header allowlist.
+        var upstreamPath = isCountTokens ? ModelRouter.CountTokensPath : route.UpstreamPath;
         using var upstreamRequest = new HttpRequestMessage(HttpMethod.Post, upstreamPath)
         {
             Content = new ByteArrayContent(outboundBody),
@@ -800,12 +896,12 @@ internal static class ProxyHttp
         upstreamRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         ApplyRequestHeaderAllowlist(ctx.Request.Headers, upstreamRequest);
 
-        // 4) Per-request deadlines: link client-abort + a reset-per-read idle timeout.
+        // 5) Per-request deadlines: link client-abort + a reset-per-read idle timeout.
         using var idleCts = new CancellationTokenSource();
         idleCts.CancelAfter(idleTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, idleCts.Token);
 
-        // 5) Send and read response headers (status + headers lock at first byte).
+        // 6) Send and read response headers (status + headers lock at first byte).
         HttpResponseMessage upstream;
         try
         {
@@ -821,8 +917,9 @@ internal static class ProxyHttp
         }
         catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
         {
-            await WriteAnthropicErrorAsync(
+            await WriteErrorAsync(
                 ctx,
+                dialect,
                 StatusCodes.Status504GatewayTimeout,
                 "api_error",
                 "Timed out waiting for the upstream Copilot API to respond."
@@ -833,8 +930,9 @@ internal static class ProxyHttp
         {
             // Token acquisition failure surfaces from CopilotHeadersHandler before the first byte.
             logger.LogError("Copilot token acquisition failed: {Reason}", ex.Message);
-            await WriteAnthropicErrorAsync(
+            await WriteErrorAsync(
                 ctx,
+                dialect,
                 StatusCodes.Status401Unauthorized,
                 "authentication_error",
                 "Failed to acquire a GitHub Copilot token. Re-authenticate with the GitHub Copilot CLI or "
@@ -845,8 +943,9 @@ internal static class ProxyHttp
         catch (HttpRequestException ex)
         {
             logger.LogError("Upstream connection failed: {Reason}", ex.Message);
-            await WriteAnthropicErrorAsync(
+            await WriteErrorAsync(
                 ctx,
+                dialect,
                 StatusCodes.Status502BadGateway,
                 "api_error",
                 "Failed to reach the upstream Copilot API."
@@ -900,7 +999,7 @@ internal static class ProxyHttp
                 idleCts,
                 linked,
                 logger,
-                (c, status, message) => WriteAnthropicErrorAsync(c, status, "api_error", message),
+                (c, status, message) => WriteErrorAsync(c, dialect, status, "api_error", message),
                 isSse,
                 keepAliveInterval
             );
@@ -1153,6 +1252,42 @@ internal static class ProxyHttp
         var payload = JsonSerializer.SerializeToUtf8Bytes(new { type = "error", error = new { type, message } });
         await ctx.Response.Body.WriteAsync(payload, ctx.RequestAborted);
     }
+
+    /// <summary>
+    ///     Writes an OpenAI-shaped error envelope. No-op once the response has started — a half-written
+    ///     body must not be capped with an error object.
+    /// </summary>
+    public static async Task WriteOpenAiErrorAsync(HttpContext ctx, int status, string type, string message)
+    {
+        if (ctx.Response.HasStarted)
+        {
+            return;
+        }
+
+        ctx.Response.StatusCode = status;
+        ctx.Response.ContentType = "application/json";
+
+        var payload = JsonSerializer.SerializeToUtf8Bytes(
+            new
+            {
+                error = new
+                {
+                    message,
+                    type,
+                    param = (string?)null,
+                    code = (string?)null,
+                },
+            }
+        );
+
+        await ctx.Response.Body.WriteAsync(payload, ctx.RequestAborted).ConfigureAwait(false);
+    }
+
+    /// <summary>Writes an error in the envelope shape the INBOUND dialect expects.</summary>
+    public static Task WriteErrorAsync(HttpContext ctx, ProxyDialect dialect, int status, string type, string message) =>
+        dialect == ProxyDialect.AnthropicMessages
+            ? WriteAnthropicErrorAsync(ctx, status, type, message)
+            : WriteOpenAiErrorAsync(ctx, status, type, message);
 
     /// <summary>
     ///     Builds the Anthropic-shaped GET /v1/models response listing every available model.
