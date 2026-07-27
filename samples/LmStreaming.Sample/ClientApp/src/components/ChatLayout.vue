@@ -274,6 +274,20 @@ const focusMode = computed(() => {
   return value === '1' || value === 'true';
 });
 
+/**
+ * The header line. Normally the static app name; in focus mode the deep-linked conversation's OWN
+ * title, because focus mode hides the sidebar — the title bar is then the only thing telling a
+ * reader which conversation they landed on (e.g. "Review PR #222 — Review Agent" for a link posted
+ * on a PR). Falls back to the app name while the conversation list is still loading or when the
+ * conversation carries no title.
+ */
+const headerTitle = computed(() => {
+  const appName = 'LmStreaming Chat';
+  if (!focusMode.value) return appName;
+  const conversation = conversations.value.find((c) => c.threadId === currentThreadId.value);
+  return conversation?.title?.trim() || appName;
+});
+
 // Load conversations and modes on mount
 onMounted(async () => {
   // Load modes, tools, and providers in parallel with conversations
@@ -567,7 +581,7 @@ onBeforeUnmount(() => {
           >
             =
           </button>
-          <h1>LmStreaming Chat</h1>
+          <h1>{{ headerTitle }}</h1>
           <div v-if="!focusMode" class="header-actions">
             <WorkspaceSelector
               ref="workspaceSelectorRef"

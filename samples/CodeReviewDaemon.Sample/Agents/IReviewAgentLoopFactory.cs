@@ -20,11 +20,13 @@ internal interface IReviewAgentLoopFactory
     /// entirely (required for non-adaptive models — e.g. Copilot's haiku rejects an effort it does not
     /// support). <paramref name="toolContext"/> is <c>null</c> on the diff-only path (today's behavior:
     /// empty tool registry, no sub-agents); when supplied it connects the gateway MCP client filtered to
-    /// its read-only allow-list and attaches any configured sub-agents. <paramref name="workspaceId"/> is
-    /// the LmStreaming workspace the S2S factory provisions the hosted review conversation against (minted
-    /// by <see cref="S2SReviewWorkspacePreparer"/>); it is <c>null</c> — and ignored — on the in-process
-    /// paths (<see cref="LiveReviewAgentLoopFactory"/> and the test fake), which own the conversation
-    /// locally. The caller owns the returned loop's lifetime (it is <see cref="IAsyncDisposable"/>).
+    /// its read-only allow-list and attaches any configured sub-agents. <paramref name="reviewWorkspace"/>
+    /// is the prepared LmStreaming workspace the S2S factory provisions the hosted review conversation
+    /// against (minted by <see cref="S2SReviewWorkspacePreparer"/>) — the whole record, not just its id,
+    /// because the factory also titles the conversation from the PR it was prepared for. It is <c>null</c>
+    /// — and ignored — on the in-process paths (<see cref="LiveReviewAgentLoopFactory"/> and the test
+    /// fake), which own the conversation locally. The caller owns the returned loop's lifetime (it is
+    /// <see cref="IAsyncDisposable"/>).
     /// </summary>
     IMultiTurnAgent Create(
         AgentProfile profile,
@@ -32,5 +34,5 @@ internal interface IReviewAgentLoopFactory
         string threadId,
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
-        string? workspaceId = null);
+        PreparedReviewWorkspace? reviewWorkspace = null);
 }

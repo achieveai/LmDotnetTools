@@ -51,7 +51,7 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         string threadId,
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
-        string? workspaceId = null)
+        PreparedReviewWorkspace? reviewWorkspace = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
 
@@ -59,9 +59,12 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         // absence means the executor did not run the preparer (a wiring bug, not a valid diff-only path — the
         // whole point of the S2S factory is a workspace-bound hosted review), so fail loudly rather than
         // silently provisioning against nothing.
-        ArgumentException.ThrowIfNullOrWhiteSpace(
-            workspaceId,
-            "S2SReviewAgentLoopFactory requires a prepared workspaceId; the review workspace was not prepared for this run.");
+        if (reviewWorkspace is null)
+        {
+            throw new ArgumentException(
+                "S2SReviewAgentLoopFactory requires a prepared review workspace; it was not prepared for this run.",
+                nameof(reviewWorkspace));
+        }
 
         if (string.IsNullOrWhiteSpace(_options.LmStreamingProviderId))
         {
@@ -72,16 +75,24 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
 
         return new S2SReviewAgent(
             _client,
-            workspaceId,
+            reviewWorkspace.WorkspaceId,
             _options.LmStreamingProviderId,
             _options.LmStreamingModeId,
-            title: BuildTitle(profile),
+            title: BuildTitle(profile, reviewWorkspace),
             logger: _loggerFactory.CreateLogger<S2SReviewAgent>());
     }
 
-    /// <summary>A human-readable conversation title for the review-host UI (best-effort; see
-    /// <see cref="S2SReviewAgent"/>). Uses the agent profile's display name so the parent review and any
-    /// judge/knowledge reruns are distinguishable in the conversation list.</summary>
-    private static string BuildTitle(AgentProfile profile) =>
-        string.IsNullOrWhiteSpace(profile.Name) ? "Code review" : $"Code review — {profile.Name}";
+    /// <summary>
+    /// A human-readable conversation title for the review-host UI (best-effort; see
+    /// <see cref="S2SReviewAgent"/>). Leads with the PR — <c>Review PR #123</c> — because the title is the
+    /// ONLY thing identifying the conversation to a judge who arrived from the deep-link posted on that PR;
+    /// a title carrying just the agent name leaves several PRs' reviews indistinguishable in the
+    /// conversation list. The profile's display name follows so the parent review and its judge/variant
+    /// reruns (separate conversations against the same workspace) stay distinguishable.
+    /// </summary>
+    private static string BuildTitle(AgentProfile profile, PreparedReviewWorkspace workspace)
+    {
+        var pr = $"Review PR #{workspace.PrId}";
+        return string.IsNullOrWhiteSpace(profile.Name) ? pr : $"{pr} — {profile.Name}";
+    }
 }

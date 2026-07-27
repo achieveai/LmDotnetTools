@@ -566,3 +566,75 @@ describe('ChatLayout ?threadId= deep link', () => {
     expect(sharedMocks.resumeStreamIfActive).toHaveBeenCalledWith('thread-1');
   });
 });
+
+/**
+ * Focus mode hides the sidebar, so the header title bar becomes the ONLY thing identifying the
+ * conversation. A deep-link posted on a PR ("Review PR #222 — Review Agent") must therefore title the
+ * header with the conversation, not the static app name — otherwise a reader following the link
+ * cannot tell which PR's review they landed on.
+ */
+describe('ChatLayout ?focus=1 header title', () => {
+  const setQuery = (query: string) => {
+    window.history.pushState({}, '', query ? `/?${query}` : '/');
+  };
+
+  const mountLayout = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.resumeStreamIfActive.mockReset();
+    sharedMocks.resumeStreamIfActive.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    setQuery('');
+  });
+
+  it('titles the header with the deep-linked conversation in focus mode', async () => {
+    sharedMocks.currentThreadId = 'thread-2';
+    sharedMocks.conversations = [
+      { threadId: 'thread-1', title: 'Some other chat' },
+      { threadId: 'thread-2', title: 'Review PR #222 — Review Agent' },
+    ];
+    setQuery('threadId=thread-2&focus=1');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.get('.chat-header h1').text()).toBe('Review PR #222 — Review Agent');
+  });
+
+  it('falls back to the app name in focus mode when the conversation has no title', async () => {
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1', title: '   ' }];
+    setQuery('threadId=thread-1&focus=1');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.get('.chat-header h1').text()).toBe('LmStreaming Chat');
+  });
+
+  it('keeps the static app name without ?focus=1 (the sidebar already names the conversation)', async () => {
+    sharedMocks.currentThreadId = 'thread-2';
+    sharedMocks.conversations = [{ threadId: 'thread-2', title: 'Review PR #222 — Review Agent' }];
+    setQuery('threadId=thread-2');
+
+    const wrapper = mountLayout();
+    await flushPromises();
+
+    expect(wrapper.get('.chat-header h1').text()).toBe('LmStreaming Chat');
+  });
+});

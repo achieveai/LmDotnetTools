@@ -64,7 +64,7 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         string threadId,
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
-        string? workspaceId = null)
+        PreparedReviewWorkspace? reviewWorkspace = null)
     {
         CreatedProfileIds.Add(profile.Id);
         CreatedProfiles.Add(profile);
@@ -72,7 +72,7 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         ReasoningEfforts.Add(reasoningEffort);
         ToolContexts.Add(toolContext);
         ModelIds.Add(modelId);
-        WorkspaceIds.Add(workspaceId);
+        WorkspaceIds.Add(reviewWorkspace?.WorkspaceId);
 
         if (toolContext is not null && ThrowWhenToolAssisted is not null
             && (ThrowOnlyForModel is null || string.Equals(modelId, ThrowOnlyForModel, StringComparison.Ordinal)))

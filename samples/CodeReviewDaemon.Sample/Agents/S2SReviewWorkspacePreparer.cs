@@ -80,7 +80,7 @@ internal sealed class S2SReviewWorkspacePreparer
         var workspaceId = await EnsureWorkspaceAsync(run, leaf, marketplaces, cancellationToken)
             .ConfigureAwait(false);
 
-        return new PreparedReviewWorkspace(leaf, workspaceId, hostDir);
+        return new PreparedReviewWorkspace(leaf, workspaceId, hostDir, run.PrId);
     }
 
     /// <summary>
@@ -218,8 +218,10 @@ internal sealed class S2SReviewWorkspacePreparer
 /// <summary>
 /// The result of <see cref="S2SReviewWorkspacePreparer.PrepareAsync"/>: the single-segment
 /// <see cref="Leaf"/> the checkout was cloned into (= LmStreaming's stored <c>DirectoryRelPath</c>), the
-/// <see cref="WorkspaceId"/> the factory provisions the conversation against, and the <see cref="HostDir"/>
+/// <see cref="WorkspaceId"/> the factory provisions the conversation against, the <see cref="HostDir"/>
 /// the checkout actually lives at on this host (<c>{WorkspaceBasePath}/{Leaf}</c>) — the directory the
-/// gateway mounts for the hosted review, and the one the daemon takes its bounded diff from.
+/// gateway mounts for the hosted review, and the one the daemon takes its bounded diff from — and the
+/// <see cref="PrId"/> the whole preparation was for, which titles the hosted conversation so a judge
+/// following the posted deep-link can see WHICH PR the review they landed on belongs to.
 /// </summary>
-internal sealed record PreparedReviewWorkspace(string Leaf, string WorkspaceId, string HostDir);
+internal sealed record PreparedReviewWorkspace(string Leaf, string WorkspaceId, string HostDir, string PrId);

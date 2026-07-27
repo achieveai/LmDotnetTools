@@ -1045,9 +1045,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         // S2S path: clone the PR checkout to the shared gateway host and mint/reuse the LmStreaming workspace the
         // hosted review provisions against, BEFORE any _loopFactory.Create call — the S2S factory requires a
-        // prepared workspaceId (it throws without one) and this is what surfaces the code-reviewer:* sub-agent
+        // prepared workspace (it throws without one) and this is what surfaces the code-reviewer:* sub-agent
         // tree behind the deep-link. No-op (returns null, does nothing) on the in-process path.
-        await EnsurePreparedWorkspaceAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
 
         // Resume-safety for the pooled path: the slot lease recorded by ContextReady lives ONLY in the
         // in-memory _leasedReviews, so a run that persisted Stage=ContextReady in an earlier process (a daemon
@@ -1678,7 +1678,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
-            workspaceId: prepared?.WorkspaceId);
+            reviewWorkspace: prepared);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
         // Only when authorized to post: the follow-up turn that forces the agent to actually deliver its review.
         var postEnforcement = shouldPost ? DaemonAgentFactory.CreatePostEnforcementPrompt(variables) : null;
@@ -1743,7 +1743,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId),
-            _options.VariantReasoningEffort, workspaceId: prepared?.WorkspaceId);
+            _options.VariantReasoningEffort, reviewWorkspace: prepared);
         var reviewer = new VariantReviewer(loop, _store, _loggerFactory.CreateLogger<VariantReviewer>());
         _ = await reviewer.ReviewAsync(run.Id, provider, _comparisonVariant, reviewInput, cancellationToken)
             .ConfigureAwait(false);
@@ -1763,10 +1763,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // The Judge is its own stage, so the per-run workspace cache may be empty on a resume — ensure it (S2S
         // path only; no-op in-process). The judge grades the persisted review text and needs no repo tools, but
         // the S2S factory still requires a workspaceId to provision the hosted conversation.
-        var judgeWorkspaceId = await EnsurePreparedWorkspaceAsync(run, repo, provider, cancellationToken)
+        var judgeWorkspace = await EnsurePreparedAsync(run, repo, provider, cancellationToken)
             .ConfigureAwait(false);
         await using var loop = _loopFactory.Create(
-            profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), workspaceId: judgeWorkspaceId);
+            profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), reviewWorkspace: judgeWorkspace);
         var judge = new JudgeAgent(loop, _store, _loggerFactory.CreateLogger<JudgeAgent>());
 
         var judgingInput = $"Grade this code review:\n\n{reviewText}";
@@ -2151,19 +2151,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// On the S2S path (<see cref="_preparer"/> non-null) ensures this run's LmStreaming review workspace exists
-    /// — cloning the PR checkout to the shared gateway host and minting/reusing the workspace — and caches its id
-    /// in <see cref="_preparedWorkspaces"/> so every <c>_loopFactory.Create</c> site of the run shares one
-    /// preparation. Returns the prepared workspace id, or <c>null</c> on the in-process path (no preparer wired),
-    /// where callers pass no workspaceId and the live/fake factory ignores it.
-    /// </summary>
-    private async Task<string?> EnsurePreparedWorkspaceAsync(
-        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken) =>
-        (await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false))?.WorkspaceId;
-
-    /// <summary>
-    /// The full prepared workspace (leaf + workspace id + host checkout dir) behind
-    /// <see cref="EnsurePreparedWorkspaceAsync"/>. Callers that only need the id use that wrapper; the context
-    /// stage needs the host dir too, because on the S2S path the bounded diff is taken from this same clone.
+    /// — cloning the PR checkout to the shared gateway host and minting/reusing the workspace — and caches it in
+    /// <see cref="_preparedWorkspaces"/> so every <c>_loopFactory.Create</c> site of the run shares one
+    /// preparation. Returns the prepared workspace (leaf + workspace id + host checkout dir + PR id), or
+    /// <c>null</c> on the in-process path (no preparer wired), where callers pass no workspace and the
+    /// live/fake factory ignores it. The context stage needs the host dir, because on the S2S path the bounded
+    /// diff is taken from this same clone; the S2S factory needs the PR id to title the hosted conversation.
     /// </summary>
     private async Task<PreparedReviewWorkspace?> EnsurePreparedAsync(
         ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)

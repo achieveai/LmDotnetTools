@@ -95,10 +95,10 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
         string threadId,
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
-        string? workspaceId = null)
+        PreparedReviewWorkspace? reviewWorkspace = null)
     {
-        // workspaceId is an S2S-only concern (the LmStreaming workspace the hosted conversation provisions
-        // against); this in-process factory owns its conversation locally, so it is intentionally ignored.
+        // reviewWorkspace is an S2S-only concern (the LmStreaming workspace the hosted conversation
+        // provisions against); this in-process factory owns its conversation locally, so it is ignored.
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
 
