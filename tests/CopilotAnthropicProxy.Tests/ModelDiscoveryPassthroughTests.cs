@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 
@@ -141,6 +142,28 @@ public sealed class ModelDiscoveryPassthroughTests
 
         response.IsSuccessStatusCode.Should().BeTrue();
         JsonNode.Parse(forwardedBody!)!["model"]!.GetValue<string>().Should().Be("claude-opus-4.8");
+    }
+
+    [Fact]
+    public async Task Models_endpoint_serves_a_body_both_dialects_can_read()
+    {
+        await using var factory = DiscoveryFactory((req, ct) => Task.FromResult(TestUpstream.Json("{}")));
+        using var client = factory.CreateClient();
+
+        using var doc = JsonDocument.Parse(await client.GetStringAsync("/v1/models"));
+        var root = doc.RootElement;
+
+        root.GetProperty("object").GetString().Should().Be("list", "OpenAI clients key off this");
+        root.GetProperty("has_more").GetBoolean().Should().BeFalse();
+
+        var first = root.GetProperty("data")[0];
+        first.GetProperty("type").GetString().Should().Be("model", "Anthropic clients key off this");
+        first.GetProperty("object").GetString().Should().Be("model", "OpenAI clients key off this");
+        first.GetProperty("id").GetString().Should().NotBeNullOrWhiteSpace();
+        first.GetProperty("display_name").GetString().Should().NotBeNullOrWhiteSpace();
+        first.GetProperty("owned_by").GetString().Should().NotBeNullOrWhiteSpace();
+        first.GetProperty("created").GetInt64().Should().BeGreaterThan(0);
+        first.GetProperty("created_at").GetString().Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]

@@ -297,7 +297,7 @@ internal sealed record ProxyConfig
     {
         return new ProxyConfig
         {
-            Port = ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_PORT"), 8787),
+            Port = ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_PORT"), 8788),
             BaseUrl =
                 NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_BASE_URL"))
                 ?? CopilotOptions.DefaultBaseUrl,
@@ -1308,28 +1308,42 @@ internal static class ProxyHttp
             : WriteOpenAiErrorAsync(ctx, status, type, message);
 
     /// <summary>
-    ///     Builds the Anthropic-shaped GET /v1/models response listing every available model.
-    ///     <paramref name="models"/> must be non-empty (the catalog always resolves at least one).
+    ///     Builds a model list that BOTH dialects can parse. Anthropic clients read
+    ///     <c>data[].type == "model"</c> and <c>display_name</c>; OpenAI clients read
+    ///     <c>object == "list"</c>, <c>data[].object == "model"</c> and <c>owned_by</c>. The two shapes do
+    ///     not conflict, so one body carrying every field serves both and we never branch on the caller.
+    ///
+    ///     <c>created</c> is a fixed epoch — Copilot's /models does not report a creation time, and the
+    ///     field exists only because OpenAI SDKs deserialise into a struct that requires it.
     /// </summary>
     public static string BuildModelsStub(IReadOnlyList<ProxyModelInfo> models)
     {
+        ArgumentNullException.ThrowIfNull(models);
+
+        const long CreatedEpochSeconds = 1735689600L; // 2025-01-01T00:00:00Z
+        const string CreatedIso = "2025-01-01T00:00:00Z";
+
         var data = models
-            .Select(model => new
+            .Select(m => new
             {
                 type = "model",
-                id = model.Id,
-                display_name = model.Id,
-                created_at = "2025-01-01T00:00:00Z",
+                @object = "model",
+                id = m.Id,
+                display_name = m.Id,
+                owned_by = string.IsNullOrEmpty(m.Vendor) ? "copilot" : m.Vendor,
+                created = CreatedEpochSeconds,
+                created_at = CreatedIso,
             })
             .ToArray();
 
         return JsonSerializer.Serialize(
             new
             {
+                @object = "list",
                 data,
                 has_more = false,
-                first_id = models[0].Id,
-                last_id = models[^1].Id,
+                first_id = models.Count == 0 ? null : models[0].Id,
+                last_id = models.Count == 0 ? null : models[^1].Id,
             }
         );
     }
