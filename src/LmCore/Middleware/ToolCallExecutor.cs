@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,9 +24,37 @@ public class ToolCallExecutor
     /// <summary>
     ///     Executes all tool calls in the provided message using the given function map.
     /// </summary>
+    public static Task<ToolsCallResultMessage> ExecuteAsync(
+        ToolsCallMessage toolCallMessage,
+        IDictionary<string, ToolCallResultHandler> functionMap,
+        IToolResultCallback? resultCallback = null,
+        ILogger? logger = null,
+        CancellationToken cancellationToken = default
+    ) =>
+        ExecuteAsync(
+            toolCallMessage,
+            functionMap,
+            ToolInvocationPreparer.Disabled,
+            resultCallback,
+            logger,
+            cancellationToken
+        );
+
+    /// <summary>
+    ///     Executes all tool calls in the provided message, gating each one through
+    ///     <paramref name="preparer"/> first.
+    /// </summary>
+    /// <remarks>
+    ///     Approvals for the whole batch are settled concurrently before anything runs, then the
+    ///     calls are invoked in the order they arrived — so a slow approval does not reorder
+    ///     execution, and a batch of ten calls does not take ten approval waits end to end.
+    ///     A call the preparer refuses never reaches its handler; it comes back as an error result
+    ///     carrying the outcome code, in the same shape as an unavailable function.
+    /// </remarks>
     public static async Task<ToolsCallResultMessage> ExecuteAsync(
         ToolsCallMessage toolCallMessage,
         IDictionary<string, ToolCallResultHandler> functionMap,
+        ToolInvocationPreparer preparer,
         IToolResultCallback? resultCallback = null,
         ILogger? logger = null,
         CancellationToken cancellationToken = default
@@ -33,6 +62,7 @@ public class ToolCallExecutor
     {
         ArgumentNullException.ThrowIfNull(toolCallMessage);
         ArgumentNullException.ThrowIfNull(functionMap);
+        ArgumentNullException.ThrowIfNull(preparer);
 
         var effectiveLogger = logger ?? NullLogger.Instance;
         var toolCalls = toolCallMessage.ToolCalls;
@@ -42,13 +72,18 @@ public class ToolCallExecutor
 
         effectiveLogger.LogInformation("Tool call execution started: ToolCallCount={ToolCallCount}", toolCallCount);
 
-        foreach (var toolCall in toolCalls)
+        var prepared = await PrepareAllAsync(toolCallMessage, functionMap, preparer, cancellationToken);
+
+        for (var i = 0; i < toolCalls.Count; i++)
         {
+            var toolCall = toolCalls[i];
             try
             {
                 var result = await ExecuteToolCallAsync(
                     toolCall,
                     functionMap,
+                    preparer,
+                    prepared[i],
                     resultCallback,
                     effectiveLogger,
                     cancellationToken
@@ -96,9 +131,70 @@ public class ToolCallExecutor
         };
     }
 
+    /// <summary>
+    ///     Settles the approval decision for every call in the batch at once, returning them by
+    ///     index so execution can still proceed in the caller's order.
+    /// </summary>
+    /// <remarks>
+    ///     A call whose function is not registered is deliberately left unprepared: refusing an
+    ///     unknown function is a mapping error the executor already reports, and asking a human to
+    ///     approve a tool that cannot run would be noise. Nothing executes if preparation itself
+    ///     fails, which is the fail-closed outcome.
+    /// </remarks>
+    private static async Task<PreparedToolInvocation?[]> PrepareAllAsync(
+        ToolsCallMessage toolCallMessage,
+        IDictionary<string, ToolCallResultHandler> functionMap,
+        ToolInvocationPreparer preparer,
+        CancellationToken cancellationToken
+    )
+    {
+        var toolCalls = toolCallMessage.ToolCalls;
+        var prepared = new PreparedToolInvocation?[toolCalls.Count];
+
+        if (!preparer.IsEnabled)
+        {
+            return prepared;
+        }
+
+        var preparations = new Task<PreparedToolInvocation>?[toolCalls.Count];
+        for (var i = 0; i < toolCalls.Count; i++)
+        {
+            var toolCall = toolCalls[i];
+            if (toolCall.FunctionName == null || !functionMap.ContainsKey(toolCall.FunctionName))
+            {
+                continue;
+            }
+
+            preparations[i] = preparer.PrepareAsync(
+                new ToolInvocationRequest
+                {
+                    ToolName = toolCall.FunctionName,
+                    ArgumentsJson = toolCall.FunctionArgs,
+                    ToolCallId = toolCall.ToolCallId,
+                    ExecutionTarget = toolCall.ExecutionTarget,
+                    ThreadId = toolCallMessage.ThreadId,
+                    RunId = toolCallMessage.RunId,
+                    GenerationId = toolCallMessage.GenerationId,
+                },
+                cancellationToken
+            );
+        }
+
+        _ = await Task.WhenAll(preparations.Where(t => t != null)!);
+
+        for (var i = 0; i < preparations.Length; i++)
+        {
+            prepared[i] = preparations[i]?.Result;
+        }
+
+        return prepared;
+    }
+
     private static async Task<ToolCallResult> ExecuteToolCallAsync(
         ToolCall toolCall,
         IDictionary<string, ToolCallResultHandler> functionMap,
+        ToolInvocationPreparer preparer,
+        PreparedToolInvocation? prepared,
         IToolResultCallback? resultCallback,
         ILogger logger,
         CancellationToken cancellationToken
@@ -126,13 +222,20 @@ public class ToolCallExecutor
 
         if (functionMap.TryGetValue(functionName, out var func))
         {
+            if (prepared is { IsApproved: false })
+            {
+                return await ReportBlockedAsync(toolCall, prepared, resultCallback, logger, cancellationToken);
+            }
+
             try
             {
                 var ctx = new ToolCallContext
                 {
                     ToolCallId = toolCall.ToolCallId,
                 };
-                var result = await func(functionArgs ?? "{}", ctx, cancellationToken);
+                var result = prepared == null
+                    ? await func(functionArgs ?? "{}", ctx, cancellationToken)
+                    : await preparer.InvokeAsync(prepared, func, ctx, cancellationToken);
                 var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
                 var imageBlockCount = result.ContentBlocks?.OfType<ImageToolResultBlock>().Count() ?? 0;
@@ -246,5 +349,43 @@ public class ToolCallExecutor
         }
 
         return unavailableResult;
+    }
+
+    /// <summary>
+    ///     Turns a refusal into the error result the caller already knows how to handle, reporting
+    ///     it through the same callbacks a failed execution would use so a UI does not leave the
+    ///     call spinning.
+    /// </summary>
+    private static async Task<ToolCallResult> ReportBlockedAsync(
+        ToolCall toolCall,
+        PreparedToolInvocation prepared,
+        IToolResultCallback? resultCallback,
+        ILogger logger,
+        CancellationToken cancellationToken
+    )
+    {
+        var blockedResult = prepared.ToBlockedResult();
+
+        logger.LogWarning(
+            "Tool call not executed: FunctionName={FunctionName}, ToolCallId={ToolCallId}, Outcome={Outcome}, Reason={Reason}",
+            prepared.ToolName,
+            toolCall.ToolCallId,
+            prepared.Outcome,
+            prepared.Reason
+        );
+
+        if (resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
+        {
+            await resultCallback.OnToolCallErrorAsync(
+                toolCall.ToolCallId,
+                prepared.ToolName,
+                prepared.BlockedMessage,
+                cancellationToken
+            );
+
+            await resultCallback.OnToolResultAvailableAsync(toolCall.ToolCallId, blockedResult, cancellationToken);
+        }
+
+        return blockedResult;
     }
 }
