@@ -104,6 +104,61 @@ async (page) => {
     record('focus=1 keeps the MessageList read surface', opened.messageList, opened);
     // The sub-agent surface is the reason the link exists: the panel toggle must survive focus mode.
     record('focus=1 keeps the sub-agent panel reachable', opened.subagentToggle, opened);
+
+    // ── 3. The panel must name the REVIEWERS that ran (plan gate G6) ───────────────────────────────
+    // An empty or generic panel is a fail: the point of the link is that a judge can read what each
+    // code-reviewer:* sub-agent actually did. This is the half that regressed whenever the roster was
+    // resolved from live pool state only — a finished review's parent is no longer pooled.
+    if (opened.subagentToggle) {
+      await page.locator('[data-testid="subagent-panel-toggle"]').first().click();
+      await page
+        .locator('[data-testid="subagent-item"]')
+        .first()
+        .waitFor({ state: 'visible', timeout: 15000 })
+        .catch(() => {});
+
+      const children = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="subagent-item"]')].map((n) => ({
+          agentId: n.getAttribute('data-agent-id'),
+          text: (n.textContent ?? '').replace(/\s+/g, ' ').trim(),
+        })));
+      const reviewers = children.filter((c) => c.text.includes('code-reviewer:'));
+
+      record('the sub-agent panel lists the children that ran', children.length > 0, { children });
+      record('the listed sub-agents are the code-reviewer:* reviewers', reviewers.length > 0, {
+        children,
+      });
+
+      // Opening one must render ITS transcript, not an empty shell — that is what a judge reads.
+      if (children.length > 0) {
+        await page.locator('[data-testid="subagent-focus-button"]').first().click();
+        const transcript = await page
+          .locator('[data-testid="subagent-transcript"]')
+          .first()
+          .waitFor({ state: 'visible', timeout: 20000 })
+          .then(() => true)
+          .catch(() => false);
+        // The child's transcript is a MessageList, so its content is the usual message groups.
+        const items = await page
+          .locator(
+            '[data-testid="subagent-transcript"] [data-testid="assistant-message-group"], ' +
+              '[data-testid="subagent-transcript"] [data-testid="user-message-group"]')
+          .count()
+          .catch(() => 0);
+        const childError = await page
+          .locator('[data-testid="subagent-error"]')
+          .first()
+          .textContent()
+          .catch(() => null);
+        record('a focused sub-agent renders its persisted transcript', transcript && items > 0, {
+          transcript,
+          items,
+          // A dead parent yields a `subagent_unavailable` LIVE-connection error frame; the persisted
+          // transcript still renders beneath it, so this is reported, not asserted on.
+          childError: childError?.trim() ?? null,
+        });
+      }
+    }
   } catch (e) {
     record('exception', false, String((e && e.stack) || e));
   }
