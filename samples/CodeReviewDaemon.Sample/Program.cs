@@ -284,7 +284,69 @@ builder.Services.AddSingleton<LiveReviewAgentLoopFactory>(sp => new LiveReviewAg
     sp.GetRequiredService<ILoggerFactory>(),
     daemonOptions,
     conversationStore));
-builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => sp.GetRequiredService<LiveReviewAgentLoopFactory>());
+
+if (daemonOptions.UseS2SReviewAgent)
+{
+    // S2S path (opt-in): each review runs as a real conversation on an already-running LmStreaming.Sample
+    // review host over REST, so the deep-link the executor posts opens the parent loop + its
+    // code-reviewer:* sub-agent tree. The in-process LiveReviewAgentLoopFactory stays registered as its
+    // concrete type above (dead-by-default, no work at construction) purely so the SharedAgentFactory below
+    // still resolves; the IReviewAgentLoopFactory the stage executor drives is the S2S one. Fully reversible:
+    // flip UseS2SReviewAgent off and the daemon reverts to the in-process review byte-for-byte.
+    if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
+    {
+        throw new InvalidOperationException(
+            "UseS2SReviewAgent is on but LmStreamingBaseUrl is not configured; set it to the LmStreaming review "
+            + "host base URL (e.g. http://localhost:5051).");
+    }
+    if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
+    {
+        throw new InvalidOperationException(
+            "UseS2SReviewAgent is on but no workspace base path is configured "
+            + "(SandboxGateway:WorkspaceBasePath / CRD_WORKSPACE_BASE_PATH); the S2S review preparer clones the "
+            + "PR checkout under it, and the review host must mount the same base.");
+    }
+
+    // Normalize to a host-root base with a trailing slash so the client's relative paths ("api/workspaces",
+    // "api/conversations") resolve correctly against HttpClient.BaseAddress.
+    var lmStreamingBaseUri = new Uri(
+        daemonOptions.LmStreamingBaseUrl.TrimEnd('/') + "/",
+        UriKind.Absolute);
+
+    // Outbound S2S client over the review host. The raw HttpClient is intentionally long-lived (mirrors the
+    // gateway HttpClients above); it forwards the daemon's own gateway identity (X-Sbx-App-*) so the sandbox
+    // the review provisions is attributed to codereview-daemon, and the X-S2S-Auth secret (never logged).
+    builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
+        new HttpClient { BaseAddress = lmStreamingBaseUri },
+        daemonOptions.LmStreamingS2SSecret,
+        daemonAppId,
+        daemonKeyMissing ? null : daemonAppKey));
+
+    // Host-side workspace preparer: clones the PR checkout under the shared WORKSPACE_BASE_PATH and ensures
+    // the LmStreaming workspace points at that leaf. Uses the SAME host-backed GitRunner the pooled path uses
+    // (privileged, credentialed, never the sandbox runner). Registered only on the S2S path so the executor
+    // resolves it optionally (null ⇒ in-process path, no preparation).
+    builder.Services.AddSingleton(sp => new S2SReviewWorkspacePreparer(
+        sp.GetRequiredService<LmStreamingS2SClient>(),
+        new GitRunner(new HostGitCommandRunner(
+            BuildHostGitCredentialsSource(sp),
+            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+            hostGitAdoOrgs)),
+        effectiveWorkspaceBase!,
+        daemonOptions.LmStreamingReviewMarketplace,
+        sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()));
+
+    builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => new S2SReviewAgentLoopFactory(
+        sp.GetRequiredService<LmStreamingS2SClient>(),
+        daemonOptions,
+        sp.GetRequiredService<ILoggerFactory>()));
+}
+else
+{
+    builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
+        sp.GetRequiredService<LiveReviewAgentLoopFactory>());
+}
+
 builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
     sp.GetRequiredService<LiveReviewAgentLoopFactory>().SharedAgentFactory);
 

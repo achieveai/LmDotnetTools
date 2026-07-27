@@ -43,6 +43,12 @@ internal sealed class ReviewAgent
             .CollectAsync(_agent, reviewInput, cancellationToken)
             .ConfigureAwait(false);
 
+        // Capture the conversation thread id the review ran on. On the in-process path this is the daemon's
+        // own review-run-{id}-{variant} id; on the S2S path it is the id LmStreaming MINTED at provision (the
+        // deep-link target the executor posts on the PR). Read it AFTER the run so the S2S agent has lazily
+        // provisioned (its ThreadId is empty until then).
+        var threadId = _agent.ThreadId;
+
         _logger.LogInformation(
             "Collect-only review run {RunId} produced {Count} assistant message(s), {Length} chars.",
             collected.RunId,
@@ -80,13 +86,15 @@ internal sealed class ReviewAgent
             }
         }
 
-        return new ReviewAgentResult(collected.Text, collected.RunId);
+        return new ReviewAgentResult(collected.Text, collected.RunId, threadId);
     }
 }
 
 /// <summary>
-/// The collect-only output of a review run: the assistant's assembled review text and the agent run id
-/// that produced it (for correlation when the orchestrator persists the review artifact). No score or
-/// verdict — grading is the Judge agent's responsibility (P4.1).
+/// The collect-only output of a review run: the assistant's assembled review text, the agent run id that
+/// produced it (for correlation when the orchestrator persists the review artifact), and the conversation
+/// <see cref="ThreadId"/> it ran on. On the S2S path <see cref="ThreadId"/> is the LmStreaming-minted id the
+/// executor turns into the posted deep-link; on the in-process path it is the daemon's own thread id. No score
+/// or verdict — grading is the Judge agent's responsibility (P4.1).
 /// </summary>
-internal sealed record ReviewAgentResult(string ReviewText, string? RunId);
+internal sealed record ReviewAgentResult(string ReviewText, string? RunId, string? ThreadId);

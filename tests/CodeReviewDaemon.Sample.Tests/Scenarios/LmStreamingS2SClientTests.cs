@@ -1,0 +1,155 @@
+using System.Net;
+using System.Net.Sockets;
+using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Tests.Infrastructure;
+
+namespace CodeReviewDaemon.Sample.Tests.Scenarios;
+
+/// <summary>
+/// Unit tests for <see cref="LmStreamingS2SClient"/> over a scripted <see cref="FakeHttpMessageHandler"/>
+/// (no network). They pin the wire contract the review host expects: provision sends
+/// <c>ModeId="workspace-agent"</c> and attaches the S2S auth headers (<c>X-S2S-Auth</c> +
+/// the <c>X-Sbx-App-*</c> gateway-credential passthrough) on every request; the workspace and
+/// message/status round-trips parse the server's camelCase JSON; and a connection-refused socket error
+/// surfaces as the actionable <see cref="S2SConnectionException"/> rather than a raw transport failure.
+/// </summary>
+public sealed class LmStreamingS2SClientTests
+{
+    private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
+        new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
+
+    [Fact]
+    public async Task ProvisionAsync_sends_workspace_agent_mode_and_attaches_the_auth_headers()
+    {
+        string? capturedS2SAuth = null;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.Method == HttpMethod.Post
+                    && req.RequestUri!.ToString().Contains("api/conversations", StringComparison.Ordinal),
+                req =>
+                {
+                    capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
+                        ? values.FirstOrDefault()
+                        : null;
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{\"threadId\":\"thread-abc123\"}"),
+                    };
+                });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(
+            http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
+
+        var threadId = await client.ProvisionAsync("ws-1", "openai", "workspace-agent", CancellationToken.None);
+
+        threadId.Should().Be("thread-abc123");
+        var recorded = handler.Requests.Should().ContainSingle().Subject;
+        recorded.Body.Should().Contain("\"workspaceId\":\"ws-1\"")
+            .And.Contain("\"providerId\":\"openai\"")
+            .And.Contain("\"modeId\":\"workspace-agent\"");
+        // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
+        recorded.SbxAppId.Should().Be("codereview-daemon");
+        recorded.SbxAppKey.Should().Be("sbx-key");
+        capturedS2SAuth.Should().Be("s2s-secret");
+    }
+
+    [Fact]
+    public async Task ProvisionAsync_omits_the_auth_headers_when_no_secret_or_app_credentials_are_configured()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-x\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
+
+        _ = await client.ProvisionAsync("ws-1", "openai", "workspace-agent", CancellationToken.None);
+
+        var recorded = handler.Requests.Should().ContainSingle().Subject;
+        recorded.SbxAppId.Should().BeNull();
+        recorded.SbxAppKey.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ListWorkspacesAsync_and_CreateWorkspaceAsync_round_trip_the_workspace_json()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces",
+                "[{\"id\":\"ws-1\",\"name\":\"Review PR #118\",\"directoryRelPath\":\"review-pr-118\","
+                    + "\"marketplaces\":[\"code-reviewer\"]}]")
+            .OnJson(
+                HttpMethod.Post,
+                "api/workspaces",
+                "{\"id\":\"ws-2\",\"name\":\"Review PR #200\",\"directoryRelPath\":\"review-pr-200\","
+                    + "\"marketplaces\":[\"code-reviewer\"]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var listed = await client.ListWorkspacesAsync(CancellationToken.None);
+        var existing = listed.Should().ContainSingle().Subject;
+        existing.Id.Should().Be("ws-1");
+        existing.DirectoryRelPath.Should().Be("review-pr-118");
+        existing.Marketplaces.Should().ContainSingle().Which.Should().Be("code-reviewer");
+
+        var created = await client.CreateWorkspaceAsync(
+            "Review PR #200", "review-pr-200", ["code-reviewer"], CancellationToken.None);
+        created.Id.Should().Be("ws-2");
+        created.DirectoryRelPath.Should().Be("review-pr-200");
+
+        var postBody = handler.Requests.Single(r => r.Method == HttpMethod.Post).Body;
+        postBody.Should().Contain("\"name\":\"Review PR #200\"")
+            .And.Contain("\"directoryRelPath\":\"review-pr-200\"")
+            .And.Contain("\"marketplaces\":[\"code-reviewer\"]");
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_then_GetStatusByInputIdAsync_round_trip_the_run_status()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-9\",\"response\":{\"text\":\"LGTM, ship it.\"}}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var inputId = await client.SendMessageAsync("thread-1", "review this PR", CancellationToken.None);
+        inputId.Should().Be("input-1");
+
+        var status = await client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
+        status.Status.Should().Be("Completed");
+        status.RunId.Should().Be("run-9");
+        status.ResponseText.Should().Be("LGTM, ship it.");
+    }
+
+    [Fact]
+    public async Task GetStatusByInputIdAsync_returns_null_response_text_while_the_run_is_still_in_progress()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"InProgress\",\"runId\":\"run-9\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var status = await client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
+
+        status.Status.Should().Be("InProgress");
+        status.ResponseText.Should().BeNull("the final assistant text is absent until the run is terminal");
+    }
+
+    [Fact]
+    public async Task A_connection_refused_socket_error_surfaces_as_S2SConnectionException()
+    {
+        // The review host isn't listening: the handler throws a bare ConnectionRefused SocketException, which
+        // HttpClient propagates unwrapped. The client must translate that into the actionable "start it" error.
+        var handler = new FakeHttpMessageHandler()
+            .On(_ => true, _ => throw new SocketException((int)SocketError.ConnectionRefused));
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.ListWorkspacesAsync(CancellationToken.None);
+
+        (await act.Should().ThrowAsync<S2SConnectionException>())
+            .Which.Message.Should().Contain("http://localhost:5051");
+    }
+}

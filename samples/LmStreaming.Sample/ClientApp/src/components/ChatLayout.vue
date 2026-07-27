@@ -261,6 +261,19 @@ function getDeepLinkThreadIdFromPageQuery(): string | null {
   return value && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Reads the ?focus=1 query param (same URLSearchParams convention as the deep-link threadId and
+ * ?record=). When set, the layout renders a read-focused single-conversation view — no left
+ * sidebar and no header workspace/provider/mode pickers or action buttons — so a deep-link posted
+ * on a PR opens straight into the review conversation + its sub-agent tabs, stripped of app chrome.
+ * The value is fixed for the page load (query strings don't change without a navigation), so a
+ * one-shot read is sufficient.
+ */
+const focusMode = computed(() => {
+  const value = new URLSearchParams(window.location.search).get('focus');
+  return value === '1' || value === 'true';
+});
+
 // Load conversations and modes on mount
 onMounted(async () => {
   // Load modes, tools, and providers in parallel with conversations
@@ -517,6 +530,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="chat-layout" data-testid="chat-layout">
     <ConversationSidebar
+      v-if="!focusMode"
       :conversations="conversations"
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
@@ -530,7 +544,7 @@ onBeforeUnmount(() => {
     <main class="chat-main">
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
         <button
-          v-if="sidebarCollapsed"
+          v-if="sidebarCollapsed && !focusMode"
           class="menu-btn not-found-menu-btn"
           @click="handleToggleCollapse"
           title="Open sidebar"
@@ -546,7 +560,7 @@ onBeforeUnmount(() => {
       <div v-else class="chat-view">
         <header class="chat-header">
           <button
-            v-if="sidebarCollapsed"
+            v-if="sidebarCollapsed && !focusMode"
             class="menu-btn"
             @click="handleToggleCollapse"
             title="Open sidebar"
@@ -554,7 +568,7 @@ onBeforeUnmount(() => {
             =
           </button>
           <h1>LmStreaming Chat</h1>
-          <div class="header-actions">
+          <div v-if="!focusMode" class="header-actions">
             <WorkspaceSelector
               ref="workspaceSelectorRef"
               :workspaces="workspaces"

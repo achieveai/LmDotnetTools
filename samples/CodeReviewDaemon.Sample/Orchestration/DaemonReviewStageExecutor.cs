@@ -135,6 +135,24 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private readonly ConcurrentDictionary<long, LeasedReview> _leasedReviews = new();
 
+    /// <summary>
+    /// The S2S review-workspace preparer, non-null ONLY when <see cref="CodeReviewDaemonOptions.UseS2SReviewAgent"/>
+    /// is on (registered in Program.cs and auto-injected via <c>ActivatorUtilities.CreateInstance</c>). On the
+    /// in-process path it stays null and every code path below skips preparation, so nothing changes. When set,
+    /// the executor clones the PR checkout to the shared gateway host and mints the LmStreaming workspace the S2S
+    /// factory provisions against (design §4 — the workspace is what surfaces the <c>code-reviewer:*</c> tree).
+    /// </summary>
+    private readonly S2SReviewWorkspacePreparer? _preparer;
+
+    /// <summary>
+    /// Per-run prepared LmStreaming workspace id (run id → workspaceId), populated by
+    /// <see cref="EnsurePreparedWorkspaceAsync"/> only on the S2S path. Held in memory (like
+    /// <see cref="_leasedReviews"/>) so the several <c>_loopFactory.Create</c> sites of one run share ONE clone
+    /// + workspace instead of re-preparing per call; the preparer is itself idempotent (clone-probe skips, and
+    /// the workspace lookup reuses), so a resume after a restart re-prepares cheaply against the same leaf.
+    /// </summary>
+    private readonly ConcurrentDictionary<long, string> _preparedWorkspaces = new();
+
     /// <summary>Host lifetime, used to stop the daemon when a session lacks code-reviewer skill/agent
     /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
     private readonly Microsoft.Extensions.Hosting.IHostApplicationLifetime? _appLifetime;
@@ -155,7 +173,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
         Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
-        string? gatewayBaseUrl = null)
+        string? gatewayBaseUrl = null,
+        S2SReviewWorkspacePreparer? preparer = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -174,6 +193,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _slotWorkspace = slotWorkspace;
         _appLifetime = appLifetime;
         _gatewayBaseUrl = gatewayBaseUrl;
+        _preparer = preparer;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -958,6 +978,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
+        // S2S path: clone the PR checkout to the shared gateway host and mint/reuse the LmStreaming workspace the
+        // hosted review provisions against, BEFORE any _loopFactory.Create call — the S2S factory requires a
+        // prepared workspaceId (it throws without one) and this is what surfaces the code-reviewer:* sub-agent
+        // tree behind the deep-link. No-op (returns null, does nothing) on the in-process path.
+        await EnsurePreparedWorkspaceAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+
         // Resume-safety for the pooled path: the slot lease recorded by ContextReady lives ONLY in the
         // in-memory _leasedReviews, so a run that persisted Stage=ContextReady in an earlier process (a daemon
         // restart, or a resume after a RetryPending) arrives here with no lease. Without one, BuildToolContextAsync
@@ -1534,7 +1560,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactKind = ReviewArtifactKind,
             Provider = provider,
             Payload = JsonSerializer.Serialize(
-                new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId)),
+                new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId, result.ThreadId)),
         });
     }
 
@@ -1567,7 +1593,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // emitted its review + notes at 17/150 turns and never posted), when posting is authorized we ALSO drive
         // one post-enforcement turn AFTER the review (ReviewAgent) that makes it actually post. The host-side
         // single-summary publisher stays an off-by-default fallback (EnableHostSummaryFallback).
-        var shouldPost = _options.EnableCommentPosting;
+        // On the S2S path the review runs on the LmStreaming host, whose agent is domain-agnostic and CANNOT post
+        // to a GitHub/ADO PR — so agent-inline posting (the should_post prompt step AND the enforcement turn) is
+        // forced off; PostAsync posts host-side for both providers instead (with the deep-link appended).
+        var shouldPost = _options.EnableCommentPosting && !_options.UseS2SReviewAgent;
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
             toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
@@ -1577,8 +1606,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // fabricates a "no files found / couldn't read the repo" caveat) rather than doing the multi-step
         // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
         var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
+        // On the S2S path pass the LmStreaming workspace this run prepared (cached at ReviewAsync entry) so the
+        // hosted conversation binds to the PR checkout + code-reviewer marketplace. Null on the in-process path,
+        // where the live/fake factory ignores it. The escalation-ladder retries share the same workspace (a fresh
+        // THREAD reloads no history but reviews the same code) — only the daemon-internal threadId differs.
+        _preparedWorkspaces.TryGetValue(run.Id, out var workspaceId);
         await using var loop = _loopFactory.Create(
-            profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext);
+            profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
+            workspaceId: workspaceId);
         var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
         // Only when authorized to post: the follow-up turn that forces the agent to actually deliver its review.
         var postEnforcement = shouldPost ? DaemonAgentFactory.CreatePostEnforcementPrompt(variables) : null;
@@ -1637,8 +1672,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             _options.BotName, repo, run.PrId, false, checkoutRoot, storeRoot,
             null, run.HeadSha, prevHeadSha, reviewRound, []);
         var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
+        // Same prepared S2S workspace as the primary arm (cached at ReviewAsync entry); null in-process. The
+        // comparison arm stays diff-only in its prompt, but on S2S it still provisions against the PR workspace
+        // (the factory requires one) — a distinct conversation the deep-link machinery does not link.
+        _preparedWorkspaces.TryGetValue(run.Id, out var workspaceId);
         await using var loop = _loopFactory.Create(
-            profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);
+            profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId),
+            _options.VariantReasoningEffort, workspaceId: workspaceId);
         var reviewer = new VariantReviewer(loop, _store, _loggerFactory.CreateLogger<VariantReviewer>());
         _ = await reviewer.ReviewAsync(run.Id, provider, _comparisonVariant, reviewInput, cancellationToken)
             .ConfigureAwait(false);
@@ -1651,11 +1691,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return;
         }
 
-        var (_, provider) = ResolveRepo(run);
+        var (repo, provider) = ResolveRepo(run);
         var reviewText = ReadReviewText(run.Id);
 
         var profile = DaemonAgentFactory.CreateJudgeProfile();
-        await using var loop = _loopFactory.Create(profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId));
+        // The Judge is its own stage, so the per-run workspace cache may be empty on a resume — ensure it (S2S
+        // path only; no-op in-process). The judge grades the persisted review text and needs no repo tools, but
+        // the S2S factory still requires a workspaceId to provision the hosted conversation.
+        var judgeWorkspaceId = await EnsurePreparedWorkspaceAsync(run, repo, provider, cancellationToken)
+            .ConfigureAwait(false);
+        await using var loop = _loopFactory.Create(
+            profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), workspaceId: judgeWorkspaceId);
         var judge = new JudgeAgent(loop, _store, _loggerFactory.CreateLogger<JudgeAgent>());
 
         var judgingInput = $"Grade this code review:\n\n{reviewText}";
@@ -1680,7 +1726,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // provider — it reads the persisted review only to gate RETENTION (commit/push the notes) and to free
         // the pooled slot + sandbox session. An empty review retains nothing; the run row still prevents
         // re-review, and the slot/session are still freed below, so nothing is leaked or looped.
-        var reviewText = ReadReviewText(run.Id);
+        var reviewArtifact = ReadReviewArtifact(run.Id);
+        var reviewText = reviewArtifact.ReviewText;
         var hasContent = !string.IsNullOrWhiteSpace(reviewText);
         if (!hasContent)
         {
@@ -1690,14 +1737,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id);
         }
 
-        // Host-side single-summary posting is an OFF-by-default fallback now (EnableHostSummaryFallback): the
-        // review agent posts inline itself over the egress proxy (see should_post), which is what we want. This
-        // path stays only as a safety net (e.g. a run that produced review text but couldn't post inline) and
-        // posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
+        // Host-side single-summary posting. Two ways it fires:
+        //   • S2S path (UseS2SReviewAgent) — MANDATORY: the LmStreaming-hosted agent is domain-agnostic and
+        //     CANNOT post to a GitHub/ADO PR (agent-inline posting was forced off in RunReviewAttemptAsync), so
+        //     this host-side post is the ONLY delivery path, for BOTH providers, and it carries the deep-link.
+        //   • In-process path — an OFF-by-default fallback (EnableHostSummaryFallback) for a run that produced
+        //     review text but couldn't post inline.
+        // Posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
         // runs BEFORE DestroyAsync but the publisher uses its own DI HttpClient/token, not the sandbox session.
-        if (hasContent && !IsNoNewFindingsSentinel(reviewText) && _options.EnableHostSummaryFallback)
+        var postHostSide = _options.UseS2SReviewAgent || _options.EnableHostSummaryFallback;
+        if (hasContent && !IsNoNewFindingsSentinel(reviewText) && postHostSide)
         {
-            await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
+            var deepLink = BuildDeepLink(reviewArtifact.ThreadId);
+            await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, deepLink, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Terminal-stage session teardown (design §7), done BEFORE the slot is stripped/returned below: the
@@ -1757,21 +1810,27 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// Posts the persisted review to an ADO pull request host-side (GitHub posting is agent-owned via the
-    /// code-reviewer:post-pr-review skill, which is GitHub-only). Builds the head_sha-scoped idempotency key and
-    /// delegates to <see cref="ReviewPoster"/>, whose 3-tier check (outbox replay → provider backstop scan →
-    /// post) guarantees exactly-once across re-polls and restarts. The body is prefixed with the configured bot
-    /// name. Requires an ADO <see cref="IReviewCommentPublisher"/> to be registered (Program.cs, gated on
-    /// <c>EnableAdoProvider</c>); throws if none matches so a misconfiguration is loud, not a silent no-post.
+    /// Posts the persisted review to the PR host-side via the provider's registered
+    /// <see cref="IReviewCommentPublisher"/> (GitHub and ADO both post here — the code-reviewer:post-pr-review
+    /// skill path was abandoned). Builds the head_sha-scoped idempotency key and delegates to
+    /// <see cref="ReviewPoster"/>, whose 3-tier check (outbox replay → provider backstop scan → post) guarantees
+    /// exactly-once across re-polls and restarts. The body is prefixed with the configured bot name; when
+    /// <paramref name="deepLink"/> is set (the S2S path) a single "Full review conversation" line is appended so
+    /// the reader can open the hosted conversation + its sub-agent tree. Requires a publisher for
+    /// <paramref name="provider"/> to be registered; throws if none matches so a misconfiguration is loud, not a
+    /// silent no-post.
     /// </summary>
     private async Task PostReviewCommentHostSideAsync(
-        ReviewRun run, RepoIdentity repo, string provider, string reviewText, CancellationToken cancellationToken)
+        ReviewRun run, RepoIdentity repo, string provider, string reviewText, string? deepLink,
+        CancellationToken cancellationToken)
     {
         var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal))
             ?? throw new InvalidOperationException(
                 $"No review-comment publisher registered for provider '{provider}'; cannot post the review for run {run.Id}.");
         var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
-        var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
+        var postedBody = string.IsNullOrWhiteSpace(deepLink)
+            ? $"[{_options.BotName}]\n\n{reviewText}"
+            : $"[{_options.BotName}]\n\n{reviewText}\n\n🔎 Full review conversation: {deepLink}";
         var key = new IdempotencyKeyComponents(
             Provider: provider,
             OrgOrOwner: repo.OrgOrOwner,
@@ -1788,8 +1847,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             LivePostingAuthorized: _options.EnableCommentPosting);
         var outcome = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation(
-            "Run {RunId}: ADO review post outcome {Outcome} (response {ResponseId}).",
-            run.Id, outcome.Kind, outcome.ProviderResponseId ?? "-");
+            "Run {RunId}: host-side {Provider} review post outcome {Outcome} (response {ResponseId}, deepLink={HasDeepLink}).",
+            run.Id, provider, outcome.Kind, outcome.ProviderResponseId ?? "-", !string.IsNullOrWhiteSpace(deepLink));
     }
 
     /// <summary>
@@ -1995,6 +2054,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private string ReadReviewText(long reviewRunId) =>
         ReadArtifactPayload<ReviewArtifactPayload>(reviewRunId, ReviewArtifactKind).ReviewText;
 
+    private ReviewArtifactPayload ReadReviewArtifact(long reviewRunId) =>
+        ReadArtifactPayload<ReviewArtifactPayload>(reviewRunId, ReviewArtifactKind);
+
     private T ReadArtifactPayload<T>(long reviewRunId, string kind)
     {
         var artifact = _store.GetArtifacts(reviewRunId)
@@ -2021,6 +2083,52 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     private static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";
+
+    /// <summary>
+    /// On the S2S path (<see cref="_preparer"/> non-null) ensures this run's LmStreaming review workspace exists
+    /// — cloning the PR checkout to the shared gateway host and minting/reusing the workspace — and caches its id
+    /// in <see cref="_preparedWorkspaces"/> so every <c>_loopFactory.Create</c> site of the run shares one
+    /// preparation. Returns the prepared workspace id, or <c>null</c> on the in-process path (no preparer wired),
+    /// where callers pass no workspaceId and the live/fake factory ignores it.
+    /// </summary>
+    private async Task<string?> EnsurePreparedWorkspaceAsync(
+        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
+    {
+        if (_preparer is null)
+        {
+            return null;
+        }
+
+        if (_preparedWorkspaces.TryGetValue(run.Id, out var cached))
+        {
+            return cached;
+        }
+
+        var prepared = await _preparer.PrepareAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        _preparedWorkspaces[run.Id] = prepared.WorkspaceId;
+        return prepared.WorkspaceId;
+    }
+
+    /// <summary>
+    /// The deep-link back to the LmStreaming review conversation for the given minted <paramref name="threadId"/>,
+    /// or <c>null</c> when there is nothing to link (in-process path, or <see cref="CodeReviewDaemonOptions.LmStreamingBaseUrl"/>
+    /// unset). Format <c>{baseUrl}/?threadId={threadId}&amp;focus=1</c> — the <c>?threadId=</c> write side is
+    /// proven in ConversationDaemon.Sample; <c>&amp;focus=1</c> selects LmStreaming's focused single-conversation
+    /// view. Only built on the S2S path, where <paramref name="threadId"/> is the id LmStreaming minted at
+    /// provision (the in-process <c>review-run-*</c> id would not resolve to a hosted conversation).
+    /// </summary>
+    private string? BuildDeepLink(string? threadId)
+    {
+        if (!_options.UseS2SReviewAgent
+            || string.IsNullOrWhiteSpace(threadId)
+            || string.IsNullOrWhiteSpace(_options.LmStreamingBaseUrl))
+        {
+            return null;
+        }
+
+        var baseUrl = _options.LmStreamingBaseUrl.TrimEnd('/');
+        return $"{baseUrl}/?threadId={threadId}&focus=1";
+    }
 }
 
 /// <summary>The persisted PR diff/context (kind <c>review-context</c>). <see cref="FileManifest"/> is the
@@ -2037,8 +2145,11 @@ internal sealed record ContextArtifactPayload(
     string? CheckoutRoot = null,
     string? StoreRoot = null);
 
-/// <summary>The persisted primary review output (kind <c>review</c>).</summary>
-internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, string VariantId);
+/// <summary>The persisted primary review output (kind <c>review</c>). <see cref="ThreadId"/> is the conversation
+/// thread the review ran on — on the S2S path the LmStreaming-minted id the Posted stage turns into the posted
+/// deep-link; on the in-process path the daemon's own <c>review-run-*</c> id (never linked). Null on older
+/// artifacts written before the field existed.</summary>
+internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, string VariantId, string? ThreadId = null);
 
 /// <summary>
 /// The host-side pooled-review dependencies (Layer 1), non-null in <see cref="DaemonReviewStageExecutor"/>

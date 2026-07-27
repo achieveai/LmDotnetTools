@@ -710,6 +710,42 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         publisher.PostedBodies.Should().BeEmpty("an empty review must not claim the head's dedup slot");
     }
 
+    // ── S2S deep-link: the posted review links back to the LmStreaming review conversation ───────────
+    // When the review runs over the LmStreaming S2S API (UseS2SReviewAgent), the hosted conversation is the
+    // deliverable a human judge opens. The daemon still owns posting, so it is the single provider-uniform
+    // place that appends the deep-link — {LmStreamingBaseUrl}/?threadId={mintedThreadId}&focus=1 — under the
+    // [{BotName}] prefix, exactly once, for BOTH providers. (The fake agent mints "fake-thread"; no workspace
+    // preparer is wired on this ctor, so Create receives workspaceId: null and the agent still surfaces its
+    // thread id.) UseS2SReviewAgent alone opens the host-side post path (postHostSide) — the host summary
+    // fallback is not required — while shouldPost stays false, so no would-be enforcement turn runs.
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_appends_the_s2s_deep_link_once_under_the_bot_prefix_for_every_provider(string provider)
+    {
+        static CodeReviewDaemonOptions S2SOptions() =>
+            new()
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+                EnableCommentPosting = true,
+            };
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, S2SOptions())
+            : Fixture.GitHub(LoggerFactory, S2SOptions());
+        var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
+
+        await RunAllStagesAsync(fixture, run);
+
+        const string expectedLink = "http://localhost:5051/?threadId=fake-thread&focus=1";
+        var body = publisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Should().StartWith("[Revobot]\n\n", "the deep-link is appended under the existing bot prefix");
+        body.Should().Contain($"🔎 Full review conversation: {expectedLink}");
+        // Appended exactly once — splitting on the link yields exactly two segments.
+        body.Split(expectedLink).Length.Should().Be(2, "the deep-link must be appended exactly once");
+    }
+
     /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>
     private static void SeedReviewBotSkeleton(Fixture fixture)
     {
