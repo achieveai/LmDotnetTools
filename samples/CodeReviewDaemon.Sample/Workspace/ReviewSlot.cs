@@ -7,7 +7,7 @@ namespace CodeReviewDaemon.Sample.Workspace;
 /// is purely the addressing contract.
 /// </summary>
 /// <param name="Index">The slot's stable 0-based identity within the pool (recycled on return).</param>
-/// <param name="HostPath">`&lt;hostRoot&gt;/slot-{Index}` — the slot's root directory.</param>
+/// <param name="HostPath">`&lt;hostRoot&gt;/&lt;slotDirPrefix&gt;{Index}` — the slot's root directory.</param>
 /// <param name="StorePath">`&lt;HostPath&gt;/store` — the warm store clone, cloned once and reused
 /// across leases.</param>
 /// <param name="ScratchPath">`&lt;HostPath&gt;/&lt;scratchDirName&gt;` — the per-review working tree.
@@ -52,6 +52,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 {
     private readonly string _hostRoot;
     private readonly string _scratchDirName;
+    private readonly string _slotDirPrefix;
     private readonly Func<ReviewSlot, CancellationToken, Task> _ensureStoreClonedAsync;
     private readonly ILogger<ReviewSlotPool> _logger;
     private readonly SemaphoreSlim _gate;
@@ -59,12 +60,24 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
     private readonly Stack<int> _freeIndexes = new();
     private int _nextIndex;
 
+    /// <param name="maxSlots">Maximum concurrent leases; also the ceiling on allocated slot indices.</param>
+    /// <param name="hostRoot">Root directory the slot dirs are created under. Null falls back to a
+    /// <c>review-pool</c> dir beside the binary.</param>
+    /// <param name="scratchDirName">Name of the per-review working-tree dir inside each slot.</param>
+    /// <param name="ensureStoreClonedAsync">Invoked on a slot's FIRST lease only, to populate its store.</param>
+    /// <param name="logger">Pool logger.</param>
+    /// <param name="slotDirPrefix">Prefix for each slot's directory name under <paramref name="hostRoot"/>.
+    /// Defaults to the historical <c>slot-</c>. The S2S path overrides it (and sets <paramref name="hostRoot"/>
+    /// to the workspace base) so a leased slot's directory is a <em>single</em> path segment — LmStreaming's
+    /// workspace-directory sanitizer accepts one segment only, and a nested name would silently collapse to a
+    /// different directory.</param>
     public ReviewSlotPool(
         int maxSlots,
         string? hostRoot,
         string scratchDirName,
         Func<ReviewSlot, CancellationToken, Task> ensureStoreClonedAsync,
-        ILogger<ReviewSlotPool> logger)
+        ILogger<ReviewSlotPool> logger,
+        string slotDirPrefix = "slot-")
     {
         if (maxSlots < 1)
         {
@@ -73,13 +86,22 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
         ArgumentNullException.ThrowIfNull(ensureStoreClonedAsync);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentException.ThrowIfNullOrWhiteSpace(slotDirPrefix);
 
         _hostRoot = hostRoot ?? Path.Combine(AppContext.BaseDirectory, "review-pool");
         _scratchDirName = scratchDirName;
+        _slotDirPrefix = slotDirPrefix;
         _ensureStoreClonedAsync = ensureStoreClonedAsync;
         _logger = logger;
         _gate = new SemaphoreSlim(maxSlots, maxSlots);
     }
+
+    /// <summary>
+    /// The directory name this pool would give slot <paramref name="index"/> — the single path segment the
+    /// S2S path hands to LmStreaming as a workspace directory. Exposed so startup can assert the name survives
+    /// that sanitizer unchanged before any review runs.
+    /// </summary>
+    public string SlotDirectoryName(int index) => $"{_slotDirPrefix}{index}";
 
     /// <summary>
     /// Awaits a free permit, then hands out a slot — a recycled one from the free list if any is
@@ -171,7 +193,7 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
     private ReviewSlot BuildSlot(int index)
     {
-        var hostPath = Path.Combine(_hostRoot, $"slot-{index}");
+        var hostPath = Path.Combine(_hostRoot, SlotDirectoryName(index));
         return new ReviewSlot(index, hostPath, Path.Combine(hostPath, "store"), Path.Combine(hostPath, _scratchDirName));
     }
 

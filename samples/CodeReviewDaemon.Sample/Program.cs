@@ -530,6 +530,25 @@ if (daemonOptions.EnableToolAssistedReview
                 ? Path.Combine(effectiveWorkspaceBase, "review-pool")
                 : Path.Combine(AppContext.BaseDirectory, "review-pool");
 
+    var slotDirPrefix = "slot-";
+    // S2S flattens the slot to ONE segment directly under the base. The gateway re-roots a workspace by a
+    // multi-segment rel path just fine (that is the in-process layout, {base}/review-pool/slot-{i}), but the
+    // S2S path names the same directory to LmStreaming as a workspace *directory*, and
+    // FileWorkspaceStore.SanitizeDirectory strips '/' and '\\' — "review-pool/slot-0" would silently become
+    // "review-poolslot-0", a different (empty) directory the agent would review as if it were the repo.
+    // {base}/review-slot-{i} sits BESIDE the untouched review-pool/ used by the in-process profiles.
+    if (daemonOptions.UseS2SReviewAgent && !string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
+    {
+        poolRoot = effectiveWorkspaceBase!.TrimEnd('/', '\\');
+        slotDirPrefix = "review-slot-";
+    }
+
+    // Host-side only (never mounted) on the in-process path; on S2S the knowledge-extraction arm mounts it as
+    // its own workspace, so it must be a sanitize-stable single segment too — hence the distinct leaf name.
+    var sweeperRepoRoot = daemonOptions.UseS2SReviewAgent
+        ? Path.Combine(poolRoot, "review-sweeper-store")
+        : Path.Combine(poolRoot, "sweeper-store");
+
     builder.Services.AddSingleton(sp =>
     {
         var hostRunner = new HostGitCommandRunner(
@@ -554,7 +573,28 @@ if (daemonOptions.EnableToolAssistedReview
                         $"Cloning the review store into slot {slot.Index} failed (exit {clone.ExitCode}): {clone.Stderr}");
                 }
             },
-            loggerFactory.CreateLogger<ReviewSlotPool>());
+            loggerFactory.CreateLogger<ReviewSlotPool>(),
+            slotDirPrefix);
+
+        // A slot directory whose name does not survive LmStreaming's workspace-directory sanitizer unchanged
+        // would be mounted as a DIFFERENT, empty directory — a failure that looks like success: the agent finds
+        // no repo, reports nothing wrong, and the review passes vacuously. Fail at startup instead.
+        if (daemonOptions.UseS2SReviewAgent)
+        {
+            for (var i = 0; i < daemonOptions.ReviewPoolSize; i++)
+            {
+                var slotDir = pool.SlotDirectoryName(i);
+                var sanitized = S2SReviewWorkspacePreparer.SanitizeLeaf(slotDir);
+                if (!string.Equals(slotDir, sanitized, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Review slot directory '{slotDir}' is not stable under LmStreaming's workspace-directory "
+                            + $"sanitizer (it becomes '{sanitized}'), so the hosted conversation would be mounted on "
+                            + "a different, empty directory. Choose a slot prefix of lowercase letters, digits and "
+                            + "dashes only.");
+                }
+            }
+        }
 
         // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
         var preparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
@@ -568,7 +608,6 @@ if (daemonOptions.EnableToolAssistedReview
         var providers = sp.GetServices<IPrProvider>().ToList();
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
         var hostGit = new GitRunner(slots.HostRunner);
-        var sweeperRepoRoot = Path.Combine(poolRoot, "sweeper-store");
         var branchManager = new ReviewBranchManager(
             hostGit, slots.HostFileSystem, loggerFactory.CreateLogger<ReviewBranchManager>());
         var sweepLogger = loggerFactory.CreateLogger("pr-lifecycle-sweep");
@@ -581,6 +620,13 @@ if (daemonOptions.EnableToolAssistedReview
         // over the host store checkout, and let the sweeper's subsequent MergeToDefaultAsync carry the
         // new/updated Knowledge Base entry into the default branch. Unset → null → the sweep is unchanged.
         var loopFactory = sp.GetRequiredService<IReviewAgentLoopFactory>();
+        // Non-null only on the S2S path. The extraction loop there is a HOSTED conversation, and the S2S
+        // factory refuses to open one without a workspace — which is why this arm has been a silent no-op on
+        // S2S (the factory threw and KnowledgeExtractionCommitter's catch-all swallowed it). Naming the
+        // sweeper's own store checkout as a workspace both fixes that and grounds the extraction: the agent
+        // can read the existing KnowledgeBase/ before deciding whether this PR taught anything durable.
+        var s2sPreparer = sp.GetService<S2SReviewWorkspacePreparer>();
+        var sweeperLeaf = Path.GetFileName(sweeperRepoRoot.TrimEnd('/', '\\'));
         Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null;
         if (daemonOptions.EnableKnowledgeAgent)
         {
@@ -604,8 +650,22 @@ if (daemonOptions.EnableToolAssistedReview
                     var knowledgeModelId = string.IsNullOrWhiteSpace(daemonOptions.KnowledgeModelId)
                         ? null
                         : daemonOptions.KnowledgeModelId;
+                    // Idempotent: reuses the workspace pointing at this leaf across every extraction.
+                    PreparedReviewWorkspace? knowledgeWorkspace = null;
+                    if (s2sPreparer is not null)
+                    {
+                        var workspaceId = await s2sPreparer
+                            .EnsureWorkspaceForLeafAsync(sweeperLeaf, "Knowledge extraction store", innerCt)
+                            .ConfigureAwait(false);
+                        knowledgeWorkspace = new PreparedReviewWorkspace(
+                            sweeperLeaf, workspaceId, sweeperRepoRoot, pr.PrId);
+                    }
+
                     await using var loop = loopFactory.Create(
-                        profile, modelId: knowledgeModelId, threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}");
+                        profile,
+                        modelId: knowledgeModelId,
+                        threadId: $"knowledge-extract-{pr.Provider}-{pr.PrId}",
+                        reviewWorkspace: knowledgeWorkspace);
                     var agent = new KnowledgeAgent(
                         loop, slots.HostFileSystem, loggerFactory.CreateLogger<KnowledgeAgent>());
                     var todayUtc = DateTime.UtcNow.ToString(

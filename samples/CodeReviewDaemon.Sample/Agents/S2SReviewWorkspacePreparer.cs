@@ -1,5 +1,6 @@
 using System.Globalization;
 using CodeReviewDaemon.Sample.Persistence.Models;
+using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
 
 namespace CodeReviewDaemon.Sample.Agents;
@@ -12,8 +13,8 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// mounts, so the PR checkout must already exist on the shared gateway host at that leaf. This preparer
 /// closes that gap for one PR:
 /// <list type="number">
-/// <item><b>Derives a single-segment leaf</b> (<c>review-pr-&lt;n&gt;</c>) that survives
-///   <c>FileWorkspaceStore.SanitizeDirectory</c> unchanged, so the daemon's host clone dir and
+/// <item><b>Derives a single-segment leaf</b> (<c>review-&lt;provider&gt;-&lt;owner&gt;-&lt;repo&gt;-pr-&lt;n&gt;</c>)
+///   that survives <c>FileWorkspaceStore.SanitizeDirectory</c> unchanged, so the daemon's host clone dir and
 ///   LmStreaming's stored <c>DirectoryRelPath</c> name the SAME directory.</item>
 /// <item><b>Clones the PR checkout host-side</b> into <c>{WorkspaceBasePath}/{leaf}</c> using the
 ///   daemon's own host-process git (the injected host-backed <see cref="GitRunner"/>, NOT the sandbox
@@ -25,6 +26,12 @@ namespace CodeReviewDaemon.Sample.Agents;
 ///   code-reviewer marketplace attached so the gateway surfaces the <c>code-reviewer:*</c> sub-agents.</item>
 /// </list>
 /// The returned <see cref="PreparedReviewWorkspace.WorkspaceId"/> is what the factory provisions against.
+/// <para>
+/// That three-step sequence is the <b>degraded</b> path, used when the reviewed repo is not a submodule of
+/// the cross-repo store. The richer path is <see cref="AdoptSlotAsync"/>: when the Layer-1 pool has leased a
+/// slot, the slot itself becomes the workspace, so the hosted review sees the store, the Knowledge Base and
+/// the PR's own notes dir rather than a bare clone.
+/// </para>
 /// </summary>
 internal sealed class S2SReviewWorkspacePreparer
 {
@@ -62,7 +69,7 @@ internal sealed class S2SReviewWorkspacePreparer
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(repo);
 
-        var leaf = DeriveLeaf(run.PrId);
+        var leaf = DeriveLeaf(repo, provider, run.PrId);
         var hostDir = $"{_workspaceBasePath.TrimEnd('/', '\\')}/{leaf}";
         var remote = TargetRemoteUrl(repo, provider);
 
@@ -74,13 +81,55 @@ internal sealed class S2SReviewWorkspacePreparer
 
         await CloneCheckoutAsync(remote, hostDir, run, cancellationToken).ConfigureAwait(false);
 
-        var marketplaces = string.IsNullOrWhiteSpace(_reviewMarketplace)
-            ? (IReadOnlyList<string>)[]
-            : [_reviewMarketplace];
-        var workspaceId = await EnsureWorkspaceAsync(run, leaf, marketplaces, cancellationToken)
-            .ConfigureAwait(false);
+        var name = string.Format(CultureInfo.InvariantCulture, "Review PR #{0}", run.PrId);
+        var workspaceId = await EnsureWorkspaceForLeafAsync(leaf, name, cancellationToken).ConfigureAwait(false);
 
         return new PreparedReviewWorkspace(leaf, workspaceId, hostDir, run.PrId);
+    }
+
+    /// <summary>
+    /// The pooled-review counterpart of <see cref="PrepareAsync"/>: takes a slot ALREADY leased and
+    /// populated by the Layer-1 pool (<c>ReviewSlotPreparer</c> has cloned/fetched/checked the PR head out
+    /// and put the notes branch in place) and simply names it to LmStreaming as a workspace.
+    /// </summary>
+    /// <remarks>
+    /// It deliberately runs <b>no git at all</b> — re-running the checkout here would fight the preparer for
+    /// the same working tree. The slot's directory name IS the workspace leaf, which is why the pool is
+    /// configured with a single-segment slot prefix on this path: the gateway mounts that leaf at
+    /// <c>/workspace</c>, so the slot's <c>store/</c> and scratch children land at exactly the container paths
+    /// the pooled review stage already computes — the whole point of mounting the slot rather than a bare
+    /// per-PR clone.
+    /// </remarks>
+    public async Task<PreparedReviewWorkspace> AdoptSlotAsync(
+        ReviewSlot slot,
+        ReviewRun run,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(slot);
+        ArgumentNullException.ThrowIfNull(run);
+
+        var leaf = Path.GetFileName(slot.HostPath.TrimEnd('/', '\\'));
+        var sanitized = SanitizeLeaf(leaf);
+        if (!string.Equals(leaf, sanitized, StringComparison.Ordinal))
+        {
+            // Startup already guards this; re-assert at the point of use so a slot root reconfigured at
+            // runtime cannot silently mount a different, empty directory.
+            throw new InvalidOperationException(
+                $"Review slot directory '{leaf}' is not stable under LmStreaming's workspace-directory sanitizer "
+                    + $"(it becomes '{sanitized}'), so the hosted conversation would be mounted on a different, "
+                    + "empty directory.");
+        }
+
+        _logger.LogInformation(
+            "Adopting leased review slot {Index} as the S2S workspace for PR {PrId}: leaf '{Leaf}'.",
+            slot.Index,
+            run.PrId,
+            leaf);
+
+        var name = string.Format(CultureInfo.InvariantCulture, "Review slot {0}", slot.Index);
+        var workspaceId = await EnsureWorkspaceForLeafAsync(leaf, name, cancellationToken).ConfigureAwait(false);
+
+        return new PreparedReviewWorkspace(leaf, workspaceId, slot.HostPath, run.PrId);
     }
 
     /// <summary>
@@ -91,17 +140,23 @@ internal sealed class S2SReviewWorkspacePreparer
     internal GitRunner HostGit => _hostGit;
 
     /// <summary>
-    /// The single-segment host/workspace leaf for a PR. Runs the PR number through the SAME sanitization
-    /// LmStreaming applies (<c>FileWorkspaceStore.SanitizeDirectory</c>: lowercase, whitespace→'-', strip
-    /// path separators + invalid chars + '..'), so the leaf the daemon clones into is byte-for-byte the
-    /// <c>DirectoryRelPath</c> LmStreaming stores and mounts. <c>review-pr-&lt;n&gt;</c> is already safe,
-    /// but sanitizing defends against an odd PR id (e.g. an ADO ref with a slash).
+    /// The single-segment host/workspace leaf for a PR. Runs the full repo identity through the SAME
+    /// sanitization LmStreaming applies (<c>FileWorkspaceStore.SanitizeDirectory</c>: lowercase,
+    /// whitespace→'-', strip path separators + invalid chars + '..'), so the leaf the daemon clones into is
+    /// byte-for-byte the <c>DirectoryRelPath</c> LmStreaming stores and mounts.
     /// </summary>
-    internal static string DeriveLeaf(string prId)
+    /// <remarks>
+    /// The leaf carries provider + owner + repo, not just the PR number: two repos reviewed by the same
+    /// daemon routinely share a PR number, and a number-only leaf would put both reviews in ONE directory —
+    /// each clobbering the other's checkout, which is precisely the interference this path exists to prevent.
+    /// </remarks>
+    internal static string DeriveLeaf(RepoIdentity repo, string provider, string prId)
     {
-        var raw = $"review-pr-{prId}";
+        ArgumentNullException.ThrowIfNull(repo);
+
+        var raw = $"review-{provider}-{repo.OrgOrOwner}-{repo.RepoName}-pr-{prId}";
         var sanitized = SanitizeLeaf(raw);
-        // If sanitization emptied it (a pathological PR id), fall back to a stable, safe constant so we
+        // If sanitization emptied it (a pathological identity), fall back to a stable, safe constant so we
         // never hand the workspace API an empty DirectoryRelPath.
         return string.IsNullOrEmpty(sanitized) ? "review-pr" : sanitized;
     }
@@ -112,7 +167,13 @@ internal sealed class S2SReviewWorkspacePreparer
     /// whitespace runs to '-', strips invalid filename chars + path separators, removes surviving '..',
     /// and trims leading/trailing '-'.
     /// </summary>
-    private static string SanitizeLeaf(string raw)
+    /// <remarks>
+    /// <c>internal</c> rather than private so startup can assert that a directory name it is about to hand
+    /// LmStreaming survives this unchanged. A leaf that sanitizes to something else is the one failure mode
+    /// that LOOKS like it worked: the gateway happily creates the renamed (empty) directory and the agent
+    /// reviews nothing, reporting no findings rather than an error.
+    /// </remarks>
+    internal static string SanitizeLeaf(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -170,17 +231,27 @@ internal sealed class S2SReviewWorkspacePreparer
     }
 
     /// <summary>
-    /// Finds an existing LmStreaming workspace whose <c>DirectoryRelPath</c> is the derived leaf (idempotent
-    /// re-run) and returns its id; otherwise creates one pointing at the leaf with the review marketplace
-    /// attached. The compare is against the leaf the daemon derived — which is already sanitize-stable — so a
-    /// second run for the same PR reuses the workspace rather than colliding.
+    /// Finds an existing LmStreaming workspace whose <c>DirectoryRelPath</c> is <paramref name="leaf"/>
+    /// (idempotent re-run) and returns its id; otherwise creates one pointing at the leaf with the review
+    /// marketplace attached. The compare is against a leaf the caller has already made sanitize-stable, so a
+    /// second run for the same leaf reuses the workspace rather than minting a duplicate.
     /// </summary>
-    private async Task<string> EnsureWorkspaceAsync(
-        ReviewRun run,
+    /// <remarks>
+    /// Shared by all three producers of a leaf — the per-PR clone (<see cref="PrepareAsync"/>), the leased
+    /// pool slot (<see cref="AdoptSlotAsync"/>) and the sweeper's knowledge-extraction store — so "a
+    /// directory becomes a workspace" has exactly one implementation.
+    /// </remarks>
+    internal async Task<string> EnsureWorkspaceForLeafAsync(
         string leaf,
-        IReadOnlyList<string> marketplaces,
+        string name,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(leaf);
+
+        var marketplaces = string.IsNullOrWhiteSpace(_reviewMarketplace)
+            ? (IReadOnlyList<string>)[]
+            : [_reviewMarketplace];
+
         var existing = await _client.ListWorkspacesAsync(cancellationToken).ConfigureAwait(false);
         foreach (var workspace in existing)
         {
@@ -194,7 +265,6 @@ internal sealed class S2SReviewWorkspacePreparer
             }
         }
 
-        var name = string.Format(CultureInfo.InvariantCulture, "Review PR #{0}", run.PrId);
         var created = await _client
             .CreateWorkspaceAsync(name, leaf, marketplaces, cancellationToken)
             .ConfigureAwait(false);
