@@ -78,17 +78,33 @@ internal sealed class LmStreamingS2SClient
         return Deserialize<S2SWorkspace>(body);
     }
 
-    /// <summary>Provisions a new conversation thread and returns its server-minted thread id.</summary>
+    /// <summary>
+    /// Provisions a new conversation thread and returns its server-minted thread id.
+    /// <paramref name="systemPromptAppendix"/> is the review profile's system prompt: provision carries no
+    /// model or tool overrides, so it is the ONLY channel by which the daemon's review methodology, output
+    /// contract and sub-agent-dispatch instructions reach the hosted agent. The host appends it to the
+    /// workspace-agent mode's own prompt (additive, not a replacement). A null/blank value is sent as
+    /// <c>null</c>, which the host treats the same as absent.
+    /// </summary>
     public async Task<string> ProvisionAsync(
         string workspaceId,
         string providerId,
         string modeId,
+        string? systemPromptAppendix,
         CancellationToken ct)
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
             "api/conversations",
-            new { WorkspaceId = workspaceId, ProviderId = providerId, ModeId = modeId },
+            new
+            {
+                WorkspaceId = workspaceId,
+                ProviderId = providerId,
+                ModeId = modeId,
+                SystemPromptAppendix = string.IsNullOrWhiteSpace(systemPromptAppendix)
+                    ? null
+                    : systemPromptAppendix,
+            },
             ct);
         return ReadStringProperty(body, "threadId");
     }

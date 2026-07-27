@@ -448,6 +448,57 @@ public class ConversationsControllerTests
         metadata!.Properties![MultiTurnAgentPool.ProviderPropertyKey].Should().Be("test");
         metadata.Properties[MultiTurnAgentPool.WorkspacePropertyKey].Should().Be("ws-1");
         metadata.Properties[MultiTurnAgentPool.ModePropertyKey].Should().Be(SystemChatModes.DefaultModeId);
+        metadata.Properties.Should().NotContainKey(
+            SystemPromptAugmenter.AppendixPropertyKey,
+            "an interactive provision carries no caller instructions and must not seed an empty appendix");
+    }
+
+    [Theory]
+    [InlineData("Review the PR and dispatch the code-reviewer:* sub-agents.")]
+    [InlineData(null)]
+    [InlineData("   ")]
+    public async Task Provision_PersistsTheSystemPromptAppendix_OnlyWhenTheCallerSuppliedOne(string? appendix)
+    {
+        // The appendix is persisted on the THREAD rather than held in memory so it survives a process
+        // restart and any later mode/provider recreation — the hosted agent is rebuilt from metadata on
+        // every entry, and a headless review that lost its methodology mid-run would silently degrade to a
+        // generic workspace agent.
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var workspaceStore = new Mock<IWorkspaceStore>();
+        workspaceStore.Setup(w => w.GetAsync("ws-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TestWorkspace("ws-1"));
+        var registry = new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal();
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            workspaceStore: workspaceStore.Object,
+            providerRegistry: registry);
+
+        var result = await controller.Provision(
+            new ProvisionConversationRequest
+            {
+                WorkspaceId = "ws-1",
+                ProviderId = "test",
+                ModeId = SystemChatModes.DefaultModeId,
+                SystemPromptAppendix = appendix,
+            },
+            CancellationToken.None);
+
+        var threadId = Assert.IsType<ProvisionConversationResponse>(
+            Assert.IsType<OkObjectResult>(result).Value).ThreadId;
+        var metadata = await store.LoadMetadataAsync(threadId, CancellationToken.None);
+
+        if (string.IsNullOrWhiteSpace(appendix))
+        {
+            metadata!.Properties.Should().NotContainKey(SystemPromptAugmenter.AppendixPropertyKey);
+        }
+        else
+        {
+            metadata!.Properties![SystemPromptAugmenter.AppendixPropertyKey].Should().Be(appendix);
+        }
     }
 
     [Fact]

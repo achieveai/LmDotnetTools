@@ -12,7 +12,10 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// tree) rather than an in-process loop. It satisfies exactly the slice of the interface that
 /// <see cref="AgentTextCollector"/> drives — one <see cref="ExecuteRunAsync"/> — and stays thin:
 /// <list type="number">
-/// <item>lazily <b>provision</b> a conversation once (caching the server-minted <c>thread-{Guid:N}</c>),</item>
+/// <item>lazily <b>provision</b> a conversation once (caching the server-minted <c>thread-{Guid:N}</c>),
+///   handing the review profile's system prompt to the host as the conversation's system prompt appendix —
+///   without it the hosted run sees only the diff under a generic workspace-agent prompt and never follows
+///   the daemon's methodology, sub-agent dispatch or output contract,</item>
 /// <item><b>send</b> the review input as one user message (getting an <c>inputId</c> to poll by),</item>
 /// <item><b>poll</b> <see cref="LmStreamingS2SClient.GetStatusByInputIdAsync"/> to a terminal status with a
 ///   bounded backoff and an overall timeout, and</item>
@@ -42,6 +45,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
     private readonly string _workspaceId;
     private readonly string _providerId;
     private readonly string _modeId;
+    private readonly string? _systemPrompt;
     private readonly string? _title;
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _pollMaxInterval;
@@ -58,6 +62,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         string workspaceId,
         string providerId,
         string modeId,
+        string? systemPrompt,
         string? title,
         ILogger<S2SReviewAgent> logger,
         TimeSpan? pollInterval = null,
@@ -73,6 +78,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         _workspaceId = workspaceId;
         _providerId = providerId;
         _modeId = modeId;
+        _systemPrompt = systemPrompt;
         _title = title;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -171,15 +177,17 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         }
 
         var threadId = await _client
-            .ProvisionAsync(_workspaceId, _providerId, _modeId, ct)
+            .ProvisionAsync(_workspaceId, _providerId, _modeId, _systemPrompt, ct)
             .ConfigureAwait(false);
         _threadId = threadId;
         _logger.LogInformation(
-            "Provisioned S2S review conversation {ThreadId} (workspace {WorkspaceId}, provider {ProviderId}, mode {ModeId}).",
+            "Provisioned S2S review conversation {ThreadId} (workspace {WorkspaceId}, provider {ProviderId}, "
+                + "mode {ModeId}, system prompt {SystemPromptChars} chars).",
             threadId,
             _workspaceId,
             _providerId,
-            _modeId);
+            _modeId,
+            _systemPrompt?.Length ?? 0);
 
         if (!string.IsNullOrWhiteSpace(_title))
         {

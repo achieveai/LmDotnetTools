@@ -150,6 +150,8 @@ export interface ProvisionConversationRequest {
   providerId: string;
   modeId: string;
   authWebhookUrl?: string | null;
+  /** Extra system instructions appended to the mode's prompt for this conversation only. */
+  systemPromptAppendix?: string | null;
 }
 
 export interface ProvisionConversationResponse {

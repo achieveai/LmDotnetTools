@@ -711,6 +711,22 @@ try
                     effectiveMode = mode with { SystemPrompt = mode.SystemPrompt + wsSuffix };
                 }
 
+                // A headless (S2S) caller's own instructions for this conversation, captured at provision.
+                // Appended LAST — after the mode prompt, the workspace-path suffix and the discovered
+                // context block — because it is additive: the caller is giving the workspace agent its task
+                // (e.g. the review daemon's methodology + output contract), not replacing the mode. Read from
+                // thread metadata rather than passed through the pool's creation context so it survives a
+                // process restart and any later mode/provider recreation of the same thread.
+                effectiveMode = effectiveMode with
+                {
+                    SystemPrompt = SystemPromptAugmenter.AppendCallerInstructions(
+                        effectiveMode.SystemPrompt,
+                        LoadSystemPromptAppendix(
+                            conversationStore,
+                            threadId,
+                            loggerFactory.CreateLogger("LmStreaming.Sample.SystemPromptAppendix"))),
+                };
+
                 // *-mock providers reuse the same agent-loop helpers as their real counterparts;
                 // the mock-host base URL is threaded into the SDK options as a per-spawn override
                 // applied to the child CLI process's environment block.
@@ -2327,6 +2343,22 @@ public partial class Program
         // Merge in precedence order: built-in (already present) > workspace file > marketplace.
         WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discoveredTask.Result, logger);
         MarketplaceSubAgentLoader.MergeFillGaps(templates, marketplaceTask.Result, logger);
+
+        // Both loaders are silent on SUCCESS, so an empty or wrongly-keyed catalog used to be
+        // invisible: the only symptom was a model that never dispatched the sub-agent it was told to
+        // use, with no way to tell "the catalog was empty" from "the model chose not to". The
+        // resulting subagent_type surface IS the contract between the workspace and the Agent tool,
+        // so log it once per loop creation — keys, not counts, because the failure mode this exists
+        // to catch is a KEYING mismatch (bare `pr-review` vs qualified `code-reviewer:pr-review`).
+        logger.LogInformation(
+            "Sub-agent catalog for workspace {WorkspaceId} (session {SessionId}): {Count} spawnable "
+            + "types [{Types}] (workspace-discovered: [{Discovered}], marketplace: [{Marketplace}]).",
+            sandboxSession.WorkspaceId,
+            sandboxSession.SessionId,
+            templates.Count,
+            string.Join(", ", templates.Keys.Order(StringComparer.Ordinal)),
+            string.Join(", ", discoveredTask.Result.Keys.Order(StringComparer.Ordinal)),
+            string.Join(", ", marketplaceTask.Result.Keys.Order(StringComparer.Ordinal)));
     }
 
     /// <summary>
@@ -2371,6 +2403,57 @@ public partial class Program
                 ex,
                 "Failed to resolve marketplaces for workspace {WorkspaceId}; using the gateway default set.",
                 workspaceId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Reads the caller-supplied system prompt appendix a headless provision stored on the thread
+    /// (<see cref="SystemPromptAugmenter.AppendixPropertyKey"/>), or null when the thread has none — which
+    /// is every interactive conversation. Sync-over-async to match the surrounding agent-creation path (a
+    /// fast local-store read), and non-fatal: a store failure logs and degrades to the mode's own prompt
+    /// rather than blocking the conversation from starting.
+    /// </summary>
+    private static string? LoadSystemPromptAppendix(
+        IConversationStore conversationStore,
+        string threadId,
+        Microsoft.Extensions.Logging.ILogger logger)
+    {
+        try
+        {
+            var metadata = conversationStore.LoadMetadataAsync(threadId).GetAwaiter().GetResult();
+            if (metadata?.Properties is null
+                || !metadata.Properties.TryGetValue(SystemPromptAugmenter.AppendixPropertyKey, out var raw))
+            {
+                return null;
+            }
+
+            // Properties round-trip through JSON in the file/SQLite stores, so the value comes back as a
+            // JsonElement there and as a raw string from the in-memory store.
+            var appendix = raw switch
+            {
+                string s => s,
+                System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } je => je.GetString(),
+                _ => null,
+            };
+
+            if (string.IsNullOrWhiteSpace(appendix))
+            {
+                return null;
+            }
+
+            logger.LogInformation(
+                "Applying caller-supplied system prompt appendix ({Length} chars) to thread {ThreadId}.",
+                appendix.Length,
+                threadId);
+            return appendix;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to read the system prompt appendix for thread {ThreadId}; continuing without it.",
+                threadId);
             return null;
         }
     }

@@ -121,6 +121,17 @@ public record ProvisionConversationRequest
     /// forwarder can apply a first-wins tie-break among a session's attached threads.
     /// </summary>
     public string? AuthWebhookUrl { get; init; }
+
+    /// <summary>
+    /// Optional extra system instructions for THIS conversation, appended to the mode's system prompt
+    /// (after the workspace-path suffix and any discovered CLAUDE.md/AGENTS.md block) every time the
+    /// thread's agent is built. Provision carries no model or tool overrides, so this is the only way a
+    /// headless caller can give the hosted agent its actual task: a caller that drives a specialized run
+    /// (e.g. the code-review daemon's review methodology + output contract) would otherwise send only its
+    /// user turn and get a generic workspace agent that never follows the caller's protocol. Additive, not
+    /// a replacement — the mode stays in charge of the workspace, tools and sub-agent catalog.
+    /// </summary>
+    public string? SystemPromptAppendix { get; init; }
 }
 
 /// <summary>

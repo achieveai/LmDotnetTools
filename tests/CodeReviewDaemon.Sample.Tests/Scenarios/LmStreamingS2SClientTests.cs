@@ -40,13 +40,17 @@ public sealed class LmStreamingS2SClientTests
         var client = new LmStreamingS2SClient(
             http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
 
-        var threadId = await client.ProvisionAsync("ws-1", "openai", "workspace-agent", CancellationToken.None);
+        var threadId = await client.ProvisionAsync(
+            "ws-1", "openai", "workspace-agent", "REVIEW METHODOLOGY", CancellationToken.None);
 
         threadId.Should().Be("thread-abc123");
         var recorded = handler.Requests.Should().ContainSingle().Subject;
         recorded.Body.Should().Contain("\"workspaceId\":\"ws-1\"")
             .And.Contain("\"providerId\":\"openai\"")
-            .And.Contain("\"modeId\":\"workspace-agent\"");
+            .And.Contain("\"modeId\":\"workspace-agent\"")
+            // The review profile's system prompt is the ONLY channel for the daemon's methodology, sub-agent
+            // dispatch instruction and output contract — provision carries no model or tool overrides.
+            .And.Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"");
         // The sandbox binds to whatever app id the daemon forwards — both passthrough headers must ride the call.
         recorded.SbxAppId.Should().Be("codereview-daemon");
         recorded.SbxAppKey.Should().Be("sbx-key");
@@ -61,11 +65,14 @@ public sealed class LmStreamingS2SClientTests
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, s2sSecret: null, sandboxAppId: null, sandboxAppKey: null);
 
-        _ = await client.ProvisionAsync("ws-1", "openai", "workspace-agent", CancellationToken.None);
+        _ = await client.ProvisionAsync(
+            "ws-1", "openai", "workspace-agent", systemPromptAppendix: null, CancellationToken.None);
 
         var recorded = handler.Requests.Should().ContainSingle().Subject;
         recorded.SbxAppId.Should().BeNull();
         recorded.SbxAppKey.Should().BeNull();
+        // A caller with no instructions sends an explicit null, which the host treats as absent.
+        recorded.Body.Should().Contain("\"systemPromptAppendix\":null");
     }
 
     [Fact]

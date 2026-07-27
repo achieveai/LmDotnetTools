@@ -18,11 +18,14 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <see cref="CodeReviewDaemonOptions.LmStreamingProviderId"/> resolves on the review host, so the
 /// per-call <c>modelId</c>/<c>reasoningEffort</c>/<c>toolContext</c> arguments of <see cref="Create"/>
 /// are intentionally not forwarded — the hosted workspace-agent conversation owns model selection, tool
-/// exposure, and the sub-agent catalog. The load-bearing input is <c>workspaceId</c>: the
-/// per-PR LmStreaming workspace <see cref="S2SReviewWorkspacePreparer"/> pointed at the daemon's host
-/// clone. <c>profile.SystemPrompt</c> and the review input flow to the host as the conversation's system
-/// prompt title and the sent user message respectively (the system prompt is set on the workspace-agent
-/// mode host-side; the review body rides <see cref="S2SReviewAgent.ExecuteRunAsync"/>).
+/// exposure, and the sub-agent catalog. The load-bearing inputs are <c>workspaceId</c> — the per-PR
+/// LmStreaming workspace <see cref="S2SReviewWorkspacePreparer"/> pointed at the daemon's host clone — and
+/// <c>profile.SystemPrompt</c>, which rides provision as the conversation's <b>system prompt appendix</b>
+/// (the host appends it to the workspace-agent mode's own prompt) while the review body rides the sent user
+/// message. Both halves are required: the hosted mode supplies the workspace, tools and sub-agent catalog,
+/// and the profile prompt supplies the review methodology, the "dispatch the <c>code-reviewer:*</c>
+/// sub-agents" instruction and the output contract. Dropping the prompt yields a run that reads the diff and
+/// answers generically — it looks like a working review and is not one.
 /// </para>
 /// <para>
 /// Like the live factory this does no work at construction (the agent provisions lazily on first run), so
@@ -73,11 +76,21 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
                 + "provider that resolves the intended review model.");
         }
 
+        if (string.IsNullOrWhiteSpace(profile.SystemPrompt))
+        {
+            throw new ArgumentException(
+                "The review profile carries no system prompt; the hosted conversation would run the review "
+                + "under a generic workspace-agent prompt with no methodology, sub-agent dispatch or output "
+                + "contract.",
+                nameof(profile));
+        }
+
         return new S2SReviewAgent(
             _client,
             reviewWorkspace.WorkspaceId,
             _options.LmStreamingProviderId,
             _options.LmStreamingModeId,
+            systemPrompt: profile.SystemPrompt,
             title: BuildTitle(profile, reviewWorkspace),
             logger: _loggerFactory.CreateLogger<S2SReviewAgent>());
     }

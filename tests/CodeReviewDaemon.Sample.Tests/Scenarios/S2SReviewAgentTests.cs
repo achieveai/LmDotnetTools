@@ -24,6 +24,7 @@ public sealed class S2SReviewAgentTests
             workspaceId: "ws-1",
             providerId: "openai",
             modeId: "workspace-agent",
+            systemPrompt: "REVIEW METHODOLOGY",
             title: title,
             logger: NullLogger<S2SReviewAgent>.Instance,
             pollInterval: TimeSpan.FromMilliseconds(1),
@@ -74,6 +75,30 @@ public sealed class S2SReviewAgentTests
         text.IsThinking.Should().BeFalse("the review text is a finalized assistant message, not a thinking trace");
         agent.ThreadId.Should().Be("thread-xyz", "ThreadId surfaces the minted conversation id — the deep-link target");
         agent.CurrentRunId.Should().Be("run-9");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_hands_the_review_system_prompt_to_the_host_at_provision()
+    {
+        // Live regression (PR #222 bring-up, G6): the adapter sent ONLY the user turn, so the hosted run saw
+        // the diff under LmStreaming's generic workspace-agent prompt and never followed the daemon's
+        // methodology — most visibly, it dispatched zero code-reviewer:* sub-agents despite a fully populated
+        // catalog. Provision carries no model or tool overrides, so the appendix is the only channel for it.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-sp\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+        var agent = NewAgent(client, title: null);
+
+        _ = await DriveAsync(agent, "review this PR");
+
+        var provision = handler.Requests
+            .Should()
+            .ContainSingle(r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal))
+            .Subject;
+        provision.Body.Should().Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"");
     }
 
     [Fact]

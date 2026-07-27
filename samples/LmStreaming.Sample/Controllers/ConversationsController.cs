@@ -230,6 +230,12 @@ public class ConversationsController(
                 propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
                 propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
 
+                if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
+                {
+                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] =
+                        request.SystemPromptAppendix;
+                }
+
                 if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
                 {
                     propertiesBuilder["sample.authWebhookUrl"] = request.AuthWebhookUrl;
