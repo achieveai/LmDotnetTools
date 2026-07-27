@@ -43,3 +43,7 @@ What improved, what became more complex, and what future work this implies.
 ## Index
 
 * [0001 — Route all programmatic sandbox gateway access through the typed SDK](0001-route-gateway-access-through-sandbox-sdk.md)
+* [0002 — Publish lifecycle events through a dependency-neutral versioned wire contract](0002-lifecycle-event-wire-contract.md)
+* [0003 — Gate host-executed tool calls behind a fail-closed approval decision](0003-fail-closed-tool-approval.md)
+* [0004 — Resolve delayed tool results as serialized child runs caused by the real tool result](0004-delayed-tool-results-as-child-runs.md)
+* [0005 — Scope service-to-service lifecycle delivery to a host-resolved owner key](0005-service-to-service-lifecycle-delivery.md)

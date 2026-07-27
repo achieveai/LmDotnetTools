@@ -1,0 +1,276 @@
+Approval.ToolApprovalDecision..ctor()
+Approval.ToolApprovalDecision.ArgumentsHash : string { get; set; }
+Approval.ToolApprovalDecision.DecidedAt : System.DateTimeOffset? { get; set; }
+Approval.ToolApprovalDecision.Decision : string { get; set; }
+Approval.ToolApprovalDecision.Matches(Approval.ToolApprovalRequest) : bool
+Approval.ToolApprovalDecision.Reason : string { get; set; }
+Approval.ToolApprovalDecision.RequestId : string { get; set; }
+Approval.ToolApprovalRequest..ctor()
+Approval.ToolApprovalRequest.Arguments : string { get; set; }
+Approval.ToolApprovalRequest.ArgumentsHash : string { get; set; }
+Approval.ToolApprovalRequest.ExpiresAt : System.DateTimeOffset { get; set; }
+Approval.ToolApprovalRequest.GenerationId : string { get; set; }
+Approval.ToolApprovalRequest.RequestId : string { get; set; }
+Approval.ToolApprovalRequest.RunId : string { get; set; }
+Approval.ToolApprovalRequest.ThreadId : string { get; set; }
+Approval.ToolApprovalRequest.ToolCallId : string { get; set; }
+Approval.ToolApprovalRequest.ToolName : string { get; set; }
+ILifecyclePublisher.PublishAsync(LifecycleEventEnvelope, System.Threading.CancellationToken = null) : System.Threading.Tasks.ValueTask
+ILifecycleSequenceAllocator.Next(string) : long
+ILifecycleSequenceAllocator.ProducerEpoch : string { get; }
+InMemoryLifecycleSequenceAllocator..ctor()
+InMemoryLifecycleSequenceAllocator..ctor(string)
+InMemoryLifecycleSequenceAllocator.Next(string) : long
+InMemoryLifecycleSequenceAllocator.ProducerEpoch : string { get; }
+LifecycleAgentKinds.Claude : string = "claude"
+LifecycleAgentKinds.Codex : string = "codex"
+LifecycleAgentKinds.Copilot : string = "copilot"
+LifecycleAgentKinds.Raw : string = "raw"
+LifecycleCapabilities.ContentFull : string = "lifecycle.content.full"
+LifecycleCapabilities.ToolApprovalDecide : string = "tool.approval.decide"
+LifecycleContextPhases.Boot : string = "boot"
+LifecycleContextPhases.MidSession : string = "mid_session"
+LifecycleContractException..ctor()
+LifecycleContractException..ctor(string)
+LifecycleContractException..ctor(string, System.Exception)
+LifecycleCorrelation..ctor()
+LifecycleCorrelation.GenerationId : string { get; set; }
+LifecycleCorrelation.ParentRunId : string { get; set; }
+LifecycleCorrelation.ParentThreadId : string { get; set; }
+LifecycleCorrelation.RunId : string { get; set; }
+LifecycleCorrelation.SandboxSessionId : string { get; set; }
+LifecycleCorrelation.SpawningToolCallId : string { get; set; }
+LifecycleCorrelation.SubAgentId : string { get; set; }
+LifecycleCorrelation.ThreadId : string { get; set; }
+LifecycleCorrelation.ToolCallId : string { get; set; }
+LifecycleCorrelation.WorkspaceId : string { get; set; }
+LifecycleDeliveryEnvelope..ctor()
+LifecycleDeliveryEnvelope.DeliveryId : string { get; set; }
+LifecycleDeliveryEnvelope.DeliverySequence : long { get; set; }
+LifecycleDeliveryEnvelope.EnsureValid() : void
+LifecycleDeliveryEnvelope.Event : LifecycleEventEnvelope { get; set; }
+LifecycleEventEnvelope..ctor()
+LifecycleEventEnvelope.Correlation : LifecycleCorrelation { get; set; }
+LifecycleEventEnvelope.EnsureValid() : void
+LifecycleEventEnvelope.EventId : string { get; set; }
+LifecycleEventEnvelope.EventType : string { get; set; }
+LifecycleEventEnvelope.IsKnownEventType : bool { get; }
+LifecycleEventEnvelope.OccurredAt : System.DateTimeOffset { get; set; }
+LifecycleEventEnvelope.Payload : System.Text.Json.JsonElement? { get; set; }
+LifecycleEventEnvelope.ProducerEpoch : string { get; set; }
+LifecycleEventEnvelope.SchemaMajor : int { get; set; }
+LifecycleEventEnvelope.SourceSequence : long { get; set; }
+LifecycleEventEnvelope.SourceStreamId : string { get; set; }
+LifecycleEventTypes.ContextLoaded : string = "context_loaded"
+LifecycleEventTypes.IsKnown(string) : bool
+LifecycleEventTypes.Known : System.Collections.Generic.IReadOnlySet<string> { get; }
+LifecycleEventTypes.RunCompleted : string = "run_completed"
+LifecycleEventTypes.RunStarted : string = "run_started"
+LifecycleEventTypes.SandboxCreated : string = "sandbox_created"
+LifecycleEventTypes.ToolCompleted : string = "tool_completed"
+LifecycleEventTypes.TurnCompleted : string = "turn_completed"
+LifecycleProtocol.CurrentMajor : int = 1
+LifecycleProtocol.IsSupported(int) : bool
+LifecycleProtocol.SupportedMajors : System.Collections.Generic.IReadOnlyList<int> { get; }
+LifecycleProtocol.TryNegotiate(System.Collections.Generic.IEnumerable<int>, System.Collections.Generic.IEnumerable<int>, out int) : bool
+LifecycleProtocol.TryNegotiate(System.Collections.Generic.IEnumerable<int>, out int) : bool
+LifecycleRunCauseKinds.SubAgentSpawn : string = "sub_agent_spawn"
+LifecycleRunCauseKinds.ToolResult : string = "tool_result"
+LifecycleRunCauseKinds.UserInput : string = "user_input"
+LifecycleRunOutcomes.AwaitingSiblingResults : string = "awaiting_sibling_results"
+LifecycleRunOutcomes.Cancelled : string = "cancelled"
+LifecycleRunOutcomes.Completed : string = "completed"
+LifecycleRunOutcomes.Error : string = "error"
+LifecycleRunOutcomes.Interrupted : string = "interrupted"
+LifecycleRunOutcomes.MaxTurns : string = "max_turns"
+LifecycleSourceStream.ForSandbox(string) : string
+LifecycleSourceStream.ForThread(string) : string
+LifecycleSourceStream.TryParse(string, out string, out string) : bool
+LifecycleSourceStreamKinds.Sandbox : string = "sandbox"
+LifecycleSourceStreamKinds.Thread : string = "thread"
+LifecycleToolKinds.Host : string = "host"
+LifecycleToolKinds.Provider : string = "provider"
+LifecycleToolKinds.SubAgent : string = "sub_agent"
+LifecycleToolOutcomes.Cancelled : string = "cancelled"
+LifecycleToolOutcomes.Denied : string = "denied"
+LifecycleToolOutcomes.Failed : string = "failed"
+LifecycleToolOutcomes.Succeeded : string = "succeeded"
+LifecycleTurnOutcomes.Cancelled : string = "cancelled"
+LifecycleTurnOutcomes.Completed : string = "completed"
+LifecycleTurnOutcomes.Error : string = "error"
+LifecycleTurnOutcomes.Interrupted : string = "interrupted"
+LifecycleUsageCompleteness.Complete : string = "complete"
+LifecycleUsageCompleteness.InProgress : string = "in_progress"
+LifecycleUsageCompleteness.Partial : string = "partial"
+NullLifecyclePublisher.Instance : NullLifecyclePublisher { get; }
+NullLifecyclePublisher.PublishAsync(LifecycleEventEnvelope, System.Threading.CancellationToken = null) : System.Threading.Tasks.ValueTask
+Payloads.ContextLoadedPayload..ctor()
+Payloads.ContextLoadedPayload.GenerationId : string { get; set; }
+Payloads.ContextLoadedPayload.RenderedByteCount : long { get; set; }
+Payloads.ContextLoadedPayload.RenderedHash : string { get; set; }
+Payloads.ContextLoadedPayload.RenderedText : string { get; set; }
+Payloads.ContextLoadedPayload.RunId : string { get; set; }
+Payloads.ContextLoadedPayload.Sources : System.Collections.Generic.IReadOnlyList<Payloads.LifecycleContextSource> { get; set; }
+Payloads.LifecycleContextSource..ctor()
+Payloads.LifecycleContextSource.DedupIdentity : string { get; set; }
+Payloads.LifecycleContextSource.DiscoveryKind : string { get; set; }
+Payloads.LifecycleContextSource.Name : string { get; set; }
+Payloads.LifecycleContextSource.NormalizedPath : string { get; set; }
+Payloads.LifecycleContextSource.Phase : string { get; set; }
+Payloads.LifecycleContextSource.RenderedByteCount : long { get; set; }
+Payloads.LifecycleContextSource.WasTruncated : bool { get; set; }
+Payloads.LifecycleError..ctor()
+Payloads.LifecycleError.Code : string { get; set; }
+Payloads.LifecycleError.Message : string { get; set; }
+Payloads.LifecycleRunCause..ctor()
+Payloads.LifecycleRunCause.Kind : string { get; set; }
+Payloads.LifecycleRunCause.ToolCallId : string { get; set; }
+Payloads.LifecycleUsage..ctor()
+Payloads.LifecycleUsage.CachedPromptTokens : long? { get; set; }
+Payloads.LifecycleUsage.Completeness : string { get; set; }
+Payloads.LifecycleUsage.CompletionTokens : long { get; set; }
+Payloads.LifecycleUsage.PromptTokens : long { get; set; }
+Payloads.LifecycleUsage.ReasoningTokens : long? { get; set; }
+Payloads.LifecycleUsage.TotalTokens : long { get; set; }
+Payloads.RunCompletedPayload..ctor()
+Payloads.RunCompletedPayload.Error : Payloads.LifecycleError { get; set; }
+Payloads.RunCompletedPayload.GenerationId : string { get; set; }
+Payloads.RunCompletedPayload.Outcome : string { get; set; }
+Payloads.RunCompletedPayload.RunId : string { get; set; }
+Payloads.RunCompletedPayload.TurnCount : int { get; set; }
+Payloads.RunCompletedPayload.Usage : Payloads.LifecycleUsage { get; set; }
+Payloads.RunStartedPayload..ctor()
+Payloads.RunStartedPayload.AgentKind : string { get; set; }
+Payloads.RunStartedPayload.Cause : Payloads.LifecycleRunCause { get; set; }
+Payloads.RunStartedPayload.GenerationId : string { get; set; }
+Payloads.RunStartedPayload.ModelId : string { get; set; }
+Payloads.RunStartedPayload.RunId : string { get; set; }
+Payloads.RunStartedPayload.WasForked : bool { get; set; }
+Payloads.SandboxCreatedPayload..ctor()
+Payloads.SandboxCreatedPayload.ImageReference : string { get; set; }
+Payloads.SandboxCreatedPayload.ReplacedSessionId : string { get; set; }
+Payloads.SandboxCreatedPayload.SessionId : string { get; set; }
+Payloads.SandboxCreatedPayload.Status : string { get; set; }
+Payloads.SandboxCreatedPayload.WasRecreated : bool { get; set; }
+Payloads.SandboxCreatedPayload.WorkspaceId : string { get; set; }
+Payloads.ToolApprovalSummary..ctor()
+Payloads.ToolApprovalSummary.ArgumentsHash : string { get; set; }
+Payloads.ToolApprovalSummary.DecidedBy : string { get; set; }
+Payloads.ToolApprovalSummary.Decision : string { get; set; }
+Payloads.ToolApprovalSummary.WaitMilliseconds : long? { get; set; }
+Payloads.ToolCompletedPayload..ctor()
+Payloads.ToolCompletedPayload.Approval : Payloads.ToolApprovalSummary { get; set; }
+Payloads.ToolCompletedPayload.DurationMilliseconds : long? { get; set; }
+Payloads.ToolCompletedPayload.Error : Payloads.LifecycleError { get; set; }
+Payloads.ToolCompletedPayload.GenerationId : string { get; set; }
+Payloads.ToolCompletedPayload.Outcome : string { get; set; }
+Payloads.ToolCompletedPayload.RunId : string { get; set; }
+Payloads.ToolCompletedPayload.ToolCallId : string { get; set; }
+Payloads.ToolCompletedPayload.ToolKind : string { get; set; }
+Payloads.ToolCompletedPayload.ToolName : string { get; set; }
+Payloads.ToolCompletedPayload.WasDeferred : bool { get; set; }
+Payloads.TurnCompletedPayload..ctor()
+Payloads.TurnCompletedPayload.Error : Payloads.LifecycleError { get; set; }
+Payloads.TurnCompletedPayload.GenerationId : string { get; set; }
+Payloads.TurnCompletedPayload.MessageCount : int { get; set; }
+Payloads.TurnCompletedPayload.Outcome : string { get; set; }
+Payloads.TurnCompletedPayload.RunId : string { get; set; }
+Payloads.TurnCompletedPayload.ToolCallCount : int { get; set; }
+Payloads.TurnCompletedPayload.TurnIndex : int { get; set; }
+Payloads.TurnCompletedPayload.Usage : Payloads.LifecycleUsage { get; set; }
+Serialization.CanonicalTimestampConverter..ctor()
+Serialization.CanonicalTimestampConverter.Read(ref System.Text.Json.Utf8JsonReader, System.Type, System.Text.Json.JsonSerializerOptions) : System.DateTimeOffset
+Serialization.CanonicalTimestampConverter.Write(System.Text.Json.Utf8JsonWriter, System.DateTimeOffset, System.Text.Json.JsonSerializerOptions) : void
+Serialization.LifecycleJsonContext..ctor()
+Serialization.LifecycleJsonContext..ctor(System.Text.Json.JsonSerializerOptions)
+Serialization.LifecycleJsonContext.Boolean : System.Text.Json.Serialization.Metadata.JsonTypeInfo<bool> { get; }
+Serialization.LifecycleJsonContext.ContextLoadedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.ContextLoadedPayload> { get; }
+Serialization.LifecycleJsonContext.DateTimeOffset : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.DateTimeOffset> { get; }
+Serialization.LifecycleJsonContext.Default : Serialization.LifecycleJsonContext { get; }
+Serialization.LifecycleJsonContext.GetTypeInfo(System.Type) : System.Text.Json.Serialization.Metadata.JsonTypeInfo
+Serialization.LifecycleJsonContext.IReadOnlyListLifecycleContextSource : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Collections.Generic.IReadOnlyList<Payloads.LifecycleContextSource>> { get; }
+Serialization.LifecycleJsonContext.Int32 : System.Text.Json.Serialization.Metadata.JsonTypeInfo<int> { get; }
+Serialization.LifecycleJsonContext.Int64 : System.Text.Json.Serialization.Metadata.JsonTypeInfo<long> { get; }
+Serialization.LifecycleJsonContext.JsonElement : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Text.Json.JsonElement> { get; }
+Serialization.LifecycleJsonContext.LifecycleContextSource : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.LifecycleContextSource> { get; }
+Serialization.LifecycleJsonContext.LifecycleCorrelation : System.Text.Json.Serialization.Metadata.JsonTypeInfo<LifecycleCorrelation> { get; }
+Serialization.LifecycleJsonContext.LifecycleDeliveryEnvelope : System.Text.Json.Serialization.Metadata.JsonTypeInfo<LifecycleDeliveryEnvelope> { get; }
+Serialization.LifecycleJsonContext.LifecycleError : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.LifecycleError> { get; }
+Serialization.LifecycleJsonContext.LifecycleEventEnvelope : System.Text.Json.Serialization.Metadata.JsonTypeInfo<LifecycleEventEnvelope> { get; }
+Serialization.LifecycleJsonContext.LifecycleRunCause : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.LifecycleRunCause> { get; }
+Serialization.LifecycleJsonContext.LifecycleUsage : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.LifecycleUsage> { get; }
+Serialization.LifecycleJsonContext.NullableDateTimeOffset : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.DateTimeOffset?> { get; }
+Serialization.LifecycleJsonContext.NullableInt64 : System.Text.Json.Serialization.Metadata.JsonTypeInfo<long?> { get; }
+Serialization.LifecycleJsonContext.NullableJsonElement : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Text.Json.JsonElement?> { get; }
+Serialization.LifecycleJsonContext.RunCompletedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.RunCompletedPayload> { get; }
+Serialization.LifecycleJsonContext.RunStartedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.RunStartedPayload> { get; }
+Serialization.LifecycleJsonContext.SandboxCreatedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.SandboxCreatedPayload> { get; }
+Serialization.LifecycleJsonContext.String : System.Text.Json.Serialization.Metadata.JsonTypeInfo<string> { get; }
+Serialization.LifecycleJsonContext.ToolApprovalDecision : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Approval.ToolApprovalDecision> { get; }
+Serialization.LifecycleJsonContext.ToolApprovalRequest : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Approval.ToolApprovalRequest> { get; }
+Serialization.LifecycleJsonContext.ToolApprovalSummary : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.ToolApprovalSummary> { get; }
+Serialization.LifecycleJsonContext.ToolCompletedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.ToolCompletedPayload> { get; }
+Serialization.LifecycleJsonContext.TurnCompletedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.TurnCompletedPayload> { get; }
+Serialization.LifecycleSerializer.CreateEnvelope<TPayload>(string, TPayload, string, ILifecycleSequenceAllocator, System.DateTimeOffset, LifecycleCorrelation = null, string = null) : LifecycleEventEnvelope
+Serialization.LifecycleSerializer.DeserializeDelivery(System.ReadOnlySpan<System.Byte>) : LifecycleDeliveryEnvelope
+Serialization.LifecycleSerializer.DeserializeDelivery(string) : LifecycleDeliveryEnvelope
+Serialization.LifecycleSerializer.DeserializeEvent(System.ReadOnlySpan<System.Byte>) : LifecycleEventEnvelope
+Serialization.LifecycleSerializer.DeserializeEvent(string) : LifecycleEventEnvelope
+Serialization.LifecycleSerializer.GetPayloadType(string) : System.Type
+Serialization.LifecycleSerializer.Options : System.Text.Json.JsonSerializerOptions { get; }
+Serialization.LifecycleSerializer.Serialize(LifecycleDeliveryEnvelope) : string
+Serialization.LifecycleSerializer.Serialize(LifecycleEventEnvelope) : string
+Serialization.LifecycleSerializer.SerializeToUtf8Bytes(LifecycleDeliveryEnvelope) : System.Byte[]
+Serialization.LifecycleSerializer.SerializeToUtf8Bytes(LifecycleEventEnvelope) : System.Byte[]
+Serialization.LifecycleSerializer.ToPayloadElement<TPayload>(TPayload) : System.Text.Json.JsonElement
+Serialization.LifecycleSerializer.TryReadPayload<TPayload>(LifecycleEventEnvelope, out TPayload) : bool
+ToolApprovalOutcomes.Allowed : string = "allowed"
+ToolApprovalOutcomes.Cancelled : string = "cancelled"
+ToolApprovalOutcomes.Denied : string = "denied"
+ToolApprovalOutcomes.HookError : string = "hook_error"
+ToolApprovalOutcomes.HostPolicyDenied : string = "host_policy_denied"
+ToolApprovalOutcomes.IsAllowed(string) : bool
+ToolApprovalOutcomes.IsApproverSubmittable(string) : bool
+ToolApprovalOutcomes.MissingApprover : string = "missing_approver"
+ToolApprovalOutcomes.Overload : string = "overload"
+ToolApprovalOutcomes.ProviderPolicyDenied : string = "provider_policy_denied"
+ToolApprovalOutcomes.Revoked : string = "revoked"
+ToolApprovalOutcomes.Timeout : string = "timeout"
+class Serialization.LifecycleJsonContext
+interface ILifecyclePublisher
+interface ILifecycleSequenceAllocator
+sealed class Approval.ToolApprovalDecision
+sealed class Approval.ToolApprovalRequest
+sealed class InMemoryLifecycleSequenceAllocator
+sealed class LifecycleContractException
+sealed class LifecycleCorrelation
+sealed class LifecycleDeliveryEnvelope
+sealed class LifecycleEventEnvelope
+sealed class NullLifecyclePublisher
+sealed class Payloads.ContextLoadedPayload
+sealed class Payloads.LifecycleContextSource
+sealed class Payloads.LifecycleError
+sealed class Payloads.LifecycleRunCause
+sealed class Payloads.LifecycleUsage
+sealed class Payloads.RunCompletedPayload
+sealed class Payloads.RunStartedPayload
+sealed class Payloads.SandboxCreatedPayload
+sealed class Payloads.ToolApprovalSummary
+sealed class Payloads.ToolCompletedPayload
+sealed class Payloads.TurnCompletedPayload
+sealed class Serialization.CanonicalTimestampConverter
+static class LifecycleAgentKinds
+static class LifecycleCapabilities
+static class LifecycleContextPhases
+static class LifecycleEventTypes
+static class LifecycleProtocol
+static class LifecycleRunCauseKinds
+static class LifecycleRunOutcomes
+static class LifecycleSourceStream
+static class LifecycleSourceStreamKinds
+static class LifecycleToolKinds
+static class LifecycleToolOutcomes
+static class LifecycleTurnOutcomes
+static class LifecycleUsageCompleteness
+static class Serialization.LifecycleSerializer
+static class ToolApprovalOutcomes
