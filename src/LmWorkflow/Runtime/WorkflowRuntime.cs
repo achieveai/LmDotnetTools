@@ -71,6 +71,13 @@ public sealed class WorkflowRuntime
     private JsonObject _notes = [];
     private JsonNode? _result;
 
+    // Transient (never persisted): a terminal whose result was composed from its resultTemplate rather than
+    // an explicit result. The eager render in AdvanceTo can run on the controller-pump task BEFORE the drive
+    // task applies the last observed sub-agent write, so the result is re-rendered from final state when the
+    // drive signals completion (see SignalCompletion). Null once completion has re-rendered it, or when the
+    // terminal supplied an explicit result / declared no template.
+    private TerminalNode? _pendingTemplateTerminal;
+
     // Optional best-effort persistence: when attached, a fresh snapshot is saved after every state-mutating
     // public method so the run can be resumed (single-root) after a restart. No store attached => no-op.
     private IWorkflowStore? _store;
@@ -903,6 +910,13 @@ public sealed class WorkflowRuntime
                     _result = capturedResult;
                 }
 
+                // The eager render above may have run against state that is not yet final (the last observed
+                // sub-agent write can be applied on the drive task AFTER the controller pump reaches here).
+                // Remember a template-composed terminal so SignalCompletion re-renders it from the drained
+                // final state; an explicit result needs no refresh.
+                _pendingTemplateTerminal =
+                    result is null && terminal.ResultTemplate is not null ? terminal : null;
+
                 IsComplete = true;
             }
 
@@ -1011,8 +1025,74 @@ public sealed class WorkflowRuntime
         };
     }
 
-    /// <summary>Signals normal completion of the controller run to <see cref="Completion"/> waiters.</summary>
-    internal void SignalCompletion() => _completion.TrySetResult();
+    /// <summary>
+    ///     Signals normal completion of the controller run to <see cref="Completion"/> waiters. When the
+    ///     workflow completed into a terminal whose result was composed from a <c>resultTemplate</c>, the
+    ///     result is re-rendered from the now-final state first: the drive calls this only after the whole
+    ///     message stream has drained (every observed sub-agent write applied), so this captures the complete
+    ///     result rather than the mid-flight snapshot the eager render in <see cref="AdvanceTo"/> may have
+    ///     frozen when the pump reached the terminal ahead of the drive. A re-render that fails its final
+    ///     output schema faults <see cref="Completion"/> instead of completing it.
+    /// </summary>
+    internal void SignalCompletion()
+    {
+        WorkflowInstanceSnapshot? snapshot = null;
+        Exception? renderFailure = null;
+        lock (_lock)
+        {
+            if (_pendingTemplateTerminal is { ResultTemplate: { } template } terminal)
+            {
+                _pendingTemplateTerminal = null;
+                try
+                {
+                    var composed = TemplateNodeRenderer.Render(
+                        template,
+                        BuildContextNoLock(null, null, null)
+                    );
+                    if (composed is not null)
+                    {
+                        var schema = terminal.FinalOutputSchema ?? Definition?.FinalOutputSchema;
+                        if (schema is not null)
+                        {
+                            var validation = _schemaValidator.ValidateDetailed(
+                                composed.ToJsonString(),
+                                schema.ToJsonString()
+                            );
+                            if (!validation.IsValid)
+                            {
+                                throw new InvalidOperationException(
+                                    "Final result failed schema validation: "
+                                        + string.Join("; ", validation.Errors)
+                                );
+                            }
+                        }
+
+                        _result = composed.DeepClone();
+                        snapshot = CaptureSnapshotNoLock();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    renderFailure = ex;
+                }
+            }
+        }
+
+        // Persist the refreshed result AFTER releasing the lock (mirrors AdvanceTo); the persister serializes
+        // saves per instance, so this later save supersedes AdvanceTo's eager-result save for resume.
+        if (snapshot is not null)
+        {
+            Persist(snapshot);
+        }
+
+        if (renderFailure is not null)
+        {
+            _completion.TrySetException(renderFailure);
+            return;
+        }
+
+        _completion.TrySetResult();
+    }
 
     /// <summary>Faults <see cref="Completion"/> with <paramref name="ex"/> (controller run threw).</summary>
     internal void SignalFailure(Exception ex) => _completion.TrySetException(ex);

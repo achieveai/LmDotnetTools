@@ -68,6 +68,36 @@ public class WorkflowRuntimeTests
         return runtime;
     }
 
+    /// <summary>A variant of <see cref="LoadedRuntime"/> whose <c>done</c> terminal composes its result from
+    /// a <c>resultTemplate</c> over <c>state.authored</c> (an array) — the shape whose terminal result is
+    /// re-rendered from final state at completion rather than frozen at the eager transition-time render.</summary>
+    private static WorkflowRuntime RuntimeWithTemplateTerminal()
+    {
+        var runtime = new WorkflowRuntime();
+        var baseDefinition = WorkflowJson.Deserialize(Phase3Fixtures.LinearBlockingAgent);
+        var templateDone = new TerminalNode
+        {
+            Id = "done",
+            Title = "Done",
+            ResultTemplate = JsonNode.Parse("""{ "authored": "{{state.authored}}" }"""),
+            FinalOutputSchema = JsonNode.Parse(
+                """
+                {
+                  "type": "object",
+                  "required": ["authored"],
+                  "properties": { "authored": { "type": "array" } }
+                }
+                """
+            ),
+        };
+        var withTemplateDone = baseDefinition with
+        {
+            Nodes = [.. baseDefinition.Nodes.Where(n => n.Id != "done"), templateDone],
+        };
+        runtime.LoadDefinition(withTemplateDone);
+        return runtime;
+    }
+
     [Fact]
     public void LoadDefinition_SeedsChannelsAndPositionsAtStart()
     {
@@ -210,6 +240,36 @@ public class WorkflowRuntimeTests
 
         act.Should().Throw<InvalidOperationException>().WithMessage("*schema validation*");
         runtime.IsComplete.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AdvanceTo_TemplateTerminal_ResultReflectsWritesAppliedAfterTransition_AtCompletion()
+    {
+        var runtime = RuntimeWithTemplateTerminal();
+        runtime.AdvanceTo("start", "analyze", null);
+
+        // First author write lands BEFORE the terminal transition.
+        runtime.SetState("state.authored", JsonValue.Create("a"), "append");
+
+        // The controller routes analyze -> done with no explicit result, so the terminal composes from its
+        // resultTemplate. That render happens eagerly at transition time (on the controller-pump task in a
+        // live run) while state.authored still holds a single item.
+        runtime.AdvanceTo("analyze", "done", null);
+        runtime.IsComplete.Should().BeTrue();
+
+        // Second author write lands AFTER the transition — in a live run this is the drive task applying the
+        // last observed sub-agent forEach append, ordered after the pump had already reached the terminal.
+        runtime.SetState("state.authored", JsonValue.Create("b"), "append");
+
+        // The drive signals completion only after the whole message stream has drained (every write applied).
+        runtime.SignalCompletion();
+
+        // State is fully applied by completion...
+        runtime.State["authored"]!.AsArray().Should().HaveCount(2);
+
+        // ...and the captured result MUST reflect that final state, not the mid-flight snapshot frozen at the
+        // eager transition-time render. This is the regression guard for the resultTemplate completion race.
+        runtime.Result!["authored"]!.AsArray().Should().HaveCount(2);
     }
 
     [Fact]
