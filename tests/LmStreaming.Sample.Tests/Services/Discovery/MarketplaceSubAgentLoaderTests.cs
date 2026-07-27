@@ -56,15 +56,74 @@ public class MarketplaceSubAgentLoaderTests
     {
         var catalog = Catalog(
             Marketplace("official", error: null,
-                Plugin("pr-toolkit", Agent("code-reviewer"), Agent("test-analyzer")),
-                Plugin("debugging", Agent("logging-review"))),
+                Plugin("pr-toolkit",
+                    Agent("code-reviewer", plugin: "pr-toolkit"),
+                    Agent("test-analyzer", plugin: "pr-toolkit")),
+                Plugin("debugging", Agent("logging-review", plugin: "debugging"))),
             Marketplace("community", error: null,
-                Plugin("orleans", Agent("orleans-reviewer"))));
+                Plugin("orleans", Agent("orleans-reviewer", plugin: "orleans"))));
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
+        // Keys are the spawnable subagent_type values, and they are QUALIFIED by contributing plugin —
+        // the same shape the gateway's QualifiedName gives WorkspaceSubAgentLoader for the same agent.
         result.Keys.Should().BeEquivalentTo(
-            "code-reviewer", "test-analyzer", "logging-review", "orleans-reviewer");
+            "pr-toolkit:code-reviewer",
+            "pr-toolkit:test-analyzer",
+            "debugging:logging-review",
+            "orleans:orleans-reviewer");
+    }
+
+    [Fact]
+    public void MapCatalog_KeysByQualifiedName_SoWorkspaceDiscoveryOfTheSameAgentDeduplicates()
+    {
+        // Live regression: workspace discovery keys by the gateway's QualifiedName ("code-reviewer:pr-review")
+        // while this loader used the bare name ("pr-review"). MergeFillGaps can only suppress a duplicate it
+        // can SEE, so every marketplace agent that was also discovered landed TWICE in the merged catalog —
+        // the real template plus a description-only stub — and both were offered as spawnable subagent_types.
+        var discovered = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
+        {
+            ["code-reviewer:pr-review"] = new SubAgentTemplate
+            {
+                Name = "pr-review",
+                SystemPrompt = "REAL-BODY",
+                AgentFactory = AgentFactory,
+                MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
+            },
+        };
+        var catalog = MarketplaceSubAgentLoader.MapCatalog(
+            Catalog(Marketplace("gb-plugins", null, Plugin("code-reviewer", Agent("pr-review", plugin: "code-reviewer")))),
+            AgentFactory);
+
+        MarketplaceSubAgentLoader.MergeFillGaps(discovered, catalog, NullLogger.Instance);
+
+        discovered.Keys.Should().BeEquivalentTo("code-reviewer:pr-review");
+        discovered["code-reviewer:pr-review"].SystemPrompt.Should().Be("REAL-BODY");
+    }
+
+    [Fact]
+    public void MapCatalog_AgentMissingItsPluginField_FallsBackToTheEnclosingPlugin()
+    {
+        // The gateway derives QualifiedName from the contributing plugin, and the enclosing
+        // CatalogPlugin names that same plugin — so a catalog that omits the per-agent field must
+        // still produce the qualified key, not silently reintroduce the duplicate.
+        var catalog = Catalog(
+            Marketplace("official", error: null, Plugin("p", Agent("loose", plugin: "  "))));
+
+        var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
+
+        result.Keys.Should().BeEquivalentTo("p:loose");
+    }
+
+    [Fact]
+    public void MapCatalog_NothingNamesAContributingPlugin_KeepsTheBareName()
+    {
+        var catalog = Catalog(
+            Marketplace("official", error: null, Plugin("  ", Agent("loose", plugin: "  "))));
+
+        var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
+
+        result.Keys.Should().BeEquivalentTo("loose");
     }
 
     [Fact]
@@ -76,21 +135,37 @@ public class MarketplaceSubAgentLoaderTests
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
-        result.Keys.Should().BeEquivalentTo("good");
+        result.Keys.Should().BeEquivalentTo("rev:good");
     }
 
     [Fact]
-    public void MapCatalog_DuplicateAgentName_KeepsFirstOccurrence()
+    public void MapCatalog_SameAgentNameUnderDifferentPlugins_StaysDistinct()
     {
+        // Qualifying by plugin also un-collides two genuinely different agents that happen to share a
+        // name — under bare keying the second was silently dropped.
         var catalog = Catalog(
             Marketplace("official", error: null,
-                Plugin("a", Agent("dup", description: "FIRST")),
-                Plugin("b", Agent("dup", description: "SECOND"))));
+                Plugin("a", Agent("dup", description: "FIRST", plugin: "a")),
+                Plugin("b", Agent("dup", description: "SECOND", plugin: "b"))));
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
-        result.Should().ContainKey("dup");
-        result["dup"].Description.Should().Be("FIRST");
+        result["a:dup"].Description.Should().Be("FIRST");
+        result["b:dup"].Description.Should().Be("SECOND");
+    }
+
+    [Fact]
+    public void MapCatalog_DuplicateQualifiedName_KeepsFirstOccurrence()
+    {
+        var catalog = Catalog(
+            Marketplace("official", error: null,
+                Plugin("a", Agent("dup", description: "FIRST", plugin: "shared")),
+                Plugin("b", Agent("dup", description: "SECOND", plugin: "shared"))));
+
+        var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
+
+        result.Should().ContainKey("shared:dup");
+        result["shared:dup"].Description.Should().Be("FIRST");
     }
 
     [Fact]
@@ -104,7 +179,7 @@ public class MarketplaceSubAgentLoaderTests
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
-        result.Keys.Should().BeEquivalentTo("ok");
+        result.Keys.Should().BeEquivalentTo("rev:ok");
     }
 
     [Fact]
@@ -120,7 +195,7 @@ public class MarketplaceSubAgentLoaderTests
 
         MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, NullLogger.Instance);
 
-        existing.Should().ContainKey("code-reviewer");
+        existing.Should().ContainKey("rev:code-reviewer");
     }
 
     [Fact]
@@ -138,7 +213,7 @@ public class MarketplaceSubAgentLoaderTests
         };
         var existing = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
         {
-            ["code-reviewer"] = kept,
+            ["rev:code-reviewer"] = kept,
         };
         var catalog = MarketplaceSubAgentLoader.MapCatalog(
             Catalog(Marketplace("official", null, Plugin("p", Agent("code-reviewer", description: "catalog stub")))),
@@ -146,8 +221,8 @@ public class MarketplaceSubAgentLoaderTests
 
         MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, NullLogger.Instance);
 
-        existing["code-reviewer"].SystemPrompt.Should().Be("REAL-BODY");
-        existing["code-reviewer"].Description.Should().Be("REAL workspace file");
+        existing["rev:code-reviewer"].SystemPrompt.Should().Be("REAL-BODY");
+        existing["rev:code-reviewer"].Description.Should().Be("REAL workspace file");
     }
 
     [Fact]
@@ -176,7 +251,7 @@ public class MarketplaceSubAgentLoaderTests
 
         var result = await loader.LoadAsync(selected, AgentFactory);
 
-        result.Keys.Should().BeEquivalentTo("code-reviewer");
+        result.Keys.Should().BeEquivalentTo("rev:code-reviewer");
         client.Verify(c => c.GetCatalogAsync(selected, It.IsAny<CancellationToken>()), Times.Once);
     }
 }

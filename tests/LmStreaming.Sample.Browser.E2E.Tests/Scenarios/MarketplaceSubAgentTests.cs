@@ -16,7 +16,7 @@ namespace LmStreaming.Sample.Browser.E2E.Tests.Scenarios;
 /// The sub-agent templates here are produced by the SAME production mapping the app uses —
 /// <see cref="MarketplaceSubAgentLoader.MapCatalog"/> over a representative catalog — rather than
 /// hand-built, so this exercises the actual catalog→template bridge. The parent (scripted) emits an
-/// <c>Agent</c> tool call with <c>subagent_type = "orleans-reviewer"</c>, a name that exists ONLY
+/// <c>Agent</c> tool call with <c>subagent_type = "orleans-dev:orleans-reviewer"</c>, a name that exists ONLY
 /// because the catalog agent was mapped into a spawnable template. The decisive assertion is the
 /// sub-agent's own phrase ("grain reentrancy looks correct") appearing in the expanded Agent pill:
 /// it is absent from the parent script, so it can only have come from the catalog-derived sub-agent
@@ -69,9 +69,12 @@ public sealed class MarketplaceSubAgentTests
             .ForRole("reviewer", ctx => ctx.SystemPromptContains("orleans-reviewer"))
             .Turn(t => t.Text("Reviewed: grain reentrancy looks correct."))
             .ForRole("parent", ctx => ctx.SystemPromptContains("helpful assistant"))
-            // subagent_type "orleans-reviewer" only resolves because the catalog agent was mapped
-            // into a spawnable template — that is exactly the bug fix under test.
-            .Turn(t => t.ToolCall("Agent", new { subagent_type = "orleans-reviewer", prompt = "Review my grain" }))
+            // subagent_type "orleans-dev:orleans-reviewer" only resolves because the catalog agent was
+            // mapped into a spawnable template — that is exactly the bug fix under test. The key is
+            // qualified by contributing plugin, matching how workspace discovery keys the same agent.
+            .Turn(t => t.ToolCall(
+                "Agent",
+                new { subagent_type = "orleans-dev:orleans-reviewer", prompt = "Review my grain" }))
             // Deliberately free of the reviewer's phrase — proof of execution must come from the sub-agent.
             .Turn(t => t.Text("Parent summary: review delegated."))
             .Build();
