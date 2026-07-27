@@ -547,6 +547,38 @@ internal sealed class TaskCoordinator
         RecordValidated(taskRef, parsed ?? JsonValue.Create(resultText));
     }
 
+    /// <summary>
+    ///     PURE, side-effect-free schema check for a spawn's raw result text, used by the async drive pump to
+    ///     decide whether a best-effort LLM JSON-repair pass is warranted BEFORE a deterministic validation
+    ///     failure is recorded (and again to confirm a repair actually satisfies the schema). It mutates
+    ///     NOTHING — no status, no retry budget, no outputs — and runs the SAME extract + parse + schema-validate
+    ///     steps as <see cref="ValidateAndRecord"/>, so a "would this be recorded as valid?" answer here matches
+    ///     what recording would do. An uncorrelated/unknown <paramref name="toolCallId"/>, or a task with no
+    ///     <c>outputSchema</c>, reports <see cref="SpawnSchemaCheck.NoSchema"/> (repair does not apply).
+    /// </summary>
+    public SpawnSchemaCheck CheckSpawnResult(string toolCallId, string resultText)
+    {
+        if (
+            !_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef)
+            || taskRef.OutputSchemaJson is not { } schemaJson
+        )
+        {
+            return SpawnSchemaCheck.NoSchema;
+        }
+
+        var parsed = JsonStringUtils.TryExtractJsonPayload(resultText, out var extractedJson)
+            ? SafeParse(extractedJson)
+            : null;
+        if (parsed is null)
+        {
+            return SpawnSchemaCheck.Invalid(schemaJson);
+        }
+
+        return _schemaValidator.ValidateDetailed(extractedJson, schemaJson).IsValid
+            ? SpawnSchemaCheck.Valid
+            : SpawnSchemaCheck.Invalid(schemaJson);
+    }
+
     /// <summary>Parses an already-extracted JSON candidate, returning <c>null</c> for the literal <c>null</c> (or the defensive parse-failure case).</summary>
     private static JsonNode? SafeParse(string json)
     {

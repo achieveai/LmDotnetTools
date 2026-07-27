@@ -625,6 +625,23 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>
+    ///     Thread-safe, side-effect-free wrapper over <see cref="TaskCoordinator.CheckSpawnResult"/>: reports
+    ///     whether a correlated spawn's result carries an output schema and already satisfies it (and, when it
+    ///     does not, the schema to repair against). Takes the runtime lock because the controller loop can be
+    ///     mutating task correlation concurrently, but records NOTHING — the drive pump calls it to gate the
+    ///     best-effort JSON-repair pass without touching durable/projected state.
+    /// </summary>
+    internal SpawnSchemaCheck CheckSpawnResult(string toolCallId, string resultText)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+
+        lock (_lock)
+        {
+            return _coordinator.CheckSpawnResult(toolCallId, resultText);
+        }
+    }
+
+    /// <summary>
     ///     Observes the injected background-completion result for a sub-agent, correlated by its receipt
     ///     <paramref name="agentId"/>. DORMANT in V1: the receipt path now fails fast (see
     ///     <see cref="ObserveSpawnResult"/>) and never records an <c>agent_id → task</c> correlation, so in V1
