@@ -92,6 +92,15 @@ public sealed record SimpleStep
     /// </summary>
     public string? Agent { get; init; }
 
+    /// <summary>
+    ///     <c>agent</c> steps (optional): the model-intelligence tier (ascending capability; 0 = cheapest)
+    ///     the spawned sub-agent should resolve to, mirroring the <c>modelIntelligence</c> argument of the
+    ///     Agent tool. Omit to let the sub-agent keep its own default (parent-inherited) model. The tier is
+    ///     resolved by the host, climbing to the nearest higher configured tier when the requested one is
+    ///     unmapped; prefer a low tier for cheap, bounded work and a higher one for harder reasoning.
+    /// </summary>
+    public int? ModelIntelligence { get; init; }
+
     /// <summary><c>agent</c> steps: the prompt handed to the sub-agent. Use <c>{{item}}</c> inside a <c>forEach</c> step.</summary>
     public string? Prompt { get; init; }
 
@@ -135,6 +144,13 @@ public sealed record SimpleAgent
     ///     <see cref="SimpleWorkflowTranslator.DefaultSubagentType"/> when any capable agent will do.
     /// </summary>
     public string Agent { get; init; } = string.Empty;
+
+    /// <summary>
+    ///     Optional model-intelligence tier (ascending capability; 0 = cheapest) this concurrent member
+    ///     should resolve to, mirroring the <c>modelIntelligence</c> argument of the Agent tool. Omit to
+    ///     keep the sub-agent's own default (parent-inherited) model.
+    /// </summary>
+    public int? ModelIntelligence { get; init; }
 
     /// <summary>The prompt handed to the sub-agent.</summary>
     public string Prompt { get; init; } = string.Empty;
@@ -370,6 +386,7 @@ public static class SimpleWorkflowTranslator
                         {
                             Id = $"{id}:task",
                             SubagentType = SubagentTypeOrDefault(step.Agent),
+                            ModelIntelligence = step.ModelIntelligence,
                             PromptTemplate = step.Prompt ?? string.Empty,
                             ForEach = NullIfBlank(step.ForEach),
                             // V1 runs a forEach fan-out SEQUENTIALLY (the validator rejects parallel=true).
@@ -402,6 +419,7 @@ public static class SimpleWorkflowTranslator
                         {
                             Id = $"{id}:task{ai + 1}",
                             SubagentType = SubagentTypeOrDefault(member.Agent),
+                            ModelIntelligence = member.ModelIntelligence,
                             PromptTemplate = member.Prompt,
                             Writes = MakeWrites(member.SaveAs, fanOut: false),
                         }
@@ -494,6 +512,7 @@ public static class SimpleWorkflowTranslator
                         .. parallel.TaskList.Select(t => new SimpleAgent
                         {
                             Agent = t.SubagentType ?? string.Empty,
+                            ModelIntelligence = t.ModelIntelligence,
                             Prompt = t.PromptTemplate,
                             SaveAs = SaveAsOf(t),
                         }),
@@ -511,6 +530,7 @@ public static class SimpleWorkflowTranslator
                     Kind = "agent",
                     Next = agent.Next.FirstOrDefault(),
                     Agent = task?.SubagentType,
+                    ModelIntelligence = task?.ModelIntelligence,
                     Prompt = task?.PromptTemplate,
                     ForEach = task?.ForEach,
                     SaveAs = task is null ? null : SaveAsOf(task),

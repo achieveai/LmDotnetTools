@@ -153,7 +153,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         bool runInBackground = false,
         string[]? addTools = null,
         string[]? removeTools = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        int? modelIntelligence = null)
     {
         // Snapshot the live source view so a concurrent TryRegister cannot make the
         // diagnostic Available list inconsistent with the lookup that produced template.
@@ -211,7 +212,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 template,
                 model,
                 addTools,
-                removeTools
+                removeTools,
+                modelIntelligence
             );
 
             state = new SubAgentState
@@ -222,6 +224,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Agent = agent,
                 Template = template,
                 ModelOverride = model,
+                ModelIntelligence = modelIntelligence,
                 EffectiveModelId = effectiveModelId,
                 AddTools = addTools,
                 RemoveTools = removeTools,
@@ -780,7 +783,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     state.Template,
                     state.ModelOverride,
                     state.AddTools,
-                    state.RemoveTools
+                    state.RemoveTools,
+                    state.ModelIntelligence
                 );
 
                 // Presentation-only: the replacement is now built and we are about to dispose the previous
@@ -1337,19 +1341,34 @@ public sealed class SubAgentManager : IAsyncDisposable
         SubAgentTemplate template,
         string? modelOverride,
         string[]? addTools,
-        string[]? removeTools)
+        string[]? removeTools,
+        int? modelIntelligence = null)
     {
+        // A per-spawn model-intelligence tier resolves to a concrete model ONLY when the spawn set no
+        // explicit model override (an explicit model always wins over a tier) AND the host supplied a
+        // tier resolver. The resolved id is then fed into option resolution as if it were the requested
+        // model, so model + budget inheritance treats it like any pinned model (override > tier > template
+        // > parent). A null return (no resolver, unmapped tier, or no routable candidate) leaves the
+        // sub-agent on its parent-inherited model, exactly as if no tier had been requested.
+        var tierResolvedModel =
+            string.IsNullOrWhiteSpace(modelOverride)
+            && modelIntelligence is { } tier
+            && _options.TierModelResolver is { } tierResolver
+                ? tierResolver(tier)
+                : null;
+        var effectiveModel = !string.IsNullOrWhiteSpace(modelOverride) ? modelOverride : tierResolvedModel;
+
         if (TestAgentFactoryOverride != null)
         {
             return (
                 TestAgentFactoryOverride(agentId, template),
                 null,
                 TestOwnedProviderOverride?.Invoke(agentId, template),
-                ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId, _parentMaxToken)?.ModelId);
+                ResolveSubAgentOptions(template.DefaultOptions, effectiveModel, _parentModelId, _parentMaxToken)?.ModelId);
         }
 
-        // Resolve the sub-agent's options with model + budget inheritance (override > template > parent).
-        var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId, _parentMaxToken);
+        // Resolve the sub-agent's options with model + budget inheritance (override > tier > template > parent).
+        var defaultOptions = ResolveSubAgentOptions(template.DefaultOptions, effectiveModel, _parentModelId, _parentMaxToken);
         IStreamingAgent providerAgent;
         IStreamingAgent? ownedProviderAgent = null;
         IConversationStore? store = null;
@@ -1364,19 +1383,23 @@ public sealed class SubAgentManager : IAsyncDisposable
                 var modelExplicitlySelected =
                     !string.IsNullOrWhiteSpace(modelOverride)
                     || template.IsModelExplicitlySelected;
+                // A per-spawn tier that resolved to a concrete model counts as a tier-resolved model for
+                // this spawn (in addition to a template that was itself tier-authored), so the
+                // characteristics gate builds a real provider for it rather than handing back the parent.
+                var isModelTierResolved = template.IsModelTierResolved || tierResolvedModel is not null;
                 // Inherit the parent's reasoning floor ONLY when this sub-agent made no model choice of its
                 // own (parent-model reuse). A template that lowered its Effort keeps that value; one that
                 // pins or tier-resolves a model is left un-nudged — "less thinking or a different model"
                 // overrides the inherited floor (see SubAgentOptions.InheritedEffort).
                 var effectiveEffort = template.Effort
-                    ?? (modelExplicitlySelected || template.IsModelTierResolved
+                    ?? (modelExplicitlySelected || isModelTierResolved
                         ? null
                         : _options.InheritedEffort);
                 var provider = characteristicsFactory(
                     new SubAgentCharacteristics(modelId, effectiveEffort)
                     {
                         IsModelExplicitlySelected = modelExplicitlySelected,
-                        IsModelTierResolved = template.IsModelTierResolved,
+                        IsModelTierResolved = isModelTierResolved,
                     });
                 providerAgent = provider.Agent;
                 ownedProviderAgent = provider.OwnsAgent ? provider.Agent : null;
@@ -1400,15 +1423,31 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
             else
             {
-                providerAgent = template.AgentFactory();
+                // A per-spawn tier that resolved to a concrete model needs a provider whose TRANSPORT
+                // matches that model: the plain template.AgentFactory() builds the parent/controller's
+                // transport, which may differ from the tier model's (e.g. an Anthropic-transport controller
+                // resolving a Responses-transport tier), so it would send the request to the wrong endpoint.
+                // When the host supplied a tier agent factory, build the transport-correct provider for the
+                // resolved model and own it for disposal; otherwise fall back to the template's provider
+                // (same-transport tiers and every no-tier spawn are unaffected).
+                if (tierResolvedModel is not null && _options.TierAgentFactory is { } tierAgentFactory)
+                {
+                    providerAgent = tierAgentFactory(tierResolvedModel);
+                    ownedProviderAgent = providerAgent;
+                }
+                else
+                {
+                    providerAgent = template.AgentFactory();
+                }
 
                 // A plain-path delegate (a template with no characteristics factory — e.g. a WorkflowAgent
                 // controller's transparent delegate) inherits the parent's PRE-SHAPED reasoning so it thinks
-                // like the launching conversation. Applied only when the delegate made no model override (a
-                // different model may use a different transport than the shaped metadata targets) and carries
-                // no reasoning of its own, so a template that set ExtraProperties still wins.
+                // like the launching conversation. Applied only when the delegate reuses the parent model (no
+                // explicit override AND no tier resolution — a different model may use a different transport
+                // than the shaped metadata targets) and carries no reasoning of its own, so a template that
+                // set ExtraProperties still wins.
                 if (_options.InheritedReasoning is { Count: > 0 } inheritedReasoning
-                    && string.IsNullOrWhiteSpace(modelOverride)
+                    && string.IsNullOrWhiteSpace(effectiveModel)
                     && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0))
                 {
                     defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with

@@ -116,6 +116,98 @@ public sealed class SubAgentModelResolverTests
         logger.Entries.Count(entry => entry.Level == LogLevel.Warning).Should().Be(1);
     }
 
+    [Fact]
+    public void ResolveClimbing_ExplicitModelWinsOverTier()
+    {
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]> { [3] = ["catalog-model"] },
+            Model("catalog-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing("explicit-model", 3).Should().Be("explicit-model");
+    }
+
+    [Fact]
+    public void ResolveClimbing_NullTierInheritsParent()
+    {
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]> { [3] = ["catalog-model"] },
+            Model("catalog-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, null).Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveClimbing_RequestedTierPresent_UsesItWithoutClimbing()
+    {
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]> { [1] = ["cheap-model"], [3] = ["strong-model"] },
+            Model("cheap-model", CopilotModelTransport.Responses),
+            Model("strong-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, 1).Should().Be("cheap-model");
+    }
+
+    [Fact]
+    public void ResolveClimbing_RequestedTierUnconfigured_ClimbsToNextHigherConfiguredTier()
+    {
+        // The requested tier (2) is unmapped in this deployment; climb UP to the nearest
+        // configured tier (3) rather than silently inheriting the parent — this is the behaviour
+        // the single-tier Resolve lacks (Resolve(null, 2) returns null here).
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]> { [3] = ["strong-model"] },
+            Model("strong-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.Resolve(null, 2).Should().BeNull();
+        resolver.ResolveClimbing(null, 2).Should().Be("strong-model");
+    }
+
+    [Fact]
+    public void ResolveClimbing_RequestedTierUnroutable_ClimbsPastItToNextRoutableTier()
+    {
+        // Tier 1 is configured but its only candidate is not in the catalog (unroutable); the climb
+        // skips it and resolves the next-higher routable tier.
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]> { [1] = ["missing-model"], [3] = ["strong-model"] },
+            Model("strong-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, 1).Should().Be("strong-model");
+    }
+
+    [Fact]
+    public void ResolveClimbing_FromZeroResolvesLowestAvailableTier()
+    {
+        // The "lowest available tier" entry point (start at 0, climb up) reused by the JSON-repair
+        // path: pick the cheapest configured, routable model regardless of which low tiers are mapped.
+        var resolver = CreateResolver(
+            new Dictionary<int, string[]> { [1] = ["cheap-model"], [3] = ["strong-model"] },
+            Model("cheap-model", CopilotModelTransport.Responses),
+            Model("strong-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, 0).Should().Be("cheap-model");
+    }
+
+    [Fact]
+    public void ResolveClimbing_NoRoutableTierAtOrAboveRequested_ReturnsNullAndWarnsOnce()
+    {
+        var logger = new CapturingLogger<SubAgentModelResolver>();
+        var resolver = CreateResolver(
+            new SubAgentIntelligenceOptions { Tiers = new Dictionary<int, string[]> { [1] = ["cheap-model"] } },
+            logger,
+            Model("cheap-model", CopilotModelTransport.Responses)
+        );
+
+        resolver.ResolveClimbing(null, 3).Should().BeNull();
+        resolver.ResolveClimbing(null, 3).Should().BeNull();
+
+        logger.Entries.Count(entry => entry.Level == LogLevel.Warning).Should().Be(1);
+    }
+
     private static SubAgentModelResolver CreateResolver(
         Dictionary<int, string[]> tiers,
         params CopilotModelInfo[] models

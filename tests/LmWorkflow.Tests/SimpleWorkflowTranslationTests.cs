@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 using FluentAssertions;
 using Xunit;
 
@@ -286,6 +287,84 @@ public class SimpleWorkflowTranslationTests
         new WorkflowValidator().ValidateAndThrow(def);
 
         def.Nodes.OfType<ConditionalNode>().Single(n => n.Id == "b").Else.Should().Be("cleanup");
+    }
+
+    [Fact]
+    public void ModelIntelligence_OnAgentStepAndParallelMembers_ThreadsToWorkflowTask_AndRoundTrips()
+    {
+        // The authoring end of the #3 spine: a per-step model-intelligence tier must reach the internal
+        // WorkflowTask (which the runtime later surfaces to the controller) and survive a DSL round-trip.
+        const string json = """
+            { "objective": "size the delegates", "steps": [
+              { "id": "s", "kind": "start", "next": "solo" },
+              { "id": "solo", "kind": "agent", "agent": "researcher", "prompt": "Do X.",
+                "modelIntelligence": 4, "saveAs": "r", "next": "fan" },
+              { "id": "fan", "kind": "parallel", "next": "e", "agents": [
+                { "agent": "cheap", "prompt": "quick", "modelIntelligence": 0, "saveAs": "a" },
+                { "agent": "smart", "prompt": "hard",  "modelIntelligence": 7, "saveAs": "b" }
+              ] },
+              { "id": "e", "kind": "end" }
+            ] }
+            """;
+        var original = Parse(json);
+
+        var def = original.ToDefinition();
+        new WorkflowValidator().ValidateAndThrow(def);
+
+        // The agent step's tier reaches its single WorkflowTask.
+        Task(def, "solo").ModelIntelligence.Should().Be(4);
+
+        // Each parallel member carries its own tier, in declaration order.
+        var fan = def.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "fan");
+        fan.TaskList!.Select(t => t.ModelIntelligence).Should().Equal(0, 7);
+
+        // A faithful DSL round-trip preserves every authored tier (both directions of the translator).
+        var roundTripped = SimpleWorkflowTranslator.FromDefinition(def);
+        JsonSerializer.Serialize(roundTripped, SimpleWorkflow.OutputJsonOptions)
+            .Should()
+            .Be(JsonSerializer.Serialize(original, SimpleWorkflow.OutputJsonOptions));
+    }
+
+    [Fact]
+    public void ModelIntelligence_OmittedOnAnAgentStep_StaysNull_NeverInventingATier()
+    {
+        // Omission must remain omission — a tier-less task keeps its parent-inherited model, never a spurious 0.
+        var def = Parse(
+            """
+            { "objective": "o", "steps": [
+              { "id": "s", "kind": "start", "next": "a" },
+              { "id": "a", "kind": "agent", "agent": "researcher", "prompt": "Do X.", "next": "e" },
+              { "id": "e", "kind": "end" }
+            ] }
+            """
+        ).ToDefinition();
+
+        Task(def, "a").ModelIntelligence.Should().BeNull();
+    }
+
+    [Fact]
+    public void ModelIntelligence_AuthoredOnAnAgentStep_SurfacesToTheControllerInTheProjection()
+    {
+        // The full #3 spine end-to-end: DSL tier -> WorkflowTask -> SpawnUnit -> the controller-visible
+        // projection, so the controller can forward it as the Agent tool's modelIntelligence argument.
+        var def = Parse(
+            """
+            { "objective": "o", "steps": [
+              { "id": "start", "kind": "start", "next": "a" },
+              { "id": "a", "kind": "agent", "agent": "researcher", "prompt": "Do X.",
+                "modelIntelligence": 4, "next": "e" },
+              { "id": "e", "kind": "end" }
+            ] }
+            """
+        ).ToDefinition();
+
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(def);
+        runtime.AdvanceTo("start", "a", null);
+
+        var unit = runtime.GetProjection(null)["nextExpectedAction"]!.AsArray().Should().ContainSingle().Which!;
+        unit["subagentType"]!.GetValue<string>().Should().Be("researcher");
+        unit["modelIntelligence"]!.GetValue<int>().Should().Be(4);
     }
 
     private static IReadOnlyList<string> Next(WorkflowDefinition def, string id) =>

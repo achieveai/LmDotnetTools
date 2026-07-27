@@ -113,6 +113,18 @@ public class SubAgentToolProvider : IFunctionProvider
                 },
                 new FunctionParameterContract
                 {
+                    Name = "modelIntelligence",
+                    Description =
+                        "Optional model-intelligence tier (integer; ascending capability, 0 = cheapest) "
+                        + "used to size this sub-agent's model when no explicit 'model' is given. The host "
+                        + "resolves it to a concrete model, climbing to the nearest higher configured tier "
+                        + "when the requested one is unmapped; omit it to keep the sub-agent's default "
+                        + "(parent-inherited) model. An explicit 'model' always wins over this.",
+                    ParameterType = new JsonSchemaObject { Type = new("integer") },
+                    IsRequired = false,
+                },
+                new FunctionParameterContract
+                {
                     Name = "run_in_background",
                     Description =
                         "When true, return immediately with an agent id instead of "
@@ -268,6 +280,7 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var name = GetOptionalString(root, "name");
         var model = GetOptionalString(root, "model");
+        var modelIntelligence = GetOptionalInt(root, "modelIntelligence");
         var runInBackground = GetOptionalBool(root, "run_in_background") ?? false;
 
         // 'description' is intentionally accepted but not read here: it is a short
@@ -286,7 +299,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 runInBackground,
                 addTools,
                 removeTools,
-                cancellationToken);
+                cancellationToken,
+                modelIntelligence);
 
             return ToolHandlerResult.FromText(result);
         }
@@ -382,6 +396,22 @@ public class SubAgentToolProvider : IFunctionProvider
             JsonValueKind.False => false,
             // Some models emit booleans as strings ("true"/"false").
             JsonValueKind.String when bool.TryParse(prop.GetString(), out var parsed) => parsed,
+            _ => null,
+        };
+    }
+
+    private static int? GetOptionalInt(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var prop))
+        {
+            return null;
+        }
+
+        return prop.ValueKind switch
+        {
+            JsonValueKind.Number when prop.TryGetInt32(out var number) => number,
+            // Some models emit integers as strings ("2").
+            JsonValueKind.String when int.TryParse(prop.GetString(), out var parsed) => parsed,
             _ => null,
         };
     }

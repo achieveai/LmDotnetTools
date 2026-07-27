@@ -454,6 +454,7 @@ internal sealed class TaskCoordinator
         {
             Name = taskRef.Name,
             SubagentType = task.SubagentType!,
+            ModelIntelligence = task.ModelIntelligence,
             Prompt = ComposePrompt(task, _buildContext(item, index, count)),
             OutputSchema = task.OutputSchema?.DeepClone(),
         };

@@ -118,6 +118,15 @@ internal class SubAgentState
     public required SubAgentTemplate Template { get; init; }
     public string? ModelOverride { get; init; }
 
+    /// <summary>
+    /// The spawn's requested model-intelligence tier (the <c>modelIntelligence</c> Agent-tool argument /
+    /// workflow task tier), or null when none was requested. Captured at spawn so an owned-provider
+    /// restart re-resolves the same tier through the host's <see cref="SubAgentOptions.TierModelResolver"/>
+    /// rather than dropping back to the parent model. Ignored when <see cref="ModelOverride"/> is set (an
+    /// explicit model always wins over a tier).
+    /// </summary>
+    public int? ModelIntelligence { get; init; }
+
     /// <summary>The final resolved model this sub-agent was built with (override &gt; template &gt; parent, after
     /// characteristics processing) — captured at creation so descendant usage is billed to the model that
     /// actually handled the request, not a value re-derived later that could diverge. Refreshed on an

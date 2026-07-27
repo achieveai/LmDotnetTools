@@ -228,6 +228,154 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task SpawnAsync_TierResolvedModel_CharacteristicsPath_MarksTierResolvedAndUsesResolvedModel()
+    {
+        // #3: a per-spawn modelIntelligence tier (the Agent tool's argument, or a workflow task's tier)
+        // that the host resolver maps to a concrete model must reach the characteristics factory as a
+        // TIER-RESOLVED model on the resolved id — so the factory builds a real provider for it rather
+        // than handing back the parent. A tier (like an explicit model) also suppresses the inherited
+        // effort floor: the child runs un-nudged on the tier model.
+        SubAgentCharacteristics? receivedCharacteristics = null;
+        var providerAgent = CreateRespondingAgent();
+        var resolverCalls = new List<int>();
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => throw new InvalidOperationException("Legacy factory should not run."),
+            CharacteristicsAgentFactory = characteristics =>
+            {
+                receivedCharacteristics = characteristics;
+                return new SubAgentProviderAgent(providerAgent.Object, ImmutableDictionary<string, object?>.Empty);
+            },
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "parent-model",
+            inheritedEffort: ReasoningEffort.High,
+            tierModelResolver: tier =>
+            {
+                resolverCalls.Add(tier);
+                return tier == 5 ? "tier-5-model" : null;
+            }
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 5);
+
+        resolverCalls.Should().ContainSingle().Which.Should().Be(5);
+        receivedCharacteristics!.ModelId.Should().Be("tier-5-model");
+        receivedCharacteristics.IsModelTierResolved.Should().BeTrue();
+        receivedCharacteristics.IsModelExplicitlySelected.Should().BeFalse();
+        receivedCharacteristics.Effort.Should().BeNull("a tier-resolved model runs un-nudged, like an explicit model");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_TierResolvedModel_PlainPath_BuildsTransportCorrectProviderViaTierAgentFactory()
+    {
+        // #3 (workflow controller path): a controller delegate takes the PLAIN path (no characteristics
+        // factory). A tier that resolves to a model whose transport may differ from the controller's own
+        // must be served by a provider built for THAT model via TierAgentFactory — NOT by the plain
+        // template.AgentFactory() (which builds the controller's transport). The resolved id also becomes
+        // the request ModelId, and the parent's pre-shaped InheritedReasoning is NOT seeded (a different
+        // transport would reject it).
+        GenerateReplyOptions? tierAgentOptions = null;
+        var tierAgent = CreateRespondingAgent(options => tierAgentOptions = options);
+        string? tierFactoryRequestedModel = null;
+        var inheritedReasoning = ImmutableDictionary<string, object?>.Empty.Add("Thinking", "budget");
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () =>
+                throw new InvalidOperationException("Plain template factory must NOT run when a tier resolves."),
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "controller-model",
+            inheritedReasoning: inheritedReasoning,
+            tierModelResolver: tier => tier == 3 ? "tier-3-model" : null,
+            tierAgentFactory: model =>
+            {
+                tierFactoryRequestedModel = model;
+                return tierAgent.Object;
+            }
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 3);
+
+        tierFactoryRequestedModel.Should().Be("tier-3-model", "the plain path must build the provider for the resolved tier model");
+        tierAgentOptions.Should().NotBeNull("the tier-built provider must be the agent that runs");
+        tierAgentOptions!.ModelId.Should().Be("tier-3-model");
+        tierAgentOptions.ExtraProperties.Should().NotContainKey(
+            "Thinking",
+            "a tier-resolved model may use a different transport, so the controller's pre-shaped reasoning is not seeded"
+        );
+    }
+
+    [Fact]
+    public async Task SpawnAsync_TierResolvesNull_PlainPath_FallsBackToTemplateFactoryAndSeedsInheritedReasoning()
+    {
+        // When the resolver returns null (unmapped tier / no routable candidate), the plain path is
+        // unchanged: it uses template.AgentFactory() and seeds the inherited pre-shaped reasoning, exactly
+        // as a no-tier delegate does. TierAgentFactory must NOT be consulted.
+        GenerateReplyOptions? templateAgentOptions = null;
+        var templateAgent = CreateRespondingAgent(options => templateAgentOptions = options);
+        var inheritedReasoning = ImmutableDictionary<string, object?>.Empty.Add("Thinking", "budget");
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => templateAgent.Object,
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "controller-model",
+            inheritedReasoning: inheritedReasoning,
+            tierModelResolver: _ => null,
+            tierAgentFactory: _ =>
+                throw new InvalidOperationException("TierAgentFactory must NOT run when the tier resolves to null.")
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", modelIntelligence: 7);
+
+        templateAgentOptions.Should().NotBeNull("an unresolved tier falls back to the template's own provider");
+        templateAgentOptions!.ExtraProperties.Should().Contain("Thinking", "budget");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ExplicitModelWithTier_PlainPath_SkipsTierResolutionAndAgentFactory()
+    {
+        // An explicit model override always wins over a tier: the resolver and TierAgentFactory are not
+        // consulted, the plain template provider runs on the override, and (since a model was chosen) the
+        // inherited reasoning is not seeded.
+        GenerateReplyOptions? templateAgentOptions = null;
+        var templateAgent = CreateRespondingAgent(options => templateAgentOptions = options);
+        var inheritedReasoning = ImmutableDictionary<string, object?>.Empty.Add("Thinking", "budget");
+        var resolverCalls = 0;
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a test agent.",
+            AgentFactory = () => templateAgent.Object,
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "controller-model",
+            inheritedReasoning: inheritedReasoning,
+            tierModelResolver: _ =>
+            {
+                resolverCalls++;
+                return "tier-model";
+            },
+            tierAgentFactory: _ =>
+                throw new InvalidOperationException("TierAgentFactory must NOT run when an explicit model wins.")
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task", model: "spawn-model", modelIntelligence: 3);
+
+        resolverCalls.Should().Be(0, "an explicit model override short-circuits tier resolution");
+        templateAgentOptions.Should().NotBeNull();
+        templateAgentOptions!.ModelId.Should().Be("spawn-model");
+        templateAgentOptions.ExtraProperties.Should().NotContainKey("Thinking");
+    }
+
+    [Fact]
     public void SubAgentCharacteristics_PreservesTwoValuePositionalApi()
     {
         var characteristics = new SubAgentCharacteristics("model", ReasoningEffort.High)
@@ -373,7 +521,9 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
         SubAgentTemplate template,
         string? parentModelId = null,
         ReasoningEffort? inheritedEffort = null,
-        ImmutableDictionary<string, object?>? inheritedReasoning = null
+        ImmutableDictionary<string, object?>? inheritedReasoning = null,
+        Func<int, string?>? tierModelResolver = null,
+        Func<string, IStreamingAgent>? tierAgentFactory = null
     )
     {
         var options = new SubAgentOptions
@@ -381,6 +531,8 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
             Templates = new Dictionary<string, SubAgentTemplate> { ["test-agent"] = template },
             InheritedEffort = inheritedEffort,
             InheritedReasoning = inheritedReasoning,
+            TierModelResolver = tierModelResolver,
+            TierAgentFactory = tierAgentFactory,
         };
 
         return new SubAgentManager(

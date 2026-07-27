@@ -32,9 +32,11 @@ public static class ControllerSystemPrompt
           result object only when entering a terminal node.
         - SetState(path, value, mode?): write into the state channel (set, append, or merge).
         - SetNotes(scope, key, value): record a scoped note for later reference.
-        - Agent(subagent_type, prompt, name, ...): the shared sub-agent tool. This is how a task is
-          actually executed. The runtime correlates the result back to the task by the name argument, so
-          it MUST be set exactly (see the core loop). Delegates you spawn inherit the launching
+        - Agent(subagent_type, prompt, name, modelIntelligence?, ...): the shared sub-agent tool. This is
+          how a task is actually executed. The runtime correlates the result back to the task by the name
+          argument, so it MUST be set exactly (see the core loop). When a ready-to-spawn unit carries a
+          modelIntelligence tier, forward it as the Agent tool's modelIntelligence argument so the delegate
+          runs on the right-sized model (see the core loop). Delegates you spawn inherit the launching
           conversation's tools (e.g. filesystem, source control, web) — so write each task's prompt to
           instruct the delegate to USE those tools to do real work, not to reason about it abstractly.
 
@@ -53,10 +55,12 @@ public static class ControllerSystemPrompt
         1. Call GetWorkflow and read nextExpectedAction.
         2. For each ready-to-spawn unit, call the Agent tool with the unit's prompt taken VERBATIM and set
            the Agent tool's name argument to the unit's name EXACTLY — the verbatim name is the only way
-           the runtime records that unit's result, so never alter or invent it. Use the unit's
-           subagent_type as-is UNLESS a more specific listed agent clearly fits the task better (see
-           CHOOSING A SUBAGENT_TYPE); the subagent_type is NOT part of the result correlation — only the
-           name is — so refining it never breaks the join.
+           the runtime records that unit's result, so never alter or invent it. If the unit carries a
+           modelIntelligence value, pass it through as the Agent tool's modelIntelligence argument
+           unchanged (omit the argument when the unit has none). Use the unit's subagent_type as-is UNLESS
+           a more specific listed agent clearly fits the task better (see CHOOSING A SUBAGENT_TYPE); the
+           subagent_type is NOT part of the result correlation — only the name is — so refining it never
+           breaks the join.
         3. Poll GetWorkflow until join.satisfied is true.
         4. Call SetCurrentNode to move to the next node.
 
@@ -117,7 +121,9 @@ public static class ControllerSystemPrompt
           has at least one.
         - A procedural node's tasks go in "taskList" (NOT "tasks", "task", or "units").
         - Each task needs "id", "subagent_type" (snake_case — NOT "agentType"/"agent_type"), and
-          "promptTemplate". Optionally "writes": { "to": "state.<path>", "mode": "set|append|merge" }.
+          "promptTemplate". Optionally "writes": { "to": "state.<path>", "mode": "set|append|merge" } and
+          "modelIntelligence" (an integer tier, ascending capability, 0 = cheapest) to size the delegate's
+          model — omit it to let the delegate keep its own default model.
         - A conditional node needs "branches" (each { "when": <cond>, "to": <nodeId> }) and a non-empty
           "else". A terminal node may carry a "resultTemplate".
 

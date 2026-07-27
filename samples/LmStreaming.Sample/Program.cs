@@ -1244,6 +1244,21 @@ try
                         .GetAwaiter()
                         .GetResult();
 
+                    // Route a spawn's modelIntelligence tier (the Agent tool's argument, or a workflow task's
+                    // tier) to a concrete model via the host's tier ladder, climbing to the nearest higher
+                    // configured tier when the requested one is unmapped. The library stays catalog-agnostic;
+                    // the ladder lives in the sample. These conversation sub-agents take the CHARACTERISTICS
+                    // path, which builds a transport-correct provider for the resolved model itself, so no
+                    // TierAgentFactory is needed here (unlike the controller's plain-path delegates below).
+                    if (subAgentOptions is not null)
+                    {
+                        var subAgentModelResolver = sp.GetRequiredService<SubAgentModelResolver>();
+                        subAgentOptions = subAgentOptions with
+                        {
+                            TierModelResolver = tier => subAgentModelResolver.ResolveClimbing(null, tier),
+                        };
+                    }
+
                     // Ordinary conversation sub-agents (characteristics path) inherit the parent's thinking as
                     // an effort FLOOR (Option A: High) — applied only when the parent can itself think, so an
                     // inherited-model sub-agent reasons like the launching conversation instead of running
@@ -1384,6 +1399,16 @@ try
                                     providerId,
                                     providerId
                                 ),
+                                // Route a delegate's modelIntelligence tier (forwarded by the controller from the
+                                // composed unit) to a concrete model via the same host tier ladder. Controller
+                                // delegates take the PLAIN path, so a tier that resolves to a CROSS-transport model
+                                // (e.g. a Responses model under an Anthropic-transport controller) needs a
+                                // transport-correct provider built for THAT model — supplied via TierAgentFactory
+                                // (the DI per-id agent factory) — instead of the controller's own transport. A
+                                // no-tier or same-transport delegate is unaffected (it keeps InheritedReasoning).
+                                TierModelResolver = tier =>
+                                    sp.GetRequiredService<SubAgentModelResolver>().ResolveClimbing(null, tier),
+                                TierAgentFactory = agentFactory,
                             };
 
                             // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
@@ -74,4 +75,30 @@ public record SubAgentOptions
     /// inherited reasoning, so ordinary sub-agent paths (which leave this unset) are unaffected.
     /// </summary>
     public ImmutableDictionary<string, object?>? InheritedReasoning { get; init; }
+
+    /// <summary>
+    /// Host-supplied resolver that maps a spawn's model-intelligence tier (the <c>modelIntelligence</c>
+    /// argument of the <c>Agent</c> tool, or a workflow task's tier) to a concrete model id, or null to
+    /// leave the sub-agent on its parent-inherited model. The library is model-catalog-agnostic, so the
+    /// host owns the tier ladder and passes this delegate in; the manager only calls it (with the raw
+    /// tier) when a spawn requested a tier AND set no explicit model override. A non-null return is treated
+    /// as a tier-resolved model (<see cref="SubAgentCharacteristics.IsModelTierResolved"/>), so the
+    /// characteristics factory builds a real provider for it rather than handing back the parent. Null
+    /// (default) disables tier resolution, so every non-host consumer keeps the previous behavior.
+    /// </summary>
+    public Func<int, string?>? TierModelResolver { get; init; }
+
+    /// <summary>
+    /// Host-supplied factory that builds a provider agent for a tier-resolved model on the PLAIN path (a
+    /// template with no <see cref="SubAgentTemplate.CharacteristicsAgentFactory"/> — e.g. a WorkflowAgent
+    /// controller's transparent delegate). When <see cref="TierModelResolver"/> maps a spawn's tier to a
+    /// concrete model, that model may use a different transport than the controller's own provider, so the
+    /// plain <see cref="SubAgentTemplate.AgentFactory"/> (which builds the controller's transport) would send
+    /// the request to the wrong endpoint. This factory builds a transport-correct provider for the resolved
+    /// model id instead; the manager owns and disposes it. It is consulted ONLY on the plain path and ONLY
+    /// when a tier resolved to a model — the characteristics path builds its own transport-correct provider,
+    /// so hosts that use it need not set this. Null (default) = fall back to the template's provider, so
+    /// same-transport tiers and every non-host consumer keep the previous behavior.
+    /// </summary>
+    public Func<string, IStreamingAgent>? TierAgentFactory { get; init; }
 }

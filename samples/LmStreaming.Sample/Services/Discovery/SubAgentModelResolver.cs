@@ -83,25 +83,9 @@ internal sealed class SubAgentModelResolver
             return null;
         }
 
-        // NOTE: candidates are matched against the discovered Copilot catalog ONLY
-        // (TryGetCopilotModel). Anthropic-compat family ids discovered via
-        // AnthropicCompatProviders.DiscoverFromEnv (e.g. "deepseek-v4-pro") live in a
-        // separate catalog reachable only through ProviderRegistry.TryGetAnthropicCompatModel,
-        // so such a candidate is silently skipped and the tier falls through to the next entry.
-        // Today that is harmless (Copilot ids precede it in every configured tier), but to make
-        // an anthropic-compat model selectable on its own, add a second lookup here that also
-        // consults TryGetAnthropicCompatModel and returns its provider id when present.
-        foreach (var candidate in candidates)
+        if (TryGetRoutableModel(candidates, out var routable))
         {
-            if (string.IsNullOrWhiteSpace(candidate) || !_catalog.TryGetCopilotModel(candidate, out var model))
-            {
-                continue;
-            }
-
-            if (model.Transport is CopilotModelTransport.Anthropic or CopilotModelTransport.Responses)
-            {
-                return model.Id;
-            }
+            return routable;
         }
 
         WarnOnce(
@@ -111,6 +95,79 @@ internal sealed class SubAgentModelResolver
             modelIntelligence
         );
         return null;
+    }
+
+    /// <summary>
+    /// Like <see cref="Resolve"/>, but when the requested tier is unconfigured or has no routable
+    /// catalog candidate it CLIMBS to the next-higher configured tier (more capable) until one
+    /// resolves or the ladder is exhausted. An explicit model still wins outright and a null tier
+    /// still inherits the parent. This is the per-spawn entry point used when a workflow controller
+    /// (or a JSON-repair fallback, via <c>ResolveClimbing(null, 0)</c> for the lowest available
+    /// tier) requests a tier that may be unmapped in this deployment — climbing yields the nearest
+    /// available model rather than silently inheriting the parent, which is exactly the gap the
+    /// single-tier <see cref="Resolve"/> leaves.
+    /// </summary>
+    internal string? ResolveClimbing(string? explicitModel, int? modelIntelligence)
+    {
+        var normalizedModel = explicitModel?.Trim();
+        if (
+            !string.IsNullOrEmpty(normalizedModel)
+            && !string.Equals(normalizedModel, "inherit", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return normalizedModel;
+        }
+
+        if (modelIntelligence is null)
+        {
+            return null;
+        }
+
+        // Walk only the CONFIGURED tiers at or above the requested one, weakest-first, so a request
+        // for an unmapped tier lands on the nearest higher-capability tier that is actually routable.
+        foreach (var tier in _options.Tiers.Keys.Where(key => key >= modelIntelligence.Value).OrderBy(key => key))
+        {
+            if (TryGetRoutableModel(_options.Tiers[tier], out var routable))
+            {
+                return routable;
+            }
+        }
+
+        WarnOnce(
+            $"climb-exhausted:{modelIntelligence.Value}",
+            "Sub-agent model-intelligence tier {Tier} (and every higher configured tier) had no "
+                + "routable Copilot catalog candidate; inheriting the parent model",
+            modelIntelligence
+        );
+        return null;
+    }
+
+    // Returns the first routable model id among the tier's candidates, matched against the discovered
+    // Copilot catalog ONLY (TryGetCopilotModel). Anthropic-compat family ids discovered via
+    // AnthropicCompatProviders.DiscoverFromEnv (e.g. "deepseek-v4-pro") live in a separate catalog
+    // reachable only through ProviderRegistry.TryGetAnthropicCompatModel, so such a candidate is
+    // silently skipped and the caller falls through to the next entry/tier. Today that is harmless
+    // (Copilot ids precede it in every configured tier), but to make an anthropic-compat model
+    // selectable on its own, add a second lookup here that also consults TryGetAnthropicCompatModel
+    // and returns its provider id when present.
+    private bool TryGetRoutableModel(IReadOnlyList<string> candidates, out string modelId)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate) || !_catalog.TryGetCopilotModel(candidate, out var model))
+            {
+                continue;
+            }
+
+            if (model.Transport is CopilotModelTransport.Anthropic or CopilotModelTransport.Responses)
+            {
+                modelId = model.Id;
+                return true;
+            }
+        }
+
+        modelId = string.Empty;
+        return false;
     }
 
     private void WarnOnce(string condition, string message, params object?[] args)
