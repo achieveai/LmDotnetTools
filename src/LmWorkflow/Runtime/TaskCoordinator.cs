@@ -506,27 +506,27 @@ internal sealed class TaskCoordinator
     /// </summary>
     private void ValidateAndRecord(TaskRef taskRef, string resultText)
     {
-        JsonNode? parsed;
-        try
-        {
-            parsed = JsonNode.Parse(resultText);
-        }
-        catch (JsonException)
-        {
-            // The parser message can echo the payload, so only the payload length is recorded.
-            HandleFailure(taskRef, $"task output was not valid JSON ({resultText.Length} chars)");
-            return;
-        }
-
-        if (parsed is null)
-        {
-            HandleFailure(taskRef, "task output parsed to a null JSON value.");
-            return;
-        }
+        // Sub-agents routinely wrap their JSON in prose or a Markdown fence, and a task with no output schema
+        // may legitimately answer in free-form Markdown. Extract any embedded JSON tolerantly rather than
+        // force-parsing the WHOLE reply: a report that merely fails a strict whole-text parse must not fail the
+        // task and drive a re-spawn/retry storm (the PR-222-review run oddity). The literal JSON `null` parses
+        // to a null node — treat it as "no JSON" so it is never written as a bare null.
+        var parsed = JsonStringUtils.TryExtractJsonPayload(resultText, out var extractedJson)
+            ? SafeParse(extractedJson)
+            : null;
 
         if (taskRef.OutputSchemaJson is { } schemaJson)
         {
-            var validation = _schemaValidator.ValidateDetailed(resultText, schemaJson);
+            // A schema'd task still requires structured output: no extractable JSON, or JSON that fails the
+            // schema, is a genuine validation failure routed through the retry policy.
+            if (parsed is null)
+            {
+                // The parser message can echo the payload, so only the ORIGINAL payload length is recorded.
+                HandleFailure(taskRef, $"task output was not valid JSON ({resultText.Length} chars)");
+                return;
+            }
+
+            var validation = _schemaValidator.ValidateDetailed(extractedJson, schemaJson);
             if (!validation.IsValid)
             {
                 // Only the error COUNT is recorded; the joined error strings can echo submitted values.
@@ -536,9 +536,37 @@ internal sealed class TaskCoordinator
                 );
                 return;
             }
+
+            RecordValidated(taskRef, parsed);
+            return;
         }
 
-        WriteOutputSlot(taskRef, parsed);
+        // No schema: accept free-form output. Store the extracted JSON when the reply is (or embeds) JSON,
+        // otherwise store the raw text as a JSON string value. Never fail the task for "not valid JSON".
+        RecordValidated(taskRef, parsed ?? JsonValue.Create(resultText));
+    }
+
+    /// <summary>Parses an already-extracted JSON candidate, returning <c>null</c> for the literal <c>null</c> (or the defensive parse-failure case).</summary>
+    private static JsonNode? SafeParse(string json)
+    {
+        try
+        {
+            return JsonNode.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///     Records a successful task answer: writes it into the output slot, applies any configured state write
+    ///     (routing a structural write failure through the retry policy rather than faulting the whole workflow),
+    ///     then marks the unit validated and clears its last error.
+    /// </summary>
+    private void RecordValidated(TaskRef taskRef, JsonNode value)
+    {
+        WriteOutputSlot(taskRef, value);
         if (taskRef.Writes is { } writes)
         {
             // A validated output can still be un-writable (e.g. a merge whose value is not an object). Route
@@ -547,7 +575,7 @@ internal sealed class TaskCoordinator
             // catch.
             try
             {
-                StateWriter.Apply(_liveState(), writes, parsed);
+                StateWriter.Apply(_liveState(), writes, value);
             }
             catch (Exception ex)
                 when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
