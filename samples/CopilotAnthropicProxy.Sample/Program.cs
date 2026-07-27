@@ -602,13 +602,45 @@ public static class ProxyModelResolver
     }
 
     /// <summary>
-    ///     Maps the model a client asked for onto a model this proxy serves. Unknown ids fall back to the
-    ///     catalog default (DEVIATION D2) — the dialect check downstream runs against the RESOLVED model.
+    ///     Model families, longest name first so a shorter name cannot shadow a longer one.
+    ///     Used to route side traffic that names a model this account does not have — Claude Code sends
+    ///     conversation-title, classification and summarisation calls as <c>claude-3-5-haiku-*</c> to the
+    ///     SAME base URL, and without this they would all bill against the default opus model.
+    /// </summary>
+    private static readonly string[] ModelFamilies = ["sonnet", "haiku", "opus"];
+
+    /// <summary>
+    ///     Maps the model a client asked for onto a model this proxy serves:
+    ///     exact match (case-insensitive) → same-family match → catalog default.
+    ///     The dialect check downstream runs against the RESOLVED model (DEVIATION D2).
     /// </summary>
     public static string SelectOutboundModel(string? incomingModel, ProxyModelCatalog catalog)
     {
         ArgumentNullException.ThrowIfNull(catalog);
-        return catalog.Find(incomingModel)?.Id ?? catalog.Default;
+
+        if (catalog.Find(incomingModel) is { } exact)
+        {
+            return exact.Id;
+        }
+
+        if (!string.IsNullOrWhiteSpace(incomingModel))
+        {
+            var family = ModelFamilies.FirstOrDefault(f =>
+                incomingModel.Contains(f, StringComparison.OrdinalIgnoreCase)
+            );
+            if (family is not null)
+            {
+                var sameFamily = catalog.Models.FirstOrDefault(m =>
+                    m.Id.Contains(family, StringComparison.OrdinalIgnoreCase)
+                );
+                if (sameFamily is not null)
+                {
+                    return sameFamily.Id;
+                }
+            }
+        }
+
+        return catalog.Default;
     }
 
     /// <summary>Peeks at the JSON body's <c>model</c> field without mutating it. Null on any parse failure.</summary>

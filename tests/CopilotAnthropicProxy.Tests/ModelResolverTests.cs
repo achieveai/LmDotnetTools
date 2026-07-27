@@ -327,6 +327,38 @@ public sealed class ModelResolverTests
         ProxyModelResolver.SelectOutboundModel("claude-sonnet-4.5", catalog).Should().Be("claude-sonnet-4.5");
     }
 
+    private static ProxyModelCatalog FamilyCatalog =>
+        new(
+            "claude-opus-4.8",
+            [
+                new ProxyModelInfo("claude-opus-4.8", "Anthropic", [CopilotModelsResponse.MessagesEndpoint]),
+                new ProxyModelInfo("claude-sonnet-4.5", "Anthropic", [CopilotModelsResponse.MessagesEndpoint]),
+                new ProxyModelInfo("claude-haiku-4.5", "Anthropic", [CopilotModelsResponse.MessagesEndpoint]),
+            ]
+        );
+
+    [Theory]
+    [InlineData("claude-3-5-haiku-20241022", "claude-haiku-4.5")]
+    [InlineData("claude-haiku-4-5-20251001", "claude-haiku-4.5")]
+    [InlineData("claude-sonnet-4-20250514", "claude-sonnet-4.5")]
+    [InlineData("claude-3-opus-20240229", "claude-opus-4.8")]
+    public void SelectOutboundModel_maps_an_unknown_id_onto_its_own_family(string incoming, string expected)
+    {
+        ProxyModelResolver.SelectOutboundModel(incoming, FamilyCatalog).Should().Be(expected);
+    }
+
+    [Fact]
+    public void SelectOutboundModel_falls_back_to_the_default_when_no_family_matches()
+    {
+        ProxyModelResolver.SelectOutboundModel("some-unknown-model", FamilyCatalog).Should().Be("claude-opus-4.8");
+    }
+
+    [Fact]
+    public void SelectOutboundModel_still_prefers_an_exact_match_over_a_family_match()
+    {
+        ProxyModelResolver.SelectOutboundModel("claude-haiku-4.5", FamilyCatalog).Should().Be("claude-haiku-4.5");
+    }
+
     [Fact]
     public void PeekModel_reads_the_model_field_without_mutating_the_body()
     {
