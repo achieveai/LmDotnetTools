@@ -217,6 +217,10 @@ public static class WorkflowSession
         CancellationToken ct
     )
     {
+        // DriveAndObserveAsync below is that single ordered consumer. Declare it BEFORE the loop can execute
+        // any tool so a transition can wait for the observer to catch up instead of routing off stale state.
+        runtime.AttachOrderedObserver();
+
         var runTask = loop.RunAsync(ct);
 
         // The controller pump runs on its own task. If it does NOT run to completion — it FAULTS, or it
