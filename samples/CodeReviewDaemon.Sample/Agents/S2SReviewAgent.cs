@@ -45,6 +45,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
     private readonly string? _title;
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _pollMaxInterval;
+    private readonly TimeSpan _terminalConfirmDelay;
     private readonly TimeSpan _overallTimeout;
     private readonly ILogger<S2SReviewAgent> _logger;
 
@@ -60,7 +61,8 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         ILogger<S2SReviewAgent> logger,
         TimeSpan? pollInterval = null,
         TimeSpan? pollMaxInterval = null,
-        TimeSpan? overallTimeout = null)
+        TimeSpan? overallTimeout = null,
+        TimeSpan? terminalConfirmDelay = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
@@ -77,6 +79,10 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(2);
         _pollMaxInterval = pollMaxInterval ?? TimeSpan.FromSeconds(15);
         _overallTimeout = overallTimeout ?? TimeSpan.FromMinutes(30);
+
+        // Short, fixed re-poll used only to confirm a terminal status (see PollToTerminalAsync) — deliberately
+        // NOT the backed-off interval, so confirming a genuinely finished run costs ~2s, not another ceiling.
+        _terminalConfirmDelay = terminalConfirmDelay ?? TimeSpan.FromSeconds(2);
     }
 
     /// <summary>The server-minted run id from the last polled status (null before the first run completes).</summary>
@@ -191,6 +197,15 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
     /// Polls the run status by input id until a terminal status, with geometric backoff capped at
     /// <see cref="_pollMaxInterval"/> and an overall <see cref="_overallTimeout"/>. Throws
     /// <see cref="TimeoutException"/> if the run does not finish in time.
+    /// <para>
+    /// <b>A terminal status only counts once it is stable.</b> The review host can bind an input to a run,
+    /// interrupt that run, and restart the SAME input under a NEW run id — observed live: the first poll after
+    /// send returned <c>Interrupted</c> for a run that never produced a message, while the real work ran (and
+    /// completed, with the review text) under a different run id seconds later. Accepting the first terminal
+    /// reading therefore abandons a review that is about to succeed. So a terminal reading is only returned
+    /// after a confirming re-poll agrees on BOTH the status and the run id; a changed run id (or a status that
+    /// went back to running) means the host restarted the input and we keep waiting.
+    /// </para>
     /// </summary>
     private async Task<S2SStatusResult> PollToTerminalAsync(string threadId, string inputId, CancellationToken ct)
     {
@@ -204,7 +219,24 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
             var status = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
             if (TerminalStatuses.Contains(status.Status))
             {
-                return status;
+                await Task.Delay(_terminalConfirmDelay, ct).ConfigureAwait(false);
+                var confirm = await _client.GetStatusByInputIdAsync(threadId, inputId, ct).ConfigureAwait(false);
+
+                if (TerminalStatuses.Contains(confirm.Status)
+                    && string.Equals(confirm.RunId, status.RunId, StringComparison.Ordinal))
+                {
+                    return confirm;
+                }
+
+                _logger.LogInformation(
+                    "S2S review on thread {ThreadId} read a transient terminal status {Status} (run {RunId}); the "
+                        + "host re-ran the input as {ConfirmStatus} (run {ConfirmRunId}). Continuing to poll.",
+                    threadId,
+                    status.Status,
+                    status.RunId,
+                    confirm.Status,
+                    confirm.RunId);
+                status = confirm;
             }
 
             if (DateTimeOffset.UtcNow >= deadline)

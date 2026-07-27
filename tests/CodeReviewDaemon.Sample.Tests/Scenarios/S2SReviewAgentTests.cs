@@ -28,7 +28,8 @@ public sealed class S2SReviewAgentTests
             logger: NullLogger<S2SReviewAgent>.Instance,
             pollInterval: TimeSpan.FromMilliseconds(1),
             pollMaxInterval: TimeSpan.FromMilliseconds(1),
-            overallTimeout: TimeSpan.FromSeconds(5));
+            overallTimeout: TimeSpan.FromSeconds(5),
+            terminalConfirmDelay: TimeSpan.FromMilliseconds(1));
 
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
         new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
@@ -93,5 +94,36 @@ public sealed class S2SReviewAgentTests
         messages.Should().BeEmpty("an errored run with no response text produces no review message");
         agent.ThreadId.Should().Be("thread-err");
         agent.CurrentRunId.Should().Be("run-err");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_keeps_polling_when_the_host_interrupts_and_re_runs_the_same_input()
+    {
+        // Live regression (PR #222 bring-up): the FIRST poll after send read Interrupted for a run that never
+        // produced a message, because the review host had already interrupted that run and restarted the SAME
+        // input under a new run id — which then completed with the real review text. Taking the first terminal
+        // reading at face value abandoned a review that was seconds from succeeding, so a terminal status is
+        // only accepted once a confirming re-poll agrees on both the status AND the run id.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnSequence(
+                HttpMethod.Get,
+                "/status",
+                (HttpStatusCode.OK, "{\"status\":\"Interrupted\",\"runId\":\"run-superseded\"}"),
+                (HttpStatusCode.OK, "{\"status\":\"InProgress\",\"runId\":\"run-real\"}"),
+                (HttpStatusCode.OK, "{\"status\":\"InProgress\",\"runId\":\"run-real\"}"),
+                (HttpStatusCode.OK, "{\"status\":\"Completed\",\"runId\":\"run-real\",\"response\":{\"text\":\"One new medium finding.\"}}"))
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-restart\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+        var agent = NewAgent(client, title: null);
+
+        var messages = await DriveAsync(agent, "review this PR");
+
+        var text = messages.Should().ContainSingle().Subject.Should().BeOfType<TextMessage>().Subject;
+        text.Text.Should().Be(
+            "One new medium finding.",
+            "the superseded Interrupted run must not end the poll — the re-run carries the review");
+        agent.CurrentRunId.Should().Be("run-real");
     }
 }
