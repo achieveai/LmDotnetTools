@@ -1,0 +1,243 @@
+using FluentAssertions;
+
+namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
+
+public class ResponsesToAnthropicSseTests
+{
+    /// <summary>Feeds a scripted Responses stream and returns the concatenated Anthropic SSE output.</summary>
+    private static string Run(params string[] events)
+    {
+        var translator = new ResponsesToAnthropicSse("msg_test", "gpt-5.3-codex");
+        return string.Concat(events.SelectMany(translator.Next));
+    }
+
+    [Fact]
+    public void Emits_a_well_formed_text_stream()
+    {
+        var output = Run(
+            """{"type":"response.created","response":{"id":"resp_1","model":"gpt-5.3-codex"}}""",
+            """{"type":"response.content_part.added","part":{"type":"output_text","text":""}}""",
+            """{"type":"response.output_text.delta","delta":"Hel"}""",
+            """{"type":"response.output_text.delta","delta":"lo"}""",
+            """{"type":"response.content_part.done"}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":9,"output_tokens":2}}}"""
+        );
+
+        output.Should().Contain("event: message_start");
+        output.Should().Contain("\"id\":\"resp_1\"");
+        output.Should().Contain("event: content_block_start");
+        output.Should().Contain("\"index\":0");
+        output.Should().Contain("\"type\":\"text_delta\",\"text\":\"Hel\"");
+        output.Should().Contain("\"type\":\"text_delta\",\"text\":\"lo\"");
+        output.Should().Contain("event: content_block_stop");
+        output.Should().Contain("\"stop_reason\":\"end_turn\"");
+        output.Should().Contain("\"input_tokens\":9");
+        output.Should().Contain("\"output_tokens\":2");
+        output.Should().EndWith("\n\n");
+        output.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
+    public void Streams_a_tool_call_as_an_input_json_delta_block()
+    {
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"get_weather"}}""",
+            """{"type":"response.function_call_arguments.delta","delta":"{\"city\":"}""",
+            """{"type":"response.function_call_arguments.delta","delta":"\"Paris\"}"}""",
+            """{"type":"response.output_item.done"}""",
+            """{"type":"response.completed","response":{"output":[{"type":"function_call"}],"usage":{"input_tokens":1,"output_tokens":5}}}"""
+        );
+
+        output.Should().Contain("\"type\":\"tool_use\"");
+        output.Should().Contain("\"id\":\"call_1\"");
+        output.Should().Contain("\"name\":\"get_weather\"");
+        output.Should().Contain("\"type\":\"input_json_delta\"");
+        output.Should().Contain("\"stop_reason\":\"tool_use\"");
+    }
+
+    [Fact]
+    public void Streams_a_reasoning_summary_as_a_thinking_block()
+    {
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.reasoning_summary_part.added"}""",
+            """{"type":"response.reasoning_summary_text.delta","delta":"thinking..."}""",
+            """{"type":"response.reasoning_summary_part.done"}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output.Should().Contain("\"type\":\"thinking\"");
+        output.Should().Contain("\"type\":\"thinking_delta\"");
+    }
+
+    [Fact]
+    public void Closes_an_open_block_before_terminating()
+    {
+        // Upstream ends the response without closing its content part — the block must still be closed
+        // before message_delta, or the Anthropic stream is malformed.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.content_part.added","part":{"type":"output_text"}}""",
+            """{"type":"response.output_text.delta","delta":"hi"}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output
+            .IndexOf("content_block_stop", StringComparison.Ordinal)
+            .Should()
+            .BeLessThan(output.IndexOf("message_delta", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_response_with_no_content_still_produces_a_well_formed_envelope()
+    {
+        // Claude Code's `max_tokens: 1` validation probe. Zero content blocks, but message_start and
+        // message_stop MUST both be present or the model is judged unusable.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":3,"output_tokens":0}}}"""
+        );
+
+        output.Should().Contain("event: message_start");
+        output.Should().Contain("event: message_delta");
+        output.Should().Contain("event: message_stop");
+        output.Should().NotContain("content_block_start", "no content is honest; a fabricated block is not");
+    }
+
+    [Fact]
+    public void Reports_max_tokens_for_an_incomplete_response()
+    {
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.incomplete","response":{"output":[],"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":16}}}"""
+        );
+
+        output.Should().Contain("\"stop_reason\":\"max_tokens\"");
+        output.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
+    public void A_truncated_stream_is_not_capped_with_a_fabricated_terminator()
+    {
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.content_part.added","part":{"type":"output_text"}}""",
+            """{"type":"response.output_text.delta","delta":"partial"}"""
+        );
+
+        output.Should().Contain("event: message_start");
+        output.Should().NotContain("message_stop", "the upstream never terminated; inventing one hides the failure");
+    }
+
+    [Fact]
+    public void Ignores_unknown_and_malformed_events()
+    {
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.some_future_event","data":{}}""",
+            "not json at all",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
+    public void Numbers_successive_content_blocks_from_zero_upwards()
+    {
+        // A reasoning model answers with a thinking block and then a text block. Anthropic requires a
+        // monotonically increasing index per block; reusing index 0 would make the client overwrite
+        // the thinking block with the answer.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.reasoning_summary_part.added"}""",
+            """{"type":"response.reasoning_summary_text.delta","delta":"weighing"}""",
+            """{"type":"response.reasoning_summary_part.done"}""",
+            """{"type":"response.content_part.added","part":{"type":"output_text"}}""",
+            """{"type":"response.output_text.delta","delta":"answer"}""",
+            """{"type":"response.content_part.done"}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output.Should().Contain("\"index\":0,\"content_block\":{\"type\":\"thinking\"");
+        output.Should().Contain("\"index\":1,\"content_block\":{\"type\":\"text\"");
+        output.Should().Contain("\"type\":\"thinking_delta\",\"thinking\":\"weighing\"");
+        output.Should().Contain("\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}");
+        output.Should().Contain("\"type\":\"content_block_stop\",\"index\":0");
+        output.Should().Contain("\"type\":\"content_block_stop\",\"index\":1");
+    }
+
+    [Fact]
+    public void Emits_nothing_once_the_stream_has_terminated()
+    {
+        // Copilot sometimes trails a terminal event with further frames. A second message_stop would
+        // break any client that treats the first one as the end of the message.
+        var translator = new ResponsesToAnthropicSse("msg_test", "m");
+        translator.Next("""{"type":"response.created","response":{"id":"r","model":"m"}}""");
+        translator.Next("""{"type":"response.completed","response":{"output":[],"usage":{}}}""");
+
+        var afterTermination = translator.Next("""{"type":"response.output_text.delta","delta":"late"}""");
+
+        afterTermination.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Terminates_cleanly_when_the_terminal_event_carries_no_response()
+    {
+        // response.completed with no "response" body: there is nothing to derive a stop reason from,
+        // so end_turn stands in. The envelope still has to close.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.completed"}"""
+        );
+
+        output.Should().Contain("\"stop_reason\":\"end_turn\"");
+        output.Should().Contain("\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n");
+        output.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
+    public void Tolerates_event_fields_of_an_unexpected_json_kind()
+    {
+        // Every read here would throw InvalidOperationException under a bare GetValue<string>(), and a
+        // throw mid-stream is an unexplained truncation the client cannot diagnose. Each frame must
+        // instead be skipped or degrade, and the stream must still terminate cleanly.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":123}""",
+            """{"type":"response.content_part.added","part":"not-an-object"}""",
+            """{"type":"response.output_item.added","item":["not-an-object"]}""",
+            """{"type":"response.output_text.delta","delta":{"nested":true}}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output.Should().Contain("event: message_start");
+        output.Should().Contain("event: message_stop");
+        output.Should().NotContain("\"type\":\"tool_use\"", "the item that would have named the call was unreadable");
+        output.Should().NotContain("text_delta", "the delta itself was unreadable, so there is no text to report");
+
+        // The unreadable output_text.delta still opened a text block: the upstream did assert that it
+        // was emitting text, and an empty text block is the honest degradation. It is the ONLY block —
+        // neither the malformed part nor the malformed item opened one.
+        output.Should().Contain("\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}");
+        output.Should().Contain("\"type\":\"content_block_stop\",\"index\":0");
+        output.Should().NotContain("\"index\":1");
+    }
+
+    [Fact]
+    public void Falls_back_to_the_supplied_id_and_model_and_to_zero_usage()
+    {
+        // The upstream announced neither an id nor a model, and reported usage in a shape we cannot
+        // read. message_start still has to be well-formed.
+        var output = Run(
+            """{"type":"response.created","response":{"id":123,"model":null}}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":"9"}}}"""
+        );
+
+        output.Should().Contain("\"id\":\"msg_test\"");
+        output.Should().Contain("\"model\":\"gpt-5.3-codex\"");
+        output.Should().Contain("\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n\n");
+        output.Should().Contain("event: message_stop");
+    }
+}

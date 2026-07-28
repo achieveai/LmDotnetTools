@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 
 /// <summary>
 ///     Rewrites a non-streaming OpenAI Responses reply into an Anthropic Message.
-///     <c>ResponsesToAnthropicSse</c> does the same job for streaming replies and shares
+///     <see cref="ResponsesToAnthropicSse"/> does the same job for streaming replies and shares
 ///     <see cref="DeriveStopReason"/> so the two cannot drift apart.
 /// </summary>
 public static class ResponsesToAnthropicJson
