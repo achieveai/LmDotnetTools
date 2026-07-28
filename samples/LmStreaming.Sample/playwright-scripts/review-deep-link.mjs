@@ -15,9 +15,19 @@
 // deliberately NOT the production instance on :5050.
 async (page) => {
   const BASE = 'http://localhost:5051';
-  // The review is the newest workspace-agent conversation on the host. Deliberately NOT matched on title:
-  // the daemon titles it from the agent profile, so a title match would couple this check to that wording.
-  const isReview = (c) => String(c.mode ?? '') === 'workspace-agent';
+  // The review arm is identified by its TITLE, not by being the newest workspace-agent conversation.
+  // The daemon titles every hosted conversation `Review PR #{n} — {agent profile name}`
+  // (S2SReviewAgentLoopFactory.BuildTitle), and the judge / knowledge-extraction arms run as SEPARATE
+  // conversations against the SAME workspace in the SAME workspace-agent mode. The judge is provisioned
+  // LAST, so "newest workspace-agent" selects the judge — whose title also carries `#{n}`, so every
+  // PR-number assertion below still passed while reading the wrong thread, and only the sub-agent
+  // assertions failed (a one-turn judge dispatches none), pointing at the wrong cause. Any ad-hoc
+  // conversation opened against the host by hand is excluded the same way. Matched on the arm name
+  // rather than the em dash so the check does not hinge on that character surviving a round-trip.
+  const isReview = (c) =>
+    String(c.mode ?? '') === 'workspace-agent' &&
+    /^Review PR #\d+/.test(String(c.title ?? '')) &&
+    !/Judge|Knowledge/.test(String(c.title ?? ''));
 
   const steps = [];
   const record = (name, pass, detail) => steps.push({ name, pass, detail });
