@@ -235,6 +235,147 @@ public sealed class RunTurnLifecycleFinalizer
     }
 
     /// <summary>
+    /// Emits <see cref="LifecycleEventTypes.ToolCompleted"/> for a tool call that reached its final
+    /// state.
+    /// </summary>
+    /// <param name="runId">The run that requested the call.</param>
+    /// <param name="generationId">The turn that requested it, when still attributable.</param>
+    /// <param name="toolCallId">The call that completed.</param>
+    /// <param name="toolName">The tool's registered name.</param>
+    /// <param name="outcome">How it ended. See <see cref="LifecycleToolOutcomes"/>.</param>
+    /// <param name="wasDeferred">
+    /// Whether it deferred and resolved after its requesting run had already ended.
+    /// </param>
+    /// <param name="durationMilliseconds">Dispatch to final state, when measured.</param>
+    /// <param name="approval">The approval decision, when approval was configured.</param>
+    /// <param name="error">The failure, when the outcome is not success.</param>
+    /// <param name="toolKind">Where it executed. See <see cref="LifecycleToolKinds"/>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// For a delayed result this is emitted <em>before</em> the child run it causes starts, so a
+    /// subscriber reading the stream in order sees the cause ahead of its effect rather than a child
+    /// run whose reason has not arrived yet. The requesting run is generally terminal by then, so
+    /// unlike the run and turn events this one does not consult the in-flight table for anything
+    /// beyond lineage.
+    /// </remarks>
+    public async Task ToolCompletedAsync(
+        string runId,
+        string? generationId,
+        string toolCallId,
+        string toolName,
+        string outcome,
+        bool wasDeferred = false,
+        long? durationMilliseconds = null,
+        ToolApprovalSummary? approval = null,
+        LifecycleError? error = null,
+        string toolKind = LifecycleToolKinds.Host,
+        CancellationToken ct = default)
+    {
+        if (!IsEnabled)
+        {
+            return;
+        }
+
+        var parentRunId = _inFlight.TryGetValue(runId, out var progress) ? progress.ParentRunId : null;
+
+        await PublishAsync(
+            LifecycleEventTypes.ToolCompleted,
+            new ToolCompletedPayload
+            {
+                RunId = runId,
+                GenerationId = generationId,
+                ToolCallId = toolCallId,
+                ToolName = toolName,
+                ToolKind = toolKind,
+                Outcome = outcome,
+                WasDeferred = wasDeferred,
+                DurationMilliseconds = durationMilliseconds,
+                Approval = approval,
+                Error = error,
+            },
+            BuildCorrelation(runId, generationId, parentRunId, toolCallId),
+            _services.TimeProvider.GetUtcNow(),
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Durably records a deferral, when a store is configured.
+    /// </summary>
+    /// <param name="runId">The run that requested the call.</param>
+    /// <param name="record">The deferral. The store assigns its ordinal.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// Best-effort, like <see cref="RunStartedAsync"/>: a store that cannot take the write leaves
+    /// the deferral tracked in memory only, which is exactly the behavior of a loop with no
+    /// lifecycle store at all. Failing the run here would make enabling observation able to break
+    /// a conversation that works without it.
+    /// </remarks>
+    public async Task RecordDeferredToolCallAsync(
+        string runId,
+        DeferredToolCallRecord record,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        if (_store == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = await _store.RecordDeferredToolCallAsync(runId, record, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not record deferral of tool call {ToolCallId} for run {RunId} on thread {ThreadId}; "
+                    + "continuing with in-process tracking only",
+                record.ToolCallId,
+                runId,
+                _threadId);
+        }
+    }
+
+    /// <summary>
+    /// Durably resolves a deferred call, when a store is configured.
+    /// </summary>
+    /// <param name="toolCallId">The deferred call to resolve.</param>
+    /// <param name="resolutionFingerprint">A stable fingerprint of the resolution content.</param>
+    /// <param name="childRunId">The child run this resolution causes, when it causes one.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// What the attempt did, or <see cref="DeferredResolutionOutcome.Resolved"/> when no store is
+    /// configured — with nothing durable to disagree with, the in-memory decision stands alone.
+    /// </returns>
+    /// <remarks>
+    /// Unlike the other store call-throughs here, a failure is <b>propagated</b>. This one is not
+    /// observation: its answer decides whether a resolution is applied, retried, or refused, and a
+    /// caller told "resolved" on a write that never landed would have no way to discover that the
+    /// result it delivered is gone.
+    /// </remarks>
+    public async Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
+        string toolCallId,
+        string resolutionFingerprint,
+        string? childRunId,
+        CancellationToken ct = default)
+    {
+        if (_store == null)
+        {
+            return DeferredResolutionOutcome.Resolved;
+        }
+
+        return await _store.TryResolveDeferredToolCallAsync(
+            _threadId,
+            toolCallId,
+            resolutionFingerprint,
+            childRunId,
+            _services.TimeProvider.GetUtcNow(),
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Attempts to end a run, emitting <see cref="LifecycleEventTypes.RunCompleted"/> if this
     /// caller is the one that ended it.
     /// </summary>

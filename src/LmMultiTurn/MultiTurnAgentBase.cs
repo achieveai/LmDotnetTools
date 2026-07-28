@@ -1558,16 +1558,29 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <paramref name="parentRunId"/>. Reported on the lifecycle <c>run_started</c> event, where it
     /// describes context inheritance only — a run can carry a parent without being a fork.
     /// </param>
+    /// <param name="runId">
+    /// The id to start the run under, when the caller already committed to one. A delayed tool
+    /// result has to name the run its resolution will cause <em>before</em> that run exists, so that
+    /// the durable resolution record and the run itself cannot disagree; every other caller leaves
+    /// this null and gets a freshly minted id.
+    /// </param>
+    /// <param name="causeKind">Why the run started. See <c>LifecycleRunCauseKinds</c>.</param>
+    /// <param name="causeToolCallId">
+    /// The tool call whose result caused the run, for a delayed-result child.
+    /// </param>
     /// <returns>The run assignment</returns>
     protected async Task<RunAssignment> StartRunAsync(
         IReadOnlyList<QueuedInput> inputs,
         string? parentRunId = null,
         CancellationToken ct = default,
-        bool wasForked = false)
+        bool wasForked = false,
+        string? runId = null,
+        string? causeKind = null,
+        string? causeToolCallId = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
-        var runId = Guid.NewGuid().ToString("N");
+        runId ??= Guid.NewGuid().ToString("N");
         var generationId = Guid.NewGuid().ToString("N");
         var inputIds = inputs.Select(i => i.ReceiptId).ToList();
 
@@ -1599,6 +1612,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             runId,
             generationId,
             parentRunId,
+            causeKind: causeKind,
+            causeToolCallId: causeToolCallId,
             wasForked: wasForked,
             ct: ct);
 
@@ -1674,6 +1689,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="pendingMessageCount">Number of pending message batches waiting to be processed</param>
     /// <param name="isError">Whether the run completed due to an error</param>
     /// <param name="errorMessage">Error message when isError is true</param>
+    /// <param name="outcome">
+    /// The lifecycle outcome to report, overriding the completed/error default. Used by a
+    /// delayed-result child that deliberately took no turn, which is a success the plain
+    /// <c>completed</c> outcome would misdescribe. The <em>ledger</em> status is unaffected — such a
+    /// run really did complete, so a caller polling status must not be told otherwise.
+    /// </param>
     /// <param name="ct">Cancellation token</param>
     protected async Task CompleteRunAsync(
         string runId,
@@ -1683,6 +1704,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         int pendingMessageCount = 0,
         bool isError = false,
         string? errorMessage = null,
+        string? outcome = null,
         CancellationToken ct = default)
     {
         if (RunLedgerStore != null)
@@ -1709,7 +1731,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _ = await Lifecycle.TryCompleteRunAsync(
             runId,
             generationId,
-            isError ? LifecycleRunOutcomes.Error : LifecycleRunOutcomes.Completed,
+            outcome ?? (isError ? LifecycleRunOutcomes.Error : LifecycleRunOutcomes.Completed),
             isError
                 ? new LifecycleError { Message = errorMessage ?? "The run failed." }
                 : null,

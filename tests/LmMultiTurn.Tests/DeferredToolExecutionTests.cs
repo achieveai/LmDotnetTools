@@ -473,9 +473,11 @@ public class DeferredToolExecutionTests
     [Fact]
     public async Task MultipleDeferred_PartialResolution_AutoResumeOnlyAfterAllResolved()
     {
-        // Two tool calls in one turn, both defer. Resolving the first must NOT trigger
-        // auto-resume (the second is still pending). Resolving the second MUST trigger
-        // auto-resume, and the LLM's next turn must see both resolved values.
+        // Two tool calls in one turn, both defer. Each resolution gets its own child run
+        // (ADR 0004), but only the one that clears the LAST unresolved call may talk to the
+        // provider — a request carrying a still-deferred placeholder is not a valid request.
+        // So resolving the first starts a child run that takes ZERO model turns, and resolving
+        // the second continues the conversation with both resolved values in view.
         var toolCallA = new ToolCallMessage
         {
             FunctionName = "wait_a",
@@ -525,21 +527,34 @@ public class DeferredToolExecutionTests
         var runTask = loop.RunAsync(cts.Token);
 
         var firstRunCompleted = new TaskCompletionSource<bool>();
-        var secondRunCompleted = new TaskCompletionSource<bool>();
-        var completedRuns = 0;
+        var siblingRunCompleted = new TaskCompletionSource<bool>();
+        var continuationCompleted = new TaskCompletionSource<bool>();
+        var completedRunIds = new List<string>();
         _ = ObserveAsync(loop, msg =>
         {
-            if (msg is RunCompletedMessage)
+            if (msg is not RunCompletedMessage completed)
             {
-                completedRuns++;
-                if (completedRuns == 1)
-                {
-                    firstRunCompleted.TrySetResult(true);
-                }
-                else if (completedRuns == 2)
-                {
-                    secondRunCompleted.TrySetResult(true);
-                }
+                return;
+            }
+
+            lock (completedRunIds)
+            {
+                completedRunIds.Add(completed.CompletedRunId);
+            }
+
+            // The provider call count is what separates the two kinds of child run: the sibling
+            // completes without one, the continuation only completes after making it.
+            if (Volatile.Read(ref callCount) >= 2)
+            {
+                continuationCompleted.TrySetResult(true);
+            }
+            else if (firstRunCompleted.Task.IsCompleted)
+            {
+                siblingRunCompleted.TrySetResult(true);
+            }
+            else
+            {
+                firstRunCompleted.TrySetResult(true);
             }
         }, cts.Token);
 
@@ -550,20 +565,34 @@ public class DeferredToolExecutionTests
         var pending = await loop.GetDeferredToolCallsAsync();
         pending.Should().HaveCount(2);
 
-        // Resolve A. Auto-resume should NOT fire because B is still deferred. We can't
-        // wait-for-not-happening, so wait a short moment and verify callCount unchanged.
+        string originatingRunId;
+        lock (completedRunIds)
+        {
+            originatingRunId = completedRunIds.Single();
+        }
+
+        // Resolve A. Its child run starts, but with B still deferred it must take no turn.
         await loop.ResolveToolCallAsync("tc_a", "result-a");
+        await siblingRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await Task.Delay(150);
-        callCount.Should().Be(1, "auto-resume must not fire while any deferral is pending");
-        secondRunCompleted.Task.IsCompleted.Should().BeFalse();
+        callCount.Should().Be(
+            1, "a request carrying a still-deferred placeholder must never reach the provider");
+        continuationCompleted.Task.IsCompleted.Should().BeFalse();
+
+        lock (completedRunIds)
+        {
+            completedRunIds.Should().HaveCount(2, "each resolved result gets its own child run");
+            completedRunIds[1].Should().NotBe(
+                originatingRunId, "the child run is a new run, not a re-completion of the origin");
+        }
 
         var stillPending = await loop.GetDeferredToolCallsAsync();
         stillPending.Should().ContainSingle(p => p.ToolCallId == "tc_b");
 
-        // Resolve B. Now auto-resume must fire and the second LLM call must see BOTH
-        // resolved values.
+        // Resolve B. Its child clears the last unresolved call, so it owns the continuation and
+        // the provider must now see BOTH resolved values.
         await loop.ResolveToolCallAsync("tc_b", "result-b");
-        await secondRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await continuationCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         callCount.Should().Be(2);
 
         secondCallMessages.Should().NotBeNull();

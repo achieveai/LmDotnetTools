@@ -1,4 +1,7 @@
-using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -8,6 +11,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
@@ -16,6 +20,11 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using Microsoft.Extensions.Logging;
+
+// LmLifecycle carries its own copy of these constants because it is a wire contract that depends on
+// no other project here. The values the loop actually reads come from the approval gate, so bind to
+// LmCore's definition rather than letting the two collide on the bare name.
+using ApprovalOutcomes = AchieveAi.LmDotnetTools.LmCore.Approval.ToolApprovalOutcomes;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 
@@ -70,18 +79,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
 
-    // Deferred tool tracking. Keyed by ToolCallId. Concurrent because resolutions arrive on
-    // arbitrary threads (UI callbacks, webhook handlers).
-    private readonly ConcurrentDictionary<string, DeferredEntry> _deferred = new();
+    // Everything about tool calls that deferred: what is outstanding, which run parked on it, and
+    // which resolved results are waiting to be run as child runs. See DelayedResultCoordinator for
+    // why this is a collaborator rather than fields here.
+    private readonly DelayedResultCoordinator _delayed = new();
 
-    // Auto-resume gating. _resumeLock guards _resumeScheduled, _runActive, and the
-    // _lastDeferring* pair so we never schedule two sentinels for the same wave nor
-    // schedule one while the loop is still mid-run.
-    private readonly object _resumeLock = new();
-    private bool _resumeScheduled;
-    private bool _runActive;
-    private string? _lastDeferringRunId;
-    private string? _lastDeferringGenerationId;
+    // Guards _wakeScheduled so at most one wake sentinel is ever outstanding on the input channel.
+    // The sentinel carries nothing — it exists only to break RunLoopAsync out of its wait so it can
+    // drain the coordinator, which is where the actual work is.
+    private readonly object _wakeLock = new();
+    private bool _wakeScheduled;
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -297,73 +304,97 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     {
         Logger.LogDebug("MultiTurnAgentLoop run loop started");
 
+        // Ordinary input that arrived while a delayed result was still waiting for its child run.
+        // Loop-local, because only this thread ever touches it.
+        List<QueuedInput> heldInputs = [];
+
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                // Wait for at least one input
-                if (!await InputReader.WaitToReadAsync(ct))
+                // Delayed results outrank queued input. A result that resolved after its run had
+                // already ended is carried by its own child run, and until every one of them has
+                // been carried the conversation is not in a state that can be sent anywhere: the
+                // history still holds placeholders that no provider will accept.
+                if (_delayed.TryDequeueCause(out var cause) && cause != null)
                 {
-                    break; // Channel completed
-                }
-
-                // Drain all available inputs
-                _ = TryDrainInputs(out var batch);
-                if (batch.Count == 0)
-                {
+                    await RunDelayedChildAsync(cause, ct);
                     continue;
                 }
 
-                // Split into real user inputs vs internal resume sentinels. A batch can mix
-                // both if a real input lands while a resume is already queued; both feed into
-                // the same run.
-                var realInputs = batch.Where(b => b.Resume == null).ToList();
-                var resumeSentinels = batch.Where(b => b.Resume != null).ToList();
-
-                if (resumeSentinels.Count > 0)
+                List<QueuedInput> realInputs;
+                if (heldInputs.Count > 0)
                 {
-                    // Clear the scheduled flag now that we're consuming the sentinel; future
-                    // resolution waves can schedule again.
-                    lock (_resumeLock)
+                    realInputs = heldInputs;
+                    heldInputs = [];
+                }
+                else
+                {
+                    // Wait for at least one input
+                    if (!await InputReader.WaitToReadAsync(ct))
                     {
-                        _resumeScheduled = false;
+                        break; // Channel completed
+                    }
+
+                    // Drain all available inputs
+                    _ = TryDrainInputs(out var batch);
+                    if (batch.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    // A batch can mix real input with the internal wake sentinel, which carries no
+                    // messages of its own — it exists only to break the wait above so the delayed
+                    // queue gets drained at the top of the next iteration.
+                    realInputs = [.. batch.Where(b => b.Resume == null)];
+                    if (realInputs.Count < batch.Count)
+                    {
+                        lock (_wakeLock)
+                        {
+                            _wakeScheduled = false;
+                        }
+                    }
+
+                    if (realInputs.Count == 0)
+                    {
+                        continue;
                     }
                 }
 
+                // A cause committed in the window between the drain above and here. Hold this input
+                // rather than racing the child run to the provider; the next iteration runs the
+                // child and the one after picks these back up.
+                if (_delayed.HasPendingCauses)
+                {
+                    heldInputs = realInputs;
+                    continue;
+                }
+
                 // Parked-on-deferral safety, scoped to notifications. When the conversation is parked on
-                // an unresolved deferral and there is no resume in flight, a fresh model turn cannot run
-                // (the provider would reject the pending tool_result — see the ExecuteTurnAsync
-                // precondition). For an out-of-band NotifyMessage (e.g. a background sub-agent completing
-                // while the parent is parked on a Wait) we fold it into history now — persisted under the
-                // deferring run and published live as a pill — and let the resume-sentinel path deliver it
-                // to the model once the deferral resolves, turning what was an unconditional RunFailed into
-                // correct at-resume delivery. A regular user input while deferred deliberately keeps the
+                // an unresolved deferral a fresh model turn cannot run (the provider would reject the
+                // pending tool_result — see the ExecuteTurnAsync precondition). For an out-of-band
+                // NotifyMessage (e.g. a background sub-agent completing while the parent is parked on a
+                // Wait) we fold it into history now — persisted under the deferring run and published live
+                // as a pill — and let the delayed-result child run deliver it to the model once the
+                // deferral resolves, turning what was an unconditional RunFailed into correct
+                // at-continuation delivery. A regular user input while deferred deliberately keeps the
                 // existing fail-fast guard (the caller must resolve the deferral first), so this is
                 // restricted to batches that are entirely notifications.
-                if (resumeSentinels.Count == 0 && !_deferred.IsEmpty && AllMessagesAreNotifications(realInputs))
+                if (!_delayed.IsEmpty && AllMessagesAreNotifications(realInputs))
                 {
                     await AppendParkedInputsAsync(realInputs, ct);
                     continue;
                 }
 
-                // Start run with the available inputs (use real if any, otherwise sentinels
-                // — StartRun records receipt IDs for telemetry but doesn't otherwise care).
-                // Fork signal sourced from caller input only — resume sentinels never carry
-                // a caller-explicit ParentRunId, so the assignment naturally falls through
-                // to _latestRunId continuation when realInputs is empty.
-                var inputsForAssignment = realInputs.Count > 0 ? realInputs : resumeSentinels;
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
                 var assignment = await StartRunAsync(
-                    inputsForAssignment, batchParent, ct, wasForked: isExplicitFork);
+                    realInputs, batchParent, ct, wasForked: isExplicitFork);
                 await PublishToAllAsync(new RunAssignmentMessage
                 {
                     Assignment = assignment,
                     ThreadId = ThreadId,
                 }, ct);
 
-                // Add real-input messages to history. Resume sentinels contribute no new
-                // messages — the loop continues from history that already has the resolved
-                // tool_results in place of the prior placeholders.
                 foreach (var input in realInputs)
                 {
                     foreach (var msg in input.Input.Messages)
@@ -373,88 +404,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     }
                 }
 
-                lock (_resumeLock)
-                {
-                    _runActive = true;
-                }
-
-                try
-                {
-                    // Execute turns - poll for new input between turns
-                    await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
-
-                    // Complete run - simple loop has no pending messages
-                    await CompleteRunAsync(
-                        assignment.RunId,
-                        assignment.GenerationId,
-                        wasForked: isExplicitFork,
-                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                        pendingMessageCount: 0,
-                        ct: ct);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // Per-run error: log, notify client, but keep the loop alive. First size the accumulated
-                    // conversation (the diff plus every fanned-out sub-agent result, folded into one history) so
-                    // a context-window overflow is debuggable AND so the error the CALLER receives carries WHY:
-                    // when a conversation outgrows the window the endpoint usually aborts the stream, and a bare
-                    // "response ended prematurely" tells a parent nothing about why a sub-agent dimension dropped.
-                    // Best-effort sizing — never masks the real error below.
-                    long estTokens = 0;
-                    try
-                    {
-                        var snapshot = GetHistorySnapshot();
-                        long chars = 0;
-                        foreach (var m in snapshot)
-                        {
-                            try { chars += System.Text.Json.JsonSerializer.Serialize<IMessage>(m).Length; }
-                            catch { /* a message that won't serialize contributes 0 to the estimate */ }
-                        }
-
-                        estTokens = chars / 4;
-                        Logger.LogWarning(
-                            "Run {RunId} failing ({ExType}): conversation = {Messages} messages, ~{Chars} serialized "
-                                + "chars (~{Tokens} tokens est).",
-                            assignment.RunId, ex.GetType().Name, snapshot.Count, chars, estTokens);
-                    }
-                    catch
-                    {
-                        // Diagnostics must never mask the real per-run error logged below.
-                    }
-
-                    Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
-
-                    // A large conversation almost certainly failed on context exhaustion — the endpoint typically
-                    // aborts the stream (a transport error) rather than returning a clean 400. Classify it in the
-                    // error the caller sees so a dropped sub-agent reads as "context too large", not a network blip.
-                    const long largeConversationTokenEstimate = 100_000;
-                    var errorMessage = estTokens >= largeConversationTokenEstimate
-                        ? $"{ex.Message} (conversation ~{estTokens} tokens est — likely exceeded the model context "
-                            + "window; reduce scope or use a bigger-window model)"
-                        : ex.Message;
-
-                    await CompleteRunAsync(
-                        assignment.RunId,
-                        assignment.GenerationId,
-                        wasForked: isExplicitFork,
-                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                        isError: true,
-                        errorMessage: errorMessage,
-                        ct: ct);
-                }
-                finally
-                {
-                    lock (_resumeLock)
-                    {
-                        _runActive = false;
-                    }
-
-                    // The run is over. If resolutions arrived during the run such that all
-                    // deferreds for the deferring generation are already resolved, schedule
-                    // an auto-resume now (the in-run resolutions deliberately deferred this
-                    // until _runActive flipped false).
-                    TryScheduleAutoResume(ct);
-                }
+                await ExecuteAssignedRunAsync(assignment, isExplicitFork, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -474,6 +424,151 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             await OnAfterRunAsync();
         }
+    }
+
+    /// <summary>
+    /// Runs an already-announced assignment to completion, turning any failure into a completed-with-
+    /// error run rather than letting it escape and kill the loop.
+    /// </summary>
+    private async Task ExecuteAssignedRunAsync(
+        RunAssignment assignment,
+        bool isExplicitFork,
+        CancellationToken ct)
+    {
+        try
+        {
+            // Execute turns - poll for new input between turns
+            await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
+
+            // Complete run - simple loop has no pending messages
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                wasForked: isExplicitFork,
+                forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                pendingMessageCount: 0,
+                ct: ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Per-run error: log, notify client, but keep the loop alive. First size the accumulated
+            // conversation (the diff plus every fanned-out sub-agent result, folded into one history) so
+            // a context-window overflow is debuggable AND so the error the CALLER receives carries WHY:
+            // when a conversation outgrows the window the endpoint usually aborts the stream, and a bare
+            // "response ended prematurely" tells a parent nothing about why a sub-agent dimension dropped.
+            // Best-effort sizing — never masks the real error below.
+            long estTokens = 0;
+            try
+            {
+                var snapshot = GetHistorySnapshot();
+                long chars = 0;
+                foreach (var m in snapshot)
+                {
+                    try { chars += System.Text.Json.JsonSerializer.Serialize<IMessage>(m).Length; }
+                    catch { /* a message that won't serialize contributes 0 to the estimate */ }
+                }
+
+                estTokens = chars / 4;
+                Logger.LogWarning(
+                    "Run {RunId} failing ({ExType}): conversation = {Messages} messages, ~{Chars} serialized "
+                        + "chars (~{Tokens} tokens est).",
+                    assignment.RunId, ex.GetType().Name, snapshot.Count, chars, estTokens);
+            }
+            catch
+            {
+                // Diagnostics must never mask the real per-run error logged below.
+            }
+
+            Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
+
+            // A large conversation almost certainly failed on context exhaustion — the endpoint typically
+            // aborts the stream (a transport error) rather than returning a clean 400. Classify it in the
+            // error the caller sees so a dropped sub-agent reads as "context too large", not a network blip.
+            const long largeConversationTokenEstimate = 100_000;
+            var errorMessage = estTokens >= largeConversationTokenEstimate
+                ? $"{ex.Message} (conversation ~{estTokens} tokens est — likely exceeded the model context "
+                    + "window; reduce scope or use a bigger-window model)"
+                : ex.Message;
+
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                wasForked: isExplicitFork,
+                forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                isError: true,
+                errorMessage: errorMessage,
+                ct: ct);
+        }
+    }
+
+    /// <summary>
+    /// Runs the child run that a delayed tool result causes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The child's cause is the real <see cref="ToolCallResultMessage"/> that arrived — not a
+    /// fabricated user message and not an empty input. That result is <i>already</i> in history:
+    /// resolution fills the placeholder in place, so the child carries it for attribution and
+    /// reporting but must not append it, or the provider would be handed the same tool result
+    /// twice.
+    /// </para>
+    /// <para>
+    /// A child that is not the continuation owner takes no model turn at all. Its siblings from the
+    /// same turn are still unresolved, and a request carrying a half-filled set of tool results is
+    /// not a request any provider will accept — so it completes immediately, recording that it is
+    /// waiting on them rather than pretending it finished the work.
+    /// </para>
+    /// </remarks>
+    private async Task RunDelayedChildAsync(DelayedCause cause, CancellationToken ct)
+    {
+        var causeInput = new QueuedInput(
+            new UserInput([cause.Result], InputId: null, ParentRunId: cause.RequestingRunId),
+            ReceiptId: $"delayed:{cause.ToolCallId}",
+            QueuedAt: DateTimeOffset.UtcNow,
+            Resume: null);
+
+        var assignment = await StartRunAsync(
+            [causeInput],
+            cause.RequestingRunId,
+            ct,
+            wasForked: false,
+            runId: cause.ChildRunId,
+            causeKind: LifecycleRunCauseKinds.ToolResult,
+            causeToolCallId: cause.ToolCallId);
+
+        await PublishToAllAsync(new RunAssignmentMessage
+        {
+            Assignment = assignment,
+            ThreadId = ThreadId,
+        }, ct);
+
+        if (!cause.IsContinuationOwner)
+        {
+            Logger.LogInformation(
+                "Run {RunId} carries the delayed result for tool call {ToolCallId} ({ToolName}) but takes no "
+                    + "turn: sibling tool calls from the same turn are still unresolved",
+                assignment.RunId,
+                cause.ToolCallId,
+                cause.ToolName);
+
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                pendingMessageCount: 0,
+                outcome: LifecycleRunOutcomes.AwaitingSiblingResults,
+                ct: ct);
+            return;
+        }
+
+        Logger.LogInformation(
+            "Run {RunId} continuing conversation from delayed result for tool call {ToolCallId} ({ToolName}), "
+                + "resolved in position {Ordinal}",
+            assignment.RunId,
+            cause.ToolCallId,
+            cause.ToolName,
+            cause.Ordinal);
+
+        await ExecuteAssignedRunAsync(assignment, isExplicitFork: false, ct);
     }
 
     /// <summary>
@@ -550,23 +645,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             var hasToolCalls = await ExecuteTurnAsync(runId, turnGenerationId, turnCount, ct);
 
-            // If any tool call from this generation deferred and is still unresolved, end
-            // the run cleanly. Resolution of the last deferred entry will auto-trigger a
-            // new run via the resume sentinel. Keyed on the per-turn generationId — the turn's
-            // tool calls are tagged with it, so this stays internally consistent.
-            if (HasUnresolvedDeferralsForGeneration(turnGenerationId))
+            // If any tool call from this generation deferred and is still unresolved, end the run
+            // cleanly. Each result that arrives from here on carries its own child run, and the one
+            // that clears the last outstanding call continues the conversation. Keyed on the
+            // per-turn generationId — the turn's tool calls are tagged with it, so this stays
+            // internally consistent. Marking and deciding happen together inside the coordinator,
+            // which is what makes a resolution landing at this exact moment safe either way.
+            if (_delayed.TryPark(runId, turnGenerationId, out var unresolvedCount))
             {
-                lock (_resumeLock)
-                {
-                    _lastDeferringRunId = runId;
-                    _lastDeferringGenerationId = turnGenerationId;
-                    _resumeScheduled = false;
-                }
-
                 Logger.LogInformation(
                     "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
                     runId,
-                    _deferred.Values.Count(d => d.GenerationId == turnGenerationId));
+                    unresolvedCount);
                 break;
             }
 
@@ -631,16 +721,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// <summary>
     /// Folds inputs that arrived while the conversation is parked on an unresolved deferral into history
     /// (persisted under the deferring run so they survive a restart) and publishes any notification pills
-    /// live — without starting a model turn. The resume-sentinel path delivers them to the model once the
-    /// deferral resolves. See the call site in <see cref="RunLoopAsync"/> for why a turn cannot run here.
+    /// live — without starting a model turn. The delayed-result child run delivers them to the model once
+    /// the deferral resolves. See the call site in <see cref="RunLoopAsync"/> for why a turn cannot run here.
     /// </summary>
     private async Task AppendParkedInputsAsync(List<QueuedInput> realInputs, CancellationToken ct)
     {
-        string? parkRunId;
-        lock (_resumeLock)
-        {
-            parkRunId = _lastDeferringRunId;
-        }
+        var parkRunId = _delayed.LastParkedRunId;
 
         var count = 0;
         foreach (var input in realInputs)
@@ -684,9 +770,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // at all — host code must call ResolveToolCallAsync before resuming.
         // Fast path: if no known deferrals exist, skip the O(n) history scan. The scan is
         // belt-and-suspenders against history rebuilt from a store that wasn't routed
-        // through _deferred (e.g., a partially-applied OnHistoryRestoredAsync); when
-        // _deferred IS empty, the in-memory index is the authoritative answer.
-        if (!_deferred.IsEmpty)
+        // through the coordinator (e.g., a partially-applied OnHistoryRestoredAsync); when
+        // the coordinator IS empty, its index is the authoritative answer.
+        if (!_delayed.IsEmpty)
         {
             foreach (var m in messagesToSend)
             {
@@ -778,7 +864,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// Executes a tool call and immediately publishes the result to all subscribers.
     /// This enables parallel execution with LLM streaming - results are sent to clients
     /// as each tool completes, rather than waiting for all tools to finish.
-    /// For deferred handlers, the placeholder is registered in <see cref="_deferred"/>
+    /// For deferred handlers, the placeholder is registered with <see cref="_delayed"/>
     /// before publishing so a racing <see cref="ResolveToolCallAsync"/> always finds it.
     /// </summary>
     private async Task<ToolCallResultMessage> ExecuteAndPublishToolCallAsync(
@@ -787,7 +873,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string generationId,
         CancellationToken ct)
     {
+        var startedAt = Stopwatch.GetTimestamp();
         var result = await ExecuteToolCallAsync(toolCall, runId, generationId, ct);
+        var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
         // Stamp ordering onto the result so the client merge/order logic (keyed partly on
         // messageOrderIdx) does not drop it (BUG H3b). The loop publishes tool results out-of-band,
@@ -802,32 +890,49 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         if (result.IsDeferred)
         {
-            // Register the deferred entry BEFORE making the placeholder visible to history
-            // or subscribers. Any incoming ResolveToolCallAsync needs to find the entry to
-            // succeed. Stamp with the run's runId/generationId — toolCall.RunId/GenerationId
-            // are set by the provider/middleware and may be unset in some agents/tests.
+            // Reserve BEFORE making the placeholder visible to history or subscribers. Any incoming
+            // ResolveToolCallAsync needs to find the reservation to succeed, and reserving here —
+            // on the loop's own thread, where a failure is just a failed run — is what lets a
+            // resolution arriving later never be turned away for want of capacity. Stamp with the
+            // run's runId/generationId: toolCall.RunId/GenerationId are set by the
+            // provider/middleware and may be unset in some agents/tests.
+            var deferredAtUnixMs = result.DeferredAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var deferredEntry = new DeferredEntry(
-                ToolCallId: result.ToolCallId!,
-                FunctionName: toolCall.FunctionName ?? string.Empty,
-                FunctionArgs: toolCall.FunctionArgs ?? "{}",
-                DeferredAtUnixMs: result.DeferredAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                RunId: toolCall.RunId ?? runId,
-                GenerationId: toolCall.GenerationId ?? generationId);
-            _deferred[result.ToolCallId!] = deferredEntry;
+                result.ToolCallId!,
+                toolCall.FunctionName ?? string.Empty,
+                toolCall.FunctionArgs ?? "{}",
+                deferredAtUnixMs,
+                toolCall.RunId ?? runId,
+                toolCall.GenerationId ?? generationId);
+            _ = _delayed.TryReserve(deferredEntry);
 
             // Persist synchronously so a webhook-triggered ReplaceMessageAsync cannot race
-            // the placeholder's append. If persistence fails, unwind the deferred-entry
-            // registration so a future resolution doesn't find a half-applied state — the
-            // exception propagates up to the run loop and surfaces as a RunFailed.
+            // the placeholder's append. If persistence fails, unwind the reservation so a
+            // future resolution doesn't find a half-applied state — the exception propagates
+            // up to the run loop and surfaces as a RunFailed.
             try
             {
                 await AddDeferredToHistoryAsync(result, ct);
             }
             catch
             {
-                _ = _deferred.TryRemove(result.ToolCallId!, out _);
+                _ = _delayed.Release(result.ToolCallId!);
                 throw;
             }
+
+            // Durable half, so a call deferred by a process that then dies is still known to the
+            // process that replaces it. Best-effort by design — see the wrapper.
+            await Lifecycle.RecordDeferredToolCallAsync(
+                deferredEntry.RunId ?? runId,
+                new DeferredToolCallRecord
+                {
+                    ToolCallId = deferredEntry.ToolCallId,
+                    ToolName = deferredEntry.FunctionName,
+                    GenerationId = deferredEntry.GenerationId,
+                    DeferredAt = DateTimeOffset.FromUnixTimeMilliseconds(deferredAtUnixMs),
+                },
+                ct);
+
             await PublishToAllAsync(result, ct);
 
             Logger.LogInformation(
@@ -838,6 +943,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             return result;
         }
+
+        await PublishToolCompletedAsync(result, toolCall, runId, generationId, elapsed, wasDeferred: false, ct);
 
         // Non-deferred result. Add text-only version to LLM history (captions are in the
         // text for id:// referencing); publish full version with ContentBlocks to
@@ -854,6 +961,74 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             result.Result.Length > 100 ? result.Result[..100] + "..." : result.Result);
 
         return result;
+    }
+
+    /// <summary>
+    /// Emits <c>tool_completed</c> for a tool call that reached its final state.
+    /// </summary>
+    /// <remarks>
+    /// Emitted for every host-executed call, not only deferred ones — an event that fired only for
+    /// the rare delayed case would describe a tool surface no consumer could reason about. Lifecycle
+    /// is off unless a host wires it up, so on the default path this is a branch and a return.
+    /// </remarks>
+    private Task PublishToolCompletedAsync(
+        ToolCallResultMessage result,
+        ToolCallMessage toolCall,
+        string runId,
+        string? generationId,
+        TimeSpan? elapsed,
+        bool wasDeferred,
+        CancellationToken ct)
+    {
+        if (!Lifecycle.IsEnabled)
+        {
+            return Task.CompletedTask;
+        }
+
+        return Lifecycle.ToolCompletedAsync(
+            runId,
+            generationId,
+            result.ToolCallId ?? toolCall.ToolCallId ?? string.Empty,
+            toolCall.FunctionName ?? string.Empty,
+            ClassifyToolOutcome(result),
+            wasDeferred: wasDeferred,
+            durationMilliseconds: elapsed == null ? null : (long)elapsed.Value.TotalMilliseconds,
+            error: result.IsError
+                ? new LifecycleError { Code = result.ErrorCode ?? string.Empty, Message = result.Result }
+                : null,
+            ct: ct);
+    }
+
+    /// <summary>
+    /// Maps a tool result onto the lifecycle outcome vocabulary.
+    /// </summary>
+    /// <remarks>
+    /// A refusal is reported as <see cref="LifecycleToolOutcomes.Denied"/> rather than
+    /// <see cref="LifecycleToolOutcomes.Failed"/>, because the two say different things to anyone
+    /// auditing the stream: denied means the handler never ran. The distinguishing signal is the
+    /// error code, which <c>PreparedToolInvocation.ToBlockedResult</c> sets to the approval outcome
+    /// — the same constants the payload's approval decision uses.
+    /// </remarks>
+    private static string ClassifyToolOutcome(ToolCallResultMessage result)
+    {
+        if (!result.IsError)
+        {
+            return LifecycleToolOutcomes.Succeeded;
+        }
+
+        return result.ErrorCode switch
+        {
+            ApprovalOutcomes.Cancelled => LifecycleToolOutcomes.Cancelled,
+            ApprovalOutcomes.Denied
+            or ApprovalOutcomes.ProviderPolicyDenied
+            or ApprovalOutcomes.HostPolicyDenied
+            or ApprovalOutcomes.Timeout
+            or ApprovalOutcomes.Overload
+            or ApprovalOutcomes.Revoked
+            or ApprovalOutcomes.HookError
+            or ApprovalOutcomes.MissingApprover => LifecycleToolOutcomes.Denied,
+            _ => LifecycleToolOutcomes.Failed,
+        };
     }
 
     private async Task<ToolCallResultMessage> ExecuteToolCallAsync(
@@ -996,15 +1171,26 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// <summary>
     /// Resolves a previously-deferred tool call. Mutates the placeholder in history and
     /// persisted store, publishes the resolved <see cref="ToolCallResultMessage"/> to
-    /// subscribers, and — when this resolution completes the most recent turn's deferred
-    /// set — auto-triggers a new run.
+    /// subscribers, and — when the run that requested the call has already ended — queues a
+    /// child run carrying the result.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Idempotent for byte-equal duplicate deliveries (webhook retries are common).
-    /// Throws <see cref="InvalidOperationException"/> if no matching deferred call exists,
-    /// or if the call has already been resolved with different content.
+    /// </para>
+    /// <para>
+    /// Throws <see cref="InvalidOperationException"/> if no matching deferred call exists, or if
+    /// the call has already been resolved with different content. It also propagates whatever the
+    /// durable lifecycle store threw when it could not record the resolution: that failure means
+    /// the call is <em>still deferred</em> and the delivery is safe to send again, which is exactly
+    /// the case a caller must not mistake for success.
+    /// </para>
+    /// <para>
+    /// Use <see cref="TryResolveToolCallAsync"/> when the caller needs to tell a retryable failure
+    /// from a permanent one — an exception cannot carry that distinction.
+    /// </para>
     /// </remarks>
-    public Task ResolveToolCallAsync(
+    public async Task ResolveToolCallAsync(
         string toolCallId,
         string result,
         bool isError = false,
@@ -1015,85 +1201,353 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ArgumentException.ThrowIfNullOrEmpty(toolCallId);
         ArgumentNullException.ThrowIfNull(result);
 
-        return ResolveToolCallInternalAsync(toolCallId, result, isError, contentBlocks, ct);
+        var (_, failure) = await ResolveToolCallInternalAsync(toolCallId, result, isError, contentBlocks, ct);
+        if (failure != null)
+        {
+            // Rethrow the original, not a wrapper: callers (and tests) match on the exact messages
+            // this method has always produced.
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
     }
 
-    private async Task ResolveToolCallInternalAsync(
+    /// <summary>
+    /// Resolves a previously-deferred tool call and reports what happened instead of throwing.
+    /// </summary>
+    /// <returns>
+    /// The outcome. <see cref="ResolveToolCallOutcome.StoreFailed"/> and
+    /// <see cref="ResolveToolCallOutcome.Cancelled"/> mean the call is untouched and the delivery
+    /// can be retried unchanged; <see cref="ResolveToolCallOutcome.NotFound"/> and
+    /// <see cref="ResolveToolCallOutcome.Conflict"/> mean retrying is pointless.
+    /// </returns>
+    /// <remarks>
+    /// This is the shape a delivery endpoint wants. A webhook handler that catches an exception
+    /// knows only that something went wrong — not whether redelivering would help or would just
+    /// replay a permanent rejection forever. Everything else about the operation is identical to
+    /// <see cref="ResolveToolCallAsync"/>; only argument validation still throws.
+    /// </remarks>
+    public async Task<ResolveToolCallOutcome> TryResolveToolCallAsync(
+        string toolCallId,
+        string result,
+        bool isError = false,
+        IList<ToolResultContentBlock>? contentBlocks = null,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+        ArgumentNullException.ThrowIfNull(result);
+
+        var (outcome, _) = await ResolveToolCallInternalAsync(toolCallId, result, isError, contentBlocks, ct);
+        return outcome;
+    }
+
+    /// <summary>
+    /// The one implementation behind both public resolve methods. Returns the outcome plus, when
+    /// the outcome is a failure, the exception the throwing overload should raise — so the two
+    /// surfaces cannot drift apart in what they consider an error.
+    /// </summary>
+    private async Task<(ResolveToolCallOutcome Outcome, Exception? Failure)> ResolveToolCallInternalAsync(
         string toolCallId,
         string result,
         bool isError,
         IList<ToolResultContentBlock>? contentBlocks,
         CancellationToken ct)
     {
-        // Capture deferred entry first to fail-fast on unknown ids without locking history.
-        if (!_deferred.TryGetValue(toolCallId, out var deferredEntry))
+        var fingerprint = ComputeResolutionFingerprint(result, isError);
+
+        if (!_delayed.TryBeginResolve(toolCallId, fingerprint, out var pending, out var inFlightFingerprint))
         {
-            // It might have been resolved already — UpdateToolResultByCallId will surface a
-            // proper conflict error. If history doesn't have the id either, that throws
-            // InvalidOperationException with a clear message.
+            if (inFlightFingerprint != null)
+            {
+                // A different delivery of the same call holds the claim right now. Which of the two
+                // "wins" is already decided — the claim holder does — so the only question is
+                // whether this delivery is saying the same thing.
+                if (string.Equals(inFlightFingerprint, fingerprint, StringComparison.Ordinal))
+                {
+                    Logger.LogDebug(
+                        "Resolution of tool call {ToolCallId} is a duplicate of one already being applied",
+                        toolCallId);
+                    return (ResolveToolCallOutcome.Duplicate, null);
+                }
+
+                return (
+                    ResolveToolCallOutcome.Conflict,
+                    new InvalidOperationException(ResolutionConflictMessage(toolCallId)));
+            }
+
+            return await ResolveUnclaimedAsync(toolCallId, result, isError, contentBlocks, ct);
         }
 
-        var noOp = false;
+        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, ct);
+    }
 
-        var (oldMessage, newMessage) = UpdateToolResultByCallId(toolCallId, existing =>
+    /// <summary>
+    /// Applies a resolution the coordinator has granted a claim for: durable record first, then
+    /// history, then the child run it causes.
+    /// </summary>
+    /// <remarks>
+    /// The durable write goes first deliberately. If it fails, nothing about the conversation has
+    /// changed and the caller can send the result again — whereas a store failure <em>after</em>
+    /// history was mutated would leave a resolution the process believes happened and the store
+    /// does not, which no retry can repair.
+    /// </remarks>
+    private async Task<(ResolveToolCallOutcome Outcome, Exception? Failure)> ResolveClaimedAsync(
+        ResolvingDeferral pending,
+        string toolCallId,
+        string result,
+        bool isError,
+        IList<ToolResultContentBlock>? contentBlocks,
+        CancellationToken ct)
+    {
+        DeferredResolutionOutcome durable;
+        try
         {
-            // Case 1: still deferred — apply the resolution.
-            if (existing.IsDeferred)
+            durable = await Lifecycle.TryResolveDeferredToolCallAsync(
+                toolCallId,
+                ComputeResolutionFingerprint(result, isError),
+                pending.ChildRunId,
+                ct);
+        }
+        catch (OperationCanceledException ex)
+        {
+            _delayed.AbortResolve(pending);
+            return (ResolveToolCallOutcome.Cancelled, ex);
+        }
+        catch (Exception ex)
+        {
+            _delayed.AbortResolve(pending);
+            Logger.LogWarning(
+                ex,
+                "Could not durably record the resolution of tool call {ToolCallId}; the call stays deferred and the result can be delivered again",
+                toolCallId);
+            return (ResolveToolCallOutcome.StoreFailed, ex);
+        }
+
+        if (durable == DeferredResolutionOutcome.Conflict)
+        {
+            _delayed.AbortResolve(pending);
+            return (
+                ResolveToolCallOutcome.Conflict,
+                new InvalidOperationException(ResolutionConflictMessage(toolCallId)));
+        }
+
+        // Duplicate and NotFound both continue. Duplicate means a previous attempt committed the
+        // durable record and then died before touching history — the in-memory claim proves history
+        // is still unresolved, so finishing the job is precisely right. NotFound means the store
+        // never got the deferral recorded in the first place (that write is best-effort); the
+        // in-process reservation is the authority on a call we know we deferred.
+        if (durable == DeferredResolutionOutcome.NotFound)
+        {
+            Logger.LogDebug(
+                "Durable store had no deferral record for tool call {ToolCallId}; resolving from in-process state",
+                toolCallId);
+        }
+
+        // A reservation says the call was outstanding when it was taken; history is what actually
+        // gets sent to the provider, and it has the final say. It can disagree — a placeholder that
+        // a previous process already resolved, for instance — and when it does, the resolution
+        // already in history wins over the one arriving now.
+        var alreadyIdentical = false;
+        ToolCallResultMessage oldMessage;
+        ToolCallResultMessage newMessage;
+        try
+        {
+            (oldMessage, newMessage) = UpdateToolResultByCallId(toolCallId, existing =>
             {
-                return existing with
+                if (existing.IsDeferred)
                 {
-                    Result = result,
-                    ContentBlocks = null, // history-side is text-only; subscribers get full
-                    IsError = isError,
-                    ErrorCode = isError ? "deferred_resolution_error" : null,
-                    IsDeferred = false,
-                    ResolvedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                };
-            }
+                    return ApplyResolution(existing, result, isError);
+                }
 
-            // Case 2: already resolved with the same content — idempotent no-op.
-            if (existing.Result == result && existing.IsError == isError)
+                if (existing.Result == result && existing.IsError == isError)
+                {
+                    alreadyIdentical = true;
+                    return existing;
+                }
+
+                throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
+            });
+        }
+        catch (Exception ex)
+        {
+            // Give the claim back rather than retiring it: the call stays visibly outstanding, which
+            // is the truth — this delivery did not resolve it and nothing else has either.
+            _delayed.AbortResolve(pending);
+            Logger.LogWarning(
+                ex,
+                "Tool call {ToolCallId} could not be resolved in history despite an outstanding deferral",
+                toolCallId);
+            return (ResolveToolCallOutcome.Conflict, ex);
+        }
+
+        if (!alreadyIdentical)
+        {
+            await ReplacePersistedAsync(oldMessage, newMessage, ct);
+
+            // Publish the full message (including ContentBlocks) to subscribers so UIs can
+            // render images. The history entry stays text-only.
+            var publishMessage = contentBlocks != null && contentBlocks.Count > 0
+                ? newMessage with { ContentBlocks = contentBlocks }
+                : newMessage;
+            await PublishToAllAsync(publishMessage, ct);
+        }
+        else
+        {
+            // History was already carrying this exact result. Nothing to write or announce — but the
+            // reservation still has to retire below, or the conversation stays parked on a call that
+            // is, as far as the provider is concerned, long since answered.
+            Logger.LogDebug(
+                "Tool call {ToolCallId} was already resolved in history with identical content; retiring the outstanding deferral",
+                toolCallId);
+        }
+
+        // Emitted before the cause is committed so a subscriber always sees the tool finish before
+        // the run that carries its result starts — the loop can pick up a queued cause the instant
+        // it exists.
+        if (Lifecycle.IsEnabled)
+        {
+            await Lifecycle.ToolCompletedAsync(
+                pending.Entry.RunId ?? LatestRunId ?? string.Empty,
+                pending.Entry.GenerationId,
+                toolCallId,
+                pending.Entry.FunctionName,
+                isError ? LifecycleToolOutcomes.Failed : LifecycleToolOutcomes.Succeeded,
+                wasDeferred: true,
+                durationMilliseconds: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pending.Entry.DeferredAtUnixMs,
+                error: isError
+                    ? new LifecycleError { Code = newMessage.ErrorCode ?? string.Empty, Message = result }
+                    : null,
+                ct: ct);
+        }
+
+        var cause = _delayed.CompleteResolve(pending, newMessage);
+
+        Logger.LogInformation(
+            "Tool call {ToolCallId} resolved (was deferred for {ElapsedMs}ms)",
+            toolCallId,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - pending.Entry.DeferredAtUnixMs);
+
+        if (cause != null)
+        {
+            ScheduleLoopWake(ct);
+        }
+
+        return (ResolveToolCallOutcome.Resolved, null);
+    }
+
+    /// <summary>
+    /// Classifies a resolution for a call the coordinator is not tracking, by asking history what
+    /// it already holds.
+    /// </summary>
+    /// <remarks>
+    /// Normally this means the call resolved earlier — a redelivery or a contradiction. The third
+    /// possibility is a placeholder in history that no reservation covers, which only a host that
+    /// injected deferred history itself can produce; rather than let the result strand, it is
+    /// adopted (pre-parked, since no live run is waiting on it) and resolved through the normal path.
+    /// </remarks>
+    private async Task<(ResolveToolCallOutcome Outcome, Exception? Failure)> ResolveUnclaimedAsync(
+        string toolCallId,
+        string result,
+        bool isError,
+        IList<ToolResultContentBlock>? contentBlocks,
+        CancellationToken ct)
+    {
+        var noOp = false;
+        ToolCallResultMessage? orphan = null;
+
+        try
+        {
+            _ = UpdateToolResultByCallId(toolCallId, existing =>
             {
-                noOp = true;
-                return existing;
-            }
+                if (existing.IsDeferred)
+                {
+                    orphan = existing;
+                    return existing;
+                }
 
-            // Case 3: already resolved with different content — conflict.
-            throw new InvalidOperationException(
-                $"Tool call '{toolCallId}' has already been resolved with different content. " +
-                "Cannot resolve again with a different value.");
-        });
+                if (existing.Result == result && existing.IsError == isError)
+                {
+                    noOp = true;
+                    return existing;
+                }
+
+                throw new InvalidOperationException(ResolutionConflictMessage(toolCallId));
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            var outcome = ex.Message.Contains("already been resolved", StringComparison.Ordinal)
+                ? ResolveToolCallOutcome.Conflict
+                : ResolveToolCallOutcome.NotFound;
+            return (outcome, ex);
+        }
 
         if (noOp)
         {
             Logger.LogDebug(
                 "ResolveToolCallAsync no-op: '{ToolCallId}' was already resolved with identical content",
                 toolCallId);
-            // Make sure the deferred entry is cleaned up in case it lingered.
-            _ = _deferred.TryRemove(toolCallId, out _);
-            return;
+            return (ResolveToolCallOutcome.Duplicate, null);
         }
 
-        // Persist the replacement (best-effort; failures are logged inside).
-        await ReplacePersistedAsync(oldMessage, newMessage, ct);
+        if (orphan == null)
+        {
+            return (ResolveToolCallOutcome.Duplicate, null);
+        }
 
-        // Publish the full message (including ContentBlocks) to subscribers so UIs can
-        // render images. The history entry stays text-only.
-        var publishMessage = contentBlocks != null && contentBlocks.Count > 0
-            ? newMessage with { ContentBlocks = contentBlocks }
-            : newMessage;
-        await PublishToAllAsync(publishMessage, ct);
+        Logger.LogWarning(
+            "Tool call {ToolCallId} is deferred in history but was not registered as outstanding; adopting it so the result is not lost",
+            toolCallId);
 
-        _ = _deferred.TryRemove(toolCallId, out _);
+        var adopted = new DeferredEntry(
+            orphan.ToolCallId!,
+            orphan.ToolName ?? string.Empty,
+            "{}",
+            orphan.DeferredAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            orphan.RunId,
+            orphan.GenerationId);
 
-        Logger.LogInformation(
-            "Tool call {ToolCallId} resolved (was deferred for {ElapsedMs}ms)",
-            toolCallId,
-            deferredEntry != null
-                ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - deferredEntry.DeferredAtUnixMs
-                : 0);
+        // Pre-parked: whatever run requested this is not the one running now, so its result can
+        // only come back as a child run.
+        _ = _delayed.TryReserve(adopted, parked: true);
 
-        TryScheduleAutoResume(ct);
+        var fingerprint = ComputeResolutionFingerprint(result, isError);
+        if (!_delayed.TryBeginResolve(toolCallId, fingerprint, out var pending, out _))
+        {
+            // Someone claimed it between the adoption and now; theirs stands.
+            return (ResolveToolCallOutcome.Duplicate, null);
+        }
+
+        return await ResolveClaimedAsync(pending!, toolCallId, result, isError, contentBlocks, ct);
+    }
+
+    private static ToolCallResultMessage ApplyResolution(
+        ToolCallResultMessage existing,
+        string result,
+        bool isError)
+    {
+        return existing with
+        {
+            Result = result,
+            ContentBlocks = null, // history-side is text-only; subscribers get full
+            IsError = isError,
+            ErrorCode = isError ? "deferred_resolution_error" : null,
+            IsDeferred = false,
+            ResolvedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        };
+    }
+
+    private static string ResolutionConflictMessage(string toolCallId) =>
+        $"Tool call '{toolCallId}' has already been resolved with different content. " +
+        "Cannot resolve again with a different value.";
+
+    /// <summary>
+    /// A stable digest of what a resolution carries, used to tell a redelivery of the same result
+    /// from a genuinely different one without keeping the payloads themselves around.
+    /// </summary>
+    private static string ComputeResolutionFingerprint(string result, bool isError)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes((isError ? "1\n" : "0\n") + result));
+        return Convert.ToHexString(bytes);
     }
 
     /// <summary>
@@ -1104,7 +1558,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     public Task<IReadOnlyList<DeferredToolCallInfo>> GetDeferredToolCallsAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        var snapshot = _deferred.Values
+        var snapshot = _delayed.Snapshot()
             .Select(e => new DeferredToolCallInfo
             {
                 ToolCallId = e.ToolCallId,
@@ -1141,6 +1595,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             }
         }
 
+        var restoredCount = 0;
         string? mostRecentDeferringRun = null;
         string? mostRecentDeferringGen = null;
 
@@ -1154,39 +1609,44 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             _ = toolCallsById.TryGetValue(tcr.ToolCallId, out var sourceCall);
 
             var entry = new DeferredEntry(
-                ToolCallId: tcr.ToolCallId,
-                FunctionName: sourceCall?.FunctionName ?? tcr.ToolName ?? string.Empty,
-                FunctionArgs: sourceCall?.FunctionArgs ?? "{}",
-                DeferredAtUnixMs: tcr.DeferredAt ?? 0,
-                RunId: tcr.RunId,
-                GenerationId: tcr.GenerationId);
-            _deferred[tcr.ToolCallId] = entry;
+                tcr.ToolCallId,
+                sourceCall?.FunctionName ?? tcr.ToolName ?? string.Empty,
+                sourceCall?.FunctionArgs ?? "{}",
+                tcr.DeferredAt ?? 0,
+                tcr.RunId,
+                tcr.GenerationId);
 
-            // Track the most recent (last in load order) deferring run/generation so a
-            // resolution after restart will trigger an auto-resume into the right context.
+            // Restored entries are parked on arrival. The run that requested them belonged to a
+            // process that no longer exists, so its result cannot be folded back into it — it can
+            // only return as a child run, which is what parked means.
+            if (_delayed.TryReserve(entry, parked: true))
+            {
+                restoredCount++;
+            }
+
+            // Remember the last-loaded deferring run so inputs arriving while the conversation is
+            // still parked are attributed to it.
             mostRecentDeferringRun = tcr.RunId ?? mostRecentDeferringRun;
             mostRecentDeferringGen = tcr.GenerationId ?? mostRecentDeferringGen;
         }
 
-        if (_deferred.Count > 0)
+        if (restoredCount > 0)
         {
-            lock (_resumeLock)
+            if (mostRecentDeferringRun != null && mostRecentDeferringGen != null)
             {
-                _lastDeferringRunId = mostRecentDeferringRun;
-                _lastDeferringGenerationId = mostRecentDeferringGen;
-                _resumeScheduled = false;
+                _ = _delayed.TryPark(mostRecentDeferringRun, mostRecentDeferringGen, out _);
             }
 
             Logger.LogInformation(
                 "Restored {Count} deferred tool call(s) from persisted history",
-                _deferred.Count);
+                restoredCount);
         }
 
         // Reconcile restored block waits so no parked Wait is left hanging: a restorable source
         // (e.g. timer) re-arms for its remaining delay; a non-restorable one resolves as
         // trigger_lost_on_restart. Runs after the deferred set is rebuilt so it sees every entry.
         List<DeferredEntry> restoredWaitEntries =
-            [.. _deferred.Values.Where(e => e.FunctionName == WaitToolProvider.WaitToolName)];
+            [.. _delayed.Snapshot().Where(e => e.FunctionName == WaitToolProvider.WaitToolName)];
 
         if (_triggerRuntime != null)
         {
@@ -1248,117 +1708,72 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
     }
 
-    private bool HasUnresolvedDeferralsForGeneration(string generationId)
-    {
-        foreach (var entry in _deferred.Values)
-        {
-            if (entry.GenerationId == generationId)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /// <summary>
-    /// Schedule an auto-resume sentinel onto the input channel when:
-    /// (1) we have recorded a deferring generation,
-    /// (2) all deferred entries for that generation have been resolved,
-    /// (3) the loop is not currently inside a run, and
-    /// (4) a sentinel hasn't already been scheduled for this wave.
-    /// All four conditions are checked under <see cref="_resumeLock"/> to avoid scheduling
-    /// duplicate sentinels when many resolutions land at once.
+    /// Nudges <see cref="RunLoopAsync"/> awake so it drains the causes the coordinator now holds.
     /// </summary>
-    private void TryScheduleAutoResume(CancellationToken ct)
+    /// <remarks>
+    /// <para>
+    /// The causes themselves never go on the input channel. That channel is bounded, and a turn
+    /// with many deferred tool calls would resolve many results at once — writing one item per
+    /// result would block resolution threads behind a full queue, on a path where blocking means
+    /// stranding a result that already exists. So the coordinator holds them and this writes a
+    /// single content-free wake-up.
+    /// </para>
+    /// <para>
+    /// One wake-up is enough for any number of causes: the loop drains one cause per iteration and
+    /// loops straight back to the drain, so it keeps going until the coordinator is empty without
+    /// needing to be woken again. <see cref="_wakeScheduled"/> is what makes "one" the actual
+    /// count — it is cleared by the loop when it consumes the wake-up, and restored here if the
+    /// write fails so a wake-up is never silently lost.
+    /// </para>
+    /// </remarks>
+    private void ScheduleLoopWake(CancellationToken ct)
     {
-        string runId;
-        string genId;
-
-        lock (_resumeLock)
+        lock (_wakeLock)
         {
-            if (_lastDeferringRunId == null || _lastDeferringGenerationId == null)
+            if (_wakeScheduled)
             {
                 return;
             }
 
-            if (_runActive || _resumeScheduled)
-            {
-                return;
-            }
-
-            if (HasUnresolvedDeferralsForGeneration(_lastDeferringGenerationId))
-            {
-                return;
-            }
-
-            runId = _lastDeferringRunId;
-            genId = _lastDeferringGenerationId;
-            _resumeScheduled = true;
-
-            // Clear the deferring marker now — once we've scheduled a resume for this wave,
-            // future no-op resolutions or post-run TryScheduleAutoResume calls must not
-            // re-schedule. The marker is set again only when a new turn defers.
-            _lastDeferringRunId = null;
-            _lastDeferringGenerationId = null;
+            _wakeScheduled = true;
         }
 
-        EnqueueResumeSentinel(runId, genId, ct);
+        _ = WriteLoopWakeAsync(ct);
     }
 
-    private void EnqueueResumeSentinel(string runId, string generationId, CancellationToken ct)
+    private async Task WriteLoopWakeAsync(CancellationToken ct)
     {
-        // Build a QueuedInput marked with a ResumeSentinel. The Input.Messages list is
-        // empty by design — resumes contribute no new messages, only a wake-up.
-        var sentinel = new ResumeSentinel(runId, generationId);
-        var emptyInput = new UserInput([], InputId: null, ParentRunId: runId);
-        var queuedInput = new QueuedInput(
-            emptyInput,
-            ReceiptId: $"resume:{Guid.NewGuid():N}",
+        // The sentinel's payload is inert: Resume marks it as a wake-up and Messages is empty, so
+        // the loop recognises it and contributes nothing to history.
+        var wake = new QueuedInput(
+            new UserInput([], InputId: null, ParentRunId: null),
+            ReceiptId: $"wake:{Guid.NewGuid():N}",
             QueuedAt: DateTimeOffset.UtcNow,
-            Resume: sentinel);
+            Resume: new ResumeSentinel(string.Empty, string.Empty));
 
-        _ = WriteResumeSentinelAsync(queuedInput, ct);
-    }
-
-    private async Task WriteResumeSentinelAsync(QueuedInput sentinelInput, CancellationToken ct)
-    {
         try
         {
-            await EnqueueRawAsync(sentinelInput, ct);
+            await EnqueueRawAsync(wake, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // Expected on shutdown
+            // Expected on shutdown.
         }
         catch (Exception ex)
         {
+            lock (_wakeLock)
+            {
+                _wakeScheduled = false;
+            }
+
+            // Not fatal: the loop drains causes at the top of every iteration, so these still run
+            // as soon as anything else stirs it. Only an otherwise-idle loop stays asleep, until
+            // the next resolution or input arrives.
             Logger.LogWarning(
                 ex,
-                "Failed to enqueue resume sentinel for run {RunId}",
-                sentinelInput.Resume?.ResumeForRunId);
-
-            // Restore scheduling state so a future ResolveToolCallAsync (or per-run finally)
-            // can retry the sentinel. Without this, _resumeScheduled stays true and the
-            // deferring markers stay null — TryScheduleAutoResume short-circuits on its
-            // first guard and the loop is permanently stuck.
-            // Only restore if no concurrent state change happened; if a new turn has
-            // already deferred and set fresh markers, we must not clobber them.
-            var sentinelRunId = sentinelInput.Resume?.ResumeForRunId;
-            var sentinelGenId = sentinelInput.Resume?.ResumeForGenerationId;
-            if (sentinelRunId != null && sentinelGenId != null)
-            {
-                lock (_resumeLock)
-                {
-                    if (_resumeScheduled
-                        && _lastDeferringRunId == null
-                        && _lastDeferringGenerationId == null)
-                    {
-                        _lastDeferringRunId = sentinelRunId;
-                        _lastDeferringGenerationId = sentinelGenId;
-                        _resumeScheduled = false;
-                    }
-                }
-            }
+                "Failed to wake the loop for {Count} pending delayed tool result(s); they will run when the loop next stirs",
+                _delayed.PendingCauseCount);
         }
     }
 
@@ -1429,16 +1844,4 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             Resume: null,
             Trigger: new TriggerEnvelope(isError));
     }
-
-    /// <summary>
-    /// Internal record describing a single deferred tool call awaiting external resolution.
-    /// Public surface is <see cref="DeferredToolCallInfo"/>.
-    /// </summary>
-    private sealed record DeferredEntry(
-        string ToolCallId,
-        string FunctionName,
-        string FunctionArgs,
-        long DeferredAtUnixMs,
-        string? RunId,
-        string? GenerationId);
 }
