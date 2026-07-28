@@ -862,22 +862,33 @@ internal static class ProxyHttp
             return;
         }
 
-        // TranslateAnthropicToResponses is not implemented yet (Task 9 wires the translator into
-        // /v1/messages). ModelRouter.Servable would list this model as "available" for this dialect
-        // (Resolve returns a non-null route for it), so reusing the generic "not available … Models
-        // that are: …" message above would be actively misleading — it would name the very model that
-        // was just rejected as one of the alternatives. This gets its own honest text instead, and the
-        // whole branch disappears cleanly once Task 9 wires the translator in.
-        if (route.Kind != ProxyRouteKind.Passthrough)
+        if (route.Kind == ProxyRouteKind.TranslateAnthropicToResponses)
         {
-            await WriteErrorAsync(
+            // count_tokens has no Responses counterpart. Translating it would answer a token-count
+            // request by running a full (billed) generation, and the only alternative — inventing a
+            // count — is a fabricated answer. An honest 404 is the whole option set; Claude Code
+            // already falls back to a local estimate when count_tokens is unavailable.
+            if (isCountTokens)
+            {
+                await WriteAnthropicErrorAsync(
+                        ctx,
+                        StatusCodes.Status404NotFound,
+                        "not_found_error",
+                        $"Model '{outboundModel}' is served by translating to OpenAI Responses, which has no "
+                            + "token-counting endpoint."
+                    )
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            await TranslateAnthropicToResponsesAsync(
                     ctx,
-                    dialect,
-                    StatusCodes.Status404NotFound,
-                    "not_found_error",
-                    $"Model '{outboundModel}' can only be reached via OpenAI Responses on this Copilot "
-                        + "account, and translating Anthropic Messages requests to Responses is not "
-                        + "implemented yet."
+                    httpClient,
+                    inboundBody,
+                    outboundModel,
+                    idleTimeout,
+                    keepAliveInterval,
+                    logger
                 )
                 .ConfigureAwait(false);
             return;
@@ -1209,6 +1220,493 @@ internal static class ProxyHttp
             await ctx.Response.Body.FlushAsync(linkedToken).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    ///     An Anthropic <c>ping</c> event. Anthropic's own stream emits these during long generations, so
+    ///     every Messages client already tolerates them. The raw passthrough uses an SSE comment instead
+    ///     because it must not alter the byte stream; this path is reframing events anyway, so a real
+    ///     (contentless) event is the honest shape.
+    /// </summary>
+    private const string AnthropicPingFrame = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
+
+    /// <summary>
+    ///     Serves an Anthropic Messages request from a model this Copilot account exposes only through
+    ///     OpenAI Responses: the request is translated on the way out and the reply on the way back.
+    ///
+    ///     Bytes are reframed rather than copied, so this path cannot use <see cref="CopyBodyAsync" />
+    ///     and re-implements its two obligations itself. The idle deadline is reset before EVERY upstream
+    ///     read, so it measures the gap between upstream lines and never the total request duration — a
+    ///     long generation must not be killed for being long — and a silent upstream is covered by
+    ///     downstream pings so an intermediary does not drop the connection mid-generation.
+    /// </summary>
+    private static async Task TranslateAnthropicToResponsesAsync(
+        HttpContext ctx,
+        HttpClient httpClient,
+        byte[] inboundBody,
+        string outboundModel,
+        TimeSpan idleTimeout,
+        TimeSpan keepAliveInterval,
+        ILogger logger
+    )
+    {
+        string translatedBody;
+        bool wantsStream;
+        try
+        {
+            if (JsonNode.Parse(inboundBody) is not JsonObject source)
+            {
+                // Defensive only: this route was chosen by reading `model` out of the body, so the body
+                // has already parsed as a JSON object once.
+                await WriteAnthropicErrorAsync(
+                    ctx,
+                    StatusCodes.Status400BadRequest,
+                    "invalid_request_error",
+                    "Request body must be a non-empty JSON object."
+                );
+                return;
+            }
+
+            source["model"] = outboundModel;
+            wantsStream = source["stream"] is JsonValue flag && flag.TryGetValue<bool>(out var asked) && asked;
+            translatedBody = AnthropicToResponsesRequest.Translate(source).ToJsonString();
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
+        {
+            // A field carrying an unexpected JSON kind (max_tokens as a string, say) is the client's
+            // error, so this is a 400 — and Copilot never sees a request we could not translate.
+            logger.LogWarning(
+                "Could not translate an Anthropic request for {Model}: {Reason}",
+                outboundModel,
+                ex.Message
+            );
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status400BadRequest,
+                "invalid_request_error",
+                "Request body could not be translated to the OpenAI Responses API."
+            );
+            return;
+        }
+
+        using var upstreamRequest = new HttpRequestMessage(HttpMethod.Post, ModelRouter.ResponsesPath)
+        {
+            Content = new StringContent(translatedBody, Encoding.UTF8, "application/json"),
+        };
+        ApplyRequestHeaderAllowlist(ctx.Request.Headers, upstreamRequest);
+
+        using var idleCts = new CancellationTokenSource();
+        idleCts.CancelAfter(idleTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, idleCts.Token);
+
+        HttpResponseMessage upstream;
+        try
+        {
+            upstream = await httpClient.SendAsync(
+                upstreamRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                linked.Token
+            );
+        }
+        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            return; // Client disconnected before we connected; nothing to write.
+        }
+        catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+        {
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status504GatewayTimeout,
+                "api_error",
+                "Timed out waiting for the upstream Copilot API to respond."
+            );
+            return;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Token acquisition failure surfaces from CopilotHeadersHandler before the first byte.
+            logger.LogError("Copilot token acquisition failed: {Reason}", ex.Message);
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status401Unauthorized,
+                "authentication_error",
+                "Failed to acquire a GitHub Copilot token. Re-authenticate with the GitHub Copilot CLI or "
+                    + "`gh auth login`, or set GITHUB_COPILOT_TOKEN / GH_TOKEN."
+            );
+            return;
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogError("Upstream connection failed: {Reason}", ex.Message);
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status502BadGateway,
+                "api_error",
+                "Failed to reach the upstream Copilot API."
+            );
+            return;
+        }
+
+        using (upstream)
+        {
+            logger.LogInformation(
+                "{Method} {Path} model {ResolvedModel} stream={Stream} upstream={Status} (Anthropic -> Responses)",
+                ctx.Request.Method,
+                ModelRouter.ResponsesPath,
+                outboundModel,
+                wantsStream,
+                (int)upstream.StatusCode
+            );
+
+            if (!upstream.IsSuccessStatusCode)
+            {
+                // The upstream status is preserved: a 429 or 503 must stay one so the client's own
+                // retry logic still works. Only the envelope is reshaped.
+                var errorBody = await upstream.Content.ReadAsStringAsync(ctx.RequestAborted);
+                await WriteAnthropicErrorAsync(
+                    ctx,
+                    (int)upstream.StatusCode,
+                    "api_error",
+                    ExtractErrorMessage(errorBody)
+                );
+                return;
+            }
+
+            if (!wantsStream)
+            {
+                await TranslateBufferedReplyAsync(ctx, upstream, outboundModel, logger);
+                return;
+            }
+
+            var isSse = string.Equals(
+                upstream.Content.Headers.ContentType?.MediaType,
+                "text/event-stream",
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (!isSse)
+            {
+                // Relaying a non-SSE body down an SSE-shaped path would translate to zero frames, i.e.
+                // an empty 200 that looks like a successful empty turn. Fail loudly instead.
+                logger.LogWarning(
+                    "Upstream answered a streaming request for {Model} with {ContentType}; refusing to relay it as SSE.",
+                    outboundModel,
+                    upstream.Content.Headers.ContentType?.MediaType ?? "(no content type)"
+                );
+                await WriteAnthropicErrorAsync(
+                    ctx,
+                    StatusCodes.Status502BadGateway,
+                    "api_error",
+                    "The upstream Copilot API answered a streaming request with a non-streaming reply."
+                );
+                return;
+            }
+
+            await TranslateStreamedReplyAsync(
+                ctx,
+                upstream,
+                outboundModel,
+                idleTimeout,
+                idleCts,
+                linked,
+                keepAliveInterval,
+                logger
+            );
+        }
+    }
+
+    /// <summary>
+    ///     Translates a buffered Responses reply into an Anthropic Message. A reply this proxy cannot
+    ///     read answers 400 rather than leaking a 500 — the contract
+    ///     <see cref="ResponsesToAnthropicJson.Translate" /> documents its <see cref="ArgumentException" />
+    ///     for.
+    /// </summary>
+    private static async Task TranslateBufferedReplyAsync(
+        HttpContext ctx,
+        HttpResponseMessage upstream,
+        string outboundModel,
+        ILogger logger
+    )
+    {
+        var responsesJson = await upstream.Content.ReadAsStringAsync(ctx.RequestAborted);
+
+        string anthropicJson;
+        try
+        {
+            anthropicJson = ResponsesToAnthropicJson.Translate(responsesJson, outboundModel);
+        }
+        catch (ArgumentException ex)
+        {
+            logger.LogWarning(
+                "Could not translate the Responses reply for {Model}: {Reason}",
+                outboundModel,
+                ex.Message
+            );
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status400BadRequest,
+                "invalid_request_error",
+                "The upstream Copilot reply could not be translated into an Anthropic message."
+            );
+            return;
+        }
+
+        ctx.Response.StatusCode = StatusCodes.Status200OK;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(anthropicJson, ctx.RequestAborted);
+    }
+
+    /// <summary>
+    ///     Relays a Responses SSE stream as an Anthropic Messages SSE stream, one upstream line at a
+    ///     time. Nothing is ever appended when the upstream ends early: a truncated stream is exactly
+    ///     what a dropped upstream looks like, and capping it with a synthetic <c>message_stop</c> would
+    ///     turn a failure into a silently empty success.
+    /// </summary>
+    private static async Task TranslateStreamedReplyAsync(
+        HttpContext ctx,
+        HttpResponseMessage upstream,
+        string outboundModel,
+        TimeSpan idleTimeout,
+        CancellationTokenSource idleCts,
+        CancellationTokenSource linked,
+        TimeSpan keepAliveInterval,
+        ILogger logger
+    )
+    {
+        Stream upstreamStream;
+        try
+        {
+            upstreamStream = await upstream.Content.ReadAsStreamAsync(linked.Token);
+        }
+        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            return;
+        }
+
+        ctx.Response.StatusCode = StatusCodes.Status200OK;
+        ctx.Response.ContentType = "text/event-stream";
+        ctx.Response.Headers["X-Accel-Buffering"] = "no";
+        ctx.Response.Headers.CacheControl = "no-cache";
+        ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+        var translator = new ResponsesToAnthropicSse($"msg_{Guid.NewGuid():N}", outboundModel);
+        var reportedSilentDrop = false;
+
+        await using (upstreamStream.ConfigureAwait(false))
+        {
+            using var reader = new StreamReader(upstreamStream, Encoding.UTF8);
+            while (true)
+            {
+                // Reset BEFORE each read: the deadline measures the gap between upstream lines, never the
+                // total request duration.
+                idleCts.CancelAfter(idleTimeout);
+
+                string? line;
+                try
+                {
+                    line = await ReadLineWithKeepAliveAsync(ctx, reader, keepAliveInterval, linked.Token);
+                }
+                catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+                {
+                    logger.LogDebug("Client disconnected mid-translated-stream; ending relay.");
+                    return;
+                }
+                catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+                {
+                    logger.LogWarning(
+                        "Upstream idle timeout after {IdleSeconds:0}s with no data; ending translated relay.",
+                        idleTimeout.TotalSeconds
+                    );
+                    if (!ctx.Response.HasStarted)
+                    {
+                        await WriteAnthropicErrorAsync(
+                            ctx,
+                            StatusCodes.Status504GatewayTimeout,
+                            "api_error",
+                            "The upstream Copilot stream produced no data before the idle timeout."
+                        );
+                    }
+
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning("Mid-stream translated upstream failure: {Reason}", ex.Message);
+                    if (!ctx.Response.HasStarted)
+                    {
+                        await WriteAnthropicErrorAsync(
+                            ctx,
+                            StatusCodes.Status502BadGateway,
+                            "api_error",
+                            "The upstream Copilot stream failed before any data was received."
+                        );
+                    }
+
+                    return;
+                }
+
+                if (line is null)
+                {
+                    return; // Upstream EOF.
+                }
+
+                // Only the payload matters: the translator dispatches on the JSON `type`, and the
+                // upstream `event:` line merely repeats it. Blank separators fall out here too.
+                if (!line.StartsWith("data:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                // The [DONE] sentinel is not JSON and produces no frames, like any other event this
+                // translator does not surface.
+                var frames = translator.Next(line[5..].Trim());
+                if (frames.Count == 0)
+                {
+                    reportedSilentDrop = ReportSilentlyDroppedEvent(logger, outboundModel, line, reportedSilentDrop);
+                    continue;
+                }
+
+                try
+                {
+                    foreach (var frame in frames)
+                    {
+                        await ctx.Response.WriteAsync(frame, linked.Token);
+                    }
+
+                    await ctx.Response.Body.FlushAsync(linked.Token);
+                }
+                catch (OperationCanceledException)
+                    when (ctx.RequestAborted.IsCancellationRequested || idleCts.IsCancellationRequested)
+                {
+                    logger.LogDebug(
+                        "Downstream write cancelled ({Reason}); ending translated relay.",
+                        ctx.RequestAborted.IsCancellationRequested ? "client disconnect" : "idle timeout"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Awaits the next upstream SSE line, emitting a downstream Anthropic <c>ping</c> every
+    ///     <paramref name="keepAliveInterval" /> while the upstream stays silent. The ping timer never
+    ///     restarts the read and never resets the upstream idle deadline, so a genuinely dead upstream
+    ///     still fails at the idle timeout.
+    /// </summary>
+    private static async Task<string?> ReadLineWithKeepAliveAsync(
+        HttpContext ctx,
+        StreamReader reader,
+        TimeSpan keepAliveInterval,
+        CancellationToken linkedToken
+    )
+    {
+        if (keepAliveInterval <= TimeSpan.Zero)
+        {
+            return await reader.ReadLineAsync(linkedToken);
+        }
+
+        var readTask = reader.ReadLineAsync(linkedToken).AsTask();
+        while (true)
+        {
+            using var keepAliveCts = new CancellationTokenSource();
+            var completed = await Task.WhenAny(readTask, Task.Delay(keepAliveInterval, keepAliveCts.Token))
+                .ConfigureAwait(false);
+            keepAliveCts.Cancel(); // Stop the loser's timer (a no-op if it already finished).
+
+            if (completed == readTask)
+            {
+                return await readTask; // Observe the line / propagate any read exception.
+            }
+
+            await ctx.Response.WriteAsync(AnthropicPingFrame, linkedToken);
+            await ctx.Response.Body.FlushAsync(linkedToken);
+        }
+    }
+
+    /// <summary>
+    ///     Reports, at most once per stream, an upstream event that translated to nothing AND whose
+    ///     absence a user would notice: a tool call whose arguments were dropped, and an upstream
+    ///     failure, which reaches the client as an unexplained truncation. Neither justifies inventing a
+    ///     frame, but both are otherwise completely invisible. This is the only layer with a logger in
+    ///     scope — the translators deliberately take no logging dependency. Returns the new
+    ///     "already reported" state.
+    /// </summary>
+    private static bool ReportSilentlyDroppedEvent(ILogger logger, string model, string line, bool alreadyReported)
+    {
+        if (alreadyReported)
+        {
+            return true;
+        }
+
+        string reason;
+        if (line.Contains("response.function_call_arguments.delta", StringComparison.Ordinal))
+        {
+            reason =
+                "a tool call's arguments were dropped because no tool_use block was open — "
+                + "response.output_item.added was missing, unreadable, or spelled differently than expected";
+        }
+        else if (line.Contains("response.failed", StringComparison.Ordinal))
+        {
+            reason =
+                "the upstream reported a failure, which reaches the client as a truncated stream rather "
+                + "than a fabricated error frame";
+        }
+        else
+        {
+            return false;
+        }
+
+        logger.LogWarning("Translated stream for {Model}: {Reason}.", model, reason);
+        return true;
+    }
+
+    /// <summary>
+    ///     Pulls a human-readable message out of an upstream error body. Every read is kind-safe:
+    ///     <c>{"error":"boom"}</c> indexed as an object throws <see cref="InvalidOperationException" />,
+    ///     which would turn a clean relayed 503 into an unhandled 500. An unrecognised body falls back to
+    ///     its own (capped) text rather than a generic placeholder, because the raw text is what makes an
+    ///     unfamiliar upstream failure diagnosable.
+    /// </summary>
+    private static string ExtractErrorMessage(string body)
+    {
+        const int MaxRawLength = 500;
+
+        try
+        {
+            if (JsonNode.Parse(body) is JsonObject obj)
+            {
+                if (ScalarText((obj["error"] as JsonObject)?["message"]) is { } nested)
+                {
+                    return nested;
+                }
+
+                if (ScalarText(obj["error"]) is { } plain)
+                {
+                    return plain;
+                }
+
+                if (ScalarText(obj["message"]) is { } top)
+                {
+                    return top;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Not JSON at all (an HTML error page from an intermediary, say) — fall through to the text.
+        }
+
+        var trimmed = body.Trim();
+        if (trimmed.Length == 0)
+        {
+            return "The upstream Copilot API returned an error with no body.";
+        }
+
+        return trimmed.Length <= MaxRawLength ? trimmed : trimmed[..MaxRawLength];
+    }
+
+    /// <summary>Reads a JSON string, or null if <paramref name="node" /> is absent or carries another kind.</summary>
+    private static string? ScalarText(JsonNode? node) =>
+        node is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : null;
 
     /// <summary>
     ///     Copies the positive request-header allowlist: only <c>anthropic-version</c> is forwarded (a

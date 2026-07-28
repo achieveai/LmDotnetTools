@@ -163,30 +163,39 @@ public class OpenAiDialectTests
     }
 
     [Fact]
-    public async Task Messages_returns_a_translation_specific_404_for_a_responses_only_model()
+    public async Task Messages_serves_a_model_without_messages_support_by_translating_to_responses()
     {
-        await using var factory = Factory((_, _) => throw new InvalidOperationException("must not be forwarded"));
+        // Replaces an earlier test that pinned the interim "translation is not implemented yet" 404 —
+        // that branch is what this endpoint's translated path exists to remove. gpt-5.4 advertises
+        // /responses and /chat/completions but NOT /v1/messages, so an Anthropic Messages request for it
+        // is translated rather than routed away. TranslatedMessagesTests covers the translation itself;
+        // this keeps the dialect x model table in this file complete.
+        string? seenPath = null;
+        await using var factory = Factory(
+            (_, path) =>
+            {
+                seenPath = path;
+                return Task.FromResult(TestUpstream.Json("""{"id":"resp_2","model":"gpt-5.4","output":[]}"""));
+            }
+        );
         using var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync(
             "/v1/messages",
-            new { model = "gpt-5.3-codex", messages = Array.Empty<object>() }
+            new
+            {
+                model = "gpt-5.4",
+                max_tokens = 64,
+                messages = Array.Empty<object>(),
+            }
         );
 
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        seenPath.Should().Be("/responses");
 
-        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var message = error.RootElement.GetProperty("error").GetProperty("message").GetString();
-        message.Should().Contain("gpt-5.3-codex");
-        message
-            .Should()
-            .Contain("translat", "gpt-5.3-codex needs Anthropic-to-Responses translation, not a plain routing miss");
-        message
-            .Should()
-            .NotContain(
-                "available",
-                "a model pending translation support must not be described as available on this endpoint"
-            );
+        using var message = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        message.RootElement.GetProperty("type").GetString().Should().Be("message");
+        message.RootElement.GetProperty("model").GetString().Should().Be("gpt-5.4");
     }
 
     [Fact]
