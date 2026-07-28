@@ -147,12 +147,18 @@ Responses API. Every passthrough route is byte-for-byte and has none of them.
   | `>= 24576` | `high` |
   | absent | `medium` |
 
-  Every served model accepts all three efforts. Measured over four runs against the four models that
-  default to `effort: "none"` — models that can *never* produce a `thinking` block otherwise — three
-  of them returned one on every run and the fourth on two of four. So enabling thinking moves this
-  from impossible to usual, but a `thinking` block is still not contractually guaranteed on any given
-  turn. **No `effort` is sent when the client did not enable thinking**, so a turn the user never
-  asked to think about costs exactly what it costs today.
+  Every served model accepts all three efforts. Measured over five runs against the four models that
+  default to `effort: "none"` — models that can *never* produce a `thinking` block otherwise — two runs
+  had all four produce one. On the other three at least one model stayed silent, and it was not always
+  the same one: `gpt-5.4` on two of them and `gpt-5.4-nano` on the third. So enabling thinking moves
+  this from impossible to usual, for no model in particular.
+
+  Even at the largest budgets a `thinking` block is not guaranteed on every turn. Probed over ten runs
+  at `budget_tokens: 32768`, `gpt-5.4` returned a complete, correct answer with no `thinking` block on
+  two of them. A larger budget improves the odds; it does not make thinking contractual.
+
+  **No `effort` is sent when the client did not enable thinking**, so a turn the user never asked to
+  think about costs exactly what it costs today.
 - **Reasoning still does not carry across turns.** The encrypted payload that would let a GPT model
   resume its own reasoning through a tool loop is not round-tripped, so answers stay correct but the
   model re-derives its reasoning each turn. The `thinking` blocks that are emitted also carry **no

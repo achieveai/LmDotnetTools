@@ -352,8 +352,16 @@ public sealed class CopilotAnthropicProxyLiveTests
     ///     arms would be unreachable. Both captures are text-only on a prompt that rewards thinking; a
     ///     forced tool call short-circuits reasoning and would fake a negative.
     ///
-    ///     The "never volunteers" half is checked on one model, because it has held on every model on
-    ///     every run. The "produces when asked" half walks the catalog instead, because whether any ONE
+    ///     The "never volunteers" half runs on ONE model, and it is weaker evidence than a green
+    ///     assertion makes it look. This is the only request in the suite that sends NO reasoning field
+    ///     at all, so the shape has never been tried on a second model — and the model it picks is the
+    ///     cheapest tier, which Copilot defaults to <c>effort: "none"</c>. A turn that never reasons has
+    ///     nothing to summarise, so an empty result here cannot separate "Copilot volunteers no
+    ///     summaries" from "this model never reasons at all". The assertion stays because a summary
+    ///     arriving unasked would still be a genuine regression, not because it settles the general
+    ///     claim; widening it would mean sweeping this shape across the catalog.
+    ///
+    ///     The "produces when asked" half walks the catalog instead, because whether any ONE
     ///     turn reasons is a coin flip — asserting it on a single sample failed a full-suite run.
     /// </summary>
     [SkippableFact]
@@ -546,19 +554,19 @@ public sealed class CopilotAnthropicProxyLiveTests
     }
 
     /// <summary>
-    ///     SAFEGUARD (a) for shipping an unconditional <c>reasoning</c> field: does
-    ///     <c>{"summary": "auto"}</c> on its own actually PRODUCE summaries? The earlier evidence sent
-    ///     <c>effort</c> alongside it, and Copilot defaults these models to <c>effort: "none"</c> — a
-    ///     turn that never reasons cannot summarise. Accepted-but-inert is the failure this catches,
-    ///     and a status check alone would not: it looks identical to success.
+    ///     SAFEGUARD (a) for shipping an unconditional <c>reasoning</c> field: is
+    ///     <c>{"summary": "auto"}</c> on its own accepted everywhere, and does it actually PRODUCE
+    ///     summaries? The earlier evidence sent <c>effort</c> alongside it, and Copilot defaults some
+    ///     models to <c>effort: "none"</c> — a turn that never reasons cannot summarise.
     ///
-    ///     What it can and cannot assert. Acceptance is an invariant — all nine models have answered 200
-    ///     on every run — so that IS asserted. Productivity is not: sweeps minutes apart saw a different
-    ///     single model produce summaries, and one full-suite run saw all nine inert at once. An earlier
-    ///     revision asserted "some model produced summaries" and failed on exactly that run, so the
-    ///     split is now recorded rather than asserted. It is the evidence for the README's claim that
-    ///     summary-alone is unreliable, and the reason the shipped code derives an effort from the
-    ///     client instead of relying on this.
+    ///     ITS ONLY FAILURE MODE IS A MODEL ANSWERING SOMETHING OTHER THAN 200. Acceptance is the
+    ///     invariant, and it is asserted per model inside the loop. Productivity is recorded and never
+    ///     asserted: sweeps minutes apart saw a different single model produce summaries, and one
+    ///     full-suite run saw every swept model inert at once. An earlier revision asserted "some model
+    ///     produced summaries" and failed on exactly that run. So accepted-but-inert is what this probe
+    ///     DOCUMENTS, not what it catches — it is the evidence for the README's claim that summary-alone
+    ///     is unreliable, and the reason the shipped code derives an effort from the client instead of
+    ///     relying on this.
     /// </summary>
     [SkippableFact]
     public async Task Summary_auto_alone_is_accepted_everywhere_but_is_not_dependable()
@@ -569,9 +577,10 @@ public sealed class CopilotAnthropicProxyLiveTests
         var models = await ResponsesCapableModelsAsync(cts.Token);
         Skip.If(models.Count == 0, "This Copilot account exposes no /responses model the proxy will serve.");
 
-        // Swept across every served model, not just the cheap one: Copilot's DEFAULT effort is a
-        // per-model property, and "summary alone is inert" on a model that defaults to effort "none"
-        // says nothing about a model that defaults to a real one.
+        // Swept across every model the proxy serves through /responses ALONE — dual-endpoint models are
+        // excluded, see ResponsesCapableModelsAsync — rather than just the cheap one: Copilot's DEFAULT
+        // effort is a per-model property, and "summary alone is inert" on a model that defaults to
+        // effort "none" says nothing about a model that defaults to a real one.
         var inert = new List<string>();
         var productive = new List<string>();
 
@@ -596,20 +605,21 @@ public sealed class CopilotAnthropicProxyLiveTests
         _output.WriteLine($"OBSERVED summaries produced by:  {(productive.Count == 0 ? "<none>" : string.Join(", ", productive))}");
         _output.WriteLine($"OBSERVED accepted but inert on:  {(inert.Count == 0 ? "<none>" : string.Join(", ", inert))}");
 
-        // Deliberately no assertion on `productive`: an all-inert sweep is a real, observed outcome of
-        // this request shape, not a regression. Asserting it would be asserting a non-invariant, and
-        // `Thinking_enabled_makes_a_none_effort_model_reason` covers what the shipped code depends on.
-        inert.Concat(productive)
-            .Should()
-            .BeEquivalentTo(models, "every served model must have answered, or the sweep proves nothing");
+        // No assertion follows, deliberately. An all-inert sweep is a real, observed outcome of this
+        // request shape, not a regression, so `productive` is not asserted on; and a coverage assertion
+        // here would be a tautology — the loop above adds every model to exactly one of the two lists
+        // and never breaks, so `inert + productive == models` restates itself and cannot fail. The
+        // per-model 200 inside the loop is the whole contract. What the shipped code depends on is
+        // covered by `Thinking_enabled_makes_a_none_effort_model_reason`.
     }
 
     /// <summary>
     ///     SAFEGUARD (b): does ANY model this proxy serves through <c>/responses</c> reject a
-    ///     <c>reasoning</c> field? Every other probe in this file uses one cheap model, so an
-    ///     unconditional request field would be shipped on one model's evidence. This one sweeps the
-    ///     whole live <c>/responses</c> surface, non-reasoning-looking models included, and names any
-    ///     model that refuses.
+    ///     <c>reasoning</c> field? Several probes in this file use one cheap model, so an unconditional
+    ///     request field would otherwise be shipped on one model's evidence. This one sweeps every model
+    ///     the proxy routes to <c>/responses</c> — non-reasoning-looking models included, dual-endpoint
+    ///     models excluded because they never reach the translator, see
+    ///     <see cref="ResponsesCapableModelsAsync" /> — and names any model that refuses.
     /// </summary>
     [SkippableFact]
     public async Task Every_responses_model_accepts_a_reasoning_field()
@@ -723,10 +733,13 @@ public sealed class CopilotAnthropicProxyLiveTests
     ///     endpoint with extended thinking enabled and reports whether one appears.
     ///
     ///     The mapping clearly works — models that could NEVER reason before now usually do — but it is
-    ///     not a guarantee. Over four runs, two had all four models produce a block and two had
-    ///     <c>gpt-5.4</c> alone stay silent. So this asserts that SOME rescued model reasoned, which is
-    ///     the claim the README makes, and logs the per-model split. Do not tighten this to "all
-    ///     models": that was tried, and the third run refuted it.
+    ///     not a guarantee, and WHICH model falls silent is not stable either. Over five runs, two had
+    ///     all four models produce a block. On the other three at least one stayed silent:
+    ///     <c>gpt-5.4</c> on two of them and <c>gpt-5.4-nano</c> on the third, and on the two of those
+    ///     with a full per-model split recorded the remaining three models still produced one. So this
+    ///     asserts that SOME rescued model reasoned, which is the claim the README makes, and logs the
+    ///     per-model split. Do not tighten this to "all models": that was tried, and the third run
+    ///     refuted it — nor to "all but <c>gpt-5.4</c>", which the fifth run would have refuted.
     ///
     ///     Statuses are checked first, or a 400 would masquerade as "this model cannot think".
     /// </summary>
@@ -774,7 +787,18 @@ public sealed class CopilotAnthropicProxyLiveTests
         }
 
         _output.WriteLine($"models defaulting to effort \"none\": {string.Join(", ", neverReason)}");
-        Skip.If(neverReason.Count == 0, "No served model defaults to effort \"none\", so there is nothing to rescue.");
+        // A skip here is not a clean pass. This probe is the ONLY end-to-end enforcement of the
+        // budget-to-effort mapping, and it works by rescuing a model that provably cannot reason on its
+        // own — without one, a thinking block would not prove the effort we sent caused it. So say out
+        // loud what disappears, rather than substituting a weaker assertion on some other model.
+        Skip.If(
+            neverReason.Count == 0,
+            "No served model defaults to effort \"none\", so nothing here is being rescued and the ONLY "
+                + "end-to-end check of the budget-to-effort mapping just went silent. If Copilot has "
+                + "stopped defaulting any model to \"none\", the payoff cannot be demonstrated this way at "
+                + "all and the mapping needs a different live check — do not weaken this one to keep it "
+                + "running."
+        );
 
         var reasoned = new List<string>();
         var stayedSilent = new List<string>();
@@ -844,18 +868,29 @@ public sealed class CopilotAnthropicProxyLiveTests
     }
 
     /// <summary>
-    ///     The payoff probe for the unconditional <c>reasoning</c> field: a <c>thinking</c> block must
-    ///     actually reach an Anthropic client through the FULL translated route. The sweep above proves
-    ///     only that Copilot returns summary events on the raw Responses stream; this proves the request
-    ///     translator asks for them without being told to and the stream translator turns them into
-    ///     Anthropic frames.
+    ///     Drives the FULL translated route with a request naming no reasoning of any kind — all Claude
+    ///     Code sends when extended thinking is off. The request translator adds
+    ///     <c>reasoning: {"summary": "auto"}</c> by itself and the stream translator reframes whatever
+    ///     comes back, so this exercises both halves against every served model.
     ///
-    ///     Walks the catalog because which model reasons is Copilot's choice, not ours — cheap models
-    ///     default to <c>effort: "none"</c> and cannot summarise a turn they never reasoned through, so
-    ///     requiring the FIRST model to produce a block would fail for a reason that is not a defect.
+    ///     WHAT IT ASSERTS IS THE 200, NOT A THINKING BLOCK. The upstream shape it produces —
+    ///     summary-only, no effort — is byte-for-byte the one
+    ///     <see cref="Summary_auto_alone_is_accepted_everywhere_but_is_not_dependable" /> sends, just
+    ///     through the Anthropic front door instead of raw <c>/responses</c>. That probe records an
+    ///     all-inert sweep as a real outcome rather than a regression, and this file must not hold the
+    ///     opposite verdict on an identical observation, so the per-model split is logged and never
+    ///     asserted. An earlier revision threw when every model stayed silent; a run where none reasons
+    ///     is exactly what the other probe has already observed happening.
+    ///
+    ///     Nothing is lost by that. That a client sending no <c>thinking</c> field still gets
+    ///     <c>summary: "auto"</c> and no <c>effort</c> is pinned deterministically at fixture level by
+    ///     <c>AnthropicToResponsesRequestTests.Always_asks_for_reasoning_summaries</c>, and the chain
+    ///     from summary events to an Anthropic <c>thinking</c> block is ENFORCED end-to-end by
+    ///     <see cref="Thinking_enabled_makes_a_none_effort_model_reason" />, which sends an effort and is
+    ///     far more reliable for that reason.
     /// </summary>
     [SkippableFact]
-    public async Task Translated_route_emits_a_thinking_block_without_being_asked()
+    public async Task Translated_route_serves_every_model_without_a_reasoning_hint()
     {
         Skip.IfNot(_fixture.Available, _fixture.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(600));
@@ -863,11 +898,12 @@ public sealed class CopilotAnthropicProxyLiveTests
         var models = await ResponsesCapableModelsAsync(cts.Token);
         Skip.If(models.Count == 0, "This Copilot account exposes no /responses model the proxy will serve.");
 
+        var thought = new List<string>();
         var silent = new List<string>();
         foreach (var model in models)
         {
             // Deliberately NOT asking for reasoning anywhere in this request: the point is that the
-            // translator adds it. Claude Code has no way to request it through the Anthropic API.
+            // translator adds it. A client with extended thinking switched off sends exactly this.
             var (status, body) = await SendProxyAsync(
                 "/v1/messages",
                 new
@@ -892,20 +928,28 @@ public sealed class CopilotAnthropicProxyLiveTests
 
             if (body.Contains("\"type\":\"thinking\"", StringComparison.Ordinal))
             {
-                _output.WriteLine($"{model,-24} -> OBSERVED a thinking block on the translated route.");
-                _output.WriteLine(Truncate(body, 1500));
-                _output.WriteLine($"OBSERVED no thinking block from: {string.Join(", ", silent)}");
-                return;
+                _output.WriteLine($"{model,-24} -> 200 OK, thinking block");
+
+                // The first one only, as the evidence sample: these streams run to hundreds of lines
+                // and the per-model split below is what a reader of this log actually needs.
+                if (thought.Count == 0)
+                {
+                    _output.WriteLine(Truncate(body, 1500));
+                }
+
+                thought.Add(model);
+                continue;
             }
 
             _output.WriteLine($"{model,-24} -> 200 OK, no thinking block");
             silent.Add(model);
         }
 
-        throw new InvalidOperationException(
-            "No served /responses model produced a thinking block through the translated route, so the "
-                + $"unconditional reasoning field bought nothing. Silent models: {string.Join(", ", silent)}"
-        );
+        // Recorded, never asserted — see the summary above. An all-silent sweep of this request shape
+        // is an outcome `Summary_auto_alone_is_accepted_everywhere_but_is_not_dependable` has already
+        // observed on the raw endpoint, and this probe cannot call the same observation a regression.
+        _output.WriteLine($"OBSERVED a thinking block from:  {(thought.Count == 0 ? "<none>" : string.Join(", ", thought))}");
+        _output.WriteLine($"OBSERVED no thinking block from: {(silent.Count == 0 ? "<none>" : string.Join(", ", silent))}");
     }
 
     /// <summary>
@@ -997,10 +1041,10 @@ public sealed class CopilotAnthropicProxyLiveTests
     /// <summary>
     ///     Every model the proxy serves ONLY through <c>/responses</c>, cheap tiers first.
     ///
-    ///     Excluding models that also advertise <c>/v1/messages</c> is not cosmetic: <c>ModelRoute</c>
-    ///     tries its Messages-passthrough arm FIRST, so an Anthropic request naming a dual-endpoint
-    ///     model never reaches the translator. A sweep that included one could report success for a
-    ///     model that never exercised the code under test.
+    ///     Excluding models that also advertise <c>/v1/messages</c> is not cosmetic:
+    ///     <c>ModelRouter.Resolve</c> tries its Messages-passthrough arm FIRST, so an Anthropic request
+    ///     naming a dual-endpoint model never reaches the translator. A sweep that included one could
+    ///     report success for a model that never exercised the code under test.
     /// </summary>
     private async Task<IReadOnlyList<string>> ResponsesCapableModelsAsync(CancellationToken cancellationToken)
     {
