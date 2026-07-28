@@ -1,38 +1,38 @@
 # CopilotAnthropicProxy.Sample
 
-A thin, **loopback-only** reverse proxy that speaks the **Anthropic Messages API** on the inbound
-side and forwards every request to **GitHub Copilot** on the outbound side. It lets a developer who
-has a GitHub Copilot entitlement (but no Anthropic API key) drive **Claude Code** — or the in-house
-`AnthropicClient` — on a Copilot-hosted Claude model by pointing `ANTHROPIC_BASE_URL` at this proxy.
+A thin, **loopback-only** reverse proxy that puts every model in your **GitHub Copilot** catalog
+behind whichever API dialect your coding agent already speaks. It accepts the **Anthropic Messages
+API** *and* the **OpenAI Chat Completions / Responses APIs** on the inbound side, and forwards to
+Copilot on the outbound side. A developer with a Copilot entitlement (but no Anthropic or OpenAI
+key) can point **Claude Code**, **Codex CLI** or **opencode** at it and drive any model Copilot
+exposes.
 
-What it does, end to end:
-
-1. Accepts `POST /v1/messages` (streaming and non-streaming), `POST /v1/messages/count_tokens`, and
-   `GET /v1/models`.
-2. Rewrites the JSON `model` field of the request body: if it names a model the proxy knows about
-   (see "Choosing the model" below), it passes through unchanged; otherwise it's rewritten to the
-   resolved default Copilot Claude (Opus) id. The top-level `context_management` field is stripped
-   (Copilot's backend rejects it outright — see "Known request incompatibilities" below). Everything
-   else — `system` blocks, `cache_control`, `thinking`, `tools`, and unknown fields — is preserved
-   verbatim (raw `JsonNode` swap, never a typed DTO).
-3. Drops the inbound `anthropic-beta` header entirely — it is never forwarded (see "Known request
-   incompatibilities" below).
-4. Attaches Copilot auth + tracking headers using the proven `GithubCopilotProvider` transport
-   (`CopilotHttpClientFactory` / `CopilotHeadersHandler` / the CLI credential token provider).
-5. Streams the upstream Server-Sent-Events response straight back to the client as **raw bytes**
-   (no parsing, no buffering, incremental flush) and passes status codes and rate-limit headers
-   through unchanged. If the upstream stream fails mid-flight the proxy does **not** fabricate any
-   terminal frames: it returns a `502` when nothing has been sent yet, otherwise it stops and closes
-   the (now incomplete) stream — the client detects the truncation from the missing `message_stop`,
-   exactly as it would if the upstream connection had dropped directly.
-6. Also transparently exposes Copilot's **MCP server** on `/mcp` and `/mcp/readonly` — see
-   "Exposing Copilot's MCP server" below.
+Most of that is byte-for-byte passthrough. The one place real work happens is **Anthropic Messages
+in, for a model that only speaks the Responses API** — Claude Code asking for `gpt-5.3-codex`. There
+the proxy translates the request, the reply, and the SSE stream between the two shapes. See
+"Known limitations" for what that translation cannot carry.
 
 > [!WARNING]
 > **Local development only.** This proxy has **no inbound authentication** but attaches **your**
 > Copilot credentials to every outbound call. It binds to loopback (`127.0.0.1` / `[::1]`) only and
 > rejects non-loopback remote addresses, foreign `Host` headers, and cross-site requests. **Never**
 > bind it to `0.0.0.0`, put it behind a public reverse proxy, or expose it through a tunnel.
+
+## Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/messages`, `/messages` | Anthropic Messages. Passthrough for Claude models; translated to `/responses` for Responses-only GPT models. |
+| `POST` | `/v1/messages/count_tokens`, `/messages/count_tokens` | Anthropic token counting. Claude models only. |
+| `POST` | `/v1/chat/completions`, `/chat/completions` | OpenAI Chat Completions. Passthrough. |
+| `POST` | `/v1/responses`, `/responses` | OpenAI Responses. Passthrough. |
+| `GET` | `/v1/models` | Model list in a body both dialects can parse. |
+| `GET` | `/health` | Liveness. |
+| `ALL` | `/mcp`, `/mcp/readonly` | Unchanged MCP passthrough. |
+
+Every `POST` binds both the `/v1`-prefixed and un-prefixed form, because clients disagree about where
+the prefix belongs: Claude Code appends `/v1/messages` to a bare host, the Vercel AI SDK appends only
+`/messages` to a `…/v1` base, and Codex joins `{base}/responses`.
 
 ## Prerequisites
 
@@ -53,46 +53,26 @@ On startup the proxy logs the resolved default model, how many models are availa
 address, e.g.:
 
 ```
-CopilotAnthropicProxy listening on http://127.0.0.1:8788 -> https://api.enterprise.githubcopilot.com (default model: <resolved-opus-id>, 7 available)
+CopilotAnthropicProxy listening on http://127.0.0.1:8788 -> https://api.enterprise.githubcopilot.com (default model: <resolved-opus-id>, 17 available; idle 180s, keep-alive 15s)
 ```
 
-### Choosing the model
-
-The proxy resolves an outbound **model catalog** (a default id plus the full set of available ids)
-at startup in one of two modes:
-
-1. **Pinned** — `COPILOT_ANTHROPIC_MODEL` is set. The catalog is just that one id (both default and
-   only available entry); Copilot's `/models` endpoint is never queried, and **every** request is
-   rewritten to it regardless of what `model` the client sent — this matches the proxy's original
-   single-model behavior.
-2. **Discovered** — `COPILOT_ANTHROPIC_MODEL` is unset. The proxy queries Copilot `GET /models` and
-   keeps every model whose `supported_endpoints` includes `/v1/messages` (the only ones this
-   Anthropic-Messages-shaped proxy can forward to — Copilot's GPT/Gemini models are excluded). The
-   default is the Claude id containing `opus`; if none is found, the proxy **fails fast** and logs
-   the available Claude ids so you can set `COPILOT_ANTHROPIC_MODEL` explicitly. Copilot can expose
-   multiple concurrent `opus` ids at once (e.g. `claude-opus-4.6`, `claude-opus-4.7`,
-   `claude-opus-4.8`); the proxy picks the one with the numerically highest version suffix — not
-   just the first one Copilot happens to list — so the default always tracks the newest opus model.
-   In this mode, a request whose `model` field exactly matches (case-insensitively) one of the
-   discovered ids is forwarded **unchanged** (normalized to the catalog's casing); anything else
-   falls back to the default.
-
-`GET /v1/models` on the proxy returns a dual-dialect union list of every id in the catalog (one entry
-in pinned mode, every discovered `/v1/messages`-capable id in discovered mode).
-
-## Point a client at the proxy
-
-There are **two** valid base-URL forms depending on how the client builds the request URL.
-
-### Claude Code / Anthropic SDK-style clients
-
-These append `/v1/messages` to the base URL, so use the **bare host** (no `/v1`):
+## Configuring each client
 
 ```bash
-ANTHROPIC_BASE_URL=http://127.0.0.1:8788 \
-ANTHROPIC_API_KEY=dummy \
-claude
+# Claude Code — any model in the catalog, Claude or GPT
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
+export ANTHROPIC_MODEL=gpt-5.3-codex
+
+# Codex CLI — ~/.codex/config.toml
+# base_url = "http://127.0.0.1:8788/v1"
+
+# opencode — OpenAI-compatible provider
+# baseURL: "http://127.0.0.1:8788/v1"
 ```
+
+`ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) is required by these clients but ignored by the proxy: the
+inbound `x-api-key` / `Authorization` headers are **not** forwarded, and Copilot auth is attached
+outbound.
 
 ### `samples/LmStreaming.Sample` (in-house `AnthropicClient`)
 
@@ -106,10 +86,94 @@ ANTHROPIC_MODEL=any-model-id-the-proxy-will-rewrite \
 dotnet run --project samples/LmStreaming.Sample
 ```
 
-`ANTHROPIC_API_KEY` is required by clients but ignored by the proxy (the inbound `x-api-key` /
-`Authorization` are **not** forwarded; Copilot auth is attached outbound). The `ANTHROPIC_MODEL`
-value is honored when `COPILOT_ANTHROPIC_MODEL` is unset and it matches one of the models the proxy
-discovered from Copilot (see "Choosing the model"); otherwise it's rewritten to the resolved default.
+## Which models are served
+
+Discovered from Copilot's `/models` at startup — nothing is hard-coded. A model is served when it
+advertises at least one of `/v1/messages`, `/chat/completions` or `/responses`, and its vendor is
+neither Google nor Microsoft. Models advertising no endpoints (including `text-embedding-*`) are
+excluded so an embedding model can never surface as a chat model.
+
+Requests naming an unknown model are mapped onto the same family when one exists
+(`claude-3-5-haiku-*` → `claude-haiku-4.5`) and otherwise onto the catalog default. That matters
+because Claude Code sends conversation-title, classification and summarisation traffic to this same
+base URL under haiku model ids; without family mapping, every one of them would bill against Opus.
+
+`GET /v1/models` returns a dual-dialect union list of every id in the catalog.
+
+> [!NOTE]
+> Setting `COPILOT_ANTHROPIC_MODEL` **pins** every request to that one id and skips discovery
+> entirely. A pinned catalog carries no endpoint metadata, so the pinned model is treated as an
+> Anthropic Messages passthrough — **the translated route is unreachable in pinned mode**. Leave the
+> variable unset to drive GPT models through `/v1/messages`.
+
+## Known limitations
+
+These affect **only** the translated route — Anthropic Messages in, for a model that speaks only the
+Responses API. Every passthrough route is byte-for-byte and has none of them.
+
+**Request fields**
+
+- **`stop_sequences` is dropped.** The Responses API has no equivalent parameter, and emulating one
+  means truncating a stream at a boundary that can straddle SSE chunks. Claude Code uses it only for
+  auto-mode classification, which targets the haiku tier — an Anthropic model, hence passthrough.
+- **`max_tokens` is raised to 16 when smaller.** Claude Code's first request against a new model is a
+  validation probe with `max_tokens: 1`, which the Responses API rejects outright; passed through
+  literally, every GPT model would look broken before you got a turn.
+- **`temperature` and `top_p` are passed through.** Verified live rather than assumed — OpenAI
+  documents its own reasoning models as rejecting a non-default `temperature`, but Copilot accepts
+  both and honours them.
+
+**Reasoning**
+
+- **`thinking` blocks are never produced, and reasoning does not carry across turns.** The translated
+  request sends no `reasoning` field, and Copilot emits reasoning summaries *only* when one is
+  explicitly asked for — so no summary events arrive and no `thinking` block is ever emitted. The
+  encrypted payload that would let a GPT model resume its own reasoning through a tool loop is not
+  round-tripped either. Answers stay correct; the model re-derives its reasoning each turn, and you
+  simply do not see it. (Should a future request start asking for summaries, the `thinking` blocks
+  the translators would then emit carry **no `signature`** — Anthropic clients that verify one will
+  reject them.)
+
+**Response content**
+
+- **Only `output_text` message parts survive.** Any other part type in a `message` item is dropped,
+  including `refusal`. A turn that consists solely of a refusal therefore arrives as `content: []`
+  with `stop_reason: "end_turn"` — indistinguishable from a genuinely empty turn, and the refusal
+  text is lost.
+- **Tool ids are passed through verbatim.** Responses mints `call_…`; Anthropic conventionally uses
+  `toolu_…`. The round-trip works because the id we hand out is the id we accept back, but Claude
+  Code cannot pattern-match these ids when explaining a tool-pairing failure, so that one error
+  message is less specific than usual.
+- **Cached input tokens are reported as fresh ones.** Copilot returns the cached prefix as
+  `input_tokens_details.cached_tokens` *inside* the total `input_tokens`, and the Anthropic usage
+  shape the proxy emits has only `input_tokens` / `output_tokens` — no
+  `cache_read_input_tokens` field to put it in. Any client costing a session from these numbers will
+  over-report whenever Copilot serves a cached prefix.
+
+**Streaming**
+
+- **A multi-line `data:` event would be silently dropped.** SSE permits an event to span several
+  `data:` lines; the stream translator reads one line at a time and does not reassemble them. Not
+  observed in practice — every live Copilot Responses stream measured so far uses exactly one
+  `data:` line per event — but a change upstream would lose those events with no error.
+- **A mid-stream upstream failure looks like a dropped connection.** The proxy never fabricates
+  terminal frames, so an upstream `response.failed` and a severed socket both end as a stream with no
+  `message_stop`. The reason is logged proxy-side; the client sees only the truncation.
+- **An early keep-alive forfeits the error envelope.** If the keep-alive interval elapses before the
+  first upstream frame arrives, the ping starts the response body — after which a subsequent upstream
+  error can no longer be reported as a clean `502` JSON envelope. This is deliberate parity with the
+  raw passthrough route, which has always behaved this way.
+- **The idle timeout measures the gap between upstream *lines*, not bytes.** An upstream dribbling a
+  single enormous line for longer than `COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS` is treated as idle
+  even though bytes are still moving.
+
+**Endpoints**
+
+- **`count_tokens` serves Claude models only.** For a Responses-only model the proxy answers `404`
+  with an Anthropic `not_found_error` rather than running a billed generation or inventing a number.
+  Clients degrade gracefully — Claude Code logs `countTokens API call failed` and falls back to a
+  local estimate, which drives only the `/context` bar and the auto-compact threshold.
+- **Prompt caching, batch and files APIs are not proxied.**
 
 ## Exposing Copilot's MCP server
 
@@ -138,12 +202,14 @@ proxy attaches its own Copilot bearer token instead, via the same `CopilotHeader
 proxy, no inbound auth is required to reach `/mcp*`; it's covered by the same loopback +
 host/cross-site guard described in the warning above.
 
-### Troubleshooting the base URL
+## Troubleshooting the base URL
 
 | Symptom (request that reaches the proxy) | Cause | Fix |
 | --- | --- | --- |
 | `404` on `POST /messages` | You used the bare host with a client that appends only `/messages`. | Add `/v1`: `…:8788/v1`. |
 | `404` on `POST /v1/v1/messages` | You added `/v1` for a client that already appends `/v1/messages`. | Drop `/v1`: use `…:8788`. |
+| `404 not_found_error` on `count_tokens` | The model is served by translation to Responses, which has no token-counting endpoint. | Expected; the client falls back to a local estimate. |
+| A GPT model answers as Claude | `COPILOT_ANTHROPIC_MODEL` is pinned, so every request is rewritten to it. | Unset it to use the discovered catalog. |
 | `403 permission_error` | Non-loopback `Host`, cross-site request, or a non-loopback `Origin`. | Use `127.0.0.1`/`localhost`; don't proxy from a browser page on another origin. |
 | `401 authentication_error` | The proxy could not acquire a Copilot token on the request. | Re-authenticate (`gh auth login` / Copilot CLI) or set `GITHUB_COPILOT_TOKEN`. |
 
@@ -151,11 +217,11 @@ host/cross-site guard described in the warning above.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `COPILOT_ANTHROPIC_MODEL` | (discovered from `/models`) | Pins every request to this single Copilot model id and skips discovery entirely. Unset to discover the full `/v1/messages`-capable catalog instead (see "Choosing the model"). |
+| `COPILOT_ANTHROPIC_MODEL` | (discovered from `/models`) | Pins every request to this single Copilot model id and skips discovery entirely. Leave unset to serve the full catalog — see the note under "Which models are served". |
 | `COPILOT_ANTHROPIC_PORT` | `8788` | Loopback listen port. |
 | `COPILOT_ANTHROPIC_BASE_URL` | `https://api.enterprise.githubcopilot.com` | Copilot host root (for non-enterprise hosts). |
 | `COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS` | `180` | Per-request idle timeout, reset after each streamed upstream read. The total exchange has no deadline, so long generations are not cut off; this only fires when the upstream produces *nothing* for the whole window. |
-| `COPILOT_ANTHROPIC_KEEPALIVE_SECONDS` | `15` | While an SSE upstream is silent, emit a downstream SSE keep-alive comment (`:` line) this often so the client's own read timeout does not fire mid-generation. Keep-alives don't reset the idle timeout above. Set `0` to disable. |
+| `COPILOT_ANTHROPIC_KEEPALIVE_SECONDS` | `15` | While an SSE upstream is silent, emit a downstream SSE keep-alive this often so the client's own read timeout does not fire mid-generation. Keep-alives don't reset the idle timeout above. Set `0` to disable. |
 | `COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW` | `false` | When truthy, allow an interactive GitHub device-flow login at startup (composite provider). Off by default — the request path never blocks on device flow. |
 
 ## Logs
@@ -173,8 +239,10 @@ The proxy logs through Serilog to two sinks:
 
 `samples/LmStreaming.Sample` in `anthropic` mode can enable the Anthropic server-side
 `AnthropicWebSearchTool`. The GitHub Copilot backend **rejects** that tool shape with HTTP 400
-(`"The use of the web search tool is not supported."`). This proxy does **not** special-case it — the
-rejection passes straight through as an upstream 400.
+(`"The use of the web search tool is not supported."`). On the passthrough route this rejection
+passes straight through as an upstream 400; on the translated route the tool is dropped before the
+request is sent (only tools carrying an `input_schema` are mapped), so the request succeeds without
+web search.
 
 To validate against the proxy, run a flow that does **not** enable web search. The clean way to do
 that in `LmStreaming.Sample` is to select (or define) a chat **mode with an empty `EnabledTools`
@@ -194,18 +262,34 @@ Copilot's backend rejects two things Claude Code routinely sends. Both are strip
   (`"context_management: Extra inputs are not permitted"`) if this top-level field is present. It is
   removed from the JSON body (alongside the `model` rewrite) before forwarding.
 
+The translated route avoids both by construction: it builds a new Responses body from an explicit
+allowlist rather than patching the inbound one, so `betas`, `cache_control`, `metadata` and server
+tools are dropped without needing to be enumerated.
+
 ## Non-goals (intentionally not implemented)
 
-- **No response-body rewriting.** The response body and the SSE `message_start` event carry whatever
-  model id was actually sent upstream (the passed-through id, or the resolved default when the
-  request's model wasn't recognized) — never rewritten back to the client's requested id. This is
-  accepted for raw-passthrough fidelity.
+- **No response-body rewriting on the passthrough routes.** The response body and the SSE
+  `message_start` event carry whatever model id was actually sent upstream — never rewritten back to
+  the client's requested id. This is accepted for raw-passthrough fidelity.
 - **No 200K → 1M context fallback / model routing.** Context-length errors pass through unchanged.
 - **No refresh-on-401 / token invalidation.** A request-path token failure maps to a local
   `authentication_error`; re-authenticate out of band.
-- **No synthetic `count_tokens` estimator.** `count_tokens` is best-effort pass-through; an
-  unsupported upstream (404/405) is normalized to an Anthropic `not_found_error`.
+- **No synthetic `count_tokens` estimator.** `count_tokens` is best-effort pass-through for Claude
+  models; an unsupported upstream (404/405) is normalized to an Anthropic `not_found_error`.
 - **No inbound auth, TLS, or CORS** beyond the loopback + host/cross-site guard.
 - **No MCP session bookkeeping or resumability logic.** The proxy relays `Mcp-Session-Id` and
   `Last-Event-ID` verbatim but never inspects, persists, or validates them — session lifecycle is
   entirely between the client and Copilot.
+
+## Live smoke tests
+
+`tests/CopilotLive.Tests/` is outside `LmDotnetTools.sln`, so CI never runs it. Those tests hit the
+real Copilot backend and are run by hand; they cover the things a fixture cannot prove — the live
+spelling of every Responses SSE event the stream translator switches on, the shape of
+`incomplete_details` on a truncated reply, and whether reasoning summaries arrive unrequested.
+
+```bash
+dotnet test tests/CopilotLive.Tests/CopilotLive.Tests.csproj
+```
+
+They skip cleanly with an explanatory message when no Copilot credential is present.

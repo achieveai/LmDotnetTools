@@ -61,6 +61,12 @@ public static class AnthropicToResponsesRequest
             target["max_output_tokens"] = Math.Max(maxTokens, MinimumOutputTokens);
         }
 
+        // Copilot accepts both on a Responses-only model, so they are copied rather than dropped.
+        // Probed live on 2026-07-27 because OpenAI documents its own reasoning models as REJECTING a
+        // non-default temperature, which would have made this a 400 on every request that set one:
+        // POST /responses {model: gpt-5.4-nano, temperature: 0.7, top_p: 0.5} answered 200 and echoed
+        // "temperature": 0.7, "top_p": 0.5 — the values were honoured, not clamped back to the
+        // defaults (1 and 0.98) that the same endpoint reports when neither field is sent.
         foreach (var passthrough in new[] { "temperature", "top_p" })
         {
             if (source[passthrough] is { } value)

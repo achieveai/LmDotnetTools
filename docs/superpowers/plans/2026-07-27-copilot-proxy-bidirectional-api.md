@@ -2433,7 +2433,7 @@ public sealed class ResponsesToAnthropicSse
                 Start(frames, response);
                 break;
 
-            case "response.content_part.added" when evt["part"]?["type"]?.GetValue<string>() == "output_text":
+            case "response.content_part.added" when (evt["part"] as JsonObject)?["type"]?.GetValue<string>() == "output_text":
                 Start(frames, response);
                 OpenBlock(frames, new JsonObject { ["type"] = "text", ["text"] = "" });
                 break;
@@ -2463,7 +2463,7 @@ public sealed class ResponsesToAnthropicSse
                 Delta(frames, "thinking_delta", "thinking", evt["delta"]?.GetValue<string>() ?? "");
                 break;
 
-            case "response.output_item.added" when evt["item"]?["type"]?.GetValue<string>() == "function_call":
+            case "response.output_item.added" when (evt["item"] as JsonObject)?["type"]?.GetValue<string>() == "function_call":
                 Start(frames, response);
                 OpenBlock(
                     frames,
