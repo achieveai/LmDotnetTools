@@ -79,12 +79,21 @@ internal sealed class CodeReviewDaemonOptions
     public string? LogFilePath { get; init; }
 
     /// <summary>
-    /// When true, a review whose sandbox session has NO <c>code-reviewer</c> sub-agent support (nothing
-    /// discovered → <c>SubAgentOptions</c> would be null) is ABORTED rather than degraded to a skill-only
-    /// review, and the daemon stops (<see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.StopApplication"/>)
-    /// — Revobot's reviews are only trustworthy WITH the code-reviewer skill + sub-agents, so a workspace
-    /// that can't provide them is a fatal misconfiguration to surface, not to review through. Default false
-    /// (degrade-not-fail, unchanged).
+    /// When true, a review that cannot be backed by Revobot's <c>code-reviewer</c> skill + sub-agents is
+    /// ABORTED rather than degraded, and the daemon stops
+    /// (<see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.StopApplication"/>) — Revobot's reviews
+    /// are only trustworthy WITH them, so a setup that can't provide them is a fatal misconfiguration to
+    /// surface, not to review through. Where the prerequisite is checked depends on who owns the session:
+    /// <list type="bullet">
+    ///   <item><b>In-process</b> — the daemon's own sandbox session discovered no <c>code-reviewer</c>
+    ///   sub-agents (<c>SubAgentOptions</c> would be null).</item>
+    ///   <item><b>S2S</b> (<see cref="UseS2SReviewAgent"/>) — the daemon provisions no session at all, so the
+    ///   gateway's marketplace catalog is read directly over <see cref="SubAgentMarketplaces"/> and must
+    ///   surface both the <c>code-reviewer:pr-review</c> skill and ≥1 <c>code-reviewer:*</c> agent. A catalog
+    ///   that cannot be READ is a different finding (gateway down, not skills absent): it warns and re-probes
+    ///   on the next run.</item>
+    /// </list>
+    /// Default false (degrade-not-fail, unchanged).
     /// </summary>
     public bool RequireSkillSupport { get; init; }
 

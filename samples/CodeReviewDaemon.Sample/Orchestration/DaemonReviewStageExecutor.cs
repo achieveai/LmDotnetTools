@@ -163,6 +163,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
     private readonly Microsoft.Extensions.Hosting.IHostApplicationLifetime? _appLifetime;
 
+    /// <summary>
+    /// Session-free gateway catalog probe, non-null ONLY on the S2S path (registered in Program.cs). It is the
+    /// S2S counterpart of the in-process <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> fail-fast:
+    /// there is no daemon-side session to inspect on S2S, so the prerequisite check reads the gateway's
+    /// marketplace catalog directly.
+    /// </summary>
+    private readonly IGatewaySkillProbe? _skillProbe;
+
+    /// <summary>
+    /// Set once the gateway catalog has been confirmed to carry Revobot's review prerequisites. The catalog is
+    /// process-lifetime configuration of the gateway, so one confirmation is enough; the unsupported verdict is
+    /// never cached because it stops the daemon, and an unreadable catalog stays uncached so the next run retries.
+    /// </summary>
+    private volatile bool _gatewaySkillsVerified;
+
     public DaemonReviewStageExecutor(
         ReviewStore store,
         IReviewAgentLoopFactory loopFactory,
@@ -180,7 +195,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ReviewSlotWorkspace? slotWorkspace = null,
         Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
         string? gatewayBaseUrl = null,
-        S2SReviewWorkspacePreparer? preparer = null)
+        S2SReviewWorkspacePreparer? preparer = null,
+        IGatewaySkillProbe? skillProbe = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -200,6 +216,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _appLifetime = appLifetime;
         _gatewayBaseUrl = gatewayBaseUrl;
         _preparer = preparer;
+        _skillProbe = skillProbe;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -207,12 +224,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             CanWrite: false);
     }
 
-    /// <summary>Thrown by <see cref="BuildToolContextAsync"/> when a session lacks code-reviewer skill/agent
-    /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set — aborts the review
-    /// (rather than degrading) and is deliberately let through the degrade-catch.</summary>
-    private sealed class SkillSupportUnavailableException(string sessionId)
-        : InvalidOperationException(
-            $"Sandbox session '{sessionId}' has no code-reviewer skill/agent support; review aborted (RequireSkillSupport).");
+    /// <summary>Thrown by <see cref="BuildToolContextAsync"/> when Revobot's code-reviewer skill/agent
+    /// prerequisites are absent and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set — aborts the
+    /// review (rather than degrading) and is deliberately let through the degrade-catch. The two factories name
+    /// the two places the prerequisites can be missing: the daemon's own sandbox session (in-process path) and
+    /// the gateway's marketplace catalog (S2S path, where the daemon provisions no session of its own).</summary>
+    private sealed class SkillSupportUnavailableException : InvalidOperationException
+    {
+        private SkillSupportUnavailableException(string message)
+            : base(message) { }
+
+        public static SkillSupportUnavailableException ForSession(string sessionId) =>
+            new($"Sandbox session '{sessionId}' has no code-reviewer skill/agent support; review aborted (RequireSkillSupport).");
+
+        public static SkillSupportUnavailableException ForGateway(string marketplaces, string detail) =>
+            new($"Gateway marketplaces [{marketplaces}] do not supply Revobot's required review skills/agents "
+                + $"({detail}); review aborted (RequireSkillSupport).");
+    }
 
     /// <summary>
     /// Resolves the runner/filesystem pair this run's checkout git and the review agent's MCP tools
@@ -244,18 +272,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private async Task<ReviewToolContext?> BuildToolContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
-        if (!_options.EnableToolAssistedReview || _provisioner is null)
-        {
-            return null;
-        }
-
         // On the S2S path the review runs inside a conversation the REVIEW HOST owns: its tools, MCP
         // transport and code-reviewer:* sub-agent catalog come from the gateway session that host provisions
         // against the mounted workspace. A daemon-side session here would mount the same slot a second time
-        // and risks the boot-session collision noted below, so there is nothing for this method to build.
-        // NOTE: the RequireSkillSupport fail-fast lives further down THIS method, so it does not apply on
-        // S2S — a review host whose marketplace stops surfacing code-reviewer:* degrades quietly instead.
+        // and risks the boot-session collision noted below, so there is nothing for this method to build —
+        // but the prerequisites still have to hold, so the RequireSkillSupport fail-fast runs first, against
+        // the gateway's own catalog. This branch is deliberately ABOVE the EnableToolAssistedReview guard: on
+        // S2S that flag governs daemon-side provisioning the path does not use, and it must not be able to
+        // switch the prerequisite check off.
         if (_options.UseS2SReviewAgent)
+        {
+            await EnsureGatewaySkillSupportAsync(run, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+
+        if (!_options.EnableToolAssistedReview || _provisioner is null)
         {
             return null;
         }
@@ -294,7 +325,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         + "daemon (RequireSkillSupport=true).",
                     run.Id, session.SessionId);
                 _appLifetime?.StopApplication();
-                throw new SkillSupportUnavailableException(session.SessionId);
+                throw SkillSupportUnavailableException.ForSession(session.SessionId);
             }
 
             return new ReviewToolContext(
@@ -316,6 +347,64 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ex, "Run {RunId}: tool-assisted review unavailable; degrading to diff-only.", run.Id);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Pre-flight for the S2S path (<see cref="CodeReviewDaemonOptions.RequireSkillSupport"/>): assert the
+    /// gateway actually publishes Revobot's review prerequisites — the <c>code-reviewer:pr-review</c> skill that
+    /// <c>daemon-prompts.yaml</c> makes mandatory ("that skill IS how you review") plus at least one
+    /// <c>code-reviewer:*</c> sub-agent — before a hosted review is allowed to run.
+    /// <para>
+    /// This is the S2S counterpart of the in-session fail-fast in <see cref="BuildToolContextAsync"/>. Without
+    /// it the failure is silent in exactly the way that matters: <c>MarketplaceSubAgentLoader</c> swallows an
+    /// unavailable catalog and the hosted agent simply reviews with no skill and no reviewers, producing a
+    /// plausible-looking but shallow review that still gets posted to the PR.
+    /// </para>
+    /// <para>
+    /// A probe that <b>throws</b> is not the same finding: it means the catalog could not be read, not that the
+    /// skills are absent, and a genuinely unreachable gateway fails this run loudly when the review host
+    /// provisions its session. That case warns and leaves the verdict uncached so the next run re-probes,
+    /// rather than stopping the daemon on a transport blip.
+    /// </para>
+    /// </summary>
+    private async Task EnsureGatewaySkillSupportAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        if (_skillProbe is null || !_options.RequireSkillSupport || _gatewaySkillsVerified)
+        {
+            return;
+        }
+
+        var marketplaces = _options.SubAgentMarketplaces;
+        var marketplaceList = marketplaces.Count > 0 ? string.Join(",", marketplaces) : "(gateway default)";
+
+        GatewaySkillSupport support;
+        try
+        {
+            support = await _skillProbe.ProbeAsync(marketplaces, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: could not read the gateway marketplace catalog for [{Marketplaces}]; skill support "
+                    + "is unverified for this run and will be re-probed on the next one.",
+                run.Id, marketplaceList);
+            return;
+        }
+
+        if (!support.IsSupported)
+        {
+            _logger.LogCritical(
+                "Run {RunId}: the gateway does not provide the code-reviewer skills/agents Revobot reviews with "
+                    + "({Support}). Revobot will not review without proper skills/agents. Aborting this review "
+                    + "and stopping the daemon (RequireSkillSupport=true) so the marketplace/plugin setup is "
+                    + "fixed instead of the daemon silently posting shallow reviews.",
+                run.Id, support.Describe());
+            _appLifetime?.StopApplication();
+            throw SkillSupportUnavailableException.ForGateway(marketplaceList, support.Describe());
+        }
+
+        _gatewaySkillsVerified = true;
     }
 
     /// <summary>

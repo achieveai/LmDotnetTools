@@ -339,6 +339,15 @@ if (daemonOptions.UseS2SReviewAgent)
         daemonOptions.LmStreamingReviewMarketplace,
         sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()));
 
+    // Gateway prerequisite probe (RequireSkillSupport on S2S). The in-process fail-fast inspects the daemon's
+    // OWN sandbox session, which does not exist here — the review runs in a conversation the review host
+    // provisions — so the equivalent check reads the gateway's marketplace catalog directly. Registered only
+    // on the S2S path; elsewhere the executor's optional parameter stays null and nothing changes.
+    builder.Services.AddSingleton<IGatewaySkillProbe>(sp => new GatewaySkillProbe(
+        gatewayBaseUrl,
+        daemonCredential,
+        sp.GetRequiredService<ILogger<GatewaySkillProbe>>()));
+
     builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => new S2SReviewAgentLoopFactory(
         sp.GetRequiredService<LmStreamingS2SClient>(),
         daemonOptions,
