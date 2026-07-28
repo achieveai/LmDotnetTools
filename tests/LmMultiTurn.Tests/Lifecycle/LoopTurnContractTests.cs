@@ -299,10 +299,12 @@ public class LoopTurnContractTests
 
     #region A turn that ends badly is still reported once, with a stable outcome
 
-    // All four loops belong in these two theories, Claude included: it used to complete its run
-    // from a `finally` that always took the default `isError: false`, so a died-mid-stream run was
-    // terminalized as a success and the turn swept behind it inherited that lie. It now reports the
-    // outcome per path, as the other three always have.
+    // A turn nobody reported is swept by the run's own terminalization and inherits the run's
+    // outcome (RunTurnLifecycleFinalizer.TurnOutcomeForRun), so "the run reports the outcome of the
+    // path it actually took" is what keeps these two promises true. A loop that terminalized every
+    // path through one shared exit would tell a subscriber that a generation which died mid-stream
+    // succeeded — which is why all four loops are held to this, not just the three that stream
+    // through middleware.
 
     [Theory]
     [MemberData(nameof(EveryLoop))]
