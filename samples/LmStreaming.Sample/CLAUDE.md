@@ -41,10 +41,17 @@ There are **two** Playwright surfaces. Keep them aligned; do not invent a third.
      `async (page) => { … return { pass, failures, steps } }` that drives the WHOLE flow and returns
      structured JSON. Run it in ONE call:
      `browser_run_code_unsafe({ filename: "samples/LmStreaming.Sample/playwright-scripts/<name>.mjs" })`.
-     Existing: `provider-switch.mjs` (switch provider when idle / locked while streaming),
-     `queue-button.mjs` (blue Queue button while streaming). Add a new `.mjs` per recurring manual case
-     — do not re-drive it by hand next time. (No trailing `;` after the arrow function — the runner
-     wraps the file as an expression.)
+     Existing (partial — browse the folder for the full set): `provider-switch.mjs` (switch provider
+     when idle / locked while streaming), `queue-button.mjs` (blue Queue button while streaming),
+     `code-review-workflow-pr222.mjs` (**richest reference / good starting point for any workflow-agent
+     flow** — drives a real workflow-agent PR review on a Copilot model end-to-end: resolves-or-creates
+     the repo workspace by name, headlessly provisions a workspace-bound conversation, verifies the
+     workspace/mode/provider are bound before sending, sends the PR-review prompt, then *bounded*-observes
+     `/api/conversations/{id}/subagents` + `/usage` — returning as soon as there's enough evidence
+     (workflow run + ≥1 delegate + usage>0) so it never pays for the whole review — and asserts every
+     BILLED model is a real, tier-sanctioned Copilot id, catching invented ids / unsanctioned overrides /
+     retry storms). Add a new `.mjs` per recurring manual case — do not re-drive it by hand next time.
+     (No trailing `;` after the arrow function — the runner wraps the file as an expression.)
    - **Assert only DETERMINISTIC, browser-observable state** in scripts (DOM/testids, `/api/*` reads).
      Exact HTTP codes / timing-sensitive races (e.g. 409-while-streaming) belong in the deterministic
      C# suite (`ConversationsControllerTests`), not a browser race against the fast mock.

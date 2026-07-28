@@ -19,7 +19,12 @@ async (page) => {
   const BASE = 'http://127.0.0.1:5050';
   const PROVIDER_ID = 'gpt-5.6-luna';
   const MODE_ID = 'workspace-agent';
-  const WORKSPACE_ID = '192a3465-67a1-4945-9323-44c2168aeb2b'; // LmDotnetTools
+  // Workspace is resolved by NAME/dir at runtime (a hardcoded id can go stale across data dirs).
+  // The LmDotnetTools repo workspace (sandbox checkout 'lm-dotnet-tools', claude-plugins marketplace
+  // that provides the code-reviewer:pr-review skill) is where PR#222 lives.
+  const WORKSPACE_NAME = 'LmDotnetTools';
+  const WORKSPACE_DIR = 'lm-dotnet-tools';
+  const WORKSPACE_MARKETPLACES = ['claude-plugins', 'superpowers'];
   const SHOT = 'B:/sources/LmDotnetTools/.logs/manual/code-review-workflow-pr222.png';
   const OBSERVE_TIMEOUT_MS = 6 * 60 * 1000;
   const MIN_OBSERVE_MS = 60 * 1000; // let it get going before we call it "enough evidence"
@@ -60,6 +65,29 @@ async (page) => {
     await page.goto(BASE);
     await tid('chat-input-textarea').waitFor({ timeout: 20000 });
 
+    // 0. Resolve (or create) the LmDotnetTools repo workspace by name/dir. If absent, create it
+    //    against the shared-gateway 'lm-dotnet-tools' checkout with the claude-plugins marketplace
+    //    (which provides the code-reviewer:pr-review skill).
+    const workspaceId = await page.evaluate(
+      async ({ name, dir, marketplaces }) => {
+        const list = await fetch(`${location.origin}/api/workspaces`).then((r) => r.json());
+        const found = (Array.isArray(list) ? list : []).find(
+          (w) => w.name === name || w.directoryRelPath === dir
+        );
+        if (found) return found.id;
+        const res = await fetch(`${location.origin}/api/workspaces`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, directoryRelPath: dir, marketplaces }),
+        });
+        if (!res.ok) throw new Error(`workspace create failed: ${res.status} ${await res.text()}`);
+        return (await res.json()).id;
+      },
+      { name: WORKSPACE_NAME, dir: WORKSPACE_DIR, marketplaces: WORKSPACE_MARKETPLACES }
+    );
+    record('workspace-resolved', !!workspaceId, workspaceId);
+    if (!workspaceId) return { pass: false, failures: ['workspace-resolved'], steps };
+
     // 1. Provision a workspace-bound conversation headlessly (race-free) on gpt-5.6-luna.
     const provisioned = await page.evaluate(
       async ({ workspaceId, providerId, modeId }) => {
@@ -71,7 +99,7 @@ async (page) => {
         if (!res.ok) throw new Error(`provision failed: ${res.status} ${await res.text()}`);
         return res.json();
       },
-      { workspaceId: WORKSPACE_ID, providerId: PROVIDER_ID, modeId: MODE_ID }
+      { workspaceId, providerId: PROVIDER_ID, modeId: MODE_ID }
     );
     const threadId = provisioned && provisioned.threadId;
     record('provisioned-thread', !!threadId, threadId);
