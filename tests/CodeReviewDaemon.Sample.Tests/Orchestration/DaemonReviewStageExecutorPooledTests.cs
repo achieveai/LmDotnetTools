@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using CodeReviewDaemon.Sample.Agents;
@@ -723,7 +725,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // The central design move: the leased slot IS the workspace LmStreaming mounts at /workspace, so every
         // container path the pooled stage computed (/workspace/store/...) is correct verbatim inside the hosted
         // conversation. Preparing a separate per-PR clone instead would mount a tree with no store at all.
-        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be("ws-slot-0");
+        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be("ws-review-slot-0");
         var created = fixture.S2SHandler.Requests
             .Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
         created.Body.Should().Contain(
@@ -764,11 +766,128 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned on the terminal stage on S2S too");
     }
 
+    /// <summary>
+    /// G15 — the isolation gate. This is the whole point of mounting a leased SLOT as the LmStreaming
+    /// workspace leaf: two reviews that overlap in time must get two slots, two single-segment leaves, two
+    /// LmStreaming workspaces (⇒ two gateway containers, since sessions are cached by workspace+app) and two
+    /// notes dirs — and neither one's commit/strip may reach into the other's tree.
+    /// <para>
+    /// The poller is deliberately still serial, so nothing in production drives this today. The test is what
+    /// makes flipping it to parallel a change in the POLLER ALONE: if the executor ever grew per-daemon shared
+    /// review state, this fails instead of two live reviews silently corrupting each other's checkout.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task S2S_two_overlapping_reviews_get_isolated_slots_workspaces_and_notes_dirs()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var first = fixture.SeedRun("118");
+        var second = fixture.SeedRun("222");
+
+        // Hold BOTH preparations open until each has claimed its slot, so the overlap is deterministic: with a
+        // plain WhenAll the first review could finish its context stage before the second even starts, and the
+        // test would "pass" while proving nothing about two live leases.
+        var bothArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrived = 0;
+        fixture.Preparer.Rendezvous = () =>
+        {
+            if (Interlocked.Increment(ref arrived) == 2)
+            {
+                bothArrived.TrySetResult();
+            }
+
+            // A 30s ceiling so a regression that stops the second review from ever leasing fails loudly here
+            // instead of hanging the suite.
+            return bothArrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        };
+
+        await Task.WhenAll(
+            Task.Run(() => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, first, CancellationToken.None)),
+            Task.Run(() => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, second, CancellationToken.None)));
+
+        // Both leases were held AT THE SAME TIME (the rendezvous could not have completed otherwise), and the
+        // pool handed out two different slots rather than recycling one.
+        fixture.Pool.LeaseCount.Should().Be(2);
+        fixture.Pool.ReturnCount.Should().Be(0, "both slots are still held — neither review has reached a terminal stage");
+        // Typed locals rather than inline collection expressions: BeEquivalentTo's element type is a generic
+        // parameter, which a target-typeless `[...]` cannot infer.
+        string[] expectedSlots = ["/pool/review-slot-0", "/pool/review-slot-1"];
+        fixture.Pool.Leased.Select(s => s.HostPath).Should().BeEquivalentTo(expectedSlots);
+
+        // Two prepared checkouts in two different stores, and two different notes dirs.
+        fixture.Preparer.Prepared.Select(p => p.StoreRoot).Should().OnlyHaveUniqueItems();
+        string[] expectedNotesDirs =
+        [
+            $"/pool/review-slot-{SlotOf(fixture, "118")}/store/PRs/lmdotnettools-118",
+            $"/pool/review-slot-{SlotOf(fixture, "222")}/store/PRs/lmdotnettools-222",
+        ];
+        fixture.Preparer.Prepared.Select(p => p.NotesDir).Should().BeEquivalentTo(expectedNotesDirs);
+
+        // The rest runs sequentially — a serial poller is decision 2, and the review/judge/post stages share
+        // fakes (agent factory, publisher) whose call ORDER these assertions read.
+        fixture.Preparer.Rendezvous = null;
+        await RunRemainingStagesAsync(fixture, first);
+        await RunRemainingStagesAsync(fixture, second);
+
+        // Two distinct LmStreaming workspaces, each named after its own slot leaf. Same workspace id for both
+        // would mean ONE gateway container serving both reviews — the exact collision this design prevents.
+        string[] expectedWorkspaceIds = ["ws-review-slot-0", "ws-review-slot-1"];
+        fixture.Factory.WorkspaceIds.Distinct().Should().BeEquivalentTo(expectedWorkspaceIds);
+
+        // The commit gate and the strip stay inside their own slot: every git command that names a PR's notes
+        // dir must carry that PR's slot path, and no command may name one PR's notes under the other's slot.
+        // Read BOTH fields: the notes-branch commands (checkout/add/commit/push) are scoped by
+        // SandboxCommand.WorkingDirectory — only the target-dir reads and the strip pass `-C <path>` in argv —
+        // so an argv-only projection would silently see no slot at all on exactly the commands under test.
+        var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
+        foreach (var prId in new[] { "118", "222" })
+        {
+            var own = $"/pool/review-slot-{SlotOf(fixture, prId)}";
+            var other = $"/pool/review-slot-{SlotOf(fixture, prId == "118" ? "222" : "118")}";
+            commands.Should().Contain(
+                a => a.Contains($"add -- PRs/lmdotnettools-{prId}") && a.Contains(own),
+                $"PR {prId}'s notes are staged in its own slot");
+            commands.Should().NotContain(
+                a => a.Contains($"lmdotnettools-{prId}") && a.Contains(other),
+                $"nothing touching PR {prId} may reach into the other review's slot");
+        }
+
+        // Each slot was stripped on its own terminal stage, so neither review left byproduct in the other.
+        foreach (var slot in new[] { "/pool/review-slot-0/store", "/pool/review-slot-1/store" })
+        {
+            commands.Should().Contain(a => a.Contains($"-C {slot} reset --hard"));
+            commands.Should().Contain(a => a.Contains($"-C {slot} clean -ffdx"));
+        }
+
+        fixture.Pool.ReturnCount.Should().Be(2, "both slots are returned once their reviews reach Posted");
+    }
+
+    /// <summary>The slot index the pool leased for <paramref name="prId"/> — the assignment is whichever lease
+    /// won the race, so the isolation assertions resolve it instead of assuming an order.</summary>
+    private static int SlotOf(Fixture fixture, string prId)
+    {
+        var notesSuffix = $"/PRs/lmdotnettools-{prId}";
+        var prepared = fixture.Preparer.Prepared.Single(p => p.NotesDir.EndsWith(notesSuffix, StringComparison.Ordinal));
+        return fixture.Pool.Leased.Single(s => prepared.StoreRoot == s.StorePath).Index;
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
+
+    /// <summary>
+    /// Argv prefixed with the directory the command runs in. A sandbox git command carries its repo either
+    /// as <c>-C &lt;path&gt;</c> in argv or as <see cref="SandboxCommand.WorkingDirectory"/>; assertions about
+    /// WHERE a command ran must therefore see both.
+    /// </summary>
+    private static string Describe(SandboxCommand command) => $"{command.WorkingDirectory} {Join(command)}";
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
     {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await RunRemainingStagesAsync(fixture, run);
+    }
+
+    private static async Task RunRemainingStagesAsync(Fixture fixture, ReviewRun run)
+    {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
@@ -782,7 +901,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         private readonly HttpClient? _s2sHttp;
         private readonly S2SReviewWorkspacePreparer? _s2sPreparer;
 
-        private Fixture(bool s2s)
+        private Fixture(bool s2s, int slots)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -795,11 +914,17 @@ public sealed class DaemonReviewStageExecutorPooledTests
             // single-segment "review-slot-" prefix Program.cs forces there (a "review-pool/slot-0" style name
             // would be FLATTENED by the workspace-directory sanitizer into a different, empty directory).
             var slotPrefix = s2s ? "review-slot-" : "slot-";
-            HostFileSystem = new FakeSandboxFileSystem().Seed(
-                $"/pool/{slotPrefix}0/store/.gitmodules",
-                "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            HostFileSystem = new FakeSandboxFileSystem();
+            for (var i = 0; i < slots; i++)
+            {
+                _ = HostFileSystem.Seed(
+                    $"/pool/{slotPrefix}{i}/store/.gitmodules",
+                    "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            }
+
             Pool = new FakeReviewSlotPool("/pool", slotPrefix);
             Preparer = new FakeReviewSlotPreparer();
+
 
             // Shared cleanup-order log so a test can assert the session is destroyed before the slot is returned.
             Pool.Order = CleanupOrder;
@@ -821,14 +946,28 @@ public sealed class DaemonReviewStageExecutorPooledTests
             if (s2s)
             {
                 // The REAL preparer over a scripted LmStreaming: the executor must ADOPT the leased slot (naming
-                // it as the workspace, running no git) rather than host-cloning a bare per-PR checkout.
+                // it as the workspace, running no git) rather than host-cloning a bare per-PR checkout. The POST
+                // ECHOES the leaf back as the workspace id ("ws-{leaf}") so a fixture with several slots hands
+                // out a DISTINCT workspace per leaf — which is exactly what the isolation gate asserts.
                 S2SHandler = new FakeHttpMessageHandler()
                     .OnJson(HttpMethod.Get, "api/workspaces", "[]")
-                    .OnJson(
-                        HttpMethod.Post,
-                        "api/workspaces",
-                        "{\"id\":\"ws-slot-0\",\"name\":\"Review slot 0\",\"directoryRelPath\":\"review-slot-0\","
-                            + "\"marketplaces\":[\"code-reviewer\"]}");
+                    .On(
+                        req => req.Method == HttpMethod.Post
+                            && req.RequestUri is not null
+                            && req.RequestUri.ToString().Contains("api/workspaces", StringComparison.Ordinal),
+                        req =>
+                        {
+                            var leaf = ReadDirectoryRelPath(req);
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent(
+                                    $"{{\"id\":\"ws-{leaf}\",\"name\":\"Review {leaf}\",\"directoryRelPath\":\"{leaf}\","
+                                        + "\"marketplaces\":[\"code-reviewer\"]}",
+                                    Encoding.UTF8,
+                                    "application/json"),
+                            };
+                        });
+
                 _s2sHttp = new HttpClient(S2SHandler) { BaseAddress = new Uri(LmStreamingBaseUrl + "/") };
                 _s2sPreparer = new S2SReviewWorkspacePreparer(
                     new LmStreamingS2SClient(_s2sHttp, "secret", "app-id", "app-key"),
@@ -879,14 +1018,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// <summary>The git the S2S preparer runs through (S2S fixture only). Adoption must leave it EMPTY.</summary>
         public FakeSandboxCommandRunner S2SGit { get; } = new();
 
-        public static Fixture Create() => new(s2s: false);
+        public static Fixture Create() => new(s2s: false, slots: 1);
 
         /// <summary>The S2S variant: the review runs in an LmStreaming-hosted conversation mounted over the
         /// leased slot, the daemon builds no tool context, and the Posted stage delivers the review host-side
-        /// with the deep-link back to that conversation.</summary>
-        public static Fixture CreateS2S() => new(s2s: true);
+        /// with the deep-link back to that conversation. <paramref name="slots"/> is how many slot leaves the
+        /// fake pool is primed with — &gt;1 lets a test hold two leases at once.</summary>
+        public static Fixture CreateS2S(int slots = 1) => new(s2s: true, slots);
 
-        public ReviewRun SeedRun()
+        /// <summary>Reads <c>directoryRelPath</c> out of a create-workspace request body so the scripted
+        /// endpoint can echo the leaf back as the workspace id.</summary>
+        private static string ReadDirectoryRelPath(HttpRequestMessage request)
+        {
+            var body = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+            using var json = JsonDocument.Parse(body ?? "{}");
+            return json.RootElement.TryGetProperty("directoryRelPath", out var leaf)
+                ? leaf.GetString() ?? "unknown"
+                : "unknown";
+        }
+
+        /// <summary>
+        /// Seeds (or resumes) a review run for <paramref name="prId"/>. Distinct PR ids give distinct runs —
+        /// which is how the isolation gate drives two reviews at once.
+        /// </summary>
+        public ReviewRun SeedRun(string prId = "118")
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -898,7 +1053,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
             return Store.CreateOrGetReviewRun(new ReviewRun
             {
                 RepoId = repoId,
-                PrId = "118",
+                PrId = prId,
                 HeadSha = "head-sha",
                 BaseSha = "base-sha",
                 TriggerWatermark = "wm-1",
@@ -925,6 +1080,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
     {
         private readonly string _root;
         private readonly string _dirPrefix;
+        private readonly Lock _gate = new();
         private int _next;
 
         /// <summary>
@@ -942,29 +1098,48 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public int RecloneCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
 
+        /// <summary>Every slot handed out, in lease order — lets a test assert two concurrent reviews were
+        /// never given the same slot.</summary>
+        public List<ReviewSlot> Leased { get; } = [];
+
         /// <summary>Shared cleanup-order log (with <see cref="RecordingProvisioner"/>) to assert the session is
         /// destroyed before the slot is returned.</summary>
         public List<string>? Order { get; set; }
 
         public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
         {
-            LeaseCount++;
-            var index = _next++;
-            var host = $"{_root}/{_dirPrefix}{index}";
-            return Task.FromResult(new ReviewSlot(index, host, $"{host}/store", $"{host}/scratch"));
+            // Gated because the isolation gate leases from two reviews at once: an unsynchronized index would
+            // hand the SAME slot to both and manufacture the very collision the test exists to rule out.
+            lock (_gate)
+            {
+                LeaseCount++;
+                var index = _next++;
+                var host = $"{_root}/{_dirPrefix}{index}";
+                var slot = new ReviewSlot(index, host, $"{host}/store", $"{host}/scratch");
+                Leased.Add(slot);
+                return Task.FromResult(slot);
+            }
         }
 
         public Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken)
         {
-            ReturnCount++;
-            Returned.Add(slot);
-            Order?.Add("return");
+            lock (_gate)
+            {
+                ReturnCount++;
+                Returned.Add(slot);
+                Order?.Add("return");
+            }
+
             return Task.CompletedTask;
         }
 
         public Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
         {
-            RecloneCount++;
+            lock (_gate)
+            {
+                RecloneCount++;
+            }
+
             return Task.CompletedTask;
         }
     }
@@ -973,6 +1148,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// forward-slash join of the slot store + the supplied relative paths (mirrors the real preparer).</summary>
     private sealed class FakeReviewSlotPreparer : IReviewSlotPreparer
     {
+        private readonly Lock _gate = new();
+
         public int PrepareCount { get; private set; }
         public string? LastSubmoduleRelPath { get; private set; }
         public string? LastBranch { get; private set; }
@@ -982,7 +1159,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// <summary>Exceptions to throw on the first N prepare calls (then succeed) — drives the re-clone ladder.</summary>
         public Queue<Exception> ThrowThenSucceed { get; } = new();
 
-        public Task<PreparedCheckout> PrepareAsync(
+        /// <summary>Every checkout handed back, in prepare order — the isolation gate asserts two concurrent
+        /// reviews were prepared into two different slot stores and two different notes dirs.</summary>
+        public List<PreparedCheckout> Prepared { get; } = [];
+
+        /// <summary>
+        /// Optional rendezvous awaited AFTER the checkout is recorded but BEFORE prepare returns. The isolation
+        /// gate uses it to hold both preparations open at once, so "two leases held simultaneously" is a
+        /// property of the test rather than a scheduling accident that could pass on a lucky interleaving.
+        /// </summary>
+        public Func<Task>? Rendezvous { get; set; }
+
+        public async Task<PreparedCheckout> PrepareAsync(
             ReviewSlot slot,
             ReviewRun run,
             string storeUrl,
@@ -993,19 +1181,34 @@ public sealed class DaemonReviewStageExecutorPooledTests
             OperationPolicy policy,
             CancellationToken cancellationToken)
         {
-            PrepareCount++;
-            if (ThrowThenSucceed.Count > 0)
+            PreparedCheckout checkout;
+
+            // Gated for the same reason as the pool: the isolation gate prepares two leases at once, and an
+            // unsynchronized counter/list there loses an entry and reads as "only one review ran".
+            lock (_gate)
             {
-                throw ThrowThenSucceed.Dequeue();
+                PrepareCount++;
+                if (ThrowThenSucceed.Count > 0)
+                {
+                    throw ThrowThenSucceed.Dequeue();
+                }
+
+                LastSubmoduleRelPath = submoduleRelPath;
+                LastBranch = branch;
+                LastNotesRelPath = notesRelPath;
+                LastDefaultBranch = defaultBranch;
+                var storeRoot = slot.StorePath;
+                checkout = new PreparedCheckout(
+                    storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch);
+                Prepared.Add(checkout);
             }
 
-            LastSubmoduleRelPath = submoduleRelPath;
-            LastBranch = branch;
-            LastNotesRelPath = notesRelPath;
-            LastDefaultBranch = defaultBranch;
-            var storeRoot = slot.StorePath;
-            return Task.FromResult(new PreparedCheckout(
-                storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch));
+            if (Rendezvous is { } rendezvous)
+            {
+                await rendezvous().ConfigureAwait(false);
+            }
+
+            return checkout;
         }
     }
 

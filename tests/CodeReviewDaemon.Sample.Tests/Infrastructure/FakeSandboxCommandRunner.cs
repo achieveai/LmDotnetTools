@@ -11,6 +11,7 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
 {
     private readonly List<(Func<SandboxCommand, bool> Match, Func<SandboxCommandResult> Next)> _rules = [];
+    private readonly Lock _commandsGate = new();
 
     /// <summary>Every command the runner was asked to execute, in invocation order.</summary>
     public List<SandboxCommand> Commands { get; } = [];
@@ -58,7 +59,14 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
 
     public Task<SandboxCommandResult> RunAsync(SandboxCommand command, CancellationToken cancellationToken)
     {
-        Commands.Add(command);
+        // Guarded because the isolation tests drive two reviews through ONE host runner concurrently; an
+        // unsynchronized List.Add there can drop or duplicate an entry and turn a real isolation regression
+        // into a flake. Readers inspect Commands only after the concurrent phase has been awaited.
+        lock (_commandsGate)
+        {
+            Commands.Add(command);
+        }
+
         foreach (var (match, next) in _rules)
         {
             if (match(command))

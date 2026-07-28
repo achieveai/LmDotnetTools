@@ -9,6 +9,14 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// </summary>
 internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
 {
+    /// <summary>
+    /// Guards <see cref="Files"/> and <see cref="Writes"/>. The isolation tests drive two reviews through ONE
+    /// host file system concurrently, and an unsynchronized <see cref="Dictionary{TKey,TValue}"/> can corrupt
+    /// or throw under a concurrent write — turning a real isolation regression into a flake. Readers inspect
+    /// the collections only after the concurrent phase has been awaited.
+    /// </summary>
+    private readonly Lock _gate = new();
+
     /// <summary>Current file contents keyed by absolute sandbox path.</summary>
     public Dictionary<string, string> Files { get; } = new(StringComparer.Ordinal);
 
@@ -27,7 +35,11 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
     /// <summary>Seeds a file's contents without recording a write (test setup convenience).</summary>
     public FakeSandboxFileSystem Seed(string path, string content)
     {
-        Files[path] = content;
+        lock (_gate)
+        {
+            Files[path] = content;
+        }
+
         return this;
     }
 
@@ -38,13 +50,20 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
             throw fault;
         }
 
-        return Task.FromResult(Files.TryGetValue(path, out var content) ? content : null);
+        lock (_gate)
+        {
+            return Task.FromResult(Files.TryGetValue(path, out var content) ? content : null);
+        }
     }
 
     public Task WriteFileAsync(string path, string content, CancellationToken cancellationToken)
     {
-        Files[path] = content;
-        Writes.Add(path);
+        lock (_gate)
+        {
+            Files[path] = content;
+            Writes.Add(path);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -60,19 +79,22 @@ internal sealed class FakeSandboxFileSystem : ISandboxFileSystem
         // directly under the directory, or the first path segment of a deeper key (a subdirectory name),
         // deduplicated and sorted. The layered Knowledge Base regen relies on discovering scope
         // subdirectories (system/, <repo>/) this way, exactly as it would against the real gateway.
-        IReadOnlyList<string> names =
-        [
-            .. Files.Keys
-                .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
-                .Select(key => key[prefix.Length..])
-                .Select(rest =>
-                {
-                    var slash = rest.IndexOf('/', StringComparison.Ordinal);
-                    return slash < 0 ? rest : rest[..slash];
-                })
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(name => name, StringComparer.Ordinal),
-        ];
-        return Task.FromResult(names);
+        lock (_gate)
+        {
+            IReadOnlyList<string> names =
+            [
+                .. Files.Keys
+                    .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
+                    .Select(key => key[prefix.Length..])
+                    .Select(rest =>
+                    {
+                        var slash = rest.IndexOf('/', StringComparison.Ordinal);
+                        return slash < 0 ? rest : rest[..slash];
+                    })
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(name => name, StringComparer.Ordinal),
+            ];
+            return Task.FromResult(names);
+        }
     }
 }
