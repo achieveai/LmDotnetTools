@@ -127,4 +127,17 @@ public record SubAgentOptions
     /// keeps its generic "defaults to the template's configured model" wording and lists no ids.
     /// </summary>
     public IReadOnlyCollection<string>? AvailableModelIds { get; init; }
+
+    /// <summary>
+    /// Host-supplied gate consulted at the <c>Agent</c> tool boundary just before a spawn: given the spawn's
+    /// <c>name</c> argument (null when omitted), it returns <c>null</c> to ALLOW the spawn or a corrective
+    /// message to REJECT it as a recoverable tool error (surfaced to the caller like the other
+    /// <c>Agent</c>-handler errors). It exists so a host that correlates spawn results by an EXACT <c>name</c>
+    /// — a WorkflowAgent controller, whose delegate results are joined to workflow units by name only — can
+    /// reject a mis-named spawn up front instead of letting it run and be silently discarded, then re-spawned
+    /// in a loop. The gate is workflow-agnostic here: a plain <c>name → message?</c> function; the workflow
+    /// layer supplies the closure (over its live runtime). Null (default) = no gate, so every ordinary
+    /// sub-agent host keeps the previous pass-through behavior.
+    /// </summary>
+    public Func<string?, string?>? SpawnNameGate { get; init; }
 }

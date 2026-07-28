@@ -572,6 +572,61 @@ public sealed class WorkflowRuntime
         }
     }
 
+    /// <summary>
+    ///     Self-correcting spawn-name gate for the controller loop (Option A). Given the <c>name</c> argument
+    ///     of an <c>Agent</c> spawn, returns <c>null</c> when the name matches a unit the runtime can correlate
+    ///     (so the spawn proceeds), or an actionable corrective message when it does not — so the
+    ///     <c>Agent</c>-tool boundary can reject the mis-named spawn as a recoverable tool error instead of
+    ///     letting it run and be silently discarded (its result never correlates, the unit stays pending, and
+    ///     the controller re-spawns the same wrong name in a loop). The active node's authored units are
+    ///     composed on demand (idempotent, exactly as <see cref="RegisterSpawn"/> does) so a FIRST spawn issued
+    ///     before any <c>GetWorkflow</c> poll is judged against the real unit set rather than rejected
+    ///     spuriously. An already-settled unit is still "expected" (its name stays known), so a harmless
+    ///     re-issue passes through — <see cref="RegisterSpawn"/> no-ops on a settled unit.
+    /// </summary>
+    internal string? DescribeSpawnNameRejection(string? name)
+    {
+        lock (_lock)
+        {
+            // Compose the active node's units on demand so the gate never depends on the controller having
+            // polled GetWorkflow first, and so a not-yet-polled unit is registered in the coordinator's
+            // name map exactly as RegisterSpawn would (Compose is idempotent).
+            _ = _coordinator.Compose();
+
+            // Allow FIRST when the name matches a known unit — Pending, in-flight, or already-settled all
+            // correlate (this mirrors RegisterSpawn, which correlates by name regardless of lifecycle status).
+            // This MUST precede the "no composable units" steer below: the run observer marks a unit in-flight
+            // BEFORE the tool-boundary gate runs for that same spawn, so a legitimate unit is frequently already
+            // non-pending here — and Compose() returns only PENDING units, so relying on its count would make a
+            // valid, already-in-flight spawn look unroutable and reject it (its result would then be recorded as
+            // a failure and its state write dropped).
+            if (!string.IsNullOrWhiteSpace(name) && _coordinator.IsExpectedUnit(name))
+            {
+                return null;
+            }
+
+            // The name is not a known unit. List the active node's authored units for the current visit (any
+            // lifecycle status, via ActiveUnits — NOT Compose()'s pending-only view) so the controller can
+            // re-issue the exact name. A node that composes no units at all (start/terminal/conditional, or a
+            // non-authored procedural node) is routed by the controller, not spawned into — steer it there.
+            var activeNames =
+                CurrentNodeId is { } nodeId
+                    ? _coordinator.ActiveUnits(nodeId).Select(u => u.Name).ToList()
+                    : [];
+            if (activeNames.Count == 0)
+            {
+                return "The current workflow node has no sub-agent units to spawn. Advance the workflow with "
+                    + "SetCurrentNode (route to the next node) instead of calling Agent.";
+            }
+
+            var expected = string.Join(", ", activeNames);
+            var got = string.IsNullOrWhiteSpace(name) ? "(no name)" : $"'{name}'";
+            return $"No workflow unit named {got} for the current node. Re-call Agent with the exact unit name "
+                + "— copy the nextExpectedAction[].name value character-for-character (do NOT build it from the "
+                + $"node id). The unit name(s) for the current node are: {expected}.";
+        }
+    }
+
     /// <summary>Whether <paramref name="toolCallId"/> has been correlated to a task via <see cref="RegisterSpawn"/>.</summary>
     internal bool IsRegisteredSpawn(string toolCallId)
     {

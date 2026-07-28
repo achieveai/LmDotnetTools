@@ -327,6 +327,16 @@ public class SubAgentToolProvider : IFunctionProvider
         var addTools = ParseCommaSeparated(GetOptionalString(root, "add_tools"));
         var removeTools = ParseCommaSeparated(GetOptionalString(root, "remove_tools"));
 
+        // Self-correcting spawn-name gate (host-supplied, workflow-agnostic here). When the host correlates
+        // spawn results by an EXACT name (a workflow controller), a name that matches no ready unit would run
+        // and then be silently discarded — the caller must fix the NAME, not the spawn. Surface the correction
+        // as a recoverable tool error (mirroring unknown_subagent_type) so the caller re-issues the exact name
+        // instead of looping on a discarded duplicate. No gate (ordinary hosts) = pass through unchanged.
+        if (_manager.SpawnNameGate?.Invoke(name) is { } rejection)
+        {
+            return ToolHandlerResult.FromError(rejection, "spawn_name_unmatched");
+        }
+
         try
         {
             var result = await _manager.SpawnAsync(

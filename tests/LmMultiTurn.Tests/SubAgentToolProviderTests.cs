@@ -221,6 +221,47 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HandleAgentToolAsync_SpawnNameGateRejects_ReturnsRecoverableUnmatchedError()
+    {
+        // Option A: a host that correlates spawn results by an EXACT name (a workflow controller) supplies a
+        // SpawnNameGate. When it rejects the spawn's name, the Agent handler must surface the correction as a
+        // recoverable tool error (spawn_name_unmatched) — NOT throw and NOT spawn — so the caller re-issues the
+        // exact name instead of looping on a silently-discarded duplicate. subagent_type is VALID here, proving
+        // the rejection comes from the name gate, not from unknown_subagent_type.
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a researcher.",
+                    Description = "Researches.",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            SpawnNameGate = name =>
+                name == "good:1:task" ? null : $"No workflow unit named '{name}'. Re-call Agent with good:1:task.",
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+
+        var args = JsonSerializer.Serialize(new { subagent_type = "researcher", prompt = "do it", name = "analyze" });
+        var result = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("spawn_name_unmatched");
+        resolved.Payload.Text.Should().Contain("good:1:task");
+    }
+
+    [Fact]
     public async Task HandleSendMessageToolAsync_MissingTarget_ThrowsArgumentException()
     {
         // Arrange

@@ -163,6 +163,13 @@ public sealed class SubAgentManager : IAsyncDisposable
     internal IReadOnlyCollection<string>? AvailableModelIds => _options.AvailableModelIds;
 
     /// <summary>
+    /// Host-supplied gate consulted at the <c>Agent</c> tool boundary (<see cref="SubAgentToolProvider"/>)
+    /// before a spawn, mapping the spawn's <c>name</c> argument to null (allow) or a corrective message
+    /// (reject). Sourced from <see cref="SubAgentOptions.SpawnNameGate"/>; null when the host supplied none.
+    /// </summary>
+    internal Func<string?, string?>? SpawnNameGate => _options.SpawnNameGate;
+
+    /// <summary>
     /// Spawn a new sub-agent from a named template.
     /// When <paramref name="runInBackground"/> is false (default), blocks until the
     /// sub-agent's run completes and returns its final answer as the result. When true,

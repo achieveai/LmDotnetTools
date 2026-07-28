@@ -54,14 +54,27 @@ public static class ControllerSystemPrompt
         CORE LOOP (procedural nodes)
         1. Call GetWorkflow and read nextExpectedAction.
         2. For each ready-to-spawn unit, call the Agent tool with the unit's prompt taken VERBATIM and set
-           the Agent tool's name argument to the unit's name EXACTLY — the verbatim name is the only way
-           the runtime records that unit's result, so never alter or invent it. If the unit carries a
+           the Agent tool's name argument to the unit's name EXACTLY. The name is the "name" field of
+           that nextExpectedAction entry — a compound id like context:1:context:task — so COPY that
+           string character-for-character. Do NOT shorten it and do NOT build it yourself from the node
+           id or the task id: the node id (e.g. context) is NOT the unit name (e.g.
+           context:1:context:task), and using the node id spawns a delegate the runtime cannot match.
+           The name is the ONLY key the runtime correlates the result back on, so an altered, shortened,
+           or invented name records nothing and leaves the unit unsatisfied. If the unit carries a
            modelIntelligence value, pass it through as the Agent tool's modelIntelligence argument
            unchanged (omit the argument when the unit has none). Use the unit's subagent_type as-is UNLESS
            a more specific listed agent clearly fits the task better (see CHOOSING A SUBAGENT_TYPE); the
            subagent_type is NOT part of the result correlation — only the name is — so refining it never
            breaks the join.
-        3. Poll GetWorkflow until join.satisfied is true.
+        3. Poll GetWorkflow until join.satisfied is true. Spawn each unit ONCE. If GetWorkflow still
+           surfaces a unit you already spawned (the same name re-appears in nextExpectedAction with
+           join.satisfied false, and it is NOT listed in taskErrors as a validation retry), do NOT
+           re-spawn it with the same name — the runtime records one result per matched name, so a
+           unit that is still pending after you spawned it almost always means your Agent name did not
+           match nextExpectedAction[].name character-for-character (e.g. you sent context instead of
+           context:1:context:task). Re-read nextExpectedAction[].name and spawn again with that EXACT
+           string; blindly repeating the same wrong name just spawns another delegate the runtime
+           discards.
         4. Call SetCurrentNode to move to the next node.
 
         CHOOSING A SUBAGENT_TYPE (re-reason it; don't just copy the default)
