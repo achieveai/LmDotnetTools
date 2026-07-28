@@ -321,6 +321,12 @@ Copilot's backend rejects three things its clients routinely send. All are strip
   route, which already drops its counterpart `web_search_20250305`. Requests carrying no hosted
   tools are forwarded byte-for-byte.
 
+  Dropping those two is a decision rather than an oversight, and so is the fact that the allowlist
+  does not widen on its own — it is meant to be curated by hand. The planned direction for web
+  search (agreed, not scheduled) is to stop treating it as a server tool at all: the proxy would
+  expose it as a client tool it implements itself and service the call against Copilot's MCP server,
+  which turns it into an ordinary `function` and removes the exemption instead of widening the list.
+
 The translated route avoids the first two by construction: it builds a new Responses body from an
 explicit allowlist rather than patching the inbound one, so `betas`, `cache_control`, `metadata` and
 server tools are dropped without needing to be enumerated.

@@ -755,8 +755,17 @@ public static class ProxyModelResolver
     ///     tools this proxy has never seen instead of forwarding them into a 400. Live-probed
     ///     2026-07-28 — <c>image_generation</c>, <c>local_shell</c>, <c>code_interpreter</c> and
     ///     <c>mcp</c> each fail with <c>"The requested tool &lt;type&gt; is not supported."</c>
-    ///     <c>web_search</c> is currently accepted upstream but is dropped anyway: it is hosted, and
-    ///     the translated Anthropic route already drops its counterpart <c>web_search_20250305</c>.
+    ///
+    ///     Keep this list curated by hand. It is meant to stay narrow, so it deliberately does not
+    ///     widen on its own when Copilot starts accepting a new hosted type: admitting one is a
+    ///     decision, not a consequence.
+    ///
+    ///     <c>web_search</c> and <c>web_search_preview</c> are the two types Copilot accepts that get
+    ///     dropped anyway. Both are hosted, and the translated Anthropic route already drops their
+    ///     counterpart <c>web_search_20250305</c>. The planned direction (agreed, not scheduled) is to
+    ///     stop treating web search as a server tool at all: the proxy would expose it as a client tool
+    ///     it implements itself, servicing the call against Copilot's MCP server. That makes it an
+    ///     ordinary <c>function</c> and removes the exemption rather than widening this list.
     /// </remarks>
     private static readonly HashSet<string> ClientDefinedToolTypes = new(StringComparer.Ordinal)
     {
