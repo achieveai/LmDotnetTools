@@ -15,6 +15,11 @@
 // deliberately NOT the production instance on :5050.
 async (page) => {
   const BASE = 'http://localhost:5051';
+  // Set to the threadId out of a specific posted comment to verify THAT link rather than whichever
+  // review ran most recently. Leave null for the normal "latest review" sweep: with the daemon still
+  // polling, the newest review conversation belongs to whatever PR it picked up last, which is not
+  // necessarily the one whose comment you are holding.
+  const PIN_THREAD_ID = null;
   // The review arm is identified by its TITLE, not by being the newest workspace-agent conversation.
   // The daemon titles every hosted conversation `Review PR #{n} — {agent profile name}`
   // (S2SReviewAgentLoopFactory.BuildTitle), and the judge / knowledge-extraction arms run as SEPARATE
@@ -55,10 +60,11 @@ async (page) => {
 
     const items = Array.isArray(conversations.items) ? conversations.items : [];
     const reviews = items
-      .filter(isReview)
+      .filter((c) => (PIN_THREAD_ID ? String(c.threadId) === PIN_THREAD_ID : isReview(c)))
       .sort((a, b) => Number(b.lastUpdated ?? 0) - Number(a.lastUpdated ?? 0));
     record('a hosted review conversation exists on the review host', reviews.length > 0, {
       total: items.length,
+      pinned: PIN_THREAD_ID,
       reviews: reviews.map((c) => ({ threadId: c.threadId, title: c.title, mode: c.mode })),
     });
     if (reviews.length === 0) {
