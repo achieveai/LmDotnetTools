@@ -82,6 +82,17 @@ One `context_loaded` per source, describing bytes a model actually received — 
 context that is queued, cancelled, superseded, rediscovered, or merely inventoried
 produces no event at all, which is the correct answer rather than a missing one.
 
+Centralising the sweep places one obligation back on the loops: because a turn the loop
+did not close inherits the *run's* outcome, a loop that terminalizes a run untruthfully
+launders that lie into the turn as well. `ClaudeAgentLoop` completed its run from a
+`finally` block, which cannot tell a finished run from one that died mid-stream, so a
+provider exception reached a subscriber as a completed turn of a completed run. It now
+completes per path — success on the success path, `isError` with the exception message
+from its catch, nothing at all on cancellation so the sweep reports it as cancelled —
+which is what the other three loops always did. `LoopTurnContractTests` pins this by
+driving all four real loops through equivalent scripted streams and asserting only on
+what a subscriber received.
+
 Reading provenance back out of the request costs a scan of the outgoing request text.
 It is gated on `RunTurnLifecycleFinalizer.PublishesEvents` rather than `IsEnabled`, so
 a host that only persists lifecycle rows never pays for a scan whose result nobody

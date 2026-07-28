@@ -523,10 +523,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 }
 
                 // The CLI runs its own agentic loop behind this one generation id, so the run has
-                // exactly one turn from the lifecycle's point of view. Completion is reported on
-                // the success path only — the finally below cannot tell a finished run from a
-                // failed one, and a turn left open by an exception or a cancellation is reported
-                // by the finalizer's terminal sweep carrying the run's own outcome.
+                // exactly one turn from the lifecycle's point of view. The run's outcome is
+                // reported per path — a run that died mid-stream must not terminalize as
+                // "completed", because the turn the finalizer sweeps inherits the run's outcome
+                // and a subscriber would be told a failed generation succeeded. A cancellation
+                // completes neither path, matching the other loops: the finalizer's terminal
+                // sweep reports it as cancelled.
                 BeginTurn(assignment.RunId, assignment.GenerationId);
                 try
                 {
@@ -546,9 +548,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     }
 
                     await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
-                }
-                finally
-                {
+
                     // Safety net: if the dequeue heuristic never fired (e.g., CLI exited
                     // without producing a recognizable signal, mock providers, or a
                     // partial protocol response), the RunAssignmentMessage was never
@@ -565,6 +565,26 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         pendingMessageCount: _localMessageQueue.Count,
                         ct: ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
+
+                    await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
+                    await CompleteRunAsync(
+                        assignment.RunId,
+                        assignment.GenerationId,
+                        wasForked: isExplicitFork,
+                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                        pendingMessageCount: _localMessageQueue.Count,
+                        isError: true,
+                        errorMessage: ex.Message,
+                        ct: ct);
+
+                    // Rethrown deliberately: this loop has always surfaced a run failure to its
+                    // caller rather than swallowing it and waiting for the next input.
+                    throw;
                 }
             }
         }
@@ -854,9 +874,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             await ExecuteInteractiveModeAsync(assignment, mergedMessages, ct);
 
             await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
-        }
-        finally
-        {
+
             // No pending messages after merge (we processed all of them)
             await CompleteRunAsync(
                 assignment.RunId,
@@ -865,6 +883,24 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
                 pendingMessageCount: 0,
                 ct: ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Same outcome discipline as the ordinary run path: a merged run that failed is
+            // reported as failed, so the turn swept behind it does not claim success.
+            Logger.LogError(ex, "Error during merged run {RunId}", assignment.RunId);
+
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                wasForked: isExplicitFork,
+                forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                pendingMessageCount: 0,
+                isError: true,
+                errorMessage: ex.Message,
+                ct: ct);
+
+            throw;
         }
     }
 
