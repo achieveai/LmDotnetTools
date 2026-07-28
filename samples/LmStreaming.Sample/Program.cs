@@ -38,6 +38,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Auth;
 using LmStreaming.Sample.Controllers;
@@ -130,7 +131,20 @@ try
         options.WriteIndentedJson = builder.Environment.IsDevelopment();
     });
 
-    _ = builder.Services.AddControllers();
+    // Service-to-service lifecycle observation and remote tool approval (ADR 0003 + ADR 0005). Both
+    // are off unless the matching `Lifecycle:*:Enabled` flag is set, and this file carries no default
+    // for either — an absent section reads as disabled.
+    _ = builder.Services.AddLifecycleDelivery(builder.Configuration);
+    _ = builder.Services.AddRemoteToolApproval(builder.Configuration);
+
+    // AddLifecycleControlPlane is called unconditionally, and the disabled case is the one that needs
+    // it. The SDK emits an ApplicationPartAttribute for every referenced assembly that references MVC,
+    // so LmAgentInfra's controllers — the lifecycle ones included — are discovered here whether or not
+    // this sample asked for them. With the flags off those two would be published and unconstructible,
+    // because their dependencies are registered only when the flags are on. This removes them. The
+    // sample's existing surface, api/auth/webhook and api/auth/egress-keys among it, is untouched:
+    // this host supplied the application part, so the method leaves the rest of that assembly alone.
+    _ = builder.Services.AddControllers().AddLifecycleControlPlane(builder.Configuration);
     _ = builder.Services.AddEndpointsApiExplorer();
 
     // Raise the request-body ceiling so the file browser's multipart upload (WI #195) can carry a file of
@@ -377,7 +391,14 @@ try
         GatewayHttpClient(TimeSpan.FromSeconds(30)),
         authOptions,
         sp.GetRequiredService<SessionSecretStore>(),
-        sp.GetRequiredService<PredefinedKeyRegistry>()
+        sp.GetRequiredService<PredefinedKeyRegistry>(),
+        // Same bundle instance the agent pool resolves (see the hostLifecycleServices note below), so
+        // the registry's SandboxCreated events share the pool's producer epoch and sequence stream. A
+        // second bundle here would mint a second epoch, and a subscriber would read the interleaving
+        // as "the producer restarted" every time a session was created. Null unless a Lifecycle flag
+        // is set, in which case the registry falls back to MultiTurnLifecycleServices.Disabled and
+        // publishes nothing — the pre-#227 behavior.
+        sp.GetService<MultiTurnLifecycleServices>()
     ));
 
     // The registry also implements the narrow file-browser surface the FileBrowserController depends on
@@ -577,12 +598,12 @@ try
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
-        // Lifecycle observation / tool approval, when something has registered it (#227). Resolved
-        // once for the process — the bundle's sequence allocator owns the producer epoch, and loops
-        // that share it share that epoch, which is what lets a subscriber tell "producer restarted"
-        // from "events were lost". Handed to the pool, which puts it on every AgentCreationContext;
-        // the per-thread factory below reads it from there rather than closing over it, so the pool
-        // stays the single distributor. Nothing registers it today, so this is null and every loop
+        // Lifecycle observation / tool approval (#227). Resolved once for the process — the bundle's
+        // sequence allocator owns the producer epoch, and loops that share it share that epoch, which
+        // is what lets a subscriber tell "producer restarted" from "events were lost". Handed to the
+        // pool, which puts it on every AgentCreationContext; the per-thread factory below reads it
+        // from there rather than closing over it, so the pool stays the single distributor. Registered
+        // only when a Lifecycle flag is set, so on a default configuration this is null and every loop
         // falls back to MultiTurnLifecycleServices.Disabled — the sample behaves exactly as before.
         var hostLifecycleServices = sp.GetService<MultiTurnLifecycleServices>();
 

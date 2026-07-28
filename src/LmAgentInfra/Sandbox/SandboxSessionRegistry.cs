@@ -402,6 +402,30 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     }
 
     /// <summary>
+    /// Reads the established binding for <paramref name="threadId"/>, if the thread has one. A
+    /// read-only companion to <see cref="PublishEstablishedBinding"/> for callers that need to know
+    /// which caller a conversation belongs to — notably lifecycle owner resolution (ADR 0005), where
+    /// <see cref="SandboxEstablishedBinding.CallerCredential"/> is the authoritative answer to "whose
+    /// conversation is this?".
+    /// </summary>
+    /// <param name="threadId">The conversation thread to look up.</param>
+    /// <param name="binding">The binding when one exists; otherwise <c>null</c>.</param>
+    /// <returns><c>true</c> when the thread has an established binding.</returns>
+    public bool TryGetEstablishedBinding(
+        string? threadId,
+        out SandboxEstablishedBinding? binding
+    )
+    {
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            binding = null;
+            return false;
+        }
+
+        return _establishedBindings.TryGetValue(threadId, out binding);
+    }
+
+    /// <summary>
     /// Resolves a conversation thread to a LIVE sandbox workspace session WITHOUT ever provisioning a
     /// first-time session, for the file-browser surface. Resolution is driven solely by the thread's
     /// <see cref="SandboxEstablishedBinding"/>:

@@ -162,12 +162,13 @@ builder.Services.AddSingleton<IAuthWebhookForwarder, NoOpAuthWebhookForwarder>()
 // sends ONLY `Authorization: {gateway_auth}` — no body signature, timestamp, or delivery id). The shared
 // AuthWebhookController already verifies that secret (SessionSecretStore, constant-time, keyed by the
 // session id carried in the callback body) and injects tokens only toward each provider's own hosts. The
-// plan §9 HMAC/timestamp/replay middleware was built for a Stripe-style signing gateway this one is NOT:
-// it hard-required X-Sandbox-Signature/Timestamp/Delivery-Id and so rejected EVERY real callback as
+// HMAC/timestamp/replay middleware was built for a Stripe-style signing gateway this one is NOT: it
+// hard-required X-Sandbox-Signature/Timestamp/Delivery-Id and so rejected EVERY real callback as
 // MissingHeaders (proven live — clone 403, "Rejected ... MissingHeaders"), breaking all authenticated git
-// (private clone, ReviewBot push). It is therefore not wired; the per-session secret carried in
-// Authorization is the gateway↔webhook boundary. (WebhookVerification* + DeliveryReplayCache are retained
-// unwired for a future signing gateway.)
+// (private clone, ReviewBot push). It is therefore not wired here; the per-session secret carried in
+// Authorization is the gateway↔webhook boundary. That signing stack now lives in the shared library as
+// AchieveAi.LmDotnetTools.LmAgentInfra.Webhooks (ADR 0005), where it is the service-to-service lifecycle
+// delivery primitive; nothing in this daemon references it.
 
 // ── Orchestration: store, sandbox, agents, providers, poller ─────────────────────────────────────
 // The daemon's orchestration source of truth (plan §6–§14). The store migrates SQLite at construction,
@@ -707,10 +708,13 @@ builder.Services
     .AddControllers()
     .ConfigureApplicationPartManager(apm =>
     {
-        // AuthWebhookController lives in LmAgentInfra (a referenced library, not auto-discovered), and
-        // DiscoveryController lives in this daemon assembly; add both parts explicitly (the daemon
-        // assembly may already be present via default population — guard against a duplicate), then
-        // filter discovery to those two controllers.
+        // AuthWebhookController lives in LmAgentInfra and DiscoveryController in this daemon assembly.
+        // Both parts are added explicitly rather than relied on: the SDK does generate an
+        // ApplicationPartAttribute for LmAgentInfra (it references MVC), but that is a build-time
+        // side effect of a project reference, not a statement of intent, and this composition root
+        // says which assemblies it serves. Adding a part twice is harmless — the feature provider
+        // dedupes by type — so the daemon assembly is guarded only to keep the list readable. The
+        // filter below is what actually bounds the surface; the parts merely decide what it filters.
         apm.ApplicationParts.Add(new AssemblyPart(typeof(AuthWebhookController).Assembly));
         var daemonAssembly = typeof(CodeReviewDaemon.Sample.Controllers.DiscoveryController).Assembly;
         if (!apm.ApplicationParts.OfType<AssemblyPart>().Any(p => p.Assembly == daemonAssembly))
@@ -737,8 +741,8 @@ if (daemonKeyMissing)
 }
 
 // The gateway↔webhook boundary is the shared secret the shared AuthWebhookController verifies (see the
-// gateway-callback note above). The plan §9 HMAC middleware is intentionally NOT wired — the real gateway
-// does not sign its callbacks, so requiring a signature rejected every real callback.
+// gateway-callback note above). LmAgentInfra.Webhooks.WebhookVerificationMiddleware is intentionally NOT
+// wired — the real gateway does not sign its callbacks, so requiring a signature rejected every one.
 app.MapControllers();
 
 app.Run();

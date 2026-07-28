@@ -1,25 +1,21 @@
-namespace CodeReviewDaemon.Sample.Auth;
+namespace AchieveAi.LmDotnetTools.LmAgentInfra.Webhooks;
 
 /// <summary>
-/// The daemon's webhook security layer (plan §9), enforced in front of the shared
-/// <c>AuthWebhookController</c> for the <c>POST /api/auth/webhook/{provider}</c> route — and ONLY there.
-/// It runs before MVC binds the body or any token is resolved: it caps the body, requires
-/// <c>application/json</c>, and validates the gateway's HMAC signature, freshness timestamp, and
-/// single-use delivery id, rejecting anything that fails closed. The shared controller is left untouched
-/// (so <c>LmStreaming.Sample</c> is unaffected) and this adds no route, so the daemon's single-endpoint
-/// surface is preserved; the controller's own shared-secret check remains as defence-in-depth.
+/// The inbound webhook security layer (ADR 0005), enforced in front of the
+/// <see cref="Controllers.AuthWebhookController"/> for the <c>POST /api/auth/webhook/{provider}</c>
+/// route — and ONLY there. It runs before MVC binds the body or any token is resolved: it caps the
+/// body, requires <c>application/json</c>, and validates the sender's HMAC signature, freshness
+/// timestamp, and single-use delivery id, rejecting anything that fails closed. It adds no route, so a
+/// host's endpoint surface is unchanged, and the controller's own shared-secret check remains as
+/// defence-in-depth.
+/// <para>
+/// Hosts wire this by hand (this library registers nothing); a host that does not wire it is
+/// unaffected. Notably the sandbox gateway does not sign its callbacks, so
+/// <c>CodeReviewDaemon.Sample</c> deliberately leaves this unwired — see its <c>Program.cs</c>.
+/// </para>
 /// </summary>
-internal sealed class WebhookVerificationMiddleware
+public sealed class WebhookVerificationMiddleware
 {
-    /// <summary>Lowercase-hex HMAC-SHA256 over <c>{timestamp}.{rawBody}</c>.</summary>
-    public const string SignatureHeader = "X-Sandbox-Signature";
-
-    /// <summary>Unix-seconds (or ISO-8601) send time, bound into the signature.</summary>
-    public const string TimestampHeader = "X-Sandbox-Timestamp";
-
-    /// <summary>Unique per-callback id; a repeat within the TTL is a rejected replay.</summary>
-    public const string DeliveryHeader = "X-Sandbox-Delivery-Id";
-
     private const string RoutePrefix = "/api/auth/webhook";
 
     private readonly RequestDelegate _next;
@@ -28,6 +24,13 @@ internal sealed class WebhookVerificationMiddleware
     private readonly long _maxBodyBytes;
     private readonly ILogger<WebhookVerificationMiddleware> _logger;
 
+    /// <summary>Creates the middleware over its verifier, replay cache, and shared limits.</summary>
+    /// <param name="next">The next term in the pipeline.</param>
+    /// <param name="verifier">Decides provider/content-type/size/freshness/signature.</param>
+    /// <param name="replayCache">Rejects a repeat of an already-accepted delivery id.</param>
+    /// <param name="limits">Shared limits; only the body cap is read here.</param>
+    /// <param name="logger">Diagnostics sink; only opaque, truncated identifiers are logged.</param>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
     public WebhookVerificationMiddleware(
         RequestDelegate next,
         WebhookRequestVerifier verifier,
@@ -44,10 +47,13 @@ internal sealed class WebhookVerificationMiddleware
 
     /// <summary>
     /// The exact route shape this layer guards: <c>POST /api/auth/webhook/{provider}</c> with exactly one
-    /// non-empty provider segment and no trailing path. Used both by the <c>UseWhen</c> branch in
-    /// <c>Program.cs</c> and here, so a suffix path like <c>/api/auth/webhook/github/extra</c> is never
-    /// HMAC-verified or allowed to consume a delivery id — it simply falls through to MVC (which 404s it).
+    /// non-empty provider segment and no trailing path. Used both by the host's <c>UseWhen</c> branch and
+    /// here, so a suffix path like <c>/api/auth/webhook/github/extra</c> is never HMAC-verified or allowed
+    /// to consume a delivery id — it simply falls through to MVC (which 404s it).
     /// </summary>
+    /// <param name="request">The incoming request to classify.</param>
+    /// <returns><c>true</c> when the request targets the guarded route.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is null.</exception>
     public static bool IsWebhookRoute(HttpRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -62,8 +68,17 @@ internal sealed class WebhookVerificationMiddleware
         return segment.Length > 0 && !segment.Contains('/', StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Verifies one request and either rejects it with a status that names the failure class, or passes
+    /// it downstream with the body rewound so MVC can still bind it.
+    /// </summary>
+    /// <param name="context">The request being processed.</param>
+    /// <returns>A task that completes when the request has been rejected or handled downstream.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="context"/> is null.</exception>
     public async Task InvokeAsync(HttpContext context)
     {
+        ArgumentNullException.ThrowIfNull(context);
+
         var request = context.Request;
 
         // Verify only the exact webhook route; anything else passes straight through.
@@ -91,9 +106,9 @@ internal sealed class WebhookVerificationMiddleware
             ProviderSegment(request.Path),
             request.ContentType,
             body,
-            request.Headers[SignatureHeader],
-            request.Headers[TimestampHeader],
-            request.Headers[DeliveryHeader]);
+            request.Headers[WebhookHeaderNames.Signature],
+            request.Headers[WebhookHeaderNames.Timestamp],
+            request.Headers[WebhookHeaderNames.DeliveryId]);
 
         var now = DateTimeOffset.UtcNow;
         var result = _verifier.Verify(input, now);
@@ -117,7 +132,7 @@ internal sealed class WebhookVerificationMiddleware
             return;
         }
 
-        // Rewind so the shared controller can still bind [FromBody].
+        // Rewind so the downstream controller can still bind [FromBody].
         request.Body.Position = 0;
         await _next(context).ConfigureAwait(false);
     }

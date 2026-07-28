@@ -76,6 +76,20 @@ UTF-8 and rendered as lowercase hex. This is documented on the public type so th
 mistakes it for a sorted or normalized JSON form. Freezing at gate-open closes the
 time-of-check-to-time-of-use gap: an approver decides on the same bytes that run.
 
+**A remote approver is shown the hash of those bytes, not the bytes.** The approval request
+carries the tool name and the frozen `ArgumentsHash` unconditionally; the arguments
+themselves cross the network only to a subscriber holding the `lifecycle.content.full`
+capability, under the same projection rule as any other payload
+([ADR 0005](0005-service-to-service-lifecycle-delivery.md)). This is a deliberate
+restriction on what approval buys an integrator: authorizing a call is a different
+entitlement from reading its inputs, and tool arguments routinely carry exactly the user
+content an observation stream is not supposed to disclose. A policy engine keyed on tool
+identity, caller, and rate — the common case — needs nothing more, and the hash still lets
+it pin a decision to specific bytes and detect that two superficially identical calls
+differ. An approver whose policy genuinely depends on argument content is asking for a
+content grant and must be given one explicitly rather than acquiring it as a side effect of
+being allowed to say no.
+
 **Waiting is always bounded.** The maximum wait is finite and defaults to five minutes.
 The effective expiry is the earliest of that configured maximum, any provider or host
 deadline, run or turn cancellation, a provider interrupt, shutdown, and revocation — so a

@@ -215,4 +215,37 @@ public static class LifecycleCapabilities
     /// from that subscriber is rejected.
     /// </summary>
     public const string ToolApprovalDecide = "tool.approval.decide";
+
+    /// <summary>
+    /// Every capability this version can grant.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="LifecycleEventTypes.Known"/>, this set is <b>authoritative, not
+    /// informational</b>, and the difference is deliberate. An unknown <em>event type</em> is
+    /// forward compatibility — a newer producer describing something this version has no typed
+    /// payload for — so it is acknowledged and ignored. An unknown <em>capability</em> is the
+    /// opposite situation: a subscriber asking for an entitlement this version cannot reason about.
+    /// Granting it would record a permission nothing enforces, and the subscriber would believe it
+    /// holds access it does not have; ignoring it silently would do the same. Registration
+    /// therefore rejects a capability that is not in this set.
+    /// <para>
+    /// This exists so that callers do not keep private copies of the capability list. A duplicated
+    /// set goes stale the day a third capability is added here, and it does so silently — nothing
+    /// makes the two disagree loudly, so the copy simply refuses a capability that is now valid.
+    /// Read membership from this type.
+    /// </para>
+    /// </remarks>
+    public static IReadOnlySet<string> Known { get; } =
+        new HashSet<string>(StringComparer.Ordinal) { ContentFull, ToolApprovalDecide };
+
+    /// <summary>
+    /// Indicates whether a capability can be granted by this version.
+    /// </summary>
+    /// <param name="capability">The capability identifier requested at registration.</param>
+    /// <returns>
+    /// <see langword="true"/> when the capability is grantable; <see langword="false"/> for
+    /// <see langword="null"/>, blank, or unrecognized values, all of which must be refused.
+    /// </returns>
+    public static bool IsKnown(string? capability) =>
+        capability is not null && Known.Contains(capability);
 }

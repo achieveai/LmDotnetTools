@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
 VisualStudioVersion = 18.0.11205.157
@@ -175,6 +175,12 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "LmLifecycle.Tests", "LmLifecycle.Tests", "{96073544-196B-A6BE-4D75-02C8BD58BF86}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AchieveAi.LmDotnetTools.LmLifecycle.Tests", "tests\LmLifecycle.Tests\AchieveAi.LmDotnetTools.LmLifecycle.Tests.csproj", "{BE638176-3008-41A2-8E3F-7E277B17C62D}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "LmAgentInfra.Tests", "LmAgentInfra.Tests", "{0D0842E8-51F7-B0DB-99D9-87D30E199130}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AchieveAi.LmDotnetTools.LmAgentInfra.Tests", "tests\LmAgentInfra.Tests\AchieveAi.LmDotnetTools.LmAgentInfra.Tests.csproj", "{8112C763-5DCF-4457-8689-A146D324E5A3}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "LmAgentInfra", "LmAgentInfra", "{E4DA3F5D-227A-16B7-5F8D-6BA6B0E14DAC}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -870,6 +876,18 @@ Global
 		{BE638176-3008-41A2-8E3F-7E277B17C62D}.Release|x64.Build.0 = Release|Any CPU
 		{BE638176-3008-41A2-8E3F-7E277B17C62D}.Release|x86.ActiveCfg = Release|Any CPU
 		{BE638176-3008-41A2-8E3F-7E277B17C62D}.Release|x86.Build.0 = Release|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Debug|x64.Build.0 = Debug|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Debug|x86.Build.0 = Debug|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Release|x64.ActiveCfg = Release|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Release|x64.Build.0 = Release|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Release|x86.ActiveCfg = Release|Any CPU
+		{8112C763-5DCF-4457-8689-A146D324E5A3}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -948,6 +966,9 @@ Global
 		{E8E25395-45AD-4144-9815-3131615AE51D} = {83A26611-99AB-0B97-BD81-A3F8FFAD0155}
 		{96073544-196B-A6BE-4D75-02C8BD58BF86} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{BE638176-3008-41A2-8E3F-7E277B17C62D} = {96073544-196B-A6BE-4D75-02C8BD58BF86}
+		{0D0842E8-51F7-B0DB-99D9-87D30E199130} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{8112C763-5DCF-4457-8689-A146D324E5A3} = {0D0842E8-51F7-B0DB-99D9-87D30E199130}
+		{E4DA3F5D-227A-16B7-5F8D-6BA6B0E14DAC} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {31A20680-EDCA-4DBB-BA5F-0B8B8670BCEC}
