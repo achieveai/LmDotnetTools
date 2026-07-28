@@ -355,6 +355,26 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
         outcomes.Should().NotContain(DeferredResolutionOutcome.NotFound);
     }
 
+    [Fact]
+    public async Task RecordRunStarted_Again_RefreshesDescriptionAndKeepsCommittedWork()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+        _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
+
+        // Whatever prompts a second start — a retry, a reconnect, a host correcting the lineage it
+        // first reported — the deferral is already committed. Re-recording must not unresolve work
+        // the run has done, or a store that replaces the row loses tool calls a caller is waiting
+        // on while a store that upserts keeps them.
+        await Store.RecordRunStartedAsync(
+            NewRun("thread-1", "run-1") with { SubAgentId = "researcher" });
+
+        var loaded = await Store.LoadRunLifecycleAsync("run-1");
+
+        loaded.Should().NotBeNull();
+        loaded!.SubAgentId.Should().Be("researcher");
+        loaded.DeferredToolCalls.Select(d => d.ToolCallId).Should().Equal("call-a");
+    }
+
     #endregion
 
     private static RunLifecycleState NewRun(

@@ -474,7 +474,15 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore,
                         $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
                 }
 
-                runs[idx] = state with { UpdatedAt = state.StartedAt };
+                // A re-record refreshes how the run describes itself; it does not roll back what
+                // the run has already committed. Deferrals and turns are facts recorded after the
+                // start, and SQLite's upsert leaves both alone — the three stores have to agree.
+                runs[idx] = state with
+                {
+                    UpdatedAt = state.StartedAt,
+                    TurnCount = runs[idx].TurnCount,
+                    DeferredToolCalls = runs[idx].DeferredToolCalls,
+                };
             }
             else
             {

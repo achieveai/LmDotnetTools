@@ -4,6 +4,9 @@ using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
@@ -79,6 +82,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // start should treat prior Queued/InProgress rows as dangling).
     private bool _runLedgerReconciled;
 
+    // The same once-per-process guard for lifecycle runs, kept separate because lifecycle
+    // persistence and run-ledger persistence are configured independently.
+    private bool _lifecycleReconciled;
+
     #endregion
 
     #region Protected Properties
@@ -140,6 +147,27 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// separate bool — is the single source of truth for whether run-ledger persistence is on.
     /// </summary>
     protected IRunLedgerStore? RunLedgerStore { get; }
+
+    /// <summary>
+    /// What the host wired up for lifecycle observation and tool approval.
+    /// <see cref="MultiTurnLifecycleServices.Disabled"/> when the host wired up nothing.
+    /// </summary>
+    /// <remarks>
+    /// Subclasses read this to publish the events only they can produce — a provider loop's
+    /// per-turn usage, a sandbox-backed loop's session creation — and to derive a spawned
+    /// agent's bundle with <c>with { Lineage = ... }</c>.
+    /// </remarks>
+    protected MultiTurnLifecycleServices LifecycleServices { get; }
+
+    /// <summary>
+    /// Owns this thread's run and turn lifecycle: which run is in flight, which caller ends it,
+    /// and the events that go out when one starts, turns, or completes.
+    /// </summary>
+    /// <remarks>
+    /// Inert unless the constructor received a bundle that enables something, so subclasses can
+    /// call it unconditionally.
+    /// </remarks>
+    protected RunTurnLifecycleFinalizer Lifecycle { get; }
 
     /// <summary>
     /// Grace period the deferred-fallback in <see cref="ExecuteRunAsync"/> waits
@@ -208,6 +236,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// (which must then also implement <see cref="IRunLedgerStore"/>) — enables <see cref="TrySendAsync"/>
     /// and restart reconciliation. Default false preserves existing in-memory-only behavior.
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Lifecycle observation and tool approval for this agent. Omit — or pass
+    /// <see cref="MultiTurnLifecycleServices.Disabled"/> — and the loop behaves exactly as it did
+    /// before lifecycle hooks existed: nothing is published, nothing extra is persisted, and no
+    /// tool call is gated.
+    /// </param>
     protected MultiTurnAgentBase(
         string threadId,
         string? systemPrompt = null,
@@ -219,7 +253,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         ILogger? logger = null,
         int maxReplayBufferSize = 10_000,
         long maxReplayBufferBytes = 8L * 1024 * 1024,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
@@ -241,6 +276,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     $"{nameof(persistRunLedger)} is true but {nameof(store)} is null or does not implement {nameof(IRunLedgerStore)}.",
                     nameof(store));
         }
+
+        LifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
+
+        // The conversation store doubles as the lifecycle store when it can, but only for a host
+        // that actually asked for lifecycle — persisting to SQLite must not by itself start writing
+        // run_lifecycle rows.
+        Lifecycle = new RunTurnLifecycleFinalizer(
+            threadId,
+            LifecycleServices,
+            store as IRunLifecycleStore,
+            Logger);
 
         // Create initial channel
         _inputChannel = CreateInputChannel();
@@ -1295,6 +1341,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             await ReconcileRunLedgerAsync(ct);
         }
 
+        // The same restart argument, one guard of its own: lifecycle persistence is configured
+        // independently of the run ledger, so a host can have dangling lifecycle runs to close
+        // without having a ledger at all.
+        if (!_lifecycleReconciled)
+        {
+            _lifecycleReconciled = true;
+            await Lifecycle.ReconcileInterruptedRunsAsync(ct);
+        }
+
         // Rebuild conversation usage accounting from durable per-attempt records before processing input,
         // so an agent recreated after a restart continues the running total (and dedups already-counted
         // attempts) instead of overwriting the persisted aggregate with only post-restart usage (#196).
@@ -1376,6 +1431,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _internalCts?.Dispose();
         _internalCts = null;
 
+        // A run cancelled mid-flight never reaches CompleteRunAsync — the loops deliberately let
+        // OperationCanceledException escape their per-run handler — so its completion has to come
+        // from here or a subscriber holds an unpaired start forever. CancellationToken.None: the
+        // token that ended the run must not also cancel the event that says so.
+        await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Cancelled, CancellationToken.None);
+
         Logger.LogInformation("{AgentType} stopped, ready for restart", GetType().Name);
     }
 
@@ -1390,6 +1451,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _isDisposed = true;
 
         await StopAsync();
+
+        // Normally a no-op: StopAsync has already closed whatever was in flight. It matters for the
+        // agent that is disposed without ever having been started-and-stopped, whose runs would
+        // otherwise never be closed by anyone.
+        await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Interrupted, CancellationToken.None);
 
         // Final durability boundary: flush any usage write scheduled by a late/background descendant that
         // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).
@@ -1487,11 +1553,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="inputs">The queued inputs to process in this run</param>
     /// <param name="parentRunId">Optional parent run ID (defaults to latest run)</param>
     /// <param name="ct">Cancellation token</param>
+    /// <param name="wasForked">
+    /// Whether the caller asked this run to inherit provider-side context from
+    /// <paramref name="parentRunId"/>. Reported on the lifecycle <c>run_started</c> event, where it
+    /// describes context inheritance only — a run can carry a parent without being a fork.
+    /// </param>
     /// <returns>The run assignment</returns>
     protected async Task<RunAssignment> StartRunAsync(
         IReadOnlyList<QueuedInput> inputs,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool wasForked = false)
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
@@ -1522,6 +1594,13 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 await RunLedgerStore.RemoveAcceptedInputAsync(ThreadId, inputId, ct);
             }
         }
+
+        await Lifecycle.RunStartedAsync(
+            runId,
+            generationId,
+            parentRunId,
+            wasForked: wasForked,
+            ct: ct);
 
         Logger.LogInformation(
             "Starting run {RunId} (parent: {ParentRunId}, generation: {GenerationId}, inputs: {InputCount})",
@@ -1623,6 +1702,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     runId);
             }
         }
+
+        // Terminalize before broadcasting, for the same reason the ledger write comes first: the
+        // durable CAS is what decides whether this caller is the one that ends the run, and a
+        // subscriber must not see a completion that lost that race.
+        _ = await Lifecycle.TryCompleteRunAsync(
+            runId,
+            generationId,
+            isError ? LifecycleRunOutcomes.Error : LifecycleRunOutcomes.Completed,
+            isError
+                ? new LifecycleError { Message = errorMessage ?? "The run failed." }
+                : null,
+            ct: ct);
 
         await PublishToAllAsync(new RunCompletedMessage
         {

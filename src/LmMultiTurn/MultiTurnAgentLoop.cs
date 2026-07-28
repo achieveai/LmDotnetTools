@@ -6,6 +6,8 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -117,6 +119,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional public-pricing resolver for conversation-wide usage accounting (#196). When supplied,
     ///     the usage ledger fills an estimated public cost per model; null still captures token totals.
     /// </param>
+    /// <param name="lifecycleServices">
+    ///     Optional lifecycle observation and tool approval. Null leaves both off, which is exactly
+    ///     how the loop behaved before lifecycle hooks existed.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -133,8 +139,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         ILoggerFactory? loggerFactory = null,
         bool persistRunLedger = false,
         TriggerOptions? triggerOptions = null,
-        IPricingResolver? pricingResolver = null)
-        : base(threadId, systemPrompt, defaultOptions, maxTurnsPerRun, inputChannelCapacity, outputChannelCapacity, store, logger, persistRunLedger: persistRunLedger)
+        IPricingResolver? pricingResolver = null,
+        MultiTurnLifecycleServices? lifecycleServices = null)
+        : base(
+            threadId,
+            systemPrompt,
+            defaultOptions,
+            maxTurnsPerRun,
+            inputChannelCapacity,
+            outputChannelCapacity,
+            store,
+            logger,
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: MultiTurnLifecycleServices.ForAgent(
+                lifecycleServices,
+                LifecycleAgentKinds.Raw,
+                defaultOptions?.ModelId))
     {
         ArgumentNullException.ThrowIfNull(providerAgent);
         ArgumentNullException.ThrowIfNull(functionRegistry);
@@ -328,7 +348,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // to _latestRunId continuation when realInputs is empty.
                 var inputsForAssignment = realInputs.Count > 0 ? realInputs : resumeSentinels;
                 var (batchParent, isExplicitFork) = ResolveBatchParent(realInputs);
-                var assignment = await StartRunAsync(inputsForAssignment, batchParent, ct);
+                var assignment = await StartRunAsync(
+                    inputsForAssignment, batchParent, ct, wasForked: isExplicitFork);
                 await PublishToAllAsync(new RunAssignmentMessage
                 {
                     Assignment = assignment,

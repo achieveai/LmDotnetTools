@@ -8,6 +8,8 @@ using AchieveAi.LmDotnetTools.CodexSdkProvider.Tools;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
@@ -48,6 +50,9 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -60,7 +65,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : this(
             options,
             mcpServers,
@@ -75,7 +81,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             logger,
             loggerFactory,
             clientFactory,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: lifecycleServices)
     {
     }
 
@@ -99,6 +106,9 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -113,7 +123,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : base(
             threadId,
             systemPrompt,
@@ -123,7 +134,11 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             outputChannelCapacity,
             store,
             logger,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: MultiTurnLifecycleServices.ForAgent(
+                lifecycleServices,
+                LifecycleAgentKinds.Codex,
+                options?.Model))
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>();
@@ -321,7 +336,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             }
 
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-            var assignment = await StartRunAsync(batch, batchParent, ct);
+            var assignment = await StartRunAsync(batch, batchParent, ct, wasForked: isExplicitFork);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {

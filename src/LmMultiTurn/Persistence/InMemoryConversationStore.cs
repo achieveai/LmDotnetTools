@@ -278,7 +278,15 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
                     $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
             }
 
-            _runLifecycle[state.RunId] = state with { UpdatedAt = state.StartedAt };
+            // A re-record refreshes how the run describes itself; it does not roll back what the
+            // run has already committed. Deferrals and turns are facts recorded after the start,
+            // and SQLite's upsert leaves both alone — the three stores have to agree.
+            _runLifecycle[state.RunId] = state with
+            {
+                UpdatedAt = state.StartedAt,
+                TurnCount = existing?.TurnCount ?? state.TurnCount,
+                DeferredToolCalls = existing?.DeferredToolCalls ?? state.DeferredToolCalls,
+            };
         }
 
         return Task.CompletedTask;

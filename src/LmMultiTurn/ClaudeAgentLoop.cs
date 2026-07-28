@@ -7,6 +7,8 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
@@ -128,6 +130,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public ClaudeAgentLoop(
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
@@ -141,7 +146,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null,
         string? initialSessionId = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : base(
             threadId,
             systemPrompt,
@@ -151,7 +157,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             outputChannelCapacity,
             store,
             logger,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: MultiTurnLifecycleServices.ForAgent(
+                lifecycleServices,
+                LifecycleAgentKinds.Claude,
+                defaultOptions?.ModelId))
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 
@@ -489,7 +499,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 // ParentRunId / WasForked is sourced from explicit caller fork signal
                 // (UserInput.ParentRunId); absence falls back to _latestRunId continuation.
                 var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-                var assignment = await StartRunAsync(batch, batchParent, ct);
+                var assignment = await StartRunAsync(batch, batchParent, ct, wasForked: isExplicitFork);
 
                 // Track each input for correlation with enqueue/dequeue events
                 foreach (var input in batch)
@@ -795,7 +805,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // Start a SINGLE run for ALL merged inputs. Caller-supplied ParentRunId on
         // any merged input promotes this to an explicit fork.
         var (mergedParent, isExplicitFork) = ResolveBatchParent(mergedInputs);
-        var assignment = await StartRunAsync(mergedInputs, mergedParent, ct);
+        var assignment = await StartRunAsync(mergedInputs, mergedParent, ct, wasForked: isExplicitFork);
 
         // Track ALL inputs for dequeue correlation with the SAME assignment
         foreach (var input in mergedInputs)
