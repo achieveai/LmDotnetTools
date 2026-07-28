@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
@@ -283,7 +284,10 @@ IConversationStore? conversationStore = string.IsNullOrWhiteSpace(daemonOptions.
 builder.Services.AddSingleton<LiveReviewAgentLoopFactory>(sp => new LiveReviewAgentLoopFactory(
     sp.GetRequiredService<ILoggerFactory>(),
     daemonOptions,
-    conversationStore));
+    conversationStore,
+    // Lifecycle observation / tool approval when the host has registered it (#227); null — and so
+    // fully disabled — until it does, which is every configuration that ships today.
+    sp.GetService<MultiTurnLifecycleServices>()));
 builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => sp.GetRequiredService<LiveReviewAgentLoopFactory>());
 builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
     sp.GetRequiredService<LiveReviewAgentLoopFactory>().SharedAgentFactory);

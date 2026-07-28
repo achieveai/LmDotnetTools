@@ -121,4 +121,58 @@ public sealed record MultiTurnLifecycleServices
         services == null || ReferenceEquals(services, Disabled)
             ? Disabled
             : services with { AgentKind = agentKind, ModelId = services.ModelId ?? modelId };
+
+    /// <summary>
+    /// Derives the bundle for an agent this one is spawning.
+    /// </summary>
+    /// <param name="parent">The spawning agent's bundle, possibly null.</param>
+    /// <param name="lineage">Where the child came from, captured at spawn time.</param>
+    /// <returns>
+    /// The child's bundle, or <see cref="Disabled"/> when the parent observes nothing — lineage
+    /// with no subscriber to read it is bookkeeping nobody asked for.
+    /// </returns>
+    /// <remarks>
+    /// The child keeps the parent's publisher, allocator, store, and approval gate: a sub-agent's
+    /// events belong in the same ordered stream as its parent's, and a host that gates the parent's
+    /// tools did not mean to leave the child's ungated.
+    /// <para>
+    /// <see cref="ModelId"/> is cleared. It described the parent's model, and carrying it forward
+    /// would make the child's own model — resolved from its template, its override, or inherited —
+    /// lose to a value that was never about the child. Cleared, the child's constructor fills it in
+    /// through <see cref="ForAgent"/>. <see cref="AgentKind"/> is left alone for the same reason:
+    /// the child's constructor restamps it.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="lineage"/> is <see langword="null"/>.</exception>
+    public static MultiTurnLifecycleServices ForSpawnedAgent(
+        MultiTurnLifecycleServices? parent,
+        AgentLineage lineage)
+    {
+        ArgumentNullException.ThrowIfNull(lineage);
+
+        return parent == null || ReferenceEquals(parent, Disabled)
+            ? Disabled
+            : parent with { Lineage = lineage, ModelId = null };
+    }
+
+    /// <summary>
+    /// Strips the approval gate from a bundle, keeping everything that only watches.
+    /// </summary>
+    /// <param name="services">What the host passed, possibly null.</param>
+    /// <returns>
+    /// The same bundle when it gates nothing (no allocation), a copy with
+    /// <see cref="Approval"/> reset to <see cref="ToolInvocationPreparer.Disabled"/> when it does, or
+    /// <see cref="Disabled"/> when there is nothing to observe either.
+    /// </returns>
+    /// <remarks>
+    /// For loops whose tools are the engine's own orchestration steps rather than model-requested
+    /// actions against the host — <c>LmWorkflow</c>'s controller is the one in the box. Asking a human
+    /// to approve "advance to the next node" gives them nothing to decide and parks the workflow
+    /// behind an answer that is never coming. Such a loop is still worth watching, so observation is
+    /// kept and only the gate is dropped.
+    /// </remarks>
+    public static MultiTurnLifecycleServices ForObservationOnly(MultiTurnLifecycleServices? services) =>
+        services == null || ReferenceEquals(services, Disabled) ? Disabled
+        : services.Approval.IsEnabled ? services with { Approval = ToolInvocationPreparer.Disabled }
+        : services;
 }

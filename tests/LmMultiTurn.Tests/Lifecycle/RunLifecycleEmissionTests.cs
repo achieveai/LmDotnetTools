@@ -1,6 +1,5 @@
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
-using AchieveAi.LmDotnetTools.LmLifecycle.Serialization;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -492,59 +491,6 @@ public class RunLifecycleEmissionTests
                 // Stopping is how this loop ends.
             }
         }
-    }
-
-    private sealed class RecordingLifecyclePublisher : ILifecyclePublisher
-    {
-        private readonly List<LifecycleEventEnvelope> _events = [];
-        private readonly Lock _gate = new();
-
-        public IReadOnlyList<LifecycleEventEnvelope> Events
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return [.. _events];
-                }
-            }
-        }
-
-        public IReadOnlyList<string> EventTypes => [.. Events.Select(e => e.EventType)];
-
-        public ValueTask PublishAsync(
-            LifecycleEventEnvelope envelope,
-            CancellationToken ct = default)
-        {
-            lock (_gate)
-            {
-                _events.Add(envelope);
-            }
-
-            return ValueTask.CompletedTask;
-        }
-
-        public TPayload PayloadAt<TPayload>(int index)
-            where TPayload : class
-        {
-            LifecycleSerializer
-                .TryReadPayload<TPayload>(Events[index], out var payload)
-                .Should()
-                .BeTrue();
-            return payload!;
-        }
-
-        public IReadOnlyList<TPayload> Payloads<TPayload>(string eventType)
-            where TPayload : class =>
-            [
-                .. Events
-                    .Where(e => e.EventType == eventType)
-                    .Select(e =>
-                    {
-                        LifecycleSerializer.TryReadPayload<TPayload>(e, out var payload).Should().BeTrue();
-                        return payload!;
-                    }),
-            ];
     }
 
     private sealed class ThrowingLifecyclePublisher : ILifecyclePublisher

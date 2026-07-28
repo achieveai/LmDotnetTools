@@ -83,6 +83,19 @@ never entitled to see.
 **Identity is assigned once, before fan-out, and reused across retries.** A retry is
 therefore a re-send of an identical body, not a new event.
 
+**`parent_run_id` is the nearest cause, not the ultimate origin.** A run that continues its
+own thread points at the run before it — including on a sub-agent whose thread some other
+agent opened. A spawn therefore appears in `parent_run_id` only on the child's *first* run;
+from then on the cross-agent edge is `parent_thread_id` and `spawning_tool_call_id`, which
+every event from that child carries for its whole life. This is what lets one field answer
+"what caused this run?" uniformly for a resume, a delayed-result continuation, and a spawn,
+instead of meaning something different in each case. A subscriber rebuilding the agent tree
+groups by `sub_agent_id` and follows `parent_thread_id`; walking `parent_run_id` alone
+climbs the child's own history and never leaves the child. Lineage is captured when the
+sub-agent is spawned and travels with it, so a restart that rebuilds the child long after
+the spawning run ended still reports the run that asked for it rather than whatever the
+parent happens to be doing at rebuild time.
+
 **Registration negotiates protocol majors.** Delivery and approval begin only when the
 producer and subscriber share a compatible major version; an incompatible peer is refused
 at registration rather than failing per-event at runtime.

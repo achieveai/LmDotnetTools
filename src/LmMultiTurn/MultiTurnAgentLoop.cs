@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -203,7 +204,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // Share the root ledger so descendant usage folds into the same conversation total (#196).
                 usageSink: UsageLedger,
                 // Persist immediately on each descendant observation (covers late/background descendants).
-                persistUsageAsync: PersistCurrentUsageAsync);
+                persistUsageAsync: PersistCurrentUsageAsync,
+                // The parent's own wiring, from which each child derives its bundle at spawn time.
+                // A sub-agent's events belong in the parent's ordered stream, and a host that gates
+                // the parent's tools did not mean to leave the children's ungated.
+                lifecycleServices: LifecycleServices);
 
             var toolProvider = new SubAgentToolProvider(
                 SubAgentManager,
@@ -782,7 +787,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         string generationId,
         CancellationToken ct)
     {
-        var result = await ExecuteToolCallAsync(toolCall, ct);
+        var result = await ExecuteToolCallAsync(toolCall, runId, generationId, ct);
 
         // Stamp ordering onto the result so the client merge/order logic (keyed partly on
         // messageOrderIdx) does not drop it (BUG H3b). The loop publishes tool results out-of-band,
@@ -853,6 +858,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
     private async Task<ToolCallResultMessage> ExecuteToolCallAsync(
         ToolCallMessage toolCall,
+        string runId,
+        string generationId,
         CancellationToken ct)
     {
         // Fail-fast validation: these fields are required for proper tool execution
@@ -904,11 +911,49 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 };
             }
 
+            // The gate opens here and nowhere earlier: an unknown function has already returned
+            // above, so a hallucinated tool name never reaches an approver. With nothing
+            // configured this is a synchronous approval that consults nothing.
+            var prepared = await LifecycleServices.Approval.PrepareAsync(
+                new ToolInvocationRequest
+                {
+                    ToolName = toolCall.FunctionName,
+                    ArgumentsJson = functionArgs,
+                    ToolCallId = toolCall.ToolCallId,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
+                    ThreadId = ThreadId,
+                    RunId = toolCall.RunId ?? runId,
+                    GenerationId = toolCall.GenerationId ?? generationId,
+                },
+                ct);
+
+            if (!prepared.IsApproved)
+            {
+                // Refusal is rendered as an ordinary error result rather than an exception, so the
+                // model sees why its call did not run and can choose something else — the same
+                // shape an unknown function gets. The handler is never reached.
+                Logger.LogWarning(
+                    "Tool call refused before execution: {FunctionName}, ToolCallId: {ToolCallId}, "
+                        + "Outcome: {Outcome}",
+                    toolCall.FunctionName,
+                    toolCall.ToolCallId,
+                    prepared.Outcome);
+
+                return ToolCallResultMessage.FromToolCallResult(
+                    prepared.ToBlockedResult(),
+                    role: Role.User,
+                    fromAgent: toolCall.FromAgent,
+                    generationId: toolCall.GenerationId);
+            }
+
             var ctx = new ToolCallContext
             {
                 ToolCallId = toolCall.ToolCallId,
             };
-            var result = await handler(functionArgs, ctx, ct);
+
+            // The frozen arguments, not the caller's copy: whoever approved this decided on
+            // exactly these bytes, and nothing may edit them in the gap between the two.
+            var result = await handler(prepared.Arguments.Json, ctx, ct);
             return BuildResultMessage(toolCall, result);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

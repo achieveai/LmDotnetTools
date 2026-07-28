@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 
@@ -50,6 +51,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     private readonly IProviderResolver? _providerRegistry;
     private readonly IConversationStore? _conversationStore;
     private readonly ISandboxBindingSink? _bindingSink;
+    private readonly MultiTurnLifecycleServices? _lifecycleServices;
     private readonly ILogger<MultiTurnAgentPool> _logger;
     private readonly CancellationTokenSource _poolCts = new();
     private bool _disposed;
@@ -72,6 +74,13 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// the factory threads it into the sandbox session create call and the <c>/mcp</c> headers. See
     /// <see cref="AgentEntry.CallerCredential"/> for the pooled-side invariant.
     /// </para>
+    /// <para>
+    /// <c>LifecycleServices</c> is the lifecycle observation / tool approval bundle the pool was
+    /// constructed with, handed to the factory so the loop it builds can be watched and gated. Null
+    /// when the host wired none, which every loop reads as fully disabled. It travels beside
+    /// <c>CallerCredential</c> deliberately: a factory that must scope observation to the calling
+    /// owner has both halves of that decision in one place.
+    /// </para>
     /// </summary>
     public sealed record AgentCreationContext(
         string ThreadId,
@@ -79,7 +88,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         string ProviderId,
         string? DumpFile,
         string? WorkspaceId,
-        SandboxCredential? CallerCredential = null
+        SandboxCredential? CallerCredential = null,
+        MultiTurnLifecycleServices? LifecycleServices = null
     );
 
     /// <summary>
@@ -190,20 +200,29 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// Optional sink the pool uses to publish/clear a conversation's sandbox-established binding as part of
     /// the agent-entry commit/removal. Null in legacy/test scenarios that do not wire the sandbox registry.
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation / tool approval, handed to the factory on every
+    /// <see cref="AgentCreationContext"/> this pool builds. Null leaves every agent unobserved and
+    /// ungated, exactly as before this parameter existed.
+    /// </param>
     public MultiTurnAgentPool(
         Func<AgentCreationContext, AgentCreationResult> agentFactory,
         IProviderResolver? providerRegistry,
         IConversationStore? conversationStore,
         ILogger<MultiTurnAgentPool> logger,
-        ISandboxBindingSink? bindingSink = null
+        ISandboxBindingSink? bindingSink = null,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
-    {
-        _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
-        _providerRegistry = providerRegistry;
-        _conversationStore = conversationStore;
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _bindingSink = bindingSink;
-    }
+        : this(
+            agentFactory,
+            providerRegistry,
+            conversationStore,
+            logger,
+            bindingSink,
+            lifecycleServices,
+            factoryReadsContext: true
+        )
+    { }
 
     /// <summary>
     /// Back-compat overload taking a four-arg (threadId, mode, providerId, dump) factory that
@@ -214,13 +233,17 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         Func<string, AgentProfile, string, string?, AgentCreationResult> agentFactory,
         IProviderResolver? providerRegistry,
         IConversationStore? conversationStore,
-        ILogger<MultiTurnAgentPool> logger
+        ILogger<MultiTurnAgentPool> logger,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
         : this(
-            agentFactory: WrapProviderFactory(agentFactory),
-            providerRegistry: providerRegistry,
-            conversationStore: conversationStore,
-            logger: logger
+            WrapProviderFactory(agentFactory),
+            providerRegistry,
+            conversationStore,
+            logger,
+            bindingSink: null,
+            lifecycleServices,
+            factoryReadsContext: false
         )
     { }
 
@@ -231,15 +254,58 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// </summary>
     public MultiTurnAgentPool(
         Func<string, AgentProfile, string?, AgentCreationResult> agentFactory,
-        ILogger<MultiTurnAgentPool> logger
+        ILogger<MultiTurnAgentPool> logger,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
         : this(
-            agentFactory: WrapLegacyFactory(agentFactory),
+            WrapLegacyFactory(agentFactory),
             providerRegistry: null,
             conversationStore: null,
-            logger: logger
+            logger,
+            bindingSink: null,
+            lifecycleServices,
+            factoryReadsContext: false
         )
     { }
+
+    // factoryReadsContext is false for the back-compat overloads, whose factories take loose
+    // positional arguments and so never see the AgentCreationContext — including the bundle on it.
+    private MultiTurnAgentPool(
+        Func<AgentCreationContext, AgentCreationResult> agentFactory,
+        IProviderResolver? providerRegistry,
+        IConversationStore? conversationStore,
+        ILogger<MultiTurnAgentPool> logger,
+        ISandboxBindingSink? bindingSink,
+        MultiTurnLifecycleServices? lifecycleServices,
+        bool factoryReadsContext
+    )
+    {
+        _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
+        _providerRegistry = providerRegistry;
+        _conversationStore = conversationStore;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _bindingSink = bindingSink;
+        _lifecycleServices = lifecycleServices;
+
+        // A legacy factory is handed loose arguments, so the bundle on the context cannot reach the
+        // loops it builds — those agents run ungated no matter what was configured here. Approval
+        // failing open silently is the dangerous half of that, so it is said out loud, once, at
+        // construction: a host that believes its tools are gated learns otherwise before a run, not
+        // after one. Observation-only bundles are not worth a warning; nothing unsafe happens.
+        if (!factoryReadsContext && lifecycleServices?.Approval.IsEnabled == true)
+        {
+            _logger.LogWarning(LegacyFactoryApprovalWarning);
+        }
+    }
+
+    /// <summary>
+    /// The wording emitted when tool approval is configured on a pool whose factory cannot receive
+    /// it. Held as a constant so it stays identical across releases and can be asserted on.
+    /// </summary>
+    internal const string LegacyFactoryApprovalWarning =
+        "Tool approval is configured but this MultiTurnAgentPool was constructed with a legacy agent "
+        + "factory that never sees AgentCreationContext, so the approval gate cannot reach the agents "
+        + "it creates and they will run UNGATED. Switch to the AgentCreationContext-based constructor.";
 
     private static Func<AgentCreationContext, AgentCreationResult> WrapProviderFactory(
         Func<string, AgentProfile, string, string?, AgentCreationResult> agentFactory
@@ -1184,7 +1250,8 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
                 providerId,
                 requestResponseDumpFileName,
                 workspaceId,
-                callerCredential
+                callerCredential,
+                _lifecycleServices
             )
         );
         var agent = result.Agent;

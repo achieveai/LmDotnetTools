@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -66,6 +67,12 @@ public static class WorkflowSession
     ///     on a fixed, pre-configured model rather than the provider agent's hardcoded default.
     /// </param>
     /// <param name="ct">A cancellation token bound to the run.</param>
+    /// <param name="lifecycleServices">
+    ///     Optional lifecycle observation for the controller loop. Any approval gate on it is dropped —
+    ///     see <see cref="MultiTurnLifecycleServices.ForObservationOnly"/> for why a workflow controller
+    ///     is never gated. Declared after <paramref name="ct"/> so existing positional callers keep
+    ///     compiling, matching how <c>WorkflowManager.StartAsync</c> already grew.
+    /// </param>
     public static Task<WorkflowRunHandle> StartAsync(
         string objective,
         JsonObject? inputs,
@@ -81,7 +88,8 @@ public static class WorkflowSession
         bool includeAuthoringTool = true,
         int? controllerMaxTurnsPerRun = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
     {
         ArgumentNullException.ThrowIfNull(objective);
@@ -115,7 +123,8 @@ public static class WorkflowSession
             conversationStore,
             includeAuthoringTool,
             controllerMaxTurnsPerRun,
-            controllerDefaultOptions
+            controllerDefaultOptions,
+            lifecycleServices
         );
         return Task.FromResult(BeginRun(loop, runtime, objective, ct));
     }
@@ -138,6 +147,10 @@ public static class WorkflowSession
     /// <param name="logger">An optional logger; forwarded to the runtime so swallowed best-effort persistence faults are surfaced at Warning.</param>
     /// <param name="schemaValidator">An optional JSON-Schema validator the runtime validates task/terminal outputs with.</param>
     /// <param name="ct">A cancellation token bound to the run.</param>
+    /// <param name="lifecycleServices">
+    ///     Optional lifecycle observation for the resumed controller loop. Any approval gate on it is
+    ///     dropped — see <see cref="MultiTurnLifecycleServices.ForObservationOnly"/>.
+    /// </param>
     /// <exception cref="InvalidOperationException">No snapshot exists for <paramref name="instanceId"/>.</exception>
     public static async Task<WorkflowRunHandle> ResumeAsync(
         string instanceId,
@@ -148,7 +161,8 @@ public static class WorkflowSession
         IConversationStore? conversationStore = null,
         ILogger? logger = null,
         IJsonSchemaValidator? schemaValidator = null,
-        CancellationToken ct = default
+        CancellationToken ct = default,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
     {
         ArgumentException.ThrowIfNullOrEmpty(instanceId);
@@ -167,7 +181,14 @@ public static class WorkflowSession
         var runtime = WorkflowRuntime.FromSnapshot(snapshot, schemaValidator, logger);
         runtime.AttachStore(store, instanceId);
 
-        var loop = BuildLoop(controllerAgent, runtime, threadId, subAgentOptions, conversationStore);
+        var loop = BuildLoop(
+            controllerAgent,
+            runtime,
+            threadId,
+            subAgentOptions,
+            conversationStore,
+            lifecycleServices: lifecycleServices
+        );
 
         // Restore the controller's prior conversation BEFORE driving so it continues with full context.
         // Doing it explicitly here also marks recovery complete so RunAsync does not re-recover.
@@ -188,7 +209,8 @@ public static class WorkflowSession
         IConversationStore? conversationStore,
         bool includeAuthoringTool = true,
         int? maxTurnsPerRun = null,
-        GenerateReplyOptions? controllerDefaultOptions = null
+        GenerateReplyOptions? controllerDefaultOptions = null,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
     {
         var registry = new FunctionRegistry();
@@ -205,7 +227,12 @@ public static class WorkflowSession
             // Fall back to MultiTurnAgentLoop's own default (50) when the caller does not bound it.
             maxTurnsPerRun: maxTurnsPerRun ?? 50,
             store: conversationStore,
-            subAgentOptions: subAgentOptions
+            subAgentOptions: subAgentOptions,
+            // Observation is welcome; the approval gate is not. The controller's tools are the workflow
+            // engine's own steps — advance a node, record a result — so an approver would have nothing
+            // to decide and the workflow would park behind a verdict that never comes. Stripped here,
+            // at the one place a controller loop is built, rather than trusted to every caller.
+            lifecycleServices: MultiTurnLifecycleServices.ForObservationOnly(lifecycleServices)
         );
     }
 

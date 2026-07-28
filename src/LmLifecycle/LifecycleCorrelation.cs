@@ -33,8 +33,18 @@ public sealed record LifecycleCorrelation
     /// The run that caused this run, for a resumed, delayed-result, or sub-agent child.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// Nearest cause, not ultimate origin: a run that continues its own thread points at the run
+    /// before it, even on a sub-agent whose thread was opened by some other agent. A sub-agent's
+    /// spawn therefore shows up here only on its FIRST run; from then on the cross-agent edge is
+    /// <see cref="ParentThreadId"/> and <see cref="SpawningToolCallId"/>, which every event carries.
+    /// A subscriber reconstructing the tree groups by <see cref="SubAgentId"/> and follows those —
+    /// walking <c>parent_run_id</c> alone lands on the child's own earlier run.
+    /// </para>
+    /// <para>
     /// Lineage only. Whether the child inherited provider context is a separate question answered
     /// by <see cref="Payloads.RunStartedPayload.WasForked"/>.
+    /// </para>
     /// </remarks>
     [JsonPropertyName("parent_run_id")]
     public string? ParentRunId { get; set; }
