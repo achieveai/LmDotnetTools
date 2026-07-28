@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
@@ -46,11 +48,15 @@ public sealed class RunTurnLifecycleFinalizer
     private readonly string _threadId;
     private readonly string _sourceStreamId;
     private readonly ILogger _logger;
-    private readonly bool _publishes;
 
     // The runs this finalizer believes are in flight. Presence is the in-process terminalization
     // token: whoever removes an entry owns ending that run.
     private readonly ConcurrentDictionary<string, RunProgress> _inFlight = new(StringComparer.Ordinal);
+
+    // Context sources already reported for this thread, by dedup identity. Presence is the right
+    // NOT to report again: the same block rides in every subsequent request, and re-announcing it
+    // each turn would say "new context arrived" once per model round trip forever.
+    private readonly ConcurrentDictionary<string, byte> _reportedContext = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Creates a finalizer for one thread.
@@ -85,9 +91,9 @@ public sealed class RunTurnLifecycleFinalizer
         _threadId = threadId;
         _services = services;
         _logger = logger ?? NullLogger.Instance;
-        _publishes = services.PublishesEvents;
+        PublishesEvents = services.PublishesEvents;
 
-        var optedIn = _publishes || services.LifecycleStore != null;
+        var optedIn = PublishesEvents || services.LifecycleStore != null;
         _store = optedIn ? services.LifecycleStore ?? fallbackStore : null;
 
         _sourceStreamId = LifecycleSourceStream.ForThread(threadId);
@@ -97,7 +103,13 @@ public sealed class RunTurnLifecycleFinalizer
     /// Whether this finalizer does anything. When false every member returns immediately and the
     /// loop's behavior is byte-for-byte what it was before lifecycle hooks existed.
     /// </summary>
-    public bool IsEnabled => _publishes || _store != null;
+    public bool IsEnabled => PublishesEvents || _store != null;
+
+    /// <summary>
+    /// Whether events reach a subscriber. Narrower than <see cref="IsEnabled"/>, for callers that
+    /// would have to do real work to build an event nobody would receive.
+    /// </summary>
+    public bool PublishesEvents { get; }
 
     /// <summary>
     /// Records that a run started and emits <see cref="LifecycleEventTypes.RunStarted"/>.
@@ -313,6 +325,88 @@ public sealed class RunTurnLifecycleFinalizer
                 Error = error,
             },
             BuildCorrelation(runId, generationId, progress.ParentRunId),
+            _services.TimeProvider.GetUtcNow(),
+            ct).ConfigureAwait(false);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Emits <see cref="LifecycleEventTypes.ContextLoaded"/> for the context blocks a request is
+    /// about to carry to the model for the first time.
+    /// </summary>
+    /// <param name="runId">The run whose request carries the context.</param>
+    /// <param name="generationId">The turn whose request carries it.</param>
+    /// <param name="blocks">
+    /// The blocks found in the request, in request order — from
+    /// <see cref="RenderedContextBlock.ScanRequest"/> or <see cref="RenderedContextBlock.Scan"/>.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// <see langword="true"/> when something was reported; <see langword="false"/> when the request
+    /// carried no context the model had not already been given, or nobody is listening.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Delivered, not discovered.</b> The caller reads these off the request it is about to
+    /// dispatch, so a discovery that was queued, cancelled, superseded, or rediscovered without ever
+    /// reaching a request produces no event — there is no request for it to have been found in.
+    /// </para>
+    /// <para>
+    /// <b>Once per source, per agent.</b> A boot seed sits in the system prompt of every request for
+    /// the life of the conversation, so first delivery is the only interesting moment and repeats
+    /// are dropped by dedup identity. The set is in memory: a conversation reloaded in a new process
+    /// reports its context again on the first dispatch, which is the honest answer — that process
+    /// did hand the model the context, and has no record that anyone else already had. A subscriber
+    /// that cares can compare <see cref="ContextLoadedPayload.RenderedHash"/>.
+    /// </para>
+    /// <para>
+    /// <b>What the hash covers.</b> When one request first carries several sources, the reported
+    /// text is those blocks concatenated in request order. Each part is byte-exact; nothing is
+    /// inserted between them, because a separator would be bytes the model was never sent.
+    /// </para>
+    /// </remarks>
+    public async Task<bool> ContextLoadedAsync(
+        string runId,
+        string generationId,
+        IReadOnlyList<RenderedContextBlock> blocks,
+        CancellationToken ct = default)
+    {
+        if (!PublishesEvents || blocks == null || blocks.Count == 0)
+        {
+            return false;
+        }
+
+        List<RenderedContextBlock>? fresh = null;
+        foreach (var block in blocks)
+        {
+            if (_reportedContext.TryAdd(block.DedupIdentity, 0))
+            {
+                (fresh ??= []).Add(block);
+            }
+        }
+
+        if (fresh == null)
+        {
+            return false;
+        }
+
+        var rendered = fresh.Count == 1 ? fresh[0].Text : string.Concat(fresh.Select(b => b.Text));
+        var renderedBytes = Encoding.UTF8.GetBytes(rendered);
+        var parentRunId = _inFlight.TryGetValue(runId, out var progress) ? progress.ParentRunId : null;
+
+        await PublishAsync(
+            LifecycleEventTypes.ContextLoaded,
+            new ContextLoadedPayload
+            {
+                RunId = runId,
+                GenerationId = generationId,
+                Sources = [.. fresh.Select(b => b.ToLifecycleSource())],
+                RenderedHash = Convert.ToHexString(SHA256.HashData(renderedBytes)).ToLowerInvariant(),
+                RenderedByteCount = renderedBytes.Length,
+                RenderedText = rendered,
+            },
+            BuildCorrelation(runId, generationId, parentRunId),
             _services.TimeProvider.GetUtcNow(),
             ct).ConfigureAwait(false);
 
@@ -747,7 +841,7 @@ public sealed class RunTurnLifecycleFinalizer
         CancellationToken ct)
         where TPayload : class
     {
-        if (!_publishes)
+        if (!PublishesEvents)
         {
             return;
         }

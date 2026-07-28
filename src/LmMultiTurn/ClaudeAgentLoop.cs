@@ -530,6 +530,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 BeginTurn(assignment.RunId, assignment.GenerationId);
                 try
                 {
+                    // Read the discovered context out of the batch that is about to be handed to
+                    // the CLI. What the CLI already holds from its own session start is its to
+                    // report; this reports what this process is sending it.
+                    await ReportContextLoadedAsync(
+                        assignment.RunId, assignment.GenerationId, messagesToSend, ct);
+
                     if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
                     {
                         await ExecuteInteractiveModeAsync(assignment, messagesToSend, ct);
@@ -766,6 +772,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                             }
                         }
 
+                        await ReportContextLoadedAsync(
+                            assignment.RunId, assignment.GenerationId, messagesToSend, ct);
+
                         // Set flags BEFORE SendAsync to prevent race condition
                         _runInProgress = true;
                         _awaitingDequeue = true;
@@ -835,6 +844,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         BeginTurn(assignment.RunId, assignment.GenerationId);
         try
         {
+            // Context that was locally queued while a run was in progress reaches the model here,
+            // not when it was queued — which is why the report sits on the dispatch and not on the
+            // enqueue.
+            await ReportContextLoadedAsync(
+                assignment.RunId, assignment.GenerationId, mergedMessages, ct);
+
             // Execute the merged batch as a full interactive run (waits for ResultEvent)
             await ExecuteInteractiveModeAsync(assignment, mergedMessages, ct);
 

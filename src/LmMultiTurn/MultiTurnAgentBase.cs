@@ -1680,6 +1680,67 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             ct: ct);
 
     /// <summary>
+    /// Reports the discovered context a provider request is about to carry, reading it back out of
+    /// the request itself.
+    /// </summary>
+    /// <param name="runId">The run whose request carries the context.</param>
+    /// <param name="generationId">The turn whose request carries it.</param>
+    /// <param name="request">The request as it will be dispatched.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// Call this from the dispatch site, on the snapshot that is being sent and after nothing else
+    /// will touch it. Reporting from anywhere earlier would describe context that was merely
+    /// intended — the discovery that got cancelled, superseded, or dropped between rendering and
+    /// sending would be announced as delivered.
+    /// </para>
+    /// <para>
+    /// The scan is skipped entirely when nobody subscribes, so a loop without lifecycle pays nothing
+    /// for it.
+    /// </para>
+    /// </remarks>
+    protected Task ReportContextLoadedAsync(
+        string runId,
+        string generationId,
+        IEnumerable<IMessage>? request,
+        CancellationToken ct = default) =>
+        Lifecycle.PublishesEvents
+            ? Lifecycle.ContextLoadedAsync(
+                runId,
+                generationId,
+                RenderedContextBlock.ScanRequest(request),
+                ct)
+            : Task.CompletedTask;
+
+    /// <summary>
+    /// Reports the discovered context a rendered prompt is about to carry, for providers whose
+    /// request is a single string rather than a message list.
+    /// </summary>
+    /// <param name="runId">The run whose prompt carries the context.</param>
+    /// <param name="generationId">The turn whose prompt carries it.</param>
+    /// <param name="prompt">The prompt as it will be dispatched.</param>
+    /// <param name="phase">
+    /// How context in this prompt entered the conversation. Defaults to
+    /// <see cref="LifecycleContextPhases.MidSession"/>, which is what a per-turn prompt carries — a
+    /// CLI provider takes its boot instructions through a separate session-start call, not through
+    /// the turn prompt.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    protected Task ReportContextLoadedAsync(
+        string runId,
+        string generationId,
+        string? prompt,
+        string? phase = null,
+        CancellationToken ct = default) =>
+        Lifecycle.PublishesEvents
+            ? Lifecycle.ContextLoadedAsync(
+                runId,
+                generationId,
+                RenderedContextBlock.Scan(prompt, phase ?? LifecycleContextPhases.MidSession),
+                ct)
+            : Task.CompletedTask;
+
+    /// <summary>
     /// Durably folds newly-injected input receipt ids into the active run's ledger entry.
     /// Called by <c>MultiTurnAgentLoop</c> at its injection point — where a new send that
     /// arrives while a run is still in-flight is folded into that same run

@@ -769,8 +769,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             GenerationId = generationId,
         };
 
-        // Build messages list with system prompt prepended (if configured)
-        var messagesToSend = GetMessagesWithSystemPrompt();
+        // Build messages list with system prompt prepended (if configured). Materialized once: this
+        // list IS the request, and the deferral precondition below, the context report, and the
+        // provider all have to be reading the same snapshot rather than three enumerations of a
+        // history that a concurrent send could have moved on between them.
+        List<IMessage> messagesToSend = [.. GetMessagesWithSystemPrompt()];
 
         // Precondition: never send a request while any deferred tool result is unresolved.
         // The provider would reject an empty tool_result.content, but the real bug is sending
@@ -804,6 +807,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 }
             }
         }
+
+        // Report the discovered context this request carries, read back out of the snapshot that is
+        // about to go out. This is the last point at which "what the model will receive" is both
+        // knowable and settled — earlier is a guess, later is history.
+        await ReportContextLoadedAsync(runId, generationId, messagesToSend, ct);
 
         var stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
 

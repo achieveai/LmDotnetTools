@@ -484,6 +484,11 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
 
         try
         {
+            // The prompt is this provider's whole request, so it is also the only place a
+            // mid-session context delivery can be read back from before it is dispatched. Boot
+            // instructions travel through thread start instead and are not this run's to report.
+            await ReportContextLoadedAsync(runId, generationId, prompt, ct: ct);
+
             await foreach (var envelope in _client.RunStreamingAsync(prompt, ct))
             {
                 eventSequence++;
