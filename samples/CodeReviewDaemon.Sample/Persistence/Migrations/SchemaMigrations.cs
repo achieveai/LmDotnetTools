@@ -16,6 +16,7 @@ internal static class SchemaMigrations
     [
         new Migration(1, V1Sql),
         new Migration(2, V2Sql),
+        new Migration(3, V3Sql),
     ];
 
     // ── v1: initial orchestration schema ─────────────────────────────────────────────────────────
@@ -111,5 +112,24 @@ internal static class SchemaMigrations
     private const string V2Sql = """
         ALTER TABLE review_run ADD COLUMN is_fork_pr            INTEGER NOT NULL DEFAULT 1;
         ALTER TABLE review_run ADD COLUMN is_target_repo_public INTEGER NOT NULL DEFAULT 1;
+        """;
+
+    // ── v3: the deep-link retention ledger ────────────────────────────────────────────────────────
+    // Every hosted S2S conversation the daemon mints (the review itself plus its judge / A-B arms) is
+    // recorded here at the moment it is minted, because only the PRIMARY review's thread id is ever
+    // persisted onto an artifact — an artifact-keyed policy would leave the other arms alive forever.
+    // The row IS the retention claim: it exists while the conversation should stay reachable behind the
+    // posted comment's ?threadId= deep-link, and is deleted once the conversation has been discarded.
+    // Deliberately NOT a child of review_run: the ledger outlives the review by design (a deep-link that
+    // died with its run would defeat the whole point of the S2S path), and a mint has no run id in hand.
+    // minted_at is a fixed-width UTC round-trip ("O") string, so lexicographic comparison is chronological.
+    private const string V3Sql = """
+        CREATE TABLE deep_link_conversation (
+            thread_id  TEXT PRIMARY KEY,
+            title      TEXT NULL,
+            minted_at  TEXT NOT NULL
+        );
+
+        CREATE INDEX ix_deep_link_conversation_minted_at ON deep_link_conversation (minted_at);
         """;
 }

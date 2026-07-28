@@ -37,15 +37,25 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
     private readonly LmStreamingS2SClient _client;
     private readonly CodeReviewDaemonOptions _options;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly Action<string, string?>? _onConversationMinted;
 
+    /// <summary>
+    /// Builds the factory. <c>onConversationMinted</c> is the optional deep-link retention recorder, invoked
+    /// with <c>(threadId, title)</c> the moment a hosted conversation is provisioned. Every arm this factory
+    /// builds — the review, the judge, each A/B variant — mints its own conversation, and only the review's
+    /// thread id ever reaches a persisted artifact, so this is the one hook that sees them all. Null (the
+    /// default) keeps every conversation forever.
+    /// </summary>
     public S2SReviewAgentLoopFactory(
         LmStreamingS2SClient client,
         CodeReviewDaemonOptions options,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        Action<string, string?>? onConversationMinted = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _onConversationMinted = onConversationMinted;
     }
 
     public IMultiTurnAgent Create(
@@ -85,14 +95,18 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
                 nameof(profile));
         }
 
+        var title = BuildTitle(profile, reviewWorkspace);
+        var recorder = _onConversationMinted;
+
         return new S2SReviewAgent(
             _client,
             reviewWorkspace.WorkspaceId,
             _options.LmStreamingProviderId,
             _options.LmStreamingModeId,
             systemPrompt: profile.SystemPrompt,
-            title: BuildTitle(profile, reviewWorkspace),
-            logger: _loggerFactory.CreateLogger<S2SReviewAgent>());
+            title: title,
+            logger: _loggerFactory.CreateLogger<S2SReviewAgent>(),
+            onConversationMinted: recorder is null ? null : minted => recorder(minted, title));
     }
 
     /// <summary>

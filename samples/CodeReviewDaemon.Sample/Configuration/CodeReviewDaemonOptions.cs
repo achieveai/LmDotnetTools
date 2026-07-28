@@ -426,6 +426,21 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public string? LmStreamingReviewMarketplace { get; init; }
 
+    /// <summary>
+    /// How long, in hours, a posted review deep-link stays live: the hosted conversation is discarded from the
+    /// review host once it has existed this long, after which <c>?threadId=</c> stops resolving. Default 24.
+    /// <para>
+    /// This is a <b>ceiling</b>, not a teardown hook — a conversation is never discarded because its review
+    /// finished, its slot was returned or its PR closed, only because it aged out. Reviews are minutes long and
+    /// the link exists to be opened afterwards, so anything that tied the two together would delete the feature.
+    /// </para>
+    /// <para>
+    /// Set to <c>0</c> (or negative) to keep every conversation forever — the pre-retention behaviour, in which
+    /// each review, judge and A/B arm leaves a permanent conversation on the host. Applies only on the S2S path.
+    /// </para>
+    /// </summary>
+    public double DeepLinkRetentionHours { get; init; } = 24;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>

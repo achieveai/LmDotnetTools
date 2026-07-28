@@ -51,6 +51,23 @@ public sealed class MigrationTests
     }
 
     [Fact]
+    public void Migration_v3_adds_the_deep_link_retention_ledger()
+    {
+        using var db = new TempSqliteDatabase();
+        using var connection = SqliteConnectionFactory.Open(db.ConnectionString);
+
+        MigrationRunner.Migrate(connection);
+
+        TableExists(connection, "deep_link_conversation").Should().BeTrue("migration v3 creates the ledger");
+        ColumnExists(connection, "deep_link_conversation", "minted_at").Should()
+            .BeTrue("age since minting is the retention sweep's only input");
+        // Deliberately parentless. A foreign key to review_run would let a cascade take the conversation
+        // down with its run — and the entire point of the ledger is that the deep-link outlives the review.
+        ReadScalar(connection, "SELECT COUNT(*) FROM pragma_foreign_key_list('deep_link_conversation');")
+            .Should().Be("0");
+    }
+
+    [Fact]
     public void Re_running_migrate_on_a_current_database_is_a_noop()
     {
         using var db = new TempSqliteDatabase();

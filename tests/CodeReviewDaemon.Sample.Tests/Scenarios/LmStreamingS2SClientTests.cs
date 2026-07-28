@@ -10,8 +10,9 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// (no network). They pin the wire contract the review host expects: provision sends
 /// <c>ModeId="workspace-agent"</c> and attaches the S2S auth headers (<c>X-S2S-Auth</c> +
 /// the <c>X-Sbx-App-*</c> gateway-credential passthrough) on every request; the workspace and
-/// message/status round-trips parse the server's camelCase JSON; and a connection-refused socket error
-/// surfaces as the actionable <see cref="S2SConnectionException"/> rather than a raw transport failure.
+/// message/status round-trips parse the server's camelCase JSON; the retention delete is 404-tolerant so an
+/// already-gone conversation is not retried forever; and a connection-refused socket error surfaces as the
+/// actionable <see cref="S2SConnectionException"/> rather than a raw transport failure.
 /// </summary>
 public sealed class LmStreamingS2SClientTests
 {
@@ -142,6 +143,64 @@ public sealed class LmStreamingS2SClientTests
 
         status.Status.Should().Be("InProgress");
         status.ResponseText.Should().BeNull("the final assistant text is absent until the run is terminal");
+    }
+
+    [Fact]
+    public async Task DeleteConversationAsync_discards_the_conversation_and_carries_the_auth_headers()
+    {
+        string? capturedS2SAuth = null;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.Method == HttpMethod.Delete,
+                req =>
+                {
+                    capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
+                        ? values.FirstOrDefault()
+                        : null;
+                    return new HttpResponseMessage(HttpStatusCode.NoContent);
+                });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(
+            http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
+
+        var deleted = await client.DeleteConversationAsync("thread-abc123", CancellationToken.None);
+
+        deleted.Should().BeTrue();
+        var recorded = handler.Requests.Should().ContainSingle().Subject;
+        recorded.Uri.ToString().Should().Be("http://localhost:5051/api/conversations/thread-abc123");
+        // The delete route is [InboundS2SAuth]-guarded like every other S2S route, so the same three headers
+        // must ride it — a delete that 401s would look to the sweeper like a transient failure forever.
+        capturedS2SAuth.Should().Be("s2s-secret");
+        recorded.SbxAppId.Should().Be("codereview-daemon");
+        recorded.SbxAppKey.Should().Be("sbx-key");
+    }
+
+    [Fact]
+    public async Task DeleteConversationAsync_reports_an_already_gone_conversation_rather_than_throwing()
+    {
+        // The review host 404s a thread it no longer has (deleted by hand, host storage reset). That is the
+        // state the retention sweep wanted, reached by another route — not an error to retry forever.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Delete, "api/conversations", "{}", HttpStatusCode.NotFound);
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var deleted = await client.DeleteConversationAsync("thread-gone", CancellationToken.None);
+
+        deleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeleteConversationAsync_throws_on_a_server_error_so_the_caller_can_retry()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Delete, "api/conversations", "boom", HttpStatusCode.InternalServerError);
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.DeleteConversationAsync("thread-1", CancellationToken.None);
+
+        await act.Should().ThrowAsync<HttpRequestException>();
     }
 
     [Fact]

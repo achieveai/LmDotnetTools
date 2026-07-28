@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
@@ -121,6 +122,34 @@ internal sealed class LmStreamingS2SClient
             $"api/conversations/{Uri.EscapeDataString(threadId)}/metadata",
             new { Title = title, Preview = preview },
             ct);
+    }
+
+    /// <summary>
+    /// Discards a hosted conversation: the review host evicts its pooled agent and deletes the thread, so
+    /// the deep-link <c>?threadId=</c> stops resolving. Returns <c>true</c> when this call deleted it and
+    /// <c>false</c> when the host reports it was already gone (404) — an absent conversation is the state
+    /// the caller wanted, not a failure, so the retention sweep can treat both as "done" while a genuine
+    /// error (auth, 5xx, host down) still throws and leaves the ledger row for the next cycle.
+    /// <para>
+    /// This is a RETENTION-CEILING operation, never a teardown one. Conversations must outlive their
+    /// review — the posted comment's deep-link is the reason the S2S path exists.
+    /// </para>
+    /// </summary>
+    public async Task<bool> DeleteConversationAsync(string threadId, CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Delete,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}",
+            body: null,
+            ct);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        return true;
     }
 
     /// <summary>Queues a user message onto the thread and returns the input id to poll status by.</summary>

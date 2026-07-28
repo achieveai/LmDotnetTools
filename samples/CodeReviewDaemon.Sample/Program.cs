@@ -348,10 +348,37 @@ if (daemonOptions.UseS2SReviewAgent)
         daemonCredential,
         sp.GetRequiredService<ILogger<GatewaySkillProbe>>()));
 
-    builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp => new S2SReviewAgentLoopFactory(
-        sp.GetRequiredService<LmStreamingS2SClient>(),
-        daemonOptions,
-        sp.GetRequiredService<ILoggerFactory>()));
+    // Deep-link retention ceiling. Every posted comment carries ?threadId=, so the hosted conversation must
+    // OUTLIVE its review — but not forever. When a window is configured, each minted conversation is recorded
+    // in the ledger and discarded once it has aged past it. The recorder and the sweeper are registered
+    // together on purpose: a ledger row IS the claim "this should eventually be discarded", so with retention
+    // off (Hours <= 0) nothing is recorded and nothing is ever deleted — the pre-retention behaviour.
+    var deepLinkRetention = daemonOptions.DeepLinkRetentionHours > 0
+        ? TimeSpan.FromHours(daemonOptions.DeepLinkRetentionHours)
+        : (TimeSpan?)null;
+
+    if (deepLinkRetention is { } retentionWindow)
+    {
+        builder.Services.AddSingleton(sp => new DeepLinkRetentionSweeper(
+            sp.GetRequiredService<ReviewStore>(),
+            sp.GetRequiredService<LmStreamingS2SClient>(),
+            retentionWindow,
+            sp.GetRequiredService<ILogger<DeepLinkRetentionSweeper>>()));
+    }
+
+    builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
+    {
+        // Resolved once here rather than per mint: the recorder runs inside the agent's provision path, and
+        // resolving from the container there would outlive the scope it was captured from.
+        var store = sp.GetRequiredService<ReviewStore>();
+        return new S2SReviewAgentLoopFactory(
+            sp.GetRequiredService<LmStreamingS2SClient>(),
+            daemonOptions,
+            sp.GetRequiredService<ILoggerFactory>(),
+            onConversationMinted: deepLinkRetention is null
+                ? null
+                : (threadId, title) => store.RecordDeepLinkConversation(threadId, title));
+    });
 }
 else
 {
@@ -824,9 +851,33 @@ builder.Services.AddHostedService(sp => new PrPollingService(
     sp.GetRequiredService<ReviewStore>(),
     sp.GetRequiredService<PrOrchestrator>(),
     sp.GetRequiredService<ILogger<PrPollingService>>(),
-    // The PR-lifecycle sweep runs on the poller cadence when the pooled path registered a sweeper; the
-    // GetService is null otherwise, so the poller keeps polling with no sweep (design §4.5).
-    sweepAsync: sp.GetService<PrLifecycleSweeper>() is { } sweeper ? sweeper.SweepAsync : null));
+    // Maintenance runs on the poller cadence: the PR-lifecycle sweep (registered by the pooled path) and the
+    // deep-link retention sweep (registered by the S2S path when a window is configured). Either or both may
+    // be absent, in which case the poller keeps polling with no sweep (design §4.5).
+    sweepAsync: ComposeMaintenanceSweep(
+        sp.GetService<PrLifecycleSweeper>() is { } lifecycleSweeper ? lifecycleSweeper.SweepAsync : null,
+        sp.GetService<DeepLinkRetentionSweeper>() is { } retentionSweeper ? retentionSweeper.SweepAsync : null)));
+
+// Chains the optional maintenance sweeps into the poller's single seam, in the order they were introduced:
+// the lifecycle sweep first, so its today's-semantics timing is unchanged by the retention sweep landing
+// behind it. The poller already wraps the whole seam in its own try/catch, so a throwing sweep skips the
+// rest of THIS cycle and both are retried on the next one — harmless against a 24-hour ceiling checked every
+// 30 seconds.
+static Func<CancellationToken, Task>? ComposeMaintenanceSweep(
+    Func<CancellationToken, Task>? first,
+    Func<CancellationToken, Task>? second)
+{
+    if (first is null || second is null)
+    {
+        return first ?? second;
+    }
+
+    return async ct =>
+    {
+        await first(ct).ConfigureAwait(false);
+        await second(ct).ConfigureAwait(false);
+    };
+}
 
 // ── HTTP surface ───────────────────────────────────────────────────────────────────────────────
 // The daemon exposes exactly TWO routes, both gateway callbacks authenticated by the same shared

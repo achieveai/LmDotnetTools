@@ -1,3 +1,4 @@
+using System.Globalization;
 using CodeReviewDaemon.Sample.Persistence.Migrations;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using Microsoft.Data.Sqlite;
@@ -45,6 +46,12 @@ internal sealed class ReviewStore : IDisposable
     }
 
     private static string UtcNow() => DateTimeOffset.UtcNow.ToString("O");
+
+    /// <summary>
+    /// Renders an instant the way <see cref="UtcNow"/> does: normalized to UTC first, so every stored
+    /// timestamp has the same fixed-width shape and offset and lexicographic ordering stays chronological.
+    /// </summary>
+    private static string Utc(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
 
     // ── Repo identity (§7) ───────────────────────────────────────────────────────────────────────
 
@@ -556,6 +563,84 @@ internal sealed class ReviewStore : IDisposable
         return results;
     }
 
+    // ── deep_link_conversation (deep-link retention ledger) ──────────────────────────────────────
+
+    /// <summary>
+    /// Records a hosted S2S conversation as reachable behind a posted deep-link, starting its retention
+    /// clock. Called at the single mint choke point (<c>S2SReviewAgent.EnsureProvisionedAsync</c>) so the
+    /// judge and A/B arms — whose thread ids never reach an artifact — are covered too.
+    /// <para>
+    /// <c>INSERT OR IGNORE</c>: a re-record for a thread already in the ledger must not restart the clock,
+    /// so the FIRST mint wins. A thread that has already been discarded has no row and is not resurrected
+    /// here either — <see cref="RemoveDeepLinkConversation"/> is the end of its life, not a pause.
+    /// </para>
+    /// </summary>
+    public void RecordDeepLinkConversation(string threadId, string? title, DateTimeOffset? mintedAtUtc = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            INSERT OR IGNORE INTO deep_link_conversation (thread_id, title, minted_at)
+            VALUES ($threadId, $title, $mintedAt);
+            """;
+        _ = command.Parameters.AddWithValue("$threadId", threadId);
+        _ = command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
+        _ = command.Parameters.AddWithValue(
+            "$mintedAt",
+            mintedAtUtc is { } minted ? Utc(minted) : UtcNow());
+        _ = command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Lists the conversations minted strictly before <paramref name="cutoffUtc"/> — i.e. those whose
+    /// deep-link has outlived the retention window and may be discarded. Comparison is lexicographic over
+    /// the fixed-width UTC round-trip ("O") timestamps this store writes, which is chronological because
+    /// every value is normalized to UTC on the way in.
+    /// </summary>
+    public IReadOnlyList<DeepLinkConversationRow> ListDeepLinkConversationsMintedBefore(DateTimeOffset cutoffUtc)
+    {
+        var results = new List<DeepLinkConversationRow>();
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT thread_id, title, minted_at
+            FROM deep_link_conversation
+            WHERE minted_at < $cutoff
+            ORDER BY minted_at;
+            """;
+        _ = command.Parameters.AddWithValue("$cutoff", Utc(cutoffUtc));
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            results.Add(new DeepLinkConversationRow(
+                reader.GetString(reader.GetOrdinal("thread_id")),
+                GetNullableString(reader, "title"),
+                DateTimeOffset.Parse(
+                    reader.GetString(reader.GetOrdinal("minted_at")),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind)));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Drops a conversation from the ledger once it has been discarded (or was already gone server-side).
+    /// Idempotent — a missing row is not an error, so a retried sweep cannot fail on its own success.
+    /// </summary>
+    public void RemoveDeepLinkConversation(string threadId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(threadId);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = "DELETE FROM deep_link_conversation WHERE thread_id = $threadId;";
+        _ = command.Parameters.AddWithValue("$threadId", threadId);
+        _ = command.ExecuteNonQuery();
+    }
+
     // ── mapping helpers ──────────────────────────────────────────────────────────────────────────
 
     private static ReviewRun MapReviewRun(SqliteDataReader reader) => new()
@@ -625,3 +710,10 @@ internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string 
 /// never completed a review), and how many rounds have completed so far.
 /// </summary>
 internal sealed record PriorReviewSummary(string? PrevHeadSha, int PriorReviewCount);
+
+/// <summary>
+/// One hosted conversation still reachable behind a posted deep-link, as enumerated by
+/// <see cref="ReviewStore.ListDeepLinkConversationsMintedBefore"/>. <paramref name="MintedAt"/> is when the
+/// conversation was provisioned — the start of its retention window, not when the review finished.
+/// </summary>
+internal sealed record DeepLinkConversationRow(string ThreadId, string? Title, DateTimeOffset MintedAt);

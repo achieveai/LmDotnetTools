@@ -53,6 +53,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
     private readonly TimeSpan _interruptedGrace;
     private readonly TimeSpan _overallTimeout;
     private readonly ILogger<S2SReviewAgent> _logger;
+    private readonly Action<string>? _onConversationMinted;
 
     private string? _threadId;
     private string? _currentRunId;
@@ -69,7 +70,8 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         TimeSpan? pollMaxInterval = null,
         TimeSpan? overallTimeout = null,
         TimeSpan? terminalConfirmDelay = null,
-        TimeSpan? interruptedGrace = null)
+        TimeSpan? interruptedGrace = null,
+        Action<string>? onConversationMinted = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
@@ -81,6 +83,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         _systemPrompt = systemPrompt;
         _title = title;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _onConversationMinted = onConversationMinted;
 
         // Live workspace-agent reviews are long (a run can reach turn 17 of 150), so the poll must be patient
         // but not busy: start tight, back off geometrically to a ceiling, and bound the whole wait.
@@ -188,6 +191,28 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
             _providerId,
             _modeId,
             _systemPrompt?.Length ?? 0);
+
+        // Record the mint BEFORE the (best-effort, failure-tolerated) title update, so a cosmetic failure can
+        // never cost the conversation its retention row. This is the single choke point through which the
+        // review, judge and A/B arms all provision — and only the review's thread id ever reaches an artifact,
+        // so recording anywhere downstream would leave the other arms un-aged and permanent.
+        if (_onConversationMinted is not null)
+        {
+            try
+            {
+                _onConversationMinted(threadId);
+            }
+            catch (Exception ex)
+            {
+                // Bookkeeping must never fail a review. The cost of losing this row is a conversation that
+                // outlives its retention window — strictly better than a review that dies over a ledger write.
+                _logger.LogWarning(
+                    ex,
+                    "Could not record S2S review conversation {ThreadId} in the deep-link retention ledger; "
+                        + "it will not be discarded automatically.",
+                    threadId);
+            }
+        }
 
         if (!string.IsNullOrWhiteSpace(_title))
         {
