@@ -137,6 +137,43 @@ public class OpenAiDialectTests
     }
 
     [Fact]
+    public async Task Responses_strips_hosted_tools_before_forwarding()
+    {
+        // Codex CLI advertises the hosted image_generation tool on every request and cannot be told
+        // not to, so this filter is the difference between Codex working through the proxy and a
+        // hard 400 from Copilot.
+        string? forwardedBody = null;
+        await using var factory = Factory(
+            async (request, _) =>
+            {
+                forwardedBody = await request.Content!.ReadAsStringAsync();
+                return TestUpstream.Json("""{"id":"resp_1","output":[]}""");
+            }
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/responses",
+            new
+            {
+                model = "gpt-5.3-codex",
+                input = Array.Empty<object>(),
+                tools = new object[]
+                {
+                    new { type = "image_generation" },
+                    new { type = "function", name = "shell" },
+                },
+            }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var sent = JsonDocument.Parse(forwardedBody!);
+        var tools = sent.RootElement.GetProperty("tools").EnumerateArray().ToArray();
+        tools.Should().HaveCount(1);
+        tools[0].GetProperty("name").GetString().Should().Be("shell");
+    }
+
+    [Fact]
     public async Task Responses_returns_an_openai_shaped_404_for_a_model_that_cannot_serve_it()
     {
         await using var factory = Factory((_, _) => throw new InvalidOperationException("must not be forwarded"));

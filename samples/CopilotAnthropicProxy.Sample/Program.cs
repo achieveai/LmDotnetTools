@@ -745,11 +745,33 @@ public static class ProxyModelResolver
     }
 
     /// <summary>
+    ///     Tool types Copilot's <c>/responses</c> accepts. Both are client-defined: <c>function</c>
+    ///     (JSON-schema arguments) and <c>custom</c> (freeform text, which is how current Codex sends
+    ///     <c>apply_patch</c>). Every other type is a hosted tool executed on the server.
+    /// </summary>
+    /// <remarks>
+    ///     An allowlist rather than a denylist, for the same reason
+    ///     <c>AnthropicToResponsesRequest.BuildTools</c> keys off <c>input_schema</c>: it drops hosted
+    ///     tools this proxy has never seen instead of forwarding them into a 400. Live-probed
+    ///     2026-07-28 — <c>image_generation</c>, <c>local_shell</c>, <c>code_interpreter</c> and
+    ///     <c>mcp</c> each fail with <c>"The requested tool &lt;type&gt; is not supported."</c>
+    ///     <c>web_search</c> is currently accepted upstream but is dropped anyway: it is hosted, and
+    ///     the translated Anthropic route already drops its counterpart <c>web_search_20250305</c>.
+    /// </remarks>
+    private static readonly HashSet<string> ClientDefinedToolTypes = new(StringComparer.Ordinal)
+    {
+        "function",
+        "custom",
+    };
+
+    /// <summary>
     ///     Raw <see cref="JsonNode"/> rewrite of the request body: sets/injects <c>model</c> and strips
     ///     the top-level <c>context_management</c> field (Copilot's backend rejects it outright with
     ///     <c>"context_management: Extra inputs are not permitted"</c>, so it can never be forwarded).
-    ///     Never deserializes to a typed DTO, so <c>cache_control</c>, <c>thinking</c>, <c>system</c>
-    ///     blocks, and every other unknown field are preserved verbatim.
+    ///     With <paramref name="stripHostedTools"/> it also filters <c>tools</c> down to
+    ///     <see cref="ClientDefinedToolTypes"/>. Never deserializes to a typed DTO, so
+    ///     <c>cache_control</c>, <c>thinking</c>, <c>system</c> blocks, and every other unknown field
+    ///     are preserved verbatim.
     /// </summary>
     /// <returns>True on success; false when the body is missing, not JSON, or not a JSON object.</returns>
     public static bool TryRewriteModel(
@@ -757,7 +779,8 @@ public static class ProxyModelResolver
         string model,
         out byte[] rewritten,
         out string? incomingModel,
-        bool renameMaxTokens = false
+        bool renameMaxTokens = false,
+        bool stripHostedTools = false
     )
     {
         ArgumentNullException.ThrowIfNull(body);
@@ -809,6 +832,40 @@ public static class ProxyModelResolver
             if (!obj.ContainsKey("max_completion_tokens"))
             {
                 obj["max_completion_tokens"] = clonedMaxTokens;
+            }
+        }
+
+        // Codex CLI advertises the hosted `image_generation` tool on every request and offers no way
+        // to turn it off (`-c tools.image_generation=false` has no effect), so without this filter
+        // Copilot 400s the request and Codex cannot use the proxy at all.
+        if (stripHostedTools && obj["tools"] is JsonArray tools)
+        {
+            var kept = new JsonArray();
+            foreach (var tool in tools)
+            {
+                if (
+                    tool is JsonObject toolObject
+                    && toolObject["type"] is JsonValue toolType
+                    && toolType.TryGetValue<string>(out var type)
+                    && ClientDefinedToolTypes.Contains(type)
+                )
+                {
+                    kept.Add(tool.DeepClone());
+                }
+            }
+
+            // Only touch the body when something was actually dropped: a request that carries no
+            // hosted tools must forward byte-for-byte.
+            if (kept.Count != tools.Count)
+            {
+                if (kept.Count == 0)
+                {
+                    _ = obj.Remove("tools");
+                }
+                else
+                {
+                    obj["tools"] = kept;
+                }
             }
         }
 
@@ -924,13 +981,15 @@ internal static class ProxyHttp
 
         // 3) Rewrite the body (raw JSON). Parse failure -> 400 (do NOT call upstream).
         var renameMaxTokens = dialect == ProxyDialect.ChatCompletions && !modelInfo.IsAnthropic;
+        var stripHostedTools = dialect == ProxyDialect.Responses;
         if (
             !ProxyModelResolver.TryRewriteModel(
                 inboundBody,
                 outboundModel,
                 out var outboundBody,
                 out var incomingModel,
-                renameMaxTokens
+                renameMaxTokens,
+                stripHostedTools
             )
         )
         {

@@ -293,8 +293,8 @@ list**: `ModeToolFilter.FilterBuiltInTools` returns `null` for an empty tool set
 
 ## Known request incompatibilities (stripped before forwarding)
 
-Copilot's backend rejects two things Claude Code routinely sends. Both are stripped unconditionally
-— the client never sees a 400 for either:
+Copilot's backend rejects three things its clients routinely send. All are stripped unconditionally
+— the client never sees a 400 for any of them:
 
 - **`anthropic-beta` header.** Copilot's backend rejects the *entire* request if even one value in a
   comma-separated `anthropic-beta` header is one it doesn't recognize (`"unsupported beta header(s):
@@ -303,13 +303,35 @@ Copilot's backend rejects two things Claude Code routinely sends. Both are strip
 - **`context_management` body field.** Copilot's backend rejects the request outright
   (`"context_management: Extra inputs are not permitted"`) if this top-level field is present. It is
   removed from the JSON body (alongside the `model` rewrite) before forwarding.
+- **Hosted tools on `/responses`.** Copilot supports only *client-defined* tools. Anything else is
+  rejected with `"The requested tool <type> is not supported."` — live-probed 2026-07-28:
 
-The translated route avoids both by construction: it builds a new Responses body from an explicit
-allowlist rather than patching the inbound one, so `betas`, `cache_control`, `metadata` and server
-tools are dropped without needing to be enumerated.
+  | tool type | Copilot |
+  | --- | --- |
+  | `function`, `custom` | accepted — forwarded |
+  | `web_search`, `web_search_preview` | accepted, but **still stripped** (see below) |
+  | `image_generation`, `local_shell`, `code_interpreter`, `mcp` | **400** |
+
+  This matters because Codex CLI advertises `image_generation` on *every* request and offers no way
+  to disable it (`-c tools.image_generation=false` has no effect), so without this filter Codex
+  cannot use the proxy at all. The `tools` array is filtered to `function` and `custom`; if nothing
+  survives, the key is removed. It is an allowlist rather than a denylist so that hosted tools this
+  proxy has never seen are dropped instead of forwarded into the same 400 — which is also why
+  `web_search` goes even though Copilot currently accepts it, matching the translated Anthropic
+  route, which already drops its counterpart `web_search_20250305`. Requests carrying no hosted
+  tools are forwarded byte-for-byte.
+
+The translated route avoids the first two by construction: it builds a new Responses body from an
+explicit allowlist rather than patching the inbound one, so `betas`, `cache_control`, `metadata` and
+server tools are dropped without needing to be enumerated.
 
 ## Non-goals (intentionally not implemented)
 
+- **No Codex-shaped model discovery.** Codex CLI logs `failed to refresh available models: missing
+  field 'models'` at startup: it expects `{"models":[…]}` from `GET /models`, while `GET /v1/models`
+  serves the standard OpenAI `{"object":"list","data":[…]}` that opencode and the OpenAI SDKs
+  require. The two shapes conflict on one path, and the failure is non-fatal — Codex falls back to
+  the configured `-c model=…` and runs normally, including tool calls.
 - **No response-body rewriting on the passthrough routes.** The response body and the SSE
   `message_start` event carry whatever model id was actually sent upstream — never rewritten back to
   the client's requested id. This is accepted for raw-passthrough fidelity.
