@@ -1854,7 +1854,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // out in review #180 — and the mechanism behind the Posted-stage index.lock we observed). Destroying
         // the session first terminates those child processes and unmounts, so the slot is quiescent before we
         // touch it. Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
-        if (_options.EnableToolAssistedReview && _provisioner is not null)
+        // Excluded on S2S for the same reason as ReleaseReviewLeaseAsync: BuildToolContextAsync returns
+        // before provisioning there, so the daemon owns no session to destroy — the container belongs to the
+        // review host and must OUTLIVE the run, because the posted comment's ?threadId= deep-link is the whole
+        // point of that path. DestroyAsync is a documented no-op with no session, so this guard states the
+        // invariant at the call site rather than leaving it to be inferred two files away.
+        if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
         {
             await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
         }

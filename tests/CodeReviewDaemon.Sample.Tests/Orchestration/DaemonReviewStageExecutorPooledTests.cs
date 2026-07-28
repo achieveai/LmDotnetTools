@@ -573,6 +573,24 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task S2S_returns_the_slot_without_destroying_a_session_the_daemon_does_not_own()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // The inverse of the two cases above, and the reason both teardown sites are guarded on S2S. There,
+        // BuildToolContextAsync returns BEFORE provisioning, so the daemon owns no session to destroy — while
+        // the container that does exist belongs to the review host and must OUTLIVE the run: the posted
+        // comment's ?threadId= deep-link is the entire reason this path exists, and tearing the conversation
+        // down at teardown would 404 that link the moment the review finished.
+        fixture.CleanupOrder.Should().NotContain("destroy");
+        fixture.CleanupOrder.Should().ContainSingle().Which.Should().Be(
+            "return", "the slot still goes back to the pool — only the session teardown is skipped");
+    }
+
+    [Fact]
     public async Task ReleaseReviewLease_destroys_the_session_before_returning_the_slot()
     {
         using var fixture = Fixture.Create();
