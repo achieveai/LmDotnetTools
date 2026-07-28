@@ -84,16 +84,14 @@ public static class AnthropicToResponsesRequest
         // on both the streaming and non-streaming path; each echoed it back normalised to
         // "summary":"detailed" alongside a per-model default effort. So no served model rejects it.
         //
-        // It is not uniformly PRODUCTIVE, though, and not even deterministically so. Across two sweeps
-        // of the same nine models with the same prompt, the models Copilot defaults to "effort":"none"
-        // emitted no summary events either time, while the ones defaulting to "medium" varied run to
-        // run — a different single model produced summaries in each sweep. So a summary is a per-turn
-        // possibility, not a per-model property, and no caller should depend on getting one.
-        //
-        // Sending an effort of our own would likely make this reliable, but it would also change how
-        // hard every model thinks and what every request costs — a decision this translation layer
-        // should not make silently on the caller's behalf.
-        target["reasoning"] = new JsonObject { ["summary"] = "auto" };
+        // It is not uniformly PRODUCTIVE on its own, though, and not even deterministically so. Across
+        // two sweeps of the same nine models with the same prompt, the models Copilot defaults to
+        // "effort":"none" emitted no summary events either time, while the ones defaulting to "medium"
+        // varied run to run — a different single model produced summaries in each sweep. An effort is
+        // what moves a summary from impossible to usual (still not guaranteed on any one turn), and
+        // BuildReasoning takes that from the client rather than imposing one, so a turn the user never
+        // asked to think about costs exactly what it costs today.
+        target["reasoning"] = BuildReasoning(source["thinking"]);
 
         // tool_choice is only considered when a non-empty tools array actually made it into the
         // request — the Responses API rejects tool_choice when tools is absent, and BuildToolChoice
@@ -110,6 +108,52 @@ public static class AnthropicToResponsesRequest
         }
 
         return target;
+    }
+
+    /// <summary>
+    ///     Builds the Responses <c>reasoning</c> field from Anthropic's top-level <c>thinking</c>.
+    ///
+    ///     <c>summary: "auto"</c> is unconditional — without it Copilot sends no reasoning summary
+    ///     events at all, so no <c>thinking</c> block can ever be produced. Every served model accepts
+    ///     it; none rejects it.
+    ///
+    ///     <c>effort</c> is NOT unconditional, and is never invented. Copilot gives each model a default
+    ///     effort and several default to <c>"none"</c>, which means the turn does not reason and there
+    ///     is nothing to summarise — so summaries alone are unreliable. The fix is to ask for effort,
+    ///     but choosing a global one would change how hard every model thinks and what every request
+    ///     costs. Anthropic clients already say how hard to think: extended thinking arrives as
+    ///     <c>thinking: {"type":"enabled","budget_tokens":N}</c>. So the client's own budget is mapped
+    ///     onto the coarse effort Responses accepts, and a request that never enabled thinking gets no
+    ///     <c>effort</c> — today's behaviour and today's cost, exactly.
+    /// </summary>
+    private static JsonObject BuildReasoning(JsonNode? thinking)
+    {
+        var reasoning = new JsonObject { ["summary"] = "auto" };
+
+        if (
+            thinking is not JsonObject request
+            || request["type"] is not JsonValue kind
+            || !kind.TryGetValue<string>(out var type)
+            || type != "enabled"
+        )
+        {
+            return reasoning;
+        }
+
+        // The thresholds separate the tiers Claude Code itself sends, which sit near 4k, 10k and 32k
+        // tokens — each lands in a different bucket with room to spare, so they are not arbitrary.
+        // An enabled request with no budget means "think", and medium is the neutral reading of that.
+        reasoning["effort"] =
+            request["budget_tokens"] is JsonValue budget && budget.TryGetValue<int>(out var budgetTokens)
+                ? budgetTokens switch
+                {
+                    < 8192 => "low",
+                    < 24576 => "medium",
+                    _ => "high",
+                }
+                : "medium";
+
+        return reasoning;
     }
 
     /// <summary>

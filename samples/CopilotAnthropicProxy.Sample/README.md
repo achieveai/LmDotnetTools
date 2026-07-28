@@ -128,21 +128,35 @@ Responses API. Every passthrough route is byte-for-byte and has none of them.
 
 **Reasoning**
 
-- **`thinking` blocks are best-effort, and reasoning never carries across turns.** Copilot emits
-  reasoning summaries *only* when one is explicitly asked for, so the translated request always sends
-  `reasoning: {"summary": "auto"}` — without it no summary events arrive and no `thinking` block can
-  ever be emitted. Asking is safe everywhere: all nine `/responses` models this account serves accept
-  the field. Getting a summary back is another matter. Copilot gives each model a default reasoning
-  `effort`, and the models it defaults to `"none"` produced no summary on any probe — they cannot
-  summarise a turn they never reasoned through. Among the models defaulting to `"medium"` it varies
-  **per turn, not per model**: two sweeps of the same nine models with the same prompt produced
-  summaries from a different single model each time. Treat a `thinking` block as something you may
-  get, not something a given model will reliably give you. The proxy does not send an `effort` of its
-  own, because choosing one would change how hard every model thinks and what every request costs.
-  Separately, the encrypted payload that would let a GPT model resume its own reasoning through a tool
-  loop is not round-tripped, so answers stay correct but the model re-derives its reasoning each turn.
-  The `thinking` blocks that do get emitted carry **no `signature`** — Anthropic clients that verify
-  one will reject them.
+- **Turn extended thinking on if you want `thinking` blocks.** Copilot emits reasoning summaries
+  only when asked, so the translated request always sends `reasoning: {"summary": "auto"}` — without
+  it no summary events arrive and no `thinking` block can ever be emitted. Every served `/responses`
+  model accepts that field, but on its own it is unreliable: Copilot gives each model a default
+  reasoning `effort`, and a model defaulting to `"none"` never reasons, so there is nothing to
+  summarise. Even among models defaulting to `"medium"`, whether a summary arrives varies **per turn,
+  not per model**.
+
+  What makes it dependable is enabling extended thinking on the client. When a request carries
+  `thinking: {"type": "enabled", "budget_tokens": N}`, the proxy maps that budget onto the
+  Responses `effort` the model actually needs:
+
+  | `budget_tokens` | `effort` |
+  |---|---|
+  | `< 8192` | `low` |
+  | `< 24576` | `medium` |
+  | `>= 24576` | `high` |
+  | absent | `medium` |
+
+  Every served model accepts all three efforts. Measured over four runs against the four models that
+  default to `effort: "none"` — models that can *never* produce a `thinking` block otherwise — three
+  of them returned one on every run and the fourth on two of four. So enabling thinking moves this
+  from impossible to usual, but a `thinking` block is still not contractually guaranteed on any given
+  turn. **No `effort` is sent when the client did not enable thinking**, so a turn the user never
+  asked to think about costs exactly what it costs today.
+- **Reasoning still does not carry across turns.** The encrypted payload that would let a GPT model
+  resume its own reasoning through a tool loop is not round-tripped, so answers stay correct but the
+  model re-derives its reasoning each turn. The `thinking` blocks that are emitted also carry **no
+  `signature`** — Anthropic clients that verify one will reject them.
 
 **Response content**
 
@@ -299,8 +313,8 @@ tools are dropped without needing to be enumerated.
 real Copilot backend and are run by hand; they cover the things a fixture cannot prove — the live
 spelling of every Responses SSE event the stream translator switches on, the shape of
 `incomplete_details` on a truncated reply, whether every served model accepts the reasoning field and
-which of them produce summaries from it, and whether a cached prefix is counted inside the reported
-`input_tokens`.
+every mapped `effort`, whether enabling extended thinking rescues the models that default to
+`effort: "none"`, and whether a cached prefix is counted inside the reported `input_tokens`.
 
 ```bash
 dotnet test tests/CopilotLive.Tests/CopilotLive.Tests.csproj

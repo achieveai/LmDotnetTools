@@ -212,6 +212,10 @@ public sealed class CopilotAnthropicProxyLiveTests
         _output.WriteLine($"OBSERVED raw status field:       {ReadEcho(rawBody, "status")}");
         _output.WriteLine($"OBSERVED raw incomplete_details: {ReadEcho(rawBody, "incomplete_details")}");
 
+        // Named up front, so an upstream 400 fails as "the call did not succeed" rather than as a
+        // confusing "incomplete_details was missing" further down.
+        rawStatus.Should().Be(HttpStatusCode.OK, "a truncated reply is still a successful call: {0}", Truncate(rawBody, 400));
+
         var body = await PostProxyAsync(
             "/v1/messages",
             new
@@ -342,18 +346,21 @@ public sealed class CopilotAnthropicProxyLiveTests
     }
 
     /// <summary>
-    ///     Establishes whether Copilot EVER emits reasoning summaries, and if so under what request.
-    ///     It matters because <c>AnthropicToResponsesRequest</c> sends no <c>reasoning</c> field at all:
-    ///     if summaries only arrive when explicitly requested, the translators' <c>thinking</c> arms are
-    ///     unreachable on the translated route. Two captures, both text-only on a prompt that rewards
-    ///     thinking (a forced tool call short-circuits reasoning): one silent, one asking for summaries
-    ///     at a non-default effort. Recorded rather than asserted — the point is the observation.
+    ///     Establishes the asymmetry the README rests on: Copilot NEVER volunteers reasoning summaries,
+    ///     and does produce them when asked. That is why <c>AnthropicToResponsesRequest</c> sends
+    ///     <c>reasoning</c> on every translated request — without it the translators' <c>thinking</c>
+    ///     arms would be unreachable. Both captures are text-only on a prompt that rewards thinking; a
+    ///     forced tool call short-circuits reasoning and would fake a negative.
+    ///
+    ///     The "never volunteers" half is checked on one model, because it has held on every model on
+    ///     every run. The "produces when asked" half walks the catalog instead, because whether any ONE
+    ///     turn reasons is a coin flip — asserting it on a single sample failed a full-suite run.
     /// </summary>
     [SkippableFact]
     public async Task Responses_stream_reports_when_reasoning_summaries_arrive()
     {
         Skip.IfNot(_fixture.Available, _fixture.SkipReason);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(600));
 
         var model = await PickResponsesOnlyModelAsync(cts.Token);
         _output.WriteLine($"model: {model}");
@@ -364,33 +371,45 @@ public sealed class CopilotAnthropicProxyLiveTests
         );
         DumpCapture("raw streaming /responses, no reasoning field sent", silent);
 
-        var asked = await CaptureResponsesStreamAsync(
-            ReasoningResponsesRequest(model, ReasoningRequest.EffortAndSummary),
-            cts.Token
-        );
-        DumpCapture("raw streaming /responses, reasoning {effort: medium, summary: auto}", asked);
-
         var silentSummaries = ReasoningEventsIn(silent);
-        var askedSummaries = ReasoningEventsIn(asked);
-
         _output.WriteLine(
             "OBSERVED reasoning events, no reasoning field sent: "
                 + (silentSummaries.Count == 0 ? "<none>" : string.Join(", ", silentSummaries))
         );
-        _output.WriteLine(
-            "OBSERVED reasoning events, summaries requested:     "
-                + (askedSummaries.Count == 0 ? "<none>" : string.Join(", ", askedSummaries))
-        );
 
-        // Both statuses first: without them an upstream 400 prints "<none>" and reads as a genuine
-        // "Copilot volunteered nothing", which is the exact claim this probe is the sole evidence for.
+        // Status first: without it an upstream 400 prints "<none>" and reads as a genuine "Copilot
+        // volunteered nothing", which is the exact claim this half of the probe is the evidence for.
         silent.Status.Should().Be(HttpStatusCode.OK);
-        asked.Status.Should().Be(HttpStatusCode.OK);
-
-        askedSummaries.Should().NotBeEmpty("this is what asking for summaries is supposed to produce");
         silentSummaries
             .Should()
-            .BeEmpty("summaries arriving unasked would mean the translated route could emit thinking blocks");
+            .BeEmpty("summaries arriving unasked would mean the translated route needs no reasoning field");
+
+        var askedSummaries = new List<string>();
+        foreach (var candidate in await ResponsesCapableModelsAsync(cts.Token))
+        {
+            var asked = await CaptureResponsesStreamAsync(
+                ReasoningResponsesRequest(candidate, ReasoningRequest.EffortAndSummary),
+                cts.Token
+            );
+
+            asked.Status.Should().Be(HttpStatusCode.OK, "{0} must accept reasoning {{effort, summary}}", candidate);
+            askedSummaries = ReasoningEventsIn(asked);
+
+            _output.WriteLine(
+                $"{candidate,-24} reasoning {{effort: medium, summary: auto}} -> "
+                    + (askedSummaries.Count == 0 ? "<none>" : string.Join(", ", askedSummaries))
+            );
+
+            if (askedSummaries.Count > 0)
+            {
+                DumpCapture($"raw streaming /responses, {candidate}, reasoning {{effort: medium, summary: auto}}", asked);
+                break;
+            }
+        }
+
+        askedSummaries
+            .Should()
+            .NotBeEmpty("no served model produced a summary even when asked, so asking has stopped working");
     }
 
     /// <summary>
@@ -533,13 +552,16 @@ public sealed class CopilotAnthropicProxyLiveTests
     ///     turn that never reasons cannot summarise. Accepted-but-inert is the failure this catches,
     ///     and a status check alone would not: it looks identical to success.
     ///
-    ///     Which model produces a summary is NOT stable. Two sweeps minutes apart, same prompt, saw a
-    ///     different single model produce one; models defaulting to <c>effort: "none"</c> produced none
-    ///     either time. So this asserts only that SOME served model still produces summaries — read a
-    ///     failure here as "the field has stopped buying anything", not as a claim about one model.
+    ///     What it can and cannot assert. Acceptance is an invariant — all nine models have answered 200
+    ///     on every run — so that IS asserted. Productivity is not: sweeps minutes apart saw a different
+    ///     single model produce summaries, and one full-suite run saw all nine inert at once. An earlier
+    ///     revision asserted "some model produced summaries" and failed on exactly that run, so the
+    ///     split is now recorded rather than asserted. It is the evidence for the README's claim that
+    ///     summary-alone is unreliable, and the reason the shipped code derives an effort from the
+    ///     client instead of relying on this.
     /// </summary>
     [SkippableFact]
-    public async Task Summary_auto_alone_produces_reasoning_summaries()
+    public async Task Summary_auto_alone_is_accepted_everywhere_but_is_not_dependable()
     {
         Skip.IfNot(_fixture.Available, _fixture.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(600));
@@ -574,12 +596,12 @@ public sealed class CopilotAnthropicProxyLiveTests
         _output.WriteLine($"OBSERVED summaries produced by:  {(productive.Count == 0 ? "<none>" : string.Join(", ", productive))}");
         _output.WriteLine($"OBSERVED accepted but inert on:  {(inert.Count == 0 ? "<none>" : string.Join(", ", inert))}");
 
-        productive
+        // Deliberately no assertion on `productive`: an all-inert sweep is a real, observed outcome of
+        // this request shape, not a regression. Asserting it would be asserting a non-invariant, and
+        // `Thinking_enabled_makes_a_none_effort_model_reason` covers what the shipped code depends on.
+        inert.Concat(productive)
             .Should()
-            .NotBeEmpty(
-                "reasoning:{summary:auto} is only worth sending unconditionally if some served model "
-                    + "actually produces summaries from it"
-            );
+            .BeEquivalentTo(models, "every served model must have answered, or the sweep proves nothing");
     }
 
     /// <summary>
@@ -638,6 +660,187 @@ public sealed class CopilotAnthropicProxyLiveTests
             .BeEmpty(
                 "an unconditional reasoning field is only safe if every served /responses model accepts it"
             );
+    }
+
+    /// <summary>
+    ///     Does every served model accept every effort the budget mapping can produce? The mapping turns
+    ///     a client's <c>thinking.budget_tokens</c> into <c>low</c> / <c>medium</c> / <c>high</c>, so a
+    ///     model rejecting any one of them would 400 a request the client is entitled to send.
+    /// </summary>
+    [SkippableFact]
+    public async Task Every_responses_model_accepts_every_mapped_effort()
+    {
+        Skip.IfNot(_fixture.Available, _fixture.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(600));
+
+        var models = await ResponsesCapableModelsAsync(cts.Token);
+        Skip.If(models.Count == 0, "This Copilot account exposes no /responses model the proxy will serve.");
+
+        var rejections = new List<string>();
+        foreach (var model in models)
+        {
+            foreach (var effort in MappedEfforts)
+            {
+                var (status, body) = await PostRawAsync(
+                    ModelRouter.ResponsesPath,
+                    new
+                    {
+                        model,
+                        store = false,
+                        max_output_tokens = 16,
+                        reasoning = new { effort, summary = "auto" },
+                        input = new[]
+                        {
+                            new
+                            {
+                                type = "message",
+                                role = "user",
+                                content = new[] { new { type = "input_text", text = "Reply with: ok" } },
+                            },
+                        },
+                    },
+                    cts.Token
+                );
+
+                _output.WriteLine($"{model,-24} effort={effort,-6} -> {(int)status} {status}  echo: {ReadEcho(body, "reasoning")}");
+
+                if (status != HttpStatusCode.OK)
+                {
+                    rejections.Add($"{model} effort={effort} -> {(int)status} {Truncate(body, 300)}");
+                }
+            }
+        }
+
+        rejections
+            .Should()
+            .BeEmpty("the budget mapping can emit any of these, so a model rejecting one would 400 a legitimate request");
+    }
+
+    /// <summary>
+    ///     THE PAYOFF for mapping <c>thinking.budget_tokens</c> onto an effort. Some models default to
+    ///     <c>effort: "none"</c> and provably never reason, so summaries alone can never produce a
+    ///     <c>thinking</c> block for them. This drives exactly those models through the ANTHROPIC
+    ///     endpoint with extended thinking enabled and reports whether one appears.
+    ///
+    ///     The mapping clearly works — models that could NEVER reason before now usually do — but it is
+    ///     not a guarantee. Over four runs, two had all four models produce a block and two had
+    ///     <c>gpt-5.4</c> alone stay silent. So this asserts that SOME rescued model reasoned, which is
+    ///     the claim the README makes, and logs the per-model split. Do not tighten this to "all
+    ///     models": that was tried, and the third run refuted it.
+    ///
+    ///     Statuses are checked first, or a 400 would masquerade as "this model cannot think".
+    /// </summary>
+    [SkippableFact]
+    public async Task Thinking_enabled_makes_a_none_effort_model_reason()
+    {
+        Skip.IfNot(_fixture.Available, _fixture.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(900));
+
+        var models = await ResponsesCapableModelsAsync(cts.Token);
+        Skip.If(models.Count == 0, "This Copilot account exposes no /responses model the proxy will serve.");
+
+        // Read the defaults live rather than naming models: which model defaults to "none" is Copilot's
+        // choice and has already changed once during this task.
+        var neverReason = new List<string>();
+        foreach (var model in models)
+        {
+            var (status, body) = await PostRawAsync(
+                ModelRouter.ResponsesPath,
+                new
+                {
+                    model,
+                    store = false,
+                    max_output_tokens = 16,
+                    reasoning = new { summary = "auto" },
+                    input = new[]
+                    {
+                        new
+                        {
+                            type = "message",
+                            role = "user",
+                            content = new[] { new { type = "input_text", text = "Reply with: ok" } },
+                        },
+                    },
+                },
+                cts.Token
+            );
+
+            status.Should().Be(HttpStatusCode.OK, "{0} must answer before its default effort can be read", model);
+
+            if (ReadEchoedReasoningEffort(body) == "none")
+            {
+                neverReason.Add(model);
+            }
+        }
+
+        _output.WriteLine($"models defaulting to effort \"none\": {string.Join(", ", neverReason)}");
+        Skip.If(neverReason.Count == 0, "No served model defaults to effort \"none\", so there is nothing to rescue.");
+
+        var reasoned = new List<string>();
+        var stayedSilent = new List<string>();
+        foreach (var model in neverReason)
+        {
+            // Shaped like Claude Code's own extended-thinking request: budget below max_tokens, and a
+            // 10240 budget lands in the medium bucket.
+            var (status, body) = await SendProxyAsync(
+                "/v1/messages",
+                new
+                {
+                    model,
+                    max_tokens = 21333,
+                    stream = true,
+                    thinking = new { type = "enabled", budget_tokens = 10240 },
+                    messages = new[]
+                    {
+                        new
+                        {
+                            role = "user",
+                            content = "A bat and a ball cost $1.10 together. The bat costs $1.00 more than "
+                                + "the ball. How much does the ball cost? Answer with the amount only.",
+                        },
+                    },
+                },
+                cts.Token
+            );
+
+            status.Should().Be(HttpStatusCode.OK, "{0} failed the translated route with: {1}", model, Truncate(body, 400));
+
+            var thought = body.Contains("\"type\":\"thinking\"", StringComparison.Ordinal);
+            _output.WriteLine($"{model,-24} thinking enabled -> {(thought ? "THINKING BLOCK" : "no thinking block")}");
+            (thought ? reasoned : stayedSilent).Add(model);
+        }
+
+        _output.WriteLine($"OBSERVED reasoned once asked:    {(reasoned.Count == 0 ? "<none>" : string.Join(", ", reasoned))}");
+        _output.WriteLine($"OBSERVED still silent when asked: {(stayedSilent.Count == 0 ? "<none>" : string.Join(", ", stayedSilent))}");
+
+        reasoned
+            .Should()
+            .NotBeEmpty(
+                "these models default to effort \"none\" and can never emit a thinking block on their "
+                    + "own, so if none of them reasons even when thinking is enabled, mapping the "
+                    + "client's budget onto an effort has bought nothing"
+            );
+    }
+
+    /// <summary>The efforts <c>BuildReasoning</c>'s budget mapping can emit.</summary>
+    private static readonly string[] MappedEfforts = ["low", "medium", "high"];
+
+    /// <summary>Reads <c>reasoning.effort</c> out of a NON-streaming Responses reply.</summary>
+    private static string ReadEchoedReasoningEffort(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("reasoning", out var reasoning)
+                && reasoning.ValueKind == JsonValueKind.Object
+                && reasoning.TryGetProperty("effort", out var effort)
+                ? effort.ToString()
+                : "<absent>";
+        }
+        catch (JsonException)
+        {
+            return "<unparseable>";
+        }
     }
 
     /// <summary>
@@ -791,7 +994,14 @@ public sealed class CopilotAnthropicProxyLiveTests
         );
     }
 
-    /// <summary>Every model the proxy serves that advertises <c>/responses</c>, cheap tiers first.</summary>
+    /// <summary>
+    ///     Every model the proxy serves ONLY through <c>/responses</c>, cheap tiers first.
+    ///
+    ///     Excluding models that also advertise <c>/v1/messages</c> is not cosmetic: <c>ModelRoute</c>
+    ///     tries its Messages-passthrough arm FIRST, so an Anthropic request naming a dual-endpoint
+    ///     model never reaches the translator. A sweep that included one could report success for a
+    ///     model that never exercised the code under test.
+    /// </summary>
     private async Task<IReadOnlyList<string>> ResponsesCapableModelsAsync(CancellationToken cancellationToken)
     {
         var catalog = await _fixture.GetCatalogAsync(cancellationToken);
@@ -799,6 +1009,7 @@ public sealed class CopilotAnthropicProxyLiveTests
         [
             .. catalog
                 .Where(m => m.Advertises(ModelRouter.ResponsesPath))
+                .Where(m => !m.Advertises(ModelRouter.MessagesPath))
                 .Where(m => !ProxyExcludedVendors.Contains(m.Vendor, StringComparer.OrdinalIgnoreCase))
                 .Select(m => m.Id)
                 .OrderBy(id => CheapModelHints.Any(h => id.Contains(h, StringComparison.OrdinalIgnoreCase)) ? 0 : 1)

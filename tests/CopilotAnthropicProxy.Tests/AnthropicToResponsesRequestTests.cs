@@ -259,7 +259,78 @@ public class AnthropicToResponsesRequestTests
         reasoning
             .TryGetProperty("effort", out _)
             .Should()
-            .BeFalse("choosing an effort would change how much every model thinks, and how much it costs");
+            .BeFalse("a request that never enabled thinking must cost exactly what it costs today");
+    }
+
+    [Theory]
+    [InlineData(1024, "low")]
+    [InlineData(4096, "low")] // Claude Code's lowest tier
+    [InlineData(8191, "low")]
+    [InlineData(8192, "medium")] // boundary: the low/medium threshold is exclusive below
+    [InlineData(10240, "medium")] // Claude Code's middle tier
+    [InlineData(24575, "medium")]
+    [InlineData(24576, "high")] // boundary: the medium/high threshold is inclusive above
+    [InlineData(32768, "high")] // Claude Code's top tier
+    public void Maps_the_thinking_budget_onto_a_reasoning_effort(int budgetTokens, string expected)
+    {
+        var result = TranslateToElement(
+            $$"""
+            {"model":"m","max_tokens":100,"thinking":{"type":"enabled","budget_tokens":{{budgetTokens}}},
+             "messages":[{"role":"user","content":"Hi"}]}
+            """
+        );
+
+        var reasoning = result.GetProperty("reasoning");
+        reasoning.GetProperty("effort").GetString().Should().Be(expected);
+        reasoning.GetProperty("summary").GetString().Should().Be("auto", "summaries are asked for either way");
+    }
+
+    [Fact]
+    public void Treats_enabled_thinking_with_no_budget_as_medium_effort()
+    {
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"thinking":{"type":"enabled"},
+             "messages":[{"role":"user","content":"Hi"}]}
+            """
+        );
+
+        result.GetProperty("reasoning").GetProperty("effort").GetString().Should().Be("medium");
+    }
+
+    [Theory]
+    [InlineData("""{"type":"disabled"}""")]
+    [InlineData("""{"type":"enabled_but_not_really"}""")]
+    [InlineData("""{"budget_tokens":32768}""")] // a budget without type:enabled is not a request to think
+    [InlineData("""{"type":null}""")]
+    [InlineData("\"enabled\"")] // a bare string where an object belongs must not throw
+    [InlineData("null")]
+    public void Sends_no_effort_unless_thinking_is_explicitly_enabled(string thinking)
+    {
+        var result = TranslateToElement(
+            $$"""
+            {"model":"m","max_tokens":100,"thinking":{{thinking}},
+             "messages":[{"role":"user","content":"Hi"}]}
+            """
+        );
+
+        var reasoning = result.GetProperty("reasoning");
+        reasoning.TryGetProperty("effort", out _).Should().BeFalse();
+        reasoning.GetProperty("summary").GetString().Should().Be("auto");
+    }
+
+    [Fact]
+    public void Does_not_forward_the_thinking_field_itself()
+    {
+        // Responses has no top-level `thinking`; it is consumed into `reasoning` and must not leak.
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"thinking":{"type":"enabled","budget_tokens":10240},
+             "messages":[{"role":"user","content":"Hi"}]}
+            """
+        );
+
+        result.TryGetProperty("thinking", out _).Should().BeFalse();
     }
 
     [Fact]
