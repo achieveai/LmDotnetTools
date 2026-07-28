@@ -48,3 +48,4 @@ What improved, what became more complex, and what future work this implies.
 * [0004 — Resolve delayed tool results as serialized child runs caused by the real tool result](0004-delayed-tool-results-as-child-runs.md)
 * [0005 — Scope service-to-service lifecycle delivery to a host-resolved owner key](0005-service-to-service-lifecycle-delivery.md)
 * [0006 — Order a workflow transition against the run observer with a publish-order watermark](0006-workflow-transition-observation-barrier.md)
+* [0007 — Observe turns and context at the seam where the fact settles](0007-observe-at-the-settling-seam.md)
