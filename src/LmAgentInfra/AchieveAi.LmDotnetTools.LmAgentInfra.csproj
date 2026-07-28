@@ -23,6 +23,10 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <!-- Direct: the sandbox registry publishes SandboxCreated envelopes itself. It would arrive
+         transitively through LmMultiTurn anyway, but a reference this code compiles against belongs
+         here rather than depending on another project's dependency staying put. -->
+    <ProjectReference Include="..\LmLifecycle\AchieveAi.LmDotnetTools.LmLifecycle.csproj" />
     <ProjectReference Include="..\LmMultiTurn\AchieveAi.LmDotnetTools.LmMultiTurn.csproj" />
     <ProjectReference Include="..\Sandbox\AchieveAi.LmDotnetTools.Sandbox.csproj" />
   </ItemGroup>

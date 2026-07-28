@@ -305,6 +305,16 @@ locks — a failed or rolled-back attempt produces no event.
 | `image_reference` | string | ✅ | absent | The image the session runs, when known. |
 | `inventory` | object | ❌ | see §5.3 | What the gateway confirmed it loaded. **Always written**, so an old gateway is never mistaken for an empty session. |
 
+**One event per creation, not per caller.** The registry single-flights session creation, so
+any number of concurrent callers for the same workspace share one gateway session — and get
+one event between them. A cache hit is not a creation and produces nothing.
+
+**`was_recreated` is scoped to a workspace slot.** It is `true` only when this session took over
+a slot whose previous session the registry evicted as dead, and `replaced_session_id` then names
+that session so a subscriber can stitch the two together. A second workspace's first session,
+and a session created after a deliberate `DestroyWorkspaceSessionAsync`, both report `false`:
+neither replaced anything the subscriber was told was still running.
+
 ---
 
 ## 5. Shared payload types
