@@ -10,6 +10,13 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 public class DataDrivenFunctionToolTests : LoggingTestBase
 {
     private const string ManualArtifactCreationEnvVar = "LM_ENABLE_MANUAL_ARTIFACT_CREATION";
+
+    /// <summary>
+    ///     Placeholder credential for the offline test-mode handler, which never authenticates. Only needs to
+    ///     satisfy <c>ValidationHelper.ValidateApiKey</c>'s 10-character minimum.
+    /// </summary>
+    private const string OfflineTestApiKey = "test-api-key";
+
     private readonly ProviderTestDataManager _testDataManager = new();
 
     public DataDrivenFunctionToolTests(ITestOutputHelper output) : base(output) { }
@@ -35,8 +42,12 @@ public class DataDrivenFunctionToolTests : LoggingTestBase
         messages = PrepareInstructionDrivenMessages(testName, messages, options);
 
         // Execute via deterministic SSE test-mode handler for offline full-stack testing.
+        // The handler never authenticates, so this deliberately does NOT read ANTHROPIC_API_KEY: a developer
+        // box that exports a short placeholder key (proxy setups do) would otherwise fail ValidateApiKey's
+        // 10-char minimum and turn an offline test into an environment-dependent one. The manual
+        // artifact-generation methods below DO forward to the real API and keep using the ambient key.
         var httpClient = TestModeHttpClientFactory.CreateAnthropicTestClient(chunkDelayMs: 0);
-        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
+        var client = new AnthropicClient(OfflineTestApiKey, httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
         Logger.LogTrace("Created agent with AnthropicTestSseMessageHandler");
 
