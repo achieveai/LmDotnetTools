@@ -743,6 +743,27 @@ public sealed class CopilotAnthropicProxyLiveTests
     ///
     ///     Statuses are checked first, or a 400 would masquerade as "this model cannot think".
     /// </summary>
+    /// <remarks>
+    ///     THE TOP BUCKET, RECORDED HERE BECAUSE NOTHING ELSE IN THE REPO HOLDS IT — and it is a probe
+    ///     observation, not a contract this test enforces. This test sends the <c>medium</c> bucket. The
+    ///     <c>high</c> one was measured by hand, read-only, on the same prompt through the same
+    ///     translated route: ten runs of <c>gpt-5.4</c> at <c>budget_tokens: 32768</c> gave a
+    ///     <c>thinking</c> block on 8 and none on 2. Both misses were complete, well-formed streams — one
+    ///     <c>text</c> block, <c>stop_reason: "end_turn"</c>, correct answer — so they are the model
+    ///     declining to reason, not truncation and not a transport failure. Deliberately not quoted as a
+    ///     rate: ten samples on one model and one prompt put the true one somewhere near 49-94%, and the
+    ///     medium bucket's 2-of-4 on this model is nowhere near separable from it. What the ten runs
+    ///     establish is only that misses happen at the largest budget too, which is what the README says
+    ///     and why nothing asserts it.
+    ///
+    ///     One precision, so a later reader need not reconstruct it: those runs observed the OUTCOME end
+    ///     to end, not the outbound <c>effort</c> field, because the translated route answers in
+    ///     Anthropic SSE and that carries no echo of the reasoning config. The link from 32768 to
+    ///     <c>"high"</c> is established deterministically by
+    ///     <c>AnthropicToResponsesRequestTests.Maps_the_thinking_budget_onto_a_reasoning_effort</c>, and
+    ///     live by <see cref="Every_responses_model_accepts_every_mapped_effort" />, which saw
+    ///     <c>gpt-5.4</c> echo <c>"effort":"high"</c> at 200.
+    /// </remarks>
     [SkippableFact]
     public async Task Thinking_enabled_makes_a_none_effort_model_reason()
     {

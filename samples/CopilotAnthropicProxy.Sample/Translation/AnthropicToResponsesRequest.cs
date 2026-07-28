@@ -84,6 +84,11 @@ public static class AnthropicToResponsesRequest
         // on both the streaming and non-streaming path; each echoed it back normalised to
         // "summary":"detailed" alongside a per-model default effort. So no served model rejects it.
         //
+        // That is a dated observation, and the thing that keeps it true is the live probe
+        // Every_responses_model_accepts_a_reasoning_field: it re-sweeps the served /responses catalog
+        // and names any model that refuses. If Copilot ever ships one that does, that probe fails rather
+        // than this comment quietly going stale.
+        //
         // It is not uniformly PRODUCTIVE on its own, though, and not even deterministically so. Across
         // two sweeps of the same nine models with the same prompt, the models Copilot defaults to
         // "effort":"none" emitted no summary events either time, while the ones defaulting to "medium"
