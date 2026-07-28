@@ -513,7 +513,11 @@ public class TranslatedMessagesTests
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         await using var body = await response.Content.ReadAsStreamAsync();
 
-        var seen = await ReadUntilAsync(body, s => s.Contains("event: ping", StringComparison.Ordinal), TimeSpan.FromSeconds(15));
+        var seen = await TestUpstream.ReadUntilAsync(
+            body,
+            s => s.Contains("event: ping", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(15)
+        );
         seen.Should().Contain("event: message_start");
         seen.Should()
             .Contain("event: ping", "a silent upstream must be covered by pings or an intermediary drops the connection");
@@ -691,34 +695,6 @@ public class TranslatedMessagesTests
         upstreamStream.Cancelled.IsCompletedSuccessfully.Should().BeTrue();
     }
 
-    /// <summary>Reads the response stream until <paramref name="predicate"/> holds or the timeout elapses.</summary>
-    private static async Task<string> ReadUntilAsync(Stream body, Func<string, bool> predicate, TimeSpan timeout)
-    {
-        var accumulated = new StringBuilder();
-        var buffer = new byte[256];
-        using var cts = new CancellationTokenSource(timeout);
-        while (!predicate(accumulated.ToString()))
-        {
-            int read;
-            try
-            {
-                read = await body.ReadAsync(buffer, cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-
-            if (read == 0)
-            {
-                break;
-            }
-
-            accumulated.Append(Encoding.UTF8.GetString(buffer, 0, read));
-        }
-
-        return accumulated.ToString();
-    }
 }
 
 /// <summary>

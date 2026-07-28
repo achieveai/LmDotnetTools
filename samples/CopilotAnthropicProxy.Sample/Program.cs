@@ -18,16 +18,38 @@ using ILogger = Microsoft.Extensions.Logging.ILogger;
 // =============================================================================
 // CopilotAnthropicProxy.Sample
 //
-// A thin, loopback-only reverse proxy that accepts the Anthropic Messages API
-// and forwards it to GitHub Copilot. It rewrites the JSON `model` field to a
-// configured Copilot Claude (Opus) id, strips the `context_management` field and the
-// `anthropic-beta` header (both unsupported by Copilot's backend), attaches Copilot
-// auth/headers via the proven GithubCopilotProvider transport, and streams the SSE
-// response back as raw bytes.
+// A loopback-only reverse proxy in front of GitHub Copilot that speaks BOTH
+// dialects: Anthropic Messages (/v1/messages and its /count_tokens twin) and
+// OpenAI (/v1/chat/completions, /v1/responses). Every POST also binds its
+// un-prefixed form, because clients disagree about where the /v1 belongs.
+// GET /v1/models answers in a body both dialects can parse; GET /health is liveness.
+//
+// The servable catalog is DISCOVERED at startup, never hard-coded — see
+// ProxyModelResolver.ParseServableModels. A model is kept when it advertises at
+// least one of /v1/messages, /chat/completions or /responses AND its vendor is not
+// denied (Google, Microsoft). Entries advertising no endpoints at all are dropped,
+// which is where text-embedding-* lives, so an embedding model can never surface as
+// a chat model. The default is the highest-version Claude opus among the
+// Messages-capable ids; it catches only requests naming a model this account does
+// not have, and then only after family mapping (see ModelFamilies).
+//
+// Routing is the inbound dialect against what the named model advertises
+// (ModelRouter.Resolve). Three of the four combinations are byte-for-byte
+// passthrough. ONE is real translation — Anthropic Messages in, for a model that
+// speaks only Responses — where the request, the non-streaming reply and the SSE
+// stream are each rewritten (see Translation/). A dialect the model cannot serve
+// 404s rather than being guessed at.
+//
+// On the passthrough paths the body's `model` is rewritten to the resolved id and
+// the top-level `context_management` field is stripped; on the translated path the
+// outbound body is built from scratch, so it cannot carry either. `anthropic-beta`
+// is dropped on both (Copilot 400s the whole request over one unrecognised value).
+// Copilot auth/headers come from the proven GithubCopilotProvider transport, and
+// responses stream back without buffering.
 // It also exposes Copilot's MCP server (Streamable HTTP transport) as a transparent
 // byte-level proxy on /mcp and /mcp/readonly, with Copilot auth attached the same way.
 //
-// Point Claude Code (or any Anthropic-Messages client) at it via ANTHROPIC_BASE_URL.
+// Point Claude Code, Codex CLI or opencode at it via that client's base-URL setting.
 // SECURITY: binds to loopback only and attaches the developer's Copilot credentials
 // outbound; never expose it on 0.0.0.0 or through a tunnel. See README.md.
 // =============================================================================
@@ -135,7 +157,8 @@ catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledE
 }
 
 // 2) Resolve the outbound model catalog (env wins and pins a single model; else discover every
-//    /v1/messages-capable Copilot model and pick the `opus` Claude id as the default; else fail fast).
+//    servable Copilot model — any of /v1/messages, /chat/completions, /responses, minus the vendor
+//    denylist — and pick the highest-version `opus` Claude id as the default; else fail fast).
 ProxyModelCatalog catalog;
 try
 {
@@ -478,9 +501,14 @@ public static class ProxyModelResolver
 {
     /// <summary>
     ///     Resolves the model catalog: <c>COPILOT_ANTHROPIC_MODEL</c> override wins and pins a single model
-    ///     (no discovery, no passthrough); otherwise queries <c>GET /models</c>, filters to the ids that
-    ///     support <c>/v1/messages</c>, and picks the <c>opus</c> Claude id as the default. Throws when no
-    ///     override is set and no opus Claude id is available (caller fails fast).
+    ///     (no discovery, no passthrough); otherwise queries <c>GET /models</c> and keeps everything
+    ///     <see cref="ParseServableModels"/> considers servable — advertising any of <c>/v1/messages</c>,
+    ///     <c>/chat/completions</c> or <c>/responses</c>, vendor not denied.
+    ///
+    ///     The DEFAULT is drawn from a narrower set than the catalog. It is the fallback for the Anthropic
+    ///     surface, so it is picked from the Messages-capable ids only, and among those it is the
+    ///     highest-version <c>opus</c> Claude id. Throws when no override is set and there is no such id
+    ///     (caller fails fast) — a catalog full of Responses-only models is not enough on its own.
     /// </summary>
     public static async Task<ProxyModelCatalog> ResolveAsync(
         HttpClient client,

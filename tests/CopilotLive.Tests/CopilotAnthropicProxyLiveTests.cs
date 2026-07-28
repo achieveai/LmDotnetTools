@@ -164,8 +164,11 @@ public sealed class CopilotAnthropicProxyLiveTests
         doc.RootElement.GetProperty("role").GetString().Should().Be("assistant");
         doc.RootElement.TryGetProperty("stop_reason", out _).Should().BeTrue();
 
-        // Task 7 could only document what incomplete_details MIGHT look like, so record what actually
-        // came back rather than asserting a reason this repo has never observed.
+        // Left unasserted, and no longer because the shape is unknown: the sibling
+        // Truncated_reply_reports_incomplete_details_and_maps_to_max_tokens pins the
+        // incomplete_details -> max_tokens mapping outright. What is genuinely not ours to pin is which
+        // reason COPILOT picks for a one-token cap — truncate, or answer and end the turn — so record
+        // the live value rather than asserting the model's choice.
         _output.WriteLine($"OBSERVED stop_reason: {doc.RootElement.GetProperty("stop_reason").GetString()}");
     }
 
@@ -173,9 +176,10 @@ public sealed class CopilotAnthropicProxyLiveTests
     ///     Settles the one shape Task 7 could only guess at: what a TRUNCATED Responses reply looks
     ///     like. <c>ResponsesToAnthropicJson.DeriveStopReason</c> maps
     ///     <c>incomplete_details.reason == "max_output_tokens"</c> onto Anthropic's <c>max_tokens</c>,
-    ///     and every completed reply this repo has seen carries <c>incomplete_details: null</c> — so
-    ///     the mapping's only input has never been observed. Asks raw for the field's live spelling,
-    ///     then checks the proxy derives the right stop_reason from it.
+    ///     and every completed reply this repo had seen carried <c>incomplete_details: null</c>, so
+    ///     until this probe the mapping's only input had never been observed. Asks raw for the field's
+    ///     live spelling, then checks the proxy derives the right stop_reason from it — which is why
+    ///     nothing else in this file needs to hedge about that mapping.
     /// </summary>
     [SkippableFact]
     public async Task Truncated_reply_reports_incomplete_details_and_maps_to_max_tokens()

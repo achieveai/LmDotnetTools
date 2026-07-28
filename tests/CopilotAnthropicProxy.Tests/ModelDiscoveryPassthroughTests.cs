@@ -83,7 +83,7 @@ public sealed class ModelDiscoveryPassthroughTests
     }
 
     [Fact]
-    public async Task Models_endpoint_lists_only_messages_capable_models_when_discovering()
+    public async Task Models_endpoint_lists_only_servable_models_when_discovering()
     {
         await using var factory = DiscoveryFactory((req, ct) => Task.FromResult(TestUpstream.Json("{}")));
         using var client = factory.CreateClient();

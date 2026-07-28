@@ -205,7 +205,17 @@ Responses API. Every passthrough route is byte-for-byte and has none of them.
   with an Anthropic `not_found_error` rather than running a billed generation or inventing a number.
   Clients degrade gracefully — Claude Code logs `countTokens API call failed` and falls back to a
   local estimate, which drives only the `/context` bar and the auto-compact threshold.
-- **Prompt caching, batch and files APIs are not proxied.**
+- **Prompt caching does not survive translation.** `cache_control` is dropped by construction, because
+  the translated request is built from an explicit allowlist rather than patched — see *Known request
+  incompatibilities* below. The passthrough routes forward it untouched.
+
+**Not route-specific**
+
+These are the exception to the scoping note above: they are proxy-wide gaps, and the passthrough routes
+do **not** escape them.
+
+- **The batch and files APIs are not proxied at all.** No route binds them in either dialect, so they
+  answer the fallback `404` for every model — passthrough included.
 
 ## Exposing Copilot's MCP server
 

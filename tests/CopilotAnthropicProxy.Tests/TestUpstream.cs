@@ -3,7 +3,10 @@ using System.Text;
 
 namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
 
-/// <summary>Builders for fake upstream Copilot responses used by the proxy tests.</summary>
+/// <summary>
+///     Builders for fake upstream Copilot responses used by the proxy tests, plus the shared reader for
+///     the proxy's own streamed reply.
+/// </summary>
 internal static class TestUpstream
 {
     /// <summary>An <c>application/json</c> response with an optional status and extra response headers.</summary>
@@ -54,6 +57,40 @@ internal static class TestUpstream
         var content = new StreamContent(stream);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
+
+    /// <summary>
+    ///     Reads the proxy's response stream, accumulating text, until <paramref name="predicate"/> holds
+    ///     or <paramref name="timeout"/> elapses — the way to assert on a frame that has arrived while the
+    ///     stream is still open. Everything matched this way (SSE event names, keep-alive comments) is
+    ///     ASCII, so a chunk boundary cannot split a character and corrupt the match.
+    /// </summary>
+    public static async Task<string> ReadUntilAsync(Stream body, Func<string, bool> predicate, TimeSpan timeout)
+    {
+        var accumulated = new StringBuilder();
+        var buffer = new byte[256];
+        using var cts = new CancellationTokenSource(timeout);
+        while (!predicate(accumulated.ToString()))
+        {
+            int read;
+            try
+            {
+                read = await body.ReadAsync(buffer, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            accumulated.Append(Encoding.UTF8.GetString(buffer, 0, read));
+        }
+
+        return accumulated.ToString();
     }
 }
 
