@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmLifecycle.Serialization;
@@ -182,39 +184,120 @@ public sealed class RunTurnLifecycleFinalizer
     }
 
     /// <summary>
+    /// Registers that a turn has begun, so exactly one <see cref="LifecycleEventTypes.TurnCompleted"/>
+    /// can later be emitted for it.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The generation id the turn was accepted under.</param>
+    /// <remarks>
+    /// <para>
+    /// This deliberately emits nothing. ADR 0002 has no <c>turn_started</c> event — a turn is
+    /// reported at its final state or not at all — so the registration exists purely to give
+    /// <see cref="TurnCompletedAsync"/> something to consume. Presence in the run's open-turn set is
+    /// the terminalization token, exactly as presence in the in-flight table is for a run.
+    /// </para>
+    /// <para>
+    /// What counts as a turn is the caller's judgement, and it differs by provider: the raw loop
+    /// mints a fresh generation id per model round-trip, while a CLI-backed loop runs its own
+    /// agentic loop behind one generation id and therefore has a single turn per run. Both are
+    /// correct — the seam reports the turn its loop actually accepted, so a subscriber can pair
+    /// starts with completions without knowing which loop produced them.
+    /// </para>
+    /// </remarks>
+    public void TurnStarted(string runId, string generationId)
+    {
+        if (!IsEnabled || string.IsNullOrEmpty(generationId))
+        {
+            return;
+        }
+
+        if (_inFlight.TryGetValue(runId, out var progress))
+        {
+            progress.OpenTurn(generationId);
+        }
+    }
+
+    /// <summary>
+    /// Folds one message a turn produced into that turn's report.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The turn that produced the message.</param>
+    /// <param name="message">The message.</param>
+    /// <remarks>
+    /// <para>
+    /// Counting lives here rather than in each loop so that <c>message_count</c> means the same
+    /// thing regardless of which loop produced it. The distinction that matters is complete messages
+    /// versus streaming fragments: a CLI-backed loop publishes hundreds of text deltas per turn and
+    /// a raw loop publishes none, so a count that included them would say more about the transport
+    /// than about the turn.
+    /// </para>
+    /// <para>
+    /// Usage is taken from the last <see cref="UsageMessage"/> the turn reported rather than summed
+    /// across them, for the reason given on <see cref="LifecycleUsageMapper"/>.
+    /// </para>
+    /// <para>
+    /// A message for a turn that never began, or has already been reported, is ignored — the turn's
+    /// figures are fixed at the moment it is reported and nothing arriving later can revise them.
+    /// </para>
+    /// </remarks>
+    public void ObserveTurnMessage(string runId, string generationId, IMessage message)
+    {
+        if (!IsEnabled || message == null || string.IsNullOrEmpty(generationId))
+        {
+            return;
+        }
+
+        if (_inFlight.TryGetValue(runId, out var progress))
+        {
+            progress.ObserveTurnMessage(generationId, message);
+        }
+    }
+
+    /// <summary>
     /// Emits <see cref="LifecycleEventTypes.TurnCompleted"/> for a turn that reached its final
     /// state, and advances the run's turn count.
     /// </summary>
     /// <param name="runId">The run the turn belongs to.</param>
     /// <param name="generationId">The turn that completed.</param>
     /// <param name="outcome">How it ended. See <see cref="LifecycleTurnOutcomes"/>.</param>
-    /// <param name="messageCount">How many complete messages the turn produced.</param>
-    /// <param name="toolCallCount">How many tool calls it requested.</param>
-    /// <param name="usage">Usage for the turn, when the provider reported any.</param>
     /// <param name="error">The failure, when the turn did not complete normally.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// <see langword="true"/> when this call ended the turn and published its completion;
+    /// <see langword="false"/> when the turn was already reported, was never registered by
+    /// <see cref="TurnStarted"/>, or lifecycle is disabled.
+    /// </returns>
     /// <remarks>
+    /// <para>
+    /// <b>Final state only, exactly once.</b> A turn is reported when it stops, never while it
+    /// streams, and the open-turn set makes the second report a no-op rather than a duplicate event.
+    /// That matters because the normal path and the terminal sweep in
+    /// <see cref="TryCompleteRunAsync"/> can both reach a turn — on an ordinary turn the loop gets
+    /// there first with real counts, and on an abandoned one the sweep does, with the run's outcome.
+    /// Whichever arrives first wins and the other is dropped.
+    /// </para>
+    /// <para>
     /// The count is kept in memory and handed to the store once, at the terminal boundary. A
     /// durable write per turn would buy nothing a live process needs — it only matters to a process
     /// recovering someone else's abandoned run, which by definition cannot know what happened
     /// anyway. See <see cref="ReconcileInterruptedRunsAsync"/>.
+    /// </para>
     /// </remarks>
-    public async Task TurnCompletedAsync(
+    public async Task<bool> TurnCompletedAsync(
         string runId,
         string generationId,
         string? outcome = null,
-        int messageCount = 0,
-        int toolCallCount = 0,
-        LifecycleUsage? usage = null,
         LifecycleError? error = null,
         CancellationToken ct = default)
     {
-        if (!IsEnabled)
+        if (!IsEnabled
+            || !_inFlight.TryGetValue(runId, out var progress)
+            || !progress.TryCloseTurn(generationId, out var tally))
         {
-            return;
+            return false;
         }
 
-        var turnIndex = _inFlight.TryGetValue(runId, out var progress) ? progress.NextTurnIndex() : 0;
+        var turnIndex = progress.NextTurnIndex();
 
         await PublishAsync(
             LifecycleEventTypes.TurnCompleted,
@@ -224,14 +307,16 @@ public sealed class RunTurnLifecycleFinalizer
                 GenerationId = generationId,
                 TurnIndex = turnIndex,
                 Outcome = outcome ?? LifecycleTurnOutcomes.Completed,
-                MessageCount = messageCount,
-                ToolCallCount = toolCallCount,
-                Usage = usage,
+                MessageCount = tally.MessageCount,
+                ToolCallCount = tally.ToolCallCount,
+                Usage = LifecycleUsageMapper.ToLifecycleUsage(tally.Usage),
                 Error = error,
             },
-            BuildCorrelation(runId, generationId, progress?.ParentRunId),
+            BuildCorrelation(runId, generationId, progress.ParentRunId),
             _services.TimeProvider.GetUtcNow(),
             ct).ConfigureAwait(false);
+
+        return true;
     }
 
     /// <summary>
@@ -400,13 +485,38 @@ public sealed class RunTurnLifecycleFinalizer
         LifecycleUsage? usage = null,
         CancellationToken ct = default)
     {
-        if (!IsEnabled || !_inFlight.TryRemove(runId, out var progress))
+        if (!IsEnabled || !_inFlight.TryGetValue(runId, out var progress))
         {
             return false;
         }
 
-        var terminalAt = _services.TimeProvider.GetUtcNow();
         var resolvedOutcome = outcome ?? LifecycleRunOutcomes.Completed;
+
+        // Any turn still open here is one no loop reported: the run is ending through an error,
+        // a cancellation, or a teardown that skipped the normal per-turn seam. Report it before the
+        // run ends, so a subscriber never sees a run complete having been told nothing about the
+        // turn it died in. A turn the loop already reported is not in this set, so the ordinary
+        // path is untouched.
+        //
+        // This runs BEFORE the run is removed from the in-flight table, because
+        // TurnCompletedAsync resolves lineage and the turn index through that entry.
+        foreach (var openGenerationId in progress.OpenTurnIds())
+        {
+            _ = await TurnCompletedAsync(
+                runId,
+                openGenerationId,
+                TurnOutcomeForRun(resolvedOutcome),
+                error: error,
+                ct: ct).ConfigureAwait(false);
+        }
+
+        if (!_inFlight.TryRemove(runId, out _))
+        {
+            // Another caller terminalized between the lookup above and here. It owns the run.
+            return false;
+        }
+
+        var terminalAt = _services.TimeProvider.GetUtcNow();
 
         if (_store != null && progress.Durable)
         {
@@ -568,6 +678,22 @@ public sealed class RunTurnLifecycleFinalizer
         }
     }
 
+    /// <summary>
+    /// How to describe a turn that was still open when its run ended.
+    /// </summary>
+    /// <remarks>
+    /// A run that reached its turn ceiling stopped <em>between</em> turns — the last turn itself
+    /// finished normally — so <c>max_turns</c> describes the run and would misdescribe the turn.
+    /// Every other terminal run outcome is one the turn shared.
+    /// </remarks>
+    private static string TurnOutcomeForRun(string runOutcome) => runOutcome switch
+    {
+        LifecycleRunOutcomes.Error => LifecycleTurnOutcomes.Error,
+        LifecycleRunOutcomes.Cancelled => LifecycleTurnOutcomes.Cancelled,
+        LifecycleRunOutcomes.Interrupted => LifecycleTurnOutcomes.Interrupted,
+        _ => LifecycleTurnOutcomes.Completed,
+    };
+
     private Task PublishRunCompletedAsync(
         string runId,
         string generationId,
@@ -658,6 +784,11 @@ public sealed class RunTurnLifecycleFinalizer
     {
         private int _turnCount;
 
+        // Turns that have begun and not yet been reported, with what each has produced so far.
+        // Removing one is the right to publish its completion, which is what keeps a turn to a
+        // single final event even when the loop and the terminal sweep both reach for it.
+        private readonly ConcurrentDictionary<string, TurnTally> _openTurns = new(StringComparer.Ordinal);
+
         /// <summary>The run's originating generation id.</summary>
         public string GenerationId { get; } = generationId;
 
@@ -675,5 +806,92 @@ public sealed class RunTurnLifecycleFinalizer
 
         /// <summary>Counts a completed turn and returns its 1-based index.</summary>
         public int NextTurnIndex() => Interlocked.Increment(ref _turnCount);
+
+        /// <summary>Marks a turn as begun and awaiting its final report.</summary>
+        public void OpenTurn(string turnGenerationId) => _openTurns[turnGenerationId] = new TurnTally();
+
+        /// <summary>Folds a message into an open turn's figures. Ignores unknown turns.</summary>
+        public void ObserveTurnMessage(string turnGenerationId, IMessage message)
+        {
+            if (_openTurns.TryGetValue(turnGenerationId, out var tally))
+            {
+                tally.Observe(message);
+            }
+        }
+
+        /// <summary>
+        /// Claims the right to report a turn, handing back what it produced. Returns false when it
+        /// was already reported or never begun, which is what makes a second completion a no-op
+        /// instead of a duplicate event.
+        /// </summary>
+        public bool TryCloseTurn(string turnGenerationId, out TurnTally tally) =>
+            _openTurns.TryRemove(turnGenerationId, out tally!);
+
+        /// <summary>
+        /// The turns still awaiting a report. A snapshot, not a drain: the caller closes each one
+        /// through <see cref="TryCloseTurn"/>, so a turn the loop reports concurrently is left alone
+        /// rather than reported twice.
+        /// </summary>
+        public IReadOnlyList<string> OpenTurnIds() => [.. _openTurns.Keys];
+    }
+
+    /// <summary>
+    /// What one in-flight turn has produced so far.
+    /// </summary>
+    /// <remarks>
+    /// Tool executions run concurrently with streaming in the raw loop, so messages can be folded in
+    /// from more than one thread; the counters are interlocked and the usage reference is written
+    /// atomically.
+    /// </remarks>
+    private sealed class TurnTally
+    {
+        private int _messageCount;
+        private int _toolCallCount;
+        private Usage? _usage;
+
+        /// <summary>Complete messages observed, excluding streaming fragments.</summary>
+        public int MessageCount => Volatile.Read(ref _messageCount);
+
+        /// <summary>Tool calls the turn requested.</summary>
+        public int ToolCallCount => Volatile.Read(ref _toolCallCount);
+
+        /// <summary>The last usage the provider reported for the turn, if any.</summary>
+        public Usage? Usage => Volatile.Read(ref _usage);
+
+        /// <summary>Folds one message into the figures.</summary>
+        public void Observe(IMessage message)
+        {
+            // Streaming fragments describe how a message arrived, not what the turn produced. The
+            // complete message that supersedes them is counted when it lands.
+            if (message is TextUpdateMessage or ReasoningUpdateMessage or ToolCallUpdateMessage)
+            {
+                return;
+            }
+
+            _ = Interlocked.Increment(ref _messageCount);
+
+            switch (message)
+            {
+                case ToolsCallMessage aggregate:
+                    // A provider that batches its calls into one message still requested each of
+                    // them, and a loop downstream of the transformation middleware sees only the
+                    // singular form — so the two cases are counted the same way and never both.
+                    _ = Interlocked.Add(ref _toolCallCount, aggregate.ToolCalls?.Count ?? 0);
+                    break;
+
+                case ToolCallMessage:
+                    _ = Interlocked.Increment(ref _toolCallCount);
+                    break;
+
+                case UsageMessage usage:
+                    _ = Interlocked.Exchange(ref _usage, usage.Usage);
+                    break;
+
+                default:
+                    // Text, reasoning, tool results and everything else count toward the message
+                    // total and contribute nothing else.
+                    break;
+            }
+        }
     }
 }

@@ -522,6 +522,12 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     }
                 }
 
+                // The CLI runs its own agentic loop behind this one generation id, so the run has
+                // exactly one turn from the lifecycle's point of view. Completion is reported on
+                // the success path only — the finally below cannot tell a finished run from a
+                // failed one, and a turn left open by an exception or a cancellation is reported
+                // by the finalizer's terminal sweep carrying the run's own outcome.
+                BeginTurn(assignment.RunId, assignment.GenerationId);
                 try
                 {
                     if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
@@ -532,6 +538,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     {
                         await ExecuteOneShotModeAsync(assignment, messagesToSend, ct);
                     }
+
+                    await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
                 }
                 finally
                 {
@@ -696,6 +704,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
                 // Add to conversation history
                 AddToHistory(msg);
+                ObserveTurnMessage(assignment.RunId, assignment.GenerationId, msg);
             }
         }
         finally
@@ -822,10 +831,14 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             }
         }
 
+        // One generation id, one lifecycle turn — same shape as the ordinary run path above.
+        BeginTurn(assignment.RunId, assignment.GenerationId);
         try
         {
             // Execute the merged batch as a full interactive run (waits for ResultEvent)
             await ExecuteInteractiveModeAsync(assignment, mergedMessages, ct);
+
+            await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
         }
         finally
         {
@@ -997,6 +1010,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
             // Add to conversation history
             AddToHistory(msg);
+            ObserveTurnMessage(assignment.RunId, assignment.GenerationId, msg);
 
             // OneShot's SendMessagesAsync intentionally suppresses SystemInitMessage,
             // but the underlying client still updates CurrentSession.SessionId when

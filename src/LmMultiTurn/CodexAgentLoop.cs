@@ -380,7 +380,13 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             try
             {
                 await OnBeforeRunAsync();
+
+                // The CLI runs its own agentic loop behind this one generation id, so the run has
+                // exactly one turn from the lifecycle's point of view. A run that fails or is
+                // cancelled reports its turn from the finalizer's terminal sweep instead.
+                BeginTurn(assignment.RunId, assignment.GenerationId);
                 await ExecuteRunAsync(batch, assignment.RunId, assignment.GenerationId, streamMetrics, ct);
+                await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
 
                 await CompleteRunAsync(
                     assignment.RunId,
@@ -525,6 +531,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 foreach (var message in messages)
                 {
                     AddToHistory(message);
+                    ObserveTurnMessage(runId, generationId, message);
                     await PublishToAllAsync(message, ct);
                     LogStreamingPublishTelemetry(
                         message,

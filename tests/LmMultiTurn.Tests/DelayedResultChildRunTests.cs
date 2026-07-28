@@ -197,9 +197,17 @@ public class DelayedResultChildRunTests
             .Be(2, "the two non-final siblings finish honestly: waiting, not done");
         completions.Should().ContainSingle(c => c.Outcome == LifecycleRunOutcomes.Completed);
 
-        // That the siblings took zero *model* turns is asserted through the provider call count
-        // above, which is the only evidence available until the turn-finalization seam lands and
-        // RunCompletedPayload.TurnCount becomes meaningful.
+        // The provider call count above says the siblings never reached a model. TurnCount says the
+        // same thing in the vocabulary a subscriber actually reads: a run that took no turn reports
+        // none, so "waiting" and "did nothing" are the same story told twice rather than two stories.
+        completions
+            .Where(c => c.Outcome == LifecycleRunOutcomes.AwaitingSiblingResults)
+            .Should()
+            .OnlyContain(c => c.TurnCount == 0, "a sibling that waits performs no model turn");
+        completions
+            .Single(c => c.Outcome == LifecycleRunOutcomes.Completed)
+            .TurnCount.Should()
+            .BeGreaterThan(0, "the child that cleared the last outstanding call is the one that runs a turn");
     }
 
     [Fact]
@@ -306,19 +314,21 @@ public class DelayedResultChildRunTests
             .Single(r => r.Cause.Kind == LifecycleRunCauseKinds.ToolResult);
 
         // Indices in publication order: the completion of the tool has to be visible before anything
-        // it caused, or a subscriber sees a run whose reason for existing has not happened yet.
-        // TurnCompleted belongs between the two run events; it joins this chain once the loop has a
-        // turn-finalization seam to emit it from.
+        // it caused, or a subscriber sees a run whose reason for existing has not happened yet. The
+        // child's turn sits between its own two run events, so the whole causal chain — tool
+        // finished, run began because of it, turn ran, run ended — reads in order.
         var events = publisher.Events;
         var toolCompletedAt = events
             .Select((e, i) => (e, i))
             .First(x => x.e.EventType == LifecycleEventTypes.ToolCompleted)
             .i;
         var childStartedAt = IndexOf(events, LifecycleEventTypes.RunStarted, child.RunId);
+        var childTurnAt = IndexOf(events, LifecycleEventTypes.TurnCompleted, child.RunId);
         var childCompletedAt = IndexOf(events, LifecycleEventTypes.RunCompleted, child.RunId);
 
         toolCompletedAt.Should().BeLessThan(childStartedAt);
-        childStartedAt.Should().BeLessThan(childCompletedAt);
+        childStartedAt.Should().BeLessThan(childTurnAt);
+        childTurnAt.Should().BeLessThan(childCompletedAt);
     }
 
     [Fact]

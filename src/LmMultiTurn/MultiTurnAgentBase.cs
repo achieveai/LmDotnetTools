@@ -1628,6 +1628,58 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     }
 
     /// <summary>
+    /// Marks the start of a model turn for lifecycle reporting. Emits nothing on its own.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The generation id the turn runs under.</param>
+    /// <remarks>
+    /// Pair every call with <see cref="CompleteTurnAsync"/> on the path where the turn finishes
+    /// normally. Abnormal endings need no call: a turn still open when the run terminalizes is
+    /// reported by the finalizer with the run's own outcome, which is what keeps error,
+    /// cancellation, and teardown from needing a copy of this logic in each loop.
+    /// </remarks>
+    protected void BeginTurn(string runId, string generationId) =>
+        Lifecycle.TurnStarted(runId, generationId);
+
+    /// <summary>
+    /// Folds a message the current turn produced into that turn's lifecycle report.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The generation id the turn runs under.</param>
+    /// <param name="message">The message the turn produced.</param>
+    /// <remarks>
+    /// Call this for every message a turn emits, streaming fragments included — the seam decides
+    /// what counts, so <c>message_count</c> means the same thing whichever loop reported it.
+    /// </remarks>
+    protected void ObserveTurnMessage(string runId, string generationId, IMessage message) =>
+        Lifecycle.ObserveTurnMessage(runId, generationId, message);
+
+    /// <summary>
+    /// Reports a turn that reached its final state.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The generation id the turn ran under.</param>
+    /// <param name="outcome">How it ended. Defaults to <see cref="LifecycleTurnOutcomes.Completed"/>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// This is the one turn-finalization seam every loop shares. What a "turn" is differs by
+    /// provider — the raw loop takes one per model round-trip, while a CLI-backed loop runs its own
+    /// agentic loop behind a single generation id and so reports one turn per run — but the event a
+    /// subscriber receives is the same shape and the same guarantee either way: one final report per
+    /// generation the loop accepted, never a streaming fragment.
+    /// </remarks>
+    protected Task CompleteTurnAsync(
+        string runId,
+        string generationId,
+        string? outcome = null,
+        CancellationToken ct = default) =>
+        Lifecycle.TurnCompletedAsync(
+            runId,
+            generationId,
+            outcome ?? LifecycleTurnOutcomes.Completed,
+            ct: ct);
+
+    /// <summary>
     /// Durably folds newly-injected input receipt ids into the active run's ledger entry.
     /// Called by <c>MultiTurnAgentLoop</c> at its injection point — where a new send that
     /// arrives while a run is still in-flight is folded into that same run

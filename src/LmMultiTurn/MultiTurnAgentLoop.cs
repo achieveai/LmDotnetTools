@@ -643,7 +643,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 runId,
                 turnGenerationId);
 
+            BeginTurn(runId, turnGenerationId);
             var hasToolCalls = await ExecuteTurnAsync(runId, turnGenerationId, turnCount, ct);
+
+            // Report the turn before deciding what the run does next, so a subscriber sees the turn
+            // that produced the deferrals ahead of the run parking on them. A turn that ends any
+            // other way — an exception or a cancellation out of ExecuteTurnAsync — is reported by
+            // the finalizer when the run terminalizes, carrying the run's outcome.
+            await CompleteTurnAsync(runId, turnGenerationId, ct: ct);
 
             // If any tool call from this generation deferred and is still unresolved, end the run
             // cleanly. Each result that arrives from here on carries its own child run, and the one
@@ -807,6 +814,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         {
             // Add to history (messages already published by MessagePublishingMiddleware)
             AddToHistory(msg);
+            ObserveTurnMessage(runId, generationId, msg);
 
             // Handle tool calls - MessageTransformationMiddleware converts ToolsCallMessage -> ToolCallMessage
             if (msg is ToolCallMessage toolCall)
