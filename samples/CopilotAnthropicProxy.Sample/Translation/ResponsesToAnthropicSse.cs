@@ -22,7 +22,15 @@ public sealed class ResponsesToAnthropicSse
     private bool _started;
     private bool _finished;
     private int _nextIndex;
-    private bool _blockOpen;
+
+    /// <summary>
+    ///     The <c>content_block.type</c> of the block currently open ("text" / "thinking" /
+    ///     "tool_use"), or null when none is. The KIND matters, not just the fact of a block being
+    ///     open: a delta must never be written into a block of a different type, which is malformed
+    ///     rather than merely degraded. The upstream is not trusted to close its own blocks — the
+    ///     auto-open fallbacks below exist precisely because it sometimes does not.
+    /// </summary>
+    private string? _openKind;
 
     /// <summary>
     ///     <paramref name="messageId"/> and <paramref name="model"/> are used when the upstream stream
@@ -85,12 +93,12 @@ public sealed class ResponsesToAnthropicSse
 
             case "response.output_text.delta":
                 Start(frames, response);
-                if (!_blockOpen)
+                if (_openKind != "text")
                 {
                     OpenBlock(frames, new JsonObject { ["type"] = "text", ["text"] = "" });
                 }
 
-                Delta(frames, "text_delta", "text", Text(evt["delta"]) ?? "");
+                Delta(frames, "text", "text_delta", "text", Text(evt["delta"]) ?? "");
                 break;
 
             case "response.reasoning_summary_part.added":
@@ -100,12 +108,12 @@ public sealed class ResponsesToAnthropicSse
 
             case "response.reasoning_summary_text.delta":
                 Start(frames, response);
-                if (!_blockOpen)
+                if (_openKind != "thinking")
                 {
                     OpenBlock(frames, new JsonObject { ["type"] = "thinking", ["thinking"] = "" });
                 }
 
-                Delta(frames, "thinking_delta", "thinking", Text(evt["delta"]) ?? "");
+                Delta(frames, "thinking", "thinking_delta", "thinking", Text(evt["delta"]) ?? "");
                 break;
 
             case "response.output_item.added" when Text(item?["type"]) == "function_call":
@@ -122,12 +130,13 @@ public sealed class ResponsesToAnthropicSse
                 );
                 break;
 
-            // No block is opened here if one is not already open: unlike a text delta, a tool_use
-            // block cannot be invented after the fact — its id and name only ever arrive on
-            // response.output_item.added.
+            // No block is opened here: unlike a text delta, a tool_use block cannot be invented after
+            // the fact — its id and name only ever arrive on response.output_item.added. If that event
+            // was missing or unreadable, the arguments are dropped rather than written into whatever
+            // block happens to be open, which is what requiring the "tool_use" kind enforces.
             case "response.function_call_arguments.delta":
                 Start(frames, response);
-                Delta(frames, "input_json_delta", "partial_json", Text(evt["delta"]) ?? "");
+                Delta(frames, "tool_use", "input_json_delta", "partial_json", Text(evt["delta"]) ?? "");
                 break;
 
             case "response.content_part.done":
@@ -175,10 +184,14 @@ public sealed class ResponsesToAnthropicSse
         frames.Add(Frame("message_start", new JsonObject { ["type"] = "message_start", ["message"] = message }));
     }
 
+    /// <summary>
+    ///     Closes any block still open and starts a new one at the next index. The kind is taken from
+    ///     the block itself, so <see cref="_openKind"/> cannot drift from what was announced.
+    /// </summary>
     private void OpenBlock(List<string> frames, JsonObject contentBlock)
     {
         CloseBlock(frames);
-        _blockOpen = true;
+        _openKind = Text(contentBlock["type"]);
 
         frames.Add(
             Frame(
@@ -193,9 +206,15 @@ public sealed class ResponsesToAnthropicSse
         );
     }
 
-    private void Delta(List<string> frames, string deltaType, string field, string value)
+    /// <summary>
+    ///     Appends a delta to the open block, but only when that block is of
+    ///     <paramref name="requiredKind"/>. A tool call's arguments spliced into rendered assistant
+    ///     text, or a text delta at the index of a thinking block, is worse than a dropped delta:
+    ///     a client validating delta type against the block it opened rejects the whole stream.
+    /// </summary>
+    private void Delta(List<string> frames, string requiredKind, string deltaType, string field, string value)
     {
-        if (!_blockOpen || value.Length == 0)
+        if (_openKind != requiredKind || value.Length == 0)
         {
             return;
         }
@@ -215,7 +234,7 @@ public sealed class ResponsesToAnthropicSse
 
     private void CloseBlock(List<string> frames)
     {
-        if (!_blockOpen)
+        if (_openKind is null)
         {
             return;
         }
@@ -223,7 +242,7 @@ public sealed class ResponsesToAnthropicSse
         frames.Add(
             Frame("content_block_stop", new JsonObject { ["type"] = "content_block_stop", ["index"] = _nextIndex })
         );
-        _blockOpen = false;
+        _openKind = null;
         _nextIndex++;
     }
 
@@ -267,9 +286,37 @@ public sealed class ResponsesToAnthropicSse
     private static string? Text(JsonNode? node) =>
         node is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : null;
 
-    /// <summary>Reads a token count, defaulting to 0 when it is absent or not a JSON integer.</summary>
-    private static int TokenCount(JsonNode? node) =>
-        node is JsonValue scalar && scalar.TryGetValue<int>(out var count) ? count : 0;
+    /// <summary>
+    ///     Reads a token count, falling back to 0 only when it is absent or not a number at all.
+    ///     Reporting 0 for a figure the upstream DID send is a worse lie than an approximate one — it
+    ///     silently zeroes a client's cost accounting — so a whole number written in floating-point
+    ///     form (<c>9.0</c>) is rounded rather than rejected, and a value too large for
+    ///     <see cref="long"/> saturates. JSON cannot express NaN or Infinity, so the cast is total.
+    /// </summary>
+    private static long TokenCount(JsonNode? node)
+    {
+        if (node is not JsonValue scalar)
+        {
+            return 0;
+        }
+
+        if (scalar.TryGetValue<long>(out var count))
+        {
+            return count;
+        }
+
+        if (!scalar.TryGetValue<double>(out var approximate))
+        {
+            return 0;
+        }
+
+        return approximate switch
+        {
+            >= long.MaxValue => long.MaxValue,
+            <= long.MinValue => long.MinValue,
+            _ => (long)Math.Round(approximate),
+        };
+    }
 
     private static string Frame(string eventName, JsonObject payload) =>
         $"event: {eventName}\ndata: {payload.ToJsonString()}\n\n";

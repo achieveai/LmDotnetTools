@@ -4,12 +4,23 @@ namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
 
 public class ResponsesToAnthropicSseTests
 {
-    /// <summary>Feeds a scripted Responses stream and returns the concatenated Anthropic SSE output.</summary>
-    private static string Run(params string[] events)
+    /// <summary>Feeds a scripted Responses stream and returns the Anthropic SSE frames it produced.</summary>
+    private static IReadOnlyList<string> Frames(params string[] events)
     {
         var translator = new ResponsesToAnthropicSse("msg_test", "gpt-5.3-codex");
-        return string.Concat(events.SelectMany(translator.Next));
+        return [.. events.SelectMany(translator.Next)];
     }
+
+    /// <summary>Feeds a scripted Responses stream and returns the concatenated Anthropic SSE output.</summary>
+    private static string Run(params string[] events) => string.Concat(Frames(events));
+
+    /// <summary>
+    ///     The event name of each frame, in order. Substring assertions over the concatenated output
+    ///     are blind to both duplication and ordering — a second message_start, or a content block
+    ///     opening before message_start, still satisfies every <c>Contain</c>.
+    /// </summary>
+    private static IReadOnlyList<string> EventNames(params string[] events) =>
+        [.. Frames(events).Select(frame => frame.Split('\n')[0]["event: ".Length..])];
 
     [Fact]
     public void Emits_a_well_formed_text_stream()
@@ -35,6 +46,31 @@ public class ResponsesToAnthropicSseTests
         output.Should().Contain("\"output_tokens\":2");
         output.Should().EndWith("\n\n");
         output.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
+    public void Emits_the_happy_path_frames_in_exactly_this_order()
+    {
+        var events = EventNames(
+            """{"type":"response.created","response":{"id":"resp_1","model":"gpt-5.3-codex"}}""",
+            """{"type":"response.content_part.added","part":{"type":"output_text","text":""}}""",
+            """{"type":"response.output_text.delta","delta":"Hel"}""",
+            """{"type":"response.output_text.delta","delta":"lo"}""",
+            """{"type":"response.content_part.done"}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":9,"output_tokens":2}}}"""
+        );
+
+        events
+            .Should()
+            .Equal(
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_delta",
+                "content_block_stop",
+                "message_delta",
+                "message_stop"
+            );
     }
 
     [Fact]
@@ -180,6 +216,62 @@ public class ResponsesToAnthropicSseTests
         var afterTermination = translator.Next("""{"type":"response.output_text.delta","delta":"late"}""");
 
         afterTermination.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Never_writes_tool_arguments_into_a_block_that_is_not_a_tool_call()
+    {
+        // The output_item.added that would have opened the tool_use block is unreadable, so the text
+        // delta owns index 0. The arguments that follow must be DROPPED: splicing tool-call JSON into
+        // rendered assistant text is malformed, not degraded.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.output_item.added","item":["not-an-object"]}""",
+            """{"type":"response.output_text.delta","delta":"hi"}""",
+            """{"type":"response.function_call_arguments.delta","delta":"{\"city\":\"Paris\"}"}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output.Should().Contain("\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}");
+        output.Should().Contain("\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}");
+        output.Should().NotContain("input_json_delta");
+        output.Should().NotContain("Paris");
+        output.Should().NotContain("\"index\":1", "no second block was ever opened");
+    }
+
+    [Fact]
+    public void Switches_block_when_a_text_delta_interrupts_an_open_thinking_block()
+    {
+        // The upstream went straight from its reasoning summary to the answer without sending
+        // reasoning_summary_part.done. The thinking block must be closed and a text block opened at
+        // the next index — writing text_delta at the thinking block's index would be malformed.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.reasoning_summary_part.added"}""",
+            """{"type":"response.reasoning_summary_text.delta","delta":"weighing"}""",
+            """{"type":"response.output_text.delta","delta":"answer"}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output.Should().Contain("\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}");
+        output.Should().Contain("\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"weighing\"}");
+        output.Should().Contain("\"type\":\"content_block_stop\",\"index\":0");
+        output.Should().Contain("\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}");
+        output.Should().Contain("\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}");
+        output.Should().NotContain("\"index\":0,\"delta\":{\"type\":\"text_delta\"");
+    }
+
+    [Fact]
+    public void Reports_a_token_count_the_upstream_sent_in_a_shape_int_cannot_hold()
+    {
+        // 9.0 is a whole number written in floating-point form, and the output figure exceeds int.
+        // Reporting 0 for either would silently zero the client's cost accounting.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":9.0,"output_tokens":3000000000}}}"""
+        );
+
+        output.Should().Contain("\"input_tokens\":9,\"output_tokens\":3000000000");
     }
 
     [Fact]

@@ -70,8 +70,9 @@ public static class ResponsesToAnthropicJson
     ///     field is not modelled anywhere under src/OpenAiResponsesProvider, so its live shape is
     ///     confirmed by the live smoke test rather than by a fixture. Reads are kind-safe rather than
     ///     throwing: unlike <see cref="Translate"/>, this method is called directly by
-    ///     <c>ResponsesToAnthropicSse</c> outside any try/catch, so a field present with an unexpected
-    ///     JSON kind (e.g. <c>"type": 123</c>) must fall through to <c>end_turn</c> rather than throw.
+    ///     <see cref="ResponsesToAnthropicSse"/> outside any try/catch, so a field present with an
+    ///     unexpected JSON kind (e.g. <c>"type": 123</c>) must fall through to <c>end_turn</c> rather
+    ///     than throw.
     /// </summary>
     public static string DeriveStopReason(JsonObject response)
     {
