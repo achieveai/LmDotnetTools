@@ -252,28 +252,84 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SpawnAsync_EnforcesConcurrencyLimit()
+    public async Task SpawnAsync_PoolFull_QueuesSpawnInsteadOfThrowing()
     {
-        // Arrange: sub-agent that never completes (blocks indefinitely)
+        // Defer-queue cap behaviour: when the pool is saturated, a further spawn is ACCEPTED and
+        // enqueued (status="queued") rather than rejected with "Max concurrent sub-agents reached".
+        // The queued spawn still gets a stable agent_id handle immediately.
         var blockingTcs = new TaskCompletionSource<bool>();
         SetupBlockingSubAgent(blockingTcs);
 
         _manager = CreateManager(maxConcurrent: 1);
 
-        // Act: first (background) spawn acquires the only concurrency slot
-        await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        // First background spawn takes the only permit and blocks (stays Running).
+        var firstJson = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        using (var firstDoc = JsonDocument.Parse(firstJson))
+        {
+            firstDoc.RootElement.GetProperty("status").GetString().Should().Be("spawned");
+        }
 
-        // Second spawn should fail because concurrency limit is 1 and the first agent
-        // is still running (semaphore wait times out after 5s).
-        var act = () => _manager.SpawnAsync(
+        // Second background spawn finds the pool full -> queued (no throw).
+        var secondJson = await _manager.SpawnAsync(
             "test-agent", "second task", runInBackground: true);
 
-        // Assert
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*Max concurrent sub-agents*");
+        using var secondDoc = JsonDocument.Parse(secondJson);
+        secondDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
+        secondDoc.RootElement.GetProperty("agent_id").GetString().Should().NotBeNullOrEmpty();
+        secondDoc.RootElement.GetProperty("template").GetString().Should().Be("test-agent");
 
         // Cleanup: unblock so dispose doesn't hang
         blockingTcs.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_QueuedSpawn_StartsAndCompletesOncePermitFrees()
+    {
+        // RED->GREEN for defer-queue end-to-end: with a pool of 1, a second background spawn is
+        // queued while the first holds the only permit. Once the first finishes and frees its slot,
+        // the background pump starts the queued spawn and it runs to completion. Before the fix the
+        // second spawn threw "Max concurrent reached" and never ran.
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var firstJson = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        using var firstDoc = JsonDocument.Parse(firstJson);
+        var firstId = firstDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        var secondJson = await _manager.SpawnAsync(
+            "test-agent", "second task", runInBackground: true);
+        using var secondDoc = JsonDocument.Parse(secondJson);
+        secondDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
+        var secondId = secondDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Release the first agent so its permit frees and the pump can start the queued one.
+        release.SetResult(true);
+
+        // Both agents must reach 'completed' — the queued one only starts after a permit frees.
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    return _manager!.Peek(firstId).Contains("\"completed\"")
+                        && _manager!.Peek(secondId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(15));
+
+        using var firstPeek = JsonDocument.Parse(_manager.Peek(firstId));
+        firstPeek.RootElement.GetProperty("status").GetString()
+            .Should().Be("completed", "the first agent finishes once released");
+
+        using var secondPeek = JsonDocument.Parse(_manager.Peek(secondId));
+        secondPeek.RootElement.GetProperty("status").GetString()
+            .Should().Be("completed", "the queued agent runs after the first frees the permit");
     }
 
     [Fact]

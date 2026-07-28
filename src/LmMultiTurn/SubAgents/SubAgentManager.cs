@@ -69,6 +69,18 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly SemaphoreSlim _concurrencyGate;
     private int _disposeStarted;
 
+    // Defer-queue for spawns that arrive when the concurrency pool is full: rather than REJECTING a
+    // spawn with "Max concurrent reached", SpawnAsync enqueues it here and a single background pump
+    // (_pumpTask) starts each queued spawn FIFO as a permit frees. _queueSignal counts pending items so
+    // the pump parks (no busy-wait) until there is work; _pumpCts ends the pump at manager disposal.
+    // Enqueue never holds a permit, so a permit-holding parent can never deadlock waiting on a child's
+    // permit — the deadlock the old 5s-timeout valve guarded against cannot arise here (each loop owns
+    // its own manager + gate, so this gate never has a permit-holder blocked awaiting itself).
+    private readonly ConcurrentQueue<QueuedSpawn> _spawnQueue = new();
+    private readonly SemaphoreSlim _queueSignal = new(0);
+    private readonly CancellationTokenSource _pumpCts = new();
+    private readonly Task _pumpTask;
+
     // Owned providers whose terminal disposal failed AND whose in-restart retry also failed: the state's
     // OwnedProviderAgent slot is about to be overwritten by the replacement, so their handle is retained
     // here for a best-effort final dispose at manager teardown rather than being silently abandoned.
@@ -136,6 +148,10 @@ public sealed class SubAgentManager : IAsyncDisposable
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
             options.MaxConcurrentSubAgents);
+
+        // Start the defer-queue pump. Its first action parks on _queueSignal (initialized above via its
+        // field initializer), so this call returns to the ctor immediately without consuming a thread.
+        _pumpTask = RunSpawnPumpAsync(_pumpCts.Token);
     }
 
     /// <summary>
@@ -197,19 +213,6 @@ public sealed class SubAgentManager : IAsyncDisposable
         templateName = resolvedName;
         var template = templates[resolvedName];
 
-        if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
-        {
-            throw new InvalidOperationException(
-                $"Max concurrent sub-agents ({_options.MaxConcurrentSubAgents}) " +
-                $"reached. Wait for a sub-agent to complete or increase the limit.");
-        }
-
-        // One independent release-guard instance for this gate-acquisition epoch (see
-        // GateReleaseGuard) - shared between this method's own failure cleanup below and the
-        // monitor task started further down, so whichever notices the run's end first is the
-        // one that actually releases the slot.
-        var gateGuard = new GateReleaseGuard();
-
         // A spawned agent's id has TWO parts, mirroring the workflow controller's identity: a per-spawn
         // guid (uniqueness) and a conversation tag derived from the parent (launching) conversation's
         // thread id. The tag is deterministic (same conversation -> same tag) and content-free, so ids
@@ -226,6 +229,108 @@ public sealed class SubAgentManager : IAsyncDisposable
             ? DeriveReadableName(templateName, agentId)
             : name;
 
+        ct.ThrowIfCancellationRequested();
+
+        // Cap behaviour is DEFER-QUEUE, not reject: try to take a concurrency permit without blocking.
+        // Wait(0) returns immediately whether or not a permit is free, so the historical hot path (a
+        // permit is available -> run inline) is unchanged. Only the full-pool path differs: instead of
+        // throwing "Max concurrent reached", the spawn is enqueued for the background pump below.
+        if (_concurrencyGate.Wait(0))
+        {
+            // One independent release-guard instance for this gate-acquisition epoch (see
+            // GateReleaseGuard) - shared between the spawn's own failure cleanup and the monitor task,
+            // so whichever notices the run's end first is the one that actually releases the slot.
+            var gateGuard = new GateReleaseGuard();
+            var state = await StartWithHeldPermitAsync(
+                agentId,
+                effectiveName,
+                templateName,
+                template,
+                task,
+                model,
+                addTools,
+                removeTools,
+                modelIntelligence,
+                runInBackground,
+                gateGuard,
+                ct);
+
+            // Past this point the monitor owns the concurrency gate; do not release it here.
+            if (runInBackground)
+            {
+                // Nobody awaits the completion on the background path; observe any fault
+                // so it never surfaces as an UnobservedTaskException.
+                ObserveCompletionFaults(state);
+                return SerializeSpawnReceipt(agentId, effectiveName, templateName, "spawned");
+            }
+
+            // Synchronous: block until the run completes and return its final answer.
+            // Parent relay is suppressed (NotifyParentOnCompletion=false) so the result
+            // flows back only as this tool result, in the same parent turn.
+            return await AwaitCompletionAsync(state, ct);
+        }
+
+        // Pool full: defer-queue. The spawn is ACCEPTED immediately (a stable handle) and the pump
+        // starts it when a permit frees. A background spawn returns a "queued" receipt now and relays
+        // its eventual result to the parent (NotifyParentOnCompletion); a foreground (blocking) spawn
+        // waits for the pump to create+start the agent (StateReady) and then awaits its completion.
+        var queued = new QueuedSpawn
+        {
+            AgentId = agentId,
+            EffectiveName = effectiveName,
+            TemplateName = templateName,
+            Template = template,
+            Task = task,
+            Model = model,
+            AddTools = addTools,
+            RemoveTools = removeTools,
+            ModelIntelligence = modelIntelligence,
+            RunInBackground = runInBackground,
+        };
+        _spawnQueue.Enqueue(queued);
+        _ = _queueSignal.Release();
+
+        _logger.LogInformation(
+            "Sub-agent pool full ({Max} in flight); queued spawn {AgentId} from template {Template} "
+                + "(background={Background}). It will start when a slot frees.",
+            _options.MaxConcurrentSubAgents, agentId, templateName, runInBackground);
+
+        if (runInBackground)
+        {
+            // The background caller returns now with a "queued" receipt and never awaits StateReady, so
+            // observe a potential start-failure fault on it to avoid an UnobservedTaskException.
+            ObserveTaskFault(queued.StateReady.Task);
+            return SerializeSpawnReceipt(agentId, effectiveName, templateName, "queued");
+        }
+
+        // Foreground (blocking) queued spawn: wait for the pump to create+start the agent, then await
+        // its completion exactly as an inline foreground spawn would. Honours the caller's ct.
+        var startedState = await queued.StateReady.Task.WaitAsync(ct);
+        return await AwaitCompletionAsync(startedState, ct);
+    }
+
+    /// <summary>
+    /// Creates, registers, and starts a sub-agent whose concurrency permit is ALREADY HELD by the
+    /// caller (either <see cref="SpawnAsync"/>'s inline fast path or the background queue pump). Sets up
+    /// the run task + monitor exactly as an inline spawn does, sends the initial task, and returns the
+    /// live <see cref="SubAgentState"/>. On any failure it releases the held permit and rolls back the
+    /// partial registration (via <see cref="CleanupFailedSpawnAsync"/> once a state exists), then
+    /// rethrows — so neither the inline path nor the pump has to reason about the permit.
+    /// </summary>
+    private async Task<SubAgentState> StartWithHeldPermitAsync(
+        string agentId,
+        string effectiveName,
+        string templateName,
+        SubAgentTemplate template,
+        string task,
+        string? model,
+        string[]? addTools,
+        string[]? removeTools,
+        int? modelIntelligence,
+        bool runInBackground,
+        GateReleaseGuard gateGuard,
+        CancellationToken ct)
+    {
         SubAgentState? state = null;
 
         try
@@ -290,6 +395,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             _logger.LogInformation(
                 "Spawned sub-agent {AgentId} from template {Template} (background={Background}) with task length {TaskLength}",
                 agentId, templateName, runInBackground, task?.Length ?? 0);
+
+            return state;
         }
         catch
         {
@@ -311,27 +418,124 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             throw;
         }
+    }
 
-        // Past this point the monitor owns the concurrency gate; do not release it here.
-        if (runInBackground)
+    /// <summary>
+    /// Background pump for defer-queued spawns: when <see cref="SpawnAsync"/> finds the pool full it
+    /// enqueues the spawn instead of throwing, and this loop starts each queued spawn FIFO as a permit
+    /// frees. It runs for the manager's lifetime (cancelled at disposal) and acquires permits with its
+    /// OWN lifetime token — NOT any caller's — so a queued BACKGROUND spawn outlives the parent turn
+    /// that requested it. A queued FOREGROUND (blocking) caller is bridged its live state via
+    /// <see cref="QueuedSpawn.StateReady"/>. The pump holds no permit while parked, so it can never
+    /// deadlock a permit-holder.
+    /// </summary>
+    private async Task RunSpawnPumpAsync(CancellationToken pumpCt)
+    {
+        while (!pumpCt.IsCancellationRequested)
         {
-            // Nobody awaits the completion on the background path; observe any fault
-            // so it never surfaces as an UnobservedTaskException.
-            ObserveCompletionFaults(state);
-
-            return JsonSerializer.Serialize(new
+            try
             {
-                agent_id = agentId,
-                name = effectiveName,
-                template = templateName,
-                status = "spawned",
-            });
+                await _queueSignal.WaitAsync(pumpCt);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (!_spawnQueue.TryDequeue(out var queued))
+            {
+                // Spurious wake or drained by disposal; loop and re-check cancellation.
+                continue;
+            }
+
+            try
+            {
+                await _concurrencyGate.WaitAsync(pumpCt);
+            }
+            catch (OperationCanceledException)
+            {
+                // Manager disposing before a permit was available: fault the waiter so a foreground
+                // caller unblocks (with cancellation) instead of hanging, then stop pumping.
+                _ = queued.StateReady.TrySetCanceled(pumpCt);
+                break;
+            }
+
+            var gateGuard = new GateReleaseGuard();
+            try
+            {
+                var state = await StartWithHeldPermitAsync(
+                    queued.AgentId,
+                    queued.EffectiveName,
+                    queued.TemplateName,
+                    queued.Template,
+                    queued.Task,
+                    queued.Model,
+                    queued.AddTools,
+                    queued.RemoveTools,
+                    queued.ModelIntelligence,
+                    queued.RunInBackground,
+                    gateGuard,
+                    pumpCt);
+
+                if (queued.RunInBackground)
+                {
+                    // Nobody awaits a background queued spawn's completion; observe faults so a
+                    // faulted run never surfaces as an UnobservedTaskException.
+                    ObserveCompletionFaults(state);
+                }
+
+                // Unblocks a foreground caller (no-op for background, whose StateReady fault was already
+                // observed at enqueue).
+                _ = queued.StateReady.TrySetResult(state);
+            }
+            catch (Exception ex)
+            {
+                // StartWithHeldPermitAsync already released the permit + rolled back registration.
+                _logger.LogError(
+                    ex,
+                    "Queued sub-agent {AgentId} (template {Template}) failed to start after dequeue.",
+                    queued.AgentId, queued.TemplateName);
+                _ = queued.StateReady.TrySetException(ex);
+            }
         }
 
-        // Synchronous: block until the run completes and return its final answer.
-        // Parent relay is suppressed (NotifyParentOnCompletion=false) so the result
-        // flows back only as this tool result, in the same parent turn.
-        return await AwaitCompletionAsync(state, ct);
+        // Fault any spawns still queued at shutdown so a foreground caller blocked on StateReady does
+        // not hang past disposal.
+        while (_spawnQueue.TryDequeue(out var pending))
+        {
+            _ = pending.StateReady.TrySetCanceled(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Serializes the JSON spawn receipt returned to the calling tool. <paramref name="status"/> is
+    /// <c>"spawned"</c> for a spawn that started immediately or <c>"queued"</c> for one deferred to the
+    /// pump because the pool was full.
+    /// </summary>
+    private static string SerializeSpawnReceipt(
+        string agentId, string name, string templateName, string status)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            agent_id = agentId,
+            name,
+            template = templateName,
+            status,
+        });
+    }
+
+    /// <summary>
+    /// Attaches a fault-only observer to a task nobody will await, so a fault it may carry never
+    /// surfaces as an <c>UnobservedTaskException</c> during GC. (Cancelled/completed tasks are safe to
+    /// leave unobserved; only faults matter.)
+    /// </summary>
+    private static void ObserveTaskFault(Task task)
+    {
+        _ = task.ContinueWith(
+            static t => { _ = t.Exception; },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <summary>
@@ -1278,6 +1482,22 @@ public sealed class SubAgentManager : IAsyncDisposable
             return;
         }
 
+        // Stop the defer-queue pump FIRST so it can't register a new sub-agent into _agents while we
+        // tear the collection down below. Cancelling _pumpCts unblocks the pump's WaitAsync calls; the
+        // pump then faults any still-queued spawns (so a foreground caller unblocks) and exits.
+        try { await _pumpCts.CancelAsync(); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to cancel sub-agent spawn pump during disposal");
+        }
+
+        try { await _pumpTask; }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Sub-agent spawn pump faulted during disposal");
+        }
+
         foreach (var (_, state) in _agents)
         {
             // Each step is isolated to prevent cascading failures:
@@ -1373,6 +1593,46 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         _concurrencyGate.Dispose();
+
+        // Drain any spawns still queued at teardown (the pump above already faults those it dequeued;
+        // this covers a race where an enqueue landed after the pump exited) so a foreground caller
+        // blocked on StateReady unblocks with cancellation instead of hanging, then dispose the
+        // defer-queue primitives.
+        while (_spawnQueue.TryDequeue(out var pending))
+        {
+            _ = pending.StateReady.TrySetCanceled(CancellationToken.None);
+        }
+
+        _queueSignal.Dispose();
+        _pumpCts.Dispose();
+    }
+
+    /// <summary>
+    /// A spawn deferred because the concurrency pool was full when <see cref="SpawnAsync"/> ran. It
+    /// carries everything the pump needs to build the agent later, plus <see cref="StateReady"/> — a
+    /// bridge the pump completes with the live <see cref="SubAgentState"/> so a FOREGROUND (blocking)
+    /// caller that is awaiting the queued spawn can then await its completion. A BACKGROUND caller does
+    /// not await <see cref="StateReady"/> (it already returned a "queued" receipt); its result is relayed
+    /// to the parent via the normal <c>NotifyParentOnCompletion</c> path once the pump starts it.
+    /// </summary>
+    private sealed record QueuedSpawn
+    {
+        public required string AgentId { get; init; }
+        public required string EffectiveName { get; init; }
+        public required string TemplateName { get; init; }
+        public required SubAgentTemplate Template { get; init; }
+        public required string Task { get; init; }
+        public required bool RunInBackground { get; init; }
+        public string? Model { get; init; }
+        public string[]? AddTools { get; init; }
+        public string[]? RemoveTools { get; init; }
+        public int? ModelIntelligence { get; init; }
+
+        // RunContinuationsAsynchronously so the pump thread that completes this never inline-runs a
+        // foreground caller's AwaitCompletionAsync continuation while it should be moving to the next
+        // queued spawn.
+        public TaskCompletionSource<SubAgentState> StateReady { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>
