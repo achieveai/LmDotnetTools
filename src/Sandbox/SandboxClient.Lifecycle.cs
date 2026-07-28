@@ -169,7 +169,35 @@ public sealed partial class SandboxClient
         );
 
     private static SandboxInfo ToSandboxInfo(CreateSandboxResponseDto dto) =>
-        new(dto.SessionId, dto.ContainerId, dto.Volumes?.Workspace?.ContainerPath, dto.Volumes?.Workspace?.Id);
+        new(
+            dto.SessionId,
+            dto.ContainerId,
+            dto.Volumes?.Workspace?.ContainerPath,
+            dto.Volumes?.Workspace?.Id,
+            dto.Status,
+            ToInventory(dto.Inventory)
+        );
+
+    /// <summary>
+    /// Maps the gateway's inventory block, dropping items whose kind or id is missing rather than
+    /// materializing a half-identified entry. An absent block maps to <see langword="null"/> so
+    /// <see cref="SandboxInfo"/> supplies its "gateway reported none" default — distinct from a
+    /// present block that reports <c>unavailable</c> with the gateway's own reason.
+    /// </summary>
+    private static SandboxInventory? ToInventory(SandboxInventoryDto? dto)
+    {
+        if (dto is null)
+        {
+            return null;
+        }
+
+        var items = dto
+            .Items?.Where(i => !string.IsNullOrWhiteSpace(i.Kind) && !string.IsNullOrWhiteSpace(i.Id))
+            .Select(i => new SandboxInventoryItem(i.Kind!, i.Id!, i.Version))
+            .ToList();
+
+        return new SandboxInventory(dto.Status, dto.UnavailableReason, items);
+    }
 
     private static async Task<CreateSandboxResponseDto> ReadSandboxResponseOrThrowAsync(
         HttpResponseMessage response,

@@ -277,6 +277,115 @@ public class LifecycleFieldSemanticsTests
     }
 
     [Fact]
+    public void A_sandbox_reports_an_inventory_even_when_it_has_nothing_to_report()
+    {
+        var json = PayloadJson(new SandboxCreatedPayload { SessionId = "sess-1", WorkspaceId = "ws-1" });
+
+        json.Should()
+            .Contain("\"inventory\":{", "an absent inventory would read as an old gateway and an empty session alike");
+        json.Should().Contain("\"status\":\"unavailable\"");
+        json.Should().Contain("\"items\":[]");
+    }
+
+    [Fact]
+    public void A_confirmed_inventory_carries_identity_and_version_and_nothing_else()
+    {
+        var json = PayloadJson(
+            new SandboxCreatedPayload
+            {
+                SessionId = "sess-1",
+                WorkspaceId = "ws-1",
+                Inventory = new SandboxInventorySummary
+                {
+                    Status = LifecycleInventoryStatuses.Confirmed,
+                    Items =
+                    [
+                        new SandboxInventoryEntry
+                        {
+                            Kind = LifecycleInventoryKinds.Plugin,
+                            Id = "development",
+                            Version = "1.4.0",
+                        },
+                        new SandboxInventoryEntry { Kind = LifecycleInventoryKinds.Skill, Id = "development:implement" },
+                    ],
+                },
+            }
+        );
+
+        json.Should().Contain("\"status\":\"confirmed\"");
+        json.Should().Contain("\"kind\":\"plugin\",\"id\":\"development\",\"version\":\"1.4.0\"");
+        json.Should()
+            .Contain(
+                "\"kind\":\"skill\",\"id\":\"development:implement\"}",
+                "a kind that tracks no version reports none rather than an empty placeholder"
+            );
+        json.Should().NotContain("unavailable_reason", "a confirmed inventory has nothing to explain");
+    }
+
+    [Fact]
+    public void An_unavailable_inventory_always_says_why()
+    {
+        var json = PayloadJson(
+            new SandboxCreatedPayload
+            {
+                SessionId = "sess-1",
+                WorkspaceId = "ws-1",
+                Inventory = new SandboxInventorySummary
+                {
+                    Status = LifecycleInventoryStatuses.Unavailable,
+                    UnavailableReason = "marketplace resolution timed out",
+                },
+            }
+        );
+
+        json.Should().Contain("\"unavailable_reason\":\"marketplace resolution timed out\"");
+        json.Should()
+            .Contain("\"items\":[]", "an unavailable inventory reports no items rather than omitting the field");
+    }
+
+    [Fact]
+    public void An_inventory_round_trips_through_the_wire_unchanged()
+    {
+        var payload = new SandboxCreatedPayload
+        {
+            SessionId = "sess-1",
+            WorkspaceId = "ws-1",
+            WasRecreated = true,
+            ReplacedSessionId = "sess-0",
+            Inventory = new SandboxInventorySummary
+            {
+                Status = LifecycleInventoryStatuses.Confirmed,
+                Items = [new SandboxInventoryEntry { Kind = LifecycleInventoryKinds.Agent, Id = "code-reviewer:pr-review" }],
+            },
+        };
+
+        var decoded = JsonSerializer.Deserialize<SandboxCreatedPayload>(
+            PayloadJson(payload),
+            LifecycleJsonContext.Default.SandboxCreatedPayload
+        );
+
+        decoded!.Inventory.Status.Should().Be(LifecycleInventoryStatuses.Confirmed);
+        decoded.Inventory.Items.Should().ContainSingle().Which.Id.Should().Be("code-reviewer:pr-review");
+        decoded.ReplacedSessionId.Should().Be("sess-0");
+    }
+
+    [Fact]
+    public void An_inventory_absent_from_the_wire_decodes_to_unavailable_rather_than_null()
+    {
+        const string WithoutInventory =
+            """{"session_id":"sess-1","workspace_id":"ws-1","was_recreated":false,"status":""}""";
+
+        var decoded = JsonSerializer.Deserialize<SandboxCreatedPayload>(
+            WithoutInventory,
+            LifecycleJsonContext.Default.SandboxCreatedPayload
+        );
+
+        decoded!.Inventory.Should().NotBeNull("a subscriber must never have to null-check the inventory");
+        decoded.Inventory.Status.Should().Be(LifecycleInventoryStatuses.Unavailable);
+        decoded.Inventory.Items.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Usage_counts_carry_their_completeness_so_a_partial_total_is_not_read_as_final()
     {
         var json = PayloadJson(

@@ -303,6 +303,7 @@ locks — a failed or rolled-back attempt produces no event.
 | `replaced_session_id` | string | ✅ | absent | The session replaced. Absent when `was_recreated` is `false`. |
 | `status` | string | ❌ | `""` | **Open vocabulary** — gateway-reported status at commit. |
 | `image_reference` | string | ✅ | absent | The image the session runs, when known. |
+| `inventory` | object | ❌ | see §5.3 | What the gateway confirmed it loaded. **Always written**, so an old gateway is never mistaken for an empty session. |
 
 ---
 
@@ -329,6 +330,37 @@ aggregating cost must check this before treating the counts as settled.
 | --- | --- | --- | --- | --- |
 | `code` | string | ❌ | `""` | **Open vocabulary**, stable, low-cardinality — safe to group and alert on. |
 | `message` | string | ✅ | absent | Short human-readable description, **free of sensitive material**. Never parse it; it is not part of the contract. |
+
+### 5.3 `SandboxInventorySummary`
+
+| JSON field | Type | Nullable | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `status` | string | ❌ | `"unavailable"` | **Open vocabulary**: `confirmed`, `unavailable`. Only the exact value `confirmed` means confirmed. |
+| `unavailable_reason` | string | ✅ | absent | Why the inventory could not be confirmed. Present whenever `status` is not `confirmed`. |
+| `items` | array | ❌ | `[]` | Confirmed items (§5.4). Always `[]` when `status` is not `confirmed`. |
+
+**Confirmed means loaded — not requested, and not available.** A create request naming three
+marketplaces may load none of them, and a marketplace catalog describes what a session *could*
+load. Neither is ever reported here, because a subscriber acting on this event reads it as a
+statement about the session that now exists.
+
+Reporting is fail-closed and mirrors the approval rule in ADR 0003: silence is never upgraded into
+a claim. A gateway that omits the block, or that returns items without claiming them confirmed,
+produces `unavailable` with a reason and an empty list. That is why `unavailable_reason` is
+mandatory in that state and why `items` is `[]` rather than absent — a consumer can always tell
+"nothing is loaded" from "nobody could tell us", without a second call.
+
+### 5.4 `SandboxInventoryEntry`
+
+| JSON field | Type | Nullable | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `kind` | string | ❌ | `""` | **Open vocabulary**: `plugin`, `skill`, `agent`. |
+| `id` | string | ❌ | `""` | The gateway's identifier, unique within its `kind`. |
+| `version` | string | ✅ | absent | The loaded version, when the gateway tracks one for this kind. |
+
+Identity and version only. Manifests, descriptions, install paths, source repositories, and
+publisher metadata are excluded by the §1 allowlist rule: the event stream has a different audience
+from the sandbox, and knowing *what* is loaded never requires shipping the content of it.
 
 ---
 

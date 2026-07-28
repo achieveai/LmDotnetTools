@@ -163,6 +163,42 @@ public static class LifecycleContextPhases
 }
 
 /// <summary>
+/// Whether a reported sandbox inventory can be read as what the session actually loaded.
+/// </summary>
+/// <remarks>
+/// Open vocabulary — an unrecognized value is preserved, not rejected. Only the exact value
+/// <see cref="Confirmed"/> means confirmed: anything else, including silence, leaves the inventory
+/// unavailable. Requested and merely-available items are never reported as confirmed.
+/// </remarks>
+public static class LifecycleInventoryStatuses
+{
+    /// <summary>The gateway confirmed the listed items are loaded in the session.</summary>
+    public const string Confirmed = "confirmed";
+
+    /// <summary>
+    /// The gateway could not confirm what is loaded. The reason says why, and the item list is
+    /// empty.
+    /// </summary>
+    public const string Unavailable = "unavailable";
+}
+
+/// <summary>
+/// The kinds of item a confirmed sandbox inventory reports.
+/// </summary>
+/// <remarks>Open vocabulary — an unrecognized value is preserved, not rejected.</remarks>
+public static class LifecycleInventoryKinds
+{
+    /// <summary>A plugin loaded from a selected marketplace.</summary>
+    public const string Plugin = "plugin";
+
+    /// <summary>A skill contributed by a loaded plugin.</summary>
+    public const string Skill = "skill";
+
+    /// <summary>A sub-agent contributed by a loaded plugin.</summary>
+    public const string Agent = "agent";
+}
+
+/// <summary>
 /// Capabilities a subscriber may be granted. A capability the host has not granted is absent, and
 /// absent means denied.
 /// </summary>

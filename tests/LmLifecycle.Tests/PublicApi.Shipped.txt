@@ -69,6 +69,11 @@ LifecycleEventTypes.RunStarted : string = "run_started"
 LifecycleEventTypes.SandboxCreated : string = "sandbox_created"
 LifecycleEventTypes.ToolCompleted : string = "tool_completed"
 LifecycleEventTypes.TurnCompleted : string = "turn_completed"
+LifecycleInventoryKinds.Agent : string = "agent"
+LifecycleInventoryKinds.Plugin : string = "plugin"
+LifecycleInventoryKinds.Skill : string = "skill"
+LifecycleInventoryStatuses.Confirmed : string = "confirmed"
+LifecycleInventoryStatuses.Unavailable : string = "unavailable"
 LifecycleProtocol.CurrentMajor : int = 1
 LifecycleProtocol.IsSupported(int) : bool
 LifecycleProtocol.SupportedMajors : System.Collections.Generic.IReadOnlyList<int> { get; }
@@ -148,11 +153,20 @@ Payloads.RunStartedPayload.RunId : string { get; set; }
 Payloads.RunStartedPayload.WasForked : bool { get; set; }
 Payloads.SandboxCreatedPayload..ctor()
 Payloads.SandboxCreatedPayload.ImageReference : string { get; set; }
+Payloads.SandboxCreatedPayload.Inventory : Payloads.SandboxInventorySummary { get; set; }
 Payloads.SandboxCreatedPayload.ReplacedSessionId : string { get; set; }
 Payloads.SandboxCreatedPayload.SessionId : string { get; set; }
 Payloads.SandboxCreatedPayload.Status : string { get; set; }
 Payloads.SandboxCreatedPayload.WasRecreated : bool { get; set; }
 Payloads.SandboxCreatedPayload.WorkspaceId : string { get; set; }
+Payloads.SandboxInventoryEntry..ctor()
+Payloads.SandboxInventoryEntry.Id : string { get; set; }
+Payloads.SandboxInventoryEntry.Kind : string { get; set; }
+Payloads.SandboxInventoryEntry.Version : string { get; set; }
+Payloads.SandboxInventorySummary..ctor()
+Payloads.SandboxInventorySummary.Items : System.Collections.Generic.IReadOnlyList<Payloads.SandboxInventoryEntry> { get; set; }
+Payloads.SandboxInventorySummary.Status : string { get; set; }
+Payloads.SandboxInventorySummary.UnavailableReason : string { get; set; }
 Payloads.ToolApprovalSummary..ctor()
 Payloads.ToolApprovalSummary.ArgumentsHash : string { get; set; }
 Payloads.ToolApprovalSummary.DecidedBy : string { get; set; }
@@ -189,6 +203,7 @@ Serialization.LifecycleJsonContext.DateTimeOffset : System.Text.Json.Serializati
 Serialization.LifecycleJsonContext.Default : Serialization.LifecycleJsonContext { get; }
 Serialization.LifecycleJsonContext.GetTypeInfo(System.Type) : System.Text.Json.Serialization.Metadata.JsonTypeInfo
 Serialization.LifecycleJsonContext.IReadOnlyListLifecycleContextSource : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Collections.Generic.IReadOnlyList<Payloads.LifecycleContextSource>> { get; }
+Serialization.LifecycleJsonContext.IReadOnlyListSandboxInventoryEntry : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Collections.Generic.IReadOnlyList<Payloads.SandboxInventoryEntry>> { get; }
 Serialization.LifecycleJsonContext.Int32 : System.Text.Json.Serialization.Metadata.JsonTypeInfo<int> { get; }
 Serialization.LifecycleJsonContext.Int64 : System.Text.Json.Serialization.Metadata.JsonTypeInfo<long> { get; }
 Serialization.LifecycleJsonContext.JsonElement : System.Text.Json.Serialization.Metadata.JsonTypeInfo<System.Text.Json.JsonElement> { get; }
@@ -205,6 +220,8 @@ Serialization.LifecycleJsonContext.NullableJsonElement : System.Text.Json.Serial
 Serialization.LifecycleJsonContext.RunCompletedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.RunCompletedPayload> { get; }
 Serialization.LifecycleJsonContext.RunStartedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.RunStartedPayload> { get; }
 Serialization.LifecycleJsonContext.SandboxCreatedPayload : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.SandboxCreatedPayload> { get; }
+Serialization.LifecycleJsonContext.SandboxInventoryEntry : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.SandboxInventoryEntry> { get; }
+Serialization.LifecycleJsonContext.SandboxInventorySummary : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Payloads.SandboxInventorySummary> { get; }
 Serialization.LifecycleJsonContext.String : System.Text.Json.Serialization.Metadata.JsonTypeInfo<string> { get; }
 Serialization.LifecycleJsonContext.ToolApprovalDecision : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Approval.ToolApprovalDecision> { get; }
 Serialization.LifecycleJsonContext.ToolApprovalRequest : System.Text.Json.Serialization.Metadata.JsonTypeInfo<Approval.ToolApprovalRequest> { get; }
@@ -255,6 +272,8 @@ sealed class Payloads.LifecycleUsage
 sealed class Payloads.RunCompletedPayload
 sealed class Payloads.RunStartedPayload
 sealed class Payloads.SandboxCreatedPayload
+sealed class Payloads.SandboxInventoryEntry
+sealed class Payloads.SandboxInventorySummary
 sealed class Payloads.ToolApprovalSummary
 sealed class Payloads.ToolCompletedPayload
 sealed class Payloads.TurnCompletedPayload
@@ -263,6 +282,8 @@ static class LifecycleAgentKinds
 static class LifecycleCapabilities
 static class LifecycleContextPhases
 static class LifecycleEventTypes
+static class LifecycleInventoryKinds
+static class LifecycleInventoryStatuses
 static class LifecycleProtocol
 static class LifecycleRunCauseKinds
 static class LifecycleRunOutcomes
