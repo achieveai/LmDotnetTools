@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 
 namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
@@ -133,5 +134,55 @@ public class ResponsesToAnthropicJsonTests
         var act = () => ResponsesToAnthropicJson.Translate("[]", "fallback-model");
 
         act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void DeriveStopReason_tolerates_a_non_string_output_item_type()
+    {
+        // Called directly (not via Translate), which is how ResponsesToAnthropicSse (Task 8) uses it,
+        // outside Translate's own try/catch. A non-string "type" must not throw.
+        var response = (JsonObject)JsonNode.Parse("""{"output":[{"type":123}]}""")!;
+
+        ResponsesToAnthropicJson.DeriveStopReason(response).Should().Be("end_turn");
+    }
+
+    [Fact]
+    public void DeriveStopReason_tolerates_a_non_string_incomplete_details_reason()
+    {
+        var response = (JsonObject)JsonNode.Parse("""{"output":[],"incomplete_details":{"reason":123}}""")!;
+
+        ResponsesToAnthropicJson.DeriveStopReason(response).Should().Be("end_turn");
+    }
+
+    [Fact]
+    public void Malformed_function_call_arguments_degrade_to_an_empty_object_rather_than_failing_the_reply()
+    {
+        var result = Translate(
+            """
+            {"id":"r","model":"m",
+             "output":[{"type":"function_call","call_id":"call_1","name":"noop","arguments":"not json"}],
+             "usage":{"input_tokens":1,"output_tokens":1}}
+            """
+        );
+
+        var block = result.GetProperty("content")[0];
+        block.GetProperty("type").GetString().Should().Be("tool_use");
+        block.GetProperty("input").EnumerateObject().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Missing_function_call_arguments_degrade_to_an_empty_object()
+    {
+        var result = Translate(
+            """
+            {"id":"r","model":"m",
+             "output":[{"type":"function_call","call_id":"call_1","name":"noop"}],
+             "usage":{"input_tokens":1,"output_tokens":1}}
+            """
+        );
+
+        var block = result.GetProperty("content")[0];
+        block.GetProperty("type").GetString().Should().Be("tool_use");
+        block.GetProperty("input").EnumerateObject().Should().BeEmpty();
     }
 }

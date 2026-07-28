@@ -68,7 +68,10 @@ public static class ResponsesToAnthropicJson
     ///
     ///     Any unrecognised <c>incomplete_details</c> shape falls through to <c>end_turn</c>. That
     ///     field is not modelled anywhere under src/OpenAiResponsesProvider, so its live shape is
-    ///     confirmed by the live smoke test rather than by a fixture.
+    ///     confirmed by the live smoke test rather than by a fixture. Reads are kind-safe rather than
+    ///     throwing: unlike <see cref="Translate"/>, this method is called directly by
+    ///     <c>ResponsesToAnthropicSse</c> outside any try/catch, so a field present with an unexpected
+    ///     JSON kind (e.g. <c>"type": 123</c>) must fall through to <c>end_turn</c> rather than throw.
     /// </summary>
     public static string DeriveStopReason(JsonObject response)
     {
@@ -76,19 +79,23 @@ public static class ResponsesToAnthropicJson
 
         if (
             response["output"] is JsonArray output
-            && output.OfType<JsonObject>().Any(item => item["type"]?.GetValue<string>() == "function_call")
+            && output.OfType<JsonObject>().Any(item => IsStringValue(item["type"], "function_call"))
         )
         {
             return "tool_use";
         }
 
-        if ((response["incomplete_details"] as JsonObject)?["reason"]?.GetValue<string>() == "max_output_tokens")
+        if (IsStringValue((response["incomplete_details"] as JsonObject)?["reason"], "max_output_tokens"))
         {
             return "max_tokens";
         }
 
         return "end_turn";
     }
+
+    /// <summary>True when <paramref name="node"/> is a JSON string equal to <paramref name="value"/>.</summary>
+    private static bool IsStringValue(JsonNode? node, string value) =>
+        node is JsonValue scalar && scalar.TryGetValue<string>(out var text) && text == value;
 
     /// <summary>
     ///     Maps Responses output items onto Anthropic content blocks, in order. An empty result is a
@@ -107,8 +114,8 @@ public static class ResponsesToAnthropicJson
         {
             switch (item["type"]?.GetValue<string>())
             {
-                // Other Responses item types (web_search_call, code_interpreter_call, mcp_call, ...)
-                // are not surfaced by this sample proxy; skip them rather than fail the whole reply.
+                // IDE0010 requires an explicit arm here. Other Responses item types (web_search_call,
+                // code_interpreter_call, mcp_call, ...) are intentionally not surfaced by this sample.
                 default:
                     break;
 
@@ -174,11 +181,16 @@ public static class ResponsesToAnthropicJson
 
         try
         {
-            return JsonNode.Parse(arguments) as JsonObject ?? [];
+            if (JsonNode.Parse(arguments) is JsonObject parsed)
+            {
+                return parsed;
+            }
         }
         catch (JsonException)
         {
-            return new JsonObject();
+            // Malformed JSON falls through to the empty-object default below.
         }
+
+        return new JsonObject();
     }
 }
