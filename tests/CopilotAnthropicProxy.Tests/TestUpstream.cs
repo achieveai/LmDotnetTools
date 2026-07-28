@@ -44,6 +44,17 @@ internal static class TestUpstream
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/event-stream");
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
     }
+
+    /// <summary>
+    ///     An <c>application/json</c> response backed by a caller-controlled stream, so a BUFFERED reply
+    ///     can stall or drop part-way through its body the way a streamed one can.
+    /// </summary>
+    public static HttpResponseMessage JsonStream(Stream stream)
+    {
+        var content = new StreamContent(stream);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
 }
 
 /// <summary>

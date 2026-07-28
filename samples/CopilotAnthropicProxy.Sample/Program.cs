@@ -1229,6 +1229,9 @@ internal static class ProxyHttp
     /// </summary>
     private const string AnthropicPingFrame = "event: ping\ndata: {\"type\":\"ping\"}\n\n";
 
+    /// <summary>How much upstream-authored error text is relayed to the client, in characters.</summary>
+    private const int MaxRelayedErrorLength = 500;
+
     /// <summary>
     ///     Serves an Anthropic Messages request from a model this Copilot account exposes only through
     ///     OpenAI Responses: the request is translated on the way out and the reply on the way back.
@@ -1361,7 +1364,20 @@ internal static class ProxyHttp
             {
                 // The upstream status is preserved: a 429 or 503 must stay one so the client's own
                 // retry logic still works. Only the envelope is reshaped.
-                var errorBody = await upstream.Content.ReadAsStringAsync(ctx.RequestAborted);
+                var errorBody = await ReadUpstreamBodyAsync(
+                    ctx,
+                    upstream,
+                    outboundModel,
+                    idleTimeout,
+                    idleCts,
+                    linked,
+                    logger
+                );
+                if (errorBody is null)
+                {
+                    return; // Already answered as a 504/502, or the client left.
+                }
+
                 await WriteAnthropicErrorAsync(
                     ctx,
                     (int)upstream.StatusCode,
@@ -1373,7 +1389,15 @@ internal static class ProxyHttp
 
             if (!wantsStream)
             {
-                await TranslateBufferedReplyAsync(ctx, upstream, outboundModel, logger);
+                await TranslateBufferedReplyAsync(
+                    ctx,
+                    upstream,
+                    outboundModel,
+                    idleTimeout,
+                    idleCts,
+                    linked,
+                    logger
+                );
                 return;
             }
 
@@ -1414,6 +1438,73 @@ internal static class ProxyHttp
     }
 
     /// <summary>
+    ///     Reads a complete upstream body under the linked (client-abort + idle) token. Because the send
+    ///     used <see cref="HttpCompletionOption.ResponseHeadersRead" /> this read still pulls from the
+    ///     socket, and the proxy's <see cref="HttpClient" /> deliberately carries no timeout — so without
+    ///     the idle token nothing at all would end a reply that stops arriving half-way through. The
+    ///     deadline is re-armed here so it measures the wait for the BODY rather than counting whatever
+    ///     the headers already spent. It does span the whole body read: a buffered reply arrives as one
+    ///     payload, so there are no inter-chunk gaps to measure at this layer.
+    /// </summary>
+    /// <returns>
+    ///     The body, or <c>null</c> once the failure has already been answered (or the client has gone).
+    ///     <c>null</c> is unambiguous — a successful read of an empty body yields <c>""</c>.
+    /// </returns>
+    private static async Task<string?> ReadUpstreamBodyAsync(
+        HttpContext ctx,
+        HttpResponseMessage upstream,
+        string outboundModel,
+        TimeSpan idleTimeout,
+        CancellationTokenSource idleCts,
+        CancellationTokenSource linked,
+        ILogger logger
+    )
+    {
+        idleCts.CancelAfter(idleTimeout);
+
+        try
+        {
+            return await upstream.Content.ReadAsStringAsync(linked.Token);
+        }
+        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Upstream idle timeout after {IdleSeconds:0}s while reading the reply for {Model}.",
+                idleTimeout.TotalSeconds,
+                outboundModel
+            );
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status504GatewayTimeout,
+                "api_error",
+                "The upstream Copilot API stopped sending its reply before the idle timeout."
+            );
+            return null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            // A body that dies part-way is an upstream fault, and gets the same 502 the raw path's relay
+            // produces. Letting it escape would surface as a bare 500 with no Anthropic envelope at all.
+            logger.LogError(
+                "Upstream connection dropped while reading the reply for {Model}: {Reason}",
+                outboundModel,
+                ex.Message
+            );
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status502BadGateway,
+                "api_error",
+                "The upstream Copilot API dropped the connection before its reply was complete."
+            );
+            return null;
+        }
+    }
+
+    /// <summary>
     ///     Translates a buffered Responses reply into an Anthropic Message. A reply this proxy cannot
     ///     read answers 400 rather than leaking a 500 — the contract
     ///     <see cref="ResponsesToAnthropicJson.Translate" /> documents its <see cref="ArgumentException" />
@@ -1423,10 +1514,25 @@ internal static class ProxyHttp
         HttpContext ctx,
         HttpResponseMessage upstream,
         string outboundModel,
+        TimeSpan idleTimeout,
+        CancellationTokenSource idleCts,
+        CancellationTokenSource linked,
         ILogger logger
     )
     {
-        var responsesJson = await upstream.Content.ReadAsStringAsync(ctx.RequestAborted);
+        var responsesJson = await ReadUpstreamBodyAsync(
+            ctx,
+            upstream,
+            outboundModel,
+            idleTimeout,
+            idleCts,
+            linked,
+            logger
+        );
+        if (responsesJson is null)
+        {
+            return; // Already answered as a 504/502, or the client left.
+        }
 
         string anthropicJson;
         try
@@ -1492,7 +1598,9 @@ internal static class ProxyHttp
 
         await using (upstreamStream.ConfigureAwait(false))
         {
-            using var reader = new StreamReader(upstreamStream, Encoding.UTF8);
+            // leaveOpen: the enclosing `await using` owns the stream. Double disposal is harmless, but
+            // saying so beats leaving a reader that looks like it owns something it does not.
+            using var reader = new StreamReader(upstreamStream, Encoding.UTF8, leaveOpen: true);
             while (true)
             {
                 // Reset BEFORE each read: the deadline measures the gap between upstream lines, never the
@@ -1529,7 +1637,16 @@ internal static class ProxyHttp
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning("Mid-stream translated upstream failure: {Reason}", ex.Message);
+                    // The upstream read and the downstream keep-alive write share this one call, so the
+                    // failing side is not knowable here — saying "upstream" would blame Copilot for a
+                    // client that hung up. The envelope below is upstream-only regardless: a keep-alive
+                    // write can only fail after it has started the response, which this guard excludes.
+                    logger.LogWarning(
+                        "Translated relay for {Model} failed mid-stream, on either the upstream read or the "
+                            + "downstream keep-alive write: {Reason}",
+                        outboundModel,
+                        ex.Message
+                    );
                     if (!ctx.Response.HasStarted)
                     {
                         await WriteAnthropicErrorAsync(
@@ -1663,30 +1780,30 @@ internal static class ProxyHttp
     ///     Pulls a human-readable message out of an upstream error body. Every read is kind-safe:
     ///     <c>{"error":"boom"}</c> indexed as an object throws <see cref="InvalidOperationException" />,
     ///     which would turn a clean relayed 503 into an unhandled 500. An unrecognised body falls back to
-    ///     its own (capped) text rather than a generic placeholder, because the raw text is what makes an
-    ///     unfamiliar upstream failure diagnosable.
+    ///     its own text rather than a generic placeholder, because the raw text is what makes an
+    ///     unfamiliar upstream failure diagnosable. Every shape is capped: an upstream that echoes the
+    ///     whole request back inside <c>error.message</c> must not turn one bad call into a megabyte of
+    ///     client-visible noise.
     /// </summary>
     private static string ExtractErrorMessage(string body)
     {
-        const int MaxRawLength = 500;
-
         try
         {
             if (JsonNode.Parse(body) is JsonObject obj)
             {
                 if (ScalarText((obj["error"] as JsonObject)?["message"]) is { } nested)
                 {
-                    return nested;
+                    return CapErrorText(nested);
                 }
 
                 if (ScalarText(obj["error"]) is { } plain)
                 {
-                    return plain;
+                    return CapErrorText(plain);
                 }
 
                 if (ScalarText(obj["message"]) is { } top)
                 {
-                    return top;
+                    return CapErrorText(top);
                 }
             }
         }
@@ -1701,8 +1818,12 @@ internal static class ProxyHttp
             return "The upstream Copilot API returned an error with no body.";
         }
 
-        return trimmed.Length <= MaxRawLength ? trimmed : trimmed[..MaxRawLength];
+        return CapErrorText(trimmed);
     }
+
+    /// <summary>Caps upstream-authored text at <see cref="MaxRelayedErrorLength" /> characters.</summary>
+    private static string CapErrorText(string text) =>
+        text.Length <= MaxRelayedErrorLength ? text : text[..MaxRelayedErrorLength];
 
     /// <summary>Reads a JSON string, or null if <paramref name="node" /> is absent or carries another kind.</summary>
     private static string? ScalarText(JsonNode? node) =>

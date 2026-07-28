@@ -292,6 +292,35 @@ public class TranslatedMessagesTests
     }
 
     [Fact]
+    public async Task An_oversized_upstream_error_message_is_capped_before_it_reaches_the_client()
+    {
+        // Upstream-authored text is relayed verbatim, so its LENGTH is the upstream's choice unless the
+        // proxy caps it. A backend that echoes the offending request back inside `error.message` would
+        // otherwise turn one bad call into a megabyte of client-visible noise.
+        var huge = new string('x', 4096);
+        await using var factory = Factory(
+            (_, _) =>
+                Task.FromResult(
+                    TestUpstream.Json(
+                        "{\"error\":{\"message\":\"" + huge + "\"}}",
+                        HttpStatusCode.ServiceUnavailable
+                    )
+                )
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("error").GetProperty("message").GetString().Should().HaveLength(500);
+    }
+
+    [Fact]
     public async Task An_untranslatable_upstream_reply_is_reported_as_400_not_500()
     {
         // ResponsesToAnthropicJson.Translate documents ArgumentException for a reply it cannot read, and
@@ -428,9 +457,10 @@ public class TranslatedMessagesTests
     [Fact]
     public async Task A_slow_but_steady_stream_is_not_killed_for_taking_longer_than_the_idle_timeout()
     {
-        // Three frames 1.2s apart is 3.6s of wall clock against a 2s idle timeout. The timeout measures
+        // Three frames 1.2s apart is 3.6s of wall clock against a 3s idle timeout. The timeout measures
         // the GAP BETWEEN BYTES, so a long generation must survive; a total-duration clock would cut it
-        // off after the first frame.
+        // off after the first frame. The per-gap margin is 1.8s — deliberately wide, because the failure
+        // this test would otherwise produce on a loaded machine is a flake, not a finding.
         var paced = new PacedStream(
             TimeSpan.FromMilliseconds(1200),
             "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_5\",\"model\":\"gpt-5.3-codex\"}}\n\n",
@@ -440,7 +470,7 @@ public class TranslatedMessagesTests
 
         await using var factory = Factory(
             (_, _) => Task.FromResult(TestUpstream.SseStream(paced)),
-            idleTimeoutSeconds: 2
+            idleTimeoutSeconds: 3
         );
         using var client = factory.CreateClient();
 
@@ -491,6 +521,174 @@ public class TranslatedMessagesTests
         gated.Release();
         var rest = await new StreamReader(body).ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
         rest.Should().Contain("event: message_stop", "real frames still flow after the keep-alives");
+    }
+
+    [Fact]
+    public async Task A_streaming_request_answered_with_a_non_streaming_reply_is_reported_as_502()
+    {
+        // Copilot answering `stream: true` with application/json would translate to ZERO frames, i.e. an
+        // empty 200 indistinguishable from a successful empty turn. Nothing has been written at this
+        // point, so the envelope is still writable and the failure is visible instead of silent.
+        await using var factory = Factory(
+            (_, _) => Task.FromResult(TestUpstream.Json("""{"id":"resp_7","model":"gpt-5.3-codex","output":[]}"""))
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        response.Content.Headers.ContentType!.MediaType.Should()
+            .Be("application/json", "the reply is an error envelope, not the SSE stream that was asked for");
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("type").GetString().Should().Be("error");
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+    }
+
+    [Fact]
+    public async Task A_stream_that_produces_no_frame_before_the_idle_timeout_answers_a_504_envelope()
+    {
+        // The upstream opens a real SSE response and then goes silent. Keep-alive is disabled on purpose:
+        // a ping would START the response, and the 504 envelope is only writable while nothing has been
+        // written. The lone SSE comment line keeps the stream open (an empty prefix would read as EOF and
+        // complete the turn normally) while producing no Anthropic frame.
+        var silent = new CancellationObservingStream(": awaiting-first-token\n");
+
+        await using var factory = Factory(
+            (_, _) => Task.FromResult(TestUpstream.SseStream(silent)),
+            idleTimeoutSeconds: 1,
+            keepAliveSeconds: 0
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("type").GetString().Should().Be("error");
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+    }
+
+    [Fact]
+    public async Task A_mid_stream_upstream_failure_truncates_without_a_message_stop()
+    {
+        // Two upstream events reach the client, then the connection dies. The relay must stop there: a
+        // synthetic message_stop would tell the client the turn ended normally, and a fabricated error
+        // frame is not something the Anthropic stream grammar has a place for.
+        var dropping = new ThrowingStream(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_8\",\"model\":\"gpt-5.3-codex\"}}\n\n"
+                + "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"half a th\"}\n\n"
+        );
+
+        await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.SseStream(dropping)));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, "the failure arrived after the headers were sent");
+
+        var stream = await response.Content.ReadAsStringAsync();
+        stream.Should().Contain("half a th", "frames translated before the failure still reach the client");
+        Frames(stream)
+            .Select(f => f.Event)
+            .Should()
+            .Equal(
+                "message_start",
+                "content_block_start",
+                "content_block_delta"
+            );
+    }
+
+    [Fact]
+    public async Task A_buffered_reply_that_stalls_mid_body_answers_a_504_envelope()
+    {
+        // 200 + headers, then the body stops arriving. This read pulls from the socket (the reply is only
+        // headers-read so far) and the proxy's HttpClient has NO timeout, so if the idle token is not
+        // handed to it nothing at all ends the request.
+        var stalled = new CancellationObservingStream("""{"id":"resp_9","model":"gpt-5.3-codex",""");
+
+        await using var factory = Factory(
+            (_, _) => Task.FromResult(TestUpstream.JsonStream(stalled)),
+            idleTimeoutSeconds: 1
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+
+        await stalled.Cancelled.WaitAsync(TimeSpan.FromSeconds(10));
+        stalled.Cancelled.IsCompletedSuccessfully.Should()
+            .BeTrue("the idle deadline must reach the upstream read, not merely abandon it");
+    }
+
+    [Fact]
+    public async Task A_buffered_reply_whose_connection_drops_is_reported_as_502()
+    {
+        // A body that dies half-way through is an upstream fault, not a translation fault: it must be the
+        // same 502 envelope the raw path produces, not an unhandled exception surfacing as a bare 500.
+        var dropping = new ThrowingStream("""{"id":"resp_10","model":"gpt-5.3-codex",""");
+
+        await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.JsonStream(dropping)));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("type").GetString().Should().Be("error");
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+    }
+
+    [Fact]
+    public async Task A_client_disconnect_cancels_the_translated_upstream_read()
+    {
+        // The translated relay must hand the client's abort to the upstream read, or a client that hangs
+        // up leaves a generation billing away against a socket nobody is reading.
+        var upstreamStream = new CancellationObservingStream(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_11\",\"model\":\"gpt-5.3-codex\"}}\n\n"
+        );
+
+        await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.SseStream(upstreamStream)));
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = JsonContent.Create(TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)),
+        };
+
+        var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        var body = await response.Content.ReadAsStreamAsync();
+
+        // Drain message_start so the relay is parked on the next upstream read.
+        var buffer = new byte[256];
+        _ = await body.ReadAsync(buffer);
+
+        body.Dispose();
+        response.Dispose();
+
+        await upstreamStream.Cancelled.WaitAsync(TimeSpan.FromSeconds(10));
+        upstreamStream.Cancelled.IsCompletedSuccessfully.Should().BeTrue();
     }
 
     /// <summary>Reads the response stream until <paramref name="predicate"/> holds or the timeout elapses.</summary>
