@@ -120,19 +120,29 @@ Responses API. Every passthrough route is byte-for-byte and has none of them.
   validation probe with `max_tokens: 1`, which the Responses API rejects outright; passed through
   literally, every GPT model would look broken before you got a turn.
 - **`temperature` and `top_p` are passed through.** Verified live rather than assumed — OpenAI
-  documents its own reasoning models as rejecting a non-default `temperature`, but Copilot accepts
-  both and honours them.
+  documents its own reasoning models as rejecting a non-default `temperature`. Copilot instead
+  accepted `0.7` / `0.5` and echoed both values back unchanged, rather than clamping them to the
+  defaults it reports when neither is sent. That was measured on one Responses-only model, not swept
+  across the catalog, so treat it as "not universally rejected" rather than a guarantee for every
+  model.
 
 **Reasoning**
 
-- **`thinking` blocks are never produced, and reasoning does not carry across turns.** The translated
-  request sends no `reasoning` field, and Copilot emits reasoning summaries *only* when one is
-  explicitly asked for — so no summary events arrive and no `thinking` block is ever emitted. The
-  encrypted payload that would let a GPT model resume its own reasoning through a tool loop is not
-  round-tripped either. Answers stay correct; the model re-derives its reasoning each turn, and you
-  simply do not see it. (Should a future request start asking for summaries, the `thinking` blocks
-  the translators would then emit carry **no `signature`** — Anthropic clients that verify one will
-  reject them.)
+- **`thinking` blocks are best-effort, and reasoning never carries across turns.** Copilot emits
+  reasoning summaries *only* when one is explicitly asked for, so the translated request always sends
+  `reasoning: {"summary": "auto"}` — without it no summary events arrive and no `thinking` block can
+  ever be emitted. Asking is safe everywhere: all nine `/responses` models this account serves accept
+  the field. Getting a summary back is another matter. Copilot gives each model a default reasoning
+  `effort`, and the models it defaults to `"none"` produced no summary on any probe — they cannot
+  summarise a turn they never reasoned through. Among the models defaulting to `"medium"` it varies
+  **per turn, not per model**: two sweeps of the same nine models with the same prompt produced
+  summaries from a different single model each time. Treat a `thinking` block as something you may
+  get, not something a given model will reliably give you. The proxy does not send an `effort` of its
+  own, because choosing one would change how hard every model thinks and what every request costs.
+  Separately, the encrypted payload that would let a GPT model resume its own reasoning through a tool
+  loop is not round-tripped, so answers stay correct but the model re-derives its reasoning each turn.
+  The `thinking` blocks that do get emitted carry **no `signature`** — Anthropic clients that verify
+  one will reject them.
 
 **Response content**
 
@@ -148,7 +158,9 @@ Responses API. Every passthrough route is byte-for-byte and has none of them.
   `input_tokens_details.cached_tokens` *inside* the total `input_tokens`, and the Anthropic usage
   shape the proxy emits has only `input_tokens` / `output_tokens` — no
   `cache_read_input_tokens` field to put it in. Any client costing a session from these numbers will
-  over-report whenever Copilot serves a cached prefix.
+  over-report whenever Copilot serves a cached prefix. Measured by sending one long prefix twice:
+  `input_tokens` read 6010 both times while `cached_tokens` went 0 → 5888, so 98% of the second
+  call's reported input was billed to the client at the uncached rate.
 
 **Streaming**
 
@@ -286,7 +298,9 @@ tools are dropped without needing to be enumerated.
 `tests/CopilotLive.Tests/` is outside `LmDotnetTools.sln`, so CI never runs it. Those tests hit the
 real Copilot backend and are run by hand; they cover the things a fixture cannot prove — the live
 spelling of every Responses SSE event the stream translator switches on, the shape of
-`incomplete_details` on a truncated reply, and whether reasoning summaries arrive unrequested.
+`incomplete_details` on a truncated reply, whether every served model accepts the reasoning field and
+which of them produce summaries from it, and whether a cached prefix is counted inside the reported
+`input_tokens`.
 
 ```bash
 dotnet test tests/CopilotLive.Tests/CopilotLive.Tests.csproj

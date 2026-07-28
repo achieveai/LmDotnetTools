@@ -75,6 +75,26 @@ public static class AnthropicToResponsesRequest
             }
         }
 
+        // Ask for reasoning summaries on every translated request. Without this the Responses stream
+        // carries no reasoning_summary events at all, so ResponsesToAnthropicStream has nothing to turn
+        // into a thinking block and a GPT model driven from Claude Code never appears to think.
+        //
+        // Sent unconditionally, and only after probing whether that is safe. On 2026-07-27 all nine
+        // /responses models this account serves answered 200 to {"summary":"auto"} with no effort field,
+        // on both the streaming and non-streaming path; each echoed it back normalised to
+        // "summary":"detailed" alongside a per-model default effort. So no served model rejects it.
+        //
+        // It is not uniformly PRODUCTIVE, though, and not even deterministically so. Across two sweeps
+        // of the same nine models with the same prompt, the models Copilot defaults to "effort":"none"
+        // emitted no summary events either time, while the ones defaulting to "medium" varied run to
+        // run — a different single model produced summaries in each sweep. So a summary is a per-turn
+        // possibility, not a per-model property, and no caller should depend on getting one.
+        //
+        // Sending an effort of our own would likely make this reliable, but it would also change how
+        // hard every model thinks and what every request costs — a decision this translation layer
+        // should not make silently on the caller's behalf.
+        target["reasoning"] = new JsonObject { ["summary"] = "auto" };
+
         // tool_choice is only considered when a non-empty tools array actually made it into the
         // request — the Responses API rejects tool_choice when tools is absent, and BuildToolChoice
         // additionally checks a "tool" choice's name against what survived BuildTools' filter.

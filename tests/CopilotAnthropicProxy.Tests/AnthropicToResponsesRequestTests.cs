@@ -245,6 +245,51 @@ public class AnthropicToResponsesRequestTests
     }
 
     [Fact]
+    public void Always_asks_for_reasoning_summaries()
+    {
+        // Without this field the Responses stream carries no reasoning_summary events, so the
+        // translated route can never produce a thinking block. It is sent on every request — no
+        // opt-in, no model sniffing — which is why it is asserted on the plainest possible body.
+        var result = TranslateToElement(
+            """{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"Hi"}]}"""
+        );
+
+        var reasoning = result.GetProperty("reasoning");
+        reasoning.GetProperty("summary").GetString().Should().Be("auto");
+        reasoning
+            .TryGetProperty("effort", out _)
+            .Should()
+            .BeFalse("choosing an effort would change how much every model thinks, and how much it costs");
+    }
+
+    [Fact]
+    public void Passes_temperature_and_top_p_through()
+    {
+        // Probed live before being allowed through: OpenAI documents its own reasoning models as
+        // rejecting a non-default temperature, which would have made this a 400 on every such request.
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"temperature":0.7,"top_p":0.5,
+             "messages":[{"role":"user","content":"Hi"}]}
+            """
+        );
+
+        result.GetProperty("temperature").GetDouble().Should().Be(0.7);
+        result.GetProperty("top_p").GetDouble().Should().Be(0.5);
+    }
+
+    [Fact]
+    public void Omits_temperature_and_top_p_when_the_client_sent_neither()
+    {
+        var result = TranslateToElement(
+            """{"model":"m","max_tokens":100,"messages":[{"role":"user","content":"Hi"}]}"""
+        );
+
+        result.TryGetProperty("temperature", out _).Should().BeFalse();
+        result.TryGetProperty("top_p", out _).Should().BeFalse();
+    }
+
+    [Fact]
     public void Maps_a_base64_image_block_to_a_data_url()
     {
         var result = TranslateToElement(
