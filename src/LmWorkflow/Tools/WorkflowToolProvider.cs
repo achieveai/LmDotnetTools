@@ -227,7 +227,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             || projection.Contains("text", StringComparison.OrdinalIgnoreCase)
         );
 
-    private Task<ToolHandlerResult> HandleSetCurrentNodeAsync(
+    private async Task<ToolHandlerResult> HandleSetCurrentNodeAsync(
         string argsJson,
         ToolCallContext context,
         CancellationToken cancellationToken
@@ -235,39 +235,49 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     {
         if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Task.FromResult<ToolHandlerResult>(argsError!);
+            return argsError!;
         }
+
+        string? nextNodeId;
+        string? completedNodeId;
+        JsonNode? result;
 
         using (doc)
         {
             var root = doc.RootElement;
 
-            var nextNodeId = OptionalString(root, "nextNodeId");
+            nextNodeId = OptionalString(root, "nextNodeId");
             if (string.IsNullOrEmpty(nextNodeId))
             {
-                return Error("The 'nextNodeId' parameter is required.", "invalid_args");
+                return await Error("The 'nextNodeId' parameter is required.", "invalid_args");
             }
 
-            var completedNodeId = OptionalString(root, "completedNodeId");
-            var result =
+            completedNodeId = OptionalString(root, "completedNodeId");
+            result =
                 root.TryGetProperty("result", out var resultElement)
                 && resultElement.ValueKind != JsonValueKind.Null
                     ? JsonNode.Parse(resultElement.GetRawText())
                     : null;
-
-            try
-            {
-                _runtime.AdvanceTo(completedNodeId, nextNodeId, result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Error(ex.Message, "invalid_transition");
-            }
-
-            return _runtime.IsComplete
-                ? Text("Workflow complete. " + _runtime.GetProjection("all").ToJsonString())
-                : Text(_runtime.GetProjection(null).ToJsonString());
         }
+
+        // Leaving a node ends its units' chance to contribute. AdvanceTo composes and validates a terminal
+        // node's result from state right here on the tool thread, so wait (bounded, usually not at all) for
+        // the writes of any unit still owing an answer — otherwise a fan-out that HAS been answered can be
+        // missing from the final result purely because the observer thread had not caught up yet.
+        await _runtime.WaitForNodeSettlementAsync(context.ToolCallId, cancellationToken);
+
+        try
+        {
+            _runtime.AdvanceTo(completedNodeId, nextNodeId, result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return await Error(ex.Message, "invalid_transition");
+        }
+
+        return _runtime.IsComplete
+            ? await Text("Workflow complete. " + _runtime.GetProjection("all").ToJsonString())
+            : await Text(_runtime.GetProjection(null).ToJsonString());
     }
 
     private Task<ToolHandlerResult> HandleSetStateAsync(
