@@ -524,7 +524,11 @@ public sealed class CopilotAnthropicProxyLiveTests
         body.Should().Contain("not_found_error");
     }
 
-    /// <summary>Codex's quadrant: a Responses request must reach Copilot unchanged.</summary>
+    /// <summary>
+    ///     Codex's quadrant: a Responses request must reach Copilot unchanged. Carrying no hosted
+    ///     tools, this body is forwarded byte-for-byte; the tool filter is covered by
+    ///     <see cref="Responses_passthrough_survives_a_hosted_tool_the_backend_rejects"/>.
+    /// </summary>
     [SkippableFact]
     public async Task Responses_endpoint_passes_through()
     {
@@ -554,6 +558,64 @@ public sealed class CopilotAnthropicProxyLiveTests
         );
 
         _output.WriteLine(body);
+        body.Should().Contain("\"output\"");
+    }
+
+    /// <summary>
+    ///     Copilot serves only client-defined tools on <c>/responses</c>. Probed 2026-07-28,
+    ///     <c>image_generation</c>, <c>local_shell</c>, <c>code_interpreter</c> and <c>mcp</c> each
+    ///     fail with 400 <c>"The requested tool &lt;type&gt; is not supported."</c> Codex CLI
+    ///     advertises <c>image_generation</c> on every request and cannot be told not to, so before
+    ///     the proxy filtered the array this exact body was a hard 400 and Codex could not use the
+    ///     proxy at all.
+    ///
+    ///     This is the only test that pins the REASON for the filter: the unit tests pin the filter's
+    ///     shape against a fake upstream, so they would keep passing if Copilot started accepting (or
+    ///     rejecting) a different set. Sending a hosted tool ALONGSIDE a real function tool also
+    ///     proves the filter is surgical rather than dropping <c>tools</c> wholesale.
+    /// </summary>
+    [SkippableFact]
+    public async Task Responses_passthrough_survives_a_hosted_tool_the_backend_rejects()
+    {
+        Skip.IfNot(_fixture.Available, _fixture.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+
+        var model = await PickResponsesOnlyModelAsync(cts.Token);
+        _output.WriteLine($"model: {model}");
+
+        var (status, body) = await SendProxyAsync(
+            "/v1/responses",
+            new
+            {
+                model,
+                store = false,
+                input = new[]
+                {
+                    new
+                    {
+                        type = "message",
+                        role = "user",
+                        content = new[] { new { type = "input_text", text = "Reply with: ok" } },
+                    },
+                },
+                tools = new object[]
+                {
+                    new { type = "image_generation" },
+                    new
+                    {
+                        type = "function",
+                        name = "get_weather",
+                        description = "Look up the weather",
+                        parameters = new { type = "object", properties = new { } },
+                    },
+                },
+            },
+            cts.Token
+        );
+
+        _output.WriteLine(body);
+        status.Should().Be(HttpStatusCode.OK, "the hosted tool must be stripped, not forwarded: {0}", Truncate(body, 2000));
+        body.Should().NotContain("image_generation", "the stripped tool must not reach the backend");
         body.Should().Contain("\"output\"");
     }
 
