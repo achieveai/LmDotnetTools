@@ -488,6 +488,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     // socket" (skip a redundant close) from "superseded before we owned it" (we must close it).
     let provisionalOwned = false;
     let openedConnection: WebSocketConnection | null = null;
+    // Set when THIS focus receives the done sentinel BEFORE adoption. A completed child (live shared
+    // provider still up, OR the server's read-only persisted-replay path) emits `done` during history
+    // buffering; without this guard the post-buffer adoption below would (re)start the spinner with no
+    // later frame to stop it. Adoption consults this so a finished child settles instead of spinning.
+    let doneSeenDuringFocus = false;
 
     try {
       const connection = await connectSubAgent(parent, agentId, {
@@ -520,7 +525,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           }
         },
         onDone: () => {
-          if (focusSeq === token) isFocusedStreaming.value = false;
+          if (focusSeq !== token) return;
+          // Record that this focus's stream already finished, so adoption (below) does not restart the
+          // spinner for an already-complete child (shared-provider live-completed, or persisted replay).
+          doneSeenDuringFocus = true;
+          isFocusedStreaming.value = false;
         },
         onError: (err: string, code?: string) => {
           if (focusSeq !== token) return;
@@ -679,9 +688,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       rebuildFocusedDisplayItems();
 
       // Adopt the connection now that history + gap messages are in place (already provisionally
-      // owned since connect; reaffirm and start the spinner).
+      // owned since connect; reaffirm). Start the spinner only if the stream hasn't already finished —
+      // a completed child (shared-provider live-completed, or the server's read-only persisted replay)
+      // delivers `done` during buffering, so restarting the spinner here would leave it stuck.
       focusedConnection = connection;
-      isFocusedStreaming.value = true;
+      isFocusedStreaming.value = !doneSeenDuringFocus;
     } catch (e) {
       // A superseding focus/unfocus/parent-switch already owns the visible state — don't clobber it.
       if (focusSeq !== token) {

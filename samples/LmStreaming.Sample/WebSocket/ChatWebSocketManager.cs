@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
@@ -33,6 +34,7 @@ public sealed class ChatWebSocketManager
     private readonly WebSocketConnectionRegistry _connectionRegistry;
     private readonly Services.WorkflowRunRegistry _workflowRunRegistry;
     private readonly PendingAuthCoordinator _pendingAuth;
+    private readonly IConversationStore _conversationStore;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<ChatWebSocketManager> _logger;
 
@@ -58,12 +60,14 @@ public sealed class ChatWebSocketManager
         WebSocketConnectionRegistry connectionRegistry,
         Services.WorkflowRunRegistry workflowRunRegistry,
         PendingAuthCoordinator pendingAuth,
+        IConversationStore conversationStore,
         ILogger<ChatWebSocketManager> logger)
     {
         _agentPool = agentPool ?? throw new ArgumentNullException(nameof(agentPool));
         _connectionRegistry = connectionRegistry ?? throw new ArgumentNullException(nameof(connectionRegistry));
         _workflowRunRegistry = workflowRunRegistry ?? throw new ArgumentNullException(nameof(workflowRunRegistry));
         _pendingAuth = pendingAuth ?? throw new ArgumentNullException(nameof(pendingAuth));
+        _conversationStore = conversationStore ?? throw new ArgumentNullException(nameof(conversationStore));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
     }
@@ -308,12 +312,45 @@ public sealed class ChatWebSocketManager
 
             if (stream is null)
             {
-                _logger.LogWarning(
-                    "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId}",
+                // No LIVE stream: the parent loop was evicted (app restart, or the parent conversation
+                // was disposed/aged out of the pool). A COMPLETED sub-agent's transcript still persists
+                // under "subagent-{agentId}", and the client already renders that history from REST. So
+                // instead of a scary "unavailable" error, settle the client with the done sentinel and
+                // hold the socket open read-only (drain client frames to detect disconnect) so the
+                // persisted transcript replays. Only a genuinely missing agent (no persisted history)
+                // falls through to the structured error.
+                var persisted = await _conversationStore.LoadMessagesAsync($"subagent-{agentId}", connectionCts.Token);
+                if (persisted.Count == 0)
+                {
+                    _logger.LogWarning(
+                        "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId} (no live stream, no persisted history)",
+                        agentId,
+                        parentThreadId);
+
+                    await SendSubAgentUnavailableErrorAsync(connection, agentId, cancellationToken);
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Sub-agent {AgentId} has no live stream; replaying {Count} persisted messages read-only for parent thread {ParentThreadId}",
                     agentId,
+                    persisted.Count,
                     parentThreadId);
 
-                await SendSubAgentUnavailableErrorAsync(connection, agentId, cancellationToken);
+                // The transcript itself renders from REST; the socket emits ONLY the done sentinel so the
+                // client settles its focused-streaming state (no WS content ⇒ no merge-key/duplicate risk).
+                var doneJson = /*lang=json,strict*/ """{"$type":"done"}""";
+                if (await connection.TrySendTextAsync(doneJson, connectionCts.Token))
+                {
+                    // Keep the read-only socket open until the client disconnects (or shutdown cancels),
+                    // mirroring a completed shared-provider tab. Drain inbound frames without relaying.
+                    await ReceiveTextMessagesAsync(
+                        webSocket,
+                        $"subagent-replay {agentId}",
+                        (_, _) => Task.CompletedTask,
+                        connectionCts.Token);
+                }
+
                 return;
             }
 
