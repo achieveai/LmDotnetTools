@@ -2066,7 +2066,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 try
                 {
                     await SlotHygiene.StripAsync(
-                            new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None)
+                            new GitRunner(_slotWorkspace.HostRunner), HostStoreRoot(lease), CancellationToken.None)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -2152,7 +2152,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var request = BuildNotesRequest(repo, run, reqFiles);
 
         var result = await manager
-            .CommitNotesAsync(lease.Prepared.StoreRoot, request, cancellationToken, stagePaths: [lease.NotesRelPath])
+            .CommitNotesAsync(HostStoreRoot(lease), request, cancellationToken, stagePaths: [lease.NotesRelPath])
             .ConfigureAwait(false);
 
         var outbox = _store.EnqueueOutbox(new OutboxEntry
@@ -2179,6 +2179,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id, result.ReviewBranch);
         }
     }
+
+    /// <summary>
+    /// Maps the SDK/container store root back to the leased host path only after the session is destroyed,
+    /// at the host commit gate. S2S's host-prepared checkout already carries its host store path.
+    /// </summary>
+    private static string HostStoreRoot(LeasedReview lease) =>
+        lease.Session is null ? lease.Prepared.StoreRoot : lease.Slot.StorePath;
 
     /// <summary>
     /// Commits the primary review's notes onto its (persistent) review branch for the primary review
