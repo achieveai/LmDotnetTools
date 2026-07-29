@@ -40,6 +40,12 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public void SdkOwnershipMarker_LivesUnderGitMetadataSoHygieneCleanCannotDeleteIt()
+    {
+        ReviewSlotPreparer.SdkOwnershipMarkerFile.Should().StartWith(".git/");
+    }
+
+    [Fact]
     public async Task EnsureStoreAsync_SdkPreparer_ReclonesAnUnmarkedHostPreparedStoreAndWritesMarker()
     {
         var slot = CreateSlot();

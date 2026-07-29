@@ -56,7 +56,7 @@ internal interface IReviewSlotPreparer
 /// </summary>
 internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 {
-    internal const string SdkOwnershipMarkerFile = ".review-store-sdk-owned";
+    internal const string SdkOwnershipMarkerFile = ".git/review-store-sdk-owned";
 
     private readonly GitRunner _git;
     private readonly ISandboxFileSystem _fileSystem;
