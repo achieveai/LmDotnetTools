@@ -255,28 +255,35 @@ public class DeferredToolExecutionTests
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
+        var subscribed = new TaskCompletionSource<bool>();
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
         _ = Task.Run(async () =>
         {
-            await foreach (var msg in loop.SubscribeAsync(cts.Token))
+            try
             {
-                if (msg is RunCompletedMessage)
+                subscribed.TrySetResult(true);
+                await foreach (var msg in loop.SubscribeAsync(cts.Token))
                 {
-                    completedRuns++;
-                    if (completedRuns == 1)
+                    if (msg is RunCompletedMessage)
                     {
-                        firstRunCompleted.TrySetResult(true);
-                    }
-                    else if (completedRuns == 2)
-                    {
-                        secondRunCompleted.TrySetResult(true);
+                        completedRuns++;
+                        if (completedRuns == 1)
+                        {
+                            firstRunCompleted.TrySetResult(true);
+                        }
+                        else if (completedRuns == 2)
+                        {
+                            secondRunCompleted.TrySetResult(true);
+                        }
                     }
                 }
             }
+            catch (OperationCanceledException) { }
         }, cts.Token);
 
+        await subscribed.Task;
         await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
         await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
