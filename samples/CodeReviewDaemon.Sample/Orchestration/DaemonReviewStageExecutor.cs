@@ -297,7 +297,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // /workspace/store is real); every other tool-assisted run keeps the per-run mount. The lease
             // was recorded by TryPooledFetchContextAsync in the ContextReady stage.
             var session = _leasedReviews.TryGetValue(run.Id, out var lease)
-                ? await _provisioner.GetOrCreateForSlotAsync(run, lease.Slot, cancellationToken).ConfigureAwait(false)
+                ? lease.Session
+                    ?? await _provisioner.GetOrCreateForSlotAsync(run, lease.Slot, cancellationToken).ConfigureAwait(false)
                 : await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
             if (session is null)
             {
@@ -658,14 +659,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
     {
         var storeUrl = _options.ResolvedStoreUrl!;
-        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
-        var hostFileSystem = _slotWorkspace.HostFileSystem;
-
-        var slot = await _slotWorkspace.Pool.LeaseAsync(cancellationToken).ConfigureAwait(false);
+        var slot = await _slotWorkspace!.Pool.LeaseAsync(cancellationToken).ConfigureAwait(false);
         var handedOff = false;
+        ReviewRunSession? session = null;
         try
         {
-            var submoduleRelPath = await ResolveStoreSubmodulePathAsync(hostFileSystem, slot.StorePath, repo, provider)
+            // S2S conversations are hosted by LmStreaming, so the daemon does not own their session. Preserve
+            // that path until its separate hosted-session design changes. The in-process path must provision
+            // FIRST and perform every setup/read/diff operation through this exact SDK-backed session.
+            if (_options.UseS2SReviewAgent)
+            {
+                var handled = await TryHostPreparedPooledContextAsync(
+                        run, repo, provider, slot, storeUrl, cancellationToken)
+                    .ConfigureAwait(false);
+                handedOff = handled;
+                return handled;
+            }
+
+            if (_provisioner is null)
+            {
+                throw new InvalidOperationException(
+                    $"Run {run.Id}: pooled SDK preparation requires a review session provisioner.");
+            }
+
+            session = await _provisioner
+                .GetOrCreateRequiredForSlotAsync(run, slot, cancellationToken)
+                .ConfigureAwait(false);
+            var preparer = _slotWorkspace.CreateSessionPreparer(session, provider);
+            var sdkGit = new GitRunner(session.CommandRunner);
+            await preparer.EnsureStoreAsync(StoreRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+
+            var submoduleRelPath = await ResolveStoreSubmodulePathAsync(
+                    session.FileSystem, StoreRoot, repo, provider)
                 .ConfigureAwait(false);
             if (submoduleRelPath is null)
             {
@@ -675,20 +700,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 return false;
             }
 
-            var branch = BuildNotesBranchName(hostGit, hostFileSystem, repo, run);
+            var branch = BuildNotesBranchName(
+                new GitRunner(_slotWorkspace.HostRunner), _slotWorkspace.HostFileSystem, repo, run);
             var notesRelPath = BuildNotesRelPath(repo, run.PrId);
+            var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
             var policy = DaemonOperationPolicy.BuildForRun(
                 repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
                 allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
-
             var prepared = await PrepareWithRecoveryAsync(
-                slot, run, storeUrl, submoduleRelPath, branch, notesRelPath, policy, cancellationToken)
+                    preparer, run, StoreRoot, scratchDirSandbox, storeUrl, submoduleRelPath, branch,
+                    notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
 
-            // Diff + manifest run HOST-side against the prepared submodule working tree (privileged daemon
-            // git), never in the sandbox the agent shares.
-            var diff = await hostGit
-                .RunAsync(["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"], prepared.TargetDir, cancellationToken)
+            var diff = await sdkGit
+                .RunAsync(["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
+                    prepared.TargetDir, cancellationToken)
                 .ConfigureAwait(false);
             if (!diff.Succeeded)
             {
@@ -697,13 +723,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
 
             var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
-            var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken).ConfigureAwait(false);
-
-            // Container paths the agent's MCP tools address (the slot is mounted at /workspace) — these, not
-            // the host paths the daemon git used, are what the review input + tool context reference.
-            var targetDirSandbox = PosixJoin(StoreRoot, submoduleRelPath);
+            var fileManifest = await BuildFileManifestAsync(sdkGit, prepared.TargetDir, cancellationToken)
+                .ConfigureAwait(false);
             var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
-            var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
 
             _ = _store.AddArtifact(new ReviewArtifact
             {
@@ -712,39 +734,104 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ArtifactKind = ContextArtifactKind,
                 Provider = provider,
                 Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                    run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, targetDirSandbox, StoreRoot)),
+                    run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
+                    prepared.TargetDir, StoreRoot)),
             });
 
-            // Record the lease so the review + commit-notes stages can find it, guarding against silently
-            // overwriting a lease already held for this run id. ContextReady runs once per run, so an
-            // existing entry means a prior slot was never returned; overwriting it would orphan that slot.
-            // Fail the stage instead (handedOff stays false, so this slot is returned by the finally below)
-            // and let the orchestrator's terminal finally return the stale one — the stage then retries clean.
             if (!_leasedReviews.TryAdd(
                 run.Id,
-                new LeasedReview(slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox)))
+                new LeasedReview(
+                    slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox, session)))
             {
                 throw new InvalidOperationException(
                     $"Run {run.Id} already holds a pooled review lease; refusing to overwrite it (would leak a slot).");
             }
 
             handedOff = true;
-
             _logger.LogInformation(
-                "Run {RunId}: pooled slot {Index} prepared on branch '{Branch}' ({Length} char diff, {Files} "
-                    + "manifest files) from {TargetDir}.",
-                run.Id, slot.Index, branch, boundedDiff.Length, ManifestFileCount(fileManifest), prepared.TargetDir);
+                "Run {RunId}: pooled slot {Index} prepared through sandbox session {SessionId} on branch "
+                    + "'{Branch}' ({Length} char diff, {Files} manifest files) from {TargetDir}.",
+                run.Id, slot.Index, session.SessionId, branch, boundedDiff.Length,
+                ManifestFileCount(fileManifest), prepared.TargetDir);
             return true;
         }
         finally
         {
-            // Return the slot on decline (not-a-submodule) or failure (exception). On success the lease owns
-            // it until PostAsync returns it, so it is NOT returned here (handedOff).
             if (!handedOff)
             {
+                if (session is not null && _provisioner is not null)
+                {
+                    await _provisioner.DestroyAsync(run, CancellationToken.None).ConfigureAwait(false);
+                }
+
                 await _slotWorkspace.Pool.ReturnAsync(slot, CancellationToken.None).ConfigureAwait(false);
             }
         }
+    }
+
+    private async Task<bool> TryHostPreparedPooledContextAsync(
+        ReviewRun run,
+        RepoIdentity repo,
+        string provider,
+        ReviewSlot slot,
+        string storeUrl,
+        CancellationToken cancellationToken)
+    {
+        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
+        var hostFileSystem = _slotWorkspace.HostFileSystem;
+        await _slotWorkspace.HostPreparer.EnsureStoreAsync(slot.StorePath, storeUrl, cancellationToken)
+            .ConfigureAwait(false);
+        var submoduleRelPath = await ResolveStoreSubmodulePathAsync(
+                hostFileSystem, slot.StorePath, repo, provider)
+            .ConfigureAwait(false);
+        if (submoduleRelPath is null)
+        {
+            return false;
+        }
+
+        var branch = BuildNotesBranchName(hostGit, hostFileSystem, repo, run);
+        var notesRelPath = BuildNotesRelPath(repo, run.PrId);
+        var policy = DaemonOperationPolicy.BuildForRun(
+            repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
+            allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
+        var prepared = await PrepareWithRecoveryAsync(
+                _slotWorkspace.HostPreparer, run, slot.StorePath, slot.ScratchPath, storeUrl,
+                submoduleRelPath, branch, notesRelPath, policy, cancellationToken)
+            .ConfigureAwait(false);
+        var diff = await hostGit.RunAsync(
+                ["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
+                prepared.TargetDir, cancellationToken)
+            .ConfigureAwait(false);
+        if (!diff.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}");
+        }
+
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken)
+            .ConfigureAwait(false);
+        var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
+        var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ContextArtifactSchemaVersion,
+            ArtifactKind = ContextArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
+                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot)),
+        });
+        if (!_leasedReviews.TryAdd(
+            run.Id,
+            new LeasedReview(slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox, null)))
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id} already holds a pooled review lease; refusing to overwrite it.");
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -755,27 +842,34 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// retried ONCE. A second failure surfaces so the stage retries and the retry governor bounds it.
     /// </summary>
     private async Task<PreparedCheckout> PrepareWithRecoveryAsync(
-        ReviewSlot slot, ReviewRun run, string storeUrl, string submoduleRelPath, string branch,
-        string notesRelPath, OperationPolicy policy, CancellationToken cancellationToken)
+        IReviewSlotPreparer preparer,
+        ReviewRun run,
+        string storeRoot,
+        string scratchRoot,
+        string storeUrl,
+        string submoduleRelPath,
+        string branch,
+        string notesRelPath,
+        OperationPolicy policy,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return await _slotWorkspace!.Preparer.PrepareAsync(
-                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
-                    cancellationToken)
+            return await preparer.PrepareAsync(
+                    run, storeRoot, scratchRoot, storeUrl, submoduleRelPath, branch,
+                    ReviewBotDefaultBranch, notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SlotNeedsRecloneException or SlotCorruptException)
         {
             _logger.LogWarning(
                 ex,
-                "Run {RunId}: pooled slot {Index} store is corrupt; re-cloning and retrying prepare once.",
-                run.Id, slot.Index);
-            await _slotWorkspace!.Preparer.RecloneStoreAsync(slot.StorePath, storeUrl, cancellationToken)
-                .ConfigureAwait(false);
-            return await _slotWorkspace.Preparer.PrepareAsync(
-                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
-                    cancellationToken)
+                "Run {RunId}: pooled store {StoreRoot} is corrupt; re-cloning and retrying prepare once.",
+                run.Id, storeRoot);
+            await preparer.RecloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+            return await preparer.PrepareAsync(
+                    run, storeRoot, scratchRoot, storeUrl, submoduleRelPath, branch,
+                    ReviewBotDefaultBranch, notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -852,7 +946,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string NotesRelPath,
         string Branch,
         string NotesDirSandbox,
-        string ScratchDirSandbox);
+        string ScratchDirSandbox,
+        ReviewRunSession? Session);
 
     /// <summary>
     /// Resolves the run's checkout. When a cross-repo store is configured (<see
@@ -1280,22 +1375,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return (summary.PrevHeadSha, reviewRound, []);
         }
 
-        // A pooled review lists its prior notes HOST-side from the leased slot's store checkout — the same
-        // host filesystem CommitPooledNotesAsync writes them through — NOT the boot-lifetime _fileSystem
-        // sandbox session (mirrors PrependPriorKnowledgeAsync). That boot session is one the gateway never
-        // registered for this run, so it 404s ("Session not found"); worse, its FIRST use binds a boot gateway
-        // session under the daemon's shared app id that then COLLIDES with the per-run review MCP session — the
-        // per-run /mcp connect 404s and the whole review fails (observed live: list-prior-notes was the first
-        // boot-adapter touch of a pooled review, so it triggered the bind that broke every review). Reading
-        // host-side keeps the boot adapter untouched on the pooled path. The returned paths stay CONTAINER-
-        // rooted (notesDir) so the review agent Reads them through its own sandbox tools; a non-pooled/legacy
-        // run (no lease) keeps the original _fileSystem path.
+        // In-process pooled reviews reuse the exact session that prepared the checkout, so prior-note reads
+        // remain inside the SDK boundary. S2S still has no daemon-owned session and therefore uses the host
+        // filesystem until the hosted-session path gets its own ownership design.
         ISandboxFileSystem fileSystem;
         string listDir;
         if (_slotWorkspace is not null && _leasedReviews.TryGetValue(run.Id, out var lease))
         {
-            fileSystem = _slotWorkspace.HostFileSystem;
-            listDir = lease.Prepared.NotesDir;
+            fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
+            listDir = lease.Session is null ? lease.Prepared.NotesDir : notesDir;
         }
         else
         {
@@ -1353,7 +1441,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? root;
         if (_slotWorkspace is not null && _leasedReviews.TryGetValue(runId, out var lease))
         {
-            fileSystem = _slotWorkspace.HostFileSystem;
+            fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
             root = lease.Prepared.StoreRoot;
         }
         else
@@ -1422,7 +1510,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return reviewInput;
         }
 
-        var fileSystem = _slotWorkspace.HostFileSystem;
+        var fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
         var targetDir = lease.Prepared.TargetDir;
 
         List<string> blocks = [];
@@ -2360,7 +2448,8 @@ internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, s
 /// </summary>
 internal sealed record ReviewSlotWorkspace(
     IReviewSlotPool Pool,
-    IReviewSlotPreparer Preparer,
+    IReviewSlotPreparer HostPreparer,
+    Func<ReviewRunSession, string, IReviewSlotPreparer> CreateSessionPreparer,
     ISandboxCommandRunner HostRunner,
     ISandboxFileSystem HostFileSystem);
 

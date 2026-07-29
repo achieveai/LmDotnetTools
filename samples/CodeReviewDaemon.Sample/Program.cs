@@ -625,8 +625,14 @@ if (daemonOptions.EnableToolAssistedReview
         }
 
         // The store is a GitHub superproject (AchieveAiReviews); its submodule URLs resolve under "github".
-        var preparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
-        return new ReviewSlotWorkspace(pool, preparer, hostRunner, hostFileSystem);
+        var hostPreparer = new ReviewSlotPreparer(new GitRunner(hostRunner), hostFileSystem, "github", loggerFactory);
+        return new ReviewSlotWorkspace(
+            pool,
+            hostPreparer,
+            (session, provider) => new ReviewSlotPreparer(
+                new GitRunner(session.CommandRunner), session.FileSystem, provider, loggerFactory),
+            hostRunner,
+            hostFileSystem);
     });
 
     builder.Services.AddSingleton(sp =>

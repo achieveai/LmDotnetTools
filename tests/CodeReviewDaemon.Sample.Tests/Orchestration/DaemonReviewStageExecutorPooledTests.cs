@@ -54,9 +54,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Preparer.LastNotesRelPath.Should().Be(NotesRelPath);
         fixture.Preparer.LastDefaultBranch.Should().Be("main");
 
-        // The diff is taken HOST-side against the prepared submodule working tree, not the boot sandbox.
-        fixture.HostRunner.Commands.Select(Join)
-            .Should().Contain(a => a.Contains("/slot-0/store/repos/LmDotnetTools") && a.Contains("diff"));
+        // The diff is taken through the run-bound SDK session, never the host or boot runner.
+        fixture.Provisioner.SdkRunner.Commands.Select(Join)
+            .Should().Contain(a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("diff"));
+        fixture.HostRunner.Commands.Should().BeEmpty("host git is reserved for the post-review commit gate");
         fixture.BootRunner.Commands.Should().BeEmpty("the pooled path never touches the boot-lifetime runner");
 
         // The artifact records the CONTAINER paths the agent's tools address (slot mounted at /workspace).
@@ -99,7 +100,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
-        fixture.Pool.RecloneCount.Should().Be(1, "a corrupt store is re-cloned before the retry");
+        fixture.Preparer.RecloneCount.Should().Be(1, "the session-bound preparer re-clones before retry");
         fixture.Preparer.PrepareCount.Should().Be(2, "prepare is retried exactly once after the re-clone");
         fixture.Store.GetArtifacts(run.Id)
             .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind,
@@ -119,7 +120,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         await act.Should().ThrowAsync<SlotCorruptException>();
-        fixture.Pool.RecloneCount.Should().Be(1, "re-clone is attempted once");
+        fixture.Preparer.RecloneCount.Should().Be(1, "the session-bound preparer attempts one re-clone");
         fixture.Preparer.PrepareCount.Should().Be(2, "prepare is attempted once, then once more after the re-clone");
         fixture.Pool.ReturnCount.Should().Be(1, "the failed lease is returned so it cannot leak pool capacity");
     }
@@ -508,7 +509,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // review-run-{id} mount, which does not exist under the gateway's read-only workspace base and 400s
         // (the silent degrade-to-diff-only these resumed runs were stuck in).
         fixture.Pool.LeaseCount.Should().Be(2, "the resumed review re-leases a slot because the prior lease was lost on restart");
-        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(1, "the resumed review mounts over the re-leased slot");
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(2,
+            "the original context and resumed context each mount their own leased slot once");
         fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
     }
 
@@ -941,7 +943,28 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // what makes the posted body (and its deep-link) observable on the fake publisher.
                 EnableCommentPosting = s2s,
             };
-            _slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
+            _slotWorkspace = new ReviewSlotWorkspace(
+                Pool,
+                Preparer,
+                (session, _) =>
+                {
+                    // The production factory builds a preparer over the run session. The fake preparer records
+                    // orchestration inputs; keep its SDK filesystem in sync with fixture-host seeds used by
+                    // prior-notes/KB/root-guidance tests.
+                    foreach (var (path, content) in HostFileSystem.Files)
+                    {
+                        var sessionPath = path.Replace(
+                            $"/pool/{(s2s ? "review-slot-" : "slot-")}0/store",
+                            "/workspace/store",
+                            StringComparison.Ordinal);
+                        session.FileSystem.WriteFileAsync(sessionPath, content, CancellationToken.None)
+                            .GetAwaiter().GetResult();
+                    }
+
+                    return Preparer;
+                },
+                HostRunner,
+                HostFileSystem);
 
             if (s2s)
             {
@@ -1151,6 +1174,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         private readonly Lock _gate = new();
 
         public int PrepareCount { get; private set; }
+        public int RecloneCount { get; private set; }
         public string? LastSubmoduleRelPath { get; private set; }
         public string? LastBranch { get; private set; }
         public string? LastNotesRelPath { get; private set; }
@@ -1163,6 +1187,20 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// reviews were prepared into two different slot stores and two different notes dirs.</summary>
         public List<PreparedCheckout> Prepared { get; } = [];
 
+        public Task EnsureStoreAsync(
+            string storeRoot,
+            string storeUrl,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task RecloneStoreAsync(
+            string storeRoot,
+            string storeUrl,
+            CancellationToken cancellationToken)
+        {
+            RecloneCount++;
+            return Task.CompletedTask;
+        }
+
         /// <summary>
         /// Optional rendezvous awaited AFTER the checkout is recorded but BEFORE prepare returns. The isolation
         /// gate uses it to hold both preparations open at once, so "two leases held simultaneously" is a
@@ -1170,7 +1208,21 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// </summary>
         public Func<Task>? Rendezvous { get; set; }
 
-        public async Task<PreparedCheckout> PrepareAsync(
+        public Task<PreparedCheckout> PrepareAsync(
+            ReviewRun run,
+            string storeRoot,
+            string scratchRoot,
+            string storeUrl,
+            string submoduleRelPath,
+            string branch,
+            string defaultBranch,
+            string notesRelPath,
+            OperationPolicy policy,
+            CancellationToken cancellationToken) =>
+            PrepareCoreAsync(
+                run, storeRoot, submoduleRelPath, branch, defaultBranch, notesRelPath, cancellationToken);
+
+        public Task<PreparedCheckout> PrepareAsync(
             ReviewSlot slot,
             ReviewRun run,
             string storeUrl,
@@ -1179,12 +1231,20 @@ public sealed class DaemonReviewStageExecutorPooledTests
             string defaultBranch,
             string notesRelPath,
             OperationPolicy policy,
+            CancellationToken cancellationToken) =>
+            PrepareCoreAsync(
+                run, slot.StorePath, submoduleRelPath, branch, defaultBranch, notesRelPath, cancellationToken);
+
+        private async Task<PreparedCheckout> PrepareCoreAsync(
+            ReviewRun run,
+            string storeRoot,
+            string submoduleRelPath,
+            string branch,
+            string defaultBranch,
+            string notesRelPath,
             CancellationToken cancellationToken)
         {
             PreparedCheckout checkout;
-
-            // Gated for the same reason as the pool: the isolation gate prepares two leases at once, and an
-            // unsynchronized counter/list there loses an entry and reads as "only one review ran".
             lock (_gate)
             {
                 PrepareCount++;
@@ -1197,7 +1257,6 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 LastBranch = branch;
                 LastNotesRelPath = notesRelPath;
                 LastDefaultBranch = defaultBranch;
-                var storeRoot = slot.StorePath;
                 checkout = new PreparedCheckout(
                     storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch);
                 Prepared.Add(checkout);
@@ -1220,6 +1279,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public int GetOrCreateForSlotCalls { get; private set; }
         public int GetOrCreateCalls { get; private set; }
         public ReviewSlot? LastSlot { get; private set; }
+        public FakeSandboxCommandRunner SdkRunner { get; } = new();
+        public FakeSandboxFileSystem SdkFileSystem { get; } = new();
 
         /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
         public List<string>? Order { get; set; }
@@ -1236,10 +1297,29 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             GetOrCreateForSlotCalls++;
             LastSlot = slot;
-            // Mirror the real provisioner: same per-run session id/key, but the mount HostPath is the slot.
-            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
-                $"session-{run.Id}", slot.HostPath,
-                new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+            return Task.FromResult<ReviewRunSession?>(Session(run, slot));
+        }
+
+        public Task<ReviewRunSession> GetOrCreateRequiredForSlotAsync(
+            ReviewRun run,
+            ReviewSlot slot,
+            CancellationToken ct)
+        {
+            GetOrCreateForSlotCalls++;
+            LastSlot = slot;
+            return Task.FromResult(Session(run, slot));
+        }
+
+        private ReviewRunSession Session(ReviewRun run, ReviewSlot slot)
+        {
+            SdkFileSystem.Seed(
+                "/workspace/store/.gitmodules",
+                "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
+                    + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            SdkRunner.OnArgvContains(
+                "diff base-sha...head-sha",
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
+            return new ReviewRunSession($"session-{run.Id}", slot.HostPath, SdkRunner, SdkFileSystem);
         }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct)
