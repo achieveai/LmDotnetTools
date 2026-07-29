@@ -56,17 +56,21 @@ internal interface IReviewSlotPreparer
 /// </summary>
 internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 {
+    internal const string SdkOwnershipMarkerFile = ".review-store-sdk-owned";
+
     private readonly GitRunner _git;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly string _provider;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<ReviewSlotPreparer> _logger;
+    private readonly bool _requireSdkOwnershipMarker;
 
     public ReviewSlotPreparer(
         GitRunner git,
         ISandboxFileSystem fileSystem,
         string provider,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        bool requireSdkOwnershipMarker = false)
     {
         _git = git ?? throw new ArgumentNullException(nameof(git));
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
@@ -74,6 +78,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         _provider = provider;
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = loggerFactory.CreateLogger<ReviewSlotPreparer>();
+        _requireSdkOwnershipMarker = requireSdkOwnershipMarker;
     }
 
     public async Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
@@ -86,6 +91,21 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             .ConfigureAwait(false);
         if (probe.Succeeded)
         {
+            if (!_requireSdkOwnershipMarker)
+            {
+                return;
+            }
+
+            var markerPath = PosixJoin(storeRoot, SdkOwnershipMarkerFile);
+            if (await _fileSystem.ReadFileAsync(markerPath, cancellationToken).ConfigureAwait(false) is not null)
+            {
+                return;
+            }
+
+            _logger.LogInformation(
+                "Review store {StoreRoot} predates SDK ownership; re-cloning once through the run sandbox.",
+                storeRoot);
+            await RecloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -98,14 +118,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 $"Review store '{storeRoot}' exists but is not a valid git checkout.");
         }
 
-        var clone = await _git
-            .RunAsync(["clone", storeUrl, storeRoot], "/workspace", cancellationToken)
-            .ConfigureAwait(false);
-        if (!clone.Succeeded)
-        {
-            throw new InvalidOperationException(
-                $"Cloning the review store at '{storeRoot}' failed (exit {clone.ExitCode}): {clone.Stderr}");
-        }
+        await CloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RecloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
@@ -119,7 +132,29 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 $"Removing corrupt review store '{storeRoot}' failed (exit {remove.ExitCode}): {remove.Stderr}");
         }
 
-        await EnsureStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+        await CloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task CloneStoreAsync(
+        string storeRoot,
+        string storeUrl,
+        CancellationToken cancellationToken)
+    {
+        var clone = await _git
+            .RunAsync(["clone", storeUrl, storeRoot], "/workspace", cancellationToken)
+            .ConfigureAwait(false);
+        if (!clone.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Cloning the review store at '{storeRoot}' failed (exit {clone.ExitCode}): {clone.Stderr}");
+        }
+
+        if (_requireSdkOwnershipMarker)
+        {
+            await _fileSystem
+                .WriteFileAsync(PosixJoin(storeRoot, SdkOwnershipMarkerFile), "1\n", cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     public Task<PreparedCheckout> PrepareAsync(

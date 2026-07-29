@@ -630,7 +630,11 @@ if (daemonOptions.EnableToolAssistedReview
             pool,
             hostPreparer,
             (session, provider) => new ReviewSlotPreparer(
-                new GitRunner(session.CommandRunner), session.FileSystem, provider, loggerFactory),
+                new GitRunner(session.CommandRunner),
+                session.FileSystem,
+                provider,
+                loggerFactory,
+                requireSdkOwnershipMarker: true),
             hostRunner,
             hostFileSystem);
     });

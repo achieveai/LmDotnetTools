@@ -40,6 +40,67 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureStoreAsync_SdkPreparer_ReclonesAnUnmarkedHostPreparedStoreAndWritesMarker()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        var fileSystem = SeedGitmodules(slot.StorePath);
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            fileSystem,
+            "ado",
+            NullLoggerFactory.Instance,
+            requireSdkOwnershipMarker: true);
+
+        await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
+            command => command == $"rm -rf -- {slot.StorePath}",
+            "an unmarked warm store may carry host-git line-ending and ownership state");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
+            command => command.Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal));
+        fileSystem.Files.Should().ContainKey($"{slot.StorePath}/{ReviewSlotPreparer.SdkOwnershipMarkerFile}");
+    }
+
+    [Fact]
+    public async Task EnsureStoreAsync_SdkPreparer_ReusesAMarkedStore()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        var fileSystem = SeedGitmodules(slot.StorePath)
+            .Seed($"{slot.StorePath}/{ReviewSlotPreparer.SdkOwnershipMarkerFile}", "1\n");
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            fileSystem,
+            "ado",
+            NullLoggerFactory.Instance,
+            requireSdkOwnershipMarker: true);
+
+        await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task EnsureStoreAsync_HostPreparer_ReusesAnUnmarkedStore()
+    {
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), SeedGitmodules(slot.StorePath), "github", NullLoggerFactory.Instance);
+
+        await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task PrepareAsync_NewBranch_BranchesFromDefaultBranchAndAdvancesSubmodule()
     {
         var slot = CreateSlot();
