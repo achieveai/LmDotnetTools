@@ -291,6 +291,192 @@ public sealed class RemoteApprovalStoreTests
         }
     }
 
+    // ---- A retry that lands while the winning allow is still settling -------------------------
+
+    // Completing the ballot and settling the request are two steps, and a retry can land between
+    // them. Answering "recorded" there is a lie with consequences: the endpoint returns 202, so the
+    // approver's client is told to keep retrying a request that has in fact already been answered.
+    //
+    // The gap is driven directly through RecordAllow rather than by racing threads. That is the seam
+    // the winner crosses on its way to Commit, so calling it leaves the ticket in exactly the state a
+    // real winner leaves it in mid-settle — and it does so on every run, not on the unlucky ones.
+
+    [Fact]
+    public async Task A_retry_arriving_while_the_only_approvers_allow_is_settling_reads_the_answer()
+    {
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA);
+
+        ticket
+            .RecordAllow(SubA)
+            .Should()
+            .Be(RemoteApprovalBallot.Unanimous, "this is the allow that completed the set");
+
+        var retry = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+
+        retry
+            .Status.Should()
+            .NotBe(
+                RemoteApprovalSettleStatus.Recorded,
+                "there is nobody left to wait for, so 202-and-retry is not a truthful answer"
+            );
+        retry.Outcome.Should().Be(WireOutcomes.Allowed);
+        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
+    }
+
+    [Fact]
+    public async Task A_retry_arriving_while_the_last_of_several_allows_is_settling_reads_the_answer()
+    {
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+
+        store
+            .Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA))
+            .Status.Should()
+            .Be(RemoteApprovalSettleStatus.Recorded, "SubB has genuinely not answered yet");
+
+        ticket.RecordAllow(SubB).Should().Be(RemoteApprovalBallot.Unanimous);
+
+        var retry = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+
+        retry.Status.Should().NotBe(RemoteApprovalSettleStatus.Recorded);
+        retry
+            .Outcome.Should()
+            .Be(
+                WireOutcomes.Allowed,
+                "the set completed, so SubA's earlier allow now has a standing answer to report"
+            );
+        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
+        store.PendingCount.Should().Be(0, "an answered request holds no admission slot");
+    }
+
+    [Fact]
+    public void A_retry_arriving_after_the_winner_committed_reads_the_same_answer_again()
+    {
+        // The settled side of the same window: whichever side of the winner's commit a retry lands
+        // on, the approver is told the same thing.
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+        var allow = Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA);
+
+        _ = store.Settle(Owner(AppA), allow);
+        _ = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubB));
+
+        var retry = store.Settle(Owner(AppA), allow);
+
+        retry.Status.Should().Be(RemoteApprovalSettleStatus.AlreadyDecided);
+        retry.Outcome.Should().Be(WireOutcomes.Allowed);
+    }
+
+    [Fact]
+    public async Task A_retry_that_completes_the_set_against_a_deny_is_refused_rather_than_left_waiting()
+    {
+        // Denial settles immediately, so a repeat allow reaching the settle path finds the request
+        // taken. It has to come back with the refusal — promptly, and without overturning it.
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+
+        _ = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+        ticket.RecordAllow(SubB).Should().Be(RemoteApprovalBallot.Unanimous);
+        store
+            .Settle(Owner(AppA), Decide(ticket, WireOutcomes.Denied, subscriptionId: SubB))
+            .Status.Should()
+            .Be(RemoteApprovalSettleStatus.Accepted);
+
+        var retry = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+
+        retry.Status.Should().Be(RemoteApprovalSettleStatus.Contradicted);
+        retry.Outcome.Should().Be(WireOutcomes.Denied, "the recorded answer is the one that stands");
+        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Denied);
+    }
+
+    [Fact]
+    public void A_retry_that_completes_the_set_after_withdrawal_finds_nothing_to_decide()
+    {
+        // Nothing was ever decided here, so there is no answer to read back — and the retry must not
+        // sit waiting for one.
+        var store = CreateStore(new ManualTimeProvider(Now));
+        var ticket = Register(store, AppA, SubA, SubB);
+
+        _ = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+        ticket.RecordAllow(SubB).Should().Be(RemoteApprovalBallot.Unanimous);
+        ticket.Dispose();
+
+        store
+            .Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA))
+            .Should()
+            .Be(NothingToDecide);
+    }
+
+    [Fact]
+    public void A_retry_that_completes_the_set_after_expiry_finds_nothing_to_decide()
+    {
+        // The call it would have authorized was blocked when the deadline passed, so a complete
+        // ballot arriving now changes nothing and must not settle anything.
+        var clock = new ManualTimeProvider(Now);
+        var store = CreateStore(clock);
+        using var ticket = Register(store, AppA, SubA, SubB);
+
+        _ = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+        ticket.RecordAllow(SubB).Should().Be(RemoteApprovalBallot.Unanimous);
+        clock.Advance(TimeSpan.FromMinutes(5));
+
+        store
+            .Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA))
+            .Should()
+            .Be(NothingToDecide);
+        ticket.Decision.IsCompleted.Should().BeFalse("an expired request is answered by the waiter");
+    }
+
+    [Fact]
+    public async Task A_retry_racing_the_allow_that_completes_the_set_never_ends_up_the_only_caller_waiting()
+    {
+        // The same window under real threads, as a check that the seam-driven tests above describe
+        // something the scheduler can actually produce. Both orderings are legitimate — a retry that
+        // arrives genuinely early is genuinely still waiting — so what is asserted is the state they
+        // both have to leave behind: one settlement, an allowed answer, and a retry afterwards that
+        // reads it.
+        const int Rounds = 200;
+        for (var round = 0; round < Rounds; round++)
+        {
+            var store = CreateStore(new ManualTimeProvider(Now));
+            using var ticket = Register(store, AppA, SubA, SubB);
+            var retry = Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA);
+            _ = store.Settle(Owner(AppA), retry);
+
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var completing = Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubB);
+            var submissions = new[] { completing, retry }
+                .Select(decision =>
+                    Task.Run(async () =>
+                    {
+                        await start.Task;
+                        return store.Settle(Owner(AppA), decision);
+                    })
+                )
+                .ToArray();
+
+            start.SetResult();
+            var settlements = await Task.WhenAll(submissions);
+
+            settlements
+                .Count(s => s.Status == RemoteApprovalSettleStatus.Accepted)
+                .Should()
+                .Be(1, "the set is completed exactly once however the two are interleaved");
+            settlements
+                .Should()
+                .OnlyContain(
+                    s => s.Outcome == null || s.Outcome == WireOutcomes.Allowed,
+                    "two allows cannot contradict each other"
+                );
+            (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
+
+            var afterwards = store.Settle(Owner(AppA), retry);
+            afterwards.Status.Should().Be(RemoteApprovalSettleStatus.AlreadyDecided);
+            afterwards.Outcome.Should().Be(WireOutcomes.Allowed);
+        }
+    }
+
     [Fact]
     public void A_decision_from_an_approver_that_was_not_asked_is_indistinguishable_from_an_unknown_id()
     {

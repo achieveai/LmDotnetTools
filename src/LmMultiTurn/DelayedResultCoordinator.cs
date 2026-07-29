@@ -233,9 +233,18 @@ internal sealed class DelayedResultCoordinator
     /// resolution already in flight. The caller distinguishes those against history.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// The claim deliberately leaves the entry in place. Until the result is actually applied to
     /// history the placeholder is still there, so a turn that ended in this window must still park —
     /// and the child run this claim already committed to is what will pick the conversation back up.
+    /// </para>
+    /// <para>
+    /// What is settled <em>here</em> is therefore only whether a child run id has to exist already,
+    /// because a parked entry's durable resolution record names that run before it starts. Whether
+    /// there is a child run at all is settled in <see cref="CompleteResolve"/>, from the entry as it
+    /// stands then: <see cref="TryPark"/> can reach this same entry while the claim is in flight,
+    /// and a claim-time snapshot would miss it.
+    /// </para>
     /// </remarks>
     public bool TryBeginResolve(
         string toolCallId,
@@ -263,7 +272,6 @@ internal sealed class DelayedResultCoordinator
             entry.ResolvingFingerprint = fingerprint;
             pending = new ResolvingDeferral(
                 entry,
-                RequiresChildRun: entry.Parked,
                 ChildRunId: entry.Parked ? Guid.NewGuid().ToString("N") : null);
             inFlightFingerprint = null;
             return true;
@@ -301,11 +309,31 @@ internal sealed class DelayedResultCoordinator
     /// folded into it.
     /// </returns>
     /// <remarks>
+    /// <para>
     /// Ownership is "nothing is outstanding any more", evaluated here rather than at claim time,
     /// so when several results race the last one to commit is the one that continues. It is a
     /// global test, not a per-run one, because the provider request carries the whole history: one
     /// unresolved placeholder anywhere in it makes the request invalid regardless of which run left
     /// it there.
+    /// </para>
+    /// <para>
+    /// <b>Whether there is a child run is read from the entry, not from the claim.</b> The claim
+    /// leaves the entry in <c>_entries</c> across the durable write and the history update, and
+    /// <see cref="TryPark"/> can mark that same entry parked in exactly that window — the requesting
+    /// run ended while this resolution was mid-commit. Trusting the claim-time snapshot there would
+    /// retire the reservation, return no cause, and leave a result sitting resolved in history with
+    /// no run to carry it to the provider. <see cref="DeferredEntry.Parked"/> only ever goes from
+    /// false to true, so reading it here is a superset of what the claim saw, never a contradiction.
+    /// </para>
+    /// <para>
+    /// A child run id minted here rather than at claim time is one the durable resolution record
+    /// does not name — that write had already gone out saying the result was folded into a live run.
+    /// This closes the live-process race, but it does not add a crash-recovery guarantee to that
+    /// narrow window: recovery currently rebuilds only still-deferred results, so a process failure
+    /// after the resolved result was persisted but before this cause was consumed can still strand the
+    /// continuation. That limitation already exists for an ordinarily parked resolution whose cause
+    /// has not run yet; the late-mint path neither widens nor conceals it.
+    /// </para>
     /// </remarks>
     public DelayedCause? CompleteResolve(ResolvingDeferral pending, ToolCallResultMessage resolved)
     {
@@ -319,7 +347,14 @@ internal sealed class DelayedResultCoordinator
             _ = _entries.Remove(pending.Entry.ToolCallId);
 
             var ordinal = ++_ordinal;
-            if (!pending.RequiresChildRun || pending.ChildRunId == null)
+
+            // The claim's id when it already had one — that is the id the durable resolution record
+            // names, and it has to stand — otherwise a fresh one if the run parked while this
+            // resolution was in flight. Null only when the requesting run is still going.
+            var childRunId = pending.ChildRunId
+                ?? (pending.Entry.Parked ? Guid.NewGuid().ToString("N") : null);
+
+            if (childRunId == null)
             {
                 return null;
             }
@@ -329,7 +364,7 @@ internal sealed class DelayedResultCoordinator
                 ToolName: pending.Entry.FunctionName,
                 RequestingRunId: pending.Entry.RunId,
                 RequestingGenerationId: pending.Entry.GenerationId,
-                ChildRunId: pending.ChildRunId,
+                ChildRunId: childRunId,
                 Ordinal: ordinal,
                 IsContinuationOwner: _entries.Count == 0,
                 Result: resolved);
@@ -393,6 +428,11 @@ internal sealed class DeferredEntry(
     /// Whether the requesting run has ended waiting on this call. Once true the resolution can no
     /// longer be folded into that run and must cause a child run instead.
     /// </summary>
+    /// <remarks>
+    /// Set once and never cleared, so a reader that sees false may simply be early — which is why
+    /// <see cref="DelayedResultCoordinator.CompleteResolve"/> re-reads it under the lock instead of
+    /// trusting the snapshot the claim took.
+    /// </remarks>
     public bool Parked { get; set; }
 
     /// <summary>Whether a resolution has claimed this call and is mid-commit.</summary>
@@ -406,15 +446,18 @@ internal sealed class DeferredEntry(
 }
 
 /// <summary>A claimed-but-not-yet-committed resolution.</summary>
-/// <param name="Entry">The call being resolved.</param>
-/// <param name="RequiresChildRun">Whether committing will start a child run.</param>
+/// <param name="Entry">
+/// The call being resolved. It stays in the coordinator's map for the life of the claim, so it —
+/// not this record — is the authority on whether the requesting run has since parked.
+/// </param>
 /// <param name="ChildRunId">
-/// The id that child run will have, minted here so the durable resolution record can name it
-/// before it starts. Null when no child run is needed.
+/// The id a child run will have if one is needed, minted at claim time when the requesting run had
+/// already ended, so the durable resolution record can name it before it starts. Null when that run
+/// was still going; <see cref="DelayedResultCoordinator.CompleteResolve"/> mints one late in the
+/// narrow case where the run parked while this claim was in flight.
 /// </param>
 internal sealed record ResolvingDeferral(
     DeferredEntry Entry,
-    bool RequiresChildRun,
     string? ChildRunId);
 
 /// <summary>

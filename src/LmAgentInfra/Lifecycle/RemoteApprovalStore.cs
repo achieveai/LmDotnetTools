@@ -32,7 +32,9 @@ public enum RemoteApprovalSettleStatus
     /// <summary>
     /// An allow was recorded, and the request stays pending because a frozen approver has not answered
     /// yet. Not a settlement and not a failure: the tool has not been authorized, and will not be until
-    /// the last approver agrees. Repeating the same allow reports this again rather than double-counting.
+    /// the last approver agrees. Repeating the same allow reports this again rather than double-counting
+    /// — but only while the set really is incomplete. Once every approver has allowed, a repeat reads
+    /// the standing outcome, because there is no longer anyone left for it to be waiting on.
     /// </summary>
     Recorded,
 
@@ -75,10 +77,17 @@ internal enum RemoteApprovalBallot
     /// <summary>Counted, and at least one frozen approver still has not allowed.</summary>
     Recorded,
 
-    /// <summary>This approver had already allowed; the ballot is unchanged.</summary>
+    /// <summary>
+    /// This approver had already allowed and the set is still short someone else; the ballot is
+    /// unchanged and nothing is settleable.
+    /// </summary>
     Duplicate,
 
-    /// <summary>This allow was the last one outstanding, so the request may now be settled.</summary>
+    /// <summary>
+    /// Every frozen approver has allowed, so the request may now be settled. Reported to a duplicate
+    /// submission too: once the set is complete a retry has a standing answer to read, and calling it
+    /// anything else would describe the request as still waiting for somebody.
+    /// </summary>
     Unanimous,
 }
 
@@ -199,22 +208,33 @@ public sealed class RemoteApprovalTicket : IDisposable
     /// <param name="subscriptionId">The approver allowing. Already known to be in <see cref="Approvers"/>.</param>
     /// <returns>Whether the ballot is now complete, unchanged, or still short an approver.</returns>
     /// <remarks>
+    /// <para>
     /// The count is taken under the lock rather than compared afterwards, so of two approvers
     /// answering simultaneously exactly one can see the set complete — which is what stops both from
     /// racing to settle and one of them reading its own allow back as a contradiction.
+    /// </para>
+    /// <para>
+    /// A completed set answers <see cref="RemoteApprovalBallot.Unanimous"/> whether or not this
+    /// particular allow was new. The ballot completing and the request settling are two steps with a
+    /// gap between them, and a duplicate landing in that gap must be sent to look for the standing
+    /// answer rather than told it is still waiting for an approver that has already voted. Sending a
+    /// duplicate on to the settle path is safe because the settle itself is a one-shot atomic claim
+    /// and <c>allowed</c> is the only allow value an approver may submit: whichever of the two wins,
+    /// the outcome recorded is identical and the loser reads it back.
+    /// </para>
     /// </remarks>
     internal RemoteApprovalBallot RecordAllow(string subscriptionId)
     {
         lock (_ballot)
         {
-            if (!_allowed.Add(subscriptionId))
+            var counted = _allowed.Add(subscriptionId);
+
+            if (_allowed.Count >= Approvers.Count)
             {
-                return RemoteApprovalBallot.Duplicate;
+                return RemoteApprovalBallot.Unanimous;
             }
 
-            return _allowed.Count >= Approvers.Count
-                ? RemoteApprovalBallot.Unanimous
-                : RemoteApprovalBallot.Recorded;
+            return counted ? RemoteApprovalBallot.Recorded : RemoteApprovalBallot.Duplicate;
         }
     }
 
@@ -475,9 +495,11 @@ public sealed class RemoteApprovalStore
             return Unknown();
         }
 
-        // An allow settles nothing until it is the last one outstanding. A deny skips the ballot
-        // entirely: one approver refusing is already the answer, and counting it would only postpone
-        // a call that is not going to run either way.
+        // An allow settles nothing until the set is complete. A deny skips the ballot entirely: one
+        // approver refusing is already the answer, and counting it would only postpone a call that is
+        // not going to run either way. A repeat allow reaches Commit whenever the set is complete —
+        // including while the allow that completed it is still settling — so a retry reads the
+        // standing answer instead of being told the request is waiting on somebody.
         if (
             WireOutcomes.IsAllowed(decision.Decision)
             && ticket.RecordAllow(submitter) != RemoteApprovalBallot.Unanimous
