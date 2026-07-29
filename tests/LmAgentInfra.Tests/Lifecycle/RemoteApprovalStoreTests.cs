@@ -19,6 +19,12 @@ public sealed class RemoteApprovalStoreTests
     private const string AppA = "app-a";
     private const string AppB = "app-b";
 
+    /// <summary>The approver every request is registered with unless a test says otherwise.</summary>
+    private const string SubA = "sub-a";
+
+    /// <summary>A second approver, used where unanimity or substitution is the point.</summary>
+    private const string SubB = "sub-b";
+
     private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_750_000_000);
     private static readonly TimeSpan Retention = TimeSpan.FromMinutes(15);
 
@@ -44,7 +50,7 @@ public sealed class RemoteApprovalStoreTests
         var store = CreateStore(new ManualTimeProvider(Now));
         var expiry = Now.AddMinutes(5);
 
-        using var ticket = store.TryRegister(Owner(AppA), Call(expiry))!;
+        using var ticket = store.TryRegister(Owner(AppA), Call(expiry), [SubA])!;
 
         ticket.Request.ArgumentsHash.Should().Be(CanonicalToolArguments.Freeze(ArgumentsJson).Sha256Hex);
         ticket.Request.ExpiresAt.Should().Be(expiry);
@@ -171,6 +177,200 @@ public sealed class RemoteApprovalStoreTests
             .Be(RemoteApprovalSettleStatus.Mismatched);
     }
 
+    // ---- Every frozen approver must allow -----------------------------------------------------
+
+    [Fact]
+    public async Task An_allow_from_one_of_two_approvers_records_without_authorizing_the_call()
+    {
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+
+        var first = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+
+        first.Status.Should().Be(RemoteApprovalSettleStatus.Recorded);
+        first.Outcome.Should().BeNull("nothing has been decided, so there is no outcome to report");
+        ticket.Decision.IsCompleted.Should().BeFalse("the call stays blocked until everyone allows");
+        store.PendingCount.Should().Be(1, "a recorded allow is not a settlement");
+
+        var second = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubB));
+
+        second.Status.Should().Be(RemoteApprovalSettleStatus.Accepted);
+        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
+        store.PendingCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void Repeating_the_same_approvers_allow_does_not_stand_in_for_the_other_ones()
+    {
+        // The ballot is a set, not a counter. Counting would let one approver allow twice and satisfy
+        // a two-approver request on its own — the precise substitution unanimity exists to prevent.
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+        var allow = Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA);
+
+        _ = store.Settle(Owner(AppA), allow);
+        var repeat = store.Settle(Owner(AppA), allow);
+
+        repeat.Status.Should().Be(RemoteApprovalSettleStatus.Recorded);
+        ticket.Decision.IsCompleted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task One_approvers_deny_settles_the_request_without_waiting_for_the_others()
+    {
+        // Waiting for the rest would be pointless — the call can no longer be allowed — and would keep
+        // an admission slot occupied for however long the remaining approvers take.
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+
+        var settlement = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Denied, subscriptionId: SubB));
+
+        settlement.Status.Should().Be(RemoteApprovalSettleStatus.Accepted);
+        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Denied);
+        store.PendingCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task An_allow_completing_the_set_cannot_overturn_a_deny_that_already_landed()
+    {
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+
+        _ = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+        _ = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Denied, subscriptionId: SubA));
+        var late = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubB));
+
+        late.Status.Should().Be(RemoteApprovalSettleStatus.Contradicted);
+        late.Outcome.Should().Be(WireOutcomes.Denied);
+        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Denied);
+    }
+
+    [Fact]
+    public async Task Racing_approvers_settle_the_request_exactly_once()
+    {
+        // Two approvers answering at the same instant must not both see the set complete, or both
+        // would try to settle and one would read its own allow back as a contradiction.
+        const int Rounds = 200;
+        for (var round = 0; round < Rounds; round++)
+        {
+            var store = CreateStore(new ManualTimeProvider(Now));
+            using var ticket = Register(store, AppA, SubA, SubB);
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var votes = new[] { SubA, SubB }
+                .Select(subscription =>
+                    Task.Run(async () =>
+                    {
+                        await start.Task;
+                        return store.Settle(
+                            Owner(AppA),
+                            Decide(ticket, WireOutcomes.Allowed, subscriptionId: subscription)
+                        );
+                    })
+                )
+                .ToArray();
+
+            start.SetResult();
+            var settlements = await Task.WhenAll(votes);
+
+            settlements
+                .Count(s => s.Status == RemoteApprovalSettleStatus.Accepted)
+                .Should()
+                .Be(1, "exactly one allow completes the set");
+            settlements
+                .Should()
+                .OnlyContain(
+                    s =>
+                        s.Status == RemoteApprovalSettleStatus.Accepted
+                        || s.Status == RemoteApprovalSettleStatus.Recorded
+                        || s.Status == RemoteApprovalSettleStatus.AlreadyDecided,
+                    "the loser is counted — and is told the request is already decided if the winner "
+                        + "committed before it looked, which is the truth rather than a conflict"
+                );
+            (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
+        }
+    }
+
+    [Fact]
+    public void A_decision_from_an_approver_that_was_not_asked_is_indistinguishable_from_an_unknown_id()
+    {
+        // Another approval-capable subscription under the same owner is exactly the actor that must
+        // not be able to answer in the frozen approver's place.
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA);
+
+        var substitute = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubB));
+
+        substitute.Should().Be(NothingToDecide);
+        ticket.Decision.IsCompleted.Should().BeFalse("nobody entitled to answer has answered");
+        store
+            .Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA))
+            .Status.Should()
+            .Be(RemoteApprovalSettleStatus.Accepted, "the real approver is unaffected by the attempt");
+    }
+
+    [Fact]
+    public void A_decision_naming_no_subscription_is_refused()
+    {
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA);
+
+        store
+            .Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: ""))
+            .Should()
+            .Be(NothingToDecide, "an answer nobody is accountable for authorizes nothing");
+    }
+
+    [Fact]
+    public void Registering_a_request_with_no_approvers_is_a_wiring_error_rather_than_a_pending_entry()
+    {
+        // Such a request could never be unanimously allowed, so it would occupy a slot until it timed
+        // out and then block the call — a failure whose cause is invisible at the point it appears.
+        var store = CreateStore(new ManualTimeProvider(Now));
+
+        var act = () => store.TryRegister(Owner(AppA), Call(Now.AddMinutes(5)), []);
+
+        act.Should().Throw<ArgumentException>();
+        store.PendingCount.Should().Be(0);
+    }
+
+    // ---- Revoking an approver ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Revoking_an_approver_denies_what_it_was_still_being_asked_about()
+    {
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var ticket = Register(store, AppA, SubA, SubB);
+        _ = store.Settle(Owner(AppA), Decide(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+
+        var denied = store.InvalidateForSubscription(Owner(AppA), SubB);
+
+        denied.Should().Be(1);
+        (await ticket.Decision)
+            .Decision.Should()
+            .Be(
+                WireOutcomes.Denied,
+                "unanimity can no longer be reached, so the outcome is already settled"
+            );
+        store.PendingCount.Should().Be(0, "the admission slot is freed rather than held until expiry");
+    }
+
+    [Fact]
+    public void Revoking_a_subscription_leaves_requests_it_was_not_an_approver_for_alone()
+    {
+        var store = CreateStore(new ManualTimeProvider(Now));
+        using var mine = Register(store, AppA, SubA);
+        using var theirs = Register(store, AppB, SubB);
+
+        store.InvalidateForSubscription(Owner(AppA), SubB).Should().Be(0);
+
+        mine.Decision.IsCompleted.Should().BeFalse("this request has a different approver");
+        theirs
+            .Decision.IsCompleted.Should()
+            .BeFalse("and this one belongs to a different owner entirely");
+        store.PendingCount.Should().Be(2);
+    }
+
     // ---- Nothing to decide ------------------------------------------------------------------
 
     [Fact]
@@ -193,7 +393,7 @@ public sealed class RemoteApprovalStoreTests
     {
         var clock = new ManualTimeProvider(Now);
         var store = CreateStore(clock);
-        using var ticket = store.TryRegister(Owner(AppA), Call(Now.AddMinutes(5)))!;
+        using var ticket = store.TryRegister(Owner(AppA), Call(Now.AddMinutes(5)), [SubA])!;
 
         clock.Advance(TimeSpan.FromMinutes(5));
 
@@ -286,8 +486,8 @@ public sealed class RemoteApprovalStoreTests
         using var first = Register(store, AppA);
         using var second = Register(store, AppA);
 
-        store.TryRegister(Owner(AppA), Call(Now.AddMinutes(5))).Should().BeNull();
-        using var other = store.TryRegister(Owner(AppB), Call(Now.AddMinutes(5)));
+        store.TryRegister(Owner(AppA), Call(Now.AddMinutes(5)), [SubA]).Should().BeNull();
+        using var other = store.TryRegister(Owner(AppB), Call(Now.AddMinutes(5)), [SubA]);
         other.Should().NotBeNull("another owner's budget is unaffected by a wedged one");
     }
 
@@ -309,7 +509,7 @@ public sealed class RemoteApprovalStoreTests
             held.AddRange([Register(store, AppA), Register(store, AppA), Register(store, AppA), Register(store, AppB)]);
 
             store
-                .TryRegister(Owner(AppB), Call(Now.AddMinutes(5)))
+                .TryRegister(Owner(AppB), Call(Now.AddMinutes(5)), [SubA])
                 .Should()
                 .BeNull("the total bound holds even though this owner is under its own");
             store.PendingCount.Should().Be(4);
@@ -398,18 +598,28 @@ public sealed class RemoteApprovalStoreTests
             ExpiresAt = expiresAt,
         };
 
-    private static RemoteApprovalTicket Register(RemoteApprovalStore store, string appId) =>
-        store.TryRegister(Owner(appId), Call(Now.AddMinutes(5)))!;
+    private static RemoteApprovalTicket Register(
+        RemoteApprovalStore store,
+        string appId,
+        params string[] approvers
+    ) =>
+        store.TryRegister(
+            Owner(appId),
+            Call(Now.AddMinutes(5)),
+            approvers.Length == 0 ? [SubA] : approvers
+        )!;
 
     private static ToolApprovalDecision Decide(
         RemoteApprovalTicket ticket,
         string outcome,
         string? hash = null,
-        string? requestId = null
+        string? requestId = null,
+        string? subscriptionId = null
     ) =>
         new()
         {
             RequestId = requestId ?? ticket.Request.RequestId,
+            SubscriptionId = subscriptionId ?? SubA,
             Decision = outcome,
             ArgumentsHash = hash ?? ticket.Request.ArgumentsHash,
         };

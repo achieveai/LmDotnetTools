@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.AspNetCore.Mvc.Controllers;
@@ -252,8 +253,11 @@ public sealed class LifecycleHostingExtensionsTests
     [Fact]
     public async Task Delivery_publishes_the_subscription_routes_and_nothing_else_from_this_assembly()
     {
+        var configuration = Configuration(delivery: true);
         var builder = CreateHostBuilder();
-        _ = builder.Services.AddControllers().AddLifecycleControlPlane(Configuration(delivery: true));
+        _ = WithLifecycleServices(builder, configuration)
+            .AddControllers()
+            .AddLifecycleControlPlane(configuration);
 
         await using var app = builder.Build();
         var templates = RouteTemplates(app.Services);
@@ -279,10 +283,11 @@ public sealed class LifecycleHostingExtensionsTests
     [Fact]
     public async Task Enabling_approval_adds_its_route_and_only_its_route()
     {
+        var configuration = Configuration(delivery: true, approval: true);
         var builder = CreateHostBuilder();
-        _ = builder
-            .Services.AddControllers()
-            .AddLifecycleControlPlane(Configuration(delivery: true, approval: true));
+        _ = WithLifecycleServices(builder, configuration)
+            .AddControllers()
+            .AddLifecycleControlPlane(configuration);
 
         await using var app = builder.Build();
         var templates = RouteTemplates(app.Services);
@@ -322,13 +327,14 @@ public sealed class LifecycleHostingExtensionsTests
     [Fact]
     public async Task A_host_the_sdk_already_wired_up_keeps_its_other_endpoints()
     {
+        var configuration = Configuration(delivery: true);
         var builder = CreateHostBuilder();
-        var mvc = builder.Services.AddControllers();
+        var mvc = WithLifecycleServices(builder, configuration).AddControllers();
         _ = mvc.ConfigureApplicationPartManager(parts =>
             parts.ApplicationParts.Add(new AssemblyPart(LifecycleAssembly))
         );
 
-        _ = mvc.AddLifecycleControlPlane(Configuration(delivery: true));
+        _ = mvc.AddLifecycleControlPlane(configuration);
 
         await using var app = builder.Build();
         var templates = RouteTemplates(app.Services);
@@ -373,19 +379,130 @@ public sealed class LifecycleHostingExtensionsTests
     [Fact]
     public void A_host_with_its_own_controller_feature_provider_is_refused()
     {
+        var configuration = Configuration(delivery: true);
         var builder = CreateHostBuilder();
-        var mvc = builder.Services.AddControllers();
+        var mvc = WithLifecycleServices(builder, configuration).AddControllers();
         _ = mvc.ConfigureApplicationPartManager(parts =>
             parts.FeatureProviders.Add(new HostControllerFeatureProvider())
         );
 
-        var act = () => _ = mvc.AddLifecycleControlPlane(Configuration(delivery: true));
+        var act = () => _ = mvc.AddLifecycleControlPlane(configuration);
 
         // MVC unions what its feature providers return, so an allow-list beside another allow-list is
         // not an allow-list. Refusing is the only answer that does not silently widen one of them.
         var message = act.Should().Throw<InvalidOperationException>().Which.Message;
         message.Should().Contain(nameof(HostControllerFeatureProvider));
         message.Should().Contain(nameof(LifecycleSubscriptionsController));
+    }
+
+    [Fact]
+    public void A_host_provider_that_is_not_a_ControllerFeatureProvider_is_refused_just_the_same()
+    {
+        // MVC resolves feature providers by interface, not by base class: anything implementing
+        // IApplicationFeatureProvider<ControllerFeature> is consulted and unioned in. A scan that
+        // looked only for ControllerFeatureProvider subclasses would walk straight past this one,
+        // leave it installed, and hand back a "narrowed" discovery that is the union of two lists.
+        var configuration = Configuration(delivery: true);
+        var builder = CreateHostBuilder();
+        var mvc = WithLifecycleServices(builder, configuration).AddControllers();
+        _ = mvc.ConfigureApplicationPartManager(parts =>
+            parts.FeatureProviders.Add(new HostInterfaceFeatureProvider())
+        );
+
+        var act = () => _ = mvc.AddLifecycleControlPlane(configuration);
+
+        act.Should()
+            .Throw<InvalidOperationException>()
+            .Which.Message.Should()
+            .Contain(nameof(HostInterfaceFeatureProvider));
+    }
+
+    [Fact]
+    public async Task Calling_this_twice_leaves_the_same_host_as_calling_it_once()
+    {
+        // Composition roots get called twice — a shared extension method that wires the control plane,
+        // invoked by both a host and a library it uses. The second call must not read the first call's
+        // own provider as a host provider it may not overrule, and must not add a second part for this
+        // assembly, which would discover every controller in it twice and make each route ambiguous.
+        var configuration = Configuration(delivery: true, approval: true);
+        var builder = CreateHostBuilder();
+        var mvc = WithLifecycleServices(builder, configuration).AddControllers();
+
+        _ = mvc.AddLifecycleControlPlane(configuration);
+        var again = () => _ = mvc.AddLifecycleControlPlane(configuration);
+        again.Should().NotThrow();
+
+        ApplicationPartManager? parts = null;
+        _ = mvc.ConfigureApplicationPartManager(manager => parts = manager);
+
+        await using var app = builder.Build();
+        var templates = RouteTemplates(app.Services);
+
+        templates.Should().Contain("api/lifecycle/subscriptions");
+        templates.Should().Contain("api/lifecycle/approvals/decisions");
+        templates.Should().Contain(HostProbeRoute);
+        templates.Should().NotContain(t => t.StartsWith("api/auth/", StringComparison.Ordinal));
+        templates.Should().OnlyHaveUniqueItems();
+
+        parts!
+            .ApplicationParts.OfType<AssemblyPart>()
+            .Should()
+            .ContainSingle(part => part.Assembly == LifecycleAssembly);
+    }
+
+    [Fact]
+    public async Task A_part_the_host_adds_after_this_method_still_brings_its_endpoints()
+    {
+        // ConfigureApplicationPartManager runs its callback immediately, so this method sees the part
+        // list mid-composition. Deciding then whether the host supplied this assembly would answer
+        // "no" for every host that wires MVC in the order below — and take away the authentication
+        // endpoints it went on to ask for. The question is therefore asked at discovery time instead.
+        var configuration = Configuration(delivery: true);
+        var builder = CreateHostBuilder();
+        var mvc = WithLifecycleServices(builder, configuration).AddControllers();
+
+        _ = mvc.AddLifecycleControlPlane(configuration);
+        _ = mvc.ConfigureApplicationPartManager(parts =>
+            parts.ApplicationParts.Add(new AssemblyPart(LifecycleAssembly))
+        );
+
+        await using var app = builder.Build();
+        var templates = RouteTemplates(app.Services);
+
+        templates.Should().Contain("api/lifecycle/subscriptions");
+        templates.Should().Contain("api/auth/egress-keys");
+        templates.Should().Contain("api/auth/webhook/{provider}");
+    }
+
+    [Theory]
+    [InlineData(true, false, nameof(LifecycleHostingExtensions.AddLifecycleDelivery))]
+    [InlineData(true, true, nameof(LifecycleHostingExtensions.AddRemoteToolApproval))]
+    public void A_route_is_not_published_when_the_host_never_wired_what_serves_it(
+        bool delivery,
+        bool approval,
+        string missing
+    )
+    {
+        // The flag says the host wants the feature; the container says whether it actually wired it.
+        // When they disagree the route would be published and its controller unconstructible — a 500
+        // that tells a prober the feature is here and misconfigured, which is precisely the outcome
+        // this method exists to prevent, reached from the other direction. So the disagreement is
+        // reported to the host at startup instead, naming the call that is missing and its order.
+        var configuration = Configuration(delivery, approval);
+        var builder = CreateHostBuilder();
+        if (approval)
+        {
+            // Delivery is wired in the approval case, so the only thing missing is the approval half.
+            _ = builder.Services.AddSingleton<ILifecycleOwnerResolver>(new NoOwnerResolver());
+            _ = builder.Services.AddLifecycleDelivery(configuration);
+        }
+
+        var act = () =>
+            _ = builder.Services.AddControllers().AddLifecycleControlPlane(configuration);
+
+        var message = act.Should().Throw<InvalidOperationException>().Which.Message;
+        message.Should().Contain(missing);
+        message.Should().Contain(nameof(LifecycleHostingExtensions.AddLifecycleControlPlane));
     }
 
     [Fact]
@@ -442,6 +559,210 @@ public sealed class LifecycleHostingExtensionsTests
         authWebhook.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
         await app.StopAsync();
+    }
+
+    [Fact]
+    public async Task The_subscription_endpoint_is_constructible_on_a_host_that_enabled_only_delivery()
+    {
+        // Delivery and approval are independent opt-ins, and RemoteApprovalStore is registered by only
+        // one of them — so the subscriptions controller takes it as an optional constructor parameter.
+        // MVC builds controllers through ActivatorUtilities, which honours a defaulted parameter; if it
+        // did not, this host would answer 500 on every subscription request rather than 403, and no
+        // route-table assertion would notice. That is the whole reason this boots a real container.
+        var configuration = Configuration(
+            delivery: true,
+            extra: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Lifecycle:Delivery:ShutdownDrainTimeout"] = "00:00:00",
+            }
+        );
+
+        var builder = CreateHostBuilder();
+        _ = builder.Services.AddSingleton<ILifecycleOwnerResolver>(new NoOwnerResolver());
+        _ = builder.Services.AddLifecycleDelivery(configuration);
+        _ = builder.Services.AddControllers().AddLifecycleControlPlane(configuration);
+
+        await using var app = builder.Build();
+        app.Services.GetService<RemoteApprovalStore>().Should().BeNull("approval was never enabled");
+        app.Urls.Add("http://127.0.0.1:0");
+        _ = app.MapControllers();
+        await app.StartAsync();
+
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+
+        using var registration = await client.PostAsync(
+            "api/lifecycle/subscriptions",
+            JsonContent.Create(new { callback_uri = $"https://{CallbackHost}/hook" })
+        );
+        registration.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        using var removal = await client.DeleteAsync("api/lifecycle/subscriptions/sub-a");
+        removal.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        await app.StopAsync();
+    }
+
+    [Fact]
+    public async Task An_allow_listed_name_is_still_refused_when_the_address_behind_it_is_private()
+    {
+        // The rebinding case, end to end. `localhost` is allow-listed, so every name-level check
+        // passes and the only thing left to refuse the delivery is the address the name resolves to
+        // at the moment of connection — which is what this asserts, on a real socket, through the
+        // delivery client the host actually wires up.
+        //
+        // The subscriber has to be live. "The delivery never arrived" says nothing if nothing was
+        // listening, so the same subscriber is dialled twice: once under a configuration that refuses
+        // private space and once under one that permits it. The second half is the control — it is
+        // what makes the first half a statement about the address rule rather than about a callback
+        // URL that was never going to work.
+        var hits = 0;
+        var builder = CreateHostBuilder();
+        await using var subscriber = builder.Build();
+        _ = subscriber.MapPost(
+            "/hook",
+            () =>
+            {
+                _ = Interlocked.Increment(ref hits);
+                return Results.NoContent();
+            }
+        );
+        subscriber.Urls.Add("http://127.0.0.1:0");
+        await subscriber.StartAsync();
+
+        var callback = new Uri($"http://localhost:{new Uri(subscriber.Urls.First()).Port}/hook");
+
+        await using (var closed = BuildServices(DeliveryToLoopback(allowPrivate: false)))
+        {
+            var refused = await SendOneAsync(closed, callback);
+
+            // Retryable, not permanent: from the sender's side this is a connection that did not
+            // open, and a name that resolves into private space today may legitimately resolve
+            // elsewhere tomorrow. The reason token stays opaque — an operator learns the destination
+            // was unreachable, not what it resolved to.
+            refused.Outcome.Should().Be(LifecycleDeliveryOutcome.Retryable);
+            refused.Reason.Should().Be("transport");
+            refused.StatusCode.Should().BeNull("nothing answered, so there is no status to report");
+            Volatile.Read(ref hits).Should().Be(0, "the connection was refused before any bytes left");
+        }
+
+        await using (var open = BuildServices(DeliveryToLoopback(allowPrivate: true)))
+        {
+            var delivered = await SendOneAsync(open, callback);
+
+            delivered
+                .Outcome.Should()
+                .Be(
+                    LifecycleDeliveryOutcome.Succeeded,
+                    "the same URL, the same subscriber, and the same client — only the address rule "
+                        + "differs, so this is what the refusal above was caused by"
+                );
+            Volatile.Read(ref hits).Should().Be(1);
+        }
+
+        await subscriber.StopAsync();
+    }
+
+    [Fact]
+    public async Task A_subscriber_cannot_redirect_a_signed_delivery_to_a_host_that_was_never_admitted()
+    {
+        // The other half of the same rule, and the half validating addresses cannot cover: a redirect
+        // target is named by the far side *after* every check has passed. Chasing it would re-POST the
+        // signed body — conversation content, or a tool's arguments — to a host the allow-list never
+        // admitted and the connect callback never saw.
+        //
+        // Private space is deliberately open here and the redirect points at the same live server, so
+        // nothing but the handler's own refusal can keep the second endpoint untouched. A test that
+        // pointed somewhere unreachable would pass against a client that follows redirects.
+        var hooked = 0;
+        var followed = 0;
+        string? elsewhere = null;
+
+        var builder = CreateHostBuilder();
+        await using var subscriber = builder.Build();
+        _ = subscriber.MapPost(
+            "/hook",
+            () =>
+            {
+                _ = Interlocked.Increment(ref hooked);
+
+                // 307 rather than 302: it is the one that tells a client to repeat the POST verbatim,
+                // body and all, which is precisely the behaviour under test.
+                return Results.Redirect(elsewhere!, permanent: false, preserveMethod: true);
+            }
+        );
+        _ = subscriber.MapPost(
+            "/elsewhere",
+            () =>
+            {
+                _ = Interlocked.Increment(ref followed);
+                return Results.NoContent();
+            }
+        );
+        subscriber.Urls.Add("http://127.0.0.1:0");
+        await subscriber.StartAsync();
+
+        // The port is not known until the server is listening, so the redirect target is filled in
+        // here rather than at MapPost.
+        var origin = subscriber.Urls.First();
+        elsewhere = $"{origin}/elsewhere";
+
+        await using var services = BuildServices(DeliveryToLoopback(allowPrivate: true));
+        var result = await SendOneAsync(
+            services,
+            new Uri($"http://localhost:{new Uri(origin).Port}/hook")
+        );
+
+        Volatile.Read(ref hooked).Should().Be(1, "the delivery reached the endpoint it was sent to");
+        Volatile.Read(ref followed).Should().Be(0, "and went no further");
+
+        // Reported as the subscriber rejecting the request, which is what an unchased redirect is, and
+        // as permanent because repeating it would only earn the same redirect again.
+        result.Outcome.Should().Be(LifecycleDeliveryOutcome.Permanent);
+        result.StatusCode.Should().Be(StatusCodes.Status307TemporaryRedirect);
+
+        await subscriber.StopAsync();
+    }
+
+    /// <summary>
+    /// Delivery configured to dial a subscriber on this machine: the loopback name is allow-listed, so
+    /// only <see cref="LifecycleDeliveryOptions.AllowPrivateCallbackAddresses"/> decides the outcome.
+    /// </summary>
+    private static IConfiguration DeliveryToLoopback(bool allowPrivate) =>
+        Configuration(
+            delivery: true,
+            extra: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Lifecycle:Delivery:AllowedCallbackHosts:0"] = "localhost",
+                // Otherwise registration refuses the plaintext callback for an unrelated reason and
+                // the connect rule is never reached.
+                ["Lifecycle:Delivery:RequireHttpsCallbacks"] = "false",
+                ["Lifecycle:Delivery:AllowPrivateCallbackAddresses"] = allowPrivate
+                    ? "true"
+                    : "false",
+            }
+        );
+
+    /// <summary>
+    /// Registers a subscriber through the real registry and makes one delivery attempt to it through
+    /// the container's own sender — the sender, not the pipeline, so the only egress check in play is
+    /// the one performed at connect time.
+    /// </summary>
+    private static async Task<LifecycleDeliveryResult> SendOneAsync(
+        IServiceProvider services,
+        Uri callback
+    )
+    {
+        var grant = services
+            .GetRequiredService<ILifecycleSubscriptionRegistry>()
+            .Register(
+                LifecycleOwnerKey.ForAppId("app-a"),
+                "app-a",
+                new LifecycleSubscriptionRequest { CallbackUri = callback }
+            );
+
+        return await services
+            .GetRequiredService<ILifecycleDeliverySender>()
+            .SendAsync(grant.Subscription, "delivery-1", "{}"u8.ToArray(), CancellationToken.None);
     }
 
     private static IConfiguration Configuration(
@@ -506,6 +827,23 @@ public sealed class LifecycleHostingExtensionsTests
         return services.BuildServiceProvider();
     }
 
+    /// <summary>
+    /// Wires what the enabled flags promise, which <c>AddLifecycleControlPlane</c> now insists on
+    /// having seen. A route-shape test cares about which controllers are published rather than about
+    /// the services behind them — but "published with nothing behind it" is the exact failure that
+    /// method exists to prevent, so it refuses to be the one that creates it.
+    /// </summary>
+    private static IServiceCollection WithLifecycleServices(
+        WebApplicationBuilder builder,
+        IConfiguration configuration
+    )
+    {
+        _ = builder.Services.AddSingleton<ILifecycleOwnerResolver>(new NoOwnerResolver());
+        _ = builder.Services.AddLifecycleDelivery(configuration);
+        _ = builder.Services.AddRemoteToolApproval(configuration);
+        return builder.Services;
+    }
+
     private static WebApplicationBuilder CreateHostBuilder() =>
         WebApplication.CreateBuilder(
             new WebApplicationOptions
@@ -558,6 +896,20 @@ public sealed class LifecycleHostingExtensionsTests
 
     /// <summary>A host's own discovery narrowing, which this assembly must not silently widen.</summary>
     private sealed class HostControllerFeatureProvider : ControllerFeatureProvider;
+
+    /// <summary>
+    /// The same thing said the other way. MVC consults feature providers by interface, so deriving
+    /// from <see cref="ControllerFeatureProvider"/> is a convenience rather than a requirement, and a
+    /// host that implemented the interface directly is every bit as authoritative.
+    /// </summary>
+    private sealed class HostInterfaceFeatureProvider
+        : IApplicationFeatureProvider<ControllerFeature>
+    {
+        public void PopulateFeature(IEnumerable<ApplicationPart> parts, ControllerFeature feature)
+        {
+            // Never runs: composition is refused before discovery, which is the point of the test.
+        }
+    }
 
     /// <summary>
     /// Collects the actions <c>AddHttpClient</c> recorded, so the primary handler can be inspected

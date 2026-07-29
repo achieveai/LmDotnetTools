@@ -28,6 +28,18 @@ public sealed record ToolApprovalRequest
     [JsonRequired]
     public string RequestId { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The subscription this copy of the request was addressed to.
+    /// </summary>
+    /// <remarks>
+    /// A request is fanned out to every approver frozen when the gate opened, and each copy names the
+    /// approver it went to. The decision echoes it back, which is what lets the host tell <i>which</i>
+    /// of the frozen approvers answered — and refuse an answer from one that was not asked. Absent
+    /// only on the host's own internal copy, which is never sent anywhere.
+    /// </remarks>
+    [JsonPropertyName("subscription_id")]
+    public string? SubscriptionId { get; set; }
+
     /// <summary>The thread the call belongs to.</summary>
     [JsonPropertyName("thread_id")]
     public string ThreadId { get; set; } = string.Empty;

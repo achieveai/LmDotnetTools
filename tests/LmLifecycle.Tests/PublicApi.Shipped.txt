@@ -5,6 +5,7 @@ Approval.ToolApprovalDecision.Decision : string { get; set; }
 Approval.ToolApprovalDecision.Matches(Approval.ToolApprovalRequest) : bool
 Approval.ToolApprovalDecision.Reason : string { get; set; }
 Approval.ToolApprovalDecision.RequestId : string { get; set; }
+Approval.ToolApprovalDecision.SubscriptionId : string { get; set; }
 Approval.ToolApprovalRequest..ctor()
 Approval.ToolApprovalRequest.Arguments : string { get; set; }
 Approval.ToolApprovalRequest.ArgumentsHash : string { get; set; }
@@ -12,6 +13,7 @@ Approval.ToolApprovalRequest.ExpiresAt : System.DateTimeOffset { get; set; }
 Approval.ToolApprovalRequest.GenerationId : string { get; set; }
 Approval.ToolApprovalRequest.RequestId : string { get; set; }
 Approval.ToolApprovalRequest.RunId : string { get; set; }
+Approval.ToolApprovalRequest.SubscriptionId : string { get; set; }
 Approval.ToolApprovalRequest.ThreadId : string { get; set; }
 Approval.ToolApprovalRequest.ToolCallId : string { get; set; }
 Approval.ToolApprovalRequest.ToolName : string { get; set; }
@@ -27,6 +29,8 @@ LifecycleAgentKinds.Codex : string = "codex"
 LifecycleAgentKinds.Copilot : string = "copilot"
 LifecycleAgentKinds.Raw : string = "raw"
 LifecycleCapabilities.ContentFull : string = "lifecycle.content.full"
+LifecycleCapabilities.IsKnown(string) : bool
+LifecycleCapabilities.Known : System.Collections.Generic.IReadOnlySet<string> { get; }
 LifecycleCapabilities.ToolApprovalDecide : string = "tool.approval.decide"
 LifecycleContextPhases.Boot : string = "boot"
 LifecycleContextPhases.MidSession : string = "mid_session"

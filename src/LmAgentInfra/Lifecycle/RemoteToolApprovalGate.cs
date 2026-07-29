@@ -47,6 +47,12 @@ public interface IToolApprovalRequestPublisher
 /// an approver is only ever asked about calls inside its own tenancy, and a thread whose owner the
 /// host cannot name is refused rather than offered to whoever happens to be subscribed.
 /// </para>
+/// <para>
+/// The approvers are frozen when the gate opens, and <b>all of them must allow</b>. Every one is
+/// asked concurrently under the single deadline the caller already supplied, and a request that
+/// cannot be delivered to one of them blocks immediately: an approver that never received the
+/// question cannot answer it, so waiting would only convert a known failure into a timeout.
+/// </para>
 /// </remarks>
 public sealed class RemoteToolApprovalGate : IToolApprovalGate
 {
@@ -152,7 +158,10 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
                 );
             }
 
-            ticket = _store.TryRegister(owner, context);
+            // The approver set is frozen here, before anything is sent. A subscription that registers
+            // while this call is waiting cannot answer it, and one that was capable but not chosen
+            // cannot stand in for one that was.
+            ticket = _store.TryRegister(owner, context, approvers.Select(a => a.SubscriptionId));
             if (ticket is null)
             {
                 return ToolApprovalVerdict.Blocked(
@@ -166,7 +175,7 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
             {
                 return ToolApprovalVerdict.Blocked(
                     CoreOutcomes.HookError,
-                    "the approval request could not be delivered to any approver"
+                    "the approval request could not be delivered to every approver"
                 );
             }
 
@@ -215,13 +224,18 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
         ];
 
     /// <summary>
-    /// Offers the request to every capable approver.
+    /// Offers the request to every frozen approver, concurrently.
     /// </summary>
     /// <returns>
-    /// <c>true</c> when at least one approver was reached. A publisher that throws for every
-    /// subscriber means nobody can answer, so the call is blocked immediately rather than made to
-    /// wait out an expiry nothing will ever satisfy.
+    /// <c>true</c> only when every approver was reached. Unanimity is what makes partial delivery
+    /// useless: an approver that never received the question cannot allow it, so the wait could only
+    /// ever end in a timeout. Failing here reports the real cause while it is still knowable.
     /// </returns>
+    /// <remarks>
+    /// Concurrent because the approvers share one deadline — the caller's, which already folds in the
+    /// run, the turn, and the configured maximum wait. Asking in sequence would spend a slow
+    /// subscriber's delivery budget out of the same window everyone else has to answer in.
+    /// </remarks>
     private async ValueTask<bool> TryPublishAsync(
         ToolApprovalRequest request,
         IReadOnlyList<LifecycleSubscription> approvers,
@@ -236,21 +250,24 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
             return true;
         }
 
-        var delivered = false;
-        foreach (var approver in approvers)
+        var attempts = approvers.Select(async approver =>
         {
             try
             {
                 await _publisher
-                    .PublishAsync(approver, ForSubscriber(request, approver, context), cancellationToken)
+                    .PublishAsync(
+                        approver,
+                        ForSubscriber(request, approver, context),
+                        cancellationToken
+                    )
                     .ConfigureAwait(false);
-                delivered = true;
+                return true;
             }
             catch (OperationCanceledException)
             {
                 throw;
             }
-#pragma warning disable CA1031 // One unreachable approver must not stop the others being asked.
+#pragma warning disable CA1031 // One approver's failure is reported, not thrown: every other delivery still has to be awaited.
             catch (Exception ex)
 #pragma warning restore CA1031
             {
@@ -260,18 +277,22 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
                     request.RequestId,
                     approver.SubscriptionId
                 );
+                return false;
             }
-        }
+        });
 
-        return delivered;
+        var delivered = await Task.WhenAll(attempts).ConfigureAwait(false);
+        return Array.TrueForAll(delivered, reached => reached);
     }
 
     /// <summary>
     /// Tailors the request to one subscriber: the argument text is included only for an approver
     /// granted <see cref="LifecycleCapabilities.ContentFull"/>, leaving everyone else the hash as the
-    /// sole description of what will run. A fresh instance per subscriber because
-    /// <see cref="ToolApprovalRequest"/> is mutable — sharing one would let a publisher's edit for a
-    /// privileged approver become what an unprivileged one receives.
+    /// sole description of what will run. Each copy also names the approver it is addressed to, which
+    /// is what the decision echoes back so the host can tell which of the frozen approvers answered.
+    /// A fresh instance per subscriber because <see cref="ToolApprovalRequest"/> is mutable — sharing
+    /// one would let a publisher's edit for a privileged approver become what an unprivileged one
+    /// receives.
     /// </summary>
     private static ToolApprovalRequest ForSubscriber(
         ToolApprovalRequest request,
@@ -280,6 +301,7 @@ public sealed class RemoteToolApprovalGate : IToolApprovalGate
     ) =>
         request with
         {
+            SubscriptionId = subscriber.SubscriptionId,
             Arguments = subscriber.HasCapability(LifecycleCapabilities.ContentFull)
                 ? context.Arguments.Json
                 : null,

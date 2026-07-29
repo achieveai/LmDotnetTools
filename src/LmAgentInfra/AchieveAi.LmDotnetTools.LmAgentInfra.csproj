@@ -42,5 +42,10 @@
     <InternalsVisibleTo Include="LmStreaming.Sample.Tests" />
     <!-- Marketplace/agent internals consumed by the browser E2E project. -->
     <InternalsVisibleTo Include="LmStreaming.Sample.Browser.E2E.Tests" />
+    <!-- LifecycleDestinationPolicy is internal because the egress rules are not a contract callers
+         program against — but they are the SSRF and DNS-rebinding defence, and the address predicate
+         is reachable from outside only through a real socket connect. Testing it through that would
+         cover a handful of ranges and assert the rest by hope. -->
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.LmAgentInfra.Tests" />
   </ItemGroup>
 </Project>

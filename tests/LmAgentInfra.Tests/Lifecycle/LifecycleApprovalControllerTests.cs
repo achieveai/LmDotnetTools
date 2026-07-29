@@ -19,10 +19,11 @@ namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Lifecycle;
 /// explicit application part, so a test that booted a host and expected this route to resolve would
 /// fail for reasons that have nothing to do with the controller.
 /// <para>
-/// Two properties here are the ones a reviewer cannot confirm by reading the code. First, the four
-/// unanswerable cases must be <b>byte-identical</b>, not merely equal in status — a difference in
-/// wording is an oracle that tells a prober which of the four it hit. Second, identity comes from
-/// the authenticated principal and from nowhere else, so a host that wired no authentication refuses
+/// Two properties here are the ones a reviewer cannot confirm by reading the code. First, every
+/// unanswerable case must be <b>byte-identical</b>, not merely equal in status — a difference in
+/// wording is an oracle that tells a prober which one it hit, and "you were not asked" is in that
+/// set precisely because it would otherwise confirm the id is real. Second, identity comes from the
+/// authenticated principal and from nowhere else, so a host that wired no authentication refuses
 /// everything rather than defaulting to something.
 /// </para>
 /// </summary>
@@ -34,6 +35,15 @@ public sealed class LifecycleApprovalControllerTests
     private const string AppB = "app-b";
     private const string Callback = "https://callbacks.example.com/hook";
     private const string Secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// <summary>The approver every request is frozen with unless a test says otherwise.</summary>
+    private const string SubA = "sub-a";
+
+    /// <summary>A second approval-capable subscription under the <em>same</em> owner as <see cref="SubA"/>.</summary>
+    private const string SubA2 = "sub-a-2";
+
+    /// <summary>An approval-capable subscription belonging to a different owner entirely.</summary>
+    private const string SubB = "sub-b";
 
     /// <summary>The property names the response is allowed to have. Anything else is a disclosure.</summary>
     private static readonly string[] AllowedResponseProperties = ["request_id", "outcome", "error"];
@@ -189,7 +199,7 @@ public sealed class LifecycleApprovalControllerTests
     {
         // The capability is re-checked at decision time precisely because it can be withdrawn while
         // an approval is pending, and the moment that matters is the moment the decision lands.
-        var harness = new Harness(subscribers: [Subscriber(AppA, "sub-a", LifecycleCapabilities.ContentFull)]);
+        var harness = new Harness(subscribers: [Subscriber(AppA, SubA, LifecycleCapabilities.ContentFull)]);
         using var ticket = harness.Register(AppA);
 
         var result = await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed));
@@ -198,19 +208,87 @@ public sealed class LifecycleApprovalControllerTests
         ticket.Decision.IsCompleted.Should().BeFalse("a caller who may not decide did not decide");
     }
 
+    [Fact]
+    public async Task A_decision_naming_a_subscription_the_caller_does_not_own_is_refused()
+    {
+        // The subscription id is a selector, not a credential: naming the frozen approver's id does
+        // not make the caller that approver. This is checked before the store is consulted, so it
+        // reports the caller's own problem rather than anything about the request.
+        var harness = new Harness();
+        using var ticket = harness.Register(AppA);
+
+        var result = await harness.As(AppB).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA));
+
+        ShouldRespond(result, StatusCodes.Status403Forbidden);
+        ticket.Decision.IsCompleted.Should().BeFalse();
+    }
+
+    // ---- Every frozen approver has to allow ---------------------------------------------------------
+
+    [Fact]
+    public async Task An_allow_from_one_of_two_approvers_is_accepted_without_deciding_the_call()
+    {
+        var harness = TwoApprovers();
+        using var ticket = harness.Register(AppA, SubA, SubA2);
+
+        var first = await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed));
+
+        var body = ShouldRespond(first, StatusCodes.Status202Accepted);
+        body.RequestId.Should().Be(ticket.Request.RequestId);
+        body.Outcome.Should().BeNull("nothing is decided yet, and echoing the caller's own answer would read as if it were");
+        ticket.Decision.IsCompleted.Should().BeFalse("the call stays blocked until every approver allows");
+
+        var second = await harness
+            .As(AppA)
+            .Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2));
+
+        ShouldRespond(second, StatusCodes.Status200OK).Outcome.Should().Be(WireOutcomes.Allowed);
+        (await ticket.Decision).Decision.Should().Be(WireOutcomes.Allowed);
+    }
+
+    [Fact]
+    public async Task An_approval_capable_subscriber_that_was_not_asked_cannot_answer_in_the_approvers_place()
+    {
+        // The substitution this endpoint has to refuse: a second approval-capable subscription under
+        // the same owner, registered by the same authenticated app, which the gate did not freeze in.
+        // Everything about the caller checks out; what disqualifies it is that it was not asked.
+        var harness = TwoApprovers();
+        using var ticket = harness.Register(AppA, SubA);
+
+        var substitute = await harness
+            .As(AppA)
+            .Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2));
+
+        ShouldRespond(substitute, StatusCodes.Status404NotFound);
+        ticket.Decision.IsCompleted.Should().BeFalse("nobody entitled to answer has answered");
+
+        // And it learns nothing by the attempt: the refusal is the same answer an invented id gets.
+        var invented = await harness
+            .As(AppA)
+            .Decide(Decision(ticket, WireOutcomes.Allowed, requestId: NeverRegistered(ticket)));
+        BodyHex(substitute)
+            .Should()
+            .Be(BodyHex(invented), "being told 'you were not asked' would confirm the id is real");
+
+        ShouldRespond(await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed)), StatusCodes.Status200OK)
+            .Outcome.Should()
+            .Be(WireOutcomes.Allowed, "the approver that was asked is unaffected by the attempt");
+    }
+
     // ---- One answer for everything unanswerable ---------------------------------------------------
 
     [Fact]
-    public async Task Unknown_expired_foreign_and_stale_epoch_requests_are_byte_identical()
+    public async Task Unknown_expired_foreign_not_asked_and_stale_epoch_requests_are_byte_identical()
     {
-        var harness = new Harness();
-        using var ticket = harness.Register(AppA);
+        var harness = TwoApprovers();
+        using var ticket = harness.Register(AppA, SubA);
         var valid = Decision(ticket, WireOutcomes.Allowed);
 
         var answers = new List<(string Case, IActionResult Result)>
         {
             ("an id that was never registered", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, requestId: NeverRegistered(ticket)))),
-            ("another owner's request", await harness.As(AppB).Decide(valid)),
+            ("another owner's request", await harness.As(AppB).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubB))),
+            ("a request this approver was not asked about", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, subscriptionId: SubA2))),
             ("an id minted by a previous process", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Allowed, requestId: WithForeignEpoch(ticket.Request.RequestId)))),
         };
 
@@ -290,10 +368,11 @@ public sealed class LifecycleApprovalControllerTests
     /// </summary>
     private static async Task<IReadOnlyList<(string Case, IActionResult Result)>> EveryResponsePathAsync()
     {
-        var harness = new Harness();
+        var harness = TwoApprovers();
         using var ticket = harness.Register(AppA);
         using var second = harness.Register(AppA);
         using var expiring = harness.Register(AppA);
+        using var unanimous = harness.Register(AppA, SubA, SubA2);
         var accepted = Decision(ticket, WireOutcomes.Allowed);
 
         var paths = new List<(string Case, IActionResult Result)>
@@ -301,9 +380,12 @@ public sealed class LifecycleApprovalControllerTests
             ("accepted", await harness.As(AppA).Decide(accepted)),
             ("identical retry", await harness.As(AppA).Decide(accepted)),
             ("contradicted", await harness.As(AppA).Decide(Decision(ticket, WireOutcomes.Denied))),
+            ("recorded", await harness.As(AppA).Decide(Decision(unanimous, WireOutcomes.Allowed))),
             ("mismatched hash", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, hash: new string('a', 64)))),
             ("unknown id", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, requestId: NeverRegistered(second)))),
-            ("foreign owner", await harness.As(AppB).Decide(Decision(second, WireOutcomes.Allowed))),
+            ("foreign owner", await harness.As(AppB).Decide(Decision(second, WireOutcomes.Allowed, subscriptionId: SubB))),
+            ("not among the frozen approvers", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, subscriptionId: SubA2))),
+            ("subscription the caller does not own", await harness.As(AppB).Decide(Decision(second, WireOutcomes.Allowed))),
             ("stale epoch", await harness.As(AppA).Decide(Decision(second, WireOutcomes.Allowed, requestId: WithForeignEpoch(second.Request.RequestId)))),
             ("unresolvable caller", await harness.As("app-nobody").Decide(Decision(second, WireOutcomes.Allowed))),
             ("unauthenticated", await harness.AsAnonymous().Decide(Decision(second, WireOutcomes.Allowed))),
@@ -314,7 +396,7 @@ public sealed class LifecycleApprovalControllerTests
         harness.Clock.Advance(TimeSpan.FromMinutes(6));
         paths.Add(("expired", await harness.As(AppA).Decide(Decision(expiring, WireOutcomes.Allowed))));
 
-        var revoked = new Harness(subscribers: [Subscriber(AppA, "sub-a", LifecycleCapabilities.ContentFull)]);
+        var revoked = new Harness(subscribers: [Subscriber(AppA, SubA, LifecycleCapabilities.ContentFull)]);
         using var undecidable = revoked.Register(AppA);
         paths.Add(("revoked capability", await revoked.As(AppA).Decide(Decision(undecidable, WireOutcomes.Allowed))));
 
@@ -355,11 +437,13 @@ public sealed class LifecycleApprovalControllerTests
         RemoteApprovalTicket ticket,
         string outcome,
         string? hash = null,
-        string? requestId = null
+        string? requestId = null,
+        string? subscriptionId = null
     ) =>
         new()
         {
             RequestId = requestId ?? ticket.Request.RequestId,
+            SubscriptionId = subscriptionId ?? SubA,
             Decision = outcome,
             ArgumentsHash = hash ?? ticket.Request.ArgumentsHash,
         };
@@ -374,6 +458,21 @@ public sealed class LifecycleApprovalControllerTests
             capabilities,
             [],
             Now
+        );
+
+    /// <summary>
+    /// A harness whose owner <see cref="AppA"/> has <em>two</em> approval-capable subscriptions, which
+    /// is what makes both unanimity and substitution expressible: the second one is a caller that
+    /// passes every check except having been asked.
+    /// </summary>
+    private static Harness TwoApprovers() =>
+        new(
+            subscribers:
+            [
+                Subscriber(AppA, SubA, LifecycleCapabilities.ToolApprovalDecide),
+                Subscriber(AppA, SubA2, LifecycleCapabilities.ToolApprovalDecide),
+                Subscriber(AppB, SubB, LifecycleCapabilities.ToolApprovalDecide),
+            ]
         );
 
     /// <summary>
@@ -416,8 +515,8 @@ public sealed class LifecycleApprovalControllerTests
                 subscribers
                     ??
                     [
-                        Subscriber(AppA, "sub-a", LifecycleCapabilities.ToolApprovalDecide),
-                        Subscriber(AppB, "sub-b", LifecycleCapabilities.ToolApprovalDecide),
+                        Subscriber(AppA, SubA, LifecycleCapabilities.ToolApprovalDecide),
+                        Subscriber(AppB, SubB, LifecycleCapabilities.ToolApprovalDecide),
                     ]
             );
         }
@@ -428,8 +527,11 @@ public sealed class LifecycleApprovalControllerTests
 
         public RemoteApprovalStore Store { get; }
 
-        /// <summary>A pending approval owned by <paramref name="appId"/>, as the gate would register it.</summary>
-        public RemoteApprovalTicket Register(string appId) =>
+        /// <summary>
+        /// A pending approval owned by <paramref name="appId"/>, as the gate would register it — with
+        /// <paramref name="approvers"/> frozen in, defaulting to the single approver most tests use.
+        /// </summary>
+        public RemoteApprovalTicket Register(string appId, params string[] approvers) =>
             Store.TryRegister(
                 LifecycleOwnerKey.ForAppId(appId),
                 new ToolApprovalContext
@@ -439,7 +541,8 @@ public sealed class LifecycleApprovalControllerTests
                     ThreadId = "thread-1",
                     Arguments = CanonicalToolArguments.Freeze(ArgumentsJson),
                     ExpiresAt = Now.AddMinutes(5),
-                }
+                },
+                approvers.Length == 0 ? [SubA] : approvers
             )!;
 
         /// <summary>A controller reached by a caller the host authenticated as <paramref name="appId"/>.</summary>

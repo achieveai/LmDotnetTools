@@ -126,6 +126,94 @@ public sealed class RemoteToolApprovalGateTests
             .Be(full.ArgumentsHash, "both approvers are deciding about the same bytes");
     }
 
+    // ---- Everyone who was asked has to agree ----------------------------------------------------
+
+    [Fact]
+    public async Task Every_approver_is_asked_and_all_of_them_have_to_allow()
+    {
+        var harness = new Harness(subscribers: [Approver("sub-a"), Approver("sub-b")]);
+        harness.Publisher.OnPublish = r => harness.Answer(r, WireOutcomes.Allowed);
+
+        var verdict = await harness.Gate.RequestApprovalAsync(Call(), CancellationToken.None);
+
+        verdict.IsAllowed.Should().BeTrue();
+        harness
+            .Publisher.Published.Select(p => p.Subscriber.SubscriptionId)
+            .Should()
+            .BeEquivalentTo(["sub-a", "sub-b"], "every frozen approver is asked, not just the first");
+    }
+
+    [Fact]
+    public async Task One_approver_refusing_blocks_the_call_however_the_others_answered()
+    {
+        var harness = new Harness(subscribers: [Approver("sub-a"), Approver("sub-b")]);
+        harness.Publisher.OnPublish = r =>
+            r.SubscriptionId == "sub-b"
+                ? harness.Answer(r, WireOutcomes.Denied, "not in this workspace")
+                : harness.Answer(r, WireOutcomes.Allowed);
+
+        var verdict = await harness.Gate.RequestApprovalAsync(Call(), CancellationToken.None);
+
+        ShouldBlockWith(verdict, CoreOutcomes.Denied);
+        verdict.Reason.Should().Be("not in this workspace");
+    }
+
+    [Fact]
+    public async Task One_approvers_allow_does_not_authorize_the_call_on_its_own()
+    {
+        // The regression this guards against is a gate that treats the first allow as the answer.
+        // With two approvers frozen and only one answering, the call must stay blocked — here the run
+        // is abandoned rather than waiting out the expiry, and the verdict says so.
+        var harness = new Harness(subscribers: [Approver("sub-a"), Approver("sub-b")]);
+        using var cts = new CancellationTokenSource();
+        harness.Publisher.OnPublish = async r =>
+        {
+            if (r.SubscriptionId == "sub-a")
+            {
+                await harness.Answer(r, WireOutcomes.Allowed);
+                return;
+            }
+
+            // The second approver simply never answers.
+            await cts.CancelAsync();
+        };
+
+        var verdict = await harness.Gate.RequestApprovalAsync(Call(), cts.Token);
+
+        ShouldBlockWith(verdict, CoreOutcomes.Cancelled);
+    }
+
+    [Fact]
+    public async Task A_request_that_reaches_only_some_of_the_approvers_blocks_immediately()
+    {
+        // An approver that never received the question cannot answer it, and every approver has to,
+        // so the outcome is already fixed. Waiting out the expiry would report this as a timeout and
+        // hide the delivery failure that actually caused it.
+        var harness = new Harness(subscribers: [Approver("sub-a"), Approver("sub-b")]);
+        harness.Publisher.UnreachableSubscriptionId = "sub-b";
+        harness.Publisher.OnPublish = r => harness.Answer(r, WireOutcomes.Allowed);
+
+        var verdict = await harness.Gate.RequestApprovalAsync(Call(), CancellationToken.None);
+
+        ShouldBlockWith(verdict, CoreOutcomes.HookError);
+        harness.Store.PendingCount.Should().Be(0, "the abandoned request must not hold its slot");
+    }
+
+    [Fact]
+    public async Task Each_approver_is_told_which_subscription_it_is_being_asked_as()
+    {
+        // The decision endpoint accepts an answer only from the frozen approver that was asked, so
+        // each request has to name the identity to answer as. An anonymous request would leave an
+        // entirely legitimate approver unable to submit a decision the host would accept.
+        var harness = new Harness(subscribers: [Approver("sub-a"), Approver("sub-b")]);
+        harness.Publisher.OnPublish = r => harness.Answer(r, WireOutcomes.Allowed);
+
+        _ = await harness.Gate.RequestApprovalAsync(Call(), CancellationToken.None);
+
+        harness.Published("sub-a").SubscriptionId.Should().Be("sub-a");
+        harness.Published("sub-b").SubscriptionId.Should().Be("sub-b");
+    }
+
     // ---- Every other path blocks -----------------------------------------------------------------
 
     [Fact]
@@ -136,7 +224,11 @@ public sealed class RemoteToolApprovalGateTests
             o.MaxPendingPerOwner = 1;
             o.MaxPendingTotal = 1;
         });
-        using var wedged = harness.Store.TryRegister(LifecycleOwnerKey.ForAppId(AppA), Call());
+        using var wedged = harness.Store.TryRegister(
+            LifecycleOwnerKey.ForAppId(AppA),
+            Call(),
+            ["sub-approver"]
+        );
 
         var verdict = await harness.Gate.RequestApprovalAsync(Call(), CancellationToken.None);
 
@@ -258,6 +350,10 @@ public sealed class RemoteToolApprovalGateTests
             Now
         );
 
+    /// <summary>A subscriber the gate will freeze into the approver set.</summary>
+    private static LifecycleSubscription Approver(string id) =>
+        Subscriber(id, LifecycleCapabilities.ToolApprovalDecide);
+
     /// <summary>The gate plus the doubles around it, assembled once so each test reads as one scenario.</summary>
     private sealed class Harness
     {
@@ -300,6 +396,9 @@ public sealed class RemoteToolApprovalGateTests
                 new ToolApprovalDecision
                 {
                     RequestId = request.RequestId,
+                    // Answered as the subscription the request was addressed to. A real approver has
+                    // no other id to use, and the store refuses anything else.
+                    SubscriptionId = request.SubscriptionId!,
                     Decision = outcome,
                     ArgumentsHash = request.ArgumentsHash,
                     Reason = reason,
@@ -324,6 +423,9 @@ public sealed class RemoteToolApprovalGateTests
         /// <summary>Makes every delivery fail, standing in for an unreachable callback host.</summary>
         public Exception? Fault { get; set; }
 
+        /// <summary>Makes delivery to one named subscriber fail while the rest still succeed.</summary>
+        public string? UnreachableSubscriptionId { get; set; }
+
         public ValueTask PublishAsync(
             LifecycleSubscription subscriber,
             ToolApprovalRequest request,
@@ -331,7 +433,19 @@ public sealed class RemoteToolApprovalGateTests
         )
         {
             Published.Add((subscriber, request));
-            return Fault is not null ? throw Fault : OnPublish?.Invoke(request) ?? ValueTask.CompletedTask;
+            var fault =
+                Fault
+                ?? (
+                    string.Equals(
+                        subscriber.SubscriptionId,
+                        UnreachableSubscriptionId,
+                        StringComparison.Ordinal
+                    )
+                        ? new InvalidOperationException("callback unreachable")
+                        : null
+                );
+            return fault is not null ? throw fault
+                : OnPublish?.Invoke(request) ?? ValueTask.CompletedTask;
         }
     }
 

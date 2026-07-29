@@ -185,6 +185,58 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
     }
 
     /// <summary>
+    /// Abandons everything this pipeline still holds for a revoked subscription: the backlog already
+    /// queued for it, and any delivery currently working through its retry budget.
+    /// </summary>
+    /// <param name="owner">The owner the subscription belonged to. Checked, not trusted — an id
+    /// alone must never reach across tenants (ADR 0005).</param>
+    /// <param name="subscriptionId">The subscription that was revoked.</param>
+    /// <remarks>
+    /// <para>
+    /// Unregistering a subscription is not enough on its own. The registry decides who is fanned out
+    /// to <i>next</i>; the queue behind it still holds bodies that were serialized and signed while
+    /// the subscription was live, and a worker may be sitting in a backoff about to send one. This is
+    /// how a caller says "and stop the ones already in motion", which is what revoking is understood
+    /// to mean.
+    /// </para>
+    /// <para>
+    /// Silent when the subscription is unknown, already abandoned, or belongs to someone else: this
+    /// is the tail end of a revocation whose authorization has already been decided, and reporting
+    /// "no such subscription" back through it would turn the control plane into an oracle for which
+    /// ids are real.
+    /// </para>
+    /// <para>
+    /// The per-subscriber state is deliberately <b>kept</b> rather than removed. A fan-out that read
+    /// the registry a moment before the revocation can still arrive here afterwards, and an absent
+    /// entry would simply be recreated as a fresh, live queue. Leaving the abandoned one in place
+    /// makes that arrival a no-op. Server-minted ids are never reused, so nothing legitimate is
+    /// blocked, and the entry is released by the capacity sweep once the registry no longer knows it.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="owner"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentException"><paramref name="subscriptionId"/> is null, empty, or
+    /// whitespace.</exception>
+    public void Abandon(LifecycleOwnerKey owner, string subscriptionId)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(subscriptionId);
+
+        if (
+            !_subscribers.TryGetValue(subscriptionId, out var queue)
+            || !string.Equals(
+                queue.Subscription.Owner.Value,
+                owner.Value,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            return;
+        }
+
+        queue.Abandon();
+    }
+
+    /// <summary>
     /// Starts the background pump.
     /// <para>
     /// Implemented as <see cref="IHostedService"/> rather than as start-plus-<c>IAsyncDisposable</c>
@@ -370,7 +422,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
     private void FanOut(LifecycleSubscription subscription, LifecycleEventEnvelope lifecycleEvent)
     {
         var queue = GetOrCreateQueue(subscription);
-        if (queue.IsQuarantined)
+        if (queue.IsAbandoned)
         {
             return;
         }
@@ -453,7 +505,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
         // the id is new, the queue is new, but the endpoint that was failing is the same one.
         if (IsDestinationQuarantined(subscription))
         {
-            queue.Quarantine();
+            queue.Abandon();
         }
 
         queue.Worker = Task.Run(
@@ -511,7 +563,12 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
                 continue;
             }
 
-            removed.Complete();
+            // Abandoned, not completed: the subscription is gone, so flushing its backlog through
+            // the sender would POST to an endpoint whose owner has already said it wants nothing
+            // more. Sweeping at capacity must reach the same answer Abandon gives a caller, or a
+            // revocation would mean two different things depending on how full the host happened to
+            // be.
+            removed.Abandon();
         }
     }
 
@@ -522,9 +579,9 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
             await foreach (var pending in queue.Reader.ReadAllAsync(shutdownToken))
             {
                 queue.OnDequeued(pending.Body.Length);
-                if (queue.IsQuarantined)
+                if (queue.IsAbandoned)
                 {
-                    // Quarantine completes the writer, so this drains what was already queued and
+                    // Abandoning completes the writer, so this drains what was already queued and
                     // then ends the loop.
                     continue;
                 }
@@ -556,6 +613,16 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
         for (var attempt = 1; attempt <= _options.MaxAttempts; attempt++)
         {
+            // Re-checked before every attempt, because a revocation or a quarantine can land while
+            // this delivery is mid-retry — sitting in a backoff, most likely — and the whole point of
+            // both is that nothing further goes out. The attempt already in flight is not aborted:
+            // it is one request that has already left, and cancelling it would buy nothing the next
+            // attempt's refusal does not already buy.
+            if (queue.IsAbandoned)
+            {
+                return;
+            }
+
             // Re-checked before every attempt, not once per delivery. An operator narrowing the
             // allow-list to contain an incident expects the bleeding to stop now, and a delivery that
             // is already three attempts into a five-minute deadline is exactly the traffic they mean.
@@ -726,7 +793,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
     private void Quarantine(SubscriberQueue queue, string reason)
     {
-        queue.Quarantine();
+        queue.Abandon();
         _ = Interlocked.Increment(ref _quarantines);
 
         // The destination is held as well as the queue, so re-registering the same endpoint does not
@@ -858,7 +925,7 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
         private long _queuedBytes;
         private long _deliverySequence;
         private int _consecutiveFailures;
-        private volatile bool _quarantined;
+        private volatile bool _abandoned;
 
         internal SubscriberQueue(
             LifecycleSubscription subscription,
@@ -883,7 +950,13 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
         internal ChannelReader<PendingDelivery> Reader => _queue.Reader;
 
-        internal bool IsQuarantined => _quarantined;
+        /// <summary>
+        /// Whether this queue has stopped delivering for good — quarantined for failing, or
+        /// abandoned because its subscription was revoked. One flag for both because from the
+        /// queue's side they are the same state: nothing more goes out, and no re-registration can
+        /// revive this instance.
+        /// </summary>
+        internal bool IsAbandoned => _abandoned;
 
         internal Task Worker { get; set; } = Task.CompletedTask;
 
@@ -919,12 +992,18 @@ public sealed class LifecycleDeliveryPipeline : ILifecyclePublisher, IHostedServ
 
         internal void Complete() => _ = _queue.Writer.TryComplete();
 
-        internal void Quarantine()
+        /// <summary>
+        /// Stops this queue delivering, now and for the rest of its life.
+        /// </summary>
+        /// <remarks>
+        /// Distinct from <see cref="Complete"/>, which drains the backlog <i>through</i> the sender:
+        /// that is what an orderly shutdown wants and exactly what a quarantine or a revocation must
+        /// not do. Completing the writer as well lets the worker walk the backlog — skipping each
+        /// item — and then exit, rather than parking forever on a queue nothing will ever read.
+        /// </remarks>
+        internal void Abandon()
         {
-            _quarantined = true;
-
-            // Completing the writer lets the worker drain what is already queued — skipping each
-            // item — and then exit, rather than parking forever on a queue nothing will ever read.
+            _abandoned = true;
             _ = _queue.Writer.TryComplete();
         }
     }

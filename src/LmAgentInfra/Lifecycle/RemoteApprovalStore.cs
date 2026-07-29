@@ -3,6 +3,10 @@ using System.Security.Cryptography;
 using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmLifecycle.Approval;
 
+// Both namespaces define ToolApprovalOutcomes. The wire vocabulary is the one a submitted decision
+// speaks, so it is named explicitly rather than left to which using won the lookup.
+using WireOutcomes = AchieveAi.LmDotnetTools.LmLifecycle.ToolApprovalOutcomes;
+
 namespace AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
 
 /// <summary>
@@ -24,6 +28,13 @@ public enum RemoteApprovalSettleStatus
 
     /// <summary>This call performed the pending → decided transition; its decision is the outcome.</summary>
     Accepted,
+
+    /// <summary>
+    /// An allow was recorded, and the request stays pending because a frozen approver has not answered
+    /// yet. Not a settlement and not a failure: the tool has not been authorized, and will not be until
+    /// the last approver agrees. Repeating the same allow reports this again rather than double-counting.
+    /// </summary>
+    Recorded,
 
     /// <summary>
     /// The request was already decided the same way. A retry of the winning decision — a duplicated
@@ -58,13 +69,33 @@ public readonly record struct RemoteApprovalSettlement(
     string? Outcome
 );
 
+/// <summary>What one approver's allow did to a request's outstanding ballot.</summary>
+internal enum RemoteApprovalBallot
+{
+    /// <summary>Counted, and at least one frozen approver still has not allowed.</summary>
+    Recorded,
+
+    /// <summary>This approver had already allowed; the ballot is unchanged.</summary>
+    Duplicate,
+
+    /// <summary>This allow was the last one outstanding, so the request may now be settled.</summary>
+    Unanimous,
+}
+
 /// <summary>
-/// One in-flight approval: the request an approver was asked, and the task the gate is waiting on.
+/// One in-flight approval: the request its approvers were asked, and the task the gate is waiting on.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Two pieces of state, deliberately separate. The ballot (<see cref="RecordAllow"/>) accumulates
+/// allows and settles nothing; the claim settles the request exactly once. Keeping them apart is what
+/// lets an allow be recorded without authorizing anything, which is the whole of the unanimity rule.
+/// </para>
+/// <para>
 /// Disposing the ticket withdraws the request. Withdrawal races the decision endpoint, and the race
 /// is resolved by the same atomic claim that resolves two competing decisions, so a decision that
 /// landed first is never erased by the waiter giving up.
+/// </para>
 /// </remarks>
 public sealed class RemoteApprovalTicket : IDisposable
 {
@@ -74,6 +105,15 @@ public sealed class RemoteApprovalTicket : IDisposable
     private readonly RemoteApprovalStore _store;
     private readonly TaskCompletionSource<ToolApprovalDecision> _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Guards <see cref="_allowed"/>. Separate from the store's own lock because a ballot belongs to
+    /// one request: two approvers answering different calls have no reason to contend.
+    /// </summary>
+    private readonly object _ballot = new();
+
+    /// <summary>Which of <see cref="Approvers"/> have allowed so far. Guarded by <see cref="_ballot"/>.</summary>
+    private readonly HashSet<string> _allowed = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The single piece of mutable state that decides everything: <c>null</c> while pending, a
@@ -86,12 +126,14 @@ public sealed class RemoteApprovalTicket : IDisposable
     internal RemoteApprovalTicket(
         RemoteApprovalStore store,
         LifecycleOwnerKey owner,
-        ToolApprovalRequest request
+        ToolApprovalRequest request,
+        IReadOnlySet<string> approvers
     )
     {
         _store = store;
         Owner = owner;
         Request = request;
+        Approvers = approvers;
     }
 
     /// <summary>The request handed to approvers. Its <c>arguments_hash</c> pins what may run.</summary>
@@ -105,6 +147,18 @@ public sealed class RemoteApprovalTicket : IDisposable
 
     /// <summary>The owner this request is scoped to; only that owner's decisions can settle it.</summary>
     internal LifecycleOwnerKey Owner { get; }
+
+    /// <summary>
+    /// The subscriptions frozen as this request's approvers at the moment the gate opened.
+    /// </summary>
+    /// <remarks>
+    /// Membership is fixed for the life of the request, and that is the point. A subscription
+    /// registered after the gate opened cannot answer, and an approval-capable subscriber that was
+    /// simply not chosen cannot stand in for one that was — so "who may decide this call" is settled
+    /// once, by the host, rather than re-derived from whatever the subscription registry happens to
+    /// contain when a decision lands.
+    /// </remarks>
+    internal IReadOnlySet<string> Approvers { get; }
 
     /// <summary>When the request was decided, used to age its tombstone out. Written under the claim.</summary>
     internal DateTimeOffset SettledAtUtc { get; private set; }
@@ -138,6 +192,31 @@ public sealed class RemoteApprovalTicket : IDisposable
 
     /// <summary>Claims the request as abandoned, so no later decision can settle it.</summary>
     internal bool TryAbandon() => TryClaim(AbandonedMarker);
+
+    /// <summary>
+    /// Counts one frozen approver's allow towards unanimity.
+    /// </summary>
+    /// <param name="subscriptionId">The approver allowing. Already known to be in <see cref="Approvers"/>.</param>
+    /// <returns>Whether the ballot is now complete, unchanged, or still short an approver.</returns>
+    /// <remarks>
+    /// The count is taken under the lock rather than compared afterwards, so of two approvers
+    /// answering simultaneously exactly one can see the set complete — which is what stops both from
+    /// racing to settle and one of them reading its own allow back as a contradiction.
+    /// </remarks>
+    internal RemoteApprovalBallot RecordAllow(string subscriptionId)
+    {
+        lock (_ballot)
+        {
+            if (!_allowed.Add(subscriptionId))
+            {
+                return RemoteApprovalBallot.Duplicate;
+            }
+
+            return _allowed.Count >= Approvers.Count
+                ? RemoteApprovalBallot.Unanimous
+                : RemoteApprovalBallot.Recorded;
+        }
+    }
 
     /// <summary>Hands the decision to the waiting gate.</summary>
     internal void PublishDecision(ToolApprovalDecision decision) =>
@@ -248,15 +327,38 @@ public sealed class RemoteApprovalStore
     /// <param name="owner">The server-resolved owner entitled to decide this request.</param>
     /// <param name="context">The tool call being gated; its frozen arguments hash and effective
     /// expiry are copied onto the request.</param>
+    /// <param name="approverSubscriptionIds">
+    /// The subscriptions selected as this request's approvers. Frozen here: every one of them must
+    /// allow before the call runs, and nothing outside this set can answer at all.
+    /// </param>
     /// <returns>
     /// The ticket to await and dispose, or <c>null</c> when the request was refused. A refusal is
     /// never a soft failure: per ADR 0003 a call that cannot be approved does not run.
     /// </returns>
     /// <exception cref="ArgumentNullException">A required argument is null.</exception>
-    public RemoteApprovalTicket? TryRegister(LifecycleOwnerKey owner, ToolApprovalContext context)
+    /// <exception cref="ArgumentException">
+    /// <paramref name="approverSubscriptionIds"/> is empty. A request with no approvers could never be
+    /// unanimously allowed, so registering one would create a pending entry whose only possible
+    /// outcome is a timeout — a wiring mistake worth failing loudly rather than a state worth holding.
+    /// </exception>
+    public RemoteApprovalTicket? TryRegister(
+        LifecycleOwnerKey owner,
+        ToolApprovalContext context,
+        IEnumerable<string> approverSubscriptionIds
+    )
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(approverSubscriptionIds);
+
+        var approvers = approverSubscriptionIds.ToHashSet(StringComparer.Ordinal);
+        if (approvers.Count == 0)
+        {
+            throw new ArgumentException(
+                "An approval request needs at least one approver; a request with none can only ever time out.",
+                nameof(approverSubscriptionIds)
+            );
+        }
 
         var request = new ToolApprovalRequest
         {
@@ -297,7 +399,7 @@ public sealed class RemoteApprovalStore
 
         // Built only once the slot is genuinely held, so a ticket cannot exist without a slot to
         // release — which is what makes Dispose's decrement unconditionally correct.
-        var ticket = new RemoteApprovalTicket(this, owner, request);
+        var ticket = new RemoteApprovalTicket(this, owner, request, approvers);
 
         // The id is freshly minted, so this cannot collide with an existing entry.
         _tickets[request.RequestId] = ticket;
@@ -334,6 +436,21 @@ public sealed class RemoteApprovalStore
             return Unknown();
         }
 
+        // "You were not asked" is reported as unknown, exactly like another owner's request id. An
+        // approval-capable subscriber that was not frozen into this request cannot use the endpoint to
+        // learn that the id is real, let alone substitute its answer for the one that was solicited.
+        if (
+            decision.SubscriptionId is not { Length: > 0 } submitter
+            || !ticket.Approvers.Contains(submitter)
+        )
+        {
+            _logger.LogWarning(
+                "Subscription {SubscriptionId} submitted a decision for a request it was not asked to approve; refused as unknown.",
+                decision.SubscriptionId
+            );
+            return Unknown();
+        }
+
         // Shape before state: a decision that describes different arguments, or carries a value no
         // approver may submit, is wrong regardless of whether the request is still pending.
         if (!decision.Matches(ticket.Request))
@@ -358,6 +475,105 @@ public sealed class RemoteApprovalStore
             return Unknown();
         }
 
+        // An allow settles nothing until it is the last one outstanding. A deny skips the ballot
+        // entirely: one approver refusing is already the answer, and counting it would only postpone
+        // a call that is not going to run either way.
+        if (
+            WireOutcomes.IsAllowed(decision.Decision)
+            && ticket.RecordAllow(submitter) != RemoteApprovalBallot.Unanimous
+        )
+        {
+            // Re-read the claim rather than reporting "recorded" blind: a deny may have settled the
+            // request between the expiry check and the ballot, and telling an approver its allow is
+            // outstanding when the call has already been refused is a worse answer than the truth.
+            return ticket.Decided is { } settled
+                ? Resolve(settled, decision)
+                : new RemoteApprovalSettlement(RemoteApprovalSettleStatus.Recorded, null);
+        }
+
+        return Commit(ticket, decision, now);
+    }
+
+    /// <summary>
+    /// Denies every pending request <paramref name="subscriptionId"/> was frozen into, because that
+    /// subscription can no longer answer.
+    /// </summary>
+    /// <param name="owner">The owner the revoked subscription belonged to. Scoped so one tenant's
+    /// revocation cannot reach into another's pending calls.</param>
+    /// <param name="subscriptionId">The subscription that was revoked.</param>
+    /// <returns>How many pending requests this denied. Diagnostic.</returns>
+    /// <remarks>
+    /// Without this, revoking an approver would leave every call it was asked about hanging until its
+    /// expiry: unanimity means the remaining approvers can never complete the set, so the outcome is
+    /// already decided and only the timing is in question. Denying immediately makes the wait honest
+    /// and frees the admission slot, and it is the fail-closed direction either way.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException">A required argument is null.</exception>
+    public int InvalidateForSubscription(LifecycleOwnerKey owner, string subscriptionId)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(subscriptionId);
+
+        var now = _timeProvider.GetUtcNow();
+        var denied = 0;
+
+        // A snapshot of a map bounded by MaxPendingTotal plus its tombstones, walked on an operation
+        // that happens when a subscriber goes away. An index keyed by subscription would have to stay
+        // consistent with the ballot through every settle; this cannot drift.
+        foreach (var ticket in _tickets.Values)
+        {
+            if (
+                !string.Equals(ticket.Owner.Value, owner.Value, StringComparison.Ordinal)
+                || !ticket.Approvers.Contains(subscriptionId)
+                || ticket.Decided is not null
+            )
+            {
+                continue;
+            }
+
+            var settlement = Commit(
+                ticket,
+                new ToolApprovalDecision
+                {
+                    RequestId = ticket.Request.RequestId,
+                    SubscriptionId = subscriptionId,
+                    Decision = WireOutcomes.Denied,
+                    ArgumentsHash = ticket.Request.ArgumentsHash,
+                    Reason = "an approver's subscription was revoked while the request was pending",
+                    DecidedAt = now,
+                },
+                now
+            );
+
+            if (settlement.Status == RemoteApprovalSettleStatus.Accepted)
+            {
+                denied++;
+            }
+        }
+
+        if (denied > 0)
+        {
+            _logger.LogInformation(
+                "Denied {Count} pending approval(s) because subscription {SubscriptionId} was revoked.",
+                denied,
+                subscriptionId
+            );
+        }
+
+        return denied;
+    }
+
+    /// <summary>
+    /// Performs the one-shot pending → decided transition and publishes the result to the waiting
+    /// gate. The single place a request is ever settled, so a decision submitted by an approver and
+    /// one synthesized by a revocation cannot diverge in what they do to the ticket.
+    /// </summary>
+    private RemoteApprovalSettlement Commit(
+        RemoteApprovalTicket ticket,
+        ToolApprovalDecision decision,
+        DateTimeOffset now
+    )
+    {
         if (!ticket.TryDecide(decision, now))
         {
             // Lost a genuine race — to another decision, whose answer is authoritative for this call

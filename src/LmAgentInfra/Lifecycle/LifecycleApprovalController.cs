@@ -56,13 +56,17 @@ public sealed record ToolApprovalDecisionResponse
 /// <para>
 /// The capability check is repeated here rather than trusted from registration time, because
 /// <see cref="LifecycleCapabilities.ToolApprovalDecide"/> can be revoked while an approval is
-/// pending, and the moment that matters is the moment the decision lands.
+/// pending, and the moment that matters is the moment the decision lands. It is checked against the
+/// <em>exact</em> subscription the decision names — not against "some capable subscription under
+/// this owner" — so a second approval-capable subscriber cannot answer in place of the one the gate
+/// actually asked.
 /// </para>
 /// <para>
 /// <b>404 is a single answer, not several.</b> Unknown id, expired request, another owner's request,
-/// an id from a previous process, and a host with remote approval switched off all return the same
-/// status and the same body, so the endpoint cannot be used to discover which request ids exist.
-/// Only a caller who already holds a valid, matching request id learns anything at all.
+/// a request the caller was not asked to approve, an id from a previous process, and a host with
+/// remote approval switched off all return the same status and the same body, so the endpoint cannot
+/// be used to discover which request ids exist. Only a caller who already holds a valid, matching
+/// request id it was actually asked about learns anything at all.
 /// </para>
 /// </remarks>
 [ApiController]
@@ -81,14 +85,17 @@ public sealed class LifecycleApprovalController(
 
     /// <summary>Submits one approver's decision about one pending tool call.</summary>
     /// <param name="decision">The decision. Its <c>request_id</c> and <c>arguments_hash</c> must both
-    /// match the pending request; the hash is what ties the answer to the exact arguments that will
-    /// run.</param>
+    /// match the pending request, and its <c>subscription_id</c> must name the caller's own
+    /// subscription among the approvers frozen when the gate opened; the hash is what ties the answer
+    /// to the exact arguments that will run.</param>
     /// <param name="cancellationToken">Cancels owner resolution.</param>
     /// <returns>
-    /// 200 with the outcome that stands; 400 for a malformed body; 403 when the caller is
-    /// unauthenticated, has no resolvable owner, or may not decide approvals; 404 when there is no
-    /// answerable request — including on a host where remote approval is switched off; 409 when the
-    /// decision does not match the request, or contradicts one already recorded.
+    /// 200 with the outcome that stands; 202 when an allow was recorded and the request is still
+    /// waiting on another frozen approver; 400 for a malformed body; 403 when the caller is
+    /// unauthenticated, has no resolvable owner, or does not own an approval-capable subscription;
+    /// 404 when there is no answerable request — including a request the caller was not asked about,
+    /// and a host where remote approval is switched off; 409 when the decision does not match the
+    /// request, or contradicts one already recorded.
     /// </returns>
     [HttpPost("decisions")]
     public async Task<IActionResult> Decide(
@@ -135,12 +142,32 @@ public sealed class LifecycleApprovalController(
             return Denied("caller has no resolvable owner");
         }
 
-        if (!subscriptions.ForOwner(owner).Any(s => s.HasCapability(LifecycleCapabilities.ToolApprovalDecide)))
+        // The decision names which of the frozen approvers is answering. That subscription must exist
+        // under this owner, must still be the one the authenticated caller registered, and must still
+        // hold the capability. Resolving the named subscription rather than asking whether the owner
+        // has any capable one is the difference between "an approver answered" and "the approver that
+        // was asked answered" — and the store then refuses it again if it was not among the frozen set.
+        var approver = subscriptions
+            .ForOwner(owner)
+            .FirstOrDefault(s =>
+                string.Equals(s.SubscriptionId, decision.SubscriptionId, StringComparison.Ordinal)
+            );
+
+        // Comparing the app id as well as the owner is deliberate: two apps can resolve to one owner,
+        // and a subscription is an approver identity, not a tenancy-wide permission. A subscriber
+        // whose app identity has changed re-registers, which is also how it would regain delivery.
+        if (
+            approver is null
+            || !string.Equals(approver.OwnerAppId, appId, StringComparison.Ordinal)
+            || !approver.HasCapability(LifecycleCapabilities.ToolApprovalDecide)
+        )
         {
             logger.LogWarning(
-                "Rejecting an approval decision: owner {Owner} holds no subscription with {Capability}.",
-                owner.Value,
-                LifecycleCapabilities.ToolApprovalDecide
+                "Rejecting an approval decision: subscription {SubscriptionId} is not an approval-capable subscription "
+                    + "registered by app {AppId} under owner {Owner}.",
+                decision.SubscriptionId,
+                appId,
+                owner.Value
             );
             return Denied("caller may not decide tool approvals");
         }
@@ -154,6 +181,15 @@ public sealed class LifecycleApprovalController(
                     RequestId = decision.RequestId,
                     Outcome = settlement.Outcome,
                 }
+            ),
+
+            // Counted, and the call is still blocked: every frozen approver has to allow. No outcome
+            // is echoed because there is none yet, and reporting the caller's own answer back would
+            // read like the request had been settled. StatusCode rather than Accepted() to name the
+            // response type unambiguously.
+            RemoteApprovalSettleStatus.Recorded => StatusCode(
+                StatusCodes.Status202Accepted,
+                new ToolApprovalDecisionResponse { RequestId = decision.RequestId }
             ),
 
             // The submitted decision described something other than the pending call — most often a

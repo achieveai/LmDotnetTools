@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmLifecycle.Approval;
 using AchieveAi.LmDotnetTools.LmLifecycle.Serialization;
 using FluentAssertions;
 using Xunit;
@@ -29,6 +31,24 @@ public class LifecycleGoldenFixtureTests
 
     private const string DeliveryJson =
         "{\"delivery_id\":\"dlv-1\",\"delivery_sequence\":7,\"event\":" + MinimalEventJson + "}";
+
+    /// <summary>The hash the approval fixtures are pinned against, in the lowercase hex the contract requires.</summary>
+    private const string ArgumentsHash =
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    /// <summary>The copy that goes to one approver: every field populated, <c>subscription_id</c> included.</summary>
+    private const string AddressedApprovalRequestJson =
+        """{"request_id":"req-1","subscription_id":"sub-1","thread_id":"thr-1","run_id":"run-1","generation_id":"gen-1","tool_call_id":"tc-1","tool_name":"write_file","arguments_hash":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","arguments":"{}","expires_at":"2026-07-27T08:35:00.0000000Z"}""";
+
+    /// <summary>The host's own copy, which is never sent: no <c>subscription_id</c>, no arguments.</summary>
+    private const string HostApprovalRequestJson =
+        """{"request_id":"req-1","thread_id":"thr-1","run_id":"run-1","generation_id":"gen-1","tool_call_id":"tc-1","tool_name":"write_file","arguments_hash":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","expires_at":"2026-07-27T08:35:00.0000000Z"}""";
+
+    private const string FullApprovalDecisionJson =
+        """{"request_id":"req-1","subscription_id":"sub-1","decision":"allowed","arguments_hash":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","reason":"reviewed","decided_at":"2026-07-27T08:31:00.0000000Z"}""";
+
+    private const string MinimalApprovalDecisionJson =
+        """{"request_id":"req-1","subscription_id":"sub-1","decision":"denied","arguments_hash":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}""";
 
     [Fact]
     public void Minimal_event_serializes_to_the_pinned_bytes()
@@ -132,4 +152,123 @@ public class LifecycleGoldenFixtureTests
         decoded.OccurredAt.Offset.Should().Be(TimeSpan.Zero);
         LifecycleSerializer.Serialize(decoded).Should().Be(MinimalEventJson);
     }
+
+    [Fact]
+    public void Approval_request_addressed_to_an_approver_serializes_to_the_pinned_bytes()
+    {
+        // Pinned in full, field order included. `subscription_id` sits second — immediately after the
+        // request it belongs to — because the pair is what an approver echoes back, and a reader
+        // scanning a delivery for "who was this asked of" should find it beside the request id rather
+        // than somewhere in the middle of the correlation fields.
+        Encode(ApprovalRequest()).Should().Be(AddressedApprovalRequestJson);
+    }
+
+    [Fact]
+    public void The_hosts_own_approval_request_omits_the_subscription_it_was_never_addressed_to()
+    {
+        // The host keeps one copy of the request that is not addressed to anybody; only the fan-out
+        // copies name an approver. So the field is optional on this type, and absent rather than
+        // empty: `""` would read as "addressed to a subscription whose id is blank", which is a claim,
+        // where absence is the truth. Note that the other unset members are still written as `""` —
+        // omission here is `subscription_id` being genuinely null, not a general empty-string rule.
+        var hostCopy = ApprovalRequest() with { SubscriptionId = null, Arguments = null };
+
+        var encoded = Encode(hostCopy);
+        encoded.Should().Be(HostApprovalRequestJson);
+        encoded.Should().NotContain("subscription_id");
+    }
+
+    [Fact]
+    public void Approval_decision_serializes_to_the_pinned_bytes()
+    {
+        Encode(ApprovalDecision()).Should().Be(FullApprovalDecisionJson);
+
+        // The optional halves drop out; `subscription_id` does not, because it is not optional here.
+        var terse = ApprovalDecision() with
+        {
+            Decision = ToolApprovalOutcomes.Denied,
+            Reason = null,
+            DecidedAt = null,
+        };
+
+        Encode(terse).Should().Be(MinimalApprovalDecisionJson);
+    }
+
+    [Fact]
+    public void A_request_may_arrive_without_a_subscription_id_but_a_decision_may_not()
+    {
+        // The asymmetry is the contract, and it is the reason `subscription_id` is worth pinning at
+        // all: a request without one is the host's own copy, while a decision without one cannot be
+        // checked against the approver set the gate froze — an approval nobody is accountable for.
+        // So the request type tolerates the omission and the decision type refuses to decode at all,
+        // which fails the submission closed rather than crediting it to an unnamed approver.
+        Decode<ToolApprovalRequest>(HostApprovalRequestJson).SubscriptionId.Should().BeNull();
+
+        var withoutSubscription = FullApprovalDecisionJson.Replace(
+            "\"subscription_id\":\"sub-1\",",
+            string.Empty,
+            StringComparison.Ordinal
+        );
+
+        var decode = () => Decode<ToolApprovalDecision>(withoutSubscription);
+        decode.Should().Throw<JsonException>();
+    }
+
+    [Fact]
+    public void Pinned_approval_bytes_round_trip_and_match_their_utf8_encoding()
+    {
+        // The same two properties the event fixtures assert, on the approval types: re-encoding a
+        // decoded value reproduces the bytes, and the UTF-8 encoder agrees with the text one. Both are
+        // asserted once per target framework, so a net8.0/net9.0 divergence in the in-box
+        // System.Text.Json fails here rather than corrupting a signature in production.
+        Encode(Decode<ToolApprovalRequest>(AddressedApprovalRequestJson))
+            .Should()
+            .Be(AddressedApprovalRequestJson);
+        Encode(Decode<ToolApprovalDecision>(FullApprovalDecisionJson))
+            .Should()
+            .Be(FullApprovalDecisionJson);
+
+        JsonSerializer
+            .SerializeToUtf8Bytes(ApprovalRequest(), LifecycleSerializer.Options)
+            .Should()
+            .Equal(Encoding.UTF8.GetBytes(AddressedApprovalRequestJson));
+    }
+
+    /// <summary>
+    /// Encoded exactly as <c>LifecycleApprovalRequestPublisher</c> encodes a request: through
+    /// <see cref="LifecycleSerializer.Options"/>. Going via <see cref="JsonSerializer"/> here rather
+    /// than adding overloads to the serializer keeps the fixture honest — it pins the bytes the
+    /// shipping call site actually produces.
+    /// </summary>
+    private static string Encode<T>(T value) =>
+        JsonSerializer.Serialize(value, LifecycleSerializer.Options);
+
+    private static T Decode<T>(string json) =>
+        JsonSerializer.Deserialize<T>(json, LifecycleSerializer.Options)!;
+
+    private static ToolApprovalRequest ApprovalRequest() =>
+        new()
+        {
+            RequestId = "req-1",
+            SubscriptionId = "sub-1",
+            ThreadId = "thr-1",
+            RunId = "run-1",
+            GenerationId = "gen-1",
+            ToolCallId = "tc-1",
+            ToolName = "write_file",
+            ArgumentsHash = ArgumentsHash,
+            Arguments = "{}",
+            ExpiresAt = new DateTimeOffset(2026, 7, 27, 8, 35, 0, TimeSpan.Zero),
+        };
+
+    private static ToolApprovalDecision ApprovalDecision() =>
+        new()
+        {
+            RequestId = "req-1",
+            SubscriptionId = "sub-1",
+            Decision = ToolApprovalOutcomes.Allowed,
+            ArgumentsHash = ArgumentsHash,
+            Reason = "reviewed",
+            DecidedAt = new DateTimeOffset(2026, 7, 27, 8, 31, 0, TimeSpan.Zero),
+        };
 }

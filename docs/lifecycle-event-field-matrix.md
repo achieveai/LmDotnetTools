@@ -384,6 +384,7 @@ a host and an approver, encoded by the same contract. See ADR 0003.
 | JSON field | Type | Required | Nullable | Notes |
 | --- | --- | --- | --- | --- |
 | `request_id` | string | ✅ | — | Identity of this request. A second decision naming it is resolved against the first, not applied over it. |
+| `subscription_id` | string | ❌ | ✅ | Which approver **this copy** was addressed to. Every fanned-out copy carries it; the host's own internal copy — which is never sent anywhere — does not, and omits the field rather than sending `""`. |
 | `thread_id` | string | ❌ | ❌ (`""`) | The thread the call belongs to. |
 | `run_id` | string | ❌ | ❌ (`""`) | The run that requested the call. |
 | `generation_id` | string | ❌ | ❌ (`""`) | The turn that requested the call. |
@@ -396,11 +397,17 @@ a host and an approver, encoded by the same contract. See ADR 0003.
 A request describes **one invocation**, not a tool or a category. Approving it
 approves exactly the bytes named by `arguments_hash`.
 
+The asymmetry between the two tables is deliberate: `subscription_id` is optional
+on the request because one copy of it is addressed to nobody, and required on the
+decision because an answer that does not say who gave it cannot be checked against
+the approver set the gate froze.
+
 ### 6.2 `ToolApprovalDecision`
 
 | JSON field | Type | Required | Nullable | Notes |
 | --- | --- | --- | --- | --- |
 | `request_id` | string | ✅ | — | The request being answered. |
+| `subscription_id` | string | ✅ | — | Which of the request's frozen approvers is answering, echoed from the request copy it was addressed to. A decision without it does not decode, so it fails closed rather than being credited to an unnamed approver. A **selector, not a claim of authority**: the owner still comes from the authenticated caller, so naming another subscriber's id buys nothing — what it adds is that an approval-capable subscriber that was not frozen as an approver cannot stand in for one that was. |
 | `decision` | string | ✅ | — | **Fails closed** — see below. |
 | `arguments_hash` | string | ✅ | — | Echoed from the request. A mismatch means the approver decided about different bytes than the ones that would run, so the decision is refused. |
 | `reason` | string | ❌ | ✅ | Short rationale, free of sensitive material. |
@@ -482,6 +489,12 @@ These are **breaking** and require a new major:
 - Changing the meaning of an existing value.
 - Adding a value to `ToolApprovalDecision.decision` and expecting old builds to
   honor it.
+
+The rule that a required field may not be introduced applies **from V1 onwards**, and
+V1 is what this document describes. `ToolApprovalDecision.subscription_id` is required
+in it: the contract has not shipped, so nothing is being tightened and no deployed
+approver is being broken. Making it optional later would be additive and safe; making
+it required *later* would not have been, which is why it is here rather than deferred.
 
 Any change to the encoding — property names, timestamp format, null handling —
 changes the bytes, and the golden-fixture tests will fail. That failure is the

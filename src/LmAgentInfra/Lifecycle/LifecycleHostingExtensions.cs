@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Approval;
@@ -115,6 +117,18 @@ public static class LifecycleHostingExtensions
                     // the allow-list did not admit. The sender classifies a 3xx as a permanent
                     // rejection, and that classification is only true if nothing chased it first.
                     AllowAutoRedirect = false,
+
+                    // Bounds how long a connection admitted by ConnectCallback stays poolable.
+                    // Without it a single connection vetted before a DNS change could carry
+                    // deliveries to the old address for the life of the process, which would make
+                    // "validated on every connection attempt" true and beside the point.
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+
+                    // The allow-list authorizes a name; this authorizes the address behind it, at the
+                    // only moment the address is knowable. Same options instance as every other
+                    // check, so narrowing the configuration narrows this too.
+                    ConnectCallback = (context, cancellationToken) =>
+                        ConnectToValidatedAddressAsync(context, options, cancellationToken),
                 }
             );
 
@@ -228,15 +242,20 @@ public static class LifecycleHostingExtensions
     /// <para>
     /// Narrowing requires <i>removing</i> the default provider, not merely adding to it: MVC unions
     /// what its feature providers return, so an allow-list sitting beside the default allow-list is
-    /// not an allow-list at all. For the same reason a host that has installed its own
-    /// <see cref="ControllerFeatureProvider"/> is refused rather than silently unioned with — two
-    /// allow-lists cannot both be authoritative, and the union is always the wider one. Such a host
-    /// should name the lifecycle controllers in its own provider instead of calling this method.
+    /// not an allow-list at all. For the same reason a host that has installed a controller feature
+    /// provider of its own — any <see cref="IApplicationFeatureProvider{ControllerFeature}"/>, not
+    /// just a <see cref="ControllerFeatureProvider"/> subclass — is refused rather than silently
+    /// unioned with: two allow-lists cannot both be authoritative, and the union is always the wider
+    /// one. Such a host should name the lifecycle controllers in its own provider instead of calling
+    /// this method. A provider <i>this</i> method installed is not foreign, so calling it twice is
+    /// safe and the second call simply re-states the first.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException">An argument is null.</exception>
-    /// <exception cref="InvalidOperationException">The host has its own
-    /// <see cref="ControllerFeatureProvider"/>; see the remarks.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// A flag is set but the matching services were never registered on <see cref="IMvcBuilder.Services"/>,
+    /// or the host has a controller feature provider of its own; see the remarks.
+    /// </exception>
     public static IMvcBuilder AddLifecycleControlPlane(
         this IMvcBuilder builder,
         IConfiguration configuration
@@ -245,17 +264,24 @@ public static class LifecycleHostingExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var deliveryEnabled = ReadDeliveryOptions(configuration).Enabled;
-        var approvalEnabled = ReadApprovalOptions(configuration).Enabled;
-
         var admitted = new HashSet<Type>();
-        if (deliveryEnabled)
+        if (ReadDeliveryOptions(configuration).Enabled)
         {
+            RequireRegistered<LifecycleDeliveryOptions>(
+                builder.Services,
+                LifecycleDeliveryOptions.SectionName,
+                nameof(AddLifecycleDelivery)
+            );
             _ = admitted.Add(typeof(LifecycleSubscriptionsController));
         }
 
-        if (approvalEnabled)
+        if (ReadApprovalOptions(configuration).Enabled)
         {
+            RequireRegistered<RemoteApprovalOptions>(
+                builder.Services,
+                RemoteApprovalOptions.SectionName,
+                nameof(AddRemoteToolApproval)
+            );
             _ = admitted.Add(typeof(LifecycleApprovalController));
         }
 
@@ -263,20 +289,18 @@ public static class LifecycleHostingExtensions
         {
             var assembly = typeof(LifecycleSubscriptionsController).Assembly;
 
-            // Who supplied the part decides what else in it stays visible. Read before the add below,
-            // because the add is what would otherwise erase the distinction.
-            var hostSuppliedThePart = parts
-                .ApplicationParts.OfType<AssemblyPart>()
-                .Any(part => part.Assembly == assembly);
-
-            if (!hostSuppliedThePart && admitted.Count > 0)
-            {
-                parts.ApplicationParts.Add(new AssemblyPart(assembly));
-            }
+            // What an earlier call to this method left behind, so a repeat call recognizes its own
+            // work instead of reporting it as a host provider it must not overrule.
+            var installed = parts
+                .FeatureProviders.OfType<LifecycleControllerFeatureProvider>()
+                .ToList();
 
             var foreign = parts
-                .FeatureProviders.OfType<ControllerFeatureProvider>()
-                .Where(provider => provider.GetType() != typeof(ControllerFeatureProvider))
+                .FeatureProviders.OfType<IApplicationFeatureProvider<ControllerFeature>>()
+                .Where(provider =>
+                    provider.GetType() != typeof(ControllerFeatureProvider)
+                    && provider is not LifecycleControllerFeatureProvider
+                )
                 .ToList();
             if (foreign.Count > 0)
             {
@@ -291,15 +315,70 @@ public static class LifecycleHostingExtensions
                 );
             }
 
-            foreach (var existing in parts.FeatureProviders.OfType<ControllerFeatureProvider>().ToList())
+            // The part is added at most once across every call, because a second AssemblyPart for the
+            // same assembly discovers every controller in it twice and turns each route ambiguous.
+            var addedPart = installed.Select(provider => provider.AddedPart).FirstOrDefault();
+            if (
+                admitted.Count > 0
+                && !parts.ApplicationParts.OfType<AssemblyPart>().Any(part => part.Assembly == assembly)
+            )
+            {
+                addedPart = new AssemblyPart(assembly);
+                parts.ApplicationParts.Add(addedPart);
+            }
+
+            foreach (
+                var existing in parts
+                    .FeatureProviders.OfType<IApplicationFeatureProvider<ControllerFeature>>()
+                    .ToList()
+            )
             {
                 _ = parts.FeatureProviders.Remove(existing);
             }
 
             parts.FeatureProviders.Add(
-                new LifecycleControllerFeatureProvider(admitted, hostSuppliedThePart)
+                new LifecycleControllerFeatureProvider(
+                    admitted,
+                    addedPart,
+                    // Deferred, and that is the whole point: ConfigureApplicationPartManager runs this
+                    // callback immediately, so anything read here is read before the host has finished
+                    // composing MVC. A host that calls AddApplicationPart for this assembly afterwards
+                    // — to publish api/auth/* — would have been judged as though it never had, and its
+                    // own endpoints would vanish.
+                    () => parts.ApplicationParts
+                )
             );
         });
+    }
+
+    /// <summary>
+    /// Refuses to publish a route whose controller could not be constructed.
+    /// </summary>
+    /// <remarks>
+    /// The flag being on says the host wants the feature; <typeparamref name="TOptions"/> being in the
+    /// container says the host actually wired it. Without this the two can disagree silently and the
+    /// disagreement surfaces as a 500 from a published endpoint — which is the outcome this whole
+    /// method exists to avoid, arrived at from the other direction. A route that is merely absent is
+    /// also the safer failure: it tells a prober nothing.
+    /// </remarks>
+    private static void RequireRegistered<TOptions>(
+        IServiceCollection services,
+        string section,
+        string registrar
+    )
+    {
+        if (services.Any(descriptor => descriptor.ServiceType == typeof(TOptions)))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{section}:Enabled is set, so {nameof(AddLifecycleControlPlane)} would publish the "
+                + $"matching route, but {nameof(LifecycleHostingExtensions)}.{registrar} has not run on "
+                + "this service collection — the controller behind that route has no dependencies to "
+                + $"construct and would answer 500. Call services.{registrar}(configuration) before "
+                + $"{nameof(AddLifecycleControlPlane)}."
+        );
     }
 
     /// <summary>
@@ -335,6 +414,67 @@ public static class LifecycleHostingExtensions
         return services;
     }
 
+    /// <summary>
+    /// Resolves a callback host and connects only to an address the egress policy admits.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the half of the destination check that the allow-list cannot do. The allow-list
+    /// authorizes a <i>name</i>; the name-to-address mapping belongs to whoever controls that name's
+    /// DNS, which for a subscriber-supplied host is the subscriber. Resolving here — on every
+    /// connection attempt, not once at registration — is what stops an allow-listed name from being
+    /// repointed at the host's own loopback or at a metadata endpoint between registration and
+    /// delivery.
+    /// </para>
+    /// <para>
+    /// The socket is dialled against the <i>vetted addresses</i> rather than the host name.
+    /// Connecting by name would re-resolve inside the socket and reopen the exact gap between check
+    /// and use that this callback exists to close.
+    /// </para>
+    /// </remarks>
+    private static async ValueTask<Stream> ConnectToValidatedAddressAsync(
+        SocketsHttpConnectionContext context,
+        LifecycleDeliveryOptions options,
+        CancellationToken cancellationToken
+    )
+    {
+        var endPoint = context.DnsEndPoint;
+        var resolved = await Dns.GetHostAddressesAsync(endPoint.Host, cancellationToken)
+            .ConfigureAwait(false);
+
+        var permitted = Array.FindAll(
+            resolved,
+            address => LifecycleDestinationPolicy.IsAllowedAddress(address, options)
+        );
+
+        if (permitted.Length == 0)
+        {
+            // Deliberately says nothing about what the host resolved to. The sender logs this and the
+            // subscriber never sees it, but an operator reading a log should not have to wonder
+            // whether the exception text itself became a way to probe internal addressing.
+            throw new HttpRequestException(
+                $"'{endPoint.Host}' resolved to no address a lifecycle callback may reach. "
+                    + $"Set {LifecycleDeliveryOptions.SectionName}:"
+                    + $"{nameof(LifecycleDeliveryOptions.AllowPrivateCallbackAddresses)} only if the "
+                    + "subscriber is genuinely on this machine or private network."
+            );
+        }
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket
+                .ConnectAsync(permitted, endPoint.Port, cancellationToken)
+                .ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
     private static LifecycleDeliveryOptions ReadDeliveryOptions(IConfiguration configuration) =>
         configuration.GetSection(LifecycleDeliveryOptions.SectionName).Get<LifecycleDeliveryOptions>()
         ?? new LifecycleDeliveryOptions();
@@ -349,16 +489,20 @@ public static class LifecycleHostingExtensions
 /// endpoints, keeps whatever else of it the host was already serving, and adds nothing new.
 /// </summary>
 /// <param name="admitted">The lifecycle controller types this host has enabled.</param>
-/// <param name="hostSuppliedThePart">
-/// Whether this assembly was already an application part before
-/// <see cref="LifecycleHostingExtensions.AddLifecycleControlPlane"/> ran — normally because the SDK
-/// wrote an <see cref="ApplicationPartAttribute"/> for it. When it was, this assembly's non-lifecycle
-/// controllers are the host's and stay; when it was not, they were never on offer and do not start
-/// being so now.
+/// <param name="addedPart">
+/// The application part <see cref="LifecycleHostingExtensions.AddLifecycleControlPlane"/> added for
+/// this assembly, or <c>null</c> when it added none. Held so that the one part this SDK contributed
+/// can be told apart from a part the host contributed for the same assembly.
+/// </param>
+/// <param name="applicationParts">
+/// Reads the part list as it stands when discovery runs. A function rather than a value because
+/// <c>ConfigureApplicationPartManager</c> invokes its callback immediately, so a value read there
+/// would be read before the host has finished composing MVC.
 /// </param>
 internal sealed class LifecycleControllerFeatureProvider(
     IReadOnlySet<Type> admitted,
-    bool hostSuppliedThePart
+    ApplicationPart? addedPart,
+    Func<IEnumerable<ApplicationPart>> applicationParts
 ) : ControllerFeatureProvider
 {
     private static readonly Assembly LifecycleAssembly =
@@ -374,6 +518,27 @@ internal sealed class LifecycleControllerFeatureProvider(
         typeof(LifecycleSubscriptionsController),
         typeof(LifecycleApprovalController),
     ];
+
+    /// <summary>
+    /// Whether this assembly is an application part for a reason other than this SDK making it one —
+    /// normally because the SDK wrote an <see cref="ApplicationPartAttribute"/> for it, or the host
+    /// called <c>AddApplicationPart</c>. When it is, this assembly's non-lifecycle controllers are the
+    /// host's and stay; when it is not, they were never on offer and do not start being so now.
+    /// </summary>
+    /// <remarks>
+    /// Answered once, on the first discovery, rather than at registration: the host may add parts
+    /// after <see cref="LifecycleHostingExtensions.AddLifecycleControlPlane"/> returns, and an answer
+    /// snapshotted then would drop endpoints the host went on to publish. Deferring it to the first
+    /// <see cref="IsController"/> call reads the list the host actually ended up with.
+    /// </remarks>
+    private readonly Lazy<bool> _hostSuppliedThePart = new(() =>
+        applicationParts()
+            .OfType<AssemblyPart>()
+            .Any(part => part.Assembly == LifecycleAssembly && !ReferenceEquals(part, addedPart))
+    );
+
+    /// <summary>The part this SDK added, so a repeat registration reuses it instead of adding a second.</summary>
+    internal ApplicationPart? AddedPart => addedPart;
 
     /// <inheritdoc />
     protected override bool IsController(TypeInfo typeInfo)
@@ -395,6 +560,6 @@ internal sealed class LifecycleControllerFeatureProvider(
         // which MVC needed in order for the gate above to mean anything — so it is now also
         // responsible for the host's own controllers, and quietly dropping them would turn "expose the
         // lifecycle endpoints" into "expose only the lifecycle endpoints".
-        return type.Assembly != LifecycleAssembly || hostSuppliedThePart;
+        return type.Assembly != LifecycleAssembly || _hostSuppliedThePart.Value;
     }
 }

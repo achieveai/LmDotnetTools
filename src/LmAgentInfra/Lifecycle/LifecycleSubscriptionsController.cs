@@ -105,6 +105,18 @@ public sealed record LifecycleSubscriptionResponse
 /// produce the same 404 with the same body, because the registry itself refuses to tell them apart —
 /// anything finer would make the control plane an oracle for which ids are real.
 /// </para>
+/// <para>
+/// The remote-approval store is optional because the two features are independently switchable: a
+/// host may run delivery with approval off, in which case there is no store registered and nothing
+/// pending to invalidate. Where both are on, revoking a subscription has to reach the approvals it
+/// was an approver for, which is the one place these features touch.
+/// </para>
+/// <para>
+/// The delivery pipeline is optional for the mirror-image reason: it is the runtime half of the
+/// feature this controller configures, and a host may compose the registry against a pipeline of its
+/// own. When it is present, revoking reaches into it so the revocation covers what is already in
+/// motion as well as what would have been sent next.
+/// </para>
 /// </remarks>
 [ApiController]
 [Route("api/lifecycle/subscriptions")]
@@ -112,7 +124,9 @@ public sealed class LifecycleSubscriptionsController(
     ILifecycleSubscriptionRegistry subscriptions,
     ILifecycleOwnerResolver ownerResolver,
     LifecycleDeliveryOptions options,
-    ILogger<LifecycleSubscriptionsController> logger
+    ILogger<LifecycleSubscriptionsController> logger,
+    RemoteApprovalStore? approvals = null,
+    LifecycleDeliveryPipeline? deliveries = null
 ) : ControllerBase
 {
     /// <summary>The one body every unanswerable case returns, so none of them can be told apart.</summary>
@@ -211,6 +225,12 @@ public sealed class LifecycleSubscriptionsController(
     /// <param name="subscriptionId">The subscription to remove.</param>
     /// <param name="cancellationToken">Cancels owner resolution.</param>
     /// <returns>204; 403 as above; 404 when the subscription is unknown or not the caller's.</returns>
+    /// <remarks>
+    /// Removing an approver also denies whatever it was still being asked about. Approval is
+    /// unanimous, so a revoked approver's pending requests can no longer be allowed by anyone — the
+    /// outcome is already settled and only the timing is open. Denying them here makes the wait honest
+    /// and frees the admission slots, instead of leaving calls blocked until they time out.
+    /// </remarks>
     [HttpDelete("{subscriptionId}")]
     public Task<IActionResult> Unregister(
         string subscriptionId,
@@ -219,7 +239,17 @@ public sealed class LifecycleSubscriptionsController(
         AuthorizedAsync(
             (owner, _) =>
             {
+                // Unregister first: a decision that arrives between the two calls is refused by the
+                // controller's own approver lookup, whereas invalidating first would leave a window in
+                // which the subscription is still live and could be asked about a fresh request.
                 subscriptions.Unregister(owner, subscriptionId);
+
+                // Then the two places the removed subscription still has state in motion. Delivery
+                // before approvals, because a pending approval request is itself a queued delivery:
+                // stopping the pipeline first means the deny below cannot race a copy of the request
+                // still on its way to the approver that is being taken away.
+                deliveries?.Abandon(owner, subscriptionId);
+                approvals?.InvalidateForSubscription(owner, subscriptionId);
                 return Task.FromResult<IActionResult>(NoContent());
             },
             cancellationToken

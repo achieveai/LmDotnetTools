@@ -9,13 +9,20 @@ namespace AchieveAi.LmDotnetTools.LmLifecycle.Approval;
 /// <remarks>
 /// <para>
 /// A decision is accepted only when it names a pending request, echoes that request's frozen
-/// argument hash, arrives before the request expires, comes from a subscriber holding
-/// <see cref="LifecycleCapabilities.ToolApprovalDecide"/>, and carries an outcome an approver is
-/// permitted to submit. Anything else is refused with a stable code and the handler does not run.
+/// argument hash, arrives before the request expires, comes from one of the approvers frozen when
+/// the gate opened — holding <see cref="LifecycleCapabilities.ToolApprovalDecide"/> at the moment it
+/// answers, not merely at registration — and carries an outcome an approver is permitted to submit.
+/// Anything else is refused with a stable code and the handler does not run.
 /// </para>
 /// <para>
-/// The first valid decision wins. An identical retry yields the same result, so a network retry is
-/// safe; a later decision that contradicts the first does not overturn it.
+/// <b>Allowing takes everyone; denying takes one.</b> A request is allowed only once every frozen
+/// approver has allowed it, so an allow that is not the last one is recorded rather than settling
+/// anything. The first deny settles the request immediately, as does the allow that completes the
+/// set — and whichever of those lands first is the answer that stands.
+/// </para>
+/// <para>
+/// An identical retry yields the same result, so a network retry is safe; a later decision that
+/// contradicts the settled one does not overturn it.
 /// </para>
 /// </remarks>
 public sealed record ToolApprovalDecision
@@ -24,6 +31,27 @@ public sealed record ToolApprovalDecision
     [JsonPropertyName("request_id")]
     [JsonRequired]
     public string RequestId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Which of the request's frozen approvers is answering, echoed from
+    /// <see cref="ToolApprovalRequest.SubscriptionId"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Required, because a decision that does not say who made it cannot be checked against the
+    /// approver set the gate froze — and an approval nobody is accountable for is the one thing this
+    /// contract must not accept.
+    /// </para>
+    /// <para>
+    /// This is a <i>selector</i>, not a claim of authority. The host still derives the owner from the
+    /// authenticated caller and refuses any subscription outside it, so naming another subscriber's id
+    /// buys nothing; what the field adds is that an approval-capable subscriber which was not among
+    /// the frozen approvers cannot stand in for one that was.
+    /// </para>
+    /// </remarks>
+    [JsonPropertyName("subscription_id")]
+    [JsonRequired]
+    public string SubscriptionId { get; set; } = string.Empty;
 
     /// <summary>
     /// The answer. Only <see cref="ToolApprovalOutcomes.Allowed"/> and

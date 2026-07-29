@@ -136,6 +136,26 @@ public sealed class LifecycleDeliveryOptions
     public bool RequireHttpsCallbacks { get; set; } = true;
 
     /// <summary>
+    /// Permits callbacks to resolve to loopback, link-local, or private addresses.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Off by default, and the default is the security property. An allow-listed host is a name, and
+    /// whoever controls that name's DNS chooses what it points at; with this off, a name repointed at
+    /// the host's own loopback or at <c>169.254.169.254</c> is refused at the moment of connection
+    /// rather than dialled with a signed body of conversation content. The check runs on every
+    /// connection attempt, so it also refuses a name that resolved acceptably an hour ago.
+    /// </para>
+    /// <para>
+    /// Turn it on only for a local development subscriber on the same machine, which is the same
+    /// situation <see cref="RequireHttpsCallbacks"/> exists for. In a deployment where a subscriber is
+    /// legitimately on the private network, this switch is the deliberate acknowledgement that the
+    /// allow-list — not the address — is now the whole of the egress boundary.
+    /// </para>
+    /// </remarks>
+    public bool AllowPrivateCallbackAddresses { get; set; }
+
+    /// <summary>
     /// Validates the configured values and throws on anything the runtime cannot honor, so a
     /// misconfiguration fails at startup instead of at the first delivery.
     /// </summary>
