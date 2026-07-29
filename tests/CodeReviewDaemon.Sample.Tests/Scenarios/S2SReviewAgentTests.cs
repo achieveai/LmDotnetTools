@@ -102,24 +102,41 @@ public sealed class S2SReviewAgentTests
     }
 
     [Fact]
-    public async Task ExecuteRunAsync_yields_no_message_but_still_surfaces_the_ids_when_the_run_ends_errored()
+    public async Task ExecuteRunAsync_throws_when_the_hosted_run_ends_errored_even_with_partial_text()
     {
-        // A non-Completed terminal (Errored) with no resolved response text yields nothing, but the minted
-        // thread/run ids must still surface so the executor can deep-link the (failed) hosted conversation.
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
-            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Errored\",\"runId\":\"run-err\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Errored\",\"runId\":\"run-err\",\"response\":{\"text\":\"partial\"}}")
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-err\"}");
         using var http = NewHttp(handler);
-        var client = new LmStreamingS2SClient(http, "s", "id", "key");
-        // title null → EnsureProvisioned skips the metadata call, so no /metadata route is needed.
-        var agent = NewAgent(client, title: null);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
 
-        var messages = await DriveAsync(agent, "review this PR");
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
 
-        messages.Should().BeEmpty("an errored run with no response text produces no review message");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*run-err*Errored*");
         agent.ThreadId.Should().Be("thread-err");
         agent.CurrentRunId.Should().Be("run-err");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_throws_when_a_completed_run_has_blank_review_text()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-empty\",\"response\":{\"text\":\"  \"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-empty\"}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*Completed*no review text*");
     }
 
     [Fact]
@@ -154,7 +171,7 @@ public sealed class S2SReviewAgentTests
     }
 
     [Fact]
-    public async Task ExecuteRunAsync_accepts_an_Interrupted_run_that_holds_through_the_grace_window()
+    public async Task ExecuteRunAsync_rejects_an_Interrupted_run_that_holds_through_the_grace_window()
     {
         // The other half of the Interrupted contract: an input whose run really is dead (nothing ever re-binds
         // it) must not hold the review open to the overall timeout. Once the same run id keeps reading
@@ -167,9 +184,9 @@ public sealed class S2SReviewAgentTests
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
         var agent = NewAgent(client, title: null);
 
-        var messages = await DriveAsync(agent, "review this PR");
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
 
-        messages.Should().BeEmpty("an Interrupted run never carries response text");
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*run-dead*Interrupted*");
         agent.ThreadId.Should().Be("thread-dead");
         agent.CurrentRunId.Should().Be("run-dead");
     }

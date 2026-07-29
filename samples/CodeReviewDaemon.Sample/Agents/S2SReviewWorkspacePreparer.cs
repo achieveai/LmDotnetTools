@@ -2,6 +2,7 @@ using System.Globalization;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace;
 using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -201,6 +202,20 @@ internal sealed class S2SReviewWorkspacePreparer
             .ConfigureAwait(false);
         if (!probe.Succeeded)
         {
+            // A failed git probe is ambiguous: a missing/empty leaf needs cloning, but a non-empty checkout may
+            // be corrupt, inaccessible, or rejected by git's ownership checks. Cloning into that directory both
+            // masks the useful diagnosis and cannot repair it. Inspect the leaf through the same host runner and
+            // clone only when it is absent/empty.
+            var entries = await _hostGit.CommandRunner
+                .RunAsync(new SandboxCommand(["ls", "-1A", "--", hostDir]), cancellationToken)
+                .ConfigureAwait(false);
+            if (entries.Succeeded && !string.IsNullOrWhiteSpace(entries.Stdout))
+            {
+                throw new InvalidOperationException(
+                    $"Existing checkout probe for PR {run.PrId} at '{hostDir}' failed (exit {probe.ExitCode}): "
+                        + probe.Stderr);
+            }
+
             var clone = await _hostGit
                 .RunAsync(["clone", remote, hostDir], workingDirectory: null, cancellationToken)
                 .ConfigureAwait(false);

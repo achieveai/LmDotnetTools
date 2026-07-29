@@ -550,10 +550,10 @@ public sealed class WorkflowRuntime
     ///         The drain marker resolves it: past the marker, pending means never spawned.
     ///     </para>
     ///     <para>
-    ///         Liveness is never worse than before this barrier existed. A node with no units returns without
-    ///         waiting at all (which is every direct tool-provider call in tests, where no observer is
-    ///         attached), waiters are woken by result recording rather than polling, and an expired
-    ///         <see cref="TransitionBarrierTimeoutMs"/> budget logs and proceeds instead of failing the run.
+    ///         A node with no units returns without waiting at all (which is every direct tool-provider call in
+    ///         tests, where no observer is attached), and waiters are woken by result recording rather than
+    ///         polling. An expired <see cref="TransitionBarrierTimeoutMs"/> budget rejects the transition: a
+    ///         bounded failure is preferable to persisting a knowingly incomplete terminal result.
     ///     </para>
     /// </remarks>
     internal async Task WaitForNodeSettlementAsync(
@@ -608,13 +608,15 @@ public sealed class WorkflowRuntime
                 catch (OperationCanceledException)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    _logger?.LogWarning(
-                        "Workflow transition from node {NodeId} proceeded before its units settled "
-                            + "({TimeoutMs}ms budget elapsed); a terminal result may be incomplete.",
+                    _logger?.LogError(
+                        "Workflow transition from node {NodeId} was rejected because its units did not settle "
+                            + "within {TimeoutMs}ms; no terminal result was composed.",
                         CurrentNodeId,
                         TransitionBarrierTimeoutMs
                     );
-                    return;
+                    throw new TimeoutException(
+                        $"Workflow units for node '{CurrentNodeId}' did not settle within "
+                            + $"{TransitionBarrierTimeoutMs}ms.");
                 }
             }
         }

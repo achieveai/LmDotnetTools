@@ -135,24 +135,16 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
 
         if (!string.Equals(status.Status, "Completed", StringComparison.OrdinalIgnoreCase))
         {
-            // Errored/Interrupted still surface whatever partial text the host resolved (may be null); log the
-            // non-success terminal so an operator can correlate an empty/short review with a failed hosted run.
-            _logger.LogError(
-                "S2S review run {RunId} on thread {ThreadId} reached terminal status {Status} (not Completed).",
-                status.RunId,
-                threadId,
-                status.Status);
+            throw new InvalidOperationException(
+                $"S2S review run {status.RunId} on thread {threadId} ended with terminal status "
+                    + $"{status.Status}, not Completed.");
         }
 
         var reviewText = status.ResponseText;
-        if (string.IsNullOrEmpty(reviewText))
+        if (string.IsNullOrWhiteSpace(reviewText))
         {
-            _logger.LogWarning(
-                "S2S review run {RunId} on thread {ThreadId} returned no response text (status {Status}).",
-                status.RunId,
-                threadId,
-                status.Status);
-            yield break;
+            throw new InvalidOperationException(
+                $"S2S review run {status.RunId} on thread {threadId} reached Completed with no review text.");
         }
 
         // ONE finalized assistant message. AgentTextCollector prefers a finalized TextMessage over streamed

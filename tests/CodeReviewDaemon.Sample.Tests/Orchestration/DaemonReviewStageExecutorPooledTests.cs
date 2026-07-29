@@ -486,6 +486,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task S2S_review_releases_before_preparing_the_workspace_after_a_restart()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        // Process A persists ContextReady with slot 0, then disappears with all process-local lease/workspace caches.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(2);
+        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be(
+            "ws-review-slot-1",
+            "the hosted workspace must be prepared from the newly leased slot, not a cached bare PR clone");
+        fixture.S2SGit.Commands.Should().BeEmpty("slot adoption must not run the fallback clone preparer");
+    }
+
+    [Fact]
     public async Task Reviewed_re_leases_a_slot_when_resuming_after_a_restart_dropped_the_in_memory_lease()
     {
         using var fixture = Fixture.Create();

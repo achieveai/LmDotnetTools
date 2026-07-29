@@ -120,6 +120,32 @@ public sealed class S2SReviewWorkspacePreparerTests
     }
 
     [Fact]
+    public async Task PrepareAsync_preserves_a_failed_probe_for_an_existing_nonempty_checkout()
+    {
+        var hostDir = $"{BasePath}/{GithubLeaf}";
+        var git = new FakeSandboxCommandRunner()
+            .OnArgvContains(
+                "rev-parse --is-inside-work-tree",
+                new SandboxCommandResult(128, string.Empty, "fatal: unsafe repository ownership"))
+            .OnArgvContains(
+                $"ls -1A -- {hostDir}",
+                new SandboxCommandResult(0, "existing-file\n", string.Empty));
+        var handler = new FakeHttpMessageHandler();
+        using var http = NewHttp(handler);
+        var preparer = NewPreparer(http, git);
+
+        Func<Task> act = async () => _ = await preparer.PrepareAsync(
+            MakeRun("118"), MakeRepo("github", project: null), "github", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*unsafe repository ownership*");
+        git.Commands.Select(c => string.Join(" ", c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal),
+            "cloning cannot repair or explain a nonempty checkout whose probe failed");
+        handler.Requests.Should().BeEmpty("the checkout fails before a workspace is created");
+    }
+
+    [Fact]
     public async Task PrepareAsync_reuses_an_existing_workspace_for_the_same_leaf_without_creating_a_duplicate()
     {
         // The probe succeeds (default result) so no clone happens; the existing workspace whose DirectoryRelPath

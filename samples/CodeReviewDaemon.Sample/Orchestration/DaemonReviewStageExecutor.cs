@@ -1248,12 +1248,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         var (repo, provider) = ResolveRepo(run);
 
-        // S2S path: clone the PR checkout to the shared gateway host and mint/reuse the LmStreaming workspace the
-        // hosted review provisions against, BEFORE any _loopFactory.Create call — the S2S factory requires a
-        // prepared workspace (it throws without one) and this is what surfaces the code-reviewer:* sub-agent
-        // tree behind the deep-link. No-op (returns null, does nothing) on the in-process path.
-        await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
-
         // Resume-safety for the pooled path: the slot lease recorded by ContextReady lives ONLY in the
         // in-memory _leasedReviews, so a run that persisted Stage=ContextReady in an earlier process (a daemon
         // restart, or a resume after a RetryPending) arrives here with no lease. Without one, BuildToolContextAsync
@@ -1267,6 +1261,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         }
+
+        // S2S path: now that resume-safety has restored the lease, adopt that slot as the LmStreaming
+        // workspace. Preparing before the re-lease would cache a bare per-PR clone whose mounted layout does
+        // not contain the pooled store, notes or Knowledge Base paths used by the persisted context.
+        await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
 
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);

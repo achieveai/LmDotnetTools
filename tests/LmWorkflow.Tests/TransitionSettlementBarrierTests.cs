@@ -99,21 +99,23 @@ public class TransitionSettlementBarrierTests
     }
 
     [Fact]
-    public async Task Transition_ProceedsAfterTheBudget_WhenAnAnswerNeverArrives()
+    public async Task Transition_FailsAfterTheBudget_WhenAnAnswerNeverArrives()
     {
-        // Liveness: a spawn whose result is dropped (crashed sub-agent, severed observer) must not wedge the
-        // workflow. The barrier is a bounded best-effort — it degrades to exactly today's behaviour, late,
-        // with a warning, rather than hanging.
+        // A terminal result must never be persisted while an in-flight unit still owes a write. The bounded
+        // budget prevents an infinite wait, but expiry rejects the transition so the caller can retry/fail the
+        // workflow instead of publishing a knowingly incomplete success.
         var runtime = RuntimeAtFan();
         SpawnUnit(runtime, 0);
         AnswerUnit(runtime, 0, "alpha-done");
         SpawnUnit(runtime, 1); // in-flight forever
 
         var elapsed = Stopwatch.StartNew();
-        _ = await RouteToDone(runtime, "tc_route_done");
+        Func<Task> act = async () => _ = await RouteToDone(runtime, "tc_route_done");
+
+        await act.Should().ThrowAsync<TimeoutException>().WithMessage("*units*settle*");
         elapsed.Stop();
 
-        runtime.IsComplete.Should().BeTrue("the transition must complete even when an answer is never delivered");
+        runtime.IsComplete.Should().BeFalse("the incomplete terminal result must not be published");
         elapsed.Elapsed.Should().BeGreaterThan(BarrierBudget - TimeSpan.FromMilliseconds(500));
         elapsed.Elapsed.Should().BeLessThan(BarrierBudget + TimeSpan.FromSeconds(8));
     }
