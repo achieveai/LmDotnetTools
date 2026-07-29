@@ -2,112 +2,115 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prevent CodeReviewDaemon from judging or posting until every recursive review sub-agent is durably terminal, then produce and deliver one same-thread authoritative synthesis.
+**Goal:** Prevent CodeReviewDaemon from judging or posting until every review descendant visible through its provenance contract is terminal, then produce and deliver one same-thread authoritative synthesis.
 
-**Architecture:** The first parent answer is a provisional, never-posted artifact. A provider-neutral completion source reads a recursive tree: in-process from read-only `SubAgentManager` snapshots, S2S from an LmStreaming recursive endpoint backed by live and persisted state. After two identical all-terminal snapshots, the daemon sends a synthesis turn on the same parent, promotes only that answer, verifies inline delivery, and uses the existing idempotent host summary only if the provider marker is absent.
+**Architecture:** The first parent answer is a provisional, never-posted artifact. One live in-process loop stays open through its direct-child barrier and synthesis; S2S reads a versioned recursive graph assembled from live state and durable provenance. A single persisted 30-minute deadline covers provisional, barrier, and spawn-disabled synthesis. Only the post-barrier answer becomes authoritative; existing idempotency markers/outbox provide verified delivery and fallback.
 
 **Tech Stack:** .NET 9, C# 13, xUnit, FluentAssertions, ASP.NET Core, LmMultiTurn, LmStreaming.Sample, SQLite review artifacts, GitHub/ADO APIs.
 
 ## Global Constraints
 
 - Initial parent answer never posts, judges, or becomes authoritative.
-- Include every recursive descendant; a late nested spawn resets stability.
+- Include every descendant visible through the declared review provenance contract; do not enable nested live delegation in this feature.
 - `Completed`, `Error`, `Stopped` terminal; `Running`, `Unknown` nonterminal.
-- Require two identical terminal snapshots separated by two seconds.
-- 30-minute timeout fails closed, posts nothing, leaves `RetryPending`.
+- Require two identical terminal snapshots separated by two seconds; growth, shrinkage, relationship, or status change resets stability.
+- One absolute 30-minute deadline covers provisional + barrier + synthesis and survives restart.
+- Timeout, snapshot incompatibility, lifecycle/head change, or synthesis roster change fails closed and posts nothing.
 - Child failures are safely inventoried; no raw exception/prompt/secret disclosure.
-- Synthesis is a second run on the same parent conversation/thread.
-- In-process synthesis attempts inline posting; host summary only when verification finds no marker.
+- Synthesis is a second run on the same parent conversation/thread with spawn capability removed.
+- In-process synthesis attempts inline posting; host summary only when the canonical summary marker is absent/unverifiable.
 - S2S synthesis is posted host-side because the hosted agent has no PR write credential.
 - Preserve current sandbox management through typed `SandboxClient`.
+- Do not persist live loop handles or a duplicate full-tree checkpoint.
 - No AI signatures in commits or PR text.
 
 ## Files
 
 **Create**
-- `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs` - shared tree DTO, source interface, barrier.
-- `tests/CodeReviewDaemon.Sample.Tests/Agents/ReviewSubAgentCompletionBarrierTests.cs` - barrier contract.
+- `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs` — shared DTO/source contract and barrier.
+- `tests/CodeReviewDaemon.Sample.Tests/Agents/ReviewSubAgentCompletionBarrierTests.cs` — barrier contract.
 
 **Modify**
-- `src/LmMultiTurn/SubAgents/SubAgentManager.cs` and `SubAgentState.cs` - recursive read snapshot and terminal persistence callback.
-- `samples/LmStreaming.Sample/Persistence/SubAgentProvenance.cs` - durable terminal keys/projection.
-- `samples/LmStreaming.Sample/Controllers/ConversationsController.cs` and `Models/SubAgentSummary.cs` - recursive completion API.
-- `samples/CodeReviewDaemon.Sample/Agents/LmStreamingS2SClient.cs` - S2S completion source.
-- `samples/CodeReviewDaemon.Sample/Agents/ReviewAgent.cs` and `S2SReviewAgent.cs` - same-thread synthesis drive.
-- `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs` - provisional/barrier/synthesis/post flow.
-- `samples/CodeReviewDaemon.Sample/Persistence/ReviewStore.cs` - artifact state access.
-- Corresponding daemon, LmStreaming, and LmMultiTurn tests.
+- `src/LmMultiTurn/SubAgents/SubAgentManager.cs` / `SubAgentState.cs` — immutable live roster and active terminal-persistence callback.
+- `samples/LmStreaming.Sample/Persistence/SubAgentProvenance.cs` / `NonOwningConversationStore.cs` — durable exact states.
+- `samples/LmStreaming.Sample/Controllers/ConversationsController.cs`, `Models/SubAgentSummary.cs`, and `ClientApp/src/api/subAgentsApi.ts` — versioned recursive API.
+- `samples/CodeReviewDaemon.Sample/Agents/LmStreamingS2SClient.cs`, `ReviewAgent.cs`, `S2SReviewAgent.cs`, and `S2SReviewAgentLoopFactory.cs` — sources, same-thread resume, shared deadline, synthesis drive.
+- `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs`, `PrOrchestrator.cs`, and `ReviewPoster.cs` — provisional/barrier/synthesis/delivery flow.
+- `samples/CodeReviewDaemon.Sample/Persistence/ReviewStore.cs` — latest-artifact lookup.
+- Corresponding daemon, LmStreaming, LmMultiTurn, and client tests.
 
 ---
 
-### Task 1: Persist exact child terminal status
+### Task 1: Persist terminal child state at the transition
 
 **Files:**
+- Modify: `src/LmMultiTurn/SubAgents/SubAgentManager.cs`
+- Modify: `src/LmMultiTurn/SubAgents/SubAgentState.cs`
 - Modify: `samples/LmStreaming.Sample/Persistence/SubAgentProvenance.cs`
+- Modify: `samples/LmStreaming.Sample/Persistence/NonOwningConversationStore.cs`
 - Modify: `samples/LmStreaming.Sample/Program.cs`
+- Test: `tests/LmMultiTurn.Tests/SubAgents/SubAgentManagerListAgentsTests.cs`
 - Test: `tests/LmStreaming.Sample.Tests/Persistence/NonOwningConversationStoreTests.cs`
 - Test: `tests/LmStreaming.Sample.Tests/Persistence/SubAgentProvenanceTests.cs`
 
-**Interfaces:**
+**Produces:**
 
 ```csharp
 public const string StatusKey = "sample.subAgentStatus";
 public const string TerminalAtKey = "sample.subAgentTerminalAt";
+
 public static ImmutableDictionary<string, object> Build(
     string parentThreadId,
     SubAgentSnapshot? snapshot);
 ```
 
-- [ ] Add a failing test: `Build` with `Completed`, `Error`, and `Stopped` snapshots writes lower-case status and UTC terminal timestamp; `Running` writes status without terminal timestamp.
-- [ ] Run:
-  `dotnet test tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj --filter "FullyQualifiedName~SubAgentProvenance"`
-  Expected RED: keys/status are absent.
-- [ ] Extend provenance to stamp status on every metadata write. Use the live `describeChild` callback already invoked by `NonOwningConversationStore`; no second registry.
-- [ ] Make `TryProject` return persisted exact status when present and `unknown` for legacy children instead of the current ambiguous `persisted` marker.
-- [ ] Add restart projection assertions for all terminal states and legacy unknown.
-- [ ] Run the focused tests; expected GREEN.
-- [ ] Commit:
-  `git commit -m "feat(streaming): persist sub-agent terminal state"`
+- [ ] Add RED tests for `Completed`, `Error`, `Stopped`, and `Running` projection; terminal values include UTC timestamp, running does not.
+- [ ] Add RED test: child reaches terminal, performs no subsequent metadata write, and exact status/timestamp are still persisted.
+- [ ] Add RED restart tests: exact terminal values restore; old metadata without exact status projects as `unknown`.
+- [ ] Run focused LmMultiTurn/LmStreaming tests; confirm missing keys/transition callback are the failures.
+- [ ] Add a narrow terminal-state persistence callback owned by the host integration and invoke it from the manager path that sets terminal state. The manager actively pushes the terminal update; do not rely solely on the child's next `SaveMetadataAsync`.
+- [ ] Keep existing metadata-write provenance projection as an idempotent refresh path; no second registry.
+- [ ] Run focused tests; expected GREEN.
+- [ ] Commit: `feat(streaming): persist sub-agent terminal transitions`.
 
-### Task 2: Expose recursive completion snapshots
+### Task 2: Expose a versioned persisted descendant graph
 
 **Files:**
-- Modify: `src/LmMultiTurn/SubAgents/SubAgentManager.cs`
 - Modify: `samples/LmStreaming.Sample/Models/SubAgentSummary.cs`
 - Modify: `samples/LmStreaming.Sample/Controllers/ConversationsController.cs`
-- Test: `tests/LmMultiTurn.Tests/SubAgents/SubAgentManagerListAgentsTests.cs`
+- Modify: `samples/LmStreaming.Sample/ClientApp/src/api/subAgentsApi.ts`
 - Test: `tests/LmStreaming.Sample.Tests/Controllers/ConversationsControllerSubAgentsTests.cs`
 
-**Interfaces:**
+**Produces:**
 
 ```csharp
-public sealed record RecursiveSubAgentSnapshot(
-    string AgentId, string ThreadId, string ParentThreadId,
-    string? Name, string Template, SubAgentStatus Status,
-    int Depth, DateTimeOffset? TerminalAtUtc, string? FailureCode);
-
-public IReadOnlyList<RecursiveSubAgentSnapshot> ListAgentTree();
+public sealed record SubAgentTreeResponse(
+    int SchemaVersion,
+    IReadOnlyList<SubAgentSummary> Nodes);
 ```
 
-HTTP: `GET /api/conversations/{threadId}/subagents?recursive=true` returns the existing flat array shape with `parentThreadId`, `depth`, `terminalAtUtc`, and stable status values.
+Recursive node fields are required in schema v1: `agentId`, `threadId`, `parentThreadId`, `name`, `template`, `status`, `depth`, `terminalAtUtc`, `failureCode`.
 
-- [ ] Write a failing LmMultiTurn test with parent -> child -> grandchild; assert both descendants, depth, and parent IDs.
-- [ ] Run the test; expected RED: `ListAgentTree` absent.
-- [ ] Implement recursive traversal only through live child loops whose `SubAgentManager` exists. Return immutable DTOs; never expose execution handles.
-- [ ] Write failing controller tests: live recursive tree, persisted recursive tree after parent leaves pool, and legacy child as `unknown`.
-- [ ] Implement controller recursive merge. Traverse persisted provenance by parent thread ID with cycle detection and the existing 2,000-thread scan cap.
-- [ ] Run both test projects; expected GREEN.
-- [ ] Commit:
-  `git commit -m "feat(streaming): expose recursive sub-agent completion"`
+HTTP: `GET /api/conversations/{threadId}/subagents?recursive=true` returns `schemaVersion: 1` plus a deterministically ordered node array. The existing no-query endpoint keeps its old array shape.
 
-### Task 3: Add provider-neutral barrier
+- [ ] Add RED controller test with persisted root→child→grandchild metadata; assert depth and parent IDs. State explicitly that this tests graph-reader correctness, not live nested spawning.
+- [ ] Add RED tests for cycles, terminal ancestors, legacy `persisted`→`unknown`, and required relationship fields.
+- [ ] Add RED compatibility test: non-recursive response retains its current fields/shape.
+- [ ] Implement one bounded store scan (existing 2,000-thread cap), build a parent→children index once, and traverse from the root with a visited set. Do not repeat the store scan per depth/node.
+- [ ] Order recursive nodes by `(depth, parentThreadId, threadId)`.
+- [ ] Update TypeScript status with `unknown` and additive recursive fields.
+- [ ] Log cycle cuts using opaque IDs only.
+- [ ] Run LmStreaming tests/client typecheck; expected GREEN.
+- [ ] Commit: `feat(streaming): expose versioned sub-agent descendants`.
+
+### Task 3: Add the provider-neutral shared-deadline barrier
 
 **Files:**
 - Create: `samples/CodeReviewDaemon.Sample/Agents/ReviewSubAgentCompletion.cs`
 - Create: `tests/CodeReviewDaemon.Sample.Tests/Agents/ReviewSubAgentCompletionBarrierTests.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Configuration/CodeReviewDaemonOptions.cs`
 
-**Interfaces:**
+**Produces:**
 
 ```csharp
 internal interface IReviewSubAgentCompletionSource
@@ -122,134 +125,143 @@ internal sealed record ReviewSubAgentTreeSnapshot(
 internal sealed class ReviewSubAgentCompletionBarrier
 {
     Task<ReviewSubAgentTreeSnapshot> WaitAsync(
-        ReviewRun run, string parentThreadId, CancellationToken ct);
+        ReviewRun run,
+        string parentThreadId,
+        DateTimeOffset deadlineUtc,
+        Func<CancellationToken, Task> validateReviewStillCurrent,
+        CancellationToken ct);
 }
+
+internal sealed class ReviewBarrierDeadlineException : TimeoutException;
 ```
 
-Options: `ReviewSubAgentBarrierTimeoutMinutes = 30`, `ReviewSubAgentBarrierQuietSeconds = 2`.
+Options: `ReviewStageDeadlineMinutes = 30`, `ReviewSubAgentBarrierQuietSeconds = 2`.
 
-- [ ] Test RED: running child blocks; second identical all-terminal snapshot opens; late nested child resets; error/stopped terminal; unknown blocks; empty tree requires two snapshots; timeout throws.
-- [ ] Use `TimeProvider` and scripted source, never sleeps.
-- [ ] Implement canonical snapshot identity sorted by `(Depth, ParentThreadId, AgentId)` and compare IDs/parents/status only.
-- [ ] Poll with 1, 2, 4, then 5 second intervals capped by deadline; quiet-period second read is mandatory.
+- [ ] RED: three running children resolve in different orders; barrier stays closed until all terminal.
+- [ ] RED: error/stopped terminal; running/unknown block; mixed terminal foreground + running background blocks.
+- [ ] RED: second identical all-terminal snapshot opens; empty tree also needs two snapshots.
+- [ ] RED: roster addition, removal, parent change, or status change resets stability.
+- [ ] RED: a persisted descendant behind a terminal ancestor remains part of identity and blocks while nonterminal.
+- [ ] RED: resumed deadline with 25 minutes elapsed allows only five remaining minutes.
+- [ ] RED: lifecycle/head validator failure aborts before barrier opens.
+- [ ] Use `TimeProvider` and scripted sources; never sleep in unit tests.
+- [ ] Canonicalize snapshots by `(Depth, ParentThreadId, AgentId)` and compare IDs/parents/status.
+- [ ] Poll 1, 2, 4, then 5 seconds capped by the supplied absolute deadline; throw `ReviewBarrierDeadlineException` at expiry.
 - [ ] Run tests; expected GREEN.
-- [ ] Commit:
-  `git commit -m "feat(daemon): wait for recursive review agents"`
+- [ ] Commit: `feat(daemon): wait for review sub-agent settlement`.
 
-### Task 4: Implement in-process and S2S sources
+### Task 4: Implement in-process and S2S completion sources
 
 **Files:**
-- Modify: `samples/CodeReviewDaemon.Sample/Agents/LiveReviewAgentLoopFactory.cs`
+- Modify: `src/LmMultiTurn/SubAgents/SubAgentManager.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Agents/LmStreamingS2SClient.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Agents/S2SReviewAgent.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Program.cs`
-- Test: daemon factory/client scenario tests.
+- Test: `tests/LmMultiTurn.Tests/SubAgents/SubAgentManagerListAgentsTests.cs`
+- Test: daemon S2S client/source tests.
 
-- [ ] Add RED in-process test: source reads recursive tree from the exact parent review loop.
-- [ ] Add RED S2S client test: recursive endpoint maps every field and sends S2S/app headers.
-- [ ] Implement `InProcessReviewSubAgentCompletionSource` using a read-only parent-loop lookup supplied by `LiveReviewAgentLoopFactory`.
-- [ ] Implement `S2SReviewSubAgentCompletionSource` calling `api/conversations/{threadId}/subagents?recursive=true`.
-- [ ] Register the correct source by review mode. If unavailable, barrier retries and eventually fails closed; no null-object success.
-- [ ] Run daemon tests; expected GREEN.
-- [ ] Commit:
-  `git commit -m "feat(daemon): read review-agent completion trees"`
+- [ ] RED in-process test: immutable source snapshot contains every direct child from the exact live parent manager; no execution handle escapes.
+- [ ] RED S2S test: schema-v1 graph maps all fields and sends S2S/app headers without logging values.
+- [ ] RED version-skew tests: old flat response, absent/unsupported schema version, and missing required relationship fields fail closed.
+- [ ] RED malformed/new status string maps to `Unknown`, not terminal/default or an unhandled JSON enum error.
+- [ ] Implement `InProcessReviewSubAgentCompletionSource` from a manager passed directly in the same call stack. Do not add a loop lookup registry to `LiveReviewAgentLoopFactory`.
+- [ ] Implement `S2SReviewSubAgentCompletionSource` against the versioned recursive endpoint.
+- [ ] Register the mode-appropriate source; unavailable/incompatible snapshots never become empty-success.
+- [ ] Document host-first deployment before daemon barrier enablement.
+- [ ] Run focused tests; expected GREEN.
+- [ ] Commit: `feat(daemon): read review completion state`.
 
-### Task 5: Split provisional and synthesis turns
+### Task 5: Keep one parent alive and split provisional from synthesis
 
 **Files:**
 - Modify: `samples/CodeReviewDaemon.Sample/Agents/ReviewAgent.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Agents/S2SReviewAgent.cs`
+- Modify: `samples/CodeReviewDaemon.Sample/Agents/S2SReviewAgentLoopFactory.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Agents/DaemonAgentFactory.cs`
+- Modify: `src/LmMultiTurn/SubAgents/SubAgentToolProvider.cs` — turn-scoped spawn suppression while retaining result/message tools.
+- Modify: `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs`
 - Test: `tests/CodeReviewDaemon.Sample.Tests/Scenarios/ReviewAgentTests.cs`
 - Test: `tests/CodeReviewDaemon.Sample.Tests/Scenarios/S2SReviewAgentTests.cs`
+- Test: executor lifecycle tests.
 
-**Interfaces:**
+**Produces:**
 
 ```csharp
-Task<ReviewAgentResult> CollectProvisionalAsync(string input, CancellationToken ct);
+Task<ReviewAgentResult> CollectProvisionalAsync(
+    string input, DateTimeOffset deadlineUtc, CancellationToken ct);
+
 Task<ReviewAgentResult> SynthesizeFinalAsync(
-    string synthesisPrompt, bool allowInlinePosting, CancellationToken ct);
+    string synthesisPrompt,
+    bool allowInlinePosting,
+    DateTimeOffset deadlineUtc,
+    CancellationToken ct);
 ```
 
-- [ ] RED: provisional sends one turn and never enforcement/post prompt.
-- [ ] RED: synthesis sends a second turn on same agent/thread and returns second answer, not first.
-- [ ] RED: synthesis error/blank throws.
-- [ ] Build synthesis prompt from deterministic safe inventory: completed names/templates and failed/stopped names/templates/status only.
-- [ ] Remove old `ReviewAsync(input, postEnforcementPrompt)` behavior after all callers migrate; do not keep parallel APIs.
+- [ ] RED: provisional sends one collect-only turn, regardless of posting configuration.
+- [ ] RED: the parent loop's disposal does not occur between provisional and barrier/synthesis; disposal occurs after synthesis/failure.
+- [ ] RED: synthesis runs on the same in-process agent and same S2S thread and returns the second answer.
+- [ ] RED: `S2SReviewAgentLoopFactory` seeds a persisted existing thread ID; no `ProvisionAsync` call occurs on resume.
+- [ ] RED: both S2S turns respect the one supplied absolute deadline rather than creating fresh per-turn windows.
+- [ ] RED: synthesis profile cannot call `Agent`; delivered-result reading and in-process provider posting remain available.
+- [ ] RED: synthesis generation error/blank throws. Keep provider verification outside this method so verification exceptions remain fallback-eligible.
+- [ ] Build deterministic safe inventory from name/template/status/failure-code only.
+- [ ] Extend the existing executor `await using` scope to enclose collect → barrier → synthesize. Pass the live manager directly to the in-process source.
+- [ ] Remove old `ReviewAsync(input, postEnforcementPrompt)` after all callers migrate; do not keep parallel APIs.
 - [ ] Run tests; expected GREEN.
-- [ ] Commit:
-  `git commit -m "feat(daemon): synthesize reviews after child settlement"`
+- [ ] Commit: `feat(daemon): synthesize after child settlement`.
 
-### Task 6: Persist barrier and synthesis checkpoints
+### Task 6: Persist minimal resumable checkpoints and retry semantics
 
 **Files:**
 - Modify: `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs`
+- Modify: `samples/CodeReviewDaemon.Sample/Orchestration/PrOrchestrator.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Persistence/ReviewStore.cs`
-- Test: `tests/CodeReviewDaemon.Sample.Tests/Orchestration/DaemonReviewStageExecutorTests.cs`
+- Test: `tests/CodeReviewDaemon.Sample.Tests/Scenarios/DaemonReviewStageExecutorTests.cs`
+- Test: orchestrator retry tests.
 
-**Interfaces:**
+**Artifact kinds:**
 
 ```csharp
 internal const string ProvisionalReviewArtifactKind = "review-provisional";
-internal const string SubAgentSnapshotArtifactKind = "review-subagent-snapshot";
 internal const string SynthesisRequestArtifactKind = "review-synthesis-request";
-
-internal sealed record ReviewProvisionalPayload(
-    string ReviewText, string ParentThreadId, string? ParentRunId,
-    DateTimeOffset CreatedAtUtc);
-internal sealed record ReviewSubAgentSnapshotPayload(
-    IReadOnlyList<ReviewSubAgentNode> Nodes, DateTimeOffset BarrierOpenedAtUtc);
-internal sealed record ReviewSynthesisRequestPayload(
-    string InputId, string? RunId, string ParentThreadId);
 ```
 
-- [ ] Write a failing executor test: `Reviewed` persists `review-provisional` but no authoritative `review`, judge artifact, or posting outbox while the completion source reports a running child.
-- [ ] Run:
-  `dotnet test tests/CodeReviewDaemon.Sample.Tests/CodeReviewDaemon.Sample.Tests.csproj --filter "FullyQualifiedName~Reviewed_waits_for_recursive_children"`
-  Expected RED: the existing executor immediately creates `review`.
-- [ ] Add `ReviewStore.TryGetLatestArtifact(reviewRunId, artifactKind)` under the existing store gate; return null when absent and preserve append-only artifact history.
-- [ ] Refactor `RunPrimaryReviewAsync` into four resumable checkpoints: collect/load provisional; wait/load terminal snapshot; queue/poll synthesis; persist authoritative `review`.
-- [ ] If `review-synthesis-request` exists after restart, call a new `SynthesizeFinalByInputAsync` polling seam instead of sending a duplicate input.
-- [ ] Add restart tests after each checkpoint: provisional saved, barrier opened, synthesis queued, authoritative saved. Each test constructs a fresh executor over the same `ReviewStore`.
-- [ ] Assert timeout/snapshot/synthesis failure leaves no authoritative artifact and bubbles to `PrOrchestrator`, which marks `RetryPending`.
-- [ ] Run focused daemon tests; expected GREEN.
-- [ ] Commit:
-  `git commit -m "feat(daemon): persist review completion checkpoints"`
+Reuse `ReviewArtifactPayload` for provisional review text/thread/run correlation, extending it append-compatibly with nullable `ReviewedStartedAtUtc` and `ReviewedDeadlineUtc`. Add an S2S-only synthesis request payload containing input ID, run ID, and parent thread ID. Do not add `review-subagent-snapshot`.
 
-### Task 7: Verify inline delivery and apply fallback
+- [ ] Rewrite existing `Reviewed_persists_a_review_artifact_and_skips_optional_arms_by_default`: before barrier/synthesis it now asserts `review-provisional` exists and `review`, judge, and posting outbox do not.
+- [ ] RED completion test: after barrier+synthesis, authoritative `review` exists and downstream consumers use it.
+- [ ] RED restart test: S2S loads provisional thread/deadline, repeats snapshot stability, and sends synthesis on that same thread.
+- [ ] RED accepted-input restart test: existing S2S synthesis input is polled, not resent.
+- [ ] RED deadline restart test: original deadline is retained.
+- [ ] RED in-process restart policy test: provisional is never promoted/resumed as a live execution; the attempt restarts collect-only.
+- [ ] RED failure tests: timeout/snapshot/synthesis failure leaves no authoritative artifact and results in `RetryPending`.
+- [ ] Add `ReviewStore.TryGetLatestArtifact`; make the executor's existing `ReadArtifactPayload` delegate to it rather than retaining duplicate lookup logic.
+- [ ] Refactor primary review into minimal checkpoints: collect/load provisional; re-query barrier; S2S queue/poll synthesis; persist authoritative review.
+- [ ] Extend `RetryGovernor` accounting only for `ReviewBarrierDeadlineException` at `Reviewed`; do not park all transient Reviewed failures. Existing poll interval remains the baseline retry delay.
+- [ ] Document rollback procedure for in-flight provisional runs: stop intake and reset to `ContextReady`; never copy provisional to review.
+- [ ] Run focused tests; expected GREEN.
+- [ ] Commit: `feat(daemon): resume post-barrier review synthesis`.
+
+### Task 7: Reject stale/changed synthesis and reuse canonical delivery
 
 **Files:**
-- Modify: `samples/CodeReviewDaemon.Sample/Orchestration/IReviewCommentPublisher.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Orchestration/DaemonReviewStageExecutor.cs`
 - Modify: `samples/CodeReviewDaemon.Sample/Orchestration/ReviewPoster.cs`
 - Test: `tests/CodeReviewDaemon.Sample.Tests/Scenarios/ReviewPosterTests.cs`
 - Test: `tests/CodeReviewDaemon.Sample.Tests/Scenarios/DaemonReviewStageExecutorTests.cs`
 
-**Interfaces:**
-
-```csharp
-Task<PostedComment?> FindAuthoritativeReviewAsync(
-    ReviewCommentTarget target,
-    string headSha,
-    string authoritativeReviewMarker,
-    CancellationToken cancellationToken);
-```
-
-The marker is head-scoped and synthesis-specific:
-`review-synthesis:v1:{provider}:{normalizedRepo}:{prId}:{headSha}:{variantId}`.
-
-- [ ] Write failing tests: marker found means no host post; marker absent means one host post; provider verification exception also invokes the idempotent host fallback; replay/restart remains exactly once.
-- [ ] Run the two scenario test classes; expected RED because the publisher has no synthesis verification seam.
-- [ ] Add the marker to the in-process synthesis/post prompt. Require the agent's posted summary to carry it; line comments need not duplicate it.
-- [ ] Implement provider scans for the authoritative marker using existing bounded comment/thread APIs. Never infer posting from model text such as “already posted.”
-- [ ] In `Posted`, verify in-process delivery first. If found, transition/adopt the existing outbox response without posting a summary; otherwise pass the authoritative synthesis to `ReviewPoster`.
-- [ ] On S2S skip inline verification and call `ReviewPoster` directly, because the hosted agent intentionally has no provider credential.
-- [ ] Ensure judge and `CommitPooledNotesAsync` read only `ReviewArtifactKind`, never `review-provisional`.
+- [ ] RED: post-synthesis snapshot identical to barrier snapshot allows promotion; any roster/status change rejects the synthesis and posts nothing.
+- [ ] RED: PR closes/merges or head changes before synthesis or posting; old-head output is not promoted/posted.
+- [ ] RED in-process: canonical summary marker found means no host post; marker absent means one fallback; verification exception also invokes one idempotent fallback; replay remains exactly once.
+- [ ] RED S2S: marker verification is never called and `ReviewPoster` receives authoritative synthesis directly.
+- [ ] Build the synthesis summary key through existing `IdempotencyKey.Build` using synthesis-specific operation/artifact components. Embed/scan through existing `IdempotencyMarker` and `IReviewCommentPublisher.FindPostedCommentAsync`; add no new publisher method or marker format.
+- [ ] Verify the issue-level summary marker only; line-inline comments need not duplicate it.
+- [ ] Keep synthesis-generation exceptions fatal; catch only provider-verification failures and route them to fallback.
+- [ ] Ensure judge and `CommitPooledNotesAsync` consume only `ReviewArtifactKind`, never provisional.
 - [ ] Run tests; expected GREEN.
-- [ ] Commit:
-  `git commit -m "feat(daemon): verify post-barrier review delivery"`
+- [ ] Commit: `feat(daemon): verify authoritative review delivery`.
 
-### Task 8: Close the S2S durable-status loop
+### Task 8: Prove S2S durability and compatibility end-to-end
 
 **Files:**
 - Modify: `samples/LmStreaming.Sample/Controllers/ConversationsController.cs`
@@ -258,62 +270,50 @@ The marker is head-scoped and synthesis-specific:
 - Test: `tests/LmStreaming.Sample.Tests/Controllers/ConversationsControllerSubAgentsTests.cs`
 - Test: `tests/CodeReviewDaemon.Sample.Tests/Scenarios/LmStreamingS2SClientTests.cs`
 
-- [ ] Write a failing end-to-end-style controller test: remove the live parent from the pool, retain child metadata, request `?recursive=true`, and assert exact completed/error/stopped states and parent/depth survive.
-- [ ] Write a failing client test for a mixed recursive tree and verify all three auth headers are attached without logging values.
-- [ ] Run focused tests; expected RED until Tasks 1–2 production changes are wired end-to-end.
-- [ ] Make recursive response ordering deterministic by `(depth, parentThreadId, threadId)` and reject/cut cycles with a warning containing only opaque IDs.
-- [ ] Keep the old non-recursive response backward compatible: existing fields and status spellings remain accepted; new fields are additive.
-- [ ] Run focused and full `LmStreaming.Sample.Tests`; expected GREEN.
-- [ ] Commit:
-  `git commit -m "test(streaming): prove durable recursive completion status"`
+- [ ] End-to-end-style test: remove live parent from pool, retain child metadata, request recursive v1, and assert completed/error/stopped plus parent/depth survive.
+- [ ] Test root→terminal child→running grandchild provenance: grandchild remains visible and blocks the daemon source.
+- [ ] Test deterministic ordering, cycle cut, one bounded scan per endpoint request, and exact auth headers without value logging.
+- [ ] Test old non-recursive endpoint compatibility and document deliberate recursive legacy `persisted`→`unknown` mapping.
+- [ ] Test daemon-ahead-of-host response fails closed.
+- [ ] Run focused and full LmStreaming tests; expected GREEN.
+- [ ] Commit: `test(streaming): prove durable review descendant status`.
 
 ### Task 9: Full regression and live timing proof
 
 **Files:**
-- Modify only files needed to repair regressions introduced by Tasks 1–8.
-- Update: `docs/superpowers/specs/2026-07-29-daemon-recursive-review-completion-barrier-design.md` only if verified implementation details differ.
-- Runtime evidence: `.run/review-completion-barrier-*` (ignored, never committed).
+- Modify only files required to repair regressions introduced by Tasks 1–8.
+- Update this spec only if verified implementation details differ.
+- Runtime evidence: `.run/review-completion-barrier-*` (ignored).
 
-- [ ] Run daemon tests:
-  `dotnet test tests/CodeReviewDaemon.Sample.Tests/CodeReviewDaemon.Sample.Tests.csproj --nologo`
-  Expected: zero failures.
-- [ ] Run LmMultiTurn tests:
-  `dotnet test tests/LmMultiTurn.Tests/LmMultiTurn.Tests.csproj --nologo`
-  Expected: zero failures.
-- [ ] Run LmStreaming tests:
-  `dotnet test tests/LmStreaming.Sample.Tests/LmStreaming.Sample.Tests.csproj --nologo`
-  Expected: zero failures except existing platform skips.
-- [ ] Run full solution:
-  `dotnet test LmDotnetTools.sln --no-build --logger "trx;LogFileName=results.trx" --results-directory .logs/review-barrier`
-  Expected: every project passes; intentional skips only.
-- [ ] Run whitespace checks for all four changed source/test projects with `dotnet format whitespace ... --verify-no-changes --no-restore`.
-- [ ] Launch the dedicated review host on 5051 and an isolated daemon database targeting one fixture PR. Use Terra for the parent and Sol/Terra-only child model resolution.
-- [ ] Drive a deterministic delayed-child fixture: one child completes after the provisional answer. Capture timestamps for child terminal state, barrier-open event, synthesis input, authoritative answer, provider post, judge, and run completion.
-- [ ] Assert from logs/provider API:
-  `max(descendantTerminalAt) <= synthesisQueuedAt < authoritativeAnswerAt <= providerPostAt < judgeAt`.
-- [ ] Repeat with a late nested child and with one errored child; verify stability reset and safe failure disclosure.
-- [ ] Repeat with an intentionally nonterminal child and a shortened test-only barrier timeout; verify no provider comment and `RetryPending`.
-- [ ] Commit any regression fixes:
-  `git commit -m "test(daemon): verify recursive review completion barrier"`
-- [ ] Push and update PR #230 with measured counts and live timing evidence.
+- [ ] Run daemon, LmMultiTurn, and LmStreaming test projects with zero failures.
+- [ ] Run full solution with TRX output under `.logs/review-barrier`; no pre-existing failure allowance.
+- [ ] Run CSharpier/whitespace verification for changed projects.
+- [ ] Launch dedicated review host on 5051 (never production 5050) and isolated daemon DB. Use Terra parent and Sol/Terra-only child resolution.
+- [ ] Use multiple concurrent delayed background children completing in different orders; capture provisional, every child terminal, barrier open, synthesis queued, authoritative response, provider post, judge, and completion timestamps.
+- [ ] Assert `max(descendantTerminalAt) <= synthesisQueuedAt < authoritativeAnswerAt <= providerPostAt < judgeAt` and total Reviewed duration ≤ configured shared deadline.
+- [ ] Repeat with persisted late descendant, errored/stopped child, unknown wire status/version skew, PR lifecycle/head change, and shortened deadline.
+- [ ] Keep another PR queued during the delayed fixture and report serial-poller delay as the accepted limitation; do not add poller parallelization in this feature.
+- [ ] Verify provider API contains no provisional/stale comment and exactly one authoritative summary.
+- [ ] Push and update PR #230 with measured counts, rollout order, and timing evidence.
 
 ### Task 10: Re-review the completed implementation
 
-**Files:** none unless findings require fixes.
-
-- [ ] Invoke `code-reviewer:pr-review` on the final PR head with explicit lenses: correctness, concurrency, restart/idempotency, schema compatibility, exception handling, test coverage, over-engineering, and blind spots.
+- [ ] Invoke `code-reviewer:pr-review` on final PR head with correctness, concurrency, restart/idempotency, schema compatibility, exception handling, test coverage, over-engineering, and blind-spot lenses.
 - [ ] Verify each finding against current code before editing.
 - [ ] Implement valid findings one at a time with RED→GREEN tests and separate commits.
-- [ ] Re-run Task 9 verification after any fix.
-- [ ] Reply in the matching GitHub review thread and resolve only after the fix is pushed and verified.
+- [ ] Re-run Task 9 after any fix.
+- [ ] Reply in matching GitHub review threads and resolve only after pushed verification.
 
 ---
 
-## Plan self-review
+## Reviewed-plan decisions
 
-- **Spec coverage:** Tasks 1–2 durable recursive status; Tasks 3–4 unified barrier sources; Task 5 same-thread synthesis; Task 6 restart checkpoints; Task 7 verified posting/fallback; Task 8 S2S compatibility; Task 9 timeout/errors/live timing; Task 10 requested adversarial review.
-- **Scope:** one subsystem; lifecycle webhooks remain optional and non-authoritative.
-- **Type consistency:** `ReviewSubAgentTreeSnapshot`, `ReviewSubAgentNode`, `IReviewSubAgentCompletionSource`, and artifact names are introduced before executor use.
-- **Security:** inventories exclude prompts/raw errors; existing S2S and sandbox credentials remain header-only/environment-only.
-- **No duplicate architecture:** reuses `SubAgentManager`, `SubAgentProvenance`, `ReviewStore`, `ReviewPoster`, and provider backstop scans rather than adding a second registry/outbox.
-- **Failure direction:** unknown/running descendants, unavailable snapshots, blank synthesis, and timeout all fail closed before posting.
+- **Removed duplicate marker architecture:** canonical `IdempotencyKey`/`FindPostedCommentAsync` only.
+- **Removed duplicate tree checkpoint:** durable child provenance is re-queried after restart.
+- **No fabricated in-process InputId:** only S2S queues/polls accepted input IDs; in-process restart reruns collect-only.
+- **No loop registry:** one local live loop spans provisional→barrier→synthesis.
+- **No hidden nested-delegation enablement:** live source reports current direct roster; S2S recursion is a persisted graph reader.
+- **One deadline, not stacked timeouts:** original absolute deadline is persisted and shared by all phases.
+- **Synthesis cannot reopen the race:** spawn tool removed and a post-synthesis snapshot verifies stability.
+- **Rollout fails closed:** host schema capability first; old flat responses are rejected.
+- **Scope held:** serial poller delay is measured/disclosed, not solved by unrelated parallelization.
