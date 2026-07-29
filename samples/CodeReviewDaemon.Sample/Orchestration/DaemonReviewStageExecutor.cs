@@ -771,7 +771,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ex,
                 "Run {RunId}: pooled slot {Index} store is corrupt; re-cloning and retrying prepare once.",
                 run.Id, slot.Index);
-            await _slotWorkspace!.Pool.RecloneStoreAsync(slot, cancellationToken).ConfigureAwait(false);
+            await _slotWorkspace!.Preparer.RecloneStoreAsync(slot.StorePath, storeUrl, cancellationToken)
+                .ConfigureAwait(false);
             return await _slotWorkspace.Preparer.PrepareAsync(
                     slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
                     cancellationToken)

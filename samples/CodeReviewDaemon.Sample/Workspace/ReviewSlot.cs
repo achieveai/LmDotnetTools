@@ -1,81 +1,36 @@
 namespace CodeReviewDaemon.Sample.Workspace;
 
 /// <summary>
-/// One host-side review-checkout slot handed out by <see cref="ReviewSlotPool"/>: a persistent store
-/// clone at <see cref="StorePath"/> plus a scratch working tree at <see cref="ScratchPath"/>, both
-/// under <see cref="HostPath"/>. Later tasks (prepare/review/commit) operate on the paths; this record
-/// is purely the addressing contract.
+/// One review-checkout slot address handed out by <see cref="ReviewSlotPool"/>. The pool owns only the
+/// address and lease; repository creation and validation begin after the slot is mounted through the sandbox SDK.
 /// </summary>
-/// <param name="Index">The slot's stable 0-based identity within the pool (recycled on return).</param>
-/// <param name="HostPath">`&lt;hostRoot&gt;/&lt;slotDirPrefix&gt;{Index}` — the slot's root directory.</param>
-/// <param name="StorePath">`&lt;HostPath&gt;/store` — the warm store clone, cloned once and reused
-/// across leases.</param>
-/// <param name="ScratchPath">`&lt;HostPath&gt;/&lt;scratchDirName&gt;` — the per-review working tree.
-/// Wiping it between leases is a later task's responsibility.</param>
 internal sealed record ReviewSlot(int Index, string HostPath, string StorePath, string ScratchPath);
 
-/// <summary>
-/// The narrow lease/return seam <see cref="ReviewSlotPool"/> exposes to the executor, mirroring the
-/// <c>IReviewSessionProvisioner</c>/<c>ISandboxSessionSource</c> seams so the pooled-review wiring stays
-/// verifiable against a fake without standing up the real host-side pool.
-/// </summary>
 internal interface IReviewSlotPool
 {
     Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken);
 
     Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Discards a leased slot's store and re-clones it from scratch — the recovery escalation when the warm
-    /// store is corrupt (a stale lock that survived cleaning, a broken object, a half-inited submodule). The
-    /// caller keeps the same leased slot; only its store contents are replaced.
-    /// </summary>
-    Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken);
 }
 
 /// <summary>
-/// A warm host-side pool of <see cref="ReviewSlot"/>s (design task 5): the daemon leases a slot, uses
-/// its store clone for a review, then returns it — the store is cloned once per slot and never
-/// re-cloned, so repeated reviews avoid the cost of a fresh clone.
+/// A bounded pool of stable workspace addresses. It deliberately does not inspect, clone, repair, or delete the
+/// store: those operations require the run-bound <c>SandboxClient</c> session mounted over the leased address.
 /// </summary>
-/// <remarks>
-/// A <see cref="SemaphoreSlim"/> gate bounds concurrent leases to <c>maxSlots</c>: <see cref="LeaseAsync"/>
-/// awaits a permit before handing out a slot, and <see cref="ReturnAsync"/> releases it, so a lease
-/// beyond the configured capacity blocks until a slot is returned. A lock-guarded free list of
-/// previously-returned slot indices is checked first on lease; only when it is empty does the pool
-/// allocate a new index (capped by the invariant that at most <c>maxSlots</c> indices are ever
-/// outstanding at once). A slot's store directory is populated lazily — only the first lease of a given
-/// index invokes the clone callback; a returned-and-re-leased slot already has its store on disk and
-/// skips it entirely.
-/// </remarks>
 internal sealed class ReviewSlotPool : IReviewSlotPool
 {
     private readonly string _hostRoot;
     private readonly string _scratchDirName;
     private readonly string _slotDirPrefix;
-    private readonly Func<ReviewSlot, CancellationToken, Task> _ensureStoreClonedAsync;
-    private readonly ILogger<ReviewSlotPool> _logger;
     private readonly SemaphoreSlim _gate;
     private readonly Lock _freeIndexesLock = new();
     private readonly Stack<int> _freeIndexes = new();
     private int _nextIndex;
 
-    /// <param name="maxSlots">Maximum concurrent leases; also the ceiling on allocated slot indices.</param>
-    /// <param name="hostRoot">Root directory the slot dirs are created under. Null falls back to a
-    /// <c>review-pool</c> dir beside the binary.</param>
-    /// <param name="scratchDirName">Name of the per-review working-tree dir inside each slot.</param>
-    /// <param name="ensureStoreClonedAsync">Invoked on a slot's FIRST lease only, to populate its store.</param>
-    /// <param name="logger">Pool logger.</param>
-    /// <param name="slotDirPrefix">Prefix for each slot's directory name under <paramref name="hostRoot"/>.
-    /// Defaults to the historical <c>slot-</c>. The S2S path overrides it (and sets <paramref name="hostRoot"/>
-    /// to the workspace base) so a leased slot's directory is a <em>single</em> path segment — LmStreaming's
-    /// workspace-directory sanitizer accepts one segment only, and a nested name would silently collapse to a
-    /// different directory.</param>
     public ReviewSlotPool(
         int maxSlots,
         string? hostRoot,
         string scratchDirName,
-        Func<ReviewSlot, CancellationToken, Task> ensureStoreClonedAsync,
         ILogger<ReviewSlotPool> logger,
         string slotDirPrefix = "slot-")
     {
@@ -84,63 +39,31 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
             throw new ArgumentOutOfRangeException(nameof(maxSlots), maxSlots, "At least one slot is required.");
         }
 
-        ArgumentNullException.ThrowIfNull(ensureStoreClonedAsync);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scratchDirName);
         ArgumentException.ThrowIfNullOrWhiteSpace(slotDirPrefix);
 
         _hostRoot = hostRoot ?? Path.Combine(AppContext.BaseDirectory, "review-pool");
         _scratchDirName = scratchDirName;
         _slotDirPrefix = slotDirPrefix;
-        _ensureStoreClonedAsync = ensureStoreClonedAsync;
-        _logger = logger;
         _gate = new SemaphoreSlim(maxSlots, maxSlots);
     }
 
-    /// <summary>
-    /// The directory name this pool would give slot <paramref name="index"/> — the single path segment the
-    /// S2S path hands to LmStreaming as a workspace directory. Exposed so startup can assert the name survives
-    /// that sanitizer unchanged before any review runs.
-    /// </summary>
     public string SlotDirectoryName(int index) => $"{_slotDirPrefix}{index}";
 
-    /// <summary>
-    /// Awaits a free permit, then hands out a slot — a recycled one from the free list if any is
-    /// available, otherwise the next unallocated index. Clones the slot's store on first use only.
-    /// </summary>
     public async Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
         var index = TakeIndex();
         var slot = BuildSlot(index);
         try
         {
             Directory.CreateDirectory(slot.HostPath);
             Directory.CreateDirectory(slot.ScratchPath);
-
-            if (!Directory.Exists(slot.StorePath) || IsDirectoryEmpty(slot.StorePath))
-            {
-                _logger.LogInformation("Cloning store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
-                await _ensureStoreClonedAsync(slot, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                _logger.LogDebug("Reusing warm store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
-            }
-
             return slot;
         }
         catch
         {
-            // Setup failed after acquiring the permit + index (directory IO, or the clone callback threw
-            // or was cancelled). A partially-populated store must NOT be left behind: the next lease of this
-            // recycled index would see a non-empty StorePath, treat it as a warm clone, and skip re-cloning —
-            // yielding a corrupt, incomplete checkout. Wipe it (best-effort) so a later lease re-clones from
-            // scratch. Then recycle BOTH the index and the permit so a transient clone/IO failure cannot
-            // permanently consume pool capacity — otherwise repeated failures exhaust the pool until a daemon
-            // restart.
-            TryResetStore(slot.StorePath);
-
             lock (_freeIndexesLock)
             {
                 _freeIndexes.Push(index);
@@ -151,14 +74,9 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         }
     }
 
-    /// <summary>
-    /// Returns a slot's index to the free list and releases its permit, making it re-leasable. Scratch
-    /// wiping is a later task's responsibility — this only makes the index available again.
-    /// </summary>
     public Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(slot);
-
         lock (_freeIndexesLock)
         {
             _freeIndexes.Push(slot.Index);
@@ -166,21 +84,6 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
 
         _gate.Release();
         return Task.CompletedTask;
-    }
-
-    /// <summary>
-    /// Discards the slot's store and re-clones it — the recovery escalation when the warm store is corrupt.
-    /// The lease is retained; only the store contents are replaced. Mirrors the first-lease clone path.
-    /// </summary>
-    public async Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(slot);
-
-        _logger.LogWarning(
-            "Re-cloning corrupt store for review slot {Index} at {StorePath}", slot.Index, slot.StorePath);
-        TryResetStore(slot.StorePath);
-        Directory.CreateDirectory(slot.HostPath);
-        await _ensureStoreClonedAsync(slot, cancellationToken).ConfigureAwait(false);
     }
 
     private int TakeIndex()
@@ -196,35 +99,4 @@ internal sealed class ReviewSlotPool : IReviewSlotPool
         var hostPath = Path.Combine(_hostRoot, SlotDirectoryName(index));
         return new ReviewSlot(index, hostPath, Path.Combine(hostPath, "store"), Path.Combine(hostPath, _scratchDirName));
     }
-
-    /// <summary>Best-effort wipe of a slot's store directory after a failed lease, so partial contents are
-    /// never mistaken for a warm clone on the next lease. Read-only attributes are cleared first (a git
-    /// object store leaves read-only files) — mirrors <c>ReviewSessionProvisioner.ClearReadOnly</c>.</summary>
-    private void TryResetStore(string storePath)
-    {
-        try
-        {
-            if (!Directory.Exists(storePath))
-            {
-                return;
-            }
-
-            foreach (var file in Directory.EnumerateFiles(storePath, "*", SearchOption.AllDirectories))
-            {
-                var attributes = File.GetAttributes(file);
-                if ((attributes & FileAttributes.ReadOnly) != 0)
-                {
-                    File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
-                }
-            }
-
-            Directory.Delete(storePath, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Best-effort store reset failed for review slot at {StorePath}.", storePath);
-        }
-    }
-
-    private static bool IsDirectoryEmpty(string path) => !Directory.EnumerateFileSystemEntries(path).Any();
 }

@@ -4,20 +4,40 @@ using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Workspace;
 
-/// <summary>
-/// The resolved layout of a slot's store after <see cref="ReviewSlotPreparer.PrepareAsync"/>:
-/// <see cref="TargetDir"/> is the reviewed submodule's working tree (advanced to the PR head),
-/// <see cref="NotesDir"/> is where this PR's persistent review notes live under the store, and
-/// <see cref="Branch"/> is the persistent notes branch checked out at <see cref="StoreRoot"/>.
-/// </summary>
 internal sealed record PreparedCheckout(string StoreRoot, string TargetDir, string NotesDir, string Branch);
 
-/// <summary>
-/// The narrow prepare seam <see cref="ReviewSlotPreparer"/> exposes to the executor, so the pooled-review
-/// wiring can be verified against a fake preparer (mirroring <see cref="IReviewSlotPool"/>).
-/// </summary>
 internal interface IReviewSlotPreparer
 {
+    Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    Task RecloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
+    Task<PreparedCheckout> PrepareAsync(
+        ReviewRun run,
+        string storeRoot,
+        string scratchRoot,
+        string storeUrl,
+        string submoduleRelPath,
+        string branch,
+        string defaultBranch,
+        string notesRelPath,
+        OperationPolicy policy,
+        CancellationToken cancellationToken) =>
+        PrepareAsync(
+            new ReviewSlot(0, "/workspace", storeRoot, scratchRoot),
+            run,
+            storeUrl,
+            submoduleRelPath,
+            branch,
+            defaultBranch,
+            notesRelPath,
+            policy,
+            cancellationToken);
+
+    // Compatibility seam for existing fakes and the S2S host-owned preparation path while the in-process
+    // executor moves to the container-rooted overload above.
     Task<PreparedCheckout> PrepareAsync(
         ReviewSlot slot,
         ReviewRun run,
@@ -31,14 +51,8 @@ internal interface IReviewSlotPreparer
 }
 
 /// <summary>
-/// The privileged phase (design task 6) that prepares a leased warm slot (task 5) for one PR review:
-/// fetches the store, checks out — or reuses — the PR's <b>persistent</b> notes branch so prior notes
-/// survive a re-lease, advances the reviewed submodule to the PR head, and wipes the ephemeral scratch
-/// working tree. The submodule-init and head-checkout steps mirror
-/// <see cref="Orchestration.DaemonReviewStageExecutor"/>'s existing <c>InitAllowListedSubmodulesAsync</c>/
-/// <c>FetchAndCheckoutHeadAsync</c> logic exactly, rooted at the slot's store instead of the single-repo
-/// checkout, so the same allow-listed, hardened git sequence governs both paths. No filesystem-perms step
-/// here — the spike ruled RO-mount/chmod out; enforcement of what the review agent can write is elsewhere.
+/// Prepares a leased review store through the injected runner/filesystem. On the in-process pooled path these
+/// capabilities are the run-bound <see cref="SandboxSessionAdapter"/> over typed <c>SandboxClient</c>.
 /// </summary>
 internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 {
@@ -62,22 +76,53 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         _logger = loggerFactory.CreateLogger<ReviewSlotPreparer>();
     }
 
-    /// <param name="slot">The leased warm slot (its store already cloned by the pool).</param>
-    /// <param name="run">The PR run being prepared for — supplies <c>BaseSha</c>/<c>HeadSha</c>.</param>
-    /// <param name="storeUrl">The store remote, used to resolve relative submodule URLs (as
-    /// <c>EnsureCheckoutAsync</c> does).</param>
-    /// <param name="submoduleRelPath">The reviewed submodule's path under the store, e.g.
-    /// <c>repos/LmDotnetTools</c>.</param>
-    /// <param name="branch">The PR's persistent review branch, e.g.
-    /// <c>review/lmdotnettools-151</c>.</param>
-    /// <param name="defaultBranch">The store's default branch, e.g. <c>main</c> — only used when
-    /// <paramref name="branch"/> does not already exist on <c>origin</c>.</param>
-    /// <param name="notesRelPath">The persistent notes path under the store, e.g.
-    /// <c>PRs/lmdotnettools-151</c>.</param>
-    /// <param name="policy">The per-run <see cref="OperationPolicy"/> scoping which submodules may be
-    /// fetched.</param>
-    /// <param name="cancellationToken">Propagated to every git step and the submodule initializer.</param>
-    public async Task<PreparedCheckout> PrepareAsync(
+    public async Task EnsureStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeUrl);
+
+        var probe = await _git
+            .RunAsync(["-C", storeRoot, "rev-parse", "--git-dir"], storeRoot, cancellationToken)
+            .ConfigureAwait(false);
+        if (probe.Succeeded)
+        {
+            return;
+        }
+
+        // A store path that exists but is not a repository is structural corruption, not an absent first-use
+        // clone. Do not run `git clone <url> <non-empty-dir>` and misclassify its deterministic failure.
+        var entries = await _fileSystem.ListFilesAsync(storeRoot, cancellationToken).ConfigureAwait(false);
+        if (entries.Count > 0)
+        {
+            throw new SlotNeedsRecloneException(
+                $"Review store '{storeRoot}' exists but is not a valid git checkout.");
+        }
+
+        var clone = await _git
+            .RunAsync(["clone", storeUrl, storeRoot], "/workspace", cancellationToken)
+            .ConfigureAwait(false);
+        if (!clone.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Cloning the review store at '{storeRoot}' failed (exit {clone.ExitCode}): {clone.Stderr}");
+        }
+    }
+
+    public async Task RecloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
+    {
+        var remove = await _git.CommandRunner
+            .RunAsync(new SandboxCommand(["rm", "-rf", "--", storeRoot]), cancellationToken)
+            .ConfigureAwait(false);
+        if (!remove.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Removing corrupt review store '{storeRoot}' failed (exit {remove.ExitCode}): {remove.Stderr}");
+        }
+
+        await EnsureStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<PreparedCheckout> PrepareAsync(
         ReviewSlot slot,
         ReviewRun run,
         string storeUrl,
@@ -86,10 +131,34 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         string defaultBranch,
         string notesRelPath,
         OperationPolicy policy,
+        CancellationToken cancellationToken) =>
+        PrepareAsync(
+            run,
+            slot.StorePath,
+            slot.ScratchPath,
+            storeUrl,
+            submoduleRelPath,
+            branch,
+            defaultBranch,
+            notesRelPath,
+            policy,
+            cancellationToken);
+
+    public async Task<PreparedCheckout> PrepareAsync(
+        ReviewRun run,
+        string storeRoot,
+        string scratchRoot,
+        string storeUrl,
+        string submoduleRelPath,
+        string branch,
+        string defaultBranch,
+        string notesRelPath,
+        OperationPolicy policy,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(slot);
         ArgumentNullException.ThrowIfNull(run);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(scratchRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(storeUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(submoduleRelPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(branch);
@@ -97,29 +166,18 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         ArgumentException.ThrowIfNullOrWhiteSpace(notesRelPath);
         ArgumentNullException.ThrowIfNull(policy);
 
-        var storeRoot = slot.StorePath;
-
-        // 0. Clean-on-entry (the durability guarantee): bring the persistent warm store to a pristine state
-        // BEFORE any git step, so a stale lock / dirty tree / half-checked-out submodule left by a crashed
-        // prior lease can never wedge or contaminate this one. A structurally broken (or corrupt) store is
-        // re-cloned by the executor's recovery ladder; a non-corrupt submodule-restore failure is non-fatal
-        // (EnsureCleanAsync returns Clean and proceeds — the review re-establishes submodules with permitted
-        // fetches), so it never destructively re-clones a healthy warm store.
+        await EnsureStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
         if (await SlotHygiene.EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger).ConfigureAwait(false)
             == HygieneVerdict.NeedsReclone)
         {
             throw new SlotNeedsRecloneException(
-                $"Run {run.Id}: slot {slot.Index} store is structurally unusable; re-clone required.");
+                $"Run {run.Id}: review store '{storeRoot}' is structurally unusable; re-clone required.");
         }
 
-        // 1. Fetch origin — refreshes the store's remote-tracking refs so the branch-resolve below sees
-        // the PR's persistent branch (or the latest default branch) if it moved since the last lease.
         await RunGitOrThrowAsync(
                 ["-C", storeRoot, "fetch", "origin"], storeRoot, run, "fetching origin", cancellationToken)
             .ConfigureAwait(false);
 
-        // 2. Branch resolve (origin-aware — fixes the note-wiping risk): reuse the persistent branch's
-        // prior notes when it already exists on origin; otherwise branch fresh from the default branch.
         var verify = await _git
             .RunAsync(["-C", storeRoot, "rev-parse", "--verify", $"origin/{branch}"], storeRoot, cancellationToken)
             .ConfigureAwait(false);
@@ -132,8 +190,6 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // 3. Init the reviewed submodule exactly like InitAllowListedSubmodulesAsync: selective,
-        // allow-listed, recursive; a denied entry is logged and the walk continues.
         var initializer = new SubmoduleInitializer(
             _git, _fileSystem, policy, _provider, _loggerFactory.CreateLogger<SubmoduleInitializer>());
         var outcome = await initializer
@@ -143,16 +199,12 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         {
             _logger.LogWarning(
                 "Run {RunId}: submodule '{Path}' ({Url}) was not initialized: {Reason}",
-                run.Id, denied.Path, denied.Url, denied.Reason);
+                run.Id,
+                denied.Path,
+                denied.Url,
+                denied.Reason);
         }
 
-        // Post-init verification (the executor's store-checkout path already does this): the REVIEWED
-        // submodule must have actually initialized. Without this a denied/failed init silently proceeds to
-        // the fetch below, which then fails opaquely. But NOT every failure is slot corruption: a TRANSIENT
-        // cause (auth/network/throttle — captured in the denial reason's stderr) must retry the warm store, not
-        // trigger a destructive reclone that can't fix it and would loop (review #180). Only a definitely-Corrupt
-        // failure drives the reclone ladder; Unknown is "treated as transient" (per GitFailureKind) — retry it,
-        // don't reclone — matching the store-checkout classification at RunGitOrThrowAsync below.
         if (!outcome.InitializedPaths.Contains(submoduleRelPath, StringComparer.Ordinal))
         {
             var reason = outcome.Denied
@@ -164,10 +216,9 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
             }
 
             throw new SlotCorruptException(
-                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; slot needs re-clone. {reason}");
+                $"Run {run.Id}: reviewed submodule '{submoduleRelPath}' did not initialize; store needs re-clone. {reason}");
         }
 
-        // 4. Advance the reviewed submodule to the PR head exactly like FetchAndCheckoutHeadAsync.
         var targetDir = PosixJoin(storeRoot, submoduleRelPath);
         await RunGitOrThrowAsync(
                 ["-C", targetDir, "fetch", "origin", run.BaseSha, run.HeadSha],
@@ -184,18 +235,20 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // 5. Wipe the ephemeral scratchpad (host IO, not git) so the review starts from a clean slate.
-        WipeScratch(slot.ScratchPath);
+        await RunCommandOrThrowAsync(
+                ["rm", "-rf", "--", scratchRoot], run, "clearing scratch", cancellationToken)
+            .ConfigureAwait(false);
+        await RunCommandOrThrowAsync(
+                ["mkdir", "-p", "--", scratchRoot], run, "creating scratch", cancellationToken)
+            .ConfigureAwait(false);
 
         return new PreparedCheckout(
-            StoreRoot: storeRoot,
-            TargetDir: targetDir,
-            NotesDir: PosixJoin(storeRoot, notesRelPath),
-            Branch: branch);
+            storeRoot,
+            targetDir,
+            PosixJoin(storeRoot, notesRelPath),
+            branch);
     }
 
-    /// <summary>Runs one git step and throws so the stage retries when it fails — mirrors the executor's
-    /// existing helpers (<c>CloneIfMissingAsync</c>/<c>FetchAndCheckoutHeadAsync</c>).</summary>
     private async Task RunGitOrThrowAsync(
         IReadOnlyList<string> gitArgs,
         string workingDirectory,
@@ -207,39 +260,28 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         if (!result.Succeeded)
         {
             var message = $"Run {run.Id}: {action} failed (exit {result.ExitCode}): {result.Stderr}";
-            // A corrupt-slot failure (stale lock that survived cleaning, dirty tree, broken object) drives
-            // the executor's re-clone escalation; a transient/unknown failure is a normal retry that keeps
-            // the warm store.
             throw GitFailureClassifier.Classify(result.Stderr) == GitFailureKind.Corrupt
                 ? new SlotCorruptException(message)
                 : new InvalidOperationException(message);
         }
     }
 
-    /// <summary>Wipes and recreates the scratch directory. Robust to read-only files left behind by an
-    /// untrusted prior checkout — mirrors <c>ReviewSessionProvisioner.ClearReadOnly</c>.</summary>
-    private static void WipeScratch(string scratchPath)
+    private async Task RunCommandOrThrowAsync(
+        IReadOnlyList<string> argv,
+        ReviewRun run,
+        string action,
+        CancellationToken cancellationToken)
     {
-        if (Directory.Exists(scratchPath))
+        var result = await _git.CommandRunner
+            .RunAsync(new SandboxCommand(argv), cancellationToken)
+            .ConfigureAwait(false);
+        if (!result.Succeeded)
         {
-            ClearReadOnly(scratchPath);
-            Directory.Delete(scratchPath, recursive: true);
-        }
-
-        Directory.CreateDirectory(scratchPath);
-    }
-
-    private static void ClearReadOnly(string path)
-    {
-        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-        {
-            var attributes = File.GetAttributes(file);
-            if ((attributes & FileAttributes.ReadOnly) != 0)
-            {
-                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
-            }
+            throw new InvalidOperationException(
+                $"Run {run.Id}: {action} failed (exit {result.ExitCode}): {result.Stderr}");
         }
     }
 
-    private static string PosixJoin(string root, string relative) => $"{root.TrimEnd('/')}/{relative.Trim('/')}";
+    private static string PosixJoin(string root, string relative) =>
+        $"{root.TrimEnd('/')}/{relative.Trim('/')}";
 }

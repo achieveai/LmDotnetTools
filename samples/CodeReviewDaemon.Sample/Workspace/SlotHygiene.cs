@@ -1,4 +1,5 @@
 using CodeReviewDaemon.Sample.Workspace.Git;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 
 namespace CodeReviewDaemon.Sample.Workspace;
 
@@ -50,17 +51,64 @@ internal static class SlotHygiene
         ArgumentNullException.ThrowIfNull(git);
         ArgumentException.ThrowIfNullOrWhiteSpace(storePath);
 
-        var gitDir = Path.Combine(storePath, ".git");
-        if (!Directory.Exists(gitDir) && !File.Exists(gitDir))
+        var structuralProbe = await git.RunAsync(["-C", storePath, "rev-parse", "--git-dir"], storePath, ct)
+            .ConfigureAwait(false);
+        if (!structuralProbe.Succeeded)
         {
-            return HygieneVerdict.NeedsReclone; // never cloned, or the store dir was blown away
+            return HygieneVerdict.NeedsReclone;
         }
 
-        // 1. Clear stale locks anywhere under .git (store + every submodule gitdir under .git/modules).
-        RemoveStaleLocks(gitDir);
-
-        // 2. Abort any in-progress merge/rebase/cherry-pick left by an interrupted prior lease.
-        AbortInProgress(gitDir);
+        // 1-2. Clear stale locks and abandoned operation markers THROUGH the injected runner. In production
+        // that runner is SandboxSessionAdapter over typed SandboxClient, so pre-review hygiene never reaches
+        // around the mounted session with host filesystem APIs. Explicit argv keeps every path a distinct token.
+        await git.CommandRunner.RunAsync(
+                new SandboxCommand(
+                    [
+                        "find",
+                        $"{storePath}/.git",
+                        "-type",
+                        "f",
+                        "(",
+                        "-name",
+                        "*.lock",
+                        "-o",
+                        "-name",
+                        "MERGE_HEAD",
+                        "-o",
+                        "-name",
+                        "CHERRY_PICK_HEAD",
+                        "-o",
+                        "-name",
+                        "REVERT_HEAD",
+                        ")",
+                        "-delete",
+                    ]),
+                ct)
+            .ConfigureAwait(false);
+        await git.CommandRunner.RunAsync(
+                new SandboxCommand(
+                    [
+                        "find",
+                        $"{storePath}/.git",
+                        "-type",
+                        "d",
+                        "(",
+                        "-name",
+                        "rebase-merge",
+                        "-o",
+                        "-name",
+                        "rebase-apply",
+                        ")",
+                        "-prune",
+                        "-exec",
+                        "rm",
+                        "-rf",
+                        "--",
+                        "{}",
+                        "+",
+                    ]),
+                ct)
+            .ConfigureAwait(false);
 
         // 3. Reset + clean the superproject, then restore ALL submodule checkouts (top-level AND nested,
         //    recursively) to the superproject's RECORDED gitlink. Restoring to the gitlink keeps a warm slot

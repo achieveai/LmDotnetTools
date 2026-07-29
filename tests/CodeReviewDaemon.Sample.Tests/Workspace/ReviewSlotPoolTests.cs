@@ -20,30 +20,13 @@ public class ReviewSlotPoolTests : IDisposable
         }
     }
 
-    private ReviewSlotPool CreatePool(int maxSlots, Func<ReviewSlot, CancellationToken, Task> ensureStoreClonedAsync) =>
-        new(maxSlots, _hostRoot, "scratch", ensureStoreClonedAsync, NullLogger<ReviewSlotPool>.Instance);
-
-    private static Func<ReviewSlot, CancellationToken, Task> CountingCloneCallback(out Func<int> callCount)
-    {
-        var count = 0;
-        callCount = () => count;
-        return (slot, _) =>
-        {
-            Interlocked.Increment(ref count);
-            // A real `git clone` leaves StorePath non-empty; write a marker file so the pool's
-            // "already cloned" check (which also treats an empty StorePath as not-yet-cloned) sees
-            // a genuinely populated store, matching production behavior.
-            Directory.CreateDirectory(slot.StorePath);
-            File.WriteAllText(Path.Combine(slot.StorePath, ".cloned"), "");
-            return Task.CompletedTask;
-        };
-    }
+    private ReviewSlotPool CreatePool(int maxSlots) =>
+        new(maxSlots, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance);
 
     [Fact]
-    public async Task LeaseAsync_FirstLease_AllocatesSlotZeroAndClonesStore()
+    public async Task LeaseAsync_FirstLease_AllocatesSlotAddressWithoutCreatingStore()
     {
-        var clone = CountingCloneCallback(out var callCount);
-        var pool = CreatePool(maxSlots: 2, clone);
+        var pool = CreatePool(maxSlots: 2);
 
         var slot = await pool.LeaseAsync(default);
 
@@ -51,114 +34,58 @@ public class ReviewSlotPoolTests : IDisposable
         slot.HostPath.Should().Be(Path.Combine(_hostRoot, "slot-0"));
         slot.StorePath.Should().Be(Path.Combine(slot.HostPath, "store"));
         slot.ScratchPath.Should().Be(Path.Combine(slot.HostPath, "scratch"));
-        callCount().Should().Be(1);
         Directory.Exists(slot.HostPath).Should().BeTrue();
         Directory.Exists(slot.ScratchPath).Should().BeTrue();
-        Directory.Exists(slot.StorePath).Should().BeTrue();
+        Directory.Exists(slot.StorePath).Should().BeFalse(
+            "repository ownership starts only after the slot is mounted through SandboxClient");
     }
 
     [Fact]
-    public async Task LeaseAsync_AfterReturn_ReusesSlotWithoutRecloning()
+    public async Task LeaseAsync_AfterReturn_ReusesTheAddressWithoutInspectingStore()
     {
-        var clone = CountingCloneCallback(out var callCount);
-        var pool = CreatePool(maxSlots: 1, clone);
-
+        var pool = CreatePool(maxSlots: 1);
         var first = await pool.LeaseAsync(default);
+        Directory.CreateDirectory(first.StorePath);
+        File.WriteAllText(Path.Combine(first.StorePath, "partial"), "handled by SDK preparation");
+
         await pool.ReturnAsync(first, default);
         var second = await pool.LeaseAsync(default);
 
-        second.Index.Should().Be(first.Index);
-        second.StorePath.Should().Be(first.StorePath);
-        callCount().Should().Be(1);
+        second.Should().Be(first);
+        File.Exists(Path.Combine(second.StorePath, "partial")).Should().BeTrue(
+            "the pool does not classify or repair repository state");
     }
 
     [Fact]
     public async Task LeaseAsync_WhenPoolExhausted_BlocksUntilSlotIsReturned()
     {
-        var clone = CountingCloneCallback(out _);
-        var pool = CreatePool(maxSlots: 1, clone);
-
+        var pool = CreatePool(maxSlots: 1);
         var firstSlot = await pool.LeaseAsync(default);
 
-        // The gate has zero permits left, so SemaphoreSlim.WaitAsync deterministically returns an
-        // incomplete task here — no race, no sleep needed to observe this.
         var secondLeaseTask = pool.LeaseAsync(default);
-        secondLeaseTask.IsCompleted.Should().BeFalse("only one slot exists and it has not been returned yet");
+        secondLeaseTask.IsCompleted.Should().BeFalse();
 
         await pool.ReturnAsync(firstSlot, default);
-
         var secondSlot = await secondLeaseTask.WaitAsync(TimeSpan.FromSeconds(10));
+
         secondSlot.Index.Should().Be(firstSlot.Index);
     }
 
     [Fact]
     public void Ctor_WithZeroMaxSlots_ThrowsArgumentOutOfRangeException()
     {
-        var clone = CountingCloneCallback(out _);
-
-        var act = () => new ReviewSlotPool(0, _hostRoot, "scratch", clone, NullLogger<ReviewSlotPool>.Instance);
+        var act = () => new ReviewSlotPool(0, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance);
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
-    public async Task LeaseAsync_WhenSetupThrows_ReleasesPermitAndRecyclesIndex()
-    {
-        var attempts = 0;
-        var pool = CreatePool(maxSlots: 1, (slot, _) =>
-        {
-            attempts++;
-            if (attempts == 1)
-            {
-                throw new InvalidOperationException("transient clone failure");
-            }
-
-            Directory.CreateDirectory(slot.StorePath);
-            File.WriteAllText(Path.Combine(slot.StorePath, ".cloned"), "");
-            return Task.CompletedTask;
-        });
-
-        // First lease fails inside setup, AFTER the single permit + index were taken.
-        var failingLease = async () => await pool.LeaseAsync(default);
-        await failingLease.Should().ThrowAsync<InvalidOperationException>();
-
-        // A leaked permit would make this second lease block forever; the recycle path releases the
-        // permit and returns the index, so it completes promptly and reuses slot 0.
-        var slot = await pool.LeaseAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
-        slot.Index.Should().Be(0);
-        attempts.Should().Be(2);
-    }
-
-    [Fact]
-    public async Task RecloneStoreAsync_WipesTheWarmStoreAndReclonesFromScratch()
-    {
-        var clone = CountingCloneCallback(out var callCount);
-        var pool = CreatePool(maxSlots: 1, clone);
-
-        var slot = await pool.LeaseAsync(default);
-        callCount().Should().Be(1);
-        // Simulate a corrupt warm store: a stray/wedged file the recovery ladder must not carry forward.
-        File.WriteAllText(Path.Combine(slot.StorePath, "corrupt-marker.txt"), "wedged");
-
-        await pool.RecloneStoreAsync(slot, default);
-
-        callCount().Should().Be(2, "the corrupt store is re-cloned from scratch");
-        File.Exists(Path.Combine(slot.StorePath, "corrupt-marker.txt"))
-            .Should().BeFalse("the corrupt store is wiped before re-cloning");
-        File.Exists(Path.Combine(slot.StorePath, ".cloned")).Should().BeTrue("the re-clone produced a fresh store");
-    }
-
-    [Fact]
     public async Task LeaseAsync_WithACustomSlotPrefix_NamesTheSlotDirWithIt()
     {
-        // The S2S path puts slot dirs DIRECTLY under the workspace base (they must be single path
-        // segments there), so it distinguishes them with a prefix instead of a `review-pool/` parent.
-        var clone = CountingCloneCallback(out _);
         var pool = new ReviewSlotPool(
-            maxSlots: 1,
+            1,
             _hostRoot,
             "scratch",
-            clone,
             NullLogger<ReviewSlotPool>.Instance,
             slotDirPrefix: "review-slot-");
 
@@ -166,8 +93,7 @@ public class ReviewSlotPoolTests : IDisposable
 
         pool.SlotDirectoryName(0).Should().Be("review-slot-0");
         slot.HostPath.Should().Be(Path.Combine(_hostRoot, "review-slot-0"));
-        slot.StorePath.Should().Be(Path.Combine(slot.HostPath, "store"),
-            "the store stays a direct child, so the gateway's /workspace mount exposes it as /workspace/store");
+        slot.StorePath.Should().Be(Path.Combine(slot.HostPath, "store"));
     }
 
     [Theory]
@@ -176,15 +102,10 @@ public class ReviewSlotPoolTests : IDisposable
     [InlineData(17)]
     public void SlotDirectoryName_OnTheS2SPath_SurvivesLmStreamingsSanitizerUnchanged(int index)
     {
-        // The silent-failure guard: a slot dir the sanitizer renames would have LmStreaming mount a
-        // different, EMPTY directory — the hosted agent then reviews nothing and reports no findings
-        // rather than failing. Startup asserts this; this test pins the naming scheme that satisfies it.
-        var clone = CountingCloneCallback(out _);
         var pool = new ReviewSlotPool(
-            maxSlots: 1,
+            1,
             _hostRoot,
             "scratch",
-            clone,
             NullLogger<ReviewSlotPool>.Instance,
             slotDirPrefix: "review-slot-");
 
@@ -196,10 +117,8 @@ public class ReviewSlotPoolTests : IDisposable
     [Fact]
     public void Ctor_WithABlankSlotPrefix_ThrowsArgumentException()
     {
-        var clone = CountingCloneCallback(out _);
-
         var act = () => new ReviewSlotPool(
-            1, _hostRoot, "scratch", clone, NullLogger<ReviewSlotPool>.Instance, slotDirPrefix: "  ");
+            1, _hostRoot, "scratch", NullLogger<ReviewSlotPool>.Instance, slotDirPrefix: "  ");
 
         act.Should().Throw<ArgumentException>();
     }

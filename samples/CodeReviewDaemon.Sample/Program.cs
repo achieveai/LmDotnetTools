@@ -601,17 +601,6 @@ if (daemonOptions.EnableToolAssistedReview
             daemonOptions.ReviewPoolSize,
             poolRoot,
             daemonOptions.ScratchDirName,
-            async (slot, ct) =>
-            {
-                var clone = await new GitRunner(hostRunner)
-                    .RunAsync(["clone", storeUrl, slot.StorePath], workingDirectory: null, ct)
-                    .ConfigureAwait(false);
-                if (!clone.Succeeded)
-                {
-                    throw new InvalidOperationException(
-                        $"Cloning the review store into slot {slot.Index} failed (exit {clone.ExitCode}): {clone.Stderr}");
-                }
-            },
             loggerFactory.CreateLogger<ReviewSlotPool>(),
             slotDirPrefix);
 
