@@ -210,6 +210,19 @@ internal class SubAgentState
     public SubAgentStatus Status { get => _status; set => _status = value; }
 
     /// <summary>
+    /// UTC instant the sub-agent reached its terminal status, captured once at the transition
+    /// (<see cref="BeginTerminalDisposalAsync"/> / <see cref="MarkRunFaulted"/>) rather than
+    /// recomputed later, so a caller that durably stamps it never sees the value drift forward on a
+    /// subsequent idempotent refresh. Null while <see cref="Status"/> is <see cref="SubAgentStatus.Running"/>.
+    /// Guarded by <see cref="_lifecycleLock"/> (a struct, so plain reads/writes are not atomic).
+    /// </summary>
+    private DateTimeOffset? _terminalAtUtc;
+    public DateTimeOffset? TerminalAtUtc
+    {
+        get { lock (_lifecycleLock) { return _terminalAtUtc; } }
+    }
+
+    /// <summary>
     /// Decides — atomically against a concurrent terminal completion and other concurrent
     /// continuations — how <c>SubAgentManager.SendMessageAsync</c> must continue this sub-agent, and
     /// records the continuation's relay preference.
@@ -375,6 +388,7 @@ internal class SubAgentState
             // resurrect this now-disposing run back to Running with an about-to-be-disposed provider.
             _terminalGeneration = _runGeneration;
             _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
+            _terminalAtUtc = DateTimeOffset.UtcNow;
         }
     }
 
@@ -481,6 +495,7 @@ internal class SubAgentState
             {
                 _terminalGeneration = generation;
                 _status = SubAgentStatus.Error;
+                _terminalAtUtc = DateTimeOffset.UtcNow;
             }
         }
     }

@@ -35,7 +35,10 @@ public sealed class ConversationsControllerSubAgentsTests
     }
 
     /// <summary>
-    /// Persists thread metadata carrying the provenance a spawned child's store would have stamped.
+    /// Persists thread metadata carrying the provenance a spawned child's store would have stamped,
+    /// including the exact terminal status/timestamp the manager pushes causally at completion
+    /// (Task 1) — <paramref name="lastUpdated"/> doubles as the terminal instant here so ordering by
+    /// activity stays deterministic.
     /// </summary>
     private static async Task SeedPersistedChildAsync(
         IConversationStore store,
@@ -62,7 +65,8 @@ public sealed class ConversationsControllerSubAgentsTests
                         Task: task,
                         Status: SubAgentStatus.Completed,
                         ThreadId: childThreadId,
-                        LastActivityUtc: DateTimeOffset.FromUnixTimeMilliseconds(lastUpdated))),
+                        LastActivityUtc: DateTimeOffset.FromUnixTimeMilliseconds(lastUpdated),
+                        TerminalAtUtc: DateTimeOffset.FromUnixTimeMilliseconds(lastUpdated))),
             });
     }
 
@@ -205,8 +209,9 @@ public sealed class ConversationsControllerSubAgentsTests
         summaries[0].Template.Should().Be("code-reviewer:performance");
         summaries[0].Task.Should().Be("check hot path");
         summaries[0].ThreadId.Should().Be("subagent-bbb");
-        summaries[0].Status.Should().Be(SubAgentProvenance.PersistedStatus,
-            "lifecycle status died with the manager; a reconstructed child must not claim one");
+        summaries[0].Status.Should().Be("completed",
+            "the manager pushes the exact terminal status causally at completion (Task 1), so a " +
+            "reconstructed child now reports its real outcome instead of a placeholder");
 
         summaries[1].AgentId.Should().Be("aaa");
         summaries[1].Name.Should().Be("alpha");

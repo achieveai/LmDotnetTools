@@ -129,4 +129,46 @@ public sealed class NonOwningConversationStoreTests
         (saved!.Properties?.ContainsKey(SubAgentProvenance.ParentThreadIdKey) ?? false)
             .Should().BeFalse();
     }
+
+    /// <summary>
+    /// Task 1 (daemon-recursive-review-completion-barrier): the manager's causal terminal-state push
+    /// goes through this wrapper's <see cref="NonOwningConversationStore.UpdateMetadataAsync"/> path —
+    /// the SAME path a passive/child refresh also uses — so it must merge the exact terminal
+    /// status/timestamp in exactly the same way, whether the write originates from the child's own
+    /// loop or from the manager's new push.
+    /// </summary>
+    [Fact]
+    public async Task NonOwningWrapper_ForwardsExactTerminalStatusAndTimestamp_ThroughUpdateMetadataAsync()
+    {
+        var underlying = new InMemoryConversationStore();
+        var terminalAt = DateTimeOffset.FromUnixTimeMilliseconds(123_456_000);
+        var wrapper = new NonOwningConversationStore(
+            underlying,
+            ThreadId,
+            () => SubAgentProvenance.Build(
+                "thread-parent",
+                new SubAgentSnapshot(
+                    AgentId: "child-1",
+                    Name: "alpha",
+                    TemplateName: "code-reviewer:security",
+                    Task: "check auth",
+                    Status: SubAgentStatus.Completed,
+                    ThreadId: ThreadId,
+                    LastActivityUtc: null,
+                    TerminalAtUtc: terminalAt)));
+
+        // Mirrors the manager's causal push: an atomic update against metadata that may not exist yet.
+        await wrapper.UpdateMetadataAsync(
+            ThreadId,
+            existing => existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
+
+        var saved = await underlying.LoadMetadataAsync(ThreadId);
+        var projected = SubAgentProvenance.TryProject(saved!, "thread-parent");
+
+        projected!.Status.Should().Be("completed");
+        projected.LastActivityUtc.Should().Be(terminalAt,
+            "the exact terminal instant captured at the transition must survive, not a value " +
+            "recomputed at write time");
+    }
 }
+

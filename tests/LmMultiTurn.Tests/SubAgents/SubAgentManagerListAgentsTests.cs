@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using Moq;
@@ -216,16 +217,110 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             $"resolved=#{afterRestart!.GetHashCode()}");
     }
 
+    [Fact]
+    public async Task ListAgents_TerminalAtUtc_IsNullWhileRunning_AndSetOnceTerminal()
+    {
+        // Task 1 (daemon-recursive-review-completion-barrier): the manager must record WHEN a
+        // sub-agent reached its terminal transition, not just THAT it did, so the timestamp can be
+        // stamped durably and never drifts on a later idempotent refresh.
+        var finisherProvider = new Mock<IStreamingAgent>();
+        SetupStreamingResponse(finisherProvider, (_, _) => ToAsyncEnumerable(
+            new TextMessage { Text = "done", Role = Role.Assistant }));
+
+        var runnerProvider = new Mock<IStreamingAgent>();
+        SetupStreamingResponse(runnerProvider, (_, ct) => BlockingStream(ct));
+
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
+        {
+            ["finisher"] = TemplateFor(finisherProvider.Object),
+            ["runner"] = TemplateFor(runnerProvider.Object),
+        });
+
+        var finisherJson = await manager.SpawnAsync(
+            "finisher", "finish the report", name: "fin", runInBackground: true);
+        var finisherId = ParseAgentId(finisherJson);
+        _ = await manager.ObserveCompletionAsync(finisherId, CancellationToken.None);
+
+        var runnerJson = await manager.SpawnAsync(
+            "runner", "keep running", name: "run", runInBackground: true);
+        var runnerId = ParseAgentId(runnerJson);
+
+        var snapshots = manager.ListAgents();
+
+        var finisher = snapshots.Single(s => s.AgentId == finisherId);
+        finisher.TerminalAtUtc.Should().NotBeNull(
+            "the finisher reached a terminal completion, so its terminal timestamp must be recorded");
+
+        var runner = snapshots.Single(s => s.AgentId == runnerId);
+        runner.TerminalAtUtc.Should().BeNull(
+            "a still-running sub-agent has not reached a terminal transition yet");
+    }
+
+    [Fact]
+    public async Task HandleRunCompletion_PushesTerminalStateToTheChildsStore_WithoutAnyFurtherChildWrite()
+    {
+        // Task 1 (daemon-recursive-review-completion-barrier), reviewed decision: exact
+        // status/timestamp must be persisted CAUSALLY from the manager's terminal-transition path,
+        // even if the child never performs another metadata write. A background sub-agent's own
+        // post-run save (MultiTurnAgentBase.UpdateMetadataAsync) only ever calls
+        // IConversationStore.SaveMetadataAsync — never UpdateMetadataAsync — so asserting that the
+        // ATOMIC UpdateMetadataAsync member was invoked for the child's thread proves the manager
+        // itself pushed the terminal transition through the child's own store, independent of
+        // whatever the child's existing post-run behavior already does.
+        var provider = new Mock<IStreamingAgent>();
+        SetupStreamingResponse(provider, (_, _) => ToAsyncEnumerable(
+            new TextMessage { Text = "done", Role = Role.Assistant }));
+
+        var storeMock = new Mock<IConversationStore>();
+        storeMock
+            .Setup(s => s.SaveMetadataAsync(
+                It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        storeMock
+            .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ThreadMetadata?)null);
+        storeMock
+            .Setup(s => s.UpdateMetadataAsync(
+                It.IsAny<string>(),
+                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = TemplateFor(provider.Object),
+            },
+            storeFactory: _ => storeMock.Object);
+
+        var spawnJson = await manager.SpawnAsync(
+            "worker", "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        _ = await manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        storeMock.Verify(
+            s => s.UpdateMetadataAsync(
+                $"subagent-{agentId}",
+                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                It.IsAny<CancellationToken>()),
+            Times.AtLeastOnce,
+            "the manager must actively push the terminal transition through the child's own " +
+            "store, not rely solely on the child's next metadata write");
+    }
+
     #region Helpers
 
     private SubAgentManager CreateManager(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
-        int maxConcurrent = 5)
+        int maxConcurrent = 5,
+        Func<string, IConversationStore>? storeFactory = null)
     {
         var options = new SubAgentOptions
         {
             Templates = templates,
             MaxConcurrentSubAgents = maxConcurrent,
+            DefaultConversationStoreFactory = storeFactory,
         };
 
         var manager = new SubAgentManager(

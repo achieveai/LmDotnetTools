@@ -30,6 +30,13 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// <param name="ThreadId">The sub-agent's conversation thread id.</param>
 /// <param name="LastActivityUtc">Timestamp of the newest buffered turn, or null when no turn has
 /// been recorded yet.</param>
+/// <param name="TerminalAtUtc">
+/// UTC instant the sub-agent reached a terminal status (<see cref="SubAgentStatus.Completed"/>,
+/// <see cref="SubAgentStatus.Error"/>, or <see cref="SubAgentStatus.Stopped"/>), captured once at
+/// the transition. Null while still <see cref="SubAgentStatus.Running"/>. Callers that durably
+/// stamp this value must reuse it rather than substituting the current time, so a later idempotent
+/// refresh never shifts the recorded terminal instant forward.
+/// </param>
 public sealed record SubAgentSnapshot(
     string AgentId,
     string? Name,
@@ -37,7 +44,8 @@ public sealed record SubAgentSnapshot(
     string Task,
     SubAgentStatus Status,
     string ThreadId,
-    DateTimeOffset? LastActivityUtc);
+    DateTimeOffset? LastActivityUtc,
+    DateTimeOffset? TerminalAtUtc = null);
 
 /// <summary>
 /// Manages sub-agent lifecycle: spawning, monitoring, resuming, and disposal.
@@ -844,7 +852,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Task: state.Task,
                 Status: state.Status,
                 ThreadId: state.Agent.ThreadId,
-                LastActivityUtc: GetLastActivityUtc(state)));
+                LastActivityUtc: GetLastActivityUtc(state),
+                TerminalAtUtc: state.TerminalAtUtc));
         }
 
         return snapshots;
@@ -1614,6 +1623,13 @@ public sealed class SubAgentManager : IAsyncDisposable
         // status and takes the restart path (which recreates a fresh provider).
         await state.BeginTerminalDisposalAsync(rcm.IsError);
 
+        // Push the terminal transition through the child's OWN store now, causally, rather than
+        // relying on the child's next metadata write — a background sub-agent that never receives
+        // another message never writes metadata again, and the exact terminal status/timestamp
+        // must still be persisted. See PersistTerminalStateAsync for why this is safe to layer on
+        // top of the child's existing (unchanged) post-run metadata save.
+        await PersistTerminalStateAsync(state);
+
         // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
         // once per gate-acquisition epoch — not here, because a single monitor may handle
         // several completions when a background sub-agent is continued in place via SendMessage.
@@ -1681,6 +1697,47 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+    }
+
+    /// <summary>
+    /// Actively persists a sub-agent's just-flipped terminal status through its OWN
+    /// <see cref="IConversationStore"/>, at the moment of transition. This is the causal push:
+    /// the child's own post-run metadata write (<c>MultiTurnAgentBase.UpdateMetadataAsync</c>) only
+    /// ever calls <see cref="IConversationStore.SaveMetadataAsync"/>, and a background sub-agent that
+    /// never receives another message never calls it again — so without this push, the exact
+    /// terminal status/timestamp would only ever be known in memory. Uses
+    /// <see cref="IConversationStore.UpdateMetadataAsync"/> so a concrete host integration (e.g. the
+    /// sample's provenance-stamping store decorator) can layer its own metadata projection onto this
+    /// touch exactly as it already does for the child's own writes; the manager itself stays
+    /// completely unaware of any such projection — no second registry, just one extra write through
+    /// the same per-child store the manager already holds.
+    /// </summary>
+    private async Task PersistTerminalStateAsync(SubAgentState state)
+    {
+        if (state.Store is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var threadId = state.Agent.ThreadId;
+            await state.Store.UpdateMetadataAsync(
+                threadId,
+                existing => existing
+                    ?? new ThreadMetadata
+                    {
+                        ThreadId = threadId,
+                        LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to persist terminal state for sub-agent {AgentId}",
+                state.AgentId);
+        }
     }
 
     /// <summary>

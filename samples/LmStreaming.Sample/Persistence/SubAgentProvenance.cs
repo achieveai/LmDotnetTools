@@ -47,11 +47,30 @@ public static class SubAgentProvenance
     public const string TaskKey = "sample.subAgentTask";
 
     /// <summary>
-    /// Status reported for a child reconstructed from the store. Lifecycle status is in-memory state
-    /// that dies with the manager, so a persisted-only child gets this honest marker rather than a
-    /// guessed <c>completed</c>/<c>failed</c>.
+    /// Exact lifecycle status of the child at the moment it was stamped (e.g. <c>running</c>,
+    /// <c>completed</c>, <c>error</c>, <c>stopped</c>), lower-cased to match the live listing
+    /// projection. Stamped whenever a live snapshot is available — including while still
+    /// <c>Running</c>, so a reconstructed roster can distinguish "still going" from "never
+    /// resolved" — and pushed causally by the manager at the terminal transition (Task 1), so it
+    /// survives even if the child never writes metadata again.
     /// </summary>
-    public const string PersistedStatus = "persisted";
+    public const string StatusKey = "sample.subAgentStatus";
+
+    /// <summary>
+    /// Unix milliseconds the child reached a terminal status. Present only once <see cref="StatusKey"/>
+    /// is terminal; absent while <c>Running</c>. Captured once at the transition
+    /// (<see cref="SubAgentSnapshot.TerminalAtUtc"/>) rather than recomputed on every stamp, so a
+    /// later idempotent refresh (the child's own post-run save) never shifts it forward.
+    /// </summary>
+    public const string TerminalAtKey = "sample.subAgentTerminalAt";
+
+    /// <summary>
+    /// Status reported for a child whose metadata predates this stamp (legacy data) or that was
+    /// never registered with the live manager. Lifecycle status is in-memory state that dies with
+    /// the manager, so a child with no stamped status gets this honest marker rather than a guessed
+    /// <c>completed</c>/<c>failed</c>.
+    /// </summary>
+    public const string UnknownStatus = "unknown";
 
     /// <summary>
     /// Template reported for a persisted child whose identity was never stamped (it wrote metadata
@@ -59,6 +78,14 @@ public static class SubAgentProvenance
     /// plausible one would misreport which reviewer ran.
     /// </summary>
     public const string UnknownTemplate = "unknown";
+
+    /// <summary>
+    /// Statuses that count as terminal for <see cref="TerminalAtKey"/> purposes — kept as a set here
+    /// (rather than duplicated at each call site) so a future addition to
+    /// <see cref="SubAgentStatus"/> cannot silently omit the timestamp stamp.
+    /// </summary>
+    private static readonly ImmutableHashSet<SubAgentStatus> TerminalStatuses =
+        ImmutableHashSet.Create(SubAgentStatus.Completed, SubAgentStatus.Error, SubAgentStatus.Stopped);
 
     /// <summary>
     /// Builds the properties to stamp onto a child's metadata. <paramref name="snapshot"/> is the
@@ -89,6 +116,14 @@ public static class SubAgentProvenance
             if (!string.IsNullOrWhiteSpace(snapshot.Task))
             {
                 builder[TaskKey] = snapshot.Task;
+            }
+
+            builder[StatusKey] = snapshot.Status.ToString().ToLowerInvariant();
+
+            if (TerminalStatuses.Contains(snapshot.Status))
+            {
+                var terminalAt = snapshot.TerminalAtUtc ?? DateTimeOffset.UtcNow;
+                builder[TerminalAtKey] = terminalAt.ToUnixTimeMilliseconds();
             }
         }
 
@@ -131,9 +166,10 @@ public static class SubAgentProvenance
             // value rather than dropping a child whose identity never resolved.
             Template = ReadString(metadata, TemplateKey) ?? UnknownTemplate,
             Task = ReadString(metadata, TaskKey) ?? string.Empty,
-            Status = PersistedStatus,
+            Status = ReadString(metadata, StatusKey) ?? UnknownStatus,
             ThreadId = metadata.ThreadId,
-            LastActivityUtc = DateTimeOffset.FromUnixTimeMilliseconds(metadata.LastUpdated),
+            LastActivityUtc = ReadUnixMillis(metadata, TerminalAtKey)
+                ?? DateTimeOffset.FromUnixTimeMilliseconds(metadata.LastUpdated),
         };
     }
 
@@ -146,4 +182,27 @@ public static class SubAgentProvenance
         metadata.Properties?.TryGetValue(key, out var value) == true
             ? value?.ToString()
             : null;
+
+    /// <summary>
+    /// Reads a Unix-milliseconds property from the bag, tolerating the numeric-JSON round-trip
+    /// (<c>JsonElement</c>/<see cref="long"/>/<see cref="int"/> all possible depending on how the
+    /// value reached the store) the same way <see cref="ReadString"/> tolerates it for strings.
+    /// </summary>
+    private static DateTimeOffset? ReadUnixMillis(ThreadMetadata metadata, string key)
+    {
+        if (metadata.Properties?.TryGetValue(key, out var value) != true || value is null)
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            long l => DateTimeOffset.FromUnixTimeMilliseconds(l),
+            int i => DateTimeOffset.FromUnixTimeMilliseconds(i),
+            System.Text.Json.JsonElement je when je.TryGetInt64(out var ms) =>
+                DateTimeOffset.FromUnixTimeMilliseconds(ms),
+            _ => null,
+        };
+    }
 }
+
