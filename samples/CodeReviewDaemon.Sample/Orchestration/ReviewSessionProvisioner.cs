@@ -36,6 +36,18 @@ internal interface IReviewSessionProvisioner
     /// </summary>
     Task<ReviewRunSession?> GetOrCreateForSlotAsync(ReviewRun run, ReviewSlot slot, CancellationToken ct);
 
+    /// <summary>
+    /// Resolves a session mounted over the exact pooled slot. Unlike
+    /// <see cref="GetOrCreateForSlotAsync"/>, this fail-closed entry point never degrades to a separate
+    /// per-run mount: callers that require SDK-owned preparation must not review a different/empty workspace.
+    /// </summary>
+    async Task<ReviewRunSession> GetOrCreateRequiredForSlotAsync(
+        ReviewRun run,
+        ReviewSlot slot,
+        CancellationToken ct) =>
+        await GetOrCreateForSlotAsync(run, slot, ct).ConfigureAwait(false)
+        ?? throw new InvalidOperationException($"Run {run.Id}: the required pooled slot session was not provisioned.");
+
     Task DestroyAsync(ReviewRun run, CancellationToken ct);
 
     /// <summary>
@@ -137,9 +149,8 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         ArgumentNullException.ThrowIfNull(slot);
 
         // Mount /workspace OVER the leased slot by expressing its host path relative to the gateway's base.
-        // A misconfigured pool root (base unset, or the slot outside it) is not a hard failure: degrade to
-        // the per-run mount so the reviewer still gets a session (design §7) — its store/scratch just won't
-        // resolve, exactly as on a non-pooled run.
+        // A misconfigured pool root (base unset, or the slot outside it) is not a hard failure for this
+        // historical entry point: degrade to the per-run mount so non-required callers keep their behavior.
         var slotRelPath = ResolveSlotRelPath(slot);
         if (slotRelPath is null)
         {
@@ -151,6 +162,27 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         }
 
         return await ProvisionAsync(run, slotRelPath, ct).ConfigureAwait(false);
+    }
+
+    public async Task<ReviewRunSession> GetOrCreateRequiredForSlotAsync(
+        ReviewRun run,
+        ReviewSlot slot,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(slot);
+
+        var slotRelPath = ResolveSlotRelPath(slot);
+        if (slotRelPath is null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: pooled slot '{slot.HostPath}' cannot be mounted under workspace base "
+                    + $"'{_workspaceBasePath ?? "(unset)"}'.");
+        }
+
+        return await ProvisionAsync(run, slotRelPath, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Run {run.Id}: the required pooled slot session was not provisioned.");
     }
 
     /// <summary>
