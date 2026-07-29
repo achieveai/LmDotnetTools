@@ -270,12 +270,19 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 cancellationToken)
             .ConfigureAwait(false);
 
-        await RunCommandOrThrowAsync(
-                ["rm", "-rf", "--", scratchRoot], run, "clearing scratch", cancellationToken)
-            .ConfigureAwait(false);
-        await RunCommandOrThrowAsync(
-                ["mkdir", "-p", "--", scratchRoot], run, "creating scratch", cancellationToken)
-            .ConfigureAwait(false);
+        if (_fileSystem is HostFileSystem)
+        {
+            ClearHostScratch(scratchRoot);
+        }
+        else
+        {
+            await RunCommandOrThrowAsync(
+                    ["rm", "-rf", "--", scratchRoot], run, "clearing scratch", cancellationToken)
+                .ConfigureAwait(false);
+            await RunCommandOrThrowAsync(
+                    ["mkdir", "-p", "--", scratchRoot], run, "creating scratch", cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         return new PreparedCheckout(
             storeRoot,
@@ -299,6 +306,25 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 ? new SlotCorruptException(message)
                 : new InvalidOperationException(message);
         }
+    }
+
+    private static void ClearHostScratch(string scratchRoot)
+    {
+        if (Directory.Exists(scratchRoot))
+        {
+            foreach (var file in Directory.EnumerateFiles(scratchRoot, "*", SearchOption.AllDirectories))
+            {
+                var attributes = File.GetAttributes(file);
+                if ((attributes & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+                }
+            }
+
+            Directory.Delete(scratchRoot, recursive: true);
+        }
+
+        Directory.CreateDirectory(scratchRoot);
     }
 
     private async Task RunCommandOrThrowAsync(

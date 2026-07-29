@@ -166,6 +166,34 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task PrepareAsync_HostPreparer_WipesScratchWithHostFilesystemApis()
+    {
+        var slot = CreateSlot();
+        var markerFile = Path.Combine(slot.ScratchPath, "stale-host-file.txt");
+        File.WriteAllText(markerFile, "leftover");
+        File.WriteAllText(
+            Path.Combine(slot.StorePath, ".gitmodules"),
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            new HostFileSystem(),
+            "github",
+            NullLoggerFactory.Instance);
+
+        _ = await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        Directory.Exists(slot.ScratchPath).Should().BeTrue();
+        Directory.EnumerateFileSystemEntries(slot.ScratchPath).Should().BeEmpty();
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.StartsWith("rm -rf --", StringComparison.Ordinal)
+                || command.StartsWith("mkdir -p --", StringComparison.Ordinal),
+            "host paths must not be passed to sandbox/POSIX command semantics");
+    }
+
+    [Fact]
     public async Task PrepareAsync_WipesTheScratchDirectory()
     {
         var slot = CreateSlot();
