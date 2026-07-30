@@ -45,12 +45,23 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
     ///     Optional downstream SSE keep-alive interval (sets <c>COPILOT_ANTHROPIC_KEEPALIVE_SECONDS</c>);
     ///     used by the keep-alive test to make pings fire quickly against a silent upstream.
     /// </param>
+    /// <param name="maxBodyBytes">
+    ///     Optional cap on a buffered body (sets <c>COPILOT_ANTHROPIC_MAX_BODY_BYTES</c>); used by the
+    ///     oversized-reply test so a few kilobytes stand in for the 32 MB production default.
+    /// </param>
+    /// <param name="modelEndpoints">
+    ///     Optional pinned-model capability metadata (sets <c>COPILOT_ANTHROPIC_MODEL_ENDPOINTS</c>);
+    ///     only meaningful alongside a non-null <paramref name="model"/>, which otherwise has no
+    ///     discovered endpoint list.
+    /// </param>
     public ProxyWebAppFactory(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> upstream,
         ICopilotTokenProvider? tokenProvider = null,
         string? model = ConfiguredModel,
         int? idleTimeoutSeconds = null,
-        int? keepAliveSeconds = null
+        int? keepAliveSeconds = null,
+        long? maxBodyBytes = null,
+        string? modelEndpoints = null
     )
     {
         ArgumentNullException.ThrowIfNull(upstream);
@@ -58,6 +69,7 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
         _upstreamHandler = new FakeHttpMessageHandler(upstream);
         _tokenProvider = tokenProvider ?? new FakeCopilotTokenProvider("fake-token");
         Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL", model);
+        Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL_ENDPOINTS", modelEndpoints);
         if (idleTimeoutSeconds is not null)
         {
             Environment.SetEnvironmentVariable(
@@ -71,6 +83,14 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
             Environment.SetEnvironmentVariable(
                 "COPILOT_ANTHROPIC_KEEPALIVE_SECONDS",
                 keepAliveSeconds.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            );
+        }
+
+        if (maxBodyBytes is not null)
+        {
+            Environment.SetEnvironmentVariable(
+                "COPILOT_ANTHROPIC_MAX_BODY_BYTES",
+                maxBodyBytes.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
             );
         }
     }
@@ -102,8 +122,10 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
             if (disposing)
             {
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL", null);
+                Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL_ENDPOINTS", null);
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS", null);
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_KEEPALIVE_SECONDS", null);
+                Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MAX_BODY_BYTES", null);
             }
         }
     }

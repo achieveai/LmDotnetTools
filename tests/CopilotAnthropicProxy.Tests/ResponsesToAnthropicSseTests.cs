@@ -219,11 +219,12 @@ public class ResponsesToAnthropicSseTests
     }
 
     [Fact]
-    public void Never_writes_tool_arguments_into_a_block_that_is_not_a_tool_call()
+    public void Fails_the_stream_when_tool_arguments_arrive_with_no_tool_block_to_hold_them()
     {
         // The output_item.added that would have opened the tool_use block is unreadable, so the text
-        // delta owns index 0. The arguments that follow must be DROPPED: splicing tool-call JSON into
-        // rendered assistant text is malformed, not degraded.
+        // delta owns index 0. The arguments that follow cannot be written anywhere: splicing tool-call
+        // JSON into rendered assistant text is malformed, and dropping them hands the client a tool
+        // call with no arguments and no way to know any existed. So the stream fails visibly.
         var output = Run(
             """{"type":"response.created","response":{"id":"r","model":"m"}}""",
             """{"type":"response.output_item.added","item":["not-an-object"]}""",
@@ -237,6 +238,114 @@ public class ResponsesToAnthropicSseTests
         output.Should().NotContain("input_json_delta");
         output.Should().NotContain("Paris");
         output.Should().NotContain("\"index\":1", "no second block was ever opened");
+
+        output.Should().Contain("event: error");
+        output.Should().Contain("\"type\":\"api_error\"");
+        output
+            .Should()
+            .NotContain("message_stop", "the turn did not complete; claiming it did is the silent failure");
+    }
+
+    [Fact]
+    public void The_open_block_is_closed_before_the_terminal_error_frame()
+    {
+        var events = EventNames(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.content_part.added","part":{"type":"output_text"}}""",
+            """{"type":"response.output_text.delta","delta":"partial"}""",
+            """{"type":"error","code":"server_error","message":"boom"}"""
+        );
+
+        events
+            .Should()
+            .Equal("message_start", "content_block_start", "content_block_delta", "content_block_stop", "error");
+    }
+
+    [Fact]
+    public void Translates_the_top_level_error_event_into_an_anthropic_error_frame()
+    {
+        // ResponseErrorEvent: {"type":"error","code":...,"message":...,"param":...}. It used to land in
+        // the silent default arm, so the client saw an unexplained truncation.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"error","code":"rate_limit_exceeded","message":"You asked about Paris too often","param":null}"""
+        );
+
+        output.Should().Contain("event: error");
+        output.Should().Contain("\"type\":\"api_error\"");
+        output.Should().Contain("rate_limit_exceeded", "a token-shaped code is machine-readable, not prose");
+        output.Should().NotContain("Paris", "the upstream's free text can echo the prompt back");
+        output.Should().NotContain("message_stop");
+    }
+
+    [Fact]
+    public void Translates_response_failed_into_an_anthropic_error_frame()
+    {
+        // ResponseFailedEvent carries the same error object one level down, under response.error.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"upstream exploded"}}}"""
+        );
+
+        output.Should().Contain("event: error");
+        output.Should().Contain("server_error");
+        output.Should().NotContain("upstream exploded");
+        output.Should().NotContain("message_stop");
+    }
+
+    [Theory]
+    [InlineData("""{"type":"error","message":"no code at all"}""")]
+    [InlineData("""{"type":"error","code":"a sentence, with punctuation, that is really prose"}""")]
+    [InlineData("""{"type":"error","code":123}""")]
+    [InlineData("""{"type":"response.failed","response":{"error":null}}""")]
+    [InlineData("""{"type":"response.failed"}""")]
+    public void An_upstream_failure_with_no_usable_code_still_ends_the_stream(string failure)
+    {
+        var output = Run("""{"type":"response.created","response":{"id":"r","model":"m"}}""", failure);
+
+        output.Should().Contain("event: error");
+        output.Should().Contain("The upstream Copilot stream failed.");
+        output.Should().NotContain("Upstream code:");
+    }
+
+    [Fact]
+    public void Emits_nothing_after_a_terminal_error_frame()
+    {
+        var translator = new ResponsesToAnthropicSse("msg_test", "m");
+        _ = translator.Next("""{"type":"response.created","response":{"id":"r","model":"m"}}""");
+        _ = translator.Next("""{"type":"error","code":"server_error"}""");
+
+        var afterFailure = translator.Next(
+            """{"type":"response.completed","response":{"output":[],"usage":{}}}"""
+        );
+
+        afterFailure.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Reports_refusal_when_a_classifier_stopped_a_streamed_turn()
+    {
+        // The buffered and the streamed path share DeriveStopReason precisely so this cannot differ
+        // between them.
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.incomplete","response":{"output":[],"incomplete_details":{"reason":"content_filter"},"usage":{"input_tokens":1,"output_tokens":1}}}"""
+        );
+
+        output.Should().Contain("\"stop_reason\":\"refusal\"");
+        output.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
+    public void A_streamed_classifier_stop_outranks_a_half_formed_function_call()
+    {
+        var output = Run(
+            """{"type":"response.created","response":{"id":"r","model":"m"}}""",
+            """{"type":"response.incomplete","response":{"output":[{"type":"function_call"}],"incomplete_details":{"reason":"content_filter"},"usage":{}}}"""
+        );
+
+        output.Should().Contain("\"stop_reason\":\"refusal\"");
+        output.Should().NotContain("\"stop_reason\":\"tool_use\"");
     }
 
     [Fact]

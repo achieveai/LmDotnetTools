@@ -94,8 +94,9 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Listen(IPAddress.IPv6Loopback, config.Port);
     // Local dev proxy on a trusted loopback socket. The forward path buffers and JsonNode-rewrites the
     // whole body in memory, so the cap matches Anthropic's own ~32 MB request limit rather than being
-    // arbitrarily large; Kestrel rejects an over-limit body mid-read, before full allocation.
-    options.Limits.MaxRequestBodySize = 32L * 1024 * 1024; // 32 MB (matches the Anthropic API request limit)
+    // arbitrarily large; Kestrel rejects an over-limit body mid-read, before full allocation. The same
+    // ceiling is applied to every buffered read inside the proxy (see ProxyHttp.ReadCappedAsync).
+    options.Limits.MaxRequestBodySize = config.MaxBodyBytes;
 });
 
 // --- Dependency injection ----------------------------------------------------
@@ -167,7 +168,8 @@ try
         app.Services.GetRequiredService<HttpClient>(),
         config.ModelOverride,
         logger,
-        modelCts.Token
+        modelCts.Token,
+        config.ModelEndpointsOverride
     );
 }
 catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or OperationCanceledException)
@@ -194,7 +196,10 @@ logger.LogInformation(
 );
 
 // --- Pipeline ----------------------------------------------------------------
-// Host/loopback/cross-site guard runs FIRST.
+// Host/loopback/cross-site guard runs FIRST. Its rejection is shaped for the dialect the caller was
+// speaking: an OpenAI SDK cannot parse Anthropic's top-level {type, error} envelope, so a rejected
+// /chat/completions or /responses request would otherwise surface as an unparseable body rather than
+// as the 403 it is.
 app.Use(
     async (ctx, next) =>
     {
@@ -208,8 +213,9 @@ app.Use(
             )
         )
         {
-            await ProxyHttp.WriteAnthropicErrorAsync(
+            await ProxyHttp.WriteErrorAsync(
                 ctx,
+                ProxyHttp.DialectForPath(ctx.Request.Path),
                 StatusCodes.Status403Forbidden,
                 "permission_error",
                 "This proxy only accepts loopback requests from a same-origin client."
@@ -242,6 +248,7 @@ foreach (var path in new[] { "/v1/messages", "/messages" })
                 catalog,
                 config.IdleTimeout,
                 config.KeepAliveInterval,
+                config.MaxBodyBytes,
                 ProxyDialect.AnthropicMessages
             )
     );
@@ -253,6 +260,7 @@ foreach (var path in new[] { "/v1/messages", "/messages" })
                 catalog,
                 config.IdleTimeout,
                 config.KeepAliveInterval,
+                config.MaxBodyBytes,
                 ProxyDialect.AnthropicMessages,
                 isCountTokens: true
             )
@@ -269,6 +277,7 @@ foreach (var path in new[] { "/v1/chat/completions", "/chat/completions" })
                 catalog,
                 config.IdleTimeout,
                 config.KeepAliveInterval,
+                config.MaxBodyBytes,
                 ProxyDialect.ChatCompletions
             )
     );
@@ -278,7 +287,15 @@ foreach (var path in new[] { "/v1/responses", "/responses" })
 {
     _ = app.MapPost(
         path,
-        ctx => ProxyHttp.ForwardAsync(ctx, catalog, config.IdleTimeout, config.KeepAliveInterval, ProxyDialect.Responses)
+        ctx =>
+            ProxyHttp.ForwardAsync(
+                ctx,
+                catalog,
+                config.IdleTimeout,
+                config.KeepAliveInterval,
+                config.MaxBodyBytes,
+                ProxyDialect.Responses
+            )
     );
 }
 
@@ -309,6 +326,9 @@ return 0;
 /// <summary>Immutable proxy configuration sourced from environment variables.</summary>
 internal sealed record ProxyConfig
 {
+    /// <summary>Matches the Anthropic API's own ~32 MB request limit.</summary>
+    public const long DefaultMaxBodyBytes = 32L * 1024 * 1024;
+
     public required int Port { get; init; }
     public required string BaseUrl { get; init; }
     public required TimeSpan IdleTimeout { get; init; }
@@ -316,11 +336,24 @@ internal sealed record ProxyConfig
     public required bool EnableDeviceFlow { get; init; }
     public required string? ModelOverride { get; init; }
 
+    /// <summary>
+    ///     Endpoints the pinned <see cref="ModelOverride"/> serves, when the operator states them.
+    ///     Empty means "unstated" — see ProxyModelResolver.ResolveAsync.
+    /// </summary>
+    public required IReadOnlyList<string> ModelEndpointsOverride { get; init; }
+
+    /// <summary>
+    ///     Ceiling on any single buffered body, inbound or upstream. The forward and translate paths
+    ///     both hold a whole body in memory to rewrite it, so this is what stops one oversized reply
+    ///     from turning into several large-object-heap allocations.
+    /// </summary>
+    public required long MaxBodyBytes { get; init; }
+
     public static ProxyConfig FromEnvironment()
     {
         return new ProxyConfig
         {
-            Port = ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_PORT"), 8788),
+            Port = ParseInt(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_PORT"), 8787),
             BaseUrl =
                 NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_BASE_URL"))
                 ?? CopilotOptions.DefaultBaseUrl,
@@ -332,13 +365,30 @@ internal sealed record ProxyConfig
             ),
             EnableDeviceFlow = ParseBool(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW")),
             ModelOverride = NullIfBlank(Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL")),
+            ModelEndpointsOverride = ParseList(
+                Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL_ENDPOINTS")
+            ),
+            MaxBodyBytes = ParseLong(
+                Environment.GetEnvironmentVariable("COPILOT_ANTHROPIC_MAX_BODY_BYTES"),
+                DefaultMaxBodyBytes
+            ),
         };
     }
 
     private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static IReadOnlyList<string> ParseList(string? value) =>
+        NullIfBlank(value) is not { } list
+            ? []
+            : [.. list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
     private static int ParseInt(string? value, int fallback) =>
         int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
+            ? parsed
+            : fallback;
+
+    private static long ParseLong(string? value, long fallback) =>
+        long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
             ? parsed
             : fallback;
 
@@ -505,6 +555,12 @@ public static class ProxyModelResolver
     ///     <see cref="ParseServableModels"/> considers servable — advertising any of <c>/v1/messages</c>,
     ///     <c>/chat/completions</c> or <c>/responses</c>, vendor not denied.
     ///
+    ///     <paramref name="pinnedEndpoints"/> states what the pinned id serves. It exists because pinning
+    ///     skips discovery, so nothing else can know: without it a pinned Responses-only model has no
+    ///     endpoint metadata, and <c>ModelRouter</c> reads "no metadata" as Messages-capable — which makes
+    ///     the Anthropic-to-Responses translation route unreachable for exactly the models it was built
+    ///     for. Empty keeps the historical behaviour.
+    ///
     ///     The DEFAULT is drawn from a narrower set than the catalog. It is the fallback for the Anthropic
     ///     surface, so it is picked from the Messages-capable ids only, and among those it is the
     ///     highest-version <c>opus</c> Claude id. Throws when no override is set and there is no such id
@@ -514,7 +570,8 @@ public static class ProxyModelResolver
         HttpClient client,
         string? modelOverride,
         ILogger logger,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? pinnedEndpoints = null
     )
     {
         ArgumentNullException.ThrowIfNull(client);
@@ -523,10 +580,21 @@ public static class ProxyModelResolver
         {
             var pinned = modelOverride.Trim();
 
-            // DEVIATION D1: pinning still short-circuits discovery. Vendor and endpoints are unknown, and an
-            // empty endpoint list means "no metadata", which routes as Anthropic Messages and Chat Completions,
-            // but not Responses — we cannot claim Responses support we have not seen advertised.
-            return new ProxyModelCatalog(pinned, [new ProxyModelInfo(pinned, string.Empty, [])]);
+            // DEVIATION D1: pinning still short-circuits discovery — see the plan's D1 note. Vendor stays
+            // unknown; endpoints are whatever the operator stated. An empty list still means "no metadata",
+            // which routes as Anthropic Messages and Chat Completions but not Responses: we do not claim
+            // Responses support nobody advertised.
+            IReadOnlyList<string> endpoints = pinnedEndpoints ?? [];
+            if (endpoints.Count > 0)
+            {
+                logger.LogInformation(
+                    "Model {Model} is pinned with the endpoints {Endpoints}; discovery is skipped.",
+                    pinned,
+                    string.Join(", ", endpoints)
+                );
+            }
+
+            return new ProxyModelCatalog(pinned, [new ProxyModelInfo(pinned, string.Empty, endpoints)]);
         }
 
         using var response = await client.GetAsync("/models", cancellationToken).ConfigureAwait(false);
@@ -875,12 +943,56 @@ public static class ProxyModelResolver
                 {
                     obj["tools"] = kept;
                 }
+
+                // A tool_choice that outlived its tool is not a smaller problem than the hosted tool
+                // was: Responses rejects a choice with no tools at all, and a named choice pointing at
+                // a tool that was just filtered out is a 400 for a tool the client never sent.
+                DropOrphanedToolChoice(obj, kept);
             }
         }
 
         rewritten = JsonSerializer.SerializeToUtf8Bytes(obj);
         return true;
     }
+
+    /// <summary>
+    ///     Removes <c>tool_choice</c> when the tools that survived hosted-tool filtering can no longer
+    ///     satisfy it. A bare "auto"/"none"/"required" string is kept whenever any tool survived; it is
+    ///     dropped only when the tools key itself went away.
+    /// </summary>
+    private static void DropOrphanedToolChoice(JsonObject obj, JsonArray kept)
+    {
+        if (obj["tool_choice"] is not { } choice)
+        {
+            return;
+        }
+
+        if (kept.Count == 0)
+        {
+            _ = obj.Remove("tool_choice");
+            return;
+        }
+
+        // The object form names one tool: {"type":"function","name":"shell"}. Anything else — a hosted
+        // tool type such as {"type":"image_generation"}, or a shape we do not recognise — cannot be
+        // checked against what survived, so it goes with the tools it referred to.
+        if (choice is not JsonObject named)
+        {
+            return;
+        }
+
+        var name = ScalarString(named["name"]);
+        var survives = name is not null && kept.OfType<JsonObject>().Any(tool => ScalarString(tool["name"]) == name);
+
+        if (!survives)
+        {
+            _ = obj.Remove("tool_choice");
+        }
+    }
+
+    /// <summary>Reads a JSON string, or null when the node is absent or carries another kind.</summary>
+    private static string? ScalarString(JsonNode? node) =>
+        node is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : null;
 }
 
 // =============================================================================
@@ -892,22 +1004,60 @@ internal static class ProxyHttp
 {
     private const int BufferSize = 8192;
 
-    // Hop-by-hop / framing / content-coding headers that must NOT be copied from the upstream response.
-    // Content-Type is copied separately from the content headers.
-    private static readonly HashSet<string> ExcludedResponseHeaders = new(StringComparer.OrdinalIgnoreCase)
+    // Positive allowlist for upstream response headers. A negative list forwards by default, so every
+    // header a provider or an intermediary invents — Set-Cookie, tracing identifiers, whatever the next
+    // gateway adds — reaches the client until someone remembers to deny it. This list is instead the
+    // complete set the client is known to need: retry pacing, rate-limit accounting, the request id that
+    // makes a provider-side incident traceable, and the one MCP protocol header below.
+    // Content-Type is applied separately from the content headers.
+    private static readonly HashSet<string> AllowedResponseHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Content-Length",
-        "Transfer-Encoding",
-        "Connection",
-        "Keep-Alive",
-        "Upgrade",
-        "TE",
-        "Trailer",
-        "Proxy-Authenticate",
-        "Proxy-Authorization",
-        "Content-Encoding",
-        "Content-Type",
+        "Retry-After",
+        "request-id",
+        "x-request-id",
+        "ETag",
+        "Cache-Control",
+        "Vary",
+        "openai-processing-ms",
+        "openai-version",
+        "openai-model",
+        // MCP Streamable HTTP: the server assigns the session id on InitializeResult and the client
+        // MUST echo it on every later request. Withholding it does not merely lose a diagnostic — it
+        // ends the session before it starts, so this is protocol payload rather than provider noise.
+        "Mcp-Session-Id",
     };
+
+    // Rate-limit families are open-ended (Anthropic alone ships requests/tokens/input-tokens/
+    // output-tokens variants and adds more), so they are matched by prefix rather than enumerated.
+    private static readonly string[] AllowedResponseHeaderPrefixes =
+    [
+        "anthropic-ratelimit-",
+        "x-ratelimit-",
+        "ratelimit-",
+    ];
+
+    /// <summary>
+    ///     The dialect a path speaks, for code that runs before routing (the loopback guard) and so
+    ///     cannot be told by the endpoint which dialect it is serving. Anything unrecognised is
+    ///     Anthropic: that is the proxy's primary surface and the shape its fallback 404 already uses.
+    /// </summary>
+    public static ProxyDialect DialectForPath(PathString path)
+    {
+        var value = path.Value ?? string.Empty;
+
+        if (HasSegment(value, "/chat/completions"))
+        {
+            return ProxyDialect.ChatCompletions;
+        }
+
+        return HasSegment(value, "/responses") ? ProxyDialect.Responses : ProxyDialect.AnthropicMessages;
+
+        // Matches the route family in both bound forms — "/v1/responses" and "/responses" — without
+        // matching a longer path that merely starts the same way.
+        static bool HasSegment(string path, string segment) =>
+            path.Equals(segment, StringComparison.OrdinalIgnoreCase)
+            || path.Equals("/v1" + segment, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>Forwards a request to Copilot in the given dialect and streams the response back.</summary>
     public static async Task ForwardAsync(
@@ -915,6 +1065,7 @@ internal static class ProxyHttp
         ProxyModelCatalog catalog,
         TimeSpan idleTimeout,
         TimeSpan keepAliveInterval,
+        long maxBodyBytes,
         ProxyDialect dialect,
         bool isCountTokens = false
     )
@@ -982,6 +1133,7 @@ internal static class ProxyHttp
                     outboundModel,
                     idleTimeout,
                     keepAliveInterval,
+                    maxBodyBytes,
                     logger
                 )
                 .ConfigureAwait(false);
@@ -1345,6 +1497,7 @@ internal static class ProxyHttp
         string outboundModel,
         TimeSpan idleTimeout,
         TimeSpan keepAliveInterval,
+        long maxBodyBytes,
         ILogger logger
     )
     {
@@ -1465,6 +1618,7 @@ internal static class ProxyHttp
                     upstream,
                     outboundModel,
                     idleTimeout,
+                    maxBodyBytes,
                     idleCts,
                     linked,
                     logger
@@ -1478,7 +1632,7 @@ internal static class ProxyHttp
                     ctx,
                     (int)upstream.StatusCode,
                     "api_error",
-                    ExtractErrorMessage(errorBody)
+                    ExtractErrorMessage(errorBody, logger)
                 );
                 return;
             }
@@ -1490,6 +1644,7 @@ internal static class ProxyHttp
                     upstream,
                     outboundModel,
                     idleTimeout,
+                    maxBodyBytes,
                     idleCts,
                     linked,
                     logger
@@ -1534,13 +1689,19 @@ internal static class ProxyHttp
     }
 
     /// <summary>
-    ///     Reads a complete upstream body under the linked (client-abort + idle) token. Because the send
-    ///     used <see cref="HttpCompletionOption.ResponseHeadersRead" /> this read still pulls from the
+    ///     Reads a complete upstream body under the linked (client-abort + idle) token, bounded by
+    ///     <paramref name="maxBodyBytes" />. Because the send used
+    ///     <see cref="HttpCompletionOption.ResponseHeadersRead" /> this read still pulls from the
     ///     socket, and the proxy's <see cref="HttpClient" /> deliberately carries no timeout — so without
     ///     the idle token nothing at all would end a reply that stops arriving half-way through. The
     ///     deadline is re-armed here so it measures the wait for the BODY rather than counting whatever
     ///     the headers already spent. It does span the whole body read: a buffered reply arrives as one
     ///     payload, so there are no inter-chunk gaps to measure at this layer.
+    ///
+    ///     The cap matters because an idle timeout does not bound SIZE: an upstream that keeps sending
+    ///     never goes idle, so a runaway or hostile reply would be buffered whole, in a single
+    ///     large-object-heap allocation per concurrent request. The inbound direction is already bounded
+    ///     by Kestrel's <c>MaxRequestBodySize</c>, set from the same configured limit.
     /// </summary>
     /// <returns>
     ///     The body, or <c>null</c> once the failure has already been answered (or the client has gone).
@@ -1551,6 +1712,7 @@ internal static class ProxyHttp
         HttpResponseMessage upstream,
         string outboundModel,
         TimeSpan idleTimeout,
+        long maxBodyBytes,
         CancellationTokenSource idleCts,
         CancellationTokenSource linked,
         ILogger logger
@@ -1560,7 +1722,24 @@ internal static class ProxyHttp
 
         try
         {
-            return await upstream.Content.ReadAsStringAsync(linked.Token);
+            var body = await ReadCappedStringAsync(upstream.Content, maxBodyBytes, linked.Token);
+            if (body is not null)
+            {
+                return body;
+            }
+
+            logger.LogError(
+                "Upstream reply for {Model} exceeded the {MaxBodyBytes}-byte relay cap and was not buffered.",
+                outboundModel,
+                maxBodyBytes
+            );
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status502BadGateway,
+                "api_error",
+                "The upstream Copilot reply was larger than this proxy will buffer."
+            );
+            return null;
         }
         catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
         {
@@ -1601,8 +1780,52 @@ internal static class ProxyHttp
     }
 
     /// <summary>
+    ///     Buffers an upstream body as UTF-8 text, or returns <c>null</c> the moment it would exceed
+    ///     <paramref name="maxBytes" />. A declared <c>Content-Length</c> short-circuits the read
+    ///     entirely; a chunked reply is measured as it arrives, so nothing over the cap is ever held.
+    /// </summary>
+    private static async Task<string?> ReadCappedStringAsync(
+        HttpContent content,
+        long maxBytes,
+        CancellationToken token
+    )
+    {
+        if (content.Headers.ContentLength is { } declared && declared > maxBytes)
+        {
+            return null;
+        }
+
+        var stream = await content.ReadAsStreamAsync(token).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        {
+            using var buffer = new MemoryStream();
+            var chunk = new byte[BufferSize];
+
+            while (true)
+            {
+                var read = await stream.ReadAsync(chunk, token).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                if (buffer.Length + read > maxBytes)
+                {
+                    return null;
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            // GetBuffer avoids the second full-size copy ToArray would make of a reply that can already
+            // be megabytes; the decode below is the only other full-size representation.
+            return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+        }
+    }
+
+    /// <summary>
     ///     Translates a buffered Responses reply into an Anthropic Message. A reply this proxy cannot
-    ///     read answers 400 rather than leaking a 500 — the contract
+    ///     read answers 502 rather than leaking a 500 — the contract
     ///     <see cref="ResponsesToAnthropicJson.Translate" /> documents its <see cref="ArgumentException" />
     ///     for.
     /// </summary>
@@ -1611,6 +1834,7 @@ internal static class ProxyHttp
         HttpResponseMessage upstream,
         string outboundModel,
         TimeSpan idleTimeout,
+        long maxBodyBytes,
         CancellationTokenSource idleCts,
         CancellationTokenSource linked,
         ILogger logger
@@ -1621,6 +1845,7 @@ internal static class ProxyHttp
             upstream,
             outboundModel,
             idleTimeout,
+            maxBodyBytes,
             idleCts,
             linked,
             logger
@@ -1637,15 +1862,20 @@ internal static class ProxyHttp
         }
         catch (ArgumentException ex)
         {
-            logger.LogWarning(
-                "Could not translate the Responses reply for {Model}: {Reason}",
-                outboundModel,
-                ex.Message
+            // 502, not 400. The client's request was accepted, forwarded, and answered with 2xx; what
+            // failed is the upstream's reply. Reporting that as invalid_request_error tells the client
+            // to fix a request that was never wrong, and hides a real upstream regression behind a
+            // client-side error class. The exception object is logged rather than only its message, so
+            // a translator defect keeps its type and stack trace.
+            logger.LogError(
+                ex,
+                "Could not translate the Responses reply for {Model} into an Anthropic message.",
+                outboundModel
             );
             await WriteAnthropicErrorAsync(
                 ctx,
-                StatusCodes.Status400BadRequest,
-                "invalid_request_error",
+                StatusCodes.Status502BadGateway,
+                "api_error",
                 "The upstream Copilot reply could not be translated into an Anthropic message."
             );
             return;
@@ -1682,6 +1912,39 @@ internal static class ProxyHttp
         {
             return;
         }
+        catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+        {
+            // The linked token cancels for two reasons and only one of them was handled above, so an
+            // idle timeout during acquisition escaped as an unhandled OperationCanceledException — a
+            // bare 500 with no Anthropic envelope, on the exact path whose 504 contract is documented.
+            logger.LogWarning(
+                "Upstream idle timeout after {IdleSeconds:0}s while opening the stream for {Model}.",
+                idleTimeout.TotalSeconds,
+                outboundModel
+            );
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status504GatewayTimeout,
+                "api_error",
+                "The upstream Copilot stream produced no data before the idle timeout."
+            );
+            return;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            logger.LogError(
+                "Upstream connection dropped while opening the stream for {Model}: {Reason}",
+                outboundModel,
+                ex.Message
+            );
+            await WriteAnthropicErrorAsync(
+                ctx,
+                StatusCodes.Status502BadGateway,
+                "api_error",
+                "The upstream Copilot API dropped the connection before its stream began."
+            );
+            return;
+        }
 
         ctx.Response.StatusCode = StatusCodes.Status200OK;
         ctx.Response.ContentType = "text/event-stream";
@@ -1697,6 +1960,54 @@ internal static class ProxyHttp
             // leaveOpen: the enclosing `await using` owns the stream. Double disposal is harmless, but
             // saying so beats leaving a reader that looks like it owns something it does not.
             using var reader = new StreamReader(upstreamStream, Encoding.UTF8, leaveOpen: true);
+
+            // SSE allows one event to span several `data:` lines, which the receiver joins with "\n" at
+            // the blank line that terminates the event. Feeding each line to the translator on its own —
+            // which this loop used to do — turns any such event into several fragments that individually
+            // fail to parse as JSON, and the translator's "unparseable payloads produce no frames"
+            // contract then drops the whole event silently. Copilot sends single-line events today;
+            // nothing in the protocol promises it always will.
+            var pending = new StringBuilder();
+
+            // Emits one reassembled event. Returns false when the relay should stop.
+            async Task<bool> DispatchAsync(string payload)
+            {
+                // The [DONE] sentinel is not JSON and produces no frames, like any other event this
+                // translator does not surface.
+                var frames = translator.Next(payload.Trim());
+                if (frames.Count == 0)
+                {
+                    reportedSilentDrop = ReportSilentlyDroppedEvent(
+                        logger,
+                        outboundModel,
+                        payload,
+                        reportedSilentDrop
+                    );
+                    return true;
+                }
+
+                try
+                {
+                    foreach (var frame in frames)
+                    {
+                        await ctx.Response.WriteAsync(frame, linked.Token);
+                    }
+
+                    await ctx.Response.Body.FlushAsync(linked.Token);
+                }
+                catch (OperationCanceledException)
+                    when (ctx.RequestAborted.IsCancellationRequested || idleCts.IsCancellationRequested)
+                {
+                    logger.LogDebug(
+                        "Downstream write cancelled ({Reason}); ending translated relay.",
+                        ctx.RequestAborted.IsCancellationRequested ? "client disconnect" : "idle timeout"
+                    );
+                    return false;
+                }
+
+                return true;
+            }
+
             while (true)
             {
                 // Reset BEFORE each read: the deadline measures the gap between upstream lines, never the
@@ -1731,17 +2042,22 @@ internal static class ProxyHttp
 
                     return;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is IOException or HttpRequestException or ObjectDisposedException)
                 {
+                    // Narrowed to transport faults, and logging the exception OBJECT: a catch-all here
+                    // swallowed programming defects — a NullReferenceException in the translator became
+                    // an "upstream stream failed" line with no type and no stack trace, and the relay
+                    // ended looking like an ordinary truncation.
+                    //
                     // The upstream read and the downstream keep-alive write share this one call, so the
                     // failing side is not knowable here — saying "upstream" would blame Copilot for a
                     // client that hung up. The envelope below is upstream-only regardless: a keep-alive
                     // write can only fail after it has started the response, which this guard excludes.
                     logger.LogWarning(
+                        ex,
                         "Translated relay for {Model} failed mid-stream, on either the upstream read or the "
-                            + "downstream keep-alive write: {Reason}",
-                        outboundModel,
-                        ex.Message
+                            + "downstream keep-alive write.",
+                        outboundModel
                     );
                     if (!ctx.Response.HasStarted)
                     {
@@ -1758,43 +2074,52 @@ internal static class ProxyHttp
 
                 if (line is null)
                 {
-                    return; // Upstream EOF.
+                    // Upstream EOF. An event whose terminating blank line never arrived is still an
+                    // event the upstream sent, so it is dispatched rather than discarded.
+                    if (pending.Length > 0)
+                    {
+                        _ = await DispatchAsync(pending.ToString());
+                    }
+
+                    return;
                 }
 
-                // Only the payload matters: the translator dispatches on the JSON `type`, and the
-                // upstream `event:` line merely repeats it. Blank separators fall out here too.
+                // The blank line terminates the event and is the only place a payload is dispatched.
+                if (line.Length == 0)
+                {
+                    if (pending.Length > 0)
+                    {
+                        var payload = pending.ToString();
+                        _ = pending.Clear();
+                        if (!await DispatchAsync(payload))
+                        {
+                            return;
+                        }
+                    }
+
+                    continue;
+                }
+
+                // Only `data:` matters: the translator dispatches on the JSON `type`, and the upstream
+                // `event:` line merely repeats it. Comments and other fields fall out here.
                 if (!line.StartsWith("data:", StringComparison.Ordinal))
                 {
                     continue;
                 }
 
-                // The [DONE] sentinel is not JSON and produces no frames, like any other event this
-                // translator does not surface.
-                var frames = translator.Next(line[5..].Trim());
-                if (frames.Count == 0)
+                // SSE strips exactly ONE optional space after the colon; any further whitespace is data.
+                var value = line[5..];
+                if (value.StartsWith(' '))
                 {
-                    reportedSilentDrop = ReportSilentlyDroppedEvent(logger, outboundModel, line, reportedSilentDrop);
-                    continue;
+                    value = value[1..];
                 }
 
-                try
+                if (pending.Length > 0)
                 {
-                    foreach (var frame in frames)
-                    {
-                        await ctx.Response.WriteAsync(frame, linked.Token);
-                    }
+                    _ = pending.Append('\n');
+                }
 
-                    await ctx.Response.Body.FlushAsync(linked.Token);
-                }
-                catch (OperationCanceledException)
-                    when (ctx.RequestAborted.IsCancellationRequested || idleCts.IsCancellationRequested)
-                {
-                    logger.LogDebug(
-                        "Downstream write cancelled ({Reason}); ending translated relay.",
-                        ctx.RequestAborted.IsCancellationRequested ? "client disconnect" : "idle timeout"
-                    );
-                    return;
-                }
+                _ = pending.Append(value);
             }
         }
     }
@@ -1837,13 +2162,15 @@ internal static class ProxyHttp
 
     /// <summary>
     ///     Reports, at most once per stream, an upstream event that translated to nothing AND whose
-    ///     absence a user would notice: a tool call whose arguments were dropped, and an upstream
-    ///     failure, which reaches the client as an unexplained truncation. Neither justifies inventing a
-    ///     frame, but both are otherwise completely invisible. This is the only layer with a logger in
-    ///     scope — the translators deliberately take no logging dependency. Returns the new
-    ///     "already reported" state.
+    ///     absence a user would notice. An upstream FAILURE is no longer one of those cases — it now
+    ///     produces a real Anthropic <c>error</c> frame — so what is left is the two ways an event can
+    ///     vanish without anyone deciding it should: a tool call's arguments that carried nothing
+    ///     readable, and a payload that is not a JSON object at all. Neither justifies inventing a frame,
+    ///     but both are otherwise completely invisible. This is the only layer with a logger in scope —
+    ///     the translators deliberately take no logging dependency. Returns the new "already reported"
+    ///     state.
     /// </summary>
-    private static bool ReportSilentlyDroppedEvent(ILogger logger, string model, string line, bool alreadyReported)
+    private static bool ReportSilentlyDroppedEvent(ILogger logger, string model, string payload, bool alreadyReported)
     {
         if (alreadyReported)
         {
@@ -1851,17 +2178,17 @@ internal static class ProxyHttp
         }
 
         string reason;
-        if (line.Contains("response.function_call_arguments.delta", StringComparison.Ordinal))
+        if (payload.Contains("response.function_call_arguments.delta", StringComparison.Ordinal))
         {
             reason =
-                "a tool call's arguments were dropped because no tool_use block was open — "
-                + "response.output_item.added was missing, unreadable, or spelled differently than expected";
+                "a tool call's arguments produced no output — the delta was absent, empty, or carried a "
+                + "JSON kind other than string";
         }
-        else if (line.Contains("response.failed", StringComparison.Ordinal))
+        else if (!IsReadableEventPayload(payload))
         {
             reason =
-                "the upstream reported a failure, which reaches the client as a truncated stream rather "
-                + "than a fabricated error frame";
+                "an upstream event could not be read as a JSON object and was dropped; a truncated or "
+                + "mis-framed SSE event is the usual cause";
         }
         else
         {
@@ -1873,16 +2200,51 @@ internal static class ProxyHttp
     }
 
     /// <summary>
+    ///     True when a zero-frame payload is one the translator legitimately chose not to surface,
+    ///     rather than one it could not read. The empty payload and the <c>[DONE]</c> sentinel are both
+    ///     expected and are not JSON.
+    /// </summary>
+    private static bool IsReadableEventPayload(string payload)
+    {
+        var trimmed = payload.Trim();
+        if (trimmed.Length == 0 || trimmed == "[DONE]")
+        {
+            return true;
+        }
+
+        try
+        {
+            return JsonNode.Parse(trimmed) is JsonObject;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     ///     Pulls a human-readable message out of an upstream error body. Every read is kind-safe:
     ///     <c>{"error":"boom"}</c> indexed as an object throws <see cref="InvalidOperationException" />,
-    ///     which would turn a clean relayed 503 into an unhandled 500. An unrecognised body falls back to
-    ///     its own text rather than a generic placeholder, because the raw text is what makes an
-    ///     unfamiliar upstream failure diagnosable. Every shape is capped: an upstream that echoes the
-    ///     whole request back inside <c>error.message</c> must not turn one bad call into a megabyte of
-    ///     client-visible noise.
+    ///     which would turn a clean relayed 503 into an unhandled 500.
+    ///
+    ///     Only a message the upstream deliberately PUT in a message field is relayed, and only capped.
+    ///     A body with no such field used to be relayed as its own raw text, which is the shape most
+    ///     likely to carry something the client should not see — an intermediary's HTML error page with
+    ///     internal hostnames, a stack trace, a proxy's echo of the request. That text is now logged
+    ///     (truncated) for the operator, who is the person who can act on it, and the client gets a
+    ///     fixed sentence plus the status code it already has.
+    ///
+    ///     The cap is not redaction and is not claimed to be: <c>error.message</c> can still echo
+    ///     request content back. This proxy binds to loopback only and serves one local user, who is the
+    ///     same person whose prompt it would be echoing — so relaying the provider's own diagnosis is
+    ///     worth more than withholding it. A multi-tenant deployment would have to replace this with a
+    ///     fixed message per status code.
     /// </summary>
-    private static string ExtractErrorMessage(string body)
+    private static string ExtractErrorMessage(string body, ILogger logger)
     {
+        const string opaque =
+            "The upstream Copilot API returned an error. See the proxy log for the response body.";
+
         try
         {
             if (JsonNode.Parse(body) is JsonObject obj)
@@ -1905,7 +2267,7 @@ internal static class ProxyHttp
         }
         catch (JsonException)
         {
-            // Not JSON at all (an HTML error page from an intermediary, say) — fall through to the text.
+            // Not JSON at all (an HTML error page from an intermediary, say) — fall through.
         }
 
         var trimmed = body.Trim();
@@ -1914,7 +2276,12 @@ internal static class ProxyHttp
             return "The upstream Copilot API returned an error with no body.";
         }
 
-        return CapErrorText(trimmed);
+        logger.LogWarning(
+            "Upstream error body carried no recognised message field; first {Length} characters: {Body}",
+            Math.Min(trimmed.Length, MaxRelayedErrorLength),
+            CapErrorText(trimmed)
+        );
+        return opaque;
     }
 
     /// <summary>Caps upstream-authored text at <see cref="MaxRelayedErrorLength" /> characters.</summary>
@@ -1952,12 +2319,15 @@ internal static class ProxyHttp
         }
     }
 
-    /// <summary>Copies upstream response headers verbatim except hop-by-hop/framing/content-coding.</summary>
+    /// <summary>
+    ///     Copies the upstream response headers the client is known to need, and nothing else. See
+    ///     <see cref="AllowedResponseHeaders" /> for why this is an allowlist rather than a denylist.
+    /// </summary>
     public static void CopyResponseHeaders(HttpResponseMessage upstream, HttpResponse response)
     {
         foreach (var header in upstream.Headers)
         {
-            if (!ExcludedResponseHeaders.Contains(header.Key))
+            if (IsRelayableResponseHeader(header.Key))
             {
                 response.Headers[header.Key] = header.Value.ToArray();
             }
@@ -1965,12 +2335,16 @@ internal static class ProxyHttp
 
         foreach (var header in upstream.Content.Headers)
         {
-            if (!ExcludedResponseHeaders.Contains(header.Key))
+            if (IsRelayableResponseHeader(header.Key))
             {
                 response.Headers[header.Key] = header.Value.ToArray();
             }
         }
     }
+
+    private static bool IsRelayableResponseHeader(string name) =>
+        AllowedResponseHeaders.Contains(name)
+        || AllowedResponseHeaderPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Writes an Anthropic-shaped error envelope (when the response has not started).</summary>
     public static async Task WriteAnthropicErrorAsync(HttpContext ctx, int status, string type, string message)
@@ -2027,6 +2401,13 @@ internal static class ProxyHttp
     ///     <c>data[].type == "model"</c> and <c>display_name</c>; OpenAI clients read
     ///     <c>object == "list"</c>, <c>data[].object == "model"</c> and <c>owned_by</c>. The two shapes do
     ///     not conflict, so one body carrying every field serves both and we never branch on the caller.
+    ///
+    ///     This assumes the caller ignores fields it does not know, which is what both official SDKs and
+    ///     every client this proxy targets do — and what the APIs themselves rely on to add fields
+    ///     without a version bump. A consumer that validates against a CLOSED schema would reject the
+    ///     union, and that is the documented limit of this endpoint: serving such a client would need a
+    ///     per-dialect view, which is only worth building once one is actually in scope. Nothing else in
+    ///     this proxy shares the assumption — every other route relays the upstream body untouched.
     ///
     ///     <c>created</c> is a fixed epoch — Copilot's /models does not report a creation time, and the
     ///     field exists only because OpenAI SDKs deserialise into a struct that requires it.

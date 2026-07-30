@@ -43,6 +43,34 @@ public sealed class PassthroughTests
     }
 
     [Fact]
+    public async Task An_upstream_response_header_nobody_asked_for_does_not_reach_the_client()
+    {
+        // Response headers are relayed by ALLOWLIST. A denylist forwards by default, so a provider or
+        // any intermediary between it and this proxy can plant something in the client's HTTP context —
+        // a cookie, a redirect, a tracking id — and it arrives until someone remembers to name it.
+        var headers = new Dictionary<string, string>
+        {
+            ["Set-Cookie"] = "session=stolen; Path=/",
+            ["x-some-gateway-trace"] = "internal-hostname-42",
+            ["request-id"] = "req_abc123",
+        };
+
+        await using var factory = new ProxyWebAppFactory(
+            (req, ct) => Task.FromResult(TestUpstream.Json("{\"type\":\"message\"}", HttpStatusCode.OK, headers))
+        );
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/v1/messages", ValidBody());
+
+        response.Headers.Contains("Set-Cookie").Should().BeFalse();
+        response.Headers.Contains("x-some-gateway-trace").Should().BeFalse();
+        response
+            .Headers.GetValues("request-id")
+            .Should()
+            .ContainSingle("the allowlist still has to carry what the client genuinely needs");
+    }
+
+    [Fact]
     public async Task Non_streaming_success_body_is_copied_verbatim()
     {
         const string upstreamBody = "{\"type\":\"message\",\"unknown_future_field\":{\"a\":1},\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}";

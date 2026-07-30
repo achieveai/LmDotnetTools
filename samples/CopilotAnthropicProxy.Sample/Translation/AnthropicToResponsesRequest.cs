@@ -110,10 +110,30 @@ public static class AnthropicToResponsesRequest
             {
                 target["tool_choice"] = toolChoice;
             }
+
+            // Anthropic carries this INSIDE tool_choice and defaults it to false; Responses carries it
+            // at the top level and defaults it to true. Dropping it would let a client that
+            // deliberately serialises tool execution receive several tool calls in one turn and break
+            // its tool loop. Only an explicit true is translated — sending parallel_tool_calls: true
+            // for every other request would be inventing an instruction the client never gave.
+            if (DisablesParallelToolUse(source["tool_choice"]))
+            {
+                target["parallel_tool_calls"] = false;
+            }
         }
 
         return target;
     }
+
+    /// <summary>
+    ///     True when the client set Anthropic's <c>tool_choice.disable_parallel_tool_use</c>. The flag
+    ///     is meaningless without tools, so this is only consulted once tools survived the filter.
+    /// </summary>
+    private static bool DisablesParallelToolUse(JsonNode? toolChoice) =>
+        toolChoice is JsonObject choice
+        && choice["disable_parallel_tool_use"] is JsonValue flag
+        && flag.TryGetValue<bool>(out var disabled)
+        && disabled;
 
     /// <summary>
     ///     Builds the Responses <c>reasoning</c> field from Anthropic's top-level <c>thinking</c>.
@@ -128,8 +148,15 @@ public static class AnthropicToResponsesRequest
     ///     but choosing a global one would change how hard every model thinks and what every request
     ///     costs. Anthropic clients already say how hard to think: extended thinking arrives as
     ///     <c>thinking: {"type":"enabled","budget_tokens":N}</c>. So the client's own budget is mapped
-    ///     onto the coarse effort Responses accepts, and a request that never enabled thinking gets no
+    ///     onto the coarse effort Responses accepts, and a request that never mentioned thinking gets no
     ///     <c>effort</c> — today's behaviour and today's cost, exactly.
+    ///
+    ///     <c>thinking: {"type":"disabled"}</c> is NOT "never mentioned". The client explicitly asked
+    ///     not to reason, and several served models default to a non-<c>none</c> effort, so omitting the
+    ///     field would bill the caller for reasoning it just turned off. That maps to Responses'
+    ///     <c>effort: "none"</c>, which is a documented value of the enum. A model that cannot honour it
+    ///     answers 400, and that 400 is relayed to the client — visibly refusing is the point; silently
+    ///     reasoning anyway is what this branch exists to prevent.
     /// </summary>
     private static JsonObject BuildReasoning(JsonNode? thinking)
     {
@@ -139,8 +166,18 @@ public static class AnthropicToResponsesRequest
             thinking is not JsonObject request
             || request["type"] is not JsonValue kind
             || !kind.TryGetValue<string>(out var type)
-            || type != "enabled"
         )
+        {
+            return reasoning;
+        }
+
+        if (type == "disabled")
+        {
+            reasoning["effort"] = "none";
+            return reasoning;
+        }
+
+        if (type != "enabled")
         {
             return reasoning;
         }

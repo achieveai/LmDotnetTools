@@ -360,6 +360,68 @@ public sealed class ModelResolverTests
     }
 
     [Fact]
+    public void ParseServableModels_drops_metadata_free_entries_when_any_sibling_declares_endpoints()
+    {
+        // The all-or-nothing fallback only fires when NOT ONE entry carries supported_endpoints. In a
+        // MIXED response the metadata is trustworthy, so an entry that declares none declares that it
+        // serves none — keeping it would advertise a model every route then answers 404 for.
+        const string json = """
+        {"data":[
+          {"id":"claude-opus-4.8","vendor":"Anthropic","supported_endpoints":["/v1/messages"]},
+          {"id":"mystery-model","vendor":"Anthropic"},
+          {"id":"embedding-only","vendor":"Anthropic","supported_endpoints":[]}
+        ]}
+        """;
+
+        var models = ProxyModelResolver.ParseServableModels(json);
+
+        models.Select(m => m.Id).Should().Equal("claude-opus-4.8");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_gives_a_pinned_model_the_endpoints_the_operator_declared()
+    {
+        // Pinned mode skips discovery, so the catalog entry has no capability metadata and every
+        // dialect check answers "this model does not serve that endpoint" — which made the translated
+        // Anthropic-to-Responses route unreachable for a pinned GPT model. The operator can now supply
+        // the metadata discovery would have provided.
+        var handler = new FakeHttpMessageHandler(
+            (req, ct) => throw new InvalidOperationException("upstream must not be called when an override is set")
+        );
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("https://upstream.test") };
+
+        var catalog = await ProxyModelResolver.ResolveAsync(
+            client,
+            modelOverride: "gpt-5.3-codex",
+            NullLogger.Instance,
+            CancellationToken.None,
+            pinnedEndpoints: ["/responses"]
+        );
+
+        catalog.Default.Should().Be("gpt-5.3-codex");
+        catalog.Find("gpt-5.3-codex")!.Supports(CopilotModelsResponse.ResponsesEndpoint).Should().BeTrue();
+        catalog.Find("gpt-5.3-codex")!.Supports(CopilotModelsResponse.MessagesEndpoint).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_leaves_a_pinned_model_endpointless_when_the_operator_declared_nothing()
+    {
+        // Unchanged default: no metadata is not the same as "serves everything", and inventing the
+        // endpoints would make the proxy claim capabilities nobody verified.
+        var handler = new FakeHttpMessageHandler((req, ct) => throw new InvalidOperationException("no upstream"));
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("https://upstream.test") };
+
+        var catalog = await ProxyModelResolver.ResolveAsync(
+            client,
+            modelOverride: "my-pinned-model",
+            NullLogger.Instance,
+            CancellationToken.None
+        );
+
+        catalog.Find("my-pinned-model")!.Endpoints.Should().BeEmpty();
+    }
+
+    [Fact]
     public void PeekModel_reads_the_model_field_without_mutating_the_body()
     {
         var body = System.Text.Encoding.UTF8.GetBytes("{\"model\":\"claude-sonnet-4.5\",\"max_tokens\":5}");

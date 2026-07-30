@@ -155,12 +155,63 @@ public class ResponsesToAnthropicJsonTests
     }
 
     [Fact]
-    public void Malformed_function_call_arguments_degrade_to_an_empty_object_rather_than_failing_the_reply()
+    public void Malformed_function_call_arguments_fail_the_reply_rather_than_degrading_to_an_empty_object()
     {
+        // Degrading to {} used to produce a well-formed tool_use whose input had silently lost every
+        // argument the model chose, which the client cannot distinguish from a parameterless call.
+        var act = () =>
+            ResponsesToAnthropicJson.Translate(
+                """
+                {"id":"r","model":"m",
+                 "output":[{"type":"function_call","call_id":"call_1","name":"noop","arguments":"not json"}],
+                 "usage":{"input_tokens":1,"output_tokens":1}}
+                """,
+                "fallback-model"
+            );
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Missing_function_call_arguments_fail_the_reply()
+    {
+        var act = () =>
+            ResponsesToAnthropicJson.Translate(
+                """
+                {"id":"r","model":"m",
+                 "output":[{"type":"function_call","call_id":"call_1","name":"noop"}],
+                 "usage":{"input_tokens":1,"output_tokens":1}}
+                """,
+                "fallback-model"
+            );
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Function_call_arguments_that_are_not_a_json_object_fail_the_reply()
+    {
+        var act = () =>
+            ResponsesToAnthropicJson.Translate(
+                """
+                {"id":"r","model":"m",
+                 "output":[{"type":"function_call","call_id":"call_1","name":"noop","arguments":"[1,2]"}],
+                 "usage":{"input_tokens":1,"output_tokens":1}}
+                """,
+                "fallback-model"
+            );
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void An_explicit_empty_arguments_object_is_still_honoured()
+    {
+        // A genuinely parameterless call is not the failure case above: "{}" reads cleanly.
         var result = Translate(
             """
             {"id":"r","model":"m",
-             "output":[{"type":"function_call","call_id":"call_1","name":"noop","arguments":"not json"}],
+             "output":[{"type":"function_call","call_id":"call_1","name":"noop","arguments":"{}"}],
              "usage":{"input_tokens":1,"output_tokens":1}}
             """
         );
@@ -171,18 +222,58 @@ public class ResponsesToAnthropicJsonTests
     }
 
     [Fact]
-    public void Missing_function_call_arguments_degrade_to_an_empty_object()
+    public void An_output_field_that_is_not_an_array_fails_the_reply()
+    {
+        // Reading a present-but-wrong-kind output as "absent" turned an invalid upstream reply into a
+        // successful, empty Anthropic message.
+        var act = () => ResponsesToAnthropicJson.Translate("""{"id":"r","output":{}}""", "fallback-model");
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Reports_refusal_when_a_classifier_stopped_the_turn()
     {
         var result = Translate(
             """
-            {"id":"r","model":"m",
-             "output":[{"type":"function_call","call_id":"call_1","name":"noop"}],
+            {"id":"r","model":"m","incomplete_details":{"reason":"content_filter"},
+             "output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}],
              "usage":{"input_tokens":1,"output_tokens":1}}
             """
         );
 
-        var block = result.GetProperty("content")[0];
-        block.GetProperty("type").GetString().Should().Be("tool_use");
-        block.GetProperty("input").EnumerateObject().Should().BeEmpty();
+        result.GetProperty("stop_reason").GetString().Should().Be("refusal");
+    }
+
+    [Fact]
+    public void A_classifier_stop_outranks_a_half_formed_function_call()
+    {
+        // A filtered turn can still carry the function call the model had begun. Reporting that as
+        // tool_use invites the client to execute it.
+        var result = Translate(
+            """
+            {"id":"r","model":"m","incomplete_details":{"reason":"content_filter"},
+             "output":[{"type":"function_call","call_id":"c","name":"rm","arguments":"{\"path\":\"/\"}"}],
+             "usage":{"input_tokens":1,"output_tokens":1}}
+            """
+        );
+
+        result.GetProperty("stop_reason").GetString().Should().Be("refusal");
+    }
+
+    [Theory]
+    // Copilot has been observed reporting counts that do not fit int, and whole numbers written in
+    // floating-point form. Both must read the same here as they do on the streaming path.
+    [InlineData("3000000000", 3000000000L)]
+    [InlineData("12.0", 12L)]
+    [InlineData("\"9\"", 0L)]
+    [InlineData("null", 0L)]
+    public void Token_counts_are_read_through_one_shared_policy(string literal, long expected)
+    {
+        var result = Translate(
+            $$"""{"id":"r","model":"m","output":[],"usage":{"input_tokens":{{literal}},"output_tokens":1} }"""
+        );
+
+        result.GetProperty("usage").GetProperty("input_tokens").GetInt64().Should().Be(expected);
     }
 }

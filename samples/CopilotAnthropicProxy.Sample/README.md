@@ -53,21 +53,21 @@ On startup the proxy logs the resolved default model, how many models are availa
 address, e.g.:
 
 ```
-CopilotAnthropicProxy listening on http://127.0.0.1:8788 -> https://api.enterprise.githubcopilot.com (default model: <resolved-opus-id>, 17 available; idle 180s, keep-alive 15s)
+CopilotAnthropicProxy listening on http://127.0.0.1:8787 -> https://api.enterprise.githubcopilot.com (default model: <resolved-opus-id>, 17 available; idle 180s, keep-alive 15s)
 ```
 
 ## Configuring each client
 
 ```bash
 # Claude Code — any model in the catalog, Claude or GPT
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 export ANTHROPIC_MODEL=gpt-5.3-codex
 
 # Codex CLI — ~/.codex/config.toml
-# base_url = "http://127.0.0.1:8788/v1"
+# base_url = "http://127.0.0.1:8787/v1"
 
 # opencode — OpenAI-compatible provider
-# baseURL: "http://127.0.0.1:8788/v1"
+# baseURL: "http://127.0.0.1:8787/v1"
 ```
 
 `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) is required by these clients but ignored by the proxy: the
@@ -81,7 +81,7 @@ The in-house `AnthropicClient` appends `/messages` to the configured base URL, s
 ```bash
 LM_PROVIDER_MODE=anthropic \
 ANTHROPIC_API_KEY=dummy \
-ANTHROPIC_BASE_URL=http://127.0.0.1:8788/v1 \
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787/v1 \
 ANTHROPIC_MODEL=any-model-id-the-proxy-will-rewrite \
 dotnet run --project samples/LmStreaming.Sample
 ```
@@ -102,9 +102,17 @@ base URL under haiku model ids; without family mapping, every one of them would 
 
 > [!NOTE]
 > Setting `COPILOT_ANTHROPIC_MODEL` **pins** every request to that one id and skips discovery
-> entirely. A pinned catalog carries no endpoint metadata, so the pinned model is treated as an
-> Anthropic Messages passthrough — **the translated route is unreachable in pinned mode**. Leave the
-> variable unset to drive GPT models through `/v1/messages`.
+> entirely. A pinned catalog carries no endpoint metadata, so by default the pinned model is treated
+> as an Anthropic Messages passthrough and the translated route stays unreachable. To pin a
+> Responses-only model, declare what discovery would have found:
+>
+> ```bash
+> export COPILOT_ANTHROPIC_MODEL=gpt-5.3-codex
+> export COPILOT_ANTHROPIC_MODEL_ENDPOINTS=/responses
+> ```
+>
+> Leave both unset to serve the whole discovered catalog, which is the usual way to drive GPT models
+> through `/v1/messages`.
 
 ## Known limitations
 
@@ -227,7 +235,7 @@ transport) on:
 
 This is a **byte-level reverse proxy**, not an MCP-aware reimplementation: there's no JSON-RPC
 parsing and no proxy-side session bookkeeping. Point any MCP Streamable-HTTP client at
-`http://127.0.0.1:8788/mcp` (or `/mcp/readonly`) exactly as you would point it at
+`http://127.0.0.1:8787/mcp` (or `/mcp/readonly`) exactly as you would point it at
 `https://api.enterprise.githubcopilot.com/mcp` (or `/mcp/readonly`) directly — request/response
 bodies, status codes, and headers are relayed verbatim, including SSE responses (same raw-byte
 streaming as `/v1/messages`).
@@ -248,8 +256,8 @@ host/cross-site guard described in the warning above.
 
 | Symptom (request that reaches the proxy) | Cause | Fix |
 | --- | --- | --- |
-| `404` on `POST /messages` | You used the bare host with a client that appends only `/messages`. | Add `/v1`: `…:8788/v1`. |
-| `404` on `POST /v1/v1/messages` | You added `/v1` for a client that already appends `/v1/messages`. | Drop `/v1`: use `…:8788`. |
+| `404` on `POST /messages` | You used the bare host with a client that appends only `/messages`. | Add `/v1`: `…:8787/v1`. |
+| `404` on `POST /v1/v1/messages` | You added `/v1` for a client that already appends `/v1/messages`. | Drop `/v1`: use `…:8787`. |
 | `404 not_found_error` on `count_tokens` | The model is served by translation to Responses, which has no token-counting endpoint. | Expected; the client falls back to a local estimate. |
 | A GPT model answers as Claude | `COPILOT_ANTHROPIC_MODEL` is pinned, so every request is rewritten to it. | Unset it to use the discovered catalog. |
 | `403 permission_error` | Non-loopback `Host`, cross-site request, or a non-loopback `Origin`. | Use `127.0.0.1`/`localhost`; don't proxy from a browser page on another origin. |
@@ -260,8 +268,10 @@ host/cross-site guard described in the warning above.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `COPILOT_ANTHROPIC_MODEL` | (discovered from `/models`) | Pins every request to this single Copilot model id and skips discovery entirely. Leave unset to serve the full catalog — see the note under "Which models are served". |
-| `COPILOT_ANTHROPIC_PORT` | `8788` | Loopback listen port. |
+| `COPILOT_ANTHROPIC_MODEL_ENDPOINTS` | (none) | Comma-separated endpoints the pinned model serves, e.g. `/responses`. Only read alongside `COPILOT_ANTHROPIC_MODEL`, where it supplies the capability metadata discovery would have found; without it a pinned model routes as an Anthropic Messages passthrough. |
+| `COPILOT_ANTHROPIC_PORT` | `8787` | Loopback listen port. |
 | `COPILOT_ANTHROPIC_BASE_URL` | `https://api.enterprise.githubcopilot.com` | Copilot host root (for non-enterprise hosts). |
+| `COPILOT_ANTHROPIC_MAX_BODY_BYTES` | `33554432` (32 MiB) | Cap on both the inbound request body and any upstream reply the proxy has to buffer whole in order to translate it. A reply over the cap is refused as `502` rather than read into memory. Streamed relays are unaffected — they are never buffered. |
 | `COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS` | `180` | Per-request idle timeout, reset after each streamed upstream read. The total exchange has no deadline, so long generations are not cut off; this only fires when the upstream produces *nothing* for the whole window. |
 | `COPILOT_ANTHROPIC_KEEPALIVE_SECONDS` | `15` | While an SSE upstream is silent, emit a downstream SSE keep-alive this often so the client's own read timeout does not fire mid-generation. Keep-alives don't reset the idle timeout above. Set `0` to disable. |
 | `COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW` | `false` | When truthy, allow an interactive GitHub device-flow login at startup (composite provider). Off by default — the request path never blocks on device flow. |

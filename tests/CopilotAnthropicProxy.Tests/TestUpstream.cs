@@ -60,6 +60,19 @@ internal static class TestUpstream
     }
 
     /// <summary>
+    ///     A <c>text/event-stream</c> response whose body stream cannot be OPENED. This is the window
+    ///     between "2xx headers received" and "first byte read": the relay awaits
+    ///     <c>Content.ReadAsStreamAsync</c> there, so a drop or an idle timeout at that moment is a
+    ///     distinct failure from one inside the read loop.
+    /// </summary>
+    public static HttpResponseMessage SseThatCannotBeOpened(Func<CancellationToken, Task<Stream>> open)
+    {
+        var content = new UnopenableContent(open);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/event-stream");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
+
+    /// <summary>
     ///     Reads the proxy's response stream, accumulating text, until <paramref name="predicate"/> holds
     ///     or <paramref name="timeout"/> elapses — the way to assert on a frame that has arrived while the
     ///     stream is still open. Everything matched this way (SSE event names, keep-alive comments) is
@@ -91,6 +104,31 @@ internal static class TestUpstream
         }
 
         return accumulated.ToString();
+    }
+}
+
+/// <summary>
+///     Content whose read stream is produced by a caller-supplied delegate, so opening the body can be
+///     made to throw or to block until the supplied token is cancelled.
+/// </summary>
+internal sealed class UnopenableContent : HttpContent
+{
+    private readonly Func<CancellationToken, Task<Stream>> _open;
+
+    public UnopenableContent(Func<CancellationToken, Task<Stream>> open) => _open = open;
+
+    protected override Task<Stream> CreateContentReadStreamAsync() => _open(CancellationToken.None);
+
+    protected override Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken) =>
+        _open(cancellationToken);
+
+    protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) =>
+        _open(CancellationToken.None);
+
+    protected override bool TryComputeLength(out long length)
+    {
+        length = 0;
+        return false;
     }
 }
 

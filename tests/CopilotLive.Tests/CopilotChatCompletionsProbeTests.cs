@@ -105,9 +105,12 @@ public sealed class CopilotChatCompletionsProbeTests
     }
 
     /// <summary>
-    ///     Confirms the one quadrant that genuinely needs translation is real: a Responses-ONLY model
-    ///     (no <c>/chat/completions</c> in its advertised endpoints) should NOT be servable here.
-    ///     Recorded rather than hard-asserted — the point is to capture the observed behavior.
+    ///     The premise the whole translation layer rests on: a Responses-ONLY model (no
+    ///     <c>/chat/completions</c> among its advertised endpoints) is NOT servable over Chat
+    ///     Completions. If Copilot served one anyway, every one of these models would be reachable by
+    ///     passthrough and the Anthropic-in/Responses-out translator would be dead weight — so this is
+    ///     asserted rather than merely recorded. An earlier revision only logged the outcome, which
+    ///     meant the premise could quietly stop being true without any test noticing.
     /// </summary>
     [SkippableFact]
     public async Task ChatCompletions_rejects_a_responses_only_model()
@@ -122,17 +125,25 @@ public sealed class CopilotChatCompletionsProbeTests
         _output.WriteLine($"status: {(int)status} {status}");
         _output.WriteLine(Truncate(body, 2000));
 
-        _output.WriteLine(
-            status == HttpStatusCode.OK
-                ? "OBSERVED: Copilot served a Responses-only model over /chat/completions anyway."
-                : "OBSERVED: rejected, as the catalog implies. The Anthropic-in -> Responses-out "
-                    + "translation path is required for these models."
-        );
+        status
+            .Should()
+            .NotBe(
+                HttpStatusCode.OK,
+                "the catalog omits /chat/completions for this model, and the Anthropic-in -> Responses-out "
+                    + "translation path exists precisely because such models cannot be served by passthrough"
+            );
     }
 
-    /// <summary>Dumps each model's advertised endpoints, so the design rests on live data.</summary>
+    /// <summary>
+    ///     The catalog contract <c>ProxyModelResolver.ParseServableModels</c> reads: entries carry a
+    ///     non-empty string <c>id</c>, and <c>supported_endpoints</c> arrives as an ARRAY on at least one
+    ///     of them. The parser's all-or-nothing fallback treats a catalog with no endpoint metadata
+    ///     anywhere as legacy and keeps every id — so a live catalog that silently stopped publishing
+    ///     the field would make the proxy advertise models it cannot route, and no fixture test can
+    ///     notice that. Dumps the per-model endpoints as well, so the design keeps resting on live data.
+    /// </summary>
     [SkippableFact]
-    public async Task Dump_advertised_endpoints_per_model()
+    public async Task Advertised_endpoints_are_published_in_the_shape_the_resolver_reads()
     {
         Skip.IfNot(_fixture.Available, _fixture.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -143,6 +154,18 @@ public sealed class CopilotChatCompletionsProbeTests
             var endpoints = entry.Endpoints.Count == 0 ? "(none)" : string.Join(", ", entry.Endpoints);
             _output.WriteLine($"{entry.Id,-32} | {entry.Vendor,-14} | {endpoints}");
         }
+
+        catalog.Should().NotBeEmpty("the proxy resolves its default model from this catalog at startup");
+        catalog
+            .Should()
+            .OnlyContain(e => !string.IsNullOrWhiteSpace(e.Id), "an entry without an id is dropped unseen");
+        catalog
+            .Should()
+            .Contain(
+                e => e.Endpoints.Count > 0,
+                "with no endpoint metadata anywhere the resolver falls back to keeping every id, "
+                    + "including ones no route can serve"
+            );
     }
 
     private async Task<(HttpStatusCode Status, string Body)> PostChatCompletionsAsync(

@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 /// <summary>
 ///     Rewrites a non-streaming OpenAI Responses reply into an Anthropic Message.
 ///     <see cref="ResponsesToAnthropicSse"/> does the same job for streaming replies and shares
-///     <see cref="DeriveStopReason"/> so the two cannot drift apart.
+///     <see cref="DeriveStopReason"/> and <see cref="TokenCount"/> so the two cannot drift apart.
 /// </summary>
 public static class ResponsesToAnthropicJson
 {
@@ -15,10 +15,11 @@ public static class ResponsesToAnthropicJson
     /// <exception cref="ArgumentException">
     ///     <paramref name="responsesJson"/> is not well-formed JSON, is not a JSON object, or its
     ///     fields carry a type this translator does not expect (e.g. <c>id</c> present but not a
-    ///     string). Copilot is a live upstream, not a fixture, so a malformed or unexpected reply must
-    ///     surface as this one documented type rather than leaking the underlying
-    ///     <see cref="JsonException"/> or <see cref="InvalidOperationException"/> — callers (Task 9's
-    ///     endpoint) branch on that to answer 400 instead of 500.
+    ///     string, or <c>output</c> present but not an array). Copilot is a live upstream, not a
+    ///     fixture, so a malformed or unexpected reply must surface as this one documented type rather
+    ///     than leaking the underlying <see cref="JsonException"/> or
+    ///     <see cref="InvalidOperationException"/>. The client's request was accepted and well formed,
+    ///     so the caller answers 502 <c>api_error</c> — the failure is upstream, not the client's.
     /// </exception>
     public static string Translate(string responsesJson, string fallbackModel)
     {
@@ -51,20 +52,39 @@ public static class ResponsesToAnthropicJson
             ["type"] = "message",
             ["role"] = "assistant",
             ["model"] = response["model"]?.GetValue<string>() ?? fallbackModel,
-            ["content"] = BuildContent(response["output"] as JsonArray),
+            ["content"] = BuildContent(RequireOutput(response)),
             ["stop_reason"] = DeriveStopReason(response),
             ["stop_sequence"] = null,
             ["usage"] = new JsonObject
             {
-                ["input_tokens"] = usage?["input_tokens"]?.GetValue<int>() ?? 0,
-                ["output_tokens"] = usage?["output_tokens"]?.GetValue<int>() ?? 0,
+                ["input_tokens"] = TokenCount(usage?["input_tokens"]),
+                ["output_tokens"] = TokenCount(usage?["output_tokens"]),
             },
         };
     }
 
     /// <summary>
+    ///     Returns the reply's <c>output</c> array. An absent <c>output</c> is a legitimate shape (a
+    ///     reply that produced nothing), but an <c>output</c> that is present and is not an array is a
+    ///     malformed reply: silently reading it as "absent" would turn an invalid upstream response
+    ///     into a successful, empty Anthropic message and hide the failure from the client.
+    /// </summary>
+    private static JsonArray? RequireOutput(JsonObject response) =>
+        response["output"] switch
+        {
+            null => null,
+            JsonArray output => output,
+            _ => throw new InvalidOperationException("A Responses reply's output must be an array."),
+        };
+
+    /// <summary>
     ///     Derives Anthropic's <c>stop_reason</c> from a Responses reply, in priority order:
-    ///     a function call outranks truncation, truncation outranks a normal finish.
+    ///     classifier intervention outranks everything, then a function call, then truncation, then a
+    ///     normal finish.
+    ///
+    ///     <c>content_filter</c> is checked first on purpose. A filtered turn can still carry the
+    ///     partial output the model produced before the classifier fired, including a half-formed
+    ///     function call; reporting that as <c>tool_use</c> would invite the client to execute it.
     ///
     ///     Any unrecognised <c>incomplete_details</c> shape falls through to <c>end_turn</c>. That
     ///     field is not modelled anywhere under src/OpenAiResponsesProvider, so its live shape is
@@ -78,6 +98,15 @@ public static class ResponsesToAnthropicJson
     {
         ArgumentNullException.ThrowIfNull(response);
 
+        var incompleteReason = (response["incomplete_details"] as JsonObject)?["reason"];
+
+        // The Responses spec defines exactly two reasons: max_output_tokens and content_filter.
+        // Anthropic exposes "refusal" for the latter — a classifier stopped the turn, it did not end.
+        if (IsStringValue(incompleteReason, "content_filter"))
+        {
+            return "refusal";
+        }
+
         if (
             response["output"] is JsonArray output
             && output.OfType<JsonObject>().Any(item => IsStringValue(item["type"], "function_call"))
@@ -86,12 +115,45 @@ public static class ResponsesToAnthropicJson
             return "tool_use";
         }
 
-        if (IsStringValue((response["incomplete_details"] as JsonObject)?["reason"], "max_output_tokens"))
+        if (IsStringValue(incompleteReason, "max_output_tokens"))
         {
             return "max_tokens";
         }
 
         return "end_turn";
+    }
+
+    /// <summary>
+    ///     Reads a Responses token count. Shared with <see cref="ResponsesToAnthropicSse"/> so a
+    ///     buffered and a streamed reply cannot report the same upstream figure differently.
+    ///
+    ///     Copilot has been observed sending these as JSON numbers that do not fit <c>int</c> and as
+    ///     whole numbers written in floating-point form. Anything unreadable degrades to 0 rather than
+    ///     failing the reply: a wrong cost figure is recoverable, a broken envelope is not.
+    /// </summary>
+    public static long TokenCount(JsonNode? node)
+    {
+        if (node is not JsonValue value)
+        {
+            return 0;
+        }
+
+        if (value.TryGetValue<long>(out var exact))
+        {
+            return exact;
+        }
+
+        if (!value.TryGetValue<double>(out var approximate) || double.IsNaN(approximate))
+        {
+            return 0;
+        }
+
+        return approximate switch
+        {
+            <= long.MinValue => long.MinValue,
+            >= long.MaxValue => long.MaxValue,
+            _ => (long)Math.Round(approximate),
+        };
     }
 
     /// <summary>True when <paramref name="node"/> is a JSON string equal to <paramref name="value"/>.</summary>
@@ -158,7 +220,7 @@ public static class ResponsesToAnthropicJson
                             ["type"] = "tool_use",
                             ["id"] = item["call_id"]?.GetValue<string>() ?? "",
                             ["name"] = item["name"]?.GetValue<string>() ?? "",
-                            ["input"] = ParseArguments(item["arguments"]?.GetValue<string>()),
+                            ["input"] = ParseArguments(item["arguments"]),
                         }
                     );
                     break;
@@ -170,28 +232,41 @@ public static class ResponsesToAnthropicJson
 
     /// <summary>
     ///     Parses a function call's arguments, which Responses sends as a JSON STRING while Anthropic
-    ///     expects an object. Malformed or empty arguments become an empty object rather than an error:
-    ///     a client can recover from a tool call with no arguments, but not from a broken envelope.
+    ///     expects an object.
+    ///
+    ///     Arguments that are missing, empty, not valid JSON, or not a JSON object fail the
+    ///     translation. Substituting <c>{}</c> would hand the client a well-formed <c>tool_use</c>
+    ///     whose input silently lost every argument the model chose — a shell command without its
+    ///     command, a delete without its filter — and the client has no way to tell that apart from a
+    ///     genuinely parameterless call. An explicit <c>"{}"</c> from the upstream still parses and is
+    ///     still honoured; only a call whose arguments we could not read is rejected.
     /// </summary>
-    private static JsonNode ParseArguments(string? arguments)
+    /// <exception cref="InvalidOperationException">
+    ///     The arguments are absent or cannot be read as a JSON object. <see cref="Translate"/> wraps
+    ///     this into the <see cref="ArgumentException"/> it documents.
+    /// </exception>
+    private static JsonNode ParseArguments(JsonNode? arguments)
     {
-        if (string.IsNullOrWhiteSpace(arguments))
+        if (
+            arguments is not JsonValue value
+            || !value.TryGetValue<string>(out var text)
+            || string.IsNullOrWhiteSpace(text)
+        )
         {
-            return new JsonObject();
+            throw new InvalidOperationException("A function call's arguments must be a non-empty JSON string.");
         }
 
+        JsonNode? parsed;
         try
         {
-            if (JsonNode.Parse(arguments) is JsonObject parsed)
-            {
-                return parsed;
-            }
+            parsed = JsonNode.Parse(text);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            // Malformed JSON falls through to the empty-object default below.
+            throw new InvalidOperationException("A function call's arguments must be well-formed JSON.", ex);
         }
 
-        return new JsonObject();
+        return parsed as JsonObject
+            ?? throw new InvalidOperationException("A function call's arguments must be a JSON object.");
     }
 }

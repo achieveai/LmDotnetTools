@@ -23,7 +23,8 @@ public class TranslatedMessagesTests
     private static ProxyWebAppFactory Factory(
         Func<HttpRequestMessage, string, Task<HttpResponseMessage>> onProxied,
         int? idleTimeoutSeconds = null,
-        int? keepAliveSeconds = null
+        int? keepAliveSeconds = null,
+        long? maxBodyBytes = null
     ) =>
         new(
             async (request, _) =>
@@ -38,7 +39,8 @@ public class TranslatedMessagesTests
             },
             model: null,
             idleTimeoutSeconds: idleTimeoutSeconds,
-            keepAliveSeconds: keepAliveSeconds
+            keepAliveSeconds: keepAliveSeconds,
+            maxBodyBytes: maxBodyBytes
         );
 
     private static object TranslatedRequest(object messages, int maxTokens = 1024, bool stream = false) =>
@@ -321,10 +323,40 @@ public class TranslatedMessagesTests
     }
 
     [Fact]
-    public async Task An_untranslatable_upstream_reply_is_reported_as_400_not_500()
+    public async Task An_upstream_error_body_with_no_recognised_message_field_is_not_relayed_verbatim()
     {
-        // ResponsesToAnthropicJson.Translate documents ArgumentException for a reply it cannot read, and
-        // documents that this caller branches on it to answer 400 rather than leaking a 500.
+        // A body the proxy cannot read is a body it cannot vouch for: relaying it verbatim would forward
+        // whatever an intermediary chose to write, HTML and all, into the client's error message.
+        await using var factory = Factory(
+            (_, _) =>
+                Task.FromResult(
+                    TestUpstream.Json(
+                        """{"detail":{"trace":"secret-internal-hostname"}}""",
+                        HttpStatusCode.BadGateway
+                    )
+                )
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var message = error.RootElement.GetProperty("error").GetProperty("message").GetString();
+        message.Should().NotContain("secret-internal-hostname");
+        message.Should().Contain("See the proxy log");
+    }
+
+    [Fact]
+    public async Task An_untranslatable_upstream_reply_is_reported_as_502_not_400_and_not_500()
+    {
+        // The client's request was accepted, forwarded, and answered 2xx; what failed is the UPSTREAM's
+        // reply. Calling that a 400 tells the client its own body was invalid, so Claude Code retries or
+        // gives up on the model — the one thing that cannot fix an upstream that answered HTML.
         await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.Json("<html>not json</html>")));
         using var client = factory.CreateClient();
 
@@ -333,11 +365,61 @@ public class TranslatedMessagesTests
             TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
         );
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
 
         using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         error.RootElement.GetProperty("type").GetString().Should().Be("error");
-        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("invalid_request_error");
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+    }
+
+    [Fact]
+    public async Task An_upstream_reply_whose_output_is_not_an_array_is_reported_as_502_not_an_empty_200()
+    {
+        // The dangerous shape is the one that PARSES: reading a present-but-wrong-kind `output` as
+        // "absent" produced a 200 carrying an empty assistant turn, which the client cannot tell from a
+        // model that genuinely said nothing.
+        await using var factory = Factory(
+            (_, _) => Task.FromResult(TestUpstream.Json("""{"id":"r","model":"m","output":{"type":"message"}}"""))
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+    }
+
+    [Fact]
+    public async Task An_upstream_reply_larger_than_the_body_cap_is_reported_as_502()
+    {
+        // The translated path buffers the whole reply and then builds a second copy of it. Without a cap
+        // a single upstream answer decides how much of the proxy's memory it gets to occupy.
+        var huge = new string('x', 200_000);
+        await using var factory = Factory(
+            (_, _) =>
+                Task.FromResult(
+                    TestUpstream.Json(
+                        $$"""
+                        {"id":"r","model":"m","output":[{"type":"message","content":[{"type":"output_text","text":"{{huge}}"}]}],
+                         "usage":{"input_tokens":1,"output_tokens":1} }
+                        """
+                    )
+                ),
+            maxBodyBytes: 4096
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
     }
 
     [Fact]
@@ -695,6 +777,225 @@ public class TranslatedMessagesTests
         upstreamStream.Cancelled.IsCompletedSuccessfully.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task An_upstream_stream_that_never_opens_answers_a_504_envelope()
+    {
+        // The idle deadline is armed before the body stream is acquired, and the linked token cancels for
+        // two reasons. Handling only the client-abort one let an idle timeout HERE escape as an unhandled
+        // OperationCanceledException — a bare 500 on the one path whose 504 contract is documented.
+        await using var factory = Factory(
+            (_, _) =>
+                Task.FromResult(
+                    TestUpstream.SseThatCannotBeOpened(async token =>
+                    {
+                        await Task.Delay(Timeout.Infinite, token);
+                        return Stream.Null;
+                    })
+                ),
+            idleTimeoutSeconds: 1,
+            keepAliveSeconds: 0
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("type").GetString().Should().Be("error");
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+    }
+
+    [Fact]
+    public async Task An_upstream_that_drops_before_its_stream_begins_answers_a_502_envelope()
+    {
+        await using var factory = Factory(
+            (_, _) =>
+                Task.FromResult(
+                    TestUpstream.SseThatCannotBeOpened(_ =>
+                        Task.FromException<Stream>(new IOException("Simulated drop before the first byte."))
+                    )
+                )
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        using var error = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+    }
+
+    [Fact]
+    public async Task An_event_split_across_several_data_lines_is_reassembled_before_translation()
+    {
+        // SSE lets one event span several `data:` lines, joined with "\n" at the blank line that ends the
+        // event. Feeding each line to the translator alone makes every fragment fail to parse, and the
+        // translator's "unparseable payloads produce no frames" contract then drops the whole event in
+        // silence — a tool call or a text delta simply vanishing from the turn.
+        var multiline = string.Concat(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\n",
+            "data:  \"response\":{\"id\":\"resp_ml\",\"model\":\"gpt-5.3-codex\"}}\n",
+            "\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\n",
+            "data: \"delta\":\"reassembled\"}\n",
+            "\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+            "\n"
+        );
+
+        await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.Sse(multiline)));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var stream = await response.Content.ReadAsStringAsync();
+        stream.Should().Contain("\"type\":\"text_delta\",\"text\":\"reassembled\"");
+        Frames(stream)
+            .Select(f => f.Event)
+            .Should()
+            .Equal(
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "message_delta",
+                "message_stop"
+            );
+
+        using var start = JsonDocument.Parse(Frames(stream)[0].Data);
+        start
+            .RootElement.GetProperty("message")
+            .GetProperty("id")
+            .GetString()
+            .Should()
+            .Be("resp_ml", "the id lived on the continuation line, which a per-line translator never saw");
+    }
+
+    [Fact]
+    public async Task An_upstream_failure_event_becomes_a_terminal_anthropic_error_frame()
+    {
+        // Headers are already sent, so the failure cannot be a status code. It must be the `error` event
+        // Anthropic's own stream grammar defines — not a truncation the client has to guess at.
+        var failing = string.Concat(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_f\",\"model\":\"gpt-5.3-codex\"}}\n",
+            "\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"internal\"}\n",
+            "\n"
+        );
+
+        await using var factory = Factory((_, _) => Task.FromResult(TestUpstream.Sse(failing)));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } }, stream: true)
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, "the failure arrived after the headers were sent");
+
+        var stream = await response.Content.ReadAsStringAsync();
+        Frames(stream).Select(f => f.Event).Should().Equal("message_start", "error");
+
+        using var error = JsonDocument.Parse(Frames(stream)[1].Data);
+        error.RootElement.GetProperty("error").GetProperty("type").GetString().Should().Be("api_error");
+        error.RootElement.GetProperty("error").GetProperty("message").GetString().Should().Contain("server_error");
+    }
+
+    [Fact]
+    public async Task A_pinned_responses_only_model_reaches_the_translation_route()
+    {
+        // Pinning skips discovery, so the pinned entry carries no endpoint metadata and the router reads
+        // "no metadata" as Messages-capable — sending an Anthropic body straight at /v1/messages for a
+        // model that only serves /responses. COPILOT_ANTHROPIC_MODEL_ENDPOINTS supplies what discovery
+        // would have, making the translated route reachable for exactly the models it was built for.
+        string? path = null;
+        string? forwarded = null;
+
+        await using var factory = new ProxyWebAppFactory(
+            async (request, _) =>
+            {
+                path = request.RequestUri!.AbsolutePath;
+                forwarded = await request.Content!.ReadAsStringAsync();
+                return TestUpstream.Json(
+                    """
+                    {"id":"resp_pinned","model":"gpt-5.3-codex",
+                     "output":[{"type":"message","content":[{"type":"output_text","text":"pinned"}]}],
+                     "usage":{"input_tokens":1,"output_tokens":1}}
+                    """
+                );
+            },
+            model: "gpt-5.3-codex",
+            modelEndpoints: "/responses"
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            TranslatedRequest(new[] { new { role = "user", content = "Hi" } })
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        path.Should().Be("/responses", "the pinned model advertises only the Responses endpoint");
+
+        using var sent = JsonDocument.Parse(forwarded!);
+        sent.RootElement.TryGetProperty("max_output_tokens", out _)
+            .Should()
+            .BeTrue("the body was translated, not merely re-addressed");
+
+        using var received = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        received.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("pinned");
+    }
+
+    [Fact]
+    public async Task A_pinned_model_with_no_declared_endpoints_still_uses_the_messages_route()
+    {
+        // The historical behaviour, kept deliberately: absent metadata must not be read as a licence to
+        // translate every pinned model's traffic onto a different API.
+        string? path = null;
+
+        await using var factory = new ProxyWebAppFactory(
+            (request, _) =>
+            {
+                path = request.RequestUri!.AbsolutePath;
+                return Task.FromResult(
+                    TestUpstream.Json("""{"id":"msg_1","type":"message","role":"assistant","content":[]}""")
+                );
+            },
+            model: "claude-opus-4.8"
+        );
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/v1/messages",
+            new
+            {
+                model = "claude-opus-4.8",
+                max_tokens = 100,
+                messages = new[] { new { role = "user", content = "Hi" } },
+            }
+        );
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        path.Should().Be("/v1/messages");
+    }
 }
 
 /// <summary>

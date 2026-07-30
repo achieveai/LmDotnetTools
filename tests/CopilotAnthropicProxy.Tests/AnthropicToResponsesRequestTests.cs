@@ -299,7 +299,6 @@ public class AnthropicToResponsesRequestTests
     }
 
     [Theory]
-    [InlineData("""{"type":"disabled"}""")]
     [InlineData("""{"type":"enabled_but_not_really"}""")]
     [InlineData("""{"budget_tokens":32768}""")] // a budget without type:enabled is not a request to think
     [InlineData("""{"type":null}""")]
@@ -317,6 +316,75 @@ public class AnthropicToResponsesRequestTests
         var reasoning = result.GetProperty("reasoning");
         reasoning.TryGetProperty("effort", out _).Should().BeFalse();
         reasoning.GetProperty("summary").GetString().Should().Be("auto");
+    }
+
+    [Fact]
+    public void Maps_explicitly_disabled_thinking_onto_effort_none()
+    {
+        // "disabled" is not "never mentioned": several Copilot models default to a non-none effort, so
+        // omitting the field bills the caller for reasoning the client just turned off.
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"thinking":{"type":"disabled"},
+             "messages":[{"role":"user","content":"Hi"}]}
+            """
+        );
+
+        var reasoning = result.GetProperty("reasoning");
+        reasoning.GetProperty("effort").GetString().Should().Be("none");
+        reasoning.GetProperty("summary").GetString().Should().Be("auto");
+    }
+
+    [Fact]
+    public void Propagates_disable_parallel_tool_use_as_parallel_tool_calls_false()
+    {
+        // Anthropic defaults this to false and carries it inside tool_choice; Responses defaults the
+        // top-level flag to TRUE. Dropping it lets a client that serialises its tool loop receive
+        // several tool calls in one turn.
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+             "tools":[{"name":"get_weather","input_schema":{"type":"object"}}],
+             "tool_choice":{"type":"auto","disable_parallel_tool_use":true}}
+            """
+        );
+
+        result.GetProperty("parallel_tool_calls").GetBoolean().Should().BeFalse();
+        result.GetProperty("tool_choice").GetString().Should().Be("auto");
+    }
+
+    [Theory]
+    [InlineData("""{"type":"auto","disable_parallel_tool_use":false}""")]
+    [InlineData("""{"type":"auto"}""")]
+    [InlineData("""{"type":"auto","disable_parallel_tool_use":"true"}""")] // wrong kind must not throw
+    public void Never_invents_parallel_tool_calls_the_client_did_not_ask_for(string toolChoice)
+    {
+        // Sending parallel_tool_calls: true for every other request would be an instruction the client
+        // never gave, so only an explicit `true` is translated.
+        var result = TranslateToElement(
+            $$"""
+            {"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+             "tools":[{"name":"get_weather","input_schema":{"type":"object"} }],
+             "tool_choice":{{toolChoice}} }
+            """
+        );
+
+        result.TryGetProperty("parallel_tool_calls", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Omits_parallel_tool_calls_when_no_tools_survive_filtering()
+    {
+        // The flag is meaningless without tools, and Responses rejects it alongside an absent `tools`.
+        var result = TranslateToElement(
+            """
+            {"model":"m","max_tokens":100,"messages":[{"role":"user","content":"hi"}],
+             "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8}],
+             "tool_choice":{"type":"any","disable_parallel_tool_use":true}}
+            """
+        );
+
+        result.TryGetProperty("parallel_tool_calls", out _).Should().BeFalse();
     }
 
     [Fact]

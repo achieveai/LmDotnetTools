@@ -1,6 +1,6 @@
 # Copilot Proxy Bidirectional API Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Steps use checkbox (`- [ ]`) syntax so progress can be tracked task-by-task.
 
 **Goal:** Let Claude Code, Codex CLI, and opencode each drive *any* GitHub Copilot model through `samples/CopilotAnthropicProxy.Sample`, regardless of which API dialect the client speaks.
 
@@ -29,7 +29,7 @@
 
 ## Deviations from the spec
 
-Two places where this plan intentionally does something other than what the spec's prose says. Both were reasoned out against the existing test suite; a reviewer should check the reasoning rather than the prose.
+Two places where this plan intentionally does something other than what the spec's prose says. Both were reasoned out against the existing test suite; the reasoning is recorded below, and it — not the spec's prose — is what these deviations rest on.
 
 ### D1 — `COPILOT_ANTHROPIC_MODEL` keeps its discovery short-circuit
 
@@ -53,9 +53,33 @@ Consequences, given a default of `claude-opus-4.8` (`/v1/messages` + `/chat/comp
 
 ---
 
-## Findings from the client wire-protocol research
+## Final decisions, recorded after implementation
 
-A background research agent mined the installed Claude Code 2.1.220 bundle, upstream Codex/opencode source, and the official specs. Items that change this plan are folded into the tasks below; recorded here so a reviewer knows they were considered rather than missed.
+The tasks below are kept as they were written and executed; these two points record where the shipped code deliberately ends up somewhere else. They are appended rather than edited into the task text so the history stays readable.
+
+### F1 — the default port stays `8787`
+
+Task 5 moves the default listen port from `8787` to `8788`, on the reasoning that the sample should be able to run beside an existing proxy on the old port. That was reversed before merge: `8787` is the port every existing client config, shell alias and note already points at, and changing it silently breaks all of them to buy a convenience nobody asked for. Anyone who genuinely needs two proxies at once sets `COPILOT_ANTHROPIC_PORT`, which has always existed.
+
+Shipped state: `ProxyConfig.FromEnvironment` falls back to `8787`, the sample README documents `8787` throughout, and `HostGuardTests`'s local `Port` constant — which was always `8787` — needs no exception. Every `8788` in Task 5's steps and in the client-configuration snippets below should be read as `8787`.
+
+### F2 — `COPILOT_ANTHROPIC_MODEL_ENDPOINTS` supplements D1
+
+D1's consequence — a pinned catalog entry carries no endpoint metadata, and "no metadata" routes as Anthropic-Messages-capable — turns out to have a sharper edge than D1 admits: pinning a Responses-ONLY model makes the translated route unreachable, so `COPILOT_ANTHROPIC_MODEL=gpt-5.3-codex` cannot be driven from Claude Code at all.
+
+Running discovery in pinned mode is still not an option, for exactly the reason D1 gives. Instead the operator can now supply the metadata discovery would have found:
+
+```bash
+export COPILOT_ANTHROPIC_MODEL=gpt-5.3-codex
+export COPILOT_ANTHROPIC_MODEL_ENDPOINTS=/responses
+```
+
+Unset, nothing changes: the pinned entry stays endpoint-free and behaves exactly as D1 describes. Absent metadata is deliberately not read as "serves everything" — inventing capabilities would make the proxy claim things nobody verified.
+
+---
+
+
+A background research pass mined the installed Claude Code 2.1.220 bundle, upstream Codex/opencode source, and the official specs. Items that change this plan are folded into the tasks below; the rest are recorded here as considered-and-set-aside rather than missed.
 
 **Folded in as requirements:**
 
@@ -3322,7 +3346,7 @@ Reuse the file's existing proxy-hosting helper for `PostProxyAsync`; add `PickRe
 dotnet test tests/CopilotAnthropicProxy.Tests/CopilotAnthropicProxy.Tests.csproj
 dotnet test tests/CopilotLive.Tests/CopilotLive.Tests.csproj
 ```
-Expected: the first passes; the second passes or skips cleanly when no Copilot credentials are present. If a live test fails, that is a real finding — fix the code, not the assertion.
+Expected: the first passes; the second passes or skips cleanly when no Copilot credentials are present. A live failure is evidence about the real backend, so the assertion describes something the code no longer does — the code is what needs to change.
 
 - [ ] **Step 4: Verify the whole solution still builds**
 

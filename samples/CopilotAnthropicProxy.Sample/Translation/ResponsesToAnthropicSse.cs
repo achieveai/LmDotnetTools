@@ -12,7 +12,9 @@ using System.Text.Json.Nodes;
 ///
 ///     There is deliberately no Finish(): if the upstream stream ends without a terminal event this
 ///     class emits nothing more, leaving the client to observe the truncation. Capping a failed stream
-///     with a synthetic message_stop would turn an upstream error into a silently empty success.
+///     with a synthetic message_stop would turn an upstream error into a silently empty success. A
+///     failure the upstream DOES report — an <c>error</c> or <c>response.failed</c> event — is the
+///     opposite case and is translated into Anthropic's terminal <c>error</c> event.
 /// </summary>
 public sealed class ResponsesToAnthropicSse
 {
@@ -132,10 +134,19 @@ public sealed class ResponsesToAnthropicSse
 
             // No block is opened here: unlike a text delta, a tool_use block cannot be invented after
             // the fact — its id and name only ever arrive on response.output_item.added. If that event
-            // was missing or unreadable, the arguments are dropped rather than written into whatever
-            // block happens to be open, which is what requiring the "tool_use" kind enforces.
+            // was missing or unreadable there is nowhere to put these arguments, and writing them into
+            // whatever block happens to be open would splice tool-call JSON into rendered assistant
+            // text. Dropping them silently is equally wrong: the client would be handed a tool call
+            // with no arguments, or none at all, and no way to know arguments existed. So the stream
+            // fails visibly instead.
             case "response.function_call_arguments.delta":
                 Start(frames, response);
+                if (_openKind != "tool_use" && Text(evt["delta"]) is { Length: > 0 })
+                {
+                    Fail(frames, "The upstream sent tool call arguments for a tool call it never announced.");
+                    break;
+                }
+
                 Delta(frames, "tool_use", "input_json_delta", "partial_json", Text(evt["delta"]) ?? "");
                 break;
 
@@ -150,6 +161,18 @@ public sealed class ResponsesToAnthropicSse
                 Start(frames, response);
                 CloseBlock(frames);
                 Terminate(frames, response);
+                break;
+
+            // The two ways a Responses stream reports failure. "error" is a top-level semantic event
+            // carrying {code, message, param}; "response.failed" carries the same under response.error.
+            // Both used to land in the silent default arm, so the client saw an unexplained truncation
+            // and could not tell a failure from a dropped connection.
+            case "error":
+                Fail(frames, DescribeUpstreamFailure(evt));
+                break;
+
+            case "response.failed":
+                Fail(frames, DescribeUpstreamFailure(response?["error"] as JsonObject));
                 break;
         }
 
@@ -278,6 +301,54 @@ public sealed class ResponsesToAnthropicSse
     }
 
     /// <summary>
+    ///     Ends the stream with Anthropic's terminal <c>error</c> event. No message_delta and no
+    ///     message_stop follow: the turn did not complete, and claiming it did is exactly the silent
+    ///     failure this arm exists to remove. Any open block is closed first so the client's block
+    ///     cursor is not left dangling.
+    /// </summary>
+    private void Fail(List<string> frames, string message)
+    {
+        CloseBlock(frames);
+        _finished = true;
+
+        frames.Add(
+            Frame(
+                "error",
+                new JsonObject
+                {
+                    ["type"] = "error",
+                    ["error"] = new JsonObject { ["type"] = "api_error", ["message"] = message },
+                }
+            )
+        );
+    }
+
+    /// <summary>
+    ///     Describes an upstream failure without relaying its text. A provider's error message can
+    ///     echo the prompt, tool arguments, or account details back at whoever is listening, so only
+    ///     the machine-readable <c>code</c> is passed through, and only when it looks like a code
+    ///     rather than a sentence.
+    /// </summary>
+    private static string DescribeUpstreamFailure(JsonObject? error)
+    {
+        const string fallback = "The upstream Copilot stream failed.";
+        if (Text(error?["code"]) is not { } code || !IsErrorCode(code))
+        {
+            return fallback;
+        }
+
+        return $"{fallback} Upstream code: {code}.";
+    }
+
+    /// <summary>
+    ///     True for a short token-shaped identifier such as <c>server_error</c> or
+    ///     <c>rate_limit_exceeded</c>. Anything longer or containing whitespace or punctuation is
+    ///     treated as free text and withheld.
+    /// </summary>
+    private static bool IsErrorCode(string code) =>
+        code.Length is > 0 and <= 64 && code.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
+
+    /// <summary>
     ///     Reads a JSON string, or null if <paramref name="node"/> is absent or carries another kind.
     ///     Every read of a live upstream frame goes through this rather than <c>GetValue&lt;string&gt;()</c>:
     ///     the reads happen outside the parse try/catch, and an <see cref="InvalidOperationException"/>
@@ -287,36 +358,10 @@ public sealed class ResponsesToAnthropicSse
         node is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : null;
 
     /// <summary>
-    ///     Reads a token count, falling back to 0 only when it is absent or not a number at all.
-    ///     Reporting 0 for a figure the upstream DID send is a worse lie than an approximate one — it
-    ///     silently zeroes a client's cost accounting — so a whole number written in floating-point
-    ///     form (<c>9.0</c>) is rounded rather than rejected, and a value too large for
-    ///     <see cref="long"/> saturates. JSON cannot express NaN or Infinity, so the cast is total.
+    ///     Reads a token count through the same policy the buffered translator uses, so a streamed and
+    ///     a buffered reply cannot report the same upstream figure differently.
     /// </summary>
-    private static long TokenCount(JsonNode? node)
-    {
-        if (node is not JsonValue scalar)
-        {
-            return 0;
-        }
-
-        if (scalar.TryGetValue<long>(out var count))
-        {
-            return count;
-        }
-
-        if (!scalar.TryGetValue<double>(out var approximate))
-        {
-            return 0;
-        }
-
-        return approximate switch
-        {
-            >= long.MaxValue => long.MaxValue,
-            <= long.MinValue => long.MinValue,
-            _ => (long)Math.Round(approximate),
-        };
-    }
+    private static long TokenCount(JsonNode? node) => ResponsesToAnthropicJson.TokenCount(node);
 
     private static string Frame(string eventName, JsonObject payload) =>
         $"event: {eventName}\ndata: {payload.ToJsonString()}\n\n";
