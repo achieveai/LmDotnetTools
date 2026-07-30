@@ -264,7 +264,10 @@ public class ConversationsController(
             // Sub-agent conversations use the reserved "subagent-{agentId}" thread-id convention and are
             // surfaced only through the sub-agent panel (GET .../subagents + /ws/subagent). They must not
             // leak into the primary conversation sidebar (nor be auto-selected on load).
-            .Where(t => !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal))
+            .Where(t =>
+                !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal)
+                && !t.ThreadId.StartsWith("workflow-", StringComparison.Ordinal)
+            )
             .Select(t => new ConversationSummary
             {
                 ThreadId = t.ThreadId,

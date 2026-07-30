@@ -184,7 +184,7 @@ try
     // StartWorkflowAgent runs (isolated controller loops, owned by a per-conversation WorkflowManager the
     // agent loop can't reference) as center-pane tabs.
     _ = builder.Services.AddSingleton(_ => new WorkflowRunRegistry(
-        Path.Combine(AppContext.BaseDirectory, "conversations", "workflow-index")));
+        Path.Combine(AppContext.BaseDirectory, "workflow-index")));
 
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
@@ -631,6 +631,7 @@ try
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
+        var workflowRunRegistry = sp.GetRequiredService<WorkflowRunRegistry>();
         // Lifecycle observation / tool approval (#227). Resolved once for the process — the bundle's
         // sequence allocator owns the producer epoch, and loops that share it share that epoch, which
         // is what lets a subscriber tell "producer restarted" from "events were lost". Handed to the
@@ -1729,6 +1730,7 @@ subAgentFactory,
             // and a session id we don't know about is a no-op. We don't have the sessionId in
             // hand, so the cleanest contract is to ask the registry to scrub.
             sandboxRegistryForCleanup.UnregisterThreadFromAllSessions(threadId);
+            workflowRunRegistry.Remove(threadId);
         };
 
         return pool;

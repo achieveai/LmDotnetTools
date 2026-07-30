@@ -163,6 +163,9 @@ public class ConversationsControllerTests
         await store.SaveMetadataAsync(
             "subagent-abc123",
             new ThreadMetadata { ThreadId = "subagent-abc123", LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
+        await store.SaveMetadataAsync(
+            "workflow-wf1-thread-normal",
+            new ThreadMetadata { ThreadId = "workflow-wf1-thread-normal", LastUpdated = 1, Properties = ImmutableDictionary<string, object>.Empty });
 
         await using var pool = CreatePool();
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
@@ -172,7 +175,9 @@ public class ConversationsControllerTests
         var summaries = (result!.Value as IEnumerable<ConversationSummary>)!.ToList();
 
         summaries.Select(s => s.ThreadId).Should().Contain("thread-normal");
-        summaries.Select(s => s.ThreadId).Should().NotContain(id => id.StartsWith("subagent-", StringComparison.Ordinal));
+        summaries.Select(s => s.ThreadId).Should().NotContain(id =>
+            id.StartsWith("subagent-", StringComparison.Ordinal)
+            || id.StartsWith("workflow-", StringComparison.Ordinal));
     }
 
     [Fact]

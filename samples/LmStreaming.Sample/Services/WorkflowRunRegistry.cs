@@ -118,14 +118,13 @@ public sealed class WorkflowRunRegistry
             return [];
         }
 
-        try
-        {
-            return JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? [];
-        }
-        catch (Exception ex) when (ex is IOException or JsonException)
-        {
-            return [];
-        }
+        return
+        [
+            .. (JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? [])
+                .Select(tab => string.Equals(tab.Status, "running", StringComparison.OrdinalIgnoreCase)
+                    ? tab with { Status = "interrupted" }
+                    : tab),
+        ];
     }
 
     private string PathFor(string threadId)

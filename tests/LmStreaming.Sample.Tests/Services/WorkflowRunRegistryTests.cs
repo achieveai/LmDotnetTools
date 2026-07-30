@@ -74,6 +74,18 @@ public sealed class WorkflowRunRegistryTests : IDisposable
     }
 
     [Fact]
+    public void FreshRegistry_ReconcilesPersistedRunningTabsToInterrupted()
+    {
+        var writer = new WorkflowRunRegistry(_dir);
+        writer.PersistTabs("t1", [Tab("workflow", "wf1", "running")]);
+
+        var restarted = new WorkflowRunRegistry(_dir);
+        var restored = restarted.GetPersistedTabs("t1");
+
+        restored.Should().ContainSingle().Which.Status.Should().Be("interrupted");
+    }
+
+    [Fact]
     public void Persistence_IsNoOp_WhenNoIndexDirectoryConfigured()
     {
         var registry = new WorkflowRunRegistry();
