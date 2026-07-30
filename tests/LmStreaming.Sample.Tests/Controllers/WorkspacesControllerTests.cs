@@ -1,4 +1,6 @@
 
+using LmStreaming.Sample.Services;
+
 namespace LmStreaming.Sample.Tests.Controllers;
 
 /// <summary>
@@ -12,7 +14,9 @@ public class WorkspacesControllerTests
     {
         var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
         var store = new FileWorkspaceStore(dir, defaultLeaf);
-        return (new WorkspacesController(store), store);
+        var compatibility = new WorkspaceCatalogCompatibilityService(new SupportedCatalogClient());
+        var identity = GatewayWorkspaceCatalogIdentity.Create("http://gateway:3000", "sample");
+        return (new WorkspacesController(store, compatibility, identity), store);
     }
 
     [Fact]
@@ -23,11 +27,12 @@ public class WorkspacesControllerTests
 
         var result = await controller.List();
         var ok = result.Should().BeOfType<OkObjectResult>().Subject;
-        var workspaces = ok.Value.Should().BeAssignableTo<IReadOnlyList<Workspace>>().Subject;
+        var response = ok.Value.Should().BeOfType<WorkspaceListResponse>().Subject;
 
-        workspaces.Should().HaveCount(2);
-        workspaces[0].Id.Should().Be(SandboxSessionRegistry.DefaultWorkspaceId);
-        workspaces[1].Name.Should().Be("Mine");
+        response.Gateway.CanonicalBaseUrl.Should().Be("http://gateway:3000");
+        response.Workspaces.Should().HaveCount(2);
+        response.Workspaces[0].Id.Should().Be(SandboxSessionRegistry.DefaultWorkspaceId);
+        response.Workspaces[1].Name.Should().Be("Mine");
     }
 
     [Fact]
@@ -48,7 +53,7 @@ public class WorkspacesControllerTests
         var result = await controller.Create(new WorkspaceCreate { Name = "New WS" });
         var created = result.Should().BeOfType<CreatedResult>().Subject;
 
-        var workspace = created.Value.Should().BeOfType<Workspace>().Subject;
+        var workspace = created.Value.Should().BeOfType<WorkspaceView>().Subject;
         created.Location.Should().Be($"/api/workspaces/{workspace.Id}");
         workspace.DirectoryRelPath.Should().Be("new-ws");
     }
@@ -75,7 +80,7 @@ public class WorkspacesControllerTests
         var result = await controller.Update(created.Id, new WorkspaceUpdate { Marketplaces = ["x", "y"] });
         var ok = result.Should().BeOfType<OkObjectResult>().Subject;
 
-        var workspace = ok.Value.Should().BeOfType<Workspace>().Subject;
+        var workspace = ok.Value.Should().BeOfType<WorkspaceView>().Subject;
         workspace.Marketplaces.Should().Equal("x", "y");
     }
 
@@ -101,5 +106,18 @@ public class WorkspacesControllerTests
         var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
 
         bad.Value!.GetType().GetProperty("error").Should().NotBeNull();
+    }
+
+    private sealed class SupportedCatalogClient : IMarketplaceCatalogClient
+    {
+        public Task<MarketplaceCatalog> GetCatalogAsync(
+            IReadOnlyList<string>? marketplaces = null,
+            CancellationToken ct = default) =>
+            Task.FromResult(
+                new MarketplaceCatalog(
+                    ["x", "y"],
+                    [new CatalogMarketplace("x", null, []), new CatalogMarketplace("y", null, [])]
+                )
+            );
     }
 }

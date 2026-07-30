@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
@@ -98,6 +100,13 @@ public sealed class WorkflowRuntime
     private JsonObject _notes = [];
     private JsonNode? _result;
 
+    // Transient (never persisted): a terminal whose result was composed from its resultTemplate rather than
+    // an explicit result. The eager render in AdvanceTo can run on the controller-pump task BEFORE the drive
+    // task applies the last observed sub-agent write, so the result is re-rendered from final state when the
+    // drive signals completion (see SignalCompletion). Null once completion has re-rendered it, or when the
+    // terminal supplied an explicit result / declared no template.
+    private TerminalNode? _pendingTemplateTerminal;
+
     // Optional best-effort persistence: when attached, a fresh snapshot is saved after every state-mutating
     // public method so the run can be resumed (single-root) after a restart. No store attached => no-op.
     private IWorkflowStore? _store;
@@ -116,8 +125,8 @@ public sealed class WorkflowRuntime
     ///     Creates a runtime. A custom <paramref name="schemaValidator"/> may be injected for tests, and an
     ///     optional <paramref name="logger"/> surfaces otherwise-swallowed best-effort persistence faults.
     ///     Internal: a runtime is only constructed inside the library (via <see cref="WorkflowSession"/> /
-    ///     <see cref="WorkflowManager"/> / <see cref="FromSnapshot"/>) so the controller-isolation invariant
-    ///     cannot be bypassed by newing one up directly.
+    ///     <see cref="WorkflowManager"/> / <see cref="FromSnapshot"/> / <see cref="CreateNew"/>) so
+    ///     construction always goes through one of those blessed, public entry points.
     /// </summary>
     internal WorkflowRuntime(IJsonSchemaValidator? schemaValidator = null, ILogger? logger = null)
     {
@@ -315,6 +324,249 @@ public sealed class WorkflowRuntime
         Persist(snapshot);
     }
 
+    /// <summary>
+    ///     Splices <paramref name="node"/> into the graph: if <paramref name="previousNodeId"/> is given, it is
+    ///     appended to that node's own outgoing edge(s); if <paramref name="nextNodeId"/> is given, it is
+    ///     appended to <paramref name="node"/>'s own outgoing edge(s). At least one of the two is required — an
+    ///     unreachable node is never useful. The candidate definition is validated (see <see cref="LoadDefinition"/>)
+    ///     before it is committed; on failure <see cref="Definition"/> is left untouched.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    ///     No definition is loaded; <paramref name="node"/>'s id already exists; both
+    ///     <paramref name="previousNodeId"/> and <paramref name="nextNodeId"/> are omitted; either id does not
+    ///     resolve to an existing node; or splicing targets a node type whose outgoing edges aren't a plain
+    ///     "next" list (conditional/terminal) — use <c>SetWorkflow</c> to edit those directly instead.
+    /// </exception>
+    /// <exception cref="WorkflowValidationException">The resulting definition failed validation.</exception>
+    public void AddNode(WorkflowNode node, string? previousNodeId, string? nextNodeId)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+
+        WorkflowInstanceSnapshot? snapshot;
+        lock (_lock)
+        {
+            if (Definition is null)
+            {
+                throw new InvalidOperationException("No workflow definition is loaded.");
+            }
+
+            if (FindNodeNoLock(node.Id) is not null)
+            {
+                throw new InvalidOperationException($"Node id '{node.Id}' already exists.");
+            }
+
+            if (string.IsNullOrEmpty(previousNodeId) && string.IsNullOrEmpty(nextNodeId))
+            {
+                throw new InvalidOperationException(
+                    "At least one of 'previousNodeId' or 'nextNodeId' is required so the new node is reachable."
+                );
+            }
+
+            WorkflowNode? mutatedPrevious = null;
+            var newNode = node;
+            if (!string.IsNullOrEmpty(previousNodeId))
+            {
+                var previous =
+                    FindNodeNoLock(previousNodeId)
+                    ?? throw new InvalidOperationException($"Node '{previousNodeId}' does not exist.");
+
+                // Insertion semantics: previous -> old successor becomes previous -> new -> old successor.
+                // When nextNodeId is supplied it explicitly selects the new node's successor; otherwise a
+                // predecessor with exactly one outgoing edge donates that edge to the inserted node. A
+                // branching procedural predecessor has no unambiguous displaced edge, so callers must say
+                // which successor they intend.
+                var previousNext = previous switch
+                {
+                    StartNode start => start.Next,
+                    ProceduralNode procedural => procedural.Next,
+                    _ => throw new InvalidOperationException(
+                        $"Node '{previousNodeId}' is a {previous.Type} node; splicing via 'previousNodeId' is "
+                            + "only supported for start/procedural nodes. Use SetWorkflow to edit its "
+                            + "branches/else directly."
+                    ),
+                };
+                var successor = nextNodeId;
+                if (string.IsNullOrEmpty(successor))
+                {
+                    successor = previousNext.Count == 1
+                        ? previousNext[0]
+                        : throw new InvalidOperationException(
+                            $"Node '{previousNodeId}' has {previousNext.Count} successors; provide 'nextNodeId' "
+                                + "to select the edge the new node should displace."
+                        );
+                }
+                else if (!previousNext.Contains(successor))
+                {
+                    throw new InvalidOperationException(
+                        $"Node '{nextNodeId}' is not an outgoing edge of '{previousNodeId}' and cannot be displaced."
+                    );
+                }
+
+                mutatedPrevious = previous switch
+                {
+                    StartNode start => start with { Next = [node.Id] },
+                    ProceduralNode procedural => procedural with
+                    {
+                        Next = [.. procedural.Next.Where(id => id != successor), node.Id],
+                    },
+                    _ => throw new UnreachableException(),
+                };
+                newNode = node is TerminalNode ? node : AppendNext(node, successor);
+            }
+
+            if (!string.IsNullOrEmpty(nextNodeId) && string.IsNullOrEmpty(previousNodeId))
+            {
+                if (FindNodeNoLock(nextNodeId) is null)
+                {
+                    throw new InvalidOperationException($"Node '{nextNodeId}' does not exist.");
+                }
+
+                newNode = AppendNext(node, nextNodeId);
+            }
+
+            var candidateNodes = Definition
+                .Nodes.Select(n => mutatedPrevious is not null && n.Id == mutatedPrevious.Id ? mutatedPrevious : n)
+                .Append(newNode)
+                .ToList();
+            var candidate = Definition with { Nodes = candidateNodes };
+            _validator.ValidateAndThrow(candidate);
+
+            Definition = candidate;
+            RebuildNodeIndexNoLock();
+            _outputs[newNode.Id] = new JsonObject();
+
+            snapshot = CaptureSnapshotNoLock();
+        }
+
+        Persist(snapshot);
+    }
+
+    private static WorkflowNode AppendNext(WorkflowNode node, string nextNodeId) =>
+        node switch
+        {
+            StartNode start => start.Next.Contains(nextNodeId)
+                ? start
+                : start with { Next = [.. start.Next, nextNodeId] },
+            ProceduralNode procedural => procedural.Next.Contains(nextNodeId)
+                ? procedural
+                : procedural with { Next = [.. procedural.Next, nextNodeId] },
+            _ => throw new InvalidOperationException(
+                $"'{node.Id}' is a {node.Type} node; automatic successor wiring is only supported for "
+                    + "start/procedural nodes. Fully specify branches/else on conditional nodes."
+            ),
+        };
+
+    /// <summary>
+    ///     "Removes" the node <paramref name="nodeId"/> by neutering it into a no-op pass-through IN PLACE
+    ///     rather than deleting it from the graph. The node keeps its id and every INBOUND edge, so removal
+    ///     itself can never leave a dangling edge or orphan a predecessor. Only the node's own work is
+    ///     stripped: a <see cref="ProceduralNode"/> loses its task list and its failure/visit-cap edges (a
+    ///     no-op can neither fail nor loop, so its loop cycle becomes 0) and simply advances along its
+    ///     existing <c>next</c>; a <see cref="ConditionalNode"/> "defaults to true", collapsing to a
+    ///     procedural pass-through whose single <c>next</c> is its FIRST branch's target (its <c>else</c>
+    ///     fallback when it declares no branch), dropping the other branches. The candidate definition is
+    ///     validated (see <see cref="LoadDefinition"/>) before it is committed; on failure
+    ///     <see cref="Definition"/> is left untouched.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    ///     No definition is loaded; <paramref name="nodeId"/> does not resolve to an existing node; it is the
+    ///     node the controller is currently positioned on; or it is the start node (the entry point — re-root
+    ///     via <c>SetWorkflow</c>) or a terminal node (no successor to pass through to — edit via
+    ///     <c>SetWorkflow</c>).
+    /// </exception>
+    /// <exception cref="WorkflowValidationException">
+    ///     Neutering the node produced an invalid definition — e.g. dropping a procedural node's
+    ///     <c>onFailure</c> edge, or collapsing a conditional to its first branch, orphaned a node that was
+    ///     reachable only through the dropped edge.
+    /// </exception>
+    public void RemoveNode(string nodeId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(nodeId);
+
+        WorkflowInstanceSnapshot? snapshot;
+        lock (_lock)
+        {
+            if (Definition is null)
+            {
+                throw new InvalidOperationException("No workflow definition is loaded.");
+            }
+
+            var node =
+                FindNodeNoLock(nodeId)
+                ?? throw new InvalidOperationException($"Node '{nodeId}' does not exist.");
+
+            if (nodeId == CurrentNodeId)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot remove node '{nodeId}': the workflow is currently positioned on it."
+                );
+            }
+
+            var neutered = NeuterNode(node);
+
+            var candidateNodes = Definition.Nodes.Select(n => n.Id == nodeId ? neutered : n).ToList();
+            var candidate = Definition with { Nodes = candidateNodes };
+            _validator.ValidateAndThrow(candidate);
+
+            Definition = candidate;
+            RebuildNodeIndexNoLock();
+            // The node persists (its id + inbound edges are unchanged); it just no longer produces output.
+            _outputs[nodeId] = new JsonObject();
+
+            snapshot = CaptureSnapshotNoLock();
+        }
+
+        Persist(snapshot);
+    }
+
+    /// <summary>
+    ///     Builds the no-op replacement for <paramref name="node"/>: a procedural node keeps its id/title and
+    ///     <c>next</c> but loses its task list and failure/visit-cap edges; a conditional collapses to a
+    ///     procedural whose single <c>next</c> is its first branch's target (its "defaults to true" path).
+    ///     Start and terminal nodes have no meaningful no-op form and are rejected.
+    /// </summary>
+    private static WorkflowNode NeuterNode(WorkflowNode node) =>
+        node switch
+        {
+            ProceduralNode procedural => procedural with
+            {
+                TaskList = [],
+                OnFailure = null,
+                MaxParallel = null,
+            },
+            ConditionalNode conditional => new ProceduralNode
+            {
+                Id = conditional.Id,
+                Title = conditional.Title,
+                ControllerInstructions = conditional.ControllerInstructions,
+                Next = [FirstConditionalTarget(conditional)],
+                TaskList = [],
+            },
+            StartNode => throw new InvalidOperationException(
+                $"Cannot remove the start node '{node.Id}': it is the workflow entry point. "
+                    + "Re-root the workflow via SetWorkflow instead."
+            ),
+            TerminalNode => throw new InvalidOperationException(
+                $"Cannot remove the terminal node '{node.Id}': it has no successor to pass through to. "
+                    + "Edit the graph via SetWorkflow instead."
+            ),
+            _ => throw new InvalidOperationException(
+                $"Cannot remove node '{node.Id}' of unsupported type {node.Type}."
+            ),
+        };
+
+    /// <summary>
+    ///     The target a no-op'd conditional collapses to: its first branch with a resolvable target,
+    ///     otherwise its <c>else</c> fallback (guaranteed non-empty for a valid conditional).
+    /// </summary>
+    private static string FirstConditionalTarget(ConditionalNode conditional)
+    {
+        var firstBranch = conditional
+            .Branches?.FirstOrDefault(b => !string.IsNullOrEmpty(b.To))
+            ?.To;
+        return !string.IsNullOrEmpty(firstBranch) ? firstBranch : conditional.Else;
+    }
+
     /// <summary>Shallow-merges <paramref name="inputs"/> into the inputs channel (caller-supplied seed).</summary>
     internal void MergeInputs(JsonObject inputs)
     {
@@ -381,6 +633,84 @@ public sealed class WorkflowRuntime
         }
     }
 
+    /// <summary>
+    ///     Self-correcting spawn-name gate for the controller loop (Option A). Given the <c>name</c> argument
+    ///     of an <c>Agent</c> spawn, returns <c>null</c> when the name matches a unit the runtime can correlate
+    ///     (so the spawn proceeds), or an actionable corrective message when it does not — so the
+    ///     <c>Agent</c>-tool boundary can reject the mis-named spawn as a recoverable tool error instead of
+    ///     letting it run and be silently discarded (its result never correlates, the unit stays pending, and
+    ///     the controller re-spawns the same wrong name in a loop). The active node's authored units are
+    ///     composed on demand (idempotent, exactly as <see cref="RegisterSpawn"/> does) so a FIRST spawn issued
+    ///     before any <c>GetWorkflow</c> poll is judged against the real unit set rather than rejected
+    ///     spuriously. An already-settled unit is still "expected" (its name stays known), so a harmless
+    ///     re-issue passes through — <see cref="RegisterSpawn"/> no-ops on a settled unit.
+    /// </summary>
+    internal string? DescribeSpawnNameRejection(string? name)
+    {
+        lock (_lock)
+        {
+            // Compose the active node's units on demand so the gate never depends on the controller having
+            // polled GetWorkflow first, and so a not-yet-polled unit is registered in the coordinator's
+            // name map exactly as RegisterSpawn would (Compose is idempotent).
+            _ = _coordinator.Compose();
+
+            // Allow FIRST when the name matches a known unit — Pending, in-flight, or already-settled all
+            // correlate (this mirrors RegisterSpawn, which correlates by name regardless of lifecycle status).
+            // This MUST precede the "no composable units" steer below: the run observer marks a unit in-flight
+            // BEFORE the tool-boundary gate runs for that same spawn, so a legitimate unit is frequently already
+            // non-pending here — and Compose() returns only PENDING units, so relying on its count would make a
+            // valid, already-in-flight spawn look unroutable and reject it (its result would then be recorded as
+            // a failure and its state write dropped).
+            if (!string.IsNullOrWhiteSpace(name) && _coordinator.IsExpectedUnit(name))
+            {
+                return null;
+            }
+
+            // The name is not a known unit. List the active node's authored units for the current visit (any
+            // lifecycle status, via ActiveUnits — NOT Compose()'s pending-only view) so the controller can
+            // re-issue the exact name. A node that composes no units at all (start/terminal/conditional, or a
+            // non-authored procedural node) is routed by the controller, not spawned into — steer it there.
+            var activeNames =
+                CurrentNodeId is { } nodeId
+                    ? _coordinator.ActiveUnits(nodeId).Select(u => u.Name).ToList()
+                    : [];
+            if (activeNames.Count == 0)
+            {
+                return "The current workflow node has no sub-agent units to spawn. Advance the workflow with "
+                    + "SetCurrentNode (route to the next node) instead of calling Agent.";
+            }
+
+            var expected = string.Join(", ", activeNames);
+            var got = string.IsNullOrWhiteSpace(name) ? "(no name)" : $"'{name}'";
+            return $"No workflow unit named {got} for the current node. Re-call Agent with the exact unit name "
+                + "— copy the nextExpectedAction[].name value character-for-character (do NOT build it from the "
+                + $"node id). The unit name(s) for the current node are: {expected}.";
+        }
+    }
+
+    /// <summary>
+    ///     Returns the workflow unit's authoritative model selection for an exact spawn name. A returned
+    ///     record may intentionally contain two nulls: that means the authored unit omitted a per-spawn
+    ///     choice and the delegate must keep its template/default model rather than accepting placeholder
+    ///     optional values generated by the controller LLM. Null return means the name is not a workflow unit.
+    /// </summary>
+    internal SubAgentSpawnModelSelection? ResolveSpawnModelSelection(string? name)
+    {
+        lock (_lock)
+        {
+            _ = _coordinator.Compose();
+            if (string.IsNullOrWhiteSpace(name) || CurrentNodeId is null)
+            {
+                return null;
+            }
+
+            var unit = _coordinator.FindComposedUnit(name);
+            return unit is null
+                ? null
+                : new SubAgentSpawnModelSelection(Model: null, unit.ModelIntelligence);
+        }
+    }
+
     /// <summary>Whether <paramref name="toolCallId"/> has been correlated to a task via <see cref="RegisterSpawn"/>.</summary>
     internal bool IsRegisteredSpawn(string toolCallId)
     {
@@ -431,6 +761,23 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+    }
+
+    /// <summary>
+    ///     Thread-safe, side-effect-free wrapper over <see cref="TaskCoordinator.CheckSpawnResult"/>: reports
+    ///     whether a correlated spawn's result carries an output schema and already satisfies it (and, when it
+    ///     does not, the schema to repair against). Takes the runtime lock because the controller loop can be
+    ///     mutating task correlation concurrently, but records NOTHING — the drive pump calls it to gate the
+    ///     best-effort JSON-repair pass without touching durable/projected state.
+    /// </summary>
+    internal SpawnSchemaCheck CheckSpawnResult(string toolCallId, string resultText)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(toolCallId);
+
+        lock (_lock)
+        {
+            return _coordinator.CheckSpawnResult(toolCallId, resultText);
+        }
     }
 
     /// <summary>
@@ -851,6 +1198,13 @@ public sealed class WorkflowRuntime
                     _result = capturedResult;
                 }
 
+                // The eager render above may have run against state that is not yet final (the last observed
+                // sub-agent write can be applied on the drive task AFTER the controller pump reaches here).
+                // Remember a template-composed terminal so SignalCompletion re-renders it from the drained
+                // final state; an explicit result needs no refresh.
+                _pendingTemplateTerminal =
+                    result is null && terminal.ResultTemplate is not null ? terminal : null;
+
                 IsComplete = true;
             }
 
@@ -959,8 +1313,74 @@ public sealed class WorkflowRuntime
         };
     }
 
-    /// <summary>Signals normal completion of the controller run to <see cref="Completion"/> waiters.</summary>
-    internal void SignalCompletion() => _completion.TrySetResult();
+    /// <summary>
+    ///     Signals normal completion of the controller run to <see cref="Completion"/> waiters. When the
+    ///     workflow completed into a terminal whose result was composed from a <c>resultTemplate</c>, the
+    ///     result is re-rendered from the now-final state first: the drive calls this only after the whole
+    ///     message stream has drained (every observed sub-agent write applied), so this captures the complete
+    ///     result rather than the mid-flight snapshot the eager render in <see cref="AdvanceTo"/> may have
+    ///     frozen when the pump reached the terminal ahead of the drive. A re-render that fails its final
+    ///     output schema faults <see cref="Completion"/> instead of completing it.
+    /// </summary>
+    internal void SignalCompletion()
+    {
+        WorkflowInstanceSnapshot? snapshot = null;
+        Exception? renderFailure = null;
+        lock (_lock)
+        {
+            if (_pendingTemplateTerminal is { ResultTemplate: { } template } terminal)
+            {
+                _pendingTemplateTerminal = null;
+                try
+                {
+                    var composed = TemplateNodeRenderer.Render(
+                        template,
+                        BuildContextNoLock(null, null, null)
+                    );
+                    if (composed is not null)
+                    {
+                        var schema = terminal.FinalOutputSchema ?? Definition?.FinalOutputSchema;
+                        if (schema is not null)
+                        {
+                            var validation = _schemaValidator.ValidateDetailed(
+                                composed.ToJsonString(),
+                                schema.ToJsonString()
+                            );
+                            if (!validation.IsValid)
+                            {
+                                throw new InvalidOperationException(
+                                    "Final result failed schema validation: "
+                                        + string.Join("; ", validation.Errors)
+                                );
+                            }
+                        }
+
+                        _result = composed.DeepClone();
+                        snapshot = CaptureSnapshotNoLock();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    renderFailure = ex;
+                }
+            }
+        }
+
+        // Persist the refreshed result AFTER releasing the lock (mirrors AdvanceTo); the persister serializes
+        // saves per instance, so this later save supersedes AdvanceTo's eager-result save for resume.
+        if (snapshot is not null)
+        {
+            Persist(snapshot);
+        }
+
+        if (renderFailure is not null)
+        {
+            _ = _completion.TrySetException(renderFailure);
+            return;
+        }
+
+        _ = _completion.TrySetResult();
+    }
 
     /// <summary>Faults <see cref="Completion"/> with <paramref name="ex"/> (controller run threw).</summary>
     internal void SignalFailure(Exception ex) => _completion.TrySetException(ex);
@@ -1006,6 +1426,15 @@ public sealed class WorkflowRuntime
         runtime.RestoreFromSnapshot(snapshot);
         return runtime;
     }
+
+    /// <summary>
+    ///     Creates a fresh, empty runtime for a host that wants a chat agent to author and drive a workflow
+    ///     directly — via <see cref="Tools.WorkflowToolProvider"/> registered on the SAME conversation loop as
+    ///     the agent, rather than inside an isolated <see cref="WorkflowSession"/> controller loop. This is a
+    ///     blessed public entry point alongside <see cref="FromSnapshot"/>.
+    /// </summary>
+    public static WorkflowRuntime CreateNew(IJsonSchemaValidator? schemaValidator = null, ILogger? logger = null) =>
+        new(schemaValidator, logger);
 
     private void RestoreFromSnapshot(WorkflowInstanceSnapshot snapshot)
     {

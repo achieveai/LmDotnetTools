@@ -1,9 +1,12 @@
 using System.Net;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using FluentAssertions;
 using LmStreaming.Sample.E2E.Tests.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 
@@ -12,12 +15,17 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// (WI #194, presentation-only sub-agent switching). These tests prove the <c>/ws/subagent</c>
 /// route → <see cref="LmStreaming.Sample.WebSocket.ChatWebSocketManager.HandleSubAgentConnectionAsync"/>
 /// wiring end-to-end through the real ASP.NET Core pipeline (TestServer), WITHOUT touching the
-/// parent <c>/ws</c> route or handler. Two coexistence facts are asserted here:
+/// parent <c>/ws</c> route or handler. Three coexistence facts are asserted here:
 /// <list type="bullet">
-///   <item>An unknown <c>agentId</c> yields the handler's structured
-///   <c>{"$type":"error","code":"subagent_unavailable",…}</c> frame and then the socket closes.</item>
+///   <item>An unknown <c>agentId</c> (no live stream AND no persisted history) yields the handler's
+///   structured <c>{"$type":"error","code":"subagent_unavailable",…}</c> frame and then the socket
+///   closes.</item>
 ///   <item>Missing required query params (<c>parentThreadId</c>/<c>agentId</c>) are rejected by the
 ///   route with <c>400 Bad Request</c> before any WebSocket is accepted.</item>
+///   <item>An <c>agentId</c> with NO live stream but a PERSISTED transcript (the "completed tab after
+///   the parent loop was evicted" state) replays read-only: the handler settles the client with a lone
+///   <c>{"$type":"done"}</c> sentinel, emits NO <c>subagent_unavailable</c> error, and holds the socket
+///   open (the transcript itself renders from REST).</item>
 /// </list>
 /// </summary>
 /// <remarks>
@@ -26,12 +34,13 @@ namespace LmStreaming.Sample.E2E.Tests.Scenarios;
 /// still-running child and observes its streamed frames cannot be made deterministic through the
 /// scripted WS harness: the runtime <c>agent_id</c> is a GUID minted at spawn time and a scripted
 /// background child completes near-instantly, so racing a fresh <c>/ws/subagent</c> connection
-/// against the child's lifetime is inherently flaky. The live streaming + replay contract of
+/// against the child's lifetime is inherently flaky. The LIVE streaming contract of
 /// <c>HandleSubAgentConnectionAsync</c> is already covered deterministically at the unit level by
 /// <c>ChatWebSocketManagerSubAgentTests.HandleSubAgentConnectionAsync_StreamsChildSubscribeAsyncOutput_ToClient</c>
 /// (a gated child over an in-memory <c>FakeWebSocket</c>), and the browser-observable focus/switch UX
-/// is the remit of the Task 9 browser E2E suite. This class therefore keeps the two deterministic
-/// route-contract facts and defers live-focus streaming to Task 9.
+/// is the remit of the Task 9 browser E2E suite. This class therefore keeps the three deterministic
+/// route-contract facts (including the completed-tab persisted replay, which needs no live LLM) and
+/// defers live-focus streaming to Task 9.
 /// </para>
 /// </remarks>
 public sealed class SubAgentFocusEndpointTests
@@ -79,6 +88,56 @@ public sealed class SubAgentFocusEndpointTests
 
         // The socket must be closed by the server after the structured error (no lingering Open state).
         childSocket.State.Should().NotBe(System.Net.WebSockets.WebSocketState.Open);
+    }
+
+    [Fact]
+    public async Task ConnectingToWsSubagent_NoLiveStreamButPersistedHistory_ReplaysReadOnly_NoErrorFrame()
+    {
+        using var factory = CreateFactory();
+
+        // Same parent setup as the unknown-agent test: the handler resolves the parent via
+        // _agentPool.TryGet, so open a parent /ws connection and send one message to create + pool the
+        // parent MultiTurnAgentLoop, then keep it open across the sub-agent connect.
+        var parentThreadId = $"subagent-replay-{Guid.NewGuid():N}";
+        var parentSocket = await factory.ConnectWebSocketAsync(parentThreadId);
+        await using var parentClient = new WebSocketTestClient(parentSocket);
+
+        await parentClient.SendUserMessageAsync("hello parent");
+        using (var parentFrames = await parentClient.CollectUntilDoneAsync(TimeSpan.FromSeconds(15)))
+        {
+            parentFrames.ConcatText().Should().Contain("Parent ready");
+        }
+
+        // Seed a COMPLETED sub-agent transcript under "subagent-{agentId}" in the SAME IConversationStore
+        // singleton the handler reads. The agentId is NEVER spawned as a live child of this parent, so the
+        // handler's live-stream resolution (parent loop → SubAgentManager → TryGetAgent) fails and
+        // `stream` is null — the exact "parent loop evicted / completed tab" state the replay fix targets.
+        var completedAgentId = $"completed-{Guid.NewGuid():N}";
+        var persistedThreadId = $"subagent-{completedAgentId}";
+        var store = factory.Services.GetRequiredService<IConversationStore>();
+        var persisted = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage { Role = Role.Assistant, Text = "persisted-child-answer" },
+            persistedThreadId,
+            runId: "run-1");
+        await store.AppendMessagesAsync(persistedThreadId, [persisted]);
+
+        var childSocket = await factory.ConnectSubAgentWebSocketAsync(parentThreadId, completedAgentId);
+        await using var childClient = new WebSocketTestClient(childSocket);
+
+        // The handler settles the focused-streaming client with a lone `done` sentinel (no content, no
+        // error frame) so the client stops spinning; the transcript itself renders from REST. Because no
+        // WS content is streamed, there is no merge-key / duplicate-pill risk.
+        using var childFrames = await childClient.CollectUntilDoneAsync(TimeSpan.FromSeconds(15));
+
+        childFrames.Any(IsSubAgentUnavailableError).Should().BeFalse(
+            "a completed sub-agent WITH persisted history must replay, not answer with the scary "
+            + "subagent_unavailable error");
+        childFrames.OfMessageType("done").Should().ContainSingle(
+            "the handler settles the focused-streaming client with the done sentinel so it stops spinning");
+
+        // Read-only replay holds the socket OPEN (mirroring a completed shared-provider tab); only the
+        // genuinely-missing-agent path closes it. This distinguishes replay from the unavailable-error case.
+        childSocket.State.Should().Be(System.Net.WebSockets.WebSocketState.Open);
     }
 
     [Fact]

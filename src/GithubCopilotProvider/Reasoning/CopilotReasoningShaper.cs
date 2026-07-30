@@ -32,9 +32,13 @@ public static class CopilotReasoningShaper
                 "OutputConfig",
                 new AnthropicOutputConfig { Effort = effort }
             ),
+            // Summary = "auto" is REQUIRED alongside Effort: the Responses API returns a displayable
+            // reasoning summary only when asked, otherwise it emits an encrypted-only reasoning item
+            // (ReasoningVisibility.Encrypted, GetDisplayText() == null) and thinking never renders — the
+            // reason workflow-controller and sub-agent thinking was invisible while the main chat's showed.
             CopilotModelTransport.Responses => ImmutableDictionary<string, object?>.Empty.Add(
                 "Reasoning",
-                new ResponseReasoningOptions { Effort = effort }
+                new ResponseReasoningOptions { Effort = effort, Summary = "auto" }
             ),
             _ => ImmutableDictionary<string, object?>.Empty,
         };

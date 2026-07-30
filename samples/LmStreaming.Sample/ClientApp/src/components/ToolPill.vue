@@ -5,7 +5,13 @@ import type { ToolCall } from '@/types';
 import type { ToolCallState } from '@/utils/toolTypes';
 import { resolveRenderer, deriveToolPillState } from '@/utils';
 import { useToolResult } from '@/composables/useToolResult';
-import { GET_AGENT_COLOR, resolveAgentIdFromCall, type AgentColorLookup } from '@/utils/agentColors';
+import {
+  GET_AGENT_COLOR,
+  GET_AGENT_ROUTING,
+  resolveAgentIdFromCall,
+  type AgentColorLookup,
+  type AgentRoutingLookup,
+} from '@/utils/agentColors';
 import CodeBlockRich from '@/components/tools/CodeBlockRich.vue';
 import DiffRich from '@/components/tools/DiffRich.vue';
 import TerminalRich from '@/components/tools/TerminalRich.vue';
@@ -53,6 +59,15 @@ const agentColor = computed<string | null>(() => {
   const agentId = resolveAgentIdFromCall(view.value.parsedArgs, rawResult.value);
   return agentId ? getAgentColor(agentId) : null;
 });
+
+const getAgentRouting = inject<AgentRoutingLookup>(GET_AGENT_ROUTING, () => null);
+const agentRouting = computed(() => {
+  if (renderer.value.family !== 'agent') return null;
+  return getAgentRouting(view.value.parsedArgs, rawResult.value);
+});
+const selectionSource = computed(() =>
+  agentRouting.value?.modelSelectionSource?.replace(/-/g, ' ') ?? 'unavailable'
+);
 
 const argEntries = computed(() =>
   view.value.parsedArgs ? Object.entries(view.value.parsedArgs) : []
@@ -121,6 +136,29 @@ async function copyResult() {
     </button>
 
     <div v-if="expanded" class="tool-pill__body">
+      <section
+        v-if="renderer.family === 'agent'"
+        class="agent-routing"
+        data-testid="agent-controller-request"
+      >
+        <strong>Controller requested</strong>
+        <span>model: {{ fmtVal(view.parsedArgs?.model) }}</span>
+        <span>model intelligence: {{ fmtVal(view.parsedArgs?.modelIntelligence) }}</span>
+      </section>
+
+      <section
+        v-if="agentRouting"
+        class="agent-routing agent-routing--effective"
+        data-testid="agent-effective-routing"
+      >
+        <strong>Effective child routing</strong>
+        <span>model: {{ agentRouting.effectiveModelId ?? 'unavailable' }}</span>
+        <span>
+          model intelligence: {{ agentRouting.effectiveModelIntelligence ?? 'not tier-based' }}
+        </span>
+        <span>source: {{ selectionSource }}</span>
+      </section>
+
       <dl v-if="argEntries.length" class="kv">
         <template v-for="[k, v] in argEntries" :key="k">
           <dt>{{ k }}</dt>
@@ -262,6 +300,23 @@ async function copyResult() {
   padding: 8px 10px;
   border-top: 1px solid #e0e0e0;
   overflow-x: auto;
+}
+
+.agent-routing {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  color: #555;
+  font-size: 12px;
+}
+
+.agent-routing--effective {
+  border-color: #9bc7a0;
+  background: #f2faf3;
+  color: #245b2b;
 }
 
 .kv {

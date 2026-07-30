@@ -398,10 +398,7 @@ public class ContextDiscoveryControllerTests
         // OWN AgentFactory — not the first conversation's. Otherwise conversation B's discovered
         // sub-agent would spawn using conversation A's provider.
         var hostPath = Path.Combine(Path.GetTempPath(), "wi-bleed-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(hostPath, ".claude", "agents"));
-        await File.WriteAllTextAsync(
-            Path.Combine(hostPath, ".claude", "agents", "echo.md"),
-            "---\nname: echo\ndescription: Echoes a marker.\n---\nYou are the echo sub-agent.");
+        Directory.CreateDirectory(hostPath);
 
         try
         {
@@ -494,30 +491,33 @@ public class ContextDiscoveryControllerTests
                 {
                     Kind = "subagent",
                     Name = "echo",
-                    Path = ".claude/agents/echo.md",
+                    QualifiedName = "plugin:echo",
+                    Path = "/marketplaces/official/plugin/agents/echo.md",
+                    Content = "---\nname: echo\ndescription: Echoes a marker.\nmodelintelligence: 5\n---\nYou are the inline echo sub-agent.",
                 }),
                 CancellationToken.None);
 
             result.Should().BeOfType<OkResult>();
 
-            bindingA.Source.Templates.Should().ContainKey("echo");
-            bindingB.Source.Templates.Should().ContainKey("echo");
-            bindingA.Source.Templates["echo"].AgentFactory().Should().BeSameAs(agentA);
-            bindingB.Source.Templates["echo"].AgentFactory().Should().BeSameAs(
+            bindingA.Source.Templates.Should().ContainKey("plugin:echo");
+            bindingB.Source.Templates.Should().ContainKey("plugin:echo");
+            bindingA.Source.Templates["plugin:echo"].SystemPrompt.Should().Contain("inline echo");
+            bindingA.Source.Templates["plugin:echo"].AgentFactory().Should().BeSameAs(agentA);
+            bindingB.Source.Templates["plugin:echo"].AgentFactory().Should().BeSameAs(
                 agentB,
                 "conversation B's discovered sub-agent must spawn with B's provider, not the first conversation's");
-            bindingA.Source.Templates["echo"].CharacteristicsAgentFactory.Should().NotBeNull();
-            bindingB.Source.Templates["echo"].CharacteristicsAgentFactory.Should().NotBeNull();
+            bindingA.Source.Templates["plugin:echo"].CharacteristicsAgentFactory.Should().NotBeNull();
+            bindingB.Source.Templates["plugin:echo"].CharacteristicsAgentFactory.Should().NotBeNull();
 
             var characteristics = new SubAgentCharacteristics("conversation-b-model", ReasoningEffort.High);
-            var reboundProvider = bindingB.Source.Templates["echo"]
+            var reboundProvider = bindingB.Source.Templates["plugin:echo"]
                 .CharacteristicsAgentFactory!(characteristics);
 
             receivedCharacteristicsB.Should().BeSameAs(characteristics);
             reboundProvider.Agent.Should().BeSameAs(
                 agentB,
                 "inherited webhook spawns must use the conversation's fresh legacy route");
-            var explicitProvider = bindingB.Source.Templates["echo"]
+            var explicitProvider = bindingB.Source.Templates["plugin:echo"]
                 .CharacteristicsAgentFactory!(
                     characteristics with { IsModelExplicitlySelected = true });
             explicitProvider.Agent.Should().BeSameAs(

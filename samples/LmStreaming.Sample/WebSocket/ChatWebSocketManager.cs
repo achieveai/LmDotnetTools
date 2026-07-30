@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
@@ -31,7 +32,9 @@ public sealed class ChatWebSocketManager
 
     private readonly MultiTurnAgentPool _agentPool;
     private readonly WebSocketConnectionRegistry _connectionRegistry;
+    private readonly Services.WorkflowRunRegistry _workflowRunRegistry;
     private readonly PendingAuthCoordinator _pendingAuth;
+    private readonly IConversationStore _conversationStore;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly ILogger<ChatWebSocketManager> _logger;
 
@@ -55,12 +58,16 @@ public sealed class ChatWebSocketManager
     public ChatWebSocketManager(
         MultiTurnAgentPool agentPool,
         WebSocketConnectionRegistry connectionRegistry,
+        Services.WorkflowRunRegistry workflowRunRegistry,
         PendingAuthCoordinator pendingAuth,
+        IConversationStore conversationStore,
         ILogger<ChatWebSocketManager> logger)
     {
         _agentPool = agentPool ?? throw new ArgumentNullException(nameof(agentPool));
         _connectionRegistry = connectionRegistry ?? throw new ArgumentNullException(nameof(connectionRegistry));
+        _workflowRunRegistry = workflowRunRegistry ?? throw new ArgumentNullException(nameof(workflowRunRegistry));
         _pendingAuth = pendingAuth ?? throw new ArgumentNullException(nameof(pendingAuth));
+        _conversationStore = conversationStore ?? throw new ArgumentNullException(nameof(conversationStore));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _jsonOptions = JsonSerializerOptionsFactory.CreateForProduction();
     }
@@ -138,12 +145,15 @@ public sealed class ChatWebSocketManager
             IMultiTurnAgent agent;
             try
             {
-                agent = _agentPool.GetOrCreateAgent(
+                _ = _agentPool.GetOrCreateAgent(
                     threadId,
                     resolvedMode,
                     providerId,
                     requestResponseDumpFileName,
                     workspaceId);
+                agent = (await _agentPool
+                    .EnsureCurrentAgentAsync(threadId, ct: cancellationToken)
+                    .ConfigureAwait(false)).Agent;
             }
             catch (ProviderUnavailableException ex)
             {
@@ -197,7 +207,12 @@ public sealed class ChatWebSocketManager
             var subscriptionTask = StreamMessagesToClientAsync(connection, agent, threadId, recordWriter, connectionCts.Token);
 
             // Handle incoming messages from client
-            var receiveTask = ReceiveMessagesFromClientAsync(webSocket, agent, threadId, connectionCts.Token);
+            var receiveTask = ReceiveMessagesFromClientAsync(
+                webSocket,
+                connection,
+                agent,
+                threadId,
+                connectionCts.Token);
 
             try
             {
@@ -258,38 +273,107 @@ public sealed class ChatWebSocketManager
         var connection = _connectionRegistry.Register($"subagent-{agentId}", webSocket);
         try
         {
-            if (!_agentPool.TryGet(parentThreadId, out var parentAgent)
-                || parentAgent is not MultiTurnAgentLoop loop
-                || loop.SubAgentManager is not { } subAgentManager
-                || !subAgentManager.TryGetAgent(agentId, out var childAgent)
-                || childAgent is null)
+            using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            // Resolve the stream: an Agent-tool sub-agent (via its parent's SubAgentManager) OR a
+            // StartWorkflowAgent run's isolated controller loop (via this conversation's WorkflowManager).
+            System.Collections.Generic.IAsyncEnumerable<AchieveAi.LmDotnetTools.LmCore.Messages.IMessage>? stream = null;
+            SubAgentManager? subAgentManager = null;
+
+            if (_agentPool.TryGet(parentThreadId, out var parentAgent)
+                && parentAgent is MultiTurnAgentLoop loop
+                && loop.SubAgentManager is { } sam
+                && sam.TryGetAgent(agentId, out var childAgent)
+                && childAgent is not null)
             {
-                _logger.LogWarning(
-                    "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId}",
+                subAgentManager = sam;
+
+                // Stream via the manager's restart-spanning enumerable rather than a single captured
+                // instance: relaying a follow-up to a FINISHED owned-provider child restarts it (disposing
+                // the old loop and swapping in a fresh one), and this enumerable re-resolves + re-subscribes
+                // internally so the focused client keeps receiving the restarted turn's frames.
+                stream = sam.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token);
+            }
+            else if (_workflowRunRegistry.TryGet(parentThreadId, out var workflowManager)
+                && workflowManager is not null
+                && workflowManager.TryGetRunLoop(agentId, out var controllerLoop)
+                && controllerLoop is not null)
+            {
+                // A StartWorkflowAgent run: stream the isolated controller loop's own conversation, the
+                // same way the main /ws pump subscribes to a loop. The tab is read-only.
+                stream = controllerLoop.SubscribeAsync(connectionCts.Token);
+            }
+            else if (_workflowRunRegistry.TryGet(parentThreadId, out var nestingManager)
+                && nestingManager is not null
+                && nestingManager.TryGetRunLoopOwningSubAgent(agentId, out var ownerLoop)
+                && ownerLoop?.SubAgentManager is { } nestedManager
+                && nestedManager.TryGetAgent(agentId, out var nestedAgent)
+                && nestedAgent is not null)
+            {
+                // A nested delegate spawned BY a running controller: stream it through the controller's
+                // own SubAgentManager, same as a top-level sub-agent (restart-spanning, follow-ups relay).
+                // Branch order is safe: the run branch above treats agentId as a workflowId, and an opaque
+                // workflowId never collides with a delegate's 12-char id, so control falls through here.
+                subAgentManager = nestedManager;
+                stream = nestedManager.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token);
+            }
+
+            if (stream is null)
+            {
+                // No LIVE stream: the parent loop was evicted (app restart, or the parent conversation
+                // was disposed/aged out of the pool). A COMPLETED sub-agent's transcript still persists
+                // under "subagent-{agentId}", and the client already renders that history from REST. So
+                // instead of a scary "unavailable" error, settle the client with the done sentinel and
+                // hold the socket open read-only (drain client frames to detect disconnect) so the
+                // persisted transcript replays. Only a genuinely missing agent (no persisted history)
+                // falls through to the structured error.
+                var persisted = await _conversationStore.LoadMessagesAsync($"subagent-{agentId}", connectionCts.Token);
+                if (persisted.Count == 0)
+                {
+                    _logger.LogWarning(
+                        "Sub-agent {AgentId} unavailable for parent thread {ParentThreadId} (no live stream, no persisted history)",
+                        agentId,
+                        parentThreadId);
+
+                    await SendSubAgentUnavailableErrorAsync(connection, agentId, cancellationToken);
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Sub-agent {AgentId} has no live stream; replaying {Count} persisted messages read-only for parent thread {ParentThreadId}",
                     agentId,
+                    persisted.Count,
                     parentThreadId);
 
-                await SendSubAgentUnavailableErrorAsync(connection, agentId, cancellationToken);
+                // The transcript itself renders from REST; the socket emits ONLY the done sentinel so the
+                // client settles its focused-streaming state (no WS content ⇒ no merge-key/duplicate risk).
+                var doneJson = /*lang=json,strict*/ """{"$type":"done"}""";
+                if (await connection.TrySendTextAsync(doneJson, connectionCts.Token))
+                {
+                    // Keep the read-only socket open until the client disconnects (or shutdown cancels),
+                    // mirroring a completed shared-provider tab. Drain inbound frames without relaying.
+                    await ReceiveTextMessagesAsync(
+                        webSocket,
+                        $"subagent-replay {agentId}",
+                        (_, _) => Task.CompletedTask,
+                        connectionCts.Token);
+                }
+
                 return;
             }
 
-            using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-            // Stream via the manager's restart-spanning enumerable rather than a single captured
-            // instance: relaying a follow-up to a FINISHED owned-provider child restarts it (disposing
-            // the old loop and swapping in a fresh one), and this enumerable re-resolves + re-subscribes
-            // internally so the focused client keeps receiving the restarted turn's frames. The sub-agent
-            // wrapper reuses the shared frame pump (the {"$type":"done"} sentinel after
+            // The sub-agent wrapper reuses the shared frame pump (the {"$type":"done"} sentinel after
             // RunCompletedMessage) but adds failure-to-structured-error handling scoped to this path.
             // This is a presentation-only view, so no recording.
-            var subscriptionTask = PumpSubAgentStreamAsync(
-                connection,
-                subAgentManager.SubscribeToAgentAcrossRestartsAsync(agentId, connectionCts.Token),
-                agentId,
-                connectionCts.Token);
+            var subscriptionTask = PumpSubAgentStreamAsync(connection, stream, agentId, connectionCts.Token);
 
-            var receiveTask = ReceiveSubAgentMessagesFromClientAsync(
-                webSocket, connection, subAgentManager, agentId, connectionCts.Token);
+            // Follow-up messages relay only to an Agent-tool sub-agent; a workflow tab is read-only, so its
+            // receive loop just drains client frames to detect disconnect.
+            var receiveTask = subAgentManager is not null
+                ? ReceiveSubAgentMessagesFromClientAsync(
+                    webSocket, connection, subAgentManager, agentId, connectionCts.Token)
+                : ReceiveTextMessagesAsync(
+                    webSocket, $"workflow {agentId}", (_, _) => Task.CompletedTask, connectionCts.Token);
 
             try
             {
@@ -499,13 +583,14 @@ public sealed class ChatWebSocketManager
     /// </summary>
     private Task ReceiveMessagesFromClientAsync(
         System.Net.WebSockets.WebSocket webSocket,
+        RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
         CancellationToken ct)
         => ReceiveTextMessagesAsync(
             webSocket,
             $"thread {threadId}",
-            (message, token) => ProcessClientMessageAsync(agent, threadId, message, token),
+            (message, token) => ProcessClientMessageAsync(connection, agent, threadId, message, token),
             ct);
 
     /// <summary>
@@ -727,6 +812,7 @@ public sealed class ChatWebSocketManager
     /// Processes a message received from the client.
     /// </summary>
     private async Task ProcessClientMessageAsync(
+        RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
         string json,
@@ -746,6 +832,37 @@ public sealed class ChatWebSocketManager
                 threadId,
                 request.Message);
 
+            var refresh = await _agentPool
+                .EnsureCurrentAgentAsync(threadId, ct: ct, replace: false)
+                .ConfigureAwait(false);
+            var agentChanged = !ReferenceEquals(refresh.Agent, agent);
+            if (
+                agentChanged
+                || refresh.Status
+                    is MultiTurnAgentPool.AgentRefreshStatus.RefreshRequired
+                        or MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred
+            )
+            {
+                var refreshType = refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred
+                    ? "sandbox_session_refresh_deferred"
+                    : "sandbox_session_refresh";
+                var refreshed = JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["$type"] = refreshType,
+                });
+                _ = await connection.TrySendTextAsync(refreshed, ct).ConfigureAwait(false);
+                if (agentChanged || refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshRequired)
+                {
+                    await connection.TryCloseAsync(
+                        WebSocketCloseStatus.NormalClosure,
+                        "Sandbox session refreshed",
+                        ct).ConfigureAwait(false);
+                }
+                return;
+            }
+
+            agent = refresh.Agent;
+
             // Create user message
             var userMessage = new TextMessage
             {
@@ -763,6 +880,16 @@ public sealed class ChatWebSocketManager
                 "Message queued for thread {ThreadId}, receipt: {InputId}",
                 threadId,
                 receipt.InputId);
+        }
+        catch (SandboxSessionUnavailableException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Sandbox refresh failed before dispatch for thread {ThreadId} (gateway status {StatusCode})",
+                threadId,
+                ex.StatusCode
+            );
+            await SendSandboxUnavailableErrorAsync(connection, ex, recordWriter: null, ct);
         }
         catch (JsonException ex)
         {

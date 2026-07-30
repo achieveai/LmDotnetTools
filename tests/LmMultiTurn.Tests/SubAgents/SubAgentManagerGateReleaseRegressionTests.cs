@@ -108,9 +108,13 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             doc.RootElement.GetProperty("status").GetString().Should().Be("spawned");
         }
 
-        var overCapacity = () => _manager.SpawnAsync("normal", "one-too-many", runInBackground: true);
-        await overCapacity.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*Max concurrent sub-agents*");
+        // With the pool now exactly full, one more spawn is DEFER-QUEUED (status="queued") rather than
+        // run inline. This is the current over-capacity probe: an over-released gate would instead leave
+        // a free slot and return "spawned" here, so "queued" still proves the count is exactly full.
+        var overCapacityJson = await _manager.SpawnAsync(
+            "normal", "one-too-many", runInBackground: true);
+        using var overCapacityDoc = JsonDocument.Parse(overCapacityJson);
+        overCapacityDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
     }
 
     [Fact]
@@ -183,9 +187,12 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             doc.RootElement.GetProperty("status").GetString().Should().Be("spawned");
         }
 
-        var overCapacity = () => _manager.SpawnAsync("normal", "one-too-many", runInBackground: true);
-        await overCapacity.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*Max concurrent sub-agents*");
+        // Pool exactly full -> one more spawn defer-queues ("queued"); a corrupted upward count would
+        // leave a slot free and return "spawned" instead.
+        var overCapacityJson = await _manager.SpawnAsync(
+            "normal", "one-too-many", runInBackground: true);
+        using var overCapacityDoc = JsonDocument.Parse(overCapacityJson);
+        overCapacityDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
     }
 
     [Fact]
@@ -592,6 +599,66 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ForegroundCancellationAfterPermitAcquisition_StopsBeforeRegistration()
+    {
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["worker"] = DummyTemplate("worker"),
+        });
+        _manager = manager;
+        var constructed = new FakeMultiTurnAgent();
+        manager.TestAgentFactoryOverride = (_, _) => constructed;
+        var reachedRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.TestBeforeAgentRegistrationAsync = async () =>
+        {
+            reachedRegistration.SetResult();
+            await releaseRegistration.Task;
+        };
+        using var cts = new CancellationTokenSource();
+
+        var spawn = manager.SpawnAsync("worker", "task", ct: cts.Token);
+        await reachedRegistration.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cts.Cancel();
+        releaseRegistration.SetResult();
+
+        var act = async () => await spawn;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        manager.ListAgents().Should().BeEmpty();
+        constructed.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DisposeRacingInlineSpawn_RejectsRegistrationAndDisposesConstructedAgent()
+    {
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["worker"] = DummyTemplate("worker"),
+        });
+        _manager = manager;
+        var constructed = new FakeMultiTurnAgent();
+        manager.TestAgentFactoryOverride = (_, _) => constructed;
+        var reachedRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.TestBeforeAgentRegistrationAsync = async () =>
+        {
+            reachedRegistration.SetResult();
+            await releaseRegistration.Task;
+        };
+
+        var spawn = manager.SpawnAsync("worker", "task", runInBackground: true);
+        await reachedRegistration.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var dispose = manager.DisposeAsync().AsTask();
+        releaseRegistration.SetResult();
+
+        var act = async () => await spawn;
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+        await dispose;
+        manager.ListAgents().Should().BeEmpty();
+        constructed.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task MonitorSubAgentAsync_PendingMessageCompletion_HoldsConcurrencyPermitUntilTerminal()
     {
         // Blocker D: with limit 1, a nonterminal (HasPendingMessages) completion must NOT release the
@@ -626,13 +693,18 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
         (await pendingEmitted.Task.WaitAsync(TimeSpan.FromSeconds(10))).Should().BeTrue();
         await Task.Delay(150); // give the monitor time to (wrongly) release the permit if it regressed
 
-        var whileBusy = () => _manager!.SpawnAsync("normal", "should-not-start", runInBackground: true);
-        await whileBusy.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*Max concurrent sub-agents*",
-                "a pending (nonterminal) completion must not free the slot while the sub-agent is still active");
+        // While the pending agent is still active (holding the only permit), a second spawn is
+        // DEFER-QUEUED rather than started. This is the probe that the pending (nonterminal) completion
+        // did NOT free the slot: had it wrongly released, Wait(0) would succeed and return "spawned".
+        var queuedJson = await _manager!.SpawnAsync("normal", "queued-while-busy", runInBackground: true);
+        using var queuedDoc = JsonDocument.Parse(queuedJson);
+        queuedDoc.RootElement.GetProperty("status").GetString().Should().Be("queued",
+            "a pending (nonterminal) completion must not free the slot while the sub-agent is still active");
+        var queuedAgentId = queuedDoc.RootElement.GetProperty("agent_id").GetString()!;
 
-        // The terminal completion frees the slot: wait for the busy agent to settle terminal, then a
-        // single fresh spawn must succeed on the now-released slot.
+        // The terminal completion frees the slot; the background pump then starts the queued spawn on the
+        // now-released permit. Wait for the pending agent to settle terminal, then assert the queued agent
+        // is started by the pump (it becomes Running — the default fake holds its slot open).
         releaseTerminal.SetResult(true);
         await WaitForConditionAsync(
             () =>
@@ -642,12 +714,17 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
             },
             TimeSpan.FromSeconds(10));
 
-        var afterTerminalJson = await _manager
-            .SpawnAsync("normal", "after-terminal", runInBackground: true)
-            .WaitAsync(TimeSpan.FromSeconds(10));
-        using var afterDoc = JsonDocument.Parse(afterTerminalJson);
-        afterDoc.RootElement.GetProperty("status").GetString().Should().Be("spawned",
-            "the terminal completion released the slot, so a new sub-agent can start");
+        await WaitForConditionAsync(
+            () =>
+            {
+                try { return _manager!.Peek(queuedAgentId).Contains("\"running\""); }
+                catch { return false; }
+            },
+            TimeSpan.FromSeconds(10));
+
+        using var queuedPeek = JsonDocument.Parse(_manager.Peek(queuedAgentId));
+        queuedPeek.RootElement.GetProperty("status").GetString().Should().Be("running",
+            "the terminal completion released the slot, so the pump started the queued sub-agent");
     }
 
     #region Helpers
@@ -711,6 +788,9 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 {
     private int _sendCallCount;
     private int _subscribeCallCount;
+    private int _disposeCount;
+
+    public int DisposeCount => Volatile.Read(ref _disposeCount);
 
     public string? CurrentRunId => null;
 
@@ -809,6 +889,7 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 
     public ValueTask DisposeAsync()
     {
+        _ = Interlocked.Increment(ref _disposeCount);
         return ValueTask.CompletedTask;
     }
 

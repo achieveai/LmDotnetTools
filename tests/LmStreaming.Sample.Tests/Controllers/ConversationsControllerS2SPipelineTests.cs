@@ -60,6 +60,7 @@ public sealed class ConversationsControllerS2SPipelineTests
                         _ = services.AddSingleton(
                             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal());
                         _ = services.AddSingleton(new ConversationStatusResolver(store, store));
+                        _ = services.AddSingleton<LmStreaming.Sample.Services.WorkflowRunRegistry>();
                         _ = services
                             .AddControllers()
                             .AddApplicationPart(typeof(ConversationsController).Assembly);

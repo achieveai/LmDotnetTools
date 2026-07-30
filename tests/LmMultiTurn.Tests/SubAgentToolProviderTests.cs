@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -82,6 +83,13 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         }
     }
 
+    private static async IAsyncEnumerable<IMessage> BlockingStream(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        yield break;
+    }
+
     [Fact]
     public void GetFunctions_ReturnsThreeFunctions()
     {
@@ -128,6 +136,49 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public void AgentDescriptor_SteersTowardReusingLiveSubAgentsViaSendMessage()
+    {
+        // Act
+        var agent = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "Agent");
+
+        // Assert: the Agent description nudges the controller/loop to CONTINUE a still-live
+        // sub-agent with SendMessage before spawning a brand-new one for the same/follow-up work.
+        var description = agent.Contract.Description!;
+        description.Should().Contain("SendMessage");
+        description.Should().Contain("before spawning a NEW sub-agent");
+    }
+
+    [Fact]
+    public void AgentDescriptor_NameParameter_AsksForAReadableHandleAndNotesAutoDerivedFallback()
+    {
+        // Act
+        var agent = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "Agent");
+        var nameParam = agent.Contract.Parameters!.First(p => p.Name == "name");
+
+        // Assert: guidance asks for a short human-readable handle and documents that the host
+        // auto-derives one when omitted (so no agent ever surfaces as a bare id).
+        var desc = nameParam.Description!;
+        desc.Should().Contain("human-readable");
+        desc.Should().Contain("auto-derived");
+    }
+
+    [Fact]
+    public void SendMessageDescriptor_PrefersContinuationOverSpawningANewAgent()
+    {
+        // Act
+        var sendMessage = _provider!.GetFunctions()
+            .First(f => f.Contract.Name == "SendMessage");
+
+        // Assert: SendMessage steers the model to prefer continuing an existing agent over
+        // spawning a fresh one when it already has the context for the work.
+        var description = sendMessage.Contract.Description!;
+        description.Should().Contain("PREFER THIS");
+        description.Should().Contain("spawning a new Agent");
+    }
+
+    [Fact]
     public async Task HandleAgentToolAsync_MissingPrompt_ThrowsArgumentException()
     {
         // Arrange
@@ -155,6 +206,116 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*subagent_type*required*");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_UnknownSubagentType_ReturnsRecoverableError()
+    {
+        // An unresolvable subagent_type (no exact match, no unique skill-segment match) is a MODEL
+        // mistake, not a host fault: the handler must return a recoverable error result listing the
+        // available agents — NOT throw — so the loop hands the LLM the catalog to self-correct with
+        // instead of the run collapsing to general-purpose.
+        var agentHandler = GetHandler("Agent");
+        var args = JsonSerializer.Serialize(
+            new { subagent_type = "no-such-agent", prompt = "do something" });
+
+        var result = await agentHandler(args, new ToolCallContext(), CancellationToken.None);
+
+        var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("unknown_subagent_type");
+        resolved.Payload.Text.Should().Contain("Unknown template")
+            .And.Contain("researcher").And.Contain("coder");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_QueueFull_ReturnsRecoverableError()
+    {
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            MaxConcurrentSubAgents = 1,
+            MaxQueuedSubAgents = 0,
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, _, ct) => Task.FromResult(BlockingStream(ct)));
+        _ = await manager.SpawnAsync("researcher", "first", runInBackground: true);
+
+        var result = await handler(
+            JsonSerializer.Serialize(new
+            {
+                subagent_type = "researcher",
+                prompt = "overflow",
+                run_in_background = true,
+            }),
+            new ToolCallContext(),
+            CancellationToken.None);
+
+        var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("queue_full");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_SpawnNameGateRejects_ReturnsRecoverableUnmatchedError()
+    {
+        // Option A: a host that correlates spawn results by an EXACT name (a workflow controller) supplies a
+        // SpawnNameGate. When it rejects the spawn's name, the Agent handler must surface the correction as a
+        // recoverable tool error (spawn_name_unmatched) — NOT throw and NOT spawn — so the caller re-issues the
+        // exact name instead of looping on a silently-discarded duplicate. subagent_type is VALID here, proving
+        // the rejection comes from the name gate, not from unknown_subagent_type.
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a researcher.",
+                    Description = "Researches.",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            SpawnNameGate = name =>
+                name == "good:1:task" ? null : $"No workflow unit named '{name}'. Re-call Agent with good:1:task.",
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+
+        var args = JsonSerializer.Serialize(new { subagent_type = "researcher", prompt = "do it", name = "analyze" });
+        var result = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("spawn_name_unmatched");
+        resolved.Payload.Text.Should().Contain("good:1:task");
     }
 
     [Fact]
@@ -200,6 +361,94 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         // Assert
         await act.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*agent_id*required*");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_WorkflowSelectionOverridesPlaceholderOptionalModelValues()
+    {
+        SubAgentSpawnModelSelection? observed = null;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            SpawnModelSelectionResolver = name =>
+                name == "unit:1:task"
+                    ? new SubAgentSpawnModelSelection(Model: null, ModelIntelligence: null)
+                    : null,
+            TierModelResolver = tier =>
+            {
+                observed = new SubAgentSpawnModelSelection(null, tier);
+                return "tier-model";
+            },
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        var args = JsonSerializer.Serialize(new
+        {
+            subagent_type = "researcher",
+            prompt = "work",
+            name = "unit:1:task",
+            model = "",
+            modelIntelligence = 0,
+        });
+
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        observed.Should().BeNull(because: "the workflow unit's authoritative null tier must erase the LLM's placeholder zero");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_OrdinaryHostPreservesIntentionalTierZero()
+    {
+        int? observedTier = null;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            TierModelResolver = tier =>
+            {
+                observedTier = tier;
+                return "tier-model";
+            },
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        var args = JsonSerializer.Serialize(new
+        {
+            subagent_type = "researcher",
+            prompt = "work",
+            modelIntelligence = 0,
+        });
+
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        observedTier.Should().Be(0);
     }
 
     [Fact]

@@ -163,6 +163,7 @@ public class ConversationsController(
     IWorkspaceStore workspaceStore,
     ProviderRegistry providerRegistry,
     ConversationStatusResolver statusResolver,
+    WorkflowRunRegistry workflowRunRegistry,
     ILogger<ConversationsController> logger) : ControllerBase
 {
     /// <summary>
@@ -263,7 +264,10 @@ public class ConversationsController(
             // Sub-agent conversations use the reserved "subagent-{agentId}" thread-id convention and are
             // surfaced only through the sub-agent panel (GET .../subagents + /ws/subagent). They must not
             // leak into the primary conversation sidebar (nor be auto-selected on load).
-            .Where(t => !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal))
+            .Where(t =>
+                !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal)
+                && !t.ThreadId.StartsWith("workflow-", StringComparison.Ordinal)
+            )
             .Select(t => new ConversationSummary
             {
                 ThreadId = t.ThreadId,
@@ -370,32 +374,118 @@ public class ConversationsController(
     /// <c>SubAgentManager.ListAgents()</c> snapshot projected to <see cref="SubAgentSummary"/>.
     /// </summary>
     [HttpGet("{threadId}/subagents")]
-    public IActionResult ListSubAgents(string threadId)
+    public async Task<IActionResult> ListSubAgents(string threadId, CancellationToken ct = default)
     {
-        if (!agentPool.TryGet(threadId, out var agent) || agent is null)
+        var summaries = new List<SubAgentSummary>();
+        var isLive = agentPool.TryGet(threadId, out var agent) && agent is not null;
+
+        // Agent-tool sub-agents (the historical /subagents contents) — LIVE-ONLY: they live on the main
+        // conversation loop's SubAgentManager, so they're gone after a restart until the loop is rehydrated.
+        if (isLive && agent is MultiTurnAgentLoop loop && loop.SubAgentManager is { } subAgentManager)
         {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            summaries.AddRange(
+                subAgentManager.ListAgents()
+                    .Select(s => new SubAgentSummary
+                    {
+                        AgentId = s.AgentId,
+                        Kind = "subagent",
+                        Name = s.Name,
+                        Template = s.TemplateName,
+                        Task = s.Task,
+                        Status = s.Status.ToString().ToLowerInvariant(),
+                        ThreadId = s.ThreadId,
+                        LastActivityUtc = s.LastActivityUtc,
+                        EffectiveModelId = s.EffectiveModelId,
+                        EffectiveModelIntelligence = s.EffectiveModelIntelligence,
+                        ModelSelectionSource = s.ModelSelectionSource,
+                    })
+            );
         }
 
-        if (agent is not MultiTurnAgentLoop loop || loop.SubAgentManager is null)
+        // StartWorkflowAgent runs + their delegates. The live snapshot (when the WorkflowManager is present)
+        // is write-through-persisted to a small on-disk index, and the response is the union of live ∪
+        // persisted (live wins) — so completed workflow/delegate tabs SURVIVE A SERVER RESTART that evicts
+        // the in-memory manager. Delegate transcripts already persist as subagent-{id} threads, so a
+        // persisted tab replays read-only.
+        var workflowTabs = new List<SubAgentSummary>();
+        if (isLive && workflowRunRegistry.TryGet(threadId, out var workflowManager) && workflowManager is not null)
         {
-            return Ok(Array.Empty<SubAgentSummary>());
-        }
+            workflowTabs.AddRange(
+                workflowManager.ListRuns()
+                    .Select(r => new SubAgentSummary
+                    {
+                        AgentId = r.WorkflowId,
+                        Kind = "workflow",
+                        Name = r.Objective,
+                        Template = "workflow",
+                        Task = r.Objective,
+                        Status = r.Status,
+                        // The controller thread is conversation-scoped (workflow-{id}-{conversationId}); use the
+                        // run's real ThreadId so the ⚙ tab opens the ACTUAL persisted thread, not a stale
+                        // reconstruction. Fall back to the legacy shape only for a run with no scoped id.
+                        ThreadId = r.ThreadId ?? $"workflow-{r.WorkflowId}",
+                        LastActivityUtc = r.LastActivityUtc ?? r.StartedUtc,
+                    })
+            );
 
-        var summaries = loop.SubAgentManager.ListAgents()
-            .Select(s => new SubAgentSummary
+            foreach (var run in workflowManager.ListRuns())
             {
-                AgentId = s.AgentId,
-                Name = s.Name,
-                Template = s.TemplateName,
-                Task = s.Task,
-                Status = s.Status.ToString().ToLowerInvariant(),
-                ThreadId = s.ThreadId,
-                LastActivityUtc = s.LastActivityUtc,
-            })
-            .ToArray();
+                workflowTabs.AddRange(
+                    workflowManager.ListRunDelegates(run.WorkflowId)
+                        .Select(s => new SubAgentSummary
+                        {
+                            AgentId = s.AgentId,
+                            Kind = "subagent",
+                            Name = s.Name,
+                            Template = s.TemplateName,
+                            Task = s.Task,
+                            Status = s.Status.ToString().ToLowerInvariant(),
+                            ThreadId = s.ThreadId,
+                            LastActivityUtc = s.LastActivityUtc,
+                            EffectiveModelId = s.EffectiveModelId,
+                            EffectiveModelIntelligence = s.EffectiveModelIntelligence,
+                            ModelSelectionSource = s.ModelSelectionSource,
+                        })
+                );
+            }
 
-        return Ok(summaries);
+            // Write-through: fold this live snapshot into the durable index (upsert, never deletes).
+            workflowRunRegistry.PersistTabs(threadId, workflowTabs);
+        }
+
+        // Merge live workflow tabs with the persisted index (live wins on Kind+AgentId), so a restart that
+        // evicted the in-memory runs still surfaces them from disk.
+        var mergedWorkflow = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
+        foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId))
+        {
+            mergedWorkflow[(tab.Kind, tab.AgentId)] = tab;
+        }
+
+        foreach (var tab in workflowTabs)
+        {
+            mergedWorkflow[(tab.Kind, tab.AgentId)] = tab;
+        }
+
+        summaries.AddRange(mergedWorkflow.Values);
+
+        // A live conversation, or one with persisted workflow tabs, always answers 200. Otherwise the
+        // conversation is idle (evicted from the pool, or reopened but not yet messaged this session)
+        // and has no children to project — but it may still be a KNOWN thread on disk. Distinguish
+        // "known but idle with no sub-agents" (→ empty 200, the common case: a plain chat you reopened)
+        // from a genuinely unknown thread (→ 404) by consulting the store. Without this, every idle
+        // conversation with no sub-agents gets a spurious 404 and the client's sub-agent panel logs
+        // "Failed to list sub-agents" on every 3s poll. The store is only touched on this cold path,
+        // so the live hot path is unchanged.
+        if (!isLive && mergedWorkflow.Count == 0)
+        {
+            var metadata = await store.LoadMetadataAsync(threadId, ct);
+            if (metadata is null)
+            {
+                return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            }
+        }
+
+        return Ok(summaries.ToArray());
     }
 
     /// <summary>
@@ -439,12 +529,25 @@ public class ConversationsController(
         IMultiTurnAgent agent;
         try
         {
-            agent = agentPool.GetOrCreateAgent(
+            _ = agentPool.GetOrCreateAgent(
                 threadId,
                 mode,
                 requestedProviderId: null,
                 requestResponseDumpFileName: null,
                 callerCredential: callerCredential);
+            var refresh = await agentPool.EnsureCurrentAgentAsync(threadId, callerCredential, ct);
+            if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
+            {
+                return Conflict(new
+                {
+                    error = "sandbox_session_refresh_deferred",
+                    code = "sandbox_session_refresh_deferred",
+                    detail = "The sandbox session changed while a response was active. Retry after the current response completes.",
+                    threadId,
+                });
+            }
+
+            agent = refresh.Agent;
         }
         catch (ProviderUnavailableException ex)
         {

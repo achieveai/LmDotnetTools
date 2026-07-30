@@ -19,6 +19,10 @@ public sealed record ContextDiscoveryPayload
     [JsonPropertyName("name")]
     public string? Name { get; init; }
 
+    /// <summary>Plugin-qualified sub-agent key (for example <c>code-reviewer:architecture-review</c>).</summary>
+    [JsonPropertyName("qualified_name")]
+    public string? QualifiedName { get; init; }
+
     [JsonPropertyName("description")]
     public string? Description { get; init; }
 

@@ -25,6 +25,16 @@ public sealed record WorkflowTask
     [JsonPropertyName("subagent_type")]
     public string? SubagentType { get; init; }
 
+    /// <summary>
+    ///     Optional model-intelligence tier (ascending capability; 0 = cheapest) the spawned agent
+    ///     should be resolved to, mirroring the <c>modelIntelligence</c> argument of the Agent tool.
+    ///     Null leaves model selection to the spawned agent's own default (parent-inherited). The tier
+    ///     is resolved against the host's configured tier ladder, climbing to the nearest higher
+    ///     configured tier when the requested one is unmapped.
+    /// </summary>
+    [JsonPropertyName("modelIntelligence")]
+    public int? ModelIntelligence { get; init; }
+
     /// <summary>An optional dotted path whose array elements fan the task out (one spawn per item).</summary>
     public string? ForEach { get; init; }
 

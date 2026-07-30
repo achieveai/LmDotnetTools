@@ -5,18 +5,24 @@ using System.Text;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
-using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
-using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
-using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
-using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
-using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
-using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Agents;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
+using AchieveAi.LmDotnetTools.GithubCopilotProvider.Reasoning;
+using AchieveAi.LmDotnetTools.LmAgentInfra;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
@@ -25,21 +31,18 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmStreaming.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.LmStreaming.Sample.Triggers;
-using AchieveAi.LmDotnetTools.LmWorkflow;
-using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.LmWorkflow;
+using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
+using AchieveAi.LmDotnetTools.LmWorkflow.Tools;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.McpServer.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Web.Jina;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using AchieveAi.LmDotnetTools.LmAgentInfra;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
-using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using LmStreaming.Sample.Auth;
 using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.Models;
@@ -150,7 +153,7 @@ try
     // Raise the request-body ceiling so the file browser's multipart upload (WI #195) can carry a file of
     // exactly MaxFileBytes (64 MiB) plus a fixed 8 KiB framing allowance. The exact inclusive per-file cap
     // is enforced in FileBrowserController against both the declared and observed bytes.
-    builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes);
+    _ = builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes);
     _ = builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
         o.MultipartBodyLengthLimit = LmStreaming.Sample.FileBrowser.FileBrowserLimits.MaxUploadRequestBytes
     );
@@ -176,6 +179,12 @@ try
     // Provider registry — single source of truth for which providers the client can pick
     // and what the per-process default is. Read once at startup; shared via DI singleton.
     _ = builder.Services.AddSingleton<IFileSystemProbe, FileSystemProbe>();
+
+    // Side-table so the read-only /subagents endpoint + sub-agent WebSocket can surface a conversation's
+    // StartWorkflowAgent runs (isolated controller loops, owned by a per-conversation WorkflowManager the
+    // agent loop can't reference) as center-pane tabs.
+    _ = builder.Services.AddSingleton(_ => new WorkflowRunRegistry(
+        Path.Combine(AppContext.BaseDirectory, "workflow-index")));
 
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
@@ -265,6 +274,11 @@ try
     }
 
     _ = builder.Services.AddSingleton(sandboxOptions);
+    var workspaceCatalogIdentity = GatewayWorkspaceCatalogIdentity.Create(
+        sandboxOptions.BaseUrl,
+        sandboxOptions.AppId
+    );
+    _ = builder.Services.AddSingleton(workspaceCatalogIdentity);
 
     // Every gateway-bound HttpClient gets the per-app bearer handler (ADR 0029) so its REST calls carry
     // X-Sbx-App-Id/X-Sbx-App-Key under an AUTH_ENFORCE gateway. No-op when no AppKey is configured, so an
@@ -306,6 +320,7 @@ try
         GatewayHttpClient(TimeSpan.FromSeconds(10)),
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
+    _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();
 
     // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
     var authOptions =
@@ -513,13 +528,24 @@ try
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
 
-    // Register the FileWorkspaceStore for workspace persistence. The seeded default workspace
-    // maps to today's configured sandbox leaf so the "default" workspace mounts the same directory
-    // it always did.
-    var workspacesPath = Path.Combine(AppContext.BaseDirectory, "workspaces");
+    // Scope workspace metadata to the active gateway URL + process AppId. The ambiguous legacy
+    // flat catalog is archived once and never assigned to the currently configured gateway.
+    var workspaceCatalogRoot = Path.Combine(AppContext.BaseDirectory, "workspaces");
+    var workspaceCatalogResolution = new GatewayWorkspaceCatalogResolver()
+        .ResolveAsync(workspaceCatalogRoot, workspaceCatalogIdentity)
+        .GetAwaiter()
+        .GetResult();
+    Log.Information(
+        "Workspace catalog scoped to gateway {GatewayBaseUrl}, app {AppId}, key {CatalogKeyPrefix}, path {CatalogPath}; legacy archive {LegacyArchive}",
+        workspaceCatalogIdentity.CanonicalBaseUrl,
+        workspaceCatalogIdentity.AppId,
+        workspaceCatalogIdentity.CatalogKey[..12],
+        workspaceCatalogResolution.CatalogDirectory,
+        workspaceCatalogResolution.LegacyArchivePath ?? "(none)"
+    );
     var defaultWorkspaceLeaf = sandboxOptions.ResolveWorkspace().Leaf;
     _ = builder.Services.AddSingleton<IWorkspaceStore>(
-        new FileWorkspaceStore(workspacesPath, defaultWorkspaceLeaf)
+        new FileWorkspaceStore(workspaceCatalogResolution.CatalogDirectory, defaultWorkspaceLeaf)
     );
 
     // Register built-in (server-side) tool definitions for the tools API. The list is
@@ -584,6 +610,9 @@ try
     var llmQueryMcpExamType = builder.Configuration["LlmQueryMcp:ExamType"] ?? "NeetPG";
 
     // Register the MultiTurnAgentPool with provider- and mode-aware factory
+    _ = builder.Services.AddSingleton<IPricingResolver>(sp =>
+        AppSettingsPricingResolver.FromConfiguration(sp.GetRequiredService<IConfiguration>()));
+
     _ = builder.Services.AddSingleton(sp =>
     {
         var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
@@ -595,9 +624,14 @@ try
         // call site below). ThreadId is per-thread via context.ThreadId inside that factory.
         var notifyWaitStore = sp.GetRequiredService<INotifyWaitStore>();
         var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
+        // Conversation-wide usage cost (#196): resolves an estimated public cost per model when a rate is
+        // configured under "Pricing:Models". Empty by default, so flat-rate Copilot ids resolve to null
+        // cost ("unavailable") — the correct state — while any model with a configured rate gets a cost.
+        var pricingResolver = sp.GetRequiredService<IPricingResolver>();
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
+        var workflowRunRegistry = sp.GetRequiredService<WorkflowRunRegistry>();
         // Lifecycle observation / tool approval (#227). Resolved once for the process — the bundle's
         // sequence allocator owns the producer epoch, and loops that share it share that epoch, which
         // is what lets a subscriber tell "producer restarted" from "events were lost". Handed to the
@@ -656,11 +690,15 @@ try
                 var mcpBaseUrl = isMedicalMode ? llmQueryMcpBaseUrl : null;
                 var normalizedProviderId = providerId.ToLowerInvariant();
 
-                // Workspace Agent mode is backed by the sandbox MCP gateway. Resolve the sandbox
-                // session up front (sync-over-async, consistent with the books wiring) and augment
-                // the system prompt with the workspace's absolute host path — the local backend has
-                // no '/workspace' mount, so the model must use the absolute path for the file tools.
+                // Workspace Agent AND Workflow Author modes are backed by the sandbox MCP gateway.
+                // Resolve the sandbox session up front (sync-over-async, consistent with the books
+                // wiring) and augment the system prompt with the workspace's absolute host path — the
+                // local backend has no '/workspace' mount, so the model must use the absolute path for
+                // the file tools. Workflow Author mode gets a narrower Read/Grep/Skill-only tool slice
+                // (wired further below); this shared block only establishes the session and the prompt
+                // context common to both.
                 var isWorkspaceMode = mode.Id == SystemChatModes.WorkspaceAgentModeId;
+                var isWorkflowAuthorMode = mode.Id == SystemChatModes.WorkflowAuthorModeId;
                 var sandboxRegistry = sp.GetRequiredService<SandboxSessionRegistry>();
                 var sandboxLifetime = sp.GetRequiredService<SandboxGatewayLifetime>();
                 SandboxSession? sandboxSession = null;
@@ -668,12 +706,23 @@ try
                 // ONLY authoritative "this conversation has a sandbox workspace" signal for the file browser.
                 SandboxEstablishedBinding? stagedBinding = null;
                 var effectiveMode = mode;
-                if (isWorkspaceMode)
+                if (isWorkspaceMode || isWorkflowAuthorMode)
                 {
-                    // Only the middleware providers (OpenAI/Anthropic/test/...) and Copilot are wired
-                    // to route tool calls to the sandbox gateway. Reject the CLI-only providers and
-                    // mock variants up front instead of creating an unused sandbox session and an
-                    // agent with no sandbox tools.
+                    // Only the middleware providers (OpenAI/Anthropic/test/...) and — in Workspace Agent
+                    // mode — Copilot are wired to route tool calls to the sandbox gateway. Reject the
+                    // CLI-only providers and mock variants up front instead of creating an unused sandbox
+                    // session and an agent with no sandbox tools.
+                    //
+                    // Copilot is a special case: it IS wired to the full sandbox /mcp surface in Workspace
+                    // Agent mode, but Workflow Author mode only offers the narrow Read/Grep/Skill slice via
+                    // the middleware FunctionRegistry path, which the Copilot CLI transport cannot consume
+                    // (it connects to the raw /mcp with no per-tool filter, and handing it the full surface
+                    // would defeat the narrow intent). Copilot in Workflow Author mode would therefore get
+                    // NEITHER the workflow-authoring tools (its provider arm returns before they are wired)
+                    // NOR any sandbox tools — so reject it here too, rather than establishing a live session
+                    // and appending a system-prompt suffix that promises Read/Grep/Skill it can't have.
+                    var copilotUnsupportedInWorkflowAuthor =
+                        isWorkflowAuthorMode && normalizedProviderId is "copilot";
                     if (
                         normalizedProviderId
                         is "codex"
@@ -681,11 +730,15 @@ try
                             or "codex-mock"
                             or "claude-mock"
                             or "copilot-mock"
+                        || copilotUnsupportedInWorkflowAuthor
                     )
                     {
                         throw new ProviderUnavailableException(
                             normalizedProviderId,
-                            "Workspace Agent mode supports the OpenAI/Anthropic (and Copilot) providers; this provider is not wired for the sandbox."
+                            (isWorkspaceMode ? "Workspace Agent" : "Workflow Author")
+                                + " mode supports the OpenAI/Anthropic"
+                                + (isWorkspaceMode ? " and Copilot providers" : " providers")
+                                + "; this provider is not wired for the sandbox."
                         );
                     }
 
@@ -701,6 +754,34 @@ try
                         effectiveWorkspaceId,
                         workspace?.DirectoryRelPath,
                         workspace?.Marketplaces);
+                    if (workspace is not null)
+                    {
+                        try
+                        {
+                            sp.GetRequiredService<WorkspaceCatalogCompatibilityService>()
+                                .ValidateForSessionAsync(workspace)
+                                .GetAwaiter()
+                                .GetResult();
+                        }
+                        catch (UnsupportedWorkspaceMarketplacesException ex)
+                        {
+                            throw new SandboxSessionUnavailableException(
+                                effectiveWorkspaceId,
+                                StatusCodes.Status400BadRequest,
+                                ex.Message,
+                                ex
+                            );
+                        }
+                        catch (WorkspaceGatewayCatalogUnavailableException ex)
+                        {
+                            throw new SandboxSessionUnavailableException(
+                                effectiveWorkspaceId,
+                                StatusCodes.Status503ServiceUnavailable,
+                                ex.Message,
+                                ex
+                            );
+                        }
+                    }
 
                     // Use the liveness-checked variant: the gateway evicts idle sessions on its own
                     // schedule, and reusing a cached-but-evicted handle silently strips the session's
@@ -717,13 +798,22 @@ try
                     stagedBinding = new SandboxEstablishedBinding(
                         workspaceRef,
                         callerCredential ?? sandboxRegistry.DefaultCredential,
-                        callerCredential
+                        callerCredential,
+                        sandboxSession.SessionId
                     );
-                    var wsSuffix =
-                        "\n\nYour workspace directory is: "
-                        + sandboxSession.HostPath
-                        + "\nUse this absolute path as the base for the file tools (Read, Write, Edit, Glob, Grep). "
-                        + "The shell tools (Bash, PowerShell) already start in this directory.";
+                    // Workspace Agent gets the full file/shell tool surface; Workflow Author mode only
+                    // gets the narrower Read/Grep/Skill slice wired below — the suffix text must match
+                    // what each mode's agent actually has, or the model will confidently claim tools
+                    // (Write/Edit/Bash/...) that don't exist for it.
+                    var wsSuffix = isWorkspaceMode
+                        ? "\n\nYour workspace directory is: "
+                            + sandboxSession.HostPath
+                            + "\nUse this absolute path as the base for the file tools (Read, Write, Edit, Glob, Grep). "
+                            + "The shell tools (Bash, PowerShell) already start in this directory."
+                        : "\n\nYour workspace directory is: "
+                            + sandboxSession.HostPath
+                            + "\nUse this absolute path as the base for the Read and Grep tools, and when invoking "
+                            + "the Skill tool, while authoring. No write/edit/shell tools are available in this mode.";
 
                     // Seed any context files (CLAUDE.md / AGENTS.md) the gateway has already
                     // discovered into the system prompt. Mid-session deliveries land via the
@@ -995,8 +1085,8 @@ try
                     // observes the loop's own message stream (see ownedResources wiring below) to
                     // correlate Agent tool-call spawns back into workflow state.
                     //
-                    // Let the Workspace Agent launch LmWorkflow workflows via the StartWorkflow tool
-                    // family. Each StartWorkflow spins up an ISOLATED controller loop (its own model +
+                    // Let the Workspace Agent launch LmWorkflow workflows via the StartWorkflowAgent tool
+                    // family. Each StartWorkflowAgent call spins up an ISOLATED controller loop (its own model +
                     // restricted tool surface); the chat agent never gets direct
                     // SetWorkflow/GetWorkflow access (that #130 wiring is retired here). The tools
                     // themselves are wired below, once the conversation loop exists so an async
@@ -1057,6 +1147,71 @@ try
                             .CreateLogger<Program>()
                             .LogWarning(
                                 "Workspace Agent mode is running WITHOUT sandbox tools for thread {ThreadId}; "
+                                    + "the system prompt now reports degraded mode instead of claiming tools",
+                                threadId
+                            );
+                    }
+                }
+                else if (isWorkflowAuthorMode)
+                {
+                    // Let the chat agent author and drive an LmWorkflow workflow directly on THIS
+                    // conversation loop, via the full SetWorkflow/GetWorkflow/SetCurrentNode/SetState/
+                    // SetNotes/AddNode/RemoveNode tool surface (WorkflowToolProvider) — unlike Workspace
+                    // Agent mode there is no isolated controller loop and no automatic Agent-spawn
+                    // correlation; the mode's system prompt tells the model to spawn sub-agents and
+                    // record progress manually.
+                    var workflowRuntime = WorkflowRuntime.CreateNew(
+                        logger: loggerFactory.CreateLogger<WorkflowRuntime>()
+                    );
+                    _ = filteredRegistry.AddProvider(new WorkflowToolProvider(workflowRuntime));
+
+                    // Reuse the SAME downstream StartWorkflowAgent/WorkflowManager wiring that Workspace
+                    // Agent mode uses, so this mode also gets the launch-only tools without duplicating
+                    // that block.
+                    workspaceWorkflowEnabled = true;
+
+                    // Give the model a narrow read-only slice of the sandbox — Read/Grep/Skill — so it
+                    // can inspect the repo and invoke skills while authoring, without the full Workspace
+                    // Agent file/shell surface (this mode is deliberately narrower than "operate the
+                    // sandbox"). Same connect-time-frozen credential/header pattern as Workspace Agent.
+                    var workflowAuthorMcpHeaders = new Dictionary<string, string>
+                    {
+                        ["X-Session-ID"] = sandboxSession!.SessionId,
+                    };
+                    AddSandboxAuthHeaders(workflowAuthorMcpHeaders, callerCredential ?? sandboxCredential);
+                    var workflowAuthorSandboxClients = ConnectFilteredHttpMcpClient(
+                        filteredRegistry,
+                        "sandbox",
+                        $"{sandboxLifetime.GatewayBaseUrl}/mcp",
+                        workflowAuthorMcpHeaders,
+                        loggerFactory,
+                        toolNames: new HashSet<string> { "Read", "Grep", "Skill" },
+                        omitServerPrefix: true,
+                        handlerDecorator: SandboxToolHealth.Wrap
+                    );
+                    if (workflowAuthorSandboxClients.Count > 0)
+                    {
+                        ownedResources = [.. workflowAuthorSandboxClients.Cast<IAsyncDisposable>()];
+                    }
+                    else
+                    {
+                        // The sandbox MCP endpoint is unreachable. Booting anyway is intentional
+                        // (best-effort demo), but the workspace suffix added above claims Read/Grep/Skill
+                        // that this agent does not have — rebuild the prompt from the original mode with
+                        // an honest degraded-mode notice instead, so the model tells the user rather than
+                        // hallucinating tool calls.
+                        effectiveMode = mode with
+                        {
+                            SystemPrompt = mode.SystemPrompt
+                                + "\n\nIMPORTANT: The sandbox workspace is currently UNAVAILABLE (its MCP endpoint "
+                                + "could not be reached), so the Read/Grep/Skill tools do not exist in this "
+                                + "conversation. Do not claim or attempt to use them. Tell the user the workspace "
+                                + "is offline and that restarting the app (or the sandbox gateway) should restore it.",
+                        };
+                        loggerFactory
+                            .CreateLogger<Program>()
+                            .LogWarning(
+                                "Workflow Author mode is running WITHOUT sandbox read tools for thread {ThreadId}; "
                                     + "the system prompt now reports degraded mode instead of claiming tools",
                                 threadId
                             );
@@ -1147,19 +1302,23 @@ try
                     // pool-creation path (no ASP.NET SynchronizationContext) so a .Result here
                     // cannot deadlock. The blocking call is HTTP only when a sandbox session is
                     // active; otherwise it completes synchronously.
-                    Func<IStreamingAgent> subAgentFactory = () => agentFactory(normalizedProviderId);
+                    IStreamingAgent subAgentFactory() => agentFactory(normalizedProviderId);
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
                         providerAgent,
                         model => CreateCopilotModelAgent(model, loggerFactory),
                         loggerFactory.CreateLogger<CharacteristicsAgentFactory>(),
-                        parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null)
+                        parentCopilotModel: isCopilotBackedModel ? copilotModelInfo : null,
+                        // Parent-model-reuse fallback: a classic Copilot Anthropic parent (advertises no
+                        // efforts, so Copilot shaping is empty) or a non-Copilot parent still passes its OWN
+                        // reasoning (e.g. a classic Thinking budget) to an inherited-model sub-agent.
+                        parentReasoningExtraProperties: extraProperties)
                         .Create;
                     var subAgentOptions = BuildSubAgentOptionsAsync(
                             isTestMode,
                             sp.GetRequiredService<ITestAgentBuilder>(),
                             loggerFactory,
-                            subAgentFactory,
+subAgentFactory,
                             characteristicsAgentFactory,
                             sandboxSession,
                             sp.GetRequiredService<WorkspaceSubAgentLoader>(),
@@ -1168,6 +1327,43 @@ try
                             loggerFactory.CreateLogger("LmStreaming.Sample.SubAgentCatalog"))
                         .GetAwaiter()
                         .GetResult();
+
+                    // Route a spawn's modelIntelligence tier (the Agent tool's argument, or a workflow task's
+                    // tier) to a concrete model via the host's tier ladder, climbing to the nearest higher
+                    // configured tier when the requested one is unmapped. The library stays catalog-agnostic;
+                    // the ladder lives in the sample. These conversation sub-agents take the CHARACTERISTICS
+                    // path, which builds a transport-correct provider for the resolved model itself, so no
+                    // TierAgentFactory is needed here (unlike the controller's plain-path delegates below).
+                    if (subAgentOptions is not null)
+                    {
+                        var subAgentModelResolver = sp.GetRequiredService<SubAgentModelResolver>();
+                        subAgentOptions = subAgentOptions with
+                        {
+                            TierModelResolver = tier => subAgentModelResolver.ResolveClimbing(null, tier),
+                            // Guard the Agent tool's free-form `model` override: validate it against the
+                            // discovered Copilot catalog (drop unknown ids → inherit parent instead of a
+                            // provider BadRequest) and surface the valid ids in the tool descriptor so the
+                            // LLM picks a real one in the first place.
+                            ModelOverrideValidator = subAgentModelResolver.IsKnownModel,
+                            AvailableModelIds = subAgentModelResolver.AvailableModelIds,
+                        };
+                    }
+
+                    // Ordinary conversation sub-agents (characteristics path) inherit the parent's thinking as
+                    // an effort FLOOR (Option A: High) — applied only when the parent can itself think, so an
+                    // inherited-model sub-agent reasons like the launching conversation instead of running
+                    // un-nudged. A template that lowers its own Effort, pins a model, or tier-resolves one
+                    // overrides the floor (SubAgentManager). The parent "can think" when it has classic
+                    // reasoning metadata OR is an adaptive Copilot model (which reasons via output_config.effort
+                    // and therefore carries no classic extraProperties). The plain-path counterpart
+                    // (InheritedReasoning) is seeded on the controller's own options, not here.
+                    var parentCanThink =
+                        !extraProperties.IsEmpty
+                        || (isCopilotBackedModel && copilotModelInfo.SupportsAdaptiveThinking);
+                    if (subAgentOptions is not null && parentCanThink)
+                    {
+                        subAgentOptions = subAgentOptions with { InheritedEffort = ReasoningEffort.High };
+                    }
 
                     // When a sandbox session is active, share the catalog with the session
                     // registry so the context-discovery webhook can activate newly discovered
@@ -1182,7 +1378,7 @@ try
                             sandboxSession.SessionId,
                             threadId,
                             subAgentOptions.Templates,
-                            subAgentFactory,
+subAgentFactory,
                             characteristicsAgentFactory);
                         sharedSubAgentSource = binding.Source;
 
@@ -1213,7 +1409,18 @@ try
                         ThreadId = isTestMode ? threadId : null,
                     };
 
-                    // Wire the StartWorkflow tool family onto the conversation registry (Workspace Agent
+                    // Deterministic mock-workflow testing: enable the workflow tool family for the SCRIPTED
+                    // mock providers (test / test-anthropic) in default mode WITHOUT a sandbox. The workflow
+                    // wiring below is sandbox-independent (it uses subAgentFactory / subAgentOptions / the
+                    // late-bound agent — never sandboxSession), and delegates inherit the conversation's mock
+                    // tools via the transparency snapshot. Scoped strictly to test providers, so a real-provider
+                    // default conversation never gets an unsandboxed WorkflowManager.
+                    if (!workspaceWorkflowEnabled && normalizedProviderId is "test" or "test-anthropic")
+                    {
+                        workspaceWorkflowEnabled = true;
+                    }
+
+                    // Wire the StartWorkflowAgent tool family onto the conversation registry (Workspace Agent
                     // mode). Declared before the loop ctor so the launch tools are registered before the
                     // sub-agent snapshot is taken; the completion notifier is late-bound to `agent` (assigned
                     // just below). This replaces #130's direct SetWorkflow/GetWorkflow wiring.
@@ -1236,11 +1443,81 @@ try
                                 ? configuredCap
                                 : 8;
 
-                        var controllerSubAgentOptions = new SubAgentOptions
+                        // Build the controller delegate options for a given provider — so a StartWorkflowAgent
+                        // run with a preferred provider spawns its delegates on THAT provider (agent factory
+                        // bound to it). The fixed default below uses the conversation's provider.
+                        SubAgentOptions BuildControllerOptions(string providerId)
                         {
-                            Templates = BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(subAgentFactory),
-                            MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
-                        };
+                            // Share the launching conversation's ENRICHED catalog (built-ins + workspace-discovered
+                            // + marketplace) with the controller so a workflow delegate can spawn the SAME
+                            // subagent_types the primary agent and its sub-agents can — not just general-purpose/
+                            // researcher (the bug: a delegate asking for a plugin type got "Unknown template …
+                            // Available: general-purpose, researcher"). Prefer the LIVE shared source so mid-session
+                            // context-discovery registrations flow into the controller too; fall back to the static
+                            // enriched snapshot; both are supersets of the built-ins. With neither (no sandbox AND
+                            // no sub-agent options) fall back to the built-ins-only catalog.
+                            var enrichedCatalog = sharedSubAgentSource?.Templates ?? subAgentOptions?.Templates;
+                            var controllerTemplates = enrichedCatalog is not null
+                                ? BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
+                                    enrichedCatalog,
+                                    () => agentFactory(providerId)
+                                )
+                                : BuiltInSubAgentTemplates.CreateWorkflowControllerTemplates(
+                                    () => agentFactory(providerId)
+                                );
+
+                            var opts = new SubAgentOptions
+                            {
+                                Templates = controllerTemplates,
+                                MaxConcurrentSubAgents = BuiltInSubAgentTemplates.DefaultMaxConcurrentSubAgents,
+                                // Structural transparency guard: keep the controller's own workflow-state/launch
+                                // tools OUT of the snapshot its delegates inherit, so an inherit-all delegate
+                                // template can never drive/mutate the workflow it is a task of. The transparent
+                                // domain tools are merged in separately via ExternalInheritableTools (below).
+                                NonInheritedToolNames =
+                                [
+                                    .. WorkflowToolProvider.AllToolNames,
+                                    .. StartWorkflowToolProvider.ToolNames,
+                                ],
+                                // Controller delegates take the PLAIN path (CreateWorkflowControllerTemplates
+                                // sets CharacteristicsAgentFactory = null) and run on the controller's own model,
+                                // so they inherit its already-transport-shaped reasoning (Option A: High floor).
+                                // Keyed off `providerId` — the run's provider — so a preferred-provider run's
+                                // delegates think on that provider's transport. For Copilot, providerId == model id.
+                                InheritedReasoning = BuildControllerReasoningExtraProperties(
+                                    providerRegistry,
+                                    providerId,
+                                    providerId
+                                ),
+                                // Route a delegate's modelIntelligence tier (forwarded by the controller from the
+                                // composed unit) to a concrete model via the same host tier ladder. Controller
+                                // delegates take the PLAIN path, so a tier that resolves to a CROSS-transport model
+                                // (e.g. a Responses model under an Anthropic-transport controller) needs a
+                                // transport-correct provider built for THAT model — supplied via TierAgentFactory
+                                // (the DI per-id agent factory) — instead of the controller's own transport. A
+                                // no-tier or same-transport delegate is unaffected (it keeps InheritedReasoning).
+                                TierModelResolver = tier =>
+                                    sp.GetRequiredService<SubAgentModelResolver>().ResolveClimbing(null, tier),
+                                TierAgentFactory = agentFactory,
+                                // Guard the controller delegate's free-form `model` override: the plain path
+                                // sends `defaultOptions.ModelId` straight to the controller's transport, so an
+                                // invented/mis-filled id (e.g. "gpt-5", or the subagent_type "general-purpose")
+                                // hard-fails with a provider BadRequest and burns a spawn + retries. Validate it
+                                // against the discovered Copilot catalog (drop unknown → inherit the controller
+                                // model) and list the valid ids in the tool descriptor so the controller stops
+                                // inventing them.
+                                ModelOverrideValidator =
+                                    sp.GetRequiredService<SubAgentModelResolver>().IsKnownModel,
+                                AvailableModelIds =
+                                    sp.GetRequiredService<SubAgentModelResolver>().AvailableModelIds,
+                            };
+
+                            // Persist nested delegate transcripts (subagent-{agentId}) to the shared store so a
+                            // nested workflow tab survives a page reload (live streaming works regardless).
+                            return ApplyDefaultSubAgentStore(opts, conversationStore);
+                        }
+
+                        var controllerSubAgentOptions = BuildControllerOptions(normalizedProviderId);
 
                         var workflowManager = new WorkflowManager(
                             controllerAgentFactory: subAgentFactory,
@@ -1259,17 +1536,88 @@ try
                                 }
                             },
                             maxConcurrentWorkflows: maxConcurrentWorkflows,
-                            controllerDefaultOptions: new GenerateReplyOptions { ModelId = controllerModelId },
+
+                            controllerDefaultOptions: new GenerateReplyOptions
+                            {
+                                ModelId = controllerModelId,
+                                // The controller loop inherits the parent's reasoning (Option A: fixed High
+                                // floor), shaped for its OWN model so the orchestrator thinks instead of
+                                // running un-nudged. A per-run preferred-model override reshapes this in
+                                // WorkflowManager.StartAsync via the profile's ControllerReasoningExtraProperties.
+                                ExtraProperties = BuildControllerReasoningExtraProperties(
+                                    providerRegistry,
+                                    controllerModelId,
+                                    normalizedProviderId
+                                ),
+                            },
                             logger: loggerFactory.CreateLogger<WorkflowManager>(),
+                            // Fold a StartWorkflowAgent run's controller + task usage into THIS conversation's
+                            // total. Late-bound because the WorkflowManager is created before the root `agent`
+                            // loop (whose UsageSink is the conversation's ledger) exists.
+                            rootUsageSink: () =>
+                            {
+                                var conversation = agent;
+                                return conversation?.UsageSink;
+                            },
+                            // Transparency (Rules 1 & 2): a run's delegate sub-agents inherit THIS conversation's
+                            // tools — the launching conversation is the first non-WorkflowAgent ancestor, and its
+                            // SubAgentManager snapshot is already the sandbox tools MINUS the workflow/launch
+                            // tools. Late-bound for the same reason as rootUsageSink.
+                            inheritedToolSnapshot: () => agent?.SubAgentManager?.GetInheritableToolSnapshot(),
+                            // Persist the controller loop's OWN conversation (the workflow agent's orchestration
+                            // turns) to the shared store under the workflow-{id} thread so the ⚙ workflow tab is
+                            // viewable after the run completes. Non-owning so controller teardown never disposes
+                            // the shared store.
+                            controllerConversationStore:
+                                new NonOwningConversationStore(conversationStore),
+                            // A StartWorkflowAgent run may pass a preferred provider; build its controller agent
+                            // AND delegate templates on that provider. Validation happens on the tool (below);
+                            // this factory trusts the id. Must be agentFactory-buildable (openai/anthropic/test/
+                            // test-anthropic/discovered Copilot) — CLI providers throw ProviderUnavailableException,
+                            // surfaced as invalid_provider by the validator.
+                            controllerProfileByProvider: providerId => new WorkflowControllerProfile(
+                                () => agentFactory(providerId),
+                                BuildControllerOptions(providerId),
+                                // Shape the parent's inherited thinking (Option A: High floor) for THIS run's
+                                // provider/model so a preferred-provider controller reasons on the correct
+                                // transport. For Copilot, providerId == model id; non-Copilot falls back to the
+                                // provider-id reasoning mapping.
+                                BuildControllerReasoningExtraProperties(providerRegistry, providerId, providerId),
+                                // Provider switch must also replace the launching provider's default model.
+                                // For discovered Copilot providers the provider id is the raw model id; for
+                                // family providers this is the same id the host's agent factory accepts.
+                                new GenerateReplyOptions { ModelId = providerId }
+                            ),
+                            // Scope the controller's persistence thread to THIS conversation so a human-chosen
+                            // (non-unique) workflowId can never map two different conversations onto the same
+                            // shared-store thread and inherit each other's controller history. The conversation
+                            // id is already unique/time-based, so the scoped thread is deterministic and resume
+                            // reconstructs it. Late-bound for the same reason as rootUsageSink (the manager is
+                            // built before the root `agent` loop exists).
+                            launchConversationId: () => agent?.ThreadId,
                             lifecycleServices: lifecycleServices
+
                         );
 
-                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(workflowManager));
+                        _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(
+                            workflowManager,
+                            validatePreferredProvider: p =>
+                                !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
+                                : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
+                                : null
+                        ));
                         ownedResources = [.. ownedResources ?? [], workflowManager];
 
-                        // Keep the launch tools out of sub-agent inheritance so a spawned sub-agent can't
-                        // launch a nested workflow (out of scope for v1). Union with any exclusions the host
-                        // already set rather than replacing them.
+                        // Publish this conversation's WorkflowManager so /subagents + the sub-agent WebSocket
+                        // can surface its runs as tabs. Safe to leave a stale entry: WorkflowManager.DisposeAsync
+                        // clears its runs, so ListRuns/TryGetRunLoop return empty/false after teardown, and the
+                        // entry is overwritten if the conversation's agent is recreated.
+                        sp.GetRequiredService<WorkflowRunRegistry>().Register(threadId, workflowManager);
+
+                        // Keep the launch tools (and, for Workflow Author mode, the direct authoring/state
+                        // tools too) out of sub-agent inheritance so a spawned sub-agent can't launch a
+                        // nested workflow or mutate the parent's runtime out from under it. Union with any
+                        // exclusions the host already set rather than replacing them.
                         if (subAgentOptions is not null)
                         {
                             subAgentOptions = subAgentOptions with
@@ -1278,6 +1626,7 @@ try
                                 [
                                     .. subAgentOptions.NonInheritedToolNames ?? [],
                                     .. StartWorkflowToolProvider.ToolNames,
+                                    .. WorkflowToolProvider.AllToolNames,
                                 ],
                             };
                         }
@@ -1321,6 +1670,9 @@ try
                         subAgentTemplateSource: sharedSubAgentSource,
                         loggerFactory: loggerFactory,
                         persistRunLedger: true,
+                        // Estimated public cost per model for conversation-wide usage accounting (#196).
+                        // Null-resolving for models without a configured rate (cost shows "unavailable").
+                        pricingResolver: pricingResolver,
                         // Enable the Wait/CancelWait/ListWaits park-and-wake tools plus the sample
                         // trigger sources (file_tail/schedule/subagent, and sandbox-gated process) for the
                         // MOCK providers only. Real providers are left untouched (triggerOptions: null) so
@@ -1360,6 +1712,11 @@ try
             // The registry is the binding sink: the pool publishes/clears each conversation's
             // sandbox-established binding through it as part of the agent-entry commit/removal (WI #195).
             bindingSink: sandboxRegistryForCleanup,
+            liveSessionResolver: (binding, ct) =>
+                sandboxRegistryForCleanup.GetOrCreateLiveSessionAsync(
+                    binding.WorkspaceRef,
+                    ct,
+                    binding.Credential),
             lifecycleServices: hostLifecycleServices
         );
 
@@ -1373,6 +1730,7 @@ try
             // and a session id we don't know about is a no-op. We don't have the sessionId in
             // hand, so the cleanest contract is to ask the registry to scrub.
             sandboxRegistryForCleanup.UnregisterThreadFromAllSessions(threadId);
+            workflowRunRegistry.Remove(threadId);
         };
 
         return pool;
@@ -1687,8 +2045,51 @@ public partial class Program
     }
 
     /// <summary>
-    ///     Creates a test-mode agent using an <see cref="ITestAgentBuilder"/>-supplied handler.
+    ///     Builds the reasoning metadata for a StartWorkflowAgent CONTROLLER loop (and its plain-path
+    ///     delegates), shaped for the controller's own model so the orchestrator thinks at the parent's
+    ///     level instead of running un-nudged (the observed "acts as dumb as it acts" starvation). The
+    ///     controller inherits a fixed <paramref name="effort"/> floor (Option A: High when the parent can
+    ///     think) rather than a copied dictionary, because the controller may run on a per-run preferred
+    ///     model whose transport differs from the conversation's.
+    ///     <para>
+    ///     Resolution mirrors <see cref="BuildReasoningExtraProperties"/> but keyed off the CONTROLLER model:
+    ///     an adaptive Copilot Claude model reasons via <c>output_config.effort</c> (Shape emits it); a
+    ///     classic Copilot Claude model advertises no efforts, so Shape is empty and we fall back to the
+    ///     classic thinking budget for its transport; a non-Copilot controller model uses the provider-id
+    ///     mapping. Returns <see cref="ImmutableDictionary{TKey,TValue}.Empty"/> only when the resolved
+    ///     model/provider genuinely carries no reasoning surface.
+    ///     </para>
     /// </summary>
+    internal static ImmutableDictionary<string, object?> BuildControllerReasoningExtraProperties(
+        ProviderRegistry providerRegistry,
+        string copilotModelKey,
+        string fallbackProviderId,
+        ReasoningEffort effort = ReasoningEffort.High)
+    {
+        ArgumentNullException.ThrowIfNull(providerRegistry);
+
+        if (
+            !string.IsNullOrWhiteSpace(copilotModelKey)
+            && providerRegistry.TryGetCopilotModel(copilotModelKey, out var copilotModel)
+        )
+        {
+            var shaped = CopilotReasoningShaper.Shape(copilotModel, effort);
+            if (shaped.Count > 0)
+            {
+                return shaped;
+            }
+
+            // Classic Copilot Claude advertises no efforts (Shape empty); fall back to the classic
+            // thinking budget shaped for its transport (adaptive short-circuits to Empty inside).
+            return BuildReasoningExtraProperties(
+                fallbackProviderId,
+                copilotModel.Transport,
+                copilotModel.SupportsAdaptiveThinking
+            );
+        }
+
+        return BuildReasoningExtraProperties(fallbackProviderId);
+    }
     private static IStreamingAgent CreateTestAgent(ILoggerFactory loggerFactory, ITestAgentBuilder testAgentBuilder)
     {
         var testHandler = testAgentBuilder.CreateHandler("test", loggerFactory);
@@ -2233,7 +2634,7 @@ public partial class Program
     /// returned unchanged in that case.
     /// <para>
     /// The shared store is handed to children through a
-    /// <see cref="LmStreaming.Sample.Persistence.NonOwningConversationStore"/> decorator so a child can
+    /// <see cref="NonOwningConversationStore"/> decorator so a child can
     /// never dispose it: <see cref="SubAgentManager"/> disposes a child store that is
     /// <see cref="IAsyncDisposable"/>, and every child shares this one application-wide store.
     /// </para>
@@ -2254,7 +2655,7 @@ public partial class Program
             : options with
             {
                 DefaultConversationStoreFactory = _ =>
-                    new LmStreaming.Sample.Persistence.NonOwningConversationStore(store),
+                    new NonOwningConversationStore(store),
             };
     }
 
@@ -2364,7 +2765,7 @@ public partial class Program
         var marketplaceTask = LoadMarketplaceSubAgentsAsync(
             marketplaceLoader, workspaceStore, sandboxSession.WorkspaceId, providerAgentFactory, logger);
 
-        await Task.WhenAll(discoveredTask, marketplaceTask).ConfigureAwait(false);
+        _ = await Task.WhenAll(discoveredTask, marketplaceTask).ConfigureAwait(false);
 
         // Merge in precedence order: built-in (already present) > workspace file > marketplace.
         WorkspaceSubAgentLoader.MergeBuiltInWins(templates, discoveredTask.Result, logger);
@@ -2920,6 +3321,79 @@ public partial class Program
             }
 
             logger.LogInformation("Connected to MCP server '{Name}' at {Endpoint}", name, endpoint);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to connect to MCP server '{Name}' at {Endpoint} — continuing without its tools",
+                name,
+                endpoint
+            );
+        }
+
+        return createdClients;
+    }
+
+    /// <summary>
+    ///     Connects to an HTTP MCP server but only exposes the tools named in <paramref name="toolNames"/>
+    ///     on <paramref name="registry"/> — used by Workflow Author mode to give the model a narrow
+    ///     Read/Grep/Skill slice of the sandbox instead of its full tool surface. Mirrors
+    ///     <see cref="ConnectHttpMcpClient"/>'s <c>handlerDecorator is not null</c> branch (the only one
+    ///     that enumerates contracts) plus a name filter; unlike that method this always requires a
+    ///     decorator, since every caller of this helper wants the same container-health wrapping
+    ///     Workspace Agent mode gets. On failure the warning is logged and an empty list is returned so
+    ///     the agent still runs (without the MCP tools), mirroring <see cref="ConnectHttpMcpClient"/>.
+    /// </summary>
+    private static List<McpClient> ConnectFilteredHttpMcpClient(
+        FunctionRegistry registry,
+        string name,
+        string endpoint,
+        IReadOnlyDictionary<string, string> headers,
+        ILoggerFactory loggerFactory,
+        IReadOnlySet<string> toolNames,
+        bool omitServerPrefix,
+        Func<ToolHandler, ToolHandler> handlerDecorator
+    )
+    {
+        var createdClients = new List<McpClient>();
+        var logger = loggerFactory.CreateLogger<Program>();
+        try
+        {
+            var transport = new HttpClientTransport(
+                new HttpClientTransportOptions
+                {
+                    Name = name,
+                    Endpoint = new Uri(endpoint),
+                    AdditionalHeaders = new Dictionary<string, string>(headers),
+                }
+            );
+
+            // Sync-over-async: acceptable in sample app (no SynchronizationContext)
+            var client = McpClient.CreateAsync(transport).GetAwaiter().GetResult();
+            createdClients.Add(client);
+
+            var mcpClients = new Dictionary<string, McpClient> { [name] = client };
+            var scratch = new FunctionRegistry();
+            _ = scratch
+                .AddMcpClientsAsync(mcpClients, name, omitServerPrefix: omitServerPrefix)
+                .GetAwaiter()
+                .GetResult();
+            var (contracts, handlers) = scratch.Build();
+            foreach (var contract in contracts)
+            {
+                if (toolNames.Contains(contract.Name) && handlers.TryGetValue(contract.Name, out var handler))
+                {
+                    _ = registry.AddFunction(contract, handlerDecorator(handler), name);
+                }
+            }
+
+            logger.LogInformation(
+                "Connected to MCP server '{Name}' at {Endpoint}, filtered to {ToolNames}",
+                name,
+                endpoint,
+                string.Join(", ", toolNames)
+            );
         }
         catch (Exception ex)
         {

@@ -124,9 +124,10 @@ internal sealed class CodeReviewDaemonOptions
 
     /// <summary>
     /// Maximum number of discovered <c>code-reviewer:*</c> sub-agents the review loop may run concurrently
-    /// (maps to the library's <c>SubAgentOptions.MaxConcurrentSubAgents</c>). Once this many are in flight the
-    /// dispatcher blocks with "Max concurrent sub-agents (N) reached" until one completes, so a higher value
-    /// lets a deep review parallelize more of its focused passes — at the cost of more simultaneous model
+    /// (maps to the library's <c>SubAgentOptions.MaxConcurrentSubAgents</c>). Once this many are in flight a
+    /// further spawn is DEFER-QUEUED (accepted immediately, then started by a background pump as a slot
+    /// frees) rather than rejected, so a lower value simply serializes the focused passes instead of failing
+    /// them; a higher value lets a deep review parallelize more — at the cost of more simultaneous model
     /// calls and gateway load. Defaults to the library default of 5.
     /// </summary>
     public int MaxConcurrentSubAgents { get; init; } = 5;

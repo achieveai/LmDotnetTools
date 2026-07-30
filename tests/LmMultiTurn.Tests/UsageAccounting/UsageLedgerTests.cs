@@ -58,6 +58,22 @@ public class UsageLedgerTests
     }
 
     [Fact]
+    public void UpsertAttempt_InvokesAggregateUpdated_WithCurrentFoldedSnapshot()
+    {
+        // The aggregate-changed callback is the source of the live usage banner frame (#196, BUG 1b): each
+        // accepted observation must fire it with the CURRENT folded total so descendant spend surfaces live.
+        var totals = new List<long>();
+        var ledger = new UsageLedger(
+            "conv-1",
+            onAggregateUpdated: aggregate => totals.Add(aggregate.TotalTokens));
+
+        ledger.UpsertAttempt(Obs("a1", "model-A", input: 100, output: 40)); // total 140
+        ledger.UpsertAttempt(Obs("a2", "model-A", input: 50, output: 10)); // total 200
+
+        totals.Should().Equal(140, 200);
+    }
+
+    [Fact]
     public void UpsertAttempt_OutOfOrder_FinalThenLateInterim_KeepsMax()
     {
         var ledger = new UsageLedger("conv-1");

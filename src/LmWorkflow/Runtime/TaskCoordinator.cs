@@ -115,6 +115,10 @@ internal sealed class TaskCoordinator
         ];
     }
 
+    /// <summary>Returns an already-composed spawn unit by its exact correlation name.</summary>
+    public SpawnUnit? FindComposedUnit(string name) =>
+        _composed.TryGetValue(name, out var unit) ? unit : null;
+
     /// <summary>Whether <paramref name="name"/> is a currently-expected (composed) unit name.</summary>
     public bool IsExpectedUnit(string name) => _tasksByName.ContainsKey(name);
 
@@ -454,6 +458,7 @@ internal sealed class TaskCoordinator
         {
             Name = taskRef.Name,
             SubagentType = task.SubagentType!,
+            ModelIntelligence = task.ModelIntelligence,
             Prompt = ComposePrompt(task, _buildContext(item, index, count)),
             OutputSchema = task.OutputSchema?.DeepClone(),
         };
@@ -506,27 +511,27 @@ internal sealed class TaskCoordinator
     /// </summary>
     private void ValidateAndRecord(TaskRef taskRef, string resultText)
     {
-        JsonNode? parsed;
-        try
-        {
-            parsed = JsonNode.Parse(resultText);
-        }
-        catch (JsonException)
-        {
-            // The parser message can echo the payload, so only the payload length is recorded.
-            HandleFailure(taskRef, $"task output was not valid JSON ({resultText.Length} chars)");
-            return;
-        }
-
-        if (parsed is null)
-        {
-            HandleFailure(taskRef, "task output parsed to a null JSON value.");
-            return;
-        }
+        // Sub-agents routinely wrap their JSON in prose or a Markdown fence, and a task with no output schema
+        // may legitimately answer in free-form Markdown. Extract any embedded JSON tolerantly rather than
+        // force-parsing the WHOLE reply: a report that merely fails a strict whole-text parse must not fail the
+        // task and drive a re-spawn/retry storm (the PR-222-review run oddity). The literal JSON `null` parses
+        // to a null node — treat it as "no JSON" so it is never written as a bare null.
+        var parsed = JsonStringUtils.TryExtractJsonPayload(resultText, out var extractedJson)
+            ? SafeParse(extractedJson)
+            : null;
 
         if (taskRef.OutputSchemaJson is { } schemaJson)
         {
-            var validation = _schemaValidator.ValidateDetailed(resultText, schemaJson);
+            // A schema'd task still requires structured output: no extractable JSON, or JSON that fails the
+            // schema, is a genuine validation failure routed through the retry policy.
+            if (parsed is null)
+            {
+                // The parser message can echo the payload, so only the ORIGINAL payload length is recorded.
+                HandleFailure(taskRef, $"task output was not valid JSON ({resultText.Length} chars)");
+                return;
+            }
+
+            var validation = _schemaValidator.ValidateDetailed(extractedJson, schemaJson);
             if (!validation.IsValid)
             {
                 // Only the error COUNT is recorded; the joined error strings can echo submitted values.
@@ -536,9 +541,90 @@ internal sealed class TaskCoordinator
                 );
                 return;
             }
+
+            RecordValidated(taskRef, parsed);
+            return;
         }
 
-        WriteOutputSlot(taskRef, parsed);
+        // No schema: preserve prose verbatim. Parse only when the whole reply is JSON or a pure JSON
+        // Markdown fence; an embedded object can be an example/status fragment inside a larger report and
+        // must not replace that report. Never fail the task for "not valid JSON".
+        var trimmed = resultText.Trim();
+        var structured = parsed is not null
+            && (string.Equals(extractedJson, trimmed, StringComparison.Ordinal)
+                || IsPureJsonFence(trimmed, extractedJson));
+        RecordValidated(taskRef, structured ? parsed! : JsonValue.Create(resultText));
+    }
+
+    /// <summary>
+    ///     PURE, side-effect-free schema check for a spawn's raw result text, used by the async drive pump to
+    ///     decide whether a best-effort LLM JSON-repair pass is warranted BEFORE a deterministic validation
+    ///     failure is recorded (and again to confirm a repair actually satisfies the schema). It mutates
+    ///     NOTHING — no status, no retry budget, no outputs — and runs the SAME extract + parse + schema-validate
+    ///     steps as <see cref="ValidateAndRecord"/>, so a "would this be recorded as valid?" answer here matches
+    ///     what recording would do. An uncorrelated/unknown <paramref name="toolCallId"/>, or a task with no
+    ///     <c>outputSchema</c>, reports <see cref="SpawnSchemaCheck.NoSchema"/> (repair does not apply).
+    /// </summary>
+    public SpawnSchemaCheck CheckSpawnResult(string toolCallId, string resultText)
+    {
+        if (
+            !_tasksByToolCallId.TryGetValue(toolCallId, out var taskRef)
+            || taskRef.OutputSchemaJson is not { } schemaJson
+        )
+        {
+            return SpawnSchemaCheck.NoSchema;
+        }
+
+        var parsed = JsonStringUtils.TryExtractJsonPayload(resultText, out var extractedJson)
+            ? SafeParse(extractedJson)
+            : null;
+        if (parsed is null)
+        {
+            return SpawnSchemaCheck.Invalid(schemaJson);
+        }
+
+        return _schemaValidator.ValidateDetailed(extractedJson, schemaJson).IsValid
+            ? SpawnSchemaCheck.Valid
+            : SpawnSchemaCheck.Invalid(schemaJson);
+    }
+
+    private static bool IsPureJsonFence(string text, string extractedJson)
+    {
+        if (!text.StartsWith("```", StringComparison.Ordinal) || !text.EndsWith("```", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var firstLineEnd = text.IndexOf('\n');
+        if (firstLineEnd < 0)
+        {
+            return false;
+        }
+
+        return string.Equals(text[(firstLineEnd + 1)..^3].Trim(), extractedJson, StringComparison.Ordinal);
+    }
+
+    /// <summary>Parses an already-extracted JSON candidate, returning <c>null</c> for the literal <c>null</c> (or the defensive parse-failure case).</summary>
+    private static JsonNode? SafeParse(string json)
+    {
+        try
+        {
+            return JsonNode.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    ///     Records a successful task answer: writes it into the output slot, applies any configured state write
+    ///     (routing a structural write failure through the retry policy rather than faulting the whole workflow),
+    ///     then marks the unit validated and clears its last error.
+    /// </summary>
+    private void RecordValidated(TaskRef taskRef, JsonNode value)
+    {
+        WriteOutputSlot(taskRef, value);
         if (taskRef.Writes is { } writes)
         {
             // A validated output can still be un-writable (e.g. a merge whose value is not an object). Route
@@ -547,7 +633,7 @@ internal sealed class TaskCoordinator
             // catch.
             try
             {
-                StateWriter.Apply(_liveState(), writes, parsed);
+                StateWriter.Apply(_liveState(), writes, value);
             }
             catch (Exception ex)
                 when (ex is ArgumentException or NotSupportedException or InvalidOperationException)

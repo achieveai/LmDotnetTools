@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
@@ -57,7 +58,7 @@ public static class WorkflowSession
     /// <param name="includeAuthoringTool">
     ///     When <c>true</c> (default) the controller loop exposes the <c>SetWorkflow</c> authoring tool.
     ///     Pass <c>false</c> when the controller always receives a pre-authored <paramref name="definition"/>
-    ///     and must not be able to author/replace it (e.g. a <c>StartWorkflow</c>-launched controller).
+    ///     and must not be able to author/replace it (e.g. a <c>StartWorkflowAgent</c>-launched controller).
     /// </param>
     /// <param name="controllerMaxTurnsPerRun">
     ///     An optional bound on the controller loop's turns per run; <c>null</c> keeps the loop's default (50).
@@ -65,6 +66,11 @@ public static class WorkflowSession
     /// <param name="controllerDefaultOptions">
     ///     Optional request defaults (notably <c>ModelId</c>) for the controller loop, so the controller runs
     ///     on a fixed, pre-configured model rather than the provider agent's hardcoded default.
+    /// </param>
+    /// <param name="usageSink">
+    ///     Optional external root usage sink (issue #196). When supplied, the controller loop's own turns AND
+    ///     its task sub-agents' usage fold into it, so an isolated workflow run's token spend rolls up into the
+    ///     originating conversation's total. Null keeps usage scoped to the controller loop only.
     /// </param>
     /// <param name="ct">A cancellation token bound to the run.</param>
     /// <param name="lifecycleServices">
@@ -88,8 +94,11 @@ public static class WorkflowSession
         bool includeAuthoringTool = true,
         int? controllerMaxTurnsPerRun = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
+
+        IUsageSink? usageSink = null,
         CancellationToken ct = default,
         MultiTurnLifecycleServices? lifecycleServices = null
+
     )
     {
         ArgumentNullException.ThrowIfNull(objective);
@@ -124,9 +133,21 @@ public static class WorkflowSession
             includeAuthoringTool,
             controllerMaxTurnsPerRun,
             controllerDefaultOptions,
+
+            usageSink,
+            logger,
             lifecycleServices
+
         );
-        return Task.FromResult(BeginRun(loop, runtime, objective, ct));
+
+        // A fresh workflow launch must begin with an EMPTY controller conversation. The controller thread
+        // id is workflow-{workflowId} (caller-chosen); if it collides with an earlier run's thread in the
+        // shared conversation store, MultiTurnAgentBase.RunAsync would otherwise auto-recover that PRIOR
+        // run's messages and the controller would "inherit" a previous workflow conversation. Recovery is
+        // reserved for the deliberate ResumeAsync path, which calls RecoverAsync explicitly.
+        loop.SuppressHistoryRecovery();
+
+        return Task.FromResult(BeginRun(loop, runtime, objective, TryBuildRepairer(subAgentOptions, logger), ct));
     }
 
     /// <summary>
@@ -181,14 +202,11 @@ public static class WorkflowSession
         var runtime = WorkflowRuntime.FromSnapshot(snapshot, schemaValidator, logger);
         runtime.AttachStore(store, instanceId);
 
+
         var loop = BuildLoop(
-            controllerAgent,
-            runtime,
-            threadId,
-            subAgentOptions,
-            conversationStore,
-            lifecycleServices: lifecycleServices
-        );
+            controllerAgent, runtime, threadId, subAgentOptions, conversationStore,
+            logger: logger, lifecycleServices: lifecycleServices);
+
 
         // Restore the controller's prior conversation BEFORE driving so it continues with full context.
         // Doing it explicitly here also marks recovery complete so RunAsync does not re-recover.
@@ -197,7 +215,7 @@ public static class WorkflowSession
             _ = await loop.RecoverAsync(ct).ConfigureAwait(false);
         }
 
-        return BeginRun(loop, runtime, ResumeObjective, ct);
+        return BeginRun(loop, runtime, ResumeObjective, TryBuildRepairer(subAgentOptions, logger), ct);
     }
 
     /// <summary>Builds the controller loop over a fresh registry carrying the workflow tools.</summary>
@@ -210,11 +228,26 @@ public static class WorkflowSession
         bool includeAuthoringTool = true,
         int? maxTurnsPerRun = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
+
+        IUsageSink? usageSink = null,
+        ILogger? logger = null,
         MultiTurnLifecycleServices? lifecycleServices = null
+
     )
     {
         var registry = new FunctionRegistry();
         _ = registry.AddProvider(new WorkflowToolProvider(runtime, includeSetWorkflow: includeAuthoringTool));
+
+        // Wire the self-correcting spawn-name gate (Option A). The controller correlates delegate results to
+        // workflow units by EXACT name only, so a mis-named Agent spawn would run and be silently discarded,
+        // leaving the unit pending and provoking a re-spawn loop. This rejects it up front at the Agent-tool
+        // boundary with an actionable correction (the ready unit name(s)) so the controller re-issues the exact
+        // name. Runtime backstop to the ControllerSystemPrompt guidance; covers StartAsync AND ResumeAsync.
+        subAgentOptions = subAgentOptions with
+        {
+            SpawnNameGate = runtime.DescribeSpawnNameRejection,
+            SpawnModelSelectionResolver = runtime.ResolveSpawnModelSelection,
+        };
 
         return new MultiTurnAgentLoop(
             controllerAgent,
@@ -228,12 +261,76 @@ public static class WorkflowSession
             maxTurnsPerRun: maxTurnsPerRun ?? 50,
             store: conversationStore,
             subAgentOptions: subAgentOptions,
-            // Observation is welcome; the approval gate is not. The controller's tools are the workflow
-            // engine's own steps — advance a node, record a result — so an approver would have nothing
-            // to decide and the workflow would park behind a verdict that never comes. Stripped here,
-            // at the one place a controller loop is built, rather than trusted to every caller.
-            lifecycleServices: MultiTurnLifecycleServices.ForObservationOnly(lifecycleServices)
+
+            // Give the isolated controller loop (and its SubAgentManager) a logger so their structured logs —
+            // notably the tool-transparency merge and per-delegate inherited-tool set — reach the same sink as
+            // the rest of the workflow. The loop wants ILogger<MultiTurnAgentLoop>; adapt the workflow's
+            // non-generic logger (category preserved).
+            logger: logger is null ? null : new ControllerLoopLogger<MultiTurnAgentLoop>(logger),
+            // Fold the isolated controller loop's own turns AND its task sub-agents' usage into the
+            // originating conversation's root sink when one is supplied (#196).
+            externalUsageSink: usageSink,
+            lifecycleServices: MultiTurnLifecycleServices.ForObservationOnly(lifecycleServices),
+            // Only the controller's workflow control-plane tools are exempt from approval. Delegates can
+            // inherit the launching host's domain tools, so they must retain that host approval gate.
+            subAgentLifecycleServices: lifecycleServices
+
         );
+    }
+
+    /// <summary>
+    ///     Adapts the workflow's non-generic <see cref="ILogger"/> to the <see cref="ILogger{T}"/> the
+    ///     controller loop's ctor expects, so the loop's and its SubAgentManager's structured logs flow to the
+    ///     same sink. The wrapped logger's category is preserved (it is already a workflow-category logger).
+    /// </summary>
+    private sealed class ControllerLoopLogger<T>(ILogger inner) : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => inner.BeginScope(state);
+
+        public bool IsEnabled(LogLevel logLevel) => inner.IsEnabled(logLevel);
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        ) => inner.Log(logLevel, eventId, state, exception, formatter);
+    }
+
+    /// <summary>
+    ///     Builds the best-effort JSON-repair helper for a run, or <c>null</c> when repair is not wired
+    ///     (auto-on-when-wired). Repair is enabled only when the host supplied BOTH a tier model resolver and a
+    ///     tier agent factory (the cheap-tier ladder) AND the lowest tier resolves to a concrete model — the
+    ///     same lowest-available-tier wiring the plain spawn path uses. Any construction fault degrades to
+    ///     "repair disabled for this run" rather than failing the workflow.
+    /// </summary>
+    private static WorkflowJsonRepairer? TryBuildRepairer(SubAgentOptions subAgentOptions, ILogger? logger)
+    {
+        if (
+            subAgentOptions.TierModelResolver is not { } resolveTier
+            || subAgentOptions.TierAgentFactory is not { } buildTierAgent
+        )
+        {
+            return null;
+        }
+
+        var model = resolveTier(0);
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        try
+        {
+            return new WorkflowJsonRepairer(buildTierAgent(model), model, logger);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogDebug(ex, "Could not build the cheap-tier JSON repair agent; repair disabled for this run");
+            return null;
+        }
     }
 
     /// <summary>Starts the loop, drives + observes it from a single ordered consumer, and wraps a handle.</summary>
@@ -241,6 +338,7 @@ public static class WorkflowSession
         MultiTurnAgentLoop loop,
         WorkflowRuntime runtime,
         string initialMessage,
+        WorkflowJsonRepairer? repairer,
         CancellationToken ct
     )
     {
@@ -269,7 +367,7 @@ public static class WorkflowSession
         );
 
         var input = new UserInput([new TextMessage { Text = initialMessage, Role = Role.User }]);
-        var driveTask = DriveAndObserveAsync(loop, runtime, input, ct);
+        var driveTask = DriveAndObserveAsync(loop, runtime, input, repairer, ct);
 
         return new WorkflowRunHandle(runtime, loop, runTask, driveTask);
     }
@@ -283,6 +381,7 @@ public static class WorkflowSession
         MultiTurnAgentLoop loop,
         WorkflowRuntime runtime,
         UserInput objectiveInput,
+        WorkflowJsonRepairer? repairer,
         CancellationToken ct
     )
     {
@@ -290,7 +389,15 @@ public static class WorkflowSession
         {
             await foreach (var message in loop.ExecuteRunAsync(objectiveInput, ct).ConfigureAwait(false))
             {
-                Observe(runtime, message);
+                // Before a schema'd sub-agent result is recorded, give a cheap LLM one chance to rewrite an
+                // invalid reply into schema-valid JSON (auto-on only when the cheap tier is wired). This is the
+                // only genuinely async, lock-free point upstream of the runtime's synchronous, Monitor-locked
+                // recording, so the repair must happen HERE, not inside Observe.
+                var observed =
+                    repairer is null
+                        ? message
+                        : await MaybeRepairSpawnResultAsync(runtime, repairer, message, ct).ConfigureAwait(false);
+                Observe(runtime, observed);
             }
 
             runtime.SignalCompletion();
@@ -314,6 +421,45 @@ public static class WorkflowSession
 
     /// <summary>Delegates stream-event correlation to the runtime's own observer entry point.</summary>
     private static void Observe(WorkflowRuntime runtime, IMessage message) => runtime.ObserveMessage(message);
+
+    /// <summary>
+    ///     Best-effort JSON repair for a single stream message, returning the message the runtime should
+    ///     observe. A message is a repair candidate ONLY when it is a successful (non-error) tool result for a
+    ///     correlated, schema'd spawn whose text does not already satisfy the schema; everything else passes
+    ///     through untouched. On a candidate, the cheap repair agent is asked to rewrite the text, and the
+    ///     rewrite is substituted ONLY when it now validates — so repair can turn a would-be failure into a
+    ///     recorded success but can never regress the deterministic failure path (a null / still-invalid
+    ///     rewrite yields the original message, which the runtime records exactly as before).
+    /// </summary>
+    internal static async Task<IMessage> MaybeRepairSpawnResultAsync(
+        WorkflowRuntime runtime,
+        WorkflowJsonRepairer repairer,
+        IMessage message,
+        CancellationToken ct
+    )
+    {
+        if (message is not ToolCallResultMessage { IsError: false, ToolCallId: { } toolCallId } result)
+        {
+            return message;
+        }
+
+        var check = runtime.CheckSpawnResult(toolCallId, result.Result);
+        if (!check.HasSchema || check.IsValid)
+        {
+            // Not a schema'd spawn, or the reply already validates — nothing to repair.
+            return message;
+        }
+
+        var repaired = await repairer.TryRepairAsync(result.Result, check.SchemaJson!, ct).ConfigureAwait(false);
+        if (repaired is null || !runtime.CheckSpawnResult(toolCallId, repaired).IsValid)
+        {
+            // Repair produced nothing usable, or a rewrite that STILL does not satisfy the schema: keep the
+            // original so the runtime's retry/terminal-failure policy runs unchanged.
+            return message;
+        }
+
+        return result with { Result = repaired };
+    }
 }
 
 /// <summary>

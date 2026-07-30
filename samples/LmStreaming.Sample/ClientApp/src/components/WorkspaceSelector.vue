@@ -5,11 +5,13 @@ import type {
   WorkspaceCreate,
   WorkspaceUpdate,
   MarketplaceDescriptor,
+  WorkspaceGateway,
 } from '@/types/workspace';
 import { listMarketplaces, MarketplaceGatewayUnavailableError } from '@/api/marketplacesApi';
 
 const props = defineProps<{
   workspaces: Workspace[];
+  gateway?: WorkspaceGateway | null;
   selectedWorkspaceId: string | null;
   /**
    * Workspace id locked to the current thread (set after the first message).
@@ -81,6 +83,8 @@ const lockedWorkspace = computed<Workspace | null>(() => {
       isSystemDefined: false,
       createdAt: 0,
       updatedAt: 0,
+      compatibility: 'unknown',
+      unsupportedMarketplaces: [],
     }
   );
 });
@@ -290,6 +294,10 @@ watch(
       </button>
 
       <div v-if="dropdownOpen" class="dropdown-menu">
+        <div v-if="gateway" class="section-header" data-testid="workspace-gateway-status">
+          {{ gateway.canonicalBaseUrl }} · {{ gateway.appId }}
+          <span v-if="!gateway.available"> · unavailable</span>
+        </div>
         <!-- List view -->
         <template v-if="formMode === 'none'">
           <div v-if="systemWorkspaces.length > 0" class="menu-section">
@@ -303,7 +311,10 @@ watch(
                 class="menu-item"
                 :class="{ active: workspace.id === selectedWorkspaceId }"
                 :data-testid="`workspace-option-${workspace.id}`"
-                :disabled="disabled"
+                :disabled="disabled || workspace.compatibility !== 'compatible'"
+                :title="workspace.compatibility === 'incompatible'
+                  ? `Unsupported: ${workspace.unsupportedMarketplaces.join(', ')}`
+                  : workspace.compatibility === 'unknown' ? 'Gateway compatibility unavailable' : ''"
                 @click="handleSelect(workspace.id)"
               >
                 <span class="item-name">{{ workspace.name }}</span>
@@ -323,7 +334,10 @@ watch(
                 class="menu-item"
                 :class="{ active: workspace.id === selectedWorkspaceId }"
                 :data-testid="`workspace-option-${workspace.id}`"
-                :disabled="disabled"
+                :disabled="disabled || workspace.compatibility !== 'compatible'"
+                :title="workspace.compatibility === 'incompatible'
+                  ? `Unsupported: ${workspace.unsupportedMarketplaces.join(', ')}`
+                  : workspace.compatibility === 'unknown' ? 'Gateway compatibility unavailable' : ''"
                 @click="handleSelect(workspace.id)"
               >
                 <span class="item-name">{{ workspace.name }}</span>

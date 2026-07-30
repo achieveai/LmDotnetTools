@@ -11,6 +11,12 @@ public sealed record SubAgentSummary
     /// <summary>Stable id assigned to the sub-agent at spawn time.</summary>
     public required string AgentId { get; init; }
 
+    /// <summary>
+    ///     What kind of child this row represents: <c>subagent</c> (an Agent-tool spawn, the default) or
+    ///     <c>workflow</c> (a StartWorkflowAgent run whose isolated controller loop is surfaced as a tab).
+    /// </summary>
+    public string Kind { get; init; } = "subagent";
+
     /// <summary>Caller-supplied display name, or null when the spawn provided none.</summary>
     public string? Name { get; init; }
 
@@ -28,4 +34,13 @@ public sealed record SubAgentSummary
 
     /// <summary>UTC timestamp of the sub-agent's last observed activity, or null if none yet.</summary>
     public DateTimeOffset? LastActivityUtc { get; init; }
+
+    /// <summary>The concrete model used to build the child provider after all routing precedence.</summary>
+    public string? EffectiveModelId { get; init; }
+
+    /// <summary>The intelligence tier that selected the effective model, when selection was tier-based.</summary>
+    public int? EffectiveModelIntelligence { get; init; }
+
+    /// <summary>Stable source label such as parent, spawn-model, spawn-tier, template-model, or template-tier.</summary>
+    public string? ModelSelectionSource { get; init; }
 }

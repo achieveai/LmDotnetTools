@@ -215,10 +215,9 @@ public sealed class FileWorkspaceStore : IWorkspaceStore
             var json = await File.ReadAllTextAsync(_workspacesFilePath, ct);
             return JsonSerializer.Deserialize<List<Workspace>>(json, JsonOptions) ?? [];
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            // If the file is corrupted, start fresh.
-            return [];
+            throw new WorkspaceCatalogCorruptException(_workspacesFilePath, ex.Message, ex);
         }
     }
 

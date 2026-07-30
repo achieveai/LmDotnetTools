@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils';
 import ToolPill from '@/components/ToolPill.vue';
 import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
 import { MessageType, type ToolCall, type ToolCallResultMessage } from '@/types';
+import { GET_AGENT_ROUTING } from '@/utils/agentColors';
 import fs from 'fs';
 import path from 'path';
 
@@ -169,6 +170,48 @@ describe('ToolPill — live family → rich-component dispatch', () => {
       }
     });
   }
+});
+
+describe('ToolPill — visible effective routing', () => {
+  it('shows raw Luna/0 separately from effective Opus/tier 5 without changing the result', async () => {
+    const rawArgs = JSON.stringify({
+      subagent_type: 'code-reviewer:architecture-review',
+      prompt: 'Reply exactly MIR-tier5',
+      name: 'parallel:1:parallel:task3',
+      model: 'gpt-5.6-luna',
+      modelIntelligence: 0,
+    });
+    const tc: ToolCall = { tool_call_id: 'routing', function_name: 'Agent', function_args: rawArgs };
+    const rawResult = 'MIR-tier5';
+    const w = mount(ToolPill, {
+      props: { toolCall: tc },
+      global: {
+        provide: {
+          [GET_RESULT_FOR_TOOL_CALL]: () => resultMsg('routing', rawResult),
+          [GET_AGENT_ROUTING]: () => ({
+            agentId: 'child-5',
+            name: 'parallel:1:parallel:task3',
+            template: 'code-reviewer:architecture-review',
+            task: 'Reply exactly MIR-tier5',
+            status: 'completed',
+            threadId: 'subagent-child-5',
+            effectiveModelId: 'claude-opus-5',
+            effectiveModelIntelligence: 5,
+            modelSelectionSource: 'template-tier',
+          }),
+        },
+      },
+    });
+
+    await w.get('.tool-pill__header').trigger('click');
+
+    expect(w.get('[data-testid="agent-controller-request"]').text()).toContain('gpt-5.6-luna');
+    expect(w.get('[data-testid="agent-controller-request"]').text()).toContain('0');
+    expect(w.get('[data-testid="agent-effective-routing"]').text()).toContain('claude-opus-5');
+    expect(w.get('[data-testid="agent-effective-routing"]').text()).toContain('5');
+    expect(w.get('[data-testid="agent-effective-routing"]').text()).toContain('template tier');
+    expect(w.get('.tool-call-result').element.textContent).toBe(rawResult);
+  });
 });
 
 describe('ToolPill — Agent (async sub-agent) family', () => {

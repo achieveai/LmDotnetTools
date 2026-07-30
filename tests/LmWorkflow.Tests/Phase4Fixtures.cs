@@ -96,6 +96,42 @@ internal static class Phase4Fixtures
         }
         """;
 
+    private const string NoSchemaSingleTaskTemplate = """
+        {
+          "schemaVersion": 1,
+          "objective": "Analyze the topic.",
+          "sharedContext": "SHARED_CTX: fan-out pipeline.",
+          "inputs": { "topic": "widgets" },
+          "state": {},
+          "maxStepBudget": 50,
+          "nodes": [
+            { "id": "start", "type": "start", "title": "Start", "next": ["analyze"] },
+            {
+              "id": "analyze",
+              "type": "procedural",
+              "title": "Analyze",
+              "tasksMode": "authored",
+              "joinPolicy": { "mode": "all" },
+              "onFailure": "fail",
+              "taskList": [
+                {
+                  "id": "task",
+                  "delegate": "agent",
+                  "subagent_type": "general-purpose",
+                  "promptTemplate": "Analyze {{inputs.topic}}.",
+                  "writes": { "to": "state.analysis", "mode": "set" },
+                  "onFailure": "fail",
+                  "maxValidationRetries": __RETRIES__
+                }
+              ],
+              "next": ["done"]
+            },
+            { "id": "done", "type": "terminal", "title": "Done" },
+            { "id": "fail", "type": "terminal", "title": "Failed" }
+          ]
+        }
+        """;
+
     private const string EmptyForEachTemplate = """
         {
           "schemaVersion": 1,
@@ -149,6 +185,16 @@ internal static class Phase4Fixtures
     /// <summary>A single-task <c>start → analyze → done</c> workflow (with a <c>fail</c> onFailure terminal) and a configurable retry budget.</summary>
     public static string SingleTask(int maxValidationRetries) =>
         SingleTaskTemplate.Replace(
+            "__RETRIES__",
+            maxValidationRetries.ToString(CultureInfo.InvariantCulture)
+        );
+
+    /// <summary>
+    ///     A single-task <c>start → analyze → done</c> workflow with NO <c>outputSchema</c> and a <c>set</c>
+    ///     write — the free-form-output case, where a sub-agent may answer in prose/Markdown rather than JSON.
+    /// </summary>
+    public static string NoSchemaSingleTask(int maxValidationRetries = 0) =>
+        NoSchemaSingleTaskTemplate.Replace(
             "__RETRIES__",
             maxValidationRetries.ToString(CultureInfo.InvariantCulture)
         );

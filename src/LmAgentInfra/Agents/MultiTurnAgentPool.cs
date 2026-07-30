@@ -51,6 +51,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     private readonly IProviderResolver? _providerRegistry;
     private readonly IConversationStore? _conversationStore;
     private readonly ISandboxBindingSink? _bindingSink;
+    private readonly Func<SandboxEstablishedBinding, CancellationToken, Task<SandboxSession>>? _liveSessionResolver;
     private readonly MultiTurnLifecycleServices? _lifecycleServices;
     private readonly ILogger<MultiTurnAgentPool> _logger;
     private readonly CancellationTokenSource _poolCts = new();
@@ -63,6 +64,16 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         bool RunTaskCompleted,
         bool IsStale
     );
+
+    public enum AgentRefreshStatus
+    {
+        Current,
+        RefreshDeferred,
+        RefreshRequired,
+        Replaced,
+    }
+
+    public sealed record AgentRefreshResult(IMultiTurnAgent Agent, AgentRefreshStatus Status);
 
     /// <summary>
     /// Inputs the agent factory receives for one (threadId) creation. Bundles the resolved
@@ -200,6 +211,10 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     /// Optional sink the pool uses to publish/clear a conversation's sandbox-established binding as part of
     /// the agent-entry commit/removal. Null in legacy/test scenarios that do not wire the sandbox registry.
     /// </param>
+    /// <param name="liveSessionResolver">
+    /// Optional resolver used immediately before message dispatch to verify a sandbox-backed entry still
+    /// targets the registry's live session. Null for non-sandbox hosts and legacy tests.
+    /// </param>
     /// <param name="lifecycleServices">
     /// Optional lifecycle observation / tool approval, handed to the factory on every
     /// <see cref="AgentCreationContext"/> this pool builds. Null leaves every agent unobserved and
@@ -211,6 +226,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         IConversationStore? conversationStore,
         ILogger<MultiTurnAgentPool> logger,
         ISandboxBindingSink? bindingSink = null,
+        Func<SandboxEstablishedBinding, CancellationToken, Task<SandboxSession>>? liveSessionResolver = null,
         MultiTurnLifecycleServices? lifecycleServices = null
     )
         : this(
@@ -219,6 +235,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             conversationStore,
             logger,
             bindingSink,
+            liveSessionResolver,
             lifecycleServices,
             factoryReadsContext: true
         )
@@ -242,6 +259,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             conversationStore,
             logger,
             bindingSink: null,
+            liveSessionResolver: null,
             lifecycleServices,
             factoryReadsContext: false
         )
@@ -263,6 +281,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             conversationStore: null,
             logger,
             bindingSink: null,
+            liveSessionResolver: null,
             lifecycleServices,
             factoryReadsContext: false
         )
@@ -276,6 +295,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         IConversationStore? conversationStore,
         ILogger<MultiTurnAgentPool> logger,
         ISandboxBindingSink? bindingSink,
+        Func<SandboxEstablishedBinding, CancellationToken, Task<SandboxSession>>? liveSessionResolver,
         MultiTurnLifecycleServices? lifecycleServices,
         bool factoryReadsContext
     )
@@ -285,6 +305,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         _conversationStore = conversationStore;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _bindingSink = bindingSink;
+        _liveSessionResolver = liveSessionResolver;
         _lifecycleServices = lifecycleServices;
 
         // A legacy factory is handed loose arguments, so the bundle on the context cannot reach the
@@ -411,7 +432,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         // which would leak disposable resources (MCP clients) from the losing invocation.
         var lockObj = _creationLocks.GetOrAdd(threadId, _ => new object());
         AgentEntry entry;
-        bool created = false;
+        var created = false;
         lock (lockObj)
         {
             if (!_agents.TryGetValue(threadId, out var existing))
@@ -904,6 +925,135 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
     }
 
     /// <summary>
+    /// Ensures a sandbox-backed pooled agent still targets the registry's live session before a new
+    /// message is dispatched. A replaced session rebuilds an idle entry transactionally; an active run
+    /// is never interrupted and will be checked again before the next message.
+    /// </summary>
+    public async Task<AgentRefreshResult> EnsureCurrentAgentAsync(
+        string threadId,
+        SandboxCredential? callerCredential = null,
+        CancellationToken ct = default,
+        bool replace = true
+    )
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrEmpty(threadId);
+
+        var lockObj = _creationLocks.GetOrAdd(threadId, static _ => new object());
+        AgentEntry observed;
+        lock (lockObj)
+        {
+            if (!_agents.TryGetValue(threadId, out observed!))
+            {
+                throw new InvalidOperationException($"No pooled agent exists for thread '{threadId}'.");
+            }
+
+            EnsureCallerMatches(threadId, observed, callerCredential);
+        }
+
+        if (
+            _liveSessionResolver is null
+            || observed.EstablishedBinding is not { SessionId.Length: > 0 } binding
+        )
+        {
+            return new AgentRefreshResult(observed.Agent, AgentRefreshStatus.Current);
+        }
+
+        var liveSession = await _liveSessionResolver(binding, ct).ConfigureAwait(false);
+        if (string.Equals(binding.SessionId, liveSession.SessionId, StringComparison.Ordinal))
+        {
+            return new AgentRefreshResult(observed.Agent, AgentRefreshStatus.Current);
+        }
+
+        AgentEntry? replacedEntry = null;
+        AgentEntry current;
+        lock (lockObj)
+        {
+            if (!_agents.TryGetValue(threadId, out current!))
+            {
+                throw new InvalidOperationException($"No pooled agent exists for thread '{threadId}'.");
+            }
+
+            EnsureCallerMatches(threadId, current, callerCredential);
+
+            if (!ReferenceEquals(current, observed))
+            {
+                return new AgentRefreshResult(current.Agent, AgentRefreshStatus.Current);
+            }
+
+            if (IsEntryInProgress(current))
+            {
+                _logger.LogInformation(
+                    "Deferring sandbox session refresh for thread {ThreadId} while run {RunId} is active",
+                    threadId,
+                    current.Agent.CurrentRunId
+                );
+                return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshDeferred);
+            }
+
+            if (!replace)
+            {
+                return new AgentRefreshResult(current.Agent, AgentRefreshStatus.RefreshRequired);
+            }
+
+            var replacement = CreateAgentEntry(
+                threadId,
+                current.Mode,
+                current.ProviderId,
+                current.RequestResponseDumpFileName,
+                current.WorkspaceId,
+                current.CallerCredential
+            );
+            _agents[threadId] = replacement;
+            PublishBindingIfStaged(threadId, replacement);
+            replacedEntry = current;
+            current = replacement;
+        }
+
+        _logger.LogInformation(
+            "Refreshed sandbox-backed agent for thread {ThreadId} from session {PreviousSessionId} to {SessionId}",
+            threadId,
+            binding.SessionId,
+            liveSession.SessionId
+        );
+
+        try
+        {
+            await replacedEntry.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to dispose the previous agent for thread {ThreadId} after sandbox session refresh",
+                threadId
+            );
+        }
+
+        return new AgentRefreshResult(current.Agent, AgentRefreshStatus.Replaced);
+    }
+
+    private static void EnsureCallerMatches(
+        string threadId,
+        AgentEntry entry,
+        SandboxCredential? callerCredential
+    )
+    {
+        var existingAppId = entry.CallerCredential?.AppId;
+        var requestedAppId = callerCredential?.AppId;
+        if (!string.Equals(existingAppId, requestedAppId, StringComparison.Ordinal))
+        {
+            throw new SandboxCredentialConflictException(threadId, existingAppId, requestedAppId);
+        }
+    }
+
+    private static bool IsEntryInProgress(AgentEntry entry)
+    {
+        var hasRunId = !string.IsNullOrWhiteSpace(entry.Agent.CurrentRunId);
+        return hasRunId && entry.Agent.IsRunning && !entry.RunTask.IsCompleted;
+    }
+
+    /// <summary>
     /// Returns true when an existing agent has an active run in progress.
     /// </summary>
     /// <param name="threadId">The thread identifier.</param>
@@ -929,7 +1079,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         var hasRunId = !string.IsNullOrWhiteSpace(currentRunId);
         var runTaskCompleted = entry.RunTask.IsCompleted;
         var agentIsRunning = entry.Agent.IsRunning;
-        var isInProgress = hasRunId && agentIsRunning && !runTaskCompleted;
+        var isInProgress = IsEntryInProgress(entry);
         var isStale = hasRunId && !isInProgress;
         return new RunStateInfo(
             IsInProgress: isInProgress,
@@ -1163,7 +1313,7 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
             // switch is neither a create nor a cross-actor request, so it must not change (or drop)
             // the caller identity the thread is bound to. Peeked (not removed) under the same lock
             // that guards the swap below, so no concurrent GetOrCreateAgent can interleave.
-            _agents.TryGetValue(threadId, out var existingEntry);
+            _ = _agents.TryGetValue(threadId, out var existingEntry);
             var frozenCredential = existingEntry?.CallerCredential;
 
             // Cross-actor guard (issue #153): a switch must be rejected for a caller that is NOT the

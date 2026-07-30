@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmCore.Approval;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using Xunit;
@@ -66,6 +67,43 @@ public class WorkflowSessionApprovalExemptionTests
 
         publisher.Count.Should().BeGreaterThan(0);
         gate.WasConsulted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ControllerDelegatesKeepTheHostApprovalGate()
+    {
+        var gate = RecordingToolApprovalGate.Denying();
+        var services = GatedBy(gate);
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["delegate"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "delegate",
+                    AgentFactory = () => ScriptedController(DriveMinimalToTerminal).Object,
+                },
+            },
+        };
+
+        await using var handle = await WorkflowSession.StartAsync(
+            objective: "drive",
+            inputs: null,
+            definition: MinimalDefinition(),
+            subAgentOptions: options,
+            controllerAgent: ScriptedController(DriveMinimalToTerminal).Object,
+            threadId: "wf-delegate-approval-thread",
+            lifecycleServices: services
+        );
+
+        var manager = handle.Loop.SubAgentManager!;
+        var field = typeof(SubAgentManager).GetField(
+            "_lifecycleServices",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic
+        );
+        var delegateServices = (MultiTurnLifecycleServices)field!.GetValue(manager)!;
+
+        delegateServices.Approval.Should().BeSameAs(services.Approval);
     }
 
     [Fact]

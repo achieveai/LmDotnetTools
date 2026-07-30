@@ -86,12 +86,12 @@ public sealed class UsageBannerTests
         // The synchronous Agent call blocks until the sub-agent runs its nested chain, so allow extra time.
         await page.WaitForStreamIdleAsync(timeoutMs: 30_000);
 
-        // The LIVE banner reflects the usage streamed to the client — at minimum the parent's own two
-        // generations (300). (Today descendant usage is folded server-side and not streamed, so the live
-        // value is exactly 300; asserting ">= 300" keeps this robust if live descendant streaming is added.)
+        // The LIVE banner now reflects the folded conversation-wide total (#196, BUG 1): the sub-agent's
+        // relayed usage is broadcast to the parent run's subscribers as a live ConversationUsageMessage
+        // frame, so descendant spend shows live — above the parent's own 300 — not only after a reload.
         await page.UsageBanner().WaitForTextContainsAsync("Total:");
         var liveTotal = ParseTotal(await page.UsageBanner().InnerTextAsync());
-        liveTotal.Should().BeGreaterThanOrEqualTo(300, "the parent's own generations are streamed to the banner");
+        liveTotal.Should().BeGreaterThan(300, "the sub-agent's usage folds into the LIVE banner via the usage frame");
 
         // Server-side ground truth: the persisted aggregate exceeds the parent-only 300 because the
         // sub-agent's generations were folded into the root conversation's total (#196 "incl. sub-agents").

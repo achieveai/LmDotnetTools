@@ -25,8 +25,27 @@ public sealed class CopilotReasoningShaperTests
         }
         else
         {
-            result[expectedKey].Should().BeEquivalentTo(new ResponseReasoningOptions { Effort = "medium" });
+            result[expectedKey]
+                .Should()
+                .BeEquivalentTo(new ResponseReasoningOptions { Effort = "medium", Summary = "auto" });
         }
+    }
+
+    [Fact]
+    public void Shape_requests_displayable_summary_for_responses_transport()
+    {
+        // Regression: a Responses-transport reasoning request MUST also ask for a displayable summary
+        // (summary="auto"). Without it the provider returns ONLY the encrypted reasoning item, which maps
+        // to ReasoningVisibility.Encrypted (GetDisplayText() == null) — so workflow-controller and
+        // sub-agent thinking never renders even though the main chat's does. The Anthropic branch has no
+        // summary concept; it carries effort via OutputConfig only.
+        var model = CreateModel(CopilotModelTransport.Responses, supportsAdaptiveThinking: false, "low", "medium", "high");
+
+        var result = CopilotReasoningShaper.Shape(model, ReasoningEffort.High);
+
+        var reasoning = result["Reasoning"].Should().BeOfType<ResponseReasoningOptions>().Which;
+        reasoning.Effort.Should().Be("high");
+        reasoning.Summary.Should().Be("auto");
     }
 
     [Theory]
@@ -47,7 +66,7 @@ public sealed class CopilotReasoningShaperTests
 
         var result = CopilotReasoningShaper.Shape(model, requested);
 
-        result["Reasoning"].Should().BeEquivalentTo(new ResponseReasoningOptions { Effort = expected });
+        result["Reasoning"].Should().BeEquivalentTo(new ResponseReasoningOptions { Effort = expected, Summary = "auto" });
     }
 
     [Theory]

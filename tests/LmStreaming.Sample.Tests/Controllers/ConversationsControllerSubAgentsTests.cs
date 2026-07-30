@@ -18,13 +18,29 @@ public sealed class ConversationsControllerSubAgentsTests
 {
     private static ConversationsController CreateController(MultiTurnAgentPool pool)
     {
+        return CreateController(pool, new WorkflowRunRegistry());
+    }
+
+    private static ConversationsController CreateController(
+        MultiTurnAgentPool pool,
+        WorkflowRunRegistry workflowRunRegistry)
+    {
+        return CreateController(pool, workflowRunRegistry, Mock.Of<IConversationStore>());
+    }
+
+    private static ConversationsController CreateController(
+        MultiTurnAgentPool pool,
+        WorkflowRunRegistry workflowRunRegistry,
+        IConversationStore store)
+    {
         return new ConversationsController(
-            Mock.Of<IConversationStore>(),
+            store,
             pool,
             Mock.Of<IChatModeStore>(),
             Mock.Of<IWorkspaceStore>(),
             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             new ConversationStatusResolver(Mock.Of<IConversationStore>(), new InMemoryConversationStore()),
+            workflowRunRegistry,
             NullLogger<ConversationsController>.Instance);
     }
 
@@ -48,12 +64,34 @@ public sealed class ConversationsControllerSubAgentsTests
         await using var pool = CreateFakeAgentPool();
         var controller = CreateController(pool);
 
-        var result = controller.ListSubAgents("does-not-exist");
+        var result = await controller.ListSubAgents("does-not-exist");
 
         var notFound = Assert.IsType<NotFoundObjectResult>(result);
         var payload = JsonSerializer.Serialize(notFound.Value);
         payload.Should().Contain("unknown_thread");
         payload.Should().Contain("does-not-exist");
+    }
+
+    [Fact]
+    public async Task ListSubAgents_ReturnsEmptyArray_ForKnownIdleThreadWithNoSubAgents()
+    {
+        // A persisted conversation that is NOT live in the pool and never spawned a sub-agent or
+        // workflow (e.g. a plain chat the user reopened). It must answer 200 with an empty list — not
+        // 404 — so the client's 3s sub-agent poll doesn't spuriously log "Failed to list sub-agents".
+        var threadId = "thread-known-idle";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 });
+
+        await using var pool = CreateFakeAgentPool(); // no live loop for this thread
+        var controller = CreateController(pool, new WorkflowRunRegistry(), store);
+
+        var result = await controller.ListSubAgents(threadId);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value);
+        summaries.Should().BeEmpty();
     }
 
     [Fact]
@@ -66,7 +104,7 @@ public sealed class ConversationsControllerSubAgentsTests
 
         var controller = CreateController(pool);
 
-        var result = controller.ListSubAgents(threadId);
+        var result = await controller.ListSubAgents(threadId);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value);
@@ -114,7 +152,7 @@ public sealed class ConversationsControllerSubAgentsTests
 
         var controller = CreateController(pool);
 
-        var result = controller.ListSubAgents(threadId);
+        var result = await controller.ListSubAgents(threadId);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value).ToList();
@@ -126,6 +164,10 @@ public sealed class ConversationsControllerSubAgentsTests
         alpha.Task.Should().Be("first task");
         alpha.Status.Should().Be("running");
         alpha.ThreadId.Should().Be($"subagent-{alphaId}");
+        alpha.GetType().GetProperty("EffectiveModelId")
+            .Should().NotBeNull("the presentation DTO must expose the child model actually selected at spawn");
+        alpha.GetType().GetProperty("ModelSelectionSource")
+            .Should().NotBeNull("the UI must distinguish effective routing from raw controller arguments");
 
         var beta = summaries.Single(s => s.AgentId == betaId);
         beta.Name.Should().Be("beta");
@@ -133,6 +175,66 @@ public sealed class ConversationsControllerSubAgentsTests
         beta.Task.Should().Be("second task");
         beta.Status.Should().Be("running");
         beta.ThreadId.Should().Be($"subagent-{betaId}");
+    }
+
+    [Fact]
+    public async Task ListSubAgents_ReturnsPersistedWorkflowTabs_ForNonLiveConversation_SurvivingRestart()
+    {
+        // A conversation whose live loop was evicted by a server restart, but whose workflow + delegate
+        // tabs were written through to the durable index. The endpoint must surface them (200) instead of
+        // 404 — that's what makes workflow tabs survive a restart.
+        var indexDir = Path.Combine(Path.GetTempPath(), "wf-index-ctrl-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var registry = new WorkflowRunRegistry(indexDir);
+            var threadId = "thread-restarted";
+            registry.PersistTabs(
+                threadId,
+                [
+                    new SubAgentSummary
+                    {
+                        AgentId = "wf-1",
+                        Kind = "workflow",
+                        Name = "Review PR",
+                        Template = "workflow",
+                        Task = "Review PR",
+                        Status = "completed",
+                        ThreadId = "workflow-wf-1",
+                    },
+                    new SubAgentSummary
+                    {
+                        AgentId = "del-1",
+                        Kind = "subagent",
+                        Name = "read:task",
+                        Template = "general-purpose",
+                        Task = "read the file",
+                        Status = "completed",
+                        ThreadId = "subagent-del-1",
+                    },
+                ]);
+
+            // Pool has NO live loop for this thread (restart evicted it) — TryGet returns false.
+            await using var pool = CreateFakeAgentPool();
+            var controller = CreateController(pool, registry);
+
+            var result = await controller.ListSubAgents(threadId);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value).ToList();
+            summaries.Select(s => s.AgentId).Should().BeEquivalentTo(["wf-1", "del-1"]);
+            summaries.Single(s => s.AgentId == "del-1").ThreadId.Should().Be("subagent-del-1");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(indexDir, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort temp cleanup.
+            }
+        }
     }
 
     private static string ParseAgentId(string spawnJson)

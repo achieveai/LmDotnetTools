@@ -107,7 +107,7 @@ public class MultiTurnAgentPoolLifecycleWiringTests
             conversationStore: null,
             logger,
             bindingSink: null,
-            services
+            lifecycleServices: services
         );
 
         _ = pool.GetOrCreateAgent("thread-lifecycle-wiring", SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);

@@ -12,7 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="LmMultiTurn.Tests" />
-    <!-- LmWorkflow.Tests + the sample's tests assert a StartWorkflow controller/conversation loop's
+    <!-- LmWorkflow.Tests + the sample's tests assert a StartWorkflowAgent controller/conversation loop's
          restricted RegisteredToolNames set. -->
     <InternalsVisibleTo Include="LmWorkflow.Tests" />
     <InternalsVisibleTo Include="LmStreaming.Sample.Tests" />

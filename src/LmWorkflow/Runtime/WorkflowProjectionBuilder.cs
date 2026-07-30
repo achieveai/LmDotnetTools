@@ -130,6 +130,7 @@ internal static class WorkflowProjectionBuilder
                 {
                     ["name"] = unit.Name,
                     ["subagentType"] = unit.SubagentType,
+                    ["modelIntelligence"] = unit.ModelIntelligence,
                     ["prompt"] = unit.Prompt,
                     ["outputSchema"] = unit.OutputSchema?.DeepClone(),
                 }

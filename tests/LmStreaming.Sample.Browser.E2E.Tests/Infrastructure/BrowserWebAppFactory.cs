@@ -179,6 +179,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
             {
                 services.RemoveAll<IMarketplaceCatalogClient>();
                 services.AddSingleton(_catalogClient);
+                services.RemoveAll<WorkspaceCatalogCompatibilityService>();
+                services.AddSingleton<WorkspaceCatalogCompatibilityService>();
             }
 
             // Swap the discovery-backed ProviderRegistry for one seeded with stub Copilot models and

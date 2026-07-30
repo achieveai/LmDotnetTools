@@ -145,6 +145,79 @@ Expected behavior:
    `routing.routed` counter increment.
 3. After ~30s the timer fires and `ctx-probe` resumes — proof it was genuinely parked, not finished.
 
+### Multi-level nested delegation (every `Agent` wrapped in the next chain)
+
+> ⚠ **Only the FIRST level actually executes.** A sub-agent does **not** inherit the `Agent` tool —
+> `MultiTurnAgentLoop` registers the `Agent`/`CheckAgent`/`SendMessage` tools *after* snapshotting the
+> parent's tools, and `SubAgentManager.CreateSubAgentAsync` builds each sub-agent loop **without a
+> `SubAgentManager`**. That is a deliberate **recursion guard** ("preventing unbounded recursive
+> delegation"). So a sub-agent **cannot spawn a sub-agent**: the prompt below is valid and the mock
+> accepts it, but the level-2 `Agent` call inside `stage-1-lead` resolves to an unknown tool and the
+> tree stops one level deep. Verified by `SubAgentEmbeddedChainTests` (1-level works) +
+> `SubAgentRecursionGuardTests` (level-2 never runs). **For genuine multi-level orchestration use the
+> `StartWorkflowAgent` workflow feature** — a workflow controller IS a nested-root loop that
+> re-registers `Agent`, so its delegates run under Workspace Agent mode (real provider + sandbox).
+
+The builder below is kept as an illustration of the *shape* of a deep chain (and of why the escaping
+forces a programmatic builder) — but remember it collapses to one executed level. A deep delegation
+tree WOULD look like: the root spawns `stage-1-lead`, whose chain spawns `stage-2-researcher`, whose
+chain spawns `stage-3-leaf` — i.e. **each `Agent` tool-call's `prompt` is the *next level's* complete
+instruction chain**.
+
+**Do NOT hand-escape this.** The nesting escapes quotes exponentially (`\"` → `\\\"` → `\\\\\\\"`
+per level). Build it with nested `JSON.stringify` so the escaping is correct by construction (the
+same trick `playwright-scripts/subagent-tabs.mjs` uses):
+
+```js
+const wrap  = (chain) => `<|instruction_start|>${JSON.stringify(chain)}<|instruction_end|>`;
+const agent = (type, name, chain) =>
+  ({ name: 'Agent', args: { subagent_type: type, name, run_in_background: false, prompt: wrap(chain) } });
+
+const L3 = { instruction_chain: [
+  { id: 'l3-work', reasoning: { length: 20 }, messages: [{ tool_call: [
+    { name: 'calculate', args: { a: 6, operation: 'multiply', b: 7 } },
+    { name: 'get_weather', args: { location: 'Reykjavik' } } ] }] },
+  { id: 'l3-done', messages: [{ text: 'L3 leaf done: 6*7=42, weather checked.' }] } ] };
+const L2 = { instruction_chain: [
+  { id: 'l2-spawn', reasoning: { length: 25 }, messages: [
+    { tool_call: [{ name: 'web_search', args: { query: 'deepest nested delegation', numResults: 2 } }] },
+    { tool_call: [ agent('general-purpose', 'stage-3-leaf', L3) ] } ] },
+  { id: 'l2-done', messages: [{ text: 'L2 done: stage-3-leaf returned.' }] } ] };
+const L1 = { instruction_chain: [
+  { id: 'l1-spawn', reasoning: { length: 25 }, messages: [
+    { tool_call: [{ name: 'calculate', args: { a: 40, operation: 'add', b: 2 } }] },
+    { tool_call: [ agent('researcher', 'stage-2-researcher', L2) ] } ] },
+  { id: 'l1-done', messages: [{ text: 'L1 done: stage-2-researcher returned.' }] } ] };
+const L0 = { instruction_chain: [
+  { id: 'l0-plan', reasoning: { length: 30 },
+    messages: [{ tool_call: [ agent('general-purpose', 'stage-1-lead', L1) ] }] },
+  { id: 'l0-done', messages: [{ text: 'Root done: 4-level nested delegation completed.' }] } ] };
+const PROMPT = wrap(L0); // ← paste this
+```
+
+The exact 4-level literal it produces (paste into a `test`/`test-anthropic` chat with the `Agent` +
+`calculate` + `get_weather` + `web_search` tools wired):
+
+<|instruction_start|>{"instruction_chain":[{"id":"l0-plan","id_message":"Root: orchestrate a 4-level delegation","reasoning":{"length":30},"messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","name":"stage-1-lead","run_in_background":false,"prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"l1-spawn\",\"id_message\":\"L1: compute then delegate to L2\",\"reasoning\":{\"length\":25},\"messages\":[{\"tool_call\":[{\"name\":\"calculate\",\"args\":{\"a\":40,\"operation\":\"add\",\"b\":2}}]},{\"tool_call\":[{\"name\":\"Agent\",\"args\":{\"subagent_type\":\"researcher\",\"name\":\"stage-2-researcher\",\"run_in_background\":false,\"prompt\":\"<|instruction_start|>{\\\"instruction_chain\\\":[{\\\"id\\\":\\\"l2-spawn\\\",\\\"id_message\\\":\\\"L2: research then delegate to L3\\\",\\\"reasoning\\\":{\\\"length\\\":25},\\\"messages\\\":[{\\\"tool_call\\\":[{\\\"name\\\":\\\"web_search\\\",\\\"args\\\":{\\\"query\\\":\\\"deepest nested delegation\\\",\\\"numResults\\\":2}}]},{\\\"tool_call\\\":[{\\\"name\\\":\\\"Agent\\\",\\\"args\\\":{\\\"subagent_type\\\":\\\"general-purpose\\\",\\\"name\\\":\\\"stage-3-leaf\\\",\\\"run_in_background\\\":false,\\\"prompt\\\":\\\"<|instruction_start|>{\\\\\\\"instruction_chain\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"l3-work\\\\\\\",\\\\\\\"id_message\\\\\\\":\\\\\\\"L3 leaf: compute + weather\\\\\\\",\\\\\\\"reasoning\\\\\\\":{\\\\\\\"length\\\\\\\":20},\\\\\\\"messages\\\\\\\":[{\\\\\\\"tool_call\\\\\\\":[{\\\\\\\"name\\\\\\\":\\\\\\\"calculate\\\\\\\",\\\\\\\"args\\\\\\\":{\\\\\\\"a\\\\\\\":6,\\\\\\\"operation\\\\\\\":\\\\\\\"multiply\\\\\\\",\\\\\\\"b\\\\\\\":7}},{\\\\\\\"name\\\\\\\":\\\\\\\"get_weather\\\\\\\",\\\\\\\"args\\\\\\\":{\\\\\\\"location\\\\\\\":\\\\\\\"Reykjavik\\\\\\\"}}]}]},{\\\\\\\"id\\\\\\\":\\\\\\\"l3-done\\\\\\\",\\\\\\\"messages\\\\\\\":[{\\\\\\\"text\\\\\\\":\\\\\\\"L3 leaf done: 6*7=42, weather checked.\\\\\\\"}]}]}<|instruction_end|>\\\"}}]}]},{\\\"id\\\":\\\"l2-done\\\",\\\"messages\\\":[{\\\"text\\\":\\\"L2 done: stage-3-leaf returned.\\\"}]}]}<|instruction_end|>\"}}]}]},{\"id\":\"l1-done\",\"messages\":[{\"text\":\"L1 done: stage-2-researcher returned.\"}]}]}<|instruction_end|>"}}]}]},{"id":"l0-done","messages":[{"text":"Root done: 4-level nested delegation completed."}]}]}<|instruction_end|>
+
+Expected behavior (ACTUAL, given the recursion guard): the parent shows an `Agent` pill for
+`stage-1-lead`, and `stage-1-lead` runs its chain — reasoning + `calculate` — and then its **level-2
+`Agent` call for `stage-2-researcher` resolves to an unknown tool and is a no-op**. So the tree stops
+at `stage-1-lead`; `stage-2-researcher`/`stage-3-leaf` never run and their text never reaches the UI.
+This is the invariant `SubAgentRecursionGuardTests` locks in.
+
+#### The working 1-level embedded chain (what the mock DOES support)
+
+Parent spawns ONE sub-agent whose `prompt` is a leaf instruction chain (a tool + a text). The
+sub-agent runs the nested chain and its final text becomes the synchronous `Agent` tool result — this
+is the deepest nesting the plain `Agent` tool supports, and it's covered by `SubAgentEmbeddedChainTests`:
+
+<|instruction_start|>{"instruction_chain":[{"id":"parent","id_message":"Delegate to sub-agent","messages":[{"tool_call":[{"name":"Agent","args":{"subagent_type":"general-purpose","prompt":"<|instruction_start|>{\"instruction_chain\":[{\"id\":\"sub-tool\",\"messages\":[{\"tool_call\":[{\"name\":\"calculate\",\"args\":{\"a\":2,\"operation\":\"add\",\"b\":3}}]}]},{\"id\":\"sub-text\",\"messages\":[{\"text\":\"hi from agent\"}]}]}<|instruction_end|>"}}]}]},{"id":"parent2","id_message":"Wrap up","messages":[{"text":"Parent done: sub-agent finished."}]}]}<|instruction_end|>
+
+Expand the `Agent` pill — its **Result** shows `hi from agent` (the sub-agent's nested-chain output),
+proving the embedded chain executed end to end. To surface sub-agents as CENTER-PANE TABS, flip the
+spawn to `run_in_background:true` (see "Sub-Agent Tabs" below).
+
 ---
 
 ## Sub-Agent Tabs (center-pane, colored)

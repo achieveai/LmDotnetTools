@@ -16,6 +16,13 @@ public sealed record SpawnUnit
     /// <summary>The sub-agent template key to spawn (mirrors the task's <c>subagent_type</c>).</summary>
     public required string SubagentType { get; init; }
 
+    /// <summary>
+    ///     The task's model-intelligence tier (mirrors the task's <c>modelIntelligence</c>), surfaced to the
+    ///     controller so it forwards the same tier as the <c>modelIntelligence</c> argument of the Agent tool.
+    ///     Null leaves model selection to the spawned agent's own default.
+    /// </summary>
+    public int? ModelIntelligence { get; init; }
+
     /// <summary>The fully-composed prompt (shared context + rendered template + schema-return directive).</summary>
     public required string Prompt { get; init; }
 

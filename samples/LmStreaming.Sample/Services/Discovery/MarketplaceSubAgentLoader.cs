@@ -95,11 +95,11 @@ public sealed class MarketplaceSubAgentLoader
     }
 
     /// <summary>
-    /// Flattens every plugin agent in <paramref name="catalog"/> into templates keyed by the agent's
-    /// name (the spawnable <c>subagent_type</c>). Marketplaces that failed to load (non-null
-    /// <see cref="CatalogMarketplace.Error"/>) contribute nothing. Agents with a blank name are
-    /// skipped; duplicate names keep the FIRST occurrence so the surface is stable. Internal-static
-    /// so unit tests can pin the mapping without a gateway.
+    /// Flattens every plugin agent in <paramref name="catalog"/> into templates keyed by
+    /// <c>plugin:name</c> (the qualified spawnable <c>subagent_type</c>). This matches the gateway's
+    /// full-discovery qualified name so a richer inline-markdown template, merged first, wins over the
+    /// preview fallback. Marketplaces that failed to load contribute nothing; blank agent names are skipped;
+    /// duplicate qualified keys keep the first occurrence. Internal-static so tests can pin the mapping.
     /// </summary>
     internal static IReadOnlyDictionary<string, SubAgentTemplate> MapCatalog(
         MarketplaceCatalog catalog,
@@ -122,7 +122,13 @@ public sealed class MarketplaceSubAgentLoader
                         continue;
                     }
 
-                    var key = agent.Name.Trim();
+                    var bareName = agent.Name.Trim();
+                    var pluginName = string.IsNullOrWhiteSpace(plugin.Name)
+                        ? agent.Plugin?.Trim()
+                        : plugin.Name.Trim();
+                    var key = string.IsNullOrWhiteSpace(pluginName)
+                        ? bareName
+                        : $"{pluginName}:{bareName}";
                     if (!result.TryAdd(key, MapToTemplate(agent, agentFactory)))
                     {
                         logger?.LogInformation(
