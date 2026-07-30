@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Time.Testing;
 
 namespace LmStreaming.Sample.Tests.Controllers;
 
@@ -24,7 +25,8 @@ public class ConversationsControllerTests
         IChatModeStore modeStore,
         IWorkspaceStore? workspaceStore = null,
         ProviderRegistry? providerRegistry = null,
-        ConversationStatusResolver? statusResolver = null)
+        ConversationStatusResolver? statusResolver = null,
+        TimeProvider? timeProvider = null)
     {
         return new ConversationsController(
             store,
@@ -33,7 +35,7 @@ public class ConversationsControllerTests
             workspaceStore ?? Mock.Of<IWorkspaceStore>(),
             providerRegistry ?? new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
-            TimeProvider.System,
+            timeProvider ?? TimeProvider.System,
             NullLogger<ConversationsController>.Instance);
     }
 
@@ -1466,6 +1468,270 @@ public class ConversationsControllerTests
         await store.UpsertRunLedgerAsync(
             new RunLedgerEntry(threadId, "run-drained", RunStatus.InProgress, [inputId], now, now));
         await store.RemoveAcceptedInputAsync(threadId, inputId);
+    }
+
+    /// <summary>The fixed instant the recovery tests reason from.</summary>
+    private static readonly DateTimeOffset Noon = new(2026, 7, 29, 12, 0, 0, TimeSpan.Zero);
+
+    private const string RecoveredKey = "review-run-7:2";
+
+    /// <summary>
+    /// Leaves behind exactly what a host that died between admitting an input and queueing it leaves: a
+    /// record in <see cref="InputAcceptanceState.Pending"/> owned by a reservation nobody will ever settle
+    /// or retract. It is written through the store's own reservation path so it is indistinguishable from
+    /// the real thing.
+    /// </summary>
+    private static async Task<InputAcceptance> PlantUnsettledAdmissionAsync(
+        InMemoryConversationStore store,
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        bool spawningSuppressed = false)
+    {
+        var unsettled = new InputAcceptance(
+            threadId,
+            inputId,
+            acceptedAt,
+            InputAcceptanceState.Pending,
+            spawningSuppressed,
+            IdempotencyHonored: true,
+            ReservationId: Guid.NewGuid());
+
+        (await store.TryReserveAcceptanceAsync(unsettled)).Should().BeNull("the fixture must own the record");
+        return unsettled;
+    }
+
+    /// <summary>
+    /// The crash this endpoint's whole recovery story is for: the host took the admission and died before it
+    /// queued anything, so the key names a turn that does not exist and never will. Answering a retry from
+    /// that record — "accepted, not queued" — hands the caller a status that can never resolve, and because
+    /// the id is deterministic the SAME key is wedged for every later retry too, right through the review
+    /// deadline. Only Enforced/Unenforced are outcomes; Pending is an undertaking in progress, and once its
+    /// input is provably not live the admission has to be re-taken and the turn actually queued.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_RetakesAKeyLeftUnsettledByAHostThatDiedBeforeQueueingAnything()
+    {
+        const string InputId = "idem:0:" + RecoveredKey;
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-abandoned";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+        var abandoned = await PlantUnsettledAdmissionAsync(
+            store,
+            threadId,
+            InputId,
+            Noon - TimeSpan.FromMinutes(10));
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            timeProvider: new FakeTimeProvider(Noon));
+
+        var response = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest { Text = "synthesize", IdempotencyKey = RecoveredKey },
+                default)).Value);
+
+        response.InputId.Should().Be(InputId);
+        response.Queued.Should().BeTrue("the admission named work that was never queued and never will be");
+        agent.SendCount.Should().Be(1, "the turn the caller asked for still has to run");
+        var record = await store.GetAcceptanceAsync(threadId, InputId);
+        record!.State.Should().Be(
+            InputAcceptanceState.Enforced,
+            "the recovered admission carries a real outcome, not the dead host's undertaking");
+        record.ReservationId.Should().NotBe(
+            abandoned.ReservationId,
+            "the send that re-took the id owns it now, so the dead host's token cannot retract this turn");
+    }
+
+    /// <summary>
+    /// The other side of the same coin, and the one that must never be got wrong: an unsettled admission
+    /// whose input IS live. Both shapes of live count — folded into a run row, and still sitting in the
+    /// accepted set — because the drain moves an input between them in two separate writes. Re-taking either
+    /// would queue a second minutes-long, sub-agent-fanning turn onto a conversation already running the
+    /// first, which is the exact duplicate the idempotency key exists to prevent.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SendMessage_LeavesAnUnsettledAdmissionAlone_WhenItsInputIsLive(bool drainedIntoARun)
+    {
+        const string InputId = "idem:0:" + RecoveredKey;
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-live-pending";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+        var inFlight = await PlantUnsettledAdmissionAsync(
+            store,
+            threadId,
+            InputId,
+            Noon - TimeSpan.FromMinutes(10));
+
+        if (drainedIntoARun)
+        {
+            await store.UpsertRunLedgerAsync(new RunLedgerEntry(
+                threadId,
+                "run-earlier",
+                RunStatus.InProgress,
+                [InputId],
+                Noon,
+                Noon));
+        }
+        else
+        {
+            await store.RecordAcceptedInputAsync(threadId, InputId, Noon);
+        }
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            timeProvider: new FakeTimeProvider(Noon));
+
+        var response = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest { Text = "synthesize", IdempotencyKey = RecoveredKey },
+                default)).Value);
+
+        response.InputId.Should().Be(InputId);
+        response.Queued.Should().BeFalse("the turn this key names is already in flight");
+        agent.SendCount.Should().Be(0, "re-sending would duplicate a turn that is already running");
+        (await store.GetAcceptanceAsync(threadId, InputId))!.ReservationId.Should().Be(
+            inFlight.ReservationId,
+            "a live input's admission is not this request's to take");
+    }
+
+    /// <summary>
+    /// An admission is taken BEFORE the input is queued, so for a moment every healthy send looks exactly
+    /// like a crashed one: Pending, with nothing live to point at yet. Treating that instant as abandoned
+    /// would let an overlapping retry take the id out from under a send that is about to queue, and both
+    /// would then run. The window is therefore a grace period, and only a record older than it may be
+    /// re-taken.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DoesNotRetakeAnUnsettledAdmission_WhileItsOwnerCouldStillBeQueueingIt()
+    {
+        const string InputId = "idem:0:" + RecoveredKey;
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-young-pending";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+        var justTaken = await PlantUnsettledAdmissionAsync(
+            store,
+            threadId,
+            InputId,
+            Noon - TimeSpan.FromSeconds(1));
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            timeProvider: new FakeTimeProvider(Noon));
+
+        var response = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest { Text = "synthesize", IdempotencyKey = RecoveredKey },
+                default)).Value);
+
+        response.Queued.Should().BeFalse("the owner of this admission may be an instant away from queueing it");
+        agent.SendCount.Should().Be(0);
+        (await store.GetAcceptanceAsync(threadId, InputId))!.ReservationId.Should().Be(
+            justTaken.ReservationId,
+            "nothing may be taken from a send that has not had its chance yet");
+    }
+
+    /// <summary>
+    /// Suppression is a GUARANTEE, and a Pending record only says a host once undertook to make it — the
+    /// agent never acknowledged this input. Reporting that undertaking as an outcome would confirm a
+    /// guarantee out of the request that asked for it, which is precisely the re-derivation the durable
+    /// record exists to replace.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ClaimsNoSuppression_FromAnAdmissionNoAgentEverAcknowledged()
+    {
+        const string InputId = "idem:1:" + RecoveredKey;
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-unproven-suppression";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+        _ = await PlantUnsettledAdmissionAsync(
+            store,
+            threadId,
+            InputId,
+            Noon - TimeSpan.FromSeconds(1),
+            spawningSuppressed: true);
+
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            timeProvider: new FakeTimeProvider(Noon));
+
+        var response = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest
+                {
+                    Text = "synthesize",
+                    IdempotencyKey = RecoveredKey,
+                    SuppressSubAgentSpawning = true,
+                },
+                default)).Value);
+
+        response.Queued.Should().BeFalse();
+        response.SpawningSuppressed.Should().BeFalse(
+            "no agent has confirmed suppression for this input, so nothing may claim it held");
+        agent.SendCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Recovery is itself a race: several retries of one wedged key can decide simultaneously that the
+    /// admission was abandoned. Re-taking it has to be a single-owner handover — if two of them could both
+    /// come away owning the id, recovery would create the very duplicate turn the admission prevents.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ConcurrentRetriesOfAWedgedKey_RequeueItExactlyOnce()
+    {
+        const string InputId = "idem:0:" + RecoveredKey;
+        const int Retries = 6;
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-concurrent-recovery";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+        _ = await PlantUnsettledAdmissionAsync(
+            store,
+            threadId,
+            InputId,
+            Noon - TimeSpan.FromMinutes(10));
+
+        var time = new FakeTimeProvider(Noon);
+        var controllers = Enumerable.Range(0, Retries)
+            .Select(_ => CreateController(store, pool, ModeStoreResolvingSystemModes(), timeProvider: time))
+            .ToArray();
+        var request = new SendMessageRequest { Text = "synthesize", IdempotencyKey = RecoveredKey };
+
+        var responses = await Task.WhenAll(controllers.Select(c => Task.Run(async () =>
+            Assert.IsType<SendMessageResponse>(
+                Assert.IsType<AcceptedResult>(await c.SendMessage(threadId, request, default)).Value))));
+
+        agent.SendCount.Should().Be(1, "the wedged key names one turn, and recovery may only start it once");
+        responses.Count(r => r.Queued).Should().Be(1, "exactly one retry may be told it started the turn");
+        responses.Should().AllSatisfy(r => r.InputId.Should().Be(InputId));
     }
 
     /// <summary>

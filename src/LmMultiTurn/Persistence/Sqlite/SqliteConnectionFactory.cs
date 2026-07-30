@@ -30,7 +30,15 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
         {
             DataSource = databasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
+
+            // Private, deliberately. A shared cache makes several connections to one file share a page
+            // cache and its locks, which is what a named in-memory database needs and what a WAL file on
+            // disk does not: WAL already lets a writer and readers proceed at once, and layering the
+            // shared cache's own table-level locking over it only narrows that. It also puts connections
+            // that the pool hands to different threads onto shared native state, where a concurrent open
+            // and close of the same file can fault inside the SQLite provider rather than returning an
+            // error. Connection pooling stays on; only the sharing of cache state goes.
+            Cache = SqliteCacheMode.Private,
             Pooling = true,
         }.ToString();
 
@@ -45,20 +53,34 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
 
         await _semaphore.WaitAsync(ct).ConfigureAwait(false);
 
+        PooledConnection? connection = null;
         try
         {
-            var connection = new SqliteConnection(_connectionString);
+            // Opened as the pooled connection itself. Opening a plain connection first and then handing it
+            // to the wrapper would mean closing it — which returns its handle to the pool — and opening a
+            // second one, so for a moment a handle this call is responsible for is available to another
+            // thread.
+            connection = new PooledConnection(_connectionString, _semaphore);
             await connection.OpenAsync(ct).ConfigureAwait(false);
 
             // Set pragmas once (they persist for the database file)
             await EnsurePragmasSetAsync(connection, ct).ConfigureAwait(false);
 
-            // Wrap the connection to release semaphore on dispose
-            return new PooledConnection(connection, _semaphore);
+            return connection;
         }
         catch
         {
-            _ = _semaphore.Release();
+            // Disposing the connection is what returns the permit; releasing it here as well would hand
+            // out one more than the factory is allowed to.
+            if (connection is null)
+            {
+                _ = _semaphore.Release();
+            }
+            else
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+
             throw;
         }
     }
@@ -127,25 +149,16 @@ public sealed class SqliteConnectionFactory : ISqliteConnectionFactory
     }
 
     /// <summary>
-    /// A thin wrapper around SqliteConnection that releases the semaphore when disposed.
-    /// Uses composition instead of inheritance to avoid base class constructor issues.
+    /// A SqliteConnection that returns its permit to the factory when disposed, so the number of live
+    /// connections is bounded by the caller's lifetime rather than by the pool's.
     /// </summary>
     private sealed class PooledConnection : SqliteConnection
     {
         private readonly SemaphoreSlim _semaphore;
         private bool _disposed;
 
-        public PooledConnection(SqliteConnection connection, SemaphoreSlim semaphore)
-            : base(connection.ConnectionString)
-        {
-            _semaphore = semaphore;
-
-            // We need to close the passed connection and open this one
-            // because we can't transfer the underlying connection
-            connection.Close();
-            connection.Dispose();
-            Open();
-        }
+        public PooledConnection(string connectionString, SemaphoreSlim semaphore)
+            : base(connectionString) => _semaphore = semaphore;
 
         protected override void Dispose(bool disposing)
         {

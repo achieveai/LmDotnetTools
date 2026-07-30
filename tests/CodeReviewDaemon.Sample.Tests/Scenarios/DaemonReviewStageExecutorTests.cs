@@ -893,6 +893,35 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_blames_the_payload_and_not_the_store_when_a_checkpoint_reads_as_nothing()
+    {
+        // "Corrupt" is a verdict on the ARTIFACT, and it costs the run: it is charged to the retry governor
+        // and parks the PR with the checkpoint left in place for a human. So it may only be reached from a
+        // fault the payload itself proves — here, a row that deserializes to no object at all. The store the
+        // row is read through raises InvalidOperationException for ordinary transient trouble (a connection
+        // closed under a shutdown, say), which says nothing about the artifact; the mapper must not be able
+        // to reach its verdict through that shape, so a payload fault is raised as one.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        _ = fixture.Store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            Provider = "github",
+            Payload = "null",
+        });
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<ReviewCheckpointCorruptException>();
+        thrown.And.InnerException.Should().BeOfType<JsonException>(
+            "only a serialization fault may be answered with a corruption verdict");
+        fixture.Factory.CreatedAgents.Should().BeEmpty("no review is started while an existing lifecycle is unreadable");
+    }
+
+    [Fact]
     public async Task Reviewed_persists_no_authoritative_review_when_the_synthesis_turn_fails()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);

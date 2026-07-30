@@ -866,6 +866,17 @@ public class ConversationsController(
     /// claims no suppression: there is no record to back a guarantee with, and inventing one from the request
     /// is exactly the re-derivation this endpoint must not do.
     /// </para>
+    /// <para>
+    /// Losing is not proof either — only <see cref="InputAcceptanceState.Enforced"/> and
+    /// <see cref="InputAcceptanceState.Unenforced"/> are OUTCOMES. A record left
+    /// <see cref="InputAcceptanceState.Pending"/> is an undertaking still in progress, and it is exactly what
+    /// a host that died between admitting an input and queueing it leaves behind. Answering a retry from one
+    /// of those returns "accepted, not queued" for a turn that does not exist and never will — and since the
+    /// id is derived from the caller's key, the SAME answer comes back for every later retry, wedging that
+    /// key for the whole of the caller's deadline. So a Pending record is resolved rather than reported:
+    /// against the thread's live state first, then, only once the input is provably not live and the record
+    /// is too old to belong to a send still on its way to the queue, by re-taking it.
+    /// </para>
     /// </summary>
     /// <returns>The reconciled response, or null when this caller may enqueue.</returns>
     private async Task<IActionResult?> TryReconcileAdmissionAsync(
@@ -873,18 +884,90 @@ public class ConversationsController(
         InputAcceptance admission,
         CancellationToken ct)
     {
-        if (await acceptances.TryReserveAcceptanceAsync(admission, ct) is { } granted)
+        for (var attempt = 1; ; attempt++)
         {
-            logger.LogInformation(
-                "SendMessage for thread {ThreadId} reconciled to already-admitted input {InputId} "
-                    + "({State}); nothing was queued",
-                admission.ThreadId,
+            if (await acceptances.TryReserveAcceptanceAsync(admission, ct) is not { } granted)
+            {
+                return await ConfirmAdmissionAgainstLiveStateAsync(acceptances, admission, ct);
+            }
+
+            if (granted.State is not InputAcceptanceState.Pending)
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} reconciled to already-admitted input {InputId} "
+                        + "({State}); nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId,
+                    granted.State);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            // Live work beats an unsettled record every time: the admitting host got as far as queueing, it
+            // just never got to write the outcome. Re-taking the id here would start the turn a second time.
+            if (await statusResolver.ResolveByInputIdAsync(admission.ThreadId, admission.InputId, ct) is not null)
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} whose "
+                        + "admission is still unsettled; nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            // Every healthy send looks abandoned for the instant between taking its admission and queueing
+            // its input. Only a record that has outlived that handoff may be re-taken.
+            if (timeProvider.GetUtcNow() - granted.AcceptedAt < UnsettledAdmissionGrace)
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} reconciled to just-admitted input {InputId} that has "
+                        + "not reached the queue yet; nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            // Retract it under the ABANDONED reservation's own token. That is a compare-and-set on the
+            // record, so of several retries deciding this at once exactly one can succeed — the rest find
+            // the id already gone or already re-taken and reconcile to whatever now holds it, which is how
+            // recovery avoids becoming the duplicate it exists to prevent.
+            if (attempt > UnsettledAdmissionRecoveryAttempts
+                || !await acceptances.TryReleaseAcceptanceAsync(
+                    admission.ThreadId,
+                    admission.InputId,
+                    granted.ReservationId,
+                    ct))
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} left the unsettled admission for input {InputId} to "
+                        + "the caller that is already recovering it; nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            logger.LogWarning(
+                "Input {InputId} on thread {ThreadId} was admitted at {AcceptedAt} and never queued or "
+                    + "settled, so this send re-took it rather than leaving the key wedged",
                 admission.InputId,
-                granted.State);
-
-            return AcceptedAdmission(granted, queued: false);
+                admission.ThreadId,
+                granted.AcceptedAt);
         }
+    }
 
+    /// <summary>
+    /// The check a caller that WON the reservation still owes: an input admitted by an earlier build of this
+    /// host is in flight with no record to lose against, so the thread's live state is what settles it.
+    /// </summary>
+    /// <returns>The reconciled response, or null when this caller may enqueue.</returns>
+    private async Task<IActionResult?> ConfirmAdmissionAgainstLiveStateAsync(
+        IInputAcceptanceStore acceptances,
+        InputAcceptance admission,
+        CancellationToken ct)
+    {
         if (await statusResolver.ResolveByInputIdAsync(admission.ThreadId, admission.InputId, ct) is null)
         {
             return null;
@@ -903,6 +986,22 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// How long an admission may sit unsettled before a retry may conclude its owner is never coming back.
+    /// It only has to cover the gap between taking the admission and the input reaching the queue — an
+    /// in-process channel write, plus whatever a loaded host adds — so it is generous against that and still
+    /// far shorter than any caller's deadline, which is the point: a wedged key must recover on its own long
+    /// before the work it names is given up on.
+    /// </summary>
+    private static readonly TimeSpan UnsettledAdmissionGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How many times one send will re-take an abandoned admission before answering from whatever holds the
+    /// id. Each pass costs another caller its own attempt, so this bounds a pathological ping-pong; failing
+    /// to recover leaves the key as it was, which is a delay rather than a duplicate.
+    /// </summary>
+    private const int UnsettledAdmissionRecoveryAttempts = 3;
+
+    /// <summary>
     /// The one place a <see cref="SendMessageResponse"/> is shaped, so a fresh send and a repeat of the same
     /// key can only ever answer with the same projection of the same record.
     /// </summary>
@@ -911,7 +1010,13 @@ public class ConversationsController(
         {
             InputId = acceptance.InputId,
             Queued = queued,
-            SpawningSuppressed = acceptance.SpawningSuppressed,
+
+            // Only an ENFORCED record proves the guarantee: it is the state an agent's receipt put the
+            // record into. Pending carries what a host undertook when it admitted the input, and relaying
+            // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
+            // and already carries false.
+            SpawningSuppressed =
+                acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
             IdempotencyKeyHonored = acceptance.IdempotencyHonored,
         });
 

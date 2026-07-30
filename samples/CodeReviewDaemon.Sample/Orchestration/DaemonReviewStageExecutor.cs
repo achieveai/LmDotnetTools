@@ -2233,6 +2233,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// bounded number of attempts (see <c>PrOrchestrator.IsGovernedFailure</c>) with the artifact intact for
     /// diagnosis, rather than retrying — or duplicating — forever.
     /// </para>
+    /// <para>
+    /// Only faults of the PAYLOAD earn that verdict. Reading a checkpoint also goes through the store, which
+    /// raises <see cref="InvalidOperationException"/> for ordinary transient trouble — a connection closed
+    /// under a shutdown, a command issued against one already gone — and none of that is evidence about the
+    /// artifact. Charging it as corruption would spend the run's retry budget on a condition that clears by
+    /// itself and park a perfectly readable checkpoint, so those are left to propagate as themselves.
+    /// </para>
     /// </summary>
     private T? ReadCheckpointPayload<T>(ReviewRun run, string kind)
         where T : class
@@ -2241,7 +2248,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         {
             return TryReadArtifactPayload<T>(run.Id, kind);
         }
-        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
             _logger.LogError(
                 ex, "Run {RunId}: the '{Kind}' review checkpoint could not be read; the run will be retried a "
@@ -2807,7 +2814,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         return JsonSerializer.Deserialize<T>(artifact.Payload, PayloadOptions)
-            ?? throw new InvalidOperationException($"The '{kind}' artifact for run {reviewRunId} did not deserialize.");
+            ?? throw new JsonException($"The '{kind}' artifact for run {reviewRunId} did not deserialize.");
     }
 
     private T ReadArtifactPayload<T>(long reviewRunId, string kind)

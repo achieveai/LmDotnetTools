@@ -239,6 +239,121 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The file-backed store under real contention: many INDEPENDENT store objects, sharing no in-process
+    /// lock, racing for each of a series of ids. A pair of calls can step over a check-then-act window of a
+    /// few microseconds by luck; a wide fan-out repeated across dozens of contested ids cannot.
+    /// <para>
+    /// Singled out for the sweep because reserving on a filesystem is where a portable-looking primitive
+    /// stops being atomic. <c>File.Move(..., overwrite: false)</c> reads as create-if-absent, but on Unix it
+    /// is a <c>stat</c> of the destination followed by a <c>rename</c> that silently REPLACES it, so two
+    /// racers both come away owning the input. Only a genuine exclusive create — <c>O_CREAT|O_EXCL</c>, which
+    /// <see cref="FileMode.CreateNew"/> compiles to — arbitrates this, and the losers must then survive
+    /// reading a record whose content the winner has not finished writing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ContendedIndependentFileStores_AdmitEachInputExactlyOnce()
+    {
+        const int Racers = 8;
+        const int ContestedInputs = 20;
+        var stores = Enumerable.Range(0, Racers)
+            .Select(_ => CreateStore(StoreKind.File, "contended"))
+            .ToArray();
+
+        for (var round = 0; round < ContestedInputs; round++)
+        {
+            var inputId = $"idem:1:contested-{round}";
+
+            // Every admission is minted before any is attempted, so the calls contend over the same id
+            // rather than one observing another's completed write.
+            var admissions = stores.Select(_ => Admission(inputId)).ToArray();
+            var results = await Task.WhenAll(
+                stores.Select((store, i) => Task.Run(() => store.TryReserveAcceptanceAsync(admissions[i]))));
+
+            results.Count(r => r is null)
+                .Should().Be(1, "exactly one caller may be told it owns input {0}", inputId);
+            var stored = await stores[0].GetAcceptanceAsync("thread-1", inputId);
+            stored.Should().NotBeNull();
+            results.Where(r => r is not null)
+                .Should().AllSatisfy(
+                    r => r.Should().Be(stored),
+                    "every loser must be handed the record the winner wrote, in full");
+            admissions.Select(a => a.ReservationId)
+                .Should().Contain(stored!.ReservationId, "the record must be one racer's, not a merge");
+        }
+    }
+
+    /// <summary>
+    /// Retraction is how a request whose work never became queued gives the id back, so two calls carrying
+    /// one token must not both be told they retracted it: the caller that gets <c>true</c> goes on to re-take
+    /// or re-queue the input, and a second <c>true</c> means a later delete lands on the NEW owner's record
+    /// and lets a third send queue a duplicate turn. A read-then-delete implementation reports both.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AllStores))]
+    public async Task ConcurrentRetractionsCarryingOneToken_RemoveTheAdmissionExactlyOnce(StoreKind kind)
+    {
+        const int Rounds = 40;
+        var backing = "retract-" + kind;
+        var storeA = CreateStore(kind, backing);
+        var storeB = CreateStore(kind, backing);
+
+        for (var round = 0; round < Rounds; round++)
+        {
+            var admission = Admission($"idem:1:retracted-{round}");
+            (await storeA.TryReserveAcceptanceAsync(admission)).Should().BeNull();
+
+            var released = await Task.WhenAll(
+                Task.Run(() => storeA.TryReleaseAcceptanceAsync(
+                    admission.ThreadId,
+                    admission.InputId,
+                    admission.ReservationId)),
+                Task.Run(() => storeB.TryReleaseAcceptanceAsync(
+                    admission.ThreadId,
+                    admission.InputId,
+                    admission.ReservationId)));
+
+            released.Count(r => r).Should().Be(
+                1,
+                "only one caller can have removed the record (round {0})",
+                round);
+            (await storeA.GetAcceptanceAsync(admission.ThreadId, admission.InputId)).Should().BeNull();
+        }
+    }
+
+    /// <summary>
+    /// An exclusive-creation protocol necessarily has a moment where the record EXISTS but its content has
+    /// not landed yet — that is what makes the creation the arbitration point. A reader that meets that
+    /// moment and answers "never admitted" would let the host queue a second turn for an input another
+    /// caller has already been granted, so the unsettled record must be reported as an error instead. The
+    /// same shape covers a record left half-written by a host that died mid-claim.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("{\"threadId\":\"thread-1\",\"inputId\":\"idem:1:rev")]
+    public async Task AnUnsettledRecord_IsNeverReportedAsAnInputThatWasNeverAdmitted(string onDisk)
+    {
+        var store = CreateStore(StoreKind.File, "unsettled-" + onDisk.Length);
+        var admission = Admission();
+        _ = await store.TryReserveAcceptanceAsync(admission);
+        await File.WriteAllTextAsync(SoleAcceptanceRecordFile("unsettled-" + onDisk.Length), onDisk);
+
+        var read = async () => await store.GetAcceptanceAsync(admission.ThreadId, admission.InputId);
+        var reserve = async () => await store.TryReserveAcceptanceAsync(Admission());
+
+        _ = await read.Should().ThrowAsync<IOException>(
+            "an in-progress claim is an admitted input, not an absent one");
+        _ = await reserve.Should().ThrowAsync<IOException>(
+            "the caller must not be handed ownership of an input someone else is claiming");
+    }
+
+    /// <summary>The one admission record under a file-backed store, located without assuming its name.</summary>
+    private string SoleAcceptanceRecordFile(string backingName) =>
+        Directory.EnumerateFiles(
+            Path.Combine(_root, backingName, "thread-1", "acceptances"),
+            "*.json").Single();
+
+    /// <summary>
     /// The record has to survive a process restart intact — including the enum, which a durable format can
     /// silently reorder if it is stored positionally.
     /// </summary>
