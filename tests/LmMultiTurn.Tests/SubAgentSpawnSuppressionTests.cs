@@ -288,6 +288,59 @@ public class SubAgentSpawnSuppressionTests
         await cts.CancelAsync();
     }
 
+    [Fact]
+    public async Task Suppressed_notification_after_restart_is_persisted_under_the_restored_parked_run()
+    {
+        const string threadId = "spawn-suppression-parked-restart";
+        var store = new InMemoryConversationStore();
+        using var cts = new CancellationTokenSource();
+
+        await using (var first = CreateLoop(
+            RecordingParent([], _ => [DeferringToolCall()]),
+            registry: DeferringRegistry(),
+            store: store,
+            threadId: threadId))
+        {
+            _ = first.RunAsync(cts.Token);
+            _ = await DrainAsync(first, NewInput("review"), cts.Token);
+            await WaitForPersistedAsync(
+                store,
+                threadId,
+                history => history.OfType<ToolCallResultMessage>().Any(r => r.IsDeferred),
+                "The deferral was never persisted.",
+                cts.Token);
+        }
+
+        await using var second = CreateLoop(
+            RecordingParent([], _ => [new TextMessage { Text = "unused", Role = Role.Assistant }]),
+            registry: DeferringRegistry(),
+            store: store,
+            threadId: threadId);
+        _ = await second.RecoverAsync(cts.Token);
+        _ = second.RunAsync(cts.Token);
+
+        var receipt = await second.TrySendAsync(
+            new UserInput(
+                [new NotifyMessage
+                {
+                    NotifyKind = NotifyKinds.SubAgentCompletion,
+                    Label = "researcher",
+                    Detail = "child settled",
+                }],
+                SuppressSubAgentSpawning: true),
+            cts.Token);
+        receipt!.SpawningSuppressed.Should().BeTrue();
+
+        await WaitForPersistedAsync(
+            store,
+            threadId,
+            history => history.OfType<NotifyMessage>().Any(),
+            "The notification was not persisted under the restored parked run.",
+            cts.Token);
+
+        await cts.CancelAsync();
+    }
+
     /// <summary>
     /// A notification that arrives while the conversation is parked on an unresolved deferral cannot start
     /// a turn, so it is folded into history and delivered by the RESUME. Suppression it asked for must ride

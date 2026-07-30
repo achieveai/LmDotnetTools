@@ -2004,8 +2004,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             // Remember the last-loaded deferring run so inputs arriving while the conversation is
             // still parked are attributed to it.
-            mostRecentDeferringRun = tcr.RunId ?? mostRecentDeferringRun;
-            mostRecentDeferringGen = tcr.GenerationId ?? mostRecentDeferringGen;
+            mostRecentDeferringRun = entry.RunId ?? mostRecentDeferringRun;
+            mostRecentDeferringGen = entry.GenerationId ?? mostRecentDeferringGen;
+        }
+
+        var suppressedRunId = await LoadSuppressedRunMarkerAsync(ct);
+        lock (_spawnSuppressionLock)
+        {
+            _spawnSuppressedRunId = suppressedRunId;
         }
 
         if (restoredCount > 0)
@@ -2013,12 +2019,6 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             if (mostRecentDeferringRun != null && mostRecentDeferringGen != null)
             {
                 _ = _delayed.TryPark(mostRecentDeferringRun, mostRecentDeferringGen, out _);
-            }
-
-            var suppressedRunId = await LoadSuppressedRunMarkerAsync(ct);
-            lock (_spawnSuppressionLock)
-            {
-                _spawnSuppressedRunId = suppressedRunId;
             }
 
             Logger.LogInformation(
