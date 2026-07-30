@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -19,6 +20,15 @@ namespace LmStreaming.Sample.Tests.Controllers;
 /// </summary>
 public sealed class ConversationsControllerSubAgentsTests
 {
+    /// <summary>
+    /// ASP.NET Core MVC's <c>AddControllers()</c> defaults <c>JsonOptions</c> to
+    /// <see cref="JsonSerializerDefaults.Web"/> (camelCase property names), unlike
+    /// <see cref="JsonSerializer.Serialize{T}(T, JsonSerializerOptions?)"/>'s own reflection-based
+    /// default (exact declared casing). Tests that inspect actual wire property names must serialize
+    /// with this to match what a real client parsing the HTTP response would see.
+    /// </summary>
+    private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
+
     private static ConversationsController CreateController(
         MultiTurnAgentPool pool,
         IConversationStore? store = null)
@@ -291,6 +301,259 @@ public sealed class ConversationsControllerSubAgentsTests
         summary.Name.Should().Be("live");
         summary.Task.Should().Be("live task");
         summary.Status.Should().Be("running");
+    }
+
+    /// <summary>
+    /// Persists a child's provenance directly with caller-supplied property overrides, bypassing
+    /// <see cref="SeedPersistedChildAsync"/>'s live-snapshot shape. Used to build graphs
+    /// <see cref="SubAgentManager"/> itself could never produce today (grandchildren, cycles,
+    /// legacy unstamped status) — these fixtures exist to prove the recursive graph READER is
+    /// correct, not to model any current live spawn path (nested Agent delegation stays disabled).
+    /// </summary>
+    private static async Task SeedRawProvenanceChildAsync(
+        IConversationStore store,
+        string childThreadId,
+        string parentThreadId,
+        long lastUpdated,
+        string? status = "completed",
+        string? name = null,
+        string? template = "worker")
+    {
+        var builder = ImmutableDictionary.CreateBuilder<string, object>(StringComparer.Ordinal);
+        builder[SubAgentProvenance.ParentThreadIdKey] = parentThreadId;
+        if (name is not null)
+        {
+            builder[SubAgentProvenance.NameKey] = name;
+        }
+
+        if (template is not null)
+        {
+            builder[SubAgentProvenance.TemplateKey] = template;
+        }
+
+        if (status is not null)
+        {
+            builder[SubAgentProvenance.StatusKey] = status;
+        }
+
+        await store.SaveMetadataAsync(
+            childThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = childThreadId,
+                LastUpdated = lastUpdated,
+                Properties = builder.ToImmutable(),
+            });
+    }
+
+    /// <summary>
+    /// Root→child→grandchild: the reader must follow persisted parent links transitively, not just
+    /// one hop. No live code path spawns a grandchild today (nested Agent delegation is disabled) —
+    /// this fixture is synthetic and validates the graph-reader's traversal/depth bookkeeping only.
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_Recursive_ReturnsRootChildGrandchild_WithDepthAndParentIds()
+    {
+        const string rootThreadId = "thread-root";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            rootThreadId,
+            new ThreadMetadata { ThreadId = rootThreadId, LastUpdated = 1_000 });
+        await SeedRawProvenanceChildAsync(
+            store, "subagent-child", rootThreadId, 2_000, name: "child");
+        await SeedRawProvenanceChildAsync(
+            store, "subagent-grandchild", "subagent-child", 3_000, name: "grandchild");
+
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, store);
+
+        var result = await controller.ListSubAgents(rootThreadId, recursive: true);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var tree = Assert.IsType<SubAgentTreeResponse>(ok.Value);
+        tree.SchemaVersion.Should().Be(1);
+        tree.Nodes.Should().HaveCount(2);
+
+        var child = tree.Nodes.Single(n => n.ThreadId == "subagent-child");
+        child.ParentThreadId.Should().Be(rootThreadId);
+        child.Depth.Should().Be(1);
+
+        var grandchild = tree.Nodes.Single(n => n.ThreadId == "subagent-grandchild");
+        grandchild.ParentThreadId.Should().Be("subagent-child");
+        grandchild.Depth.Should().Be(2);
+    }
+
+    /// <summary>
+    /// Every persisted node stamps exactly one <c>ParentThreadId</c> (last write wins), so a
+    /// reachable "revisit" cannot come from two nodes each naming the other as parent — that pair
+    /// would simply be unreachable from an unrelated root. The only way a cycle is BOTH reachable
+    /// AND causes a repeat visit is for the request root itself to sit on its own descendant chain:
+    /// here the root's own persisted parent is "b", closing the loop root → a → b → (root, cut).
+    /// This can never arise from a real spawn (nested delegation is disabled) — the fixture proves
+    /// the reader's visited-set guard terminates and does not surface the root as a duplicate node.
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_Recursive_CutsCycles()
+    {
+        const string rootThreadId = "subagent-root-cycle";
+        var store = new InMemoryConversationStore();
+        // The root is itself a stamped sub-agent whose persisted parent is "b" — the loop-closing
+        // edge. Only reachable/inspected once BFS reaches "b"; never emitted as a discovered node.
+        await SeedRawProvenanceChildAsync(store, rootThreadId, "subagent-b", 1_000);
+        await SeedRawProvenanceChildAsync(store, "subagent-a", rootThreadId, 2_000);
+        await SeedRawProvenanceChildAsync(store, "subagent-b", "subagent-a", 3_000);
+
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, store);
+
+        var result = await controller.ListSubAgents(rootThreadId, recursive: true);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var tree = Assert.IsType<SubAgentTreeResponse>(ok.Value);
+        tree.Nodes.Should().HaveCount(2, "the cycle back to the root must be cut, not duplicated");
+        tree.Nodes.Select(n => n.ThreadId).Should().BeEquivalentTo(["subagent-a", "subagent-b"]);
+    }
+
+    /// <summary>
+    /// A terminal (completed) child still has its own persisted child; the reader follows
+    /// structural parent links regardless of an ancestor's lifecycle status.
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_Recursive_TraversesThroughTerminalAncestor()
+    {
+        const string rootThreadId = "thread-root-terminal";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            rootThreadId,
+            new ThreadMetadata { ThreadId = rootThreadId, LastUpdated = 1_000 });
+        await SeedRawProvenanceChildAsync(
+            store, "subagent-terminal-child", rootThreadId, 2_000, status: "completed");
+        await SeedRawProvenanceChildAsync(
+            store, "subagent-grandchild-of-terminal", "subagent-terminal-child", 3_000, status: "running");
+
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, store);
+
+        var result = await controller.ListSubAgents(rootThreadId, recursive: true);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var tree = Assert.IsType<SubAgentTreeResponse>(ok.Value);
+        tree.Nodes.Should().Contain(n => n.ThreadId == "subagent-grandchild-of-terminal" && n.Depth == 2);
+    }
+
+    /// <summary>
+    /// Metadata that predates the status stamp (only the parent link is present — the shape any
+    /// pre-Task-1 persisted child would have) must report <c>unknown</c>, never a guessed status.
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_Recursive_MapsUnstampedLegacyChildStatus_ToUnknown()
+    {
+        const string rootThreadId = "thread-root-legacy";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            rootThreadId,
+            new ThreadMetadata { ThreadId = rootThreadId, LastUpdated = 1_000 });
+        await SeedRawProvenanceChildAsync(
+            store, "subagent-legacy", rootThreadId, 2_000, status: null);
+
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, store);
+
+        var result = await controller.ListSubAgents(rootThreadId, recursive: true);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var tree = Assert.IsType<SubAgentTreeResponse>(ok.Value);
+        tree.Nodes.Should().ContainSingle().Which.Status.Should().Be("unknown");
+    }
+
+    /// <summary>
+    /// The recursive contract's required relationship fields must round-trip through JSON even when
+    /// several of them have no value yet (schema v1 guarantees the KEY is present, not that it is
+    /// populated) — a consumer parsing the wire payload can rely on every key existing.
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_Recursive_IncludesRequiredRelationshipFields()
+    {
+        const string rootThreadId = "thread-root-fields";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            rootThreadId,
+            new ThreadMetadata { ThreadId = rootThreadId, LastUpdated = 1_000 });
+        await SeedRawProvenanceChildAsync(store, "subagent-fields", rootThreadId, 2_000);
+
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, store);
+
+        var result = await controller.ListSubAgents(rootThreadId, recursive: true);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var json = JsonSerializer.Serialize(ok.Value, WebJsonOptions);
+        using var doc = JsonDocument.Parse(json);
+        var node = doc.RootElement.GetProperty("nodes")[0];
+        foreach (var requiredField in new[]
+        {
+            "agentId", "threadId", "parentThreadId", "name", "template", "status", "depth",
+            "terminalAtUtc", "failureCode",
+        })
+        {
+            node.TryGetProperty(requiredField, out _).Should()
+                .BeTrue($"'{requiredField}' must be present on every recursive node");
+        }
+    }
+
+    /// <summary>
+    /// The pre-existing endpoint shape (no query string) is a compatibility contract: it must keep
+    /// returning a plain array of <see cref="SubAgentSummary"/>, never the new envelope, so the
+    /// current UI panel and any other caller of the flat endpoint are unaffected by this task.
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_NonRecursive_RetainsFlatArrayShape()
+    {
+        const string parentThreadId = "thread-compat";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            parentThreadId,
+            new ThreadMetadata { ThreadId = parentThreadId, LastUpdated = 1_000 });
+        await SeedPersistedChildAsync(
+            store, parentThreadId, "aaa", "alpha", "code-reviewer:security", "check auth", 2_000);
+
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, store);
+
+        var result = await controller.ListSubAgents(parentThreadId);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value);
+        summaries.Should().ContainSingle().Which.AgentId.Should().Be("aaa");
+    }
+
+    /// <summary>
+    /// Nodes must sort by (depth, parentThreadId, threadId) so the client renders a stable tree
+    /// regardless of store scan order.
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_Recursive_OrdersNodesByDepthThenParentThenThreadId()
+    {
+        const string rootThreadId = "thread-root-order";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            rootThreadId,
+            new ThreadMetadata { ThreadId = rootThreadId, LastUpdated = 1_000 });
+        // Two depth-1 children seeded out of alpha order.
+        await SeedRawProvenanceChildAsync(store, "subagent-zeta", rootThreadId, 2_000);
+        await SeedRawProvenanceChildAsync(store, "subagent-alpha", rootThreadId, 3_000);
+        // A depth-2 grandchild under "zeta".
+        await SeedRawProvenanceChildAsync(store, "subagent-grand", "subagent-zeta", 4_000);
+
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, store);
+
+        var result = await controller.ListSubAgents(rootThreadId, recursive: true);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var tree = Assert.IsType<SubAgentTreeResponse>(ok.Value);
+        tree.Nodes.Select(n => n.ThreadId).Should().ContainInOrder(
+            "subagent-alpha", "subagent-zeta", "subagent-grand");
     }
 
     private static string ParseAgentId(string spawnJson)

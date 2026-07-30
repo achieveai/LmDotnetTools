@@ -384,10 +384,26 @@ public class ConversationsController(
     /// </para>
     /// Returns 404 only when the thread is unknown everywhere — not in the pool, no persisted
     /// metadata, and no persisted children.
+    /// <para>
+    /// <paramref name="recursive"/> switches to an entirely different, VERSIONED contract
+    /// (<see cref="SubAgentTreeResponse"/>): the full persisted descendant graph reachable from
+    /// <paramref name="threadId"/> (children, grandchildren, ...), not just direct children, and not
+    /// unioned with live state (no nested live Agent delegation exists to union with — see
+    /// <see cref="BuildDescendantTreeAsync"/>). The plain array shape above is unchanged when this
+    /// is omitted/false, so existing callers of the flat endpoint are unaffected.
+    /// </para>
     /// </summary>
     [HttpGet("{threadId}/subagents")]
-    public async Task<IActionResult> ListSubAgents(string threadId, CancellationToken ct = default)
+    public async Task<IActionResult> ListSubAgents(
+        string threadId,
+        bool recursive = false,
+        CancellationToken ct = default)
     {
+        if (recursive)
+        {
+            return await BuildDescendantTreeAsync(threadId, ct);
+        }
+
         SubAgentSummary[] live = agentPool.TryGet(threadId, out var agent)
             && agent is MultiTurnAgentLoop { SubAgentManager: not null } loop
                 ? [.. loop.SubAgentManager.ListAgents()
@@ -403,15 +419,16 @@ public class ConversationsController(
                     })]
                 : [];
 
-        var persisted = await LoadPersistedSubAgentsAsync(threadId, ct);
+        var persisted = (await ScanAllPersistedSubAgentNodesAsync(threadId, ct))
+            .Where(n => string.Equals(n.ParentThreadId, threadId, StringComparison.Ordinal))
+            .ToList();
 
         if (live.Length == 0 && persisted.Count == 0)
         {
             // Nothing to list. Distinguish "this conversation has no sub-agents" from "this
             // conversation does not exist" — the client shows the panel for the former and an
             // unknown-thread error for the latter.
-            var known = agent is not null || await store.LoadMetadataAsync(threadId, ct) is not null;
-            return known
+            return await IsKnownThreadAsync(threadId, agent, ct)
                 ? Ok(Array.Empty<SubAgentSummary>())
                 : NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
@@ -438,6 +455,15 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// True when <paramref name="threadId"/> is known either as a live pooled agent
+    /// (<paramref name="agent"/>, already resolved by the caller via <c>agentPool.TryGet</c>) or as
+    /// persisted metadata. Shared by the flat and recursive branches of <see cref="ListSubAgents"/>
+    /// so both answer the same "does this conversation exist at all" question the same way.
+    /// </summary>
+    private async Task<bool> IsKnownThreadAsync(string threadId, IMultiTurnAgent? agent, CancellationToken ct) =>
+        agent is not null || await store.LoadMetadataAsync(threadId, ct) is not null;
+
+    /// <summary>
     /// Page size and total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
     /// no property index, so rebuilding the roster means scanning thread metadata; the cap bounds the
     /// work on a long-lived store and truncation is logged rather than silently swallowed.
@@ -445,8 +471,16 @@ public class ConversationsController(
     private const int SubAgentScanPageSize = 200;
     private const int SubAgentScanMaxThreads = 2000;
 
-    private async Task<IReadOnlyList<SubAgentSummary>> LoadPersistedSubAgentsAsync(
-        string threadId,
+    /// <summary>
+    /// The single bounded store scan both the flat and recursive listings are built from — every
+    /// stamped sub-agent thread, projected via the no-filter
+    /// <see cref="SubAgentProvenance.TryProject(ThreadMetadata)"/> overload, regardless of who its
+    /// parent is. Callers filter or index the result in memory; nothing here queries the store again
+    /// per node, satisfying the "one bounded scan per request" requirement even for the recursive,
+    /// arbitrary-depth graph.
+    /// </summary>
+    private async Task<IReadOnlyList<SubAgentSummary>> ScanAllPersistedSubAgentNodesAsync(
+        string requestingThreadId,
         CancellationToken ct)
     {
         var found = new List<SubAgentSummary>();
@@ -463,10 +497,10 @@ public class ConversationsController(
             scanned += page.Count;
             foreach (var metadata in page)
             {
-                var child = SubAgentProvenance.TryProject(metadata, threadId);
-                if (child is not null)
+                var node = SubAgentProvenance.TryProject(metadata);
+                if (node is not null)
                 {
-                    found.Add(child);
+                    found.Add(node);
                 }
             }
 
@@ -479,9 +513,78 @@ public class ConversationsController(
         logger.LogWarning(
             "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
                 + "children persisted beyond that point are not listed.",
-            threadId,
+            requestingThreadId,
             SubAgentScanMaxThreads);
         return found;
+    }
+
+    /// <summary>
+    /// Builds the versioned recursive descendant graph (schema v1) for <paramref name="rootThreadId"/>:
+    /// one bounded store scan (<see cref="ScanAllPersistedSubAgentNodesAsync"/>), one in-memory
+    /// parent→children index built from it, then a visited-set BFS from the root. Deliberately
+    /// persisted-only — no live <c>SubAgentManager</c> union — because no current spawn path creates
+    /// a depth-&gt;1 tree anyway (nested live Agent delegation stays disabled); this reader exists to
+    /// answer "what does the persisted graph say", which is exactly what a restarted host or a
+    /// finished run still has. The root itself is never emitted as a node, only its descendants.
+    /// </summary>
+    private async Task<IActionResult> BuildDescendantTreeAsync(string rootThreadId, CancellationToken ct)
+    {
+        var allNodes = await ScanAllPersistedSubAgentNodesAsync(rootThreadId, ct);
+        var childrenByParent = allNodes
+            .GroupBy(n => n.ParentThreadId!, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+        var discovered = new List<SubAgentSummary>();
+        var visited = new HashSet<string>(StringComparer.Ordinal) { rootThreadId };
+        var queue = new Queue<(string ThreadId, int Depth)>();
+        queue.Enqueue((rootThreadId, 0));
+
+        while (queue.Count > 0)
+        {
+            var (parentId, depth) = queue.Dequeue();
+            if (!childrenByParent.TryGetValue(parentId, out var children))
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                if (!visited.Add(child.ThreadId))
+                {
+                    // Cycle cut (or a diamond re-reachable via a second path) — the visited set has
+                    // already placed this thread at an earlier, shallower position. Log opaque ids
+                    // only: never Name/Template/Task, which may carry caller-supplied free text.
+                    logger.LogWarning(
+                        "Sub-agent recursive scan for {RootThreadId} cut a repeat visit at thread "
+                            + "{ThreadId} (parent {ParentThreadId})",
+                        rootThreadId,
+                        child.ThreadId,
+                        parentId);
+                    continue;
+                }
+
+                var childDepth = depth + 1;
+                discovered.Add(child with { Depth = childDepth });
+                queue.Enqueue((child.ThreadId, childDepth));
+            }
+        }
+
+        if (discovered.Count == 0)
+        {
+            agentPool.TryGet(rootThreadId, out var agent);
+            if (!await IsKnownThreadAsync(rootThreadId, agent, ct))
+            {
+                return NotFound(new { error = $"Conversation '{rootThreadId}' not found.", code = "unknown_thread" });
+            }
+        }
+
+        var ordered = discovered
+            .OrderBy(n => n.Depth)
+            .ThenBy(n => n.ParentThreadId, StringComparer.Ordinal)
+            .ThenBy(n => n.ThreadId, StringComparer.Ordinal)
+            .ToList();
+
+        return Ok(new SubAgentTreeResponse(SchemaVersion: 1, Nodes: ordered));
     }
 
     /// <summary>

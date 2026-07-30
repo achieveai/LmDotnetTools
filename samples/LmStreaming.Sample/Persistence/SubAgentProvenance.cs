@@ -156,9 +156,26 @@ public static class SubAgentProvenance
     /// </summary>
     public static SubAgentSummary? TryProject(ThreadMetadata metadata, string parentThreadId)
     {
+        var node = TryProject(metadata);
+        return node is not null && string.Equals(node.ParentThreadId, parentThreadId, StringComparison.Ordinal)
+            ? node
+            : null;
+    }
+
+    /// <summary>
+    /// Projects persisted thread metadata back to a <see cref="SubAgentSummary"/> regardless of who
+    /// its parent is, or null when the thread is not a stamped sub-agent at all. This is the
+    /// no-filter half the recursive descendant-graph reader needs: it scans every thread once and
+    /// must be able to place each sub-agent node under whichever parent it was actually stamped
+    /// with, not just one expected parent (see <see cref="TryProject(ThreadMetadata, string)"/> for
+    /// the single-parent-filtered convenience overload, which now delegates here).
+    /// </summary>
+    public static SubAgentSummary? TryProject(ThreadMetadata metadata)
+    {
         ArgumentNullException.ThrowIfNull(metadata);
 
-        if (!string.Equals(ReadString(metadata, ParentThreadIdKey), parentThreadId, StringComparison.Ordinal))
+        var parentThreadId = ReadString(metadata, ParentThreadIdKey);
+        if (parentThreadId is null)
         {
             return null;
         }
@@ -177,6 +194,8 @@ public static class SubAgentProvenance
             return null;
         }
 
+        var terminalAt = ReadUnixMillis(metadata, TerminalAtKey);
+
         return new SubAgentSummary
         {
             AgentId = agentId,
@@ -188,8 +207,9 @@ public static class SubAgentProvenance
             Task = ReadString(metadata, TaskKey) ?? string.Empty,
             Status = ReadString(metadata, StatusKey) ?? UnknownStatus,
             ThreadId = metadata.ThreadId,
-            LastActivityUtc = ReadUnixMillis(metadata, TerminalAtKey)
-                ?? DateTimeOffset.FromUnixTimeMilliseconds(metadata.LastUpdated),
+            LastActivityUtc = terminalAt ?? DateTimeOffset.FromUnixTimeMilliseconds(metadata.LastUpdated),
+            ParentThreadId = parentThreadId,
+            TerminalAtUtc = terminalAt,
         };
     }
 

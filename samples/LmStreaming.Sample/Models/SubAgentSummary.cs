@@ -28,4 +28,39 @@ public sealed record SubAgentSummary
 
     /// <summary>UTC timestamp of the sub-agent's last observed activity, or null if none yet.</summary>
     public DateTimeOffset? LastActivityUtc { get; init; }
+
+    /// <summary>
+    /// Thread id of the conversation that spawned this sub-agent, or null when the node has no
+    /// persisted parent link. Additive: populated by the recursive descendant-graph reader
+    /// (<c>GET .../subagents?recursive=true</c>); the flat (non-recursive) listing does not set it.
+    /// </summary>
+    public string? ParentThreadId { get; init; }
+
+    /// <summary>
+    /// Distance from the requested root in the recursive descendant graph — the root's direct
+    /// children are depth 1. Additive: null outside the recursive contract.
+    /// </summary>
+    public int? Depth { get; init; }
+
+    /// <summary>
+    /// UTC instant the sub-agent reached a terminal status, or null while running or unknown.
+    /// Additive: populated by the recursive descendant-graph reader from the same stamped value
+    /// <see cref="LastActivityUtc"/> already falls back to for a persisted-only child.
+    /// </summary>
+    public DateTimeOffset? TerminalAtUtc { get; init; }
+
+    /// <summary>
+    /// Machine-readable failure reason, when known. Additive and reserved for future use — no
+    /// current write path stamps a failure code, so this is always null today.
+    /// </summary>
+    public string? FailureCode { get; init; }
 }
+
+/// <summary>
+/// Versioned envelope for the recursive descendant graph
+/// (<c>GET /api/conversations/{threadId}/subagents?recursive=true</c>). <see cref="SchemaVersion"/>
+/// lets a consumer (e.g. a daemon-side completion barrier) fail closed on an old/incompatible
+/// response rather than silently misreading a flat array as a tree. The plain, non-recursive
+/// endpoint is unaffected — it keeps returning a bare <c>SubAgentSummary[]</c>.
+/// </summary>
+public sealed record SubAgentTreeResponse(int SchemaVersion, IReadOnlyList<SubAgentSummary> Nodes);
