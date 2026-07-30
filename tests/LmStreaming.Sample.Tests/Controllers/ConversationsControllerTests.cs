@@ -891,7 +891,6 @@ public class ConversationsControllerTests
         var threadId = "thread-send-idem-repeat";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
-        agent.Ledger = store;
         await SeedDefaultModeThreadAsync(store, threadId);
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
@@ -929,7 +928,7 @@ public class ConversationsControllerTests
             threadId,
             "run-earlier",
             RunStatus.InProgress,
-            ["review-run-7:2"],
+            ["idem:0:review-run-7:2"],
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow));
 
@@ -941,7 +940,7 @@ public class ConversationsControllerTests
             CancellationToken.None);
 
         var response = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(result).Value);
-        response.InputId.Should().Be("review-run-7:2");
+        response.InputId.Should().Be("idem:0:review-run-7:2");
         response.Queued.Should().BeFalse();
         agent.SendCount.Should().Be(0, "the turn this key names is already running — re-sending would duplicate it");
     }
@@ -959,7 +958,6 @@ public class ConversationsControllerTests
         var threadId = "thread-send-idem-options";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
-        agent.Ledger = store;
         await SeedDefaultModeThreadAsync(store, threadId);
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
@@ -1002,7 +1000,7 @@ public class ConversationsControllerTests
         agent.EnforcesSpawnSuppression = false;
         await SeedDefaultModeThreadAsync(store, threadId);
         await store.RecordAcceptedInputAsync(
-            threadId, "review-run-7:2:spawn-suppressed", DateTimeOffset.UtcNow);
+            threadId, "idem:1:review-run-7:2", DateTimeOffset.UtcNow);
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
@@ -1021,17 +1019,32 @@ public class ConversationsControllerTests
     }
 
     /// <summary>
-    /// A blank key is the shape of a caller whose key derivation produced nothing. Reading it as "absent"
-    /// would acknowledge nothing while the caller believes its retry is safe, so it is refused outright.
+    /// A key the host cannot turn into a durable, unambiguous id is refused rather than read as "absent".
+    /// Blank is the shape of a caller whose key derivation produced nothing; a control character survives
+    /// JSON but not the ids, logs and store round-trips the reservation lives in. Absent means "no protection
+    /// asked for" — but a caller that SENT a key believes its retry is safe, so it has to be told it is not.
     /// </summary>
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public async Task SendMessage_ReturnsBadRequest_WhenTheIdempotencyKeyIsBlank(string key)
+    [InlineData("review-run-7\u00002")]
+    [InlineData("review-run-7\n2")]
+    public async Task SendMessage_ReturnsBadRequest_WhenTheIdempotencyKeyCannotBecomeADurableId(string key) =>
+        await AssertKeyRefusedBeforeEnqueueAsync(key);
+
+    /// <summary>
+    /// The cap bounds what a caller can push into every accepted-input record and run row the derived id
+    /// appears in, and is enforced the same way: before anything is queued.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ReturnsBadRequest_WhenTheIdempotencyKeyExceedsTheLengthCap() =>
+        await AssertKeyRefusedBeforeEnqueueAsync(new string('k', 201));
+
+    private static async Task AssertKeyRefusedBeforeEnqueueAsync(string key)
     {
         var store = new InMemoryConversationStore();
         await using var pool = CreateSuppressionCapablePool();
-        var threadId = "thread-send-idem-blank";
+        var threadId = "thread-send-idem-invalid";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
         await SeedDefaultModeThreadAsync(store, threadId);
@@ -1045,7 +1058,7 @@ public class ConversationsControllerTests
 
         JsonSerializer.Serialize(Assert.IsType<BadRequestObjectResult>(result).Value)
             .Should().Contain("invalid_idempotency_key");
-        agent.SendCount.Should().Be(0);
+        agent.SendCount.Should().Be(0, "the refusal has to land before anything is queued");
     }
 
     /// <summary>
@@ -1061,7 +1074,6 @@ public class ConversationsControllerTests
         var threadId = "thread-send-idem-absent";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
-        agent.Ledger = store;
         await SeedDefaultModeThreadAsync(store, threadId);
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
@@ -1077,8 +1089,285 @@ public class ConversationsControllerTests
         agent.SendCount.Should().Be(2);
     }
 
-    private static MultiTurnAgentPool CreateSuppressionCapablePool()
+    /// <summary>
+    /// Two keys that differ only in a marker one of them CONTAINS must not derive the same id. A derivation
+    /// that appended the suppression marker made exactly that collision reachable from the wire: a caller
+    /// whose key legitimately ends in the marker would dedupe against an unrelated suppressed turn, which is
+    /// the failure the key exists to prevent, only harder to see.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DerivesDistinctInputIds_ForKeysThatDifferOnlyByTheSuppressionMarker()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-collision";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
 
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var suppressed = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest
+                {
+                    Text = "synthesize",
+                    IdempotencyKey = "review-run-7:2",
+                    SuppressSubAgentSpawning = true,
+                },
+                default)).Value);
+        var lookalike = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest { Text = "review", IdempotencyKey = "review-run-7:2:spawn-suppressed" },
+                default)).Value);
+
+        lookalike.InputId.Should().NotBe(suppressed.InputId);
+        lookalike.Queued.Should().BeTrue("an unrelated key must not reconcile to someone else's turn");
+        agent.SendCount.Should().Be(2, "two different operations, two turns");
+    }
+
+    /// <summary>
+    /// Ids the host mints for keyless sends live in their own namespace, so no caller key can name one. A
+    /// shared namespace would let a caller that echoed back an observed inputId as its key reconcile onto a
+    /// turn it never sent — and never get the turn it asked for.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DoesNotLetACallerKeyNameAServerMintedInput()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-namespace";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var minted = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(threadId, new SendMessageRequest { Text = "review" }, default)).Value);
+        // That first turn is now running, which is the state a repeat would reconcile against.
+        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
+            threadId,
+            "run-minted",
+            RunStatus.InProgress,
+            [minted.InputId],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow));
+
+        var echoed = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest { Text = "synthesize", IdempotencyKey = minted.InputId },
+                default)).Value);
+
+        echoed.InputId.Should().NotBe(minted.InputId);
+        echoed.Queued.Should().BeTrue("the caller asked for a new turn, not for the host's earlier one");
+        agent.SendCount.Should().Be(2);
+    }
+
+    /// <summary>
+    /// The honored claim is a promise about DURABLE state, so a host whose store cannot record a reservation
+    /// has to refuse before it queues anything. Queueing first and then reporting "not honored" would already
+    /// have created the duplicate the key exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_RefusesAKey_WhenTheStoreCannotDurablyReserveTheInput()
+    {
+        var threadId = "thread-send-idem-no-ledger";
+        var store = new Mock<IConversationStore>();
+        store
+            .Setup(s => s.LoadMetadataAsync(threadId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DefaultModeMetadata(threadId));
+        await using var pool = CreateSuppressionCapablePool();
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+
+        var controller = CreateController(store.Object, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "synthesize", IdempotencyKey = "review-run-7:2" },
+            CancellationToken.None);
+
+        JsonSerializer.Serialize(Assert.IsType<BadRequestObjectResult>(result).Value)
+            .Should().Contain("idempotency_unsupported");
+        agent.SendCount.Should().Be(0, "nothing may be queued under a promise the host cannot keep");
+    }
+
+    /// <summary>
+    /// The race the reservation exists for: the daemon's retry can overlap the send it is retrying (the first
+    /// response was lost, not the request). Both sends are held inside the accepted-input lookup until each
+    /// has been told the input is not there, so a check-then-write acceptance would let BOTH enqueue — two
+    /// minutes-long, sub-agent-fanning turns on one conversation, and a double-posted review.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_WithTwoConcurrentSendsOfOneKey_EnqueuesExactlyOnce()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-concurrent";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        // One rendezvous shared by both controllers: neither may leave the lookup until both have arrived.
+        var rendezvous = new RendezvousLedgerStore(store, participants: 2);
+        ConversationsController Controller() => CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            statusResolver: new ConversationStatusResolver(store, rendezvous));
+        var request = new SendMessageRequest { Text = "synthesize", IdempotencyKey = "review-run-7:2" };
+
+        var first = Controller().SendMessage(threadId, request, default);
+        var second = Controller().SendMessage(threadId, request, default);
+        var responses = (await Task.WhenAll(first, second))
+            .Select(r => Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(r).Value))
+            .ToList();
+
+        responses.Select(r => r.InputId).Distinct().Should().ContainSingle(
+            "both callers named the same turn, so both must be told the same input id");
+        responses.Count(r => r.Queued).Should().Be(1, "exactly one of the two may become queued work");
+        responses.Should().OnlyContain(
+            r => r.IdempotencyKeyHonored, "both sends were covered by the same durable reservation");
+        agent.SendCount.Should().Be(1, "the loser must not put a second turn onto the conversation");
+    }
+
+    /// <summary>
+    /// A reservation whose send never became queued work has to go back. Left behind, it wedges that key
+    /// permanently: every later retry reconciles to a turn that does not exist and the caller waits for a
+    /// status that will never arrive. Covers both ways a send can fail after the claim — a full queue (503)
+    /// and a throwing send (surfaced as a 500).
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SendMessage_ReleasesTheReservation_WhenTheSendNeverBecomesQueuedWork(bool sendThrows)
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-compensate";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.ThrowOnTrySend = sendThrows;
+        agent.RejectAsQueueFull = !sendThrows;
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var request = new SendMessageRequest { Text = "synthesize", IdempotencyKey = "review-run-7:2" };
+
+        var failing = async () => await controller.SendMessage(threadId, request, default);
+        if (sendThrows)
+        {
+            await failing.Should().ThrowAsync<InvalidOperationException>();
+        }
+        else
+        {
+            Assert.IsType<ObjectResult>(await failing()).StatusCode.Should().Be(503);
+        }
+
+        agent.ThrowOnTrySend = false;
+        agent.RejectAsQueueFull = false;
+
+        var retry = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+
+        retry.Queued.Should().BeTrue("the failed attempt queued nothing, so the retry still has to");
+        agent.SendCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// The suppression outcome a repeat is told comes from the stored record, not from the repeat's own
+    /// request — otherwise the host would be confirming a guarantee by reading back the very claim it is
+    /// meant to verify.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ReportsTheRecordedSuppressionOutcome_OnAReconciledRepeat()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-suppress-repeat";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var request = new SendMessageRequest
+        {
+            Text = "synthesize",
+            IdempotencyKey = "review-run-7:2",
+            SuppressSubAgentSpawning = true,
+        };
+
+        _ = Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default));
+        var repeat = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+
+        repeat.Queued.Should().BeFalse();
+        repeat.SpawningSuppressed.Should().BeTrue("the recovered turn really is the suppressed one");
+        repeat.IdempotencyKeyHonored.Should().BeTrue();
+        agent.SendCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// When the receipt refuses the guarantee the record would have claimed, the host keeps the two honest
+    /// together: it drops the reservation, tells the caller its key was NOT honored, and lets the retry queue
+    /// a real turn — instead of leaving behind a record that would later promise a suppression that never held.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DoesNotHonorAKey_WhenTheReceiptContradictsTheRecordedSuppression()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-suppress-unconfirmed";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.ConfirmsSuppressionOnReceipt = false;
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var request = new SendMessageRequest
+        {
+            Text = "synthesize",
+            IdempotencyKey = "review-run-7:2",
+            SuppressSubAgentSpawning = true,
+        };
+
+        var first = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+        var repeat = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+
+        first.IdempotencyKeyHonored.Should().BeFalse("no record survives that could dedupe a repeat");
+        repeat.Queued.Should().BeTrue("the caller was told plainly that its first send was not protected");
+        agent.SendCount.Should().Be(2);
+    }
+
+    /// <summary>
+    /// The preflight a caller checks before its first send. It reports the same durable fact the send path
+    /// reserves against, so the two can never disagree: a host whose store cannot reserve must not advertise
+    /// message idempotency, or a caller would fail closed only after its turn was already queued.
+    /// </summary>
+    [Fact]
+    public async Task GetCapabilities_ReportsMessageIdempotency_OnlyWhenTheStoreCanReserve()
+    {
+        await using var pool = CreateSuppressionCapablePool();
+
+        var reserving = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(
+            CreateController(new InMemoryConversationStore(), pool, ModeStoreResolvingSystemModes())
+                .GetCapabilities()).Value);
+        var nonReserving = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(
+            CreateController(Mock.Of<IConversationStore>(), pool, ModeStoreResolvingSystemModes())
+                .GetCapabilities()).Value);
+
+        reserving.MessageIdempotency.Should().BeTrue();
+        reserving.SpawnSuppression.Should().BeTrue();
+        nonReserving.MessageIdempotency.Should().BeFalse(
+            "advertising a guarantee this store cannot record is what makes a caller fail late");
+    }
+
+    private static MultiTurnAgentPool CreateSuppressionCapablePool()
     {
         return new MultiTurnAgentPool(
             (threadId, _, _) =>
@@ -1087,15 +1376,18 @@ public class ConversationsControllerTests
     }
 
     private static Task SeedDefaultModeThreadAsync(InMemoryConversationStore store, string threadId) =>
-        store.SaveMetadataAsync(
-            threadId,
-            new ThreadMetadata
-            {
-                ThreadId = threadId,
-                LastUpdated = 1,
-                Properties = ImmutableDictionary<string, object>.Empty
-                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
-            });
+        store.SaveMetadataAsync(threadId, DefaultModeMetadata(threadId));
+
+    /// <summary>Metadata for a thread pinned to the default mode — what <c>SendMessage</c> needs to resolve
+    /// an agent, whether it is seeded into a real store or stubbed on a mock one.</summary>
+    private static ThreadMetadata DefaultModeMetadata(string threadId) =>
+        new()
+        {
+            ThreadId = threadId,
+            LastUpdated = 1,
+            Properties = ImmutableDictionary<string, object>.Empty
+                .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
+        };
 
     [Fact]
     public async Task GetStatus_ReturnsBadRequest_WhenNeitherIdProvided()

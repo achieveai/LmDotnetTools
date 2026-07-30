@@ -28,6 +28,38 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         TimeSpan? quietPeriod = null) =>
         new(source, quietPeriod ?? QuietPeriod, LoggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>(), clock);
 
+    /// <summary>
+    /// A clock that also reports WHEN the code under test has parked on its next wait. The barrier polls
+    /// and then awaits <c>Task.Delay(interval, clock)</c>, whose continuation resumes on the thread pool —
+    /// so a pump that advances blindly can move the clock before the barrier has registered the timer it is
+    /// about to wait on, and under a busy pool it can burn every step that way. Registration is the one
+    /// observable moment that says "the barrier is now waiting", which turns that race into a handshake
+    /// with no real sleeping anywhere.
+    /// </summary>
+    private sealed class ObservableFakeClock(DateTimeOffset start) : FakeTimeProvider(start)
+    {
+        private readonly SemaphoreSlim _waitsRegistered = new(0);
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            var timer = base.CreateTimer(callback, state, dueTime, period);
+            _waitsRegistered.Release();
+            return timer;
+        }
+
+        /// <summary>
+        /// Completes once a wait has been registered that this method has not already accounted for. The
+        /// semaphore COUNTS registrations rather than latching, so one that happened before the call is
+        /// still observed. <paramref name="guard"/> only bounds a genuine hang — on the happy path the
+        /// count is already there and the wait completes synchronously.
+        /// </summary>
+        public Task<bool> WaitForNextWaitAsync(TimeSpan guard) => _waitsRegistered.WaitAsync(guard);
+    }
+
     private static ReviewRun TestRun() =>
         new()
         {
@@ -65,32 +97,44 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
 
     private static Task NoopValidator(CancellationToken ct) => Task.CompletedTask;
 
-    /// <summary>Drives the clock forward one wait step at a time until the awaited task settles, or gives
-    /// up after a generous number of steps (guards a test hang if the barrier never re-polls as expected).</summary>
+    /// <summary>Drives the clock forward one wait step at a time until the awaited task settles, or fails
+    /// loudly once it has taken more steps than the scripted source could possibly need.</summary>
     private static async Task<T> PumpUntilSettledAsync<T>(
         Task<T> task,
-        FakeTimeProvider clock,
+        ObservableFakeClock clock,
         TimeSpan step,
         int maxSteps = 50)
     {
+        // Bounds a genuine hang (the barrier stopped waiting AND stopped settling). It is never reached on
+        // the happy path, where the registration has already been counted by the time it is asked for.
+        var hangGuard = TimeSpan.FromSeconds(30);
+
         for (var i = 0; i < maxSteps && !task.IsCompleted; i++)
         {
-            clock.Advance(step);
+            // Advance only once the barrier is parked on its next wait, so no step can be spent on a timer
+            // that has not been registered yet.
+            var parked = clock.WaitForNextWaitAsync(hangGuard);
+            if (ReferenceEquals(await Task.WhenAny(task, parked), task))
+            {
+                break;
+            }
 
-            // Task.Delay(..., TimeProvider, ...) resumes its awaiter on the thread pool rather than
-            // inline, so the barrier may not have registered its next timer by the time this loop comes
-            // back around. Yielding is NOT enough to guarantee it gets to: a yield queues onto the same
-            // pool this loop is competing for, so under a saturated pool (the whole suite running in
-            // parallel) the loop can burn every step before the barrier is ever scheduled, and then the
-            // safety net below waits 30s against a clock nothing is advancing any more. Waiting a real
-            // moment on the task itself gives the pool actual time to run that continuation, and costs
-            // nothing on the happy path because the wait ends the instant the barrier settles.
-            await Task.WhenAny(task, Task.Delay(TimeSpan.FromMilliseconds(20)));
+            if (!await parked)
+            {
+                throw new InvalidOperationException(
+                    $"The barrier neither settled nor registered another wait within {hangGuard}.");
+            }
+
+            clock.Advance(step);
         }
 
-        // Safety net: if the barrier genuinely never settles, fail fast with a clear timeout instead of
-        // hanging the whole test run. Never triggers on the happy path.
-        return await task.WaitAsync(TimeSpan.FromSeconds(30));
+        if (!task.IsCompleted)
+        {
+            throw new InvalidOperationException(
+                $"The barrier never settled within {maxSteps} wait steps of {step} — it is not re-polling as expected.");
+        }
+
+        return await task;
     }
 
     [Fact]
@@ -98,7 +142,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     {
         // Brief bullet 1: three running children resolve in different orders; the barrier stays closed
         // (never returns) until every one of them is terminal, regardless of the settling order.
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
             new ReviewSubAgentTreeSnapshot(
@@ -154,7 +198,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
     {
         // Brief bullet 2: Error/Stopped are terminal (do not block), Running/Unknown block, and a snapshot
         // mixing a terminal "foreground" node with a still-running "background" node stays blocked.
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
             // Mixed: foreground already Error (terminal) but a background node is Running — must block.
@@ -203,7 +247,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // Brief bullet 3: an empty descendant tree is vacuously "all terminal" but STILL requires two
         // identical observations separated by the quiet period before the barrier opens — a single empty
         // observation must not short-circuit.
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
             new ReviewSubAgentTreeSnapshot([]),
@@ -235,7 +279,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // Brief bullet 4: roster addition, removal, parent change, or status change between the candidate
         // and what would otherwise be the confirming snapshot resets stability — the barrier must NOT open
         // on that pair; it needs a fresh pair of truly identical observations afterwards.
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
 
         var baseline = new ReviewSubAgentTreeSnapshot(
@@ -290,7 +334,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // Brief bullet 5: a grandchild that is still nonterminal keeps the barrier closed even though its
         // own parent (an intermediate descendant) already reached a terminal status — completeness is
         // evaluated per-node across the whole flattened roster, not rolled up by ancestor.
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
             new ReviewSubAgentTreeSnapshot(
@@ -331,7 +375,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // absolute deadline. A caller resuming after 25 of an original 30-minute budget passes a deadline
         // only 5 minutes out — the barrier must throw at +5 minutes, never fabricate/restore a 30-minute
         // window of its own.
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
             new ReviewSubAgentTreeSnapshot([Node("a", "root", 1, ReviewSubAgentStatus.Running)])
@@ -357,7 +401,7 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
         // Brief bullet 7: lifecycle/head validation runs right before a confirmed terminal candidate is
         // accepted. A failing validator means the barrier NEVER opens/returns successfully — the failure
         // propagates instead, even though two identical all-terminal snapshots were observed.
-        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var clock = new ObservableFakeClock(DateTimeOffset.UtcNow);
         var run = TestRun();
         var source = new ScriptedCompletionSource(
             new ReviewSubAgentTreeSnapshot([Node("a", "root", 1, ReviewSubAgentStatus.Completed)]),

@@ -65,6 +65,7 @@ internal sealed class S2SReviewAgent
     private readonly Action<string>? _onConversationMinted;
 
     private string? _threadId;
+    private bool _hostContractVerified;
     private string? _currentRunId;
     private DateTimeOffset? _deadlineUtc;
     private int _spawnSuppressionDepth;
@@ -273,6 +274,17 @@ internal sealed class S2SReviewAgent
     /// </summary>
     private async Task<string> EnsureProvisionedAsync(CancellationToken ct)
     {
+        // BEFORE anything is sent, and before the resume short-circuit below, because both paths are about
+        // to depend on contracts an older host does not implement. Doing it here rather than at each send
+        // is what keeps it a preflight: once a turn is queued the damage a missing contract causes (an
+        // unsuppressed fan-out, or a duplicate review on the next retry) is already done. Verified once per
+        // agent — the host cannot gain or lose the contract in the middle of one review.
+        if (!_hostContractVerified)
+        {
+            await _client.EnsureHostContractAsync(ct).ConfigureAwait(false);
+            _hostContractVerified = true;
+        }
+
         if (_threadId is not null)
         {
             // A seeded thread is a RESUME. Whether it is still the right conversation to continue on — same

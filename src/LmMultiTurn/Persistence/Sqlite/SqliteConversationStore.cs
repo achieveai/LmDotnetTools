@@ -463,6 +463,39 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
+    public async Task<bool> TryReserveAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(inputId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        // DO NOTHING (rather than the upsert above) is what makes this a reservation: the PRIMARY KEY on
+        // (thread_id, input_id) decides the winner inside SQLite, and the affected-row count reports the
+        // decision back. No read-then-write, so no window for a second caller to slip through.
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO accepted_inputs (thread_id, input_id, accepted_at)
+            VALUES ($thread_id, $input_id, $accepted_at)
+            ON CONFLICT(thread_id, input_id) DO NOTHING;
+            """;
+
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$input_id", inputId);
+        _ = command.Parameters.AddWithValue("$accepted_at", acceptedAt.ToUnixTimeMilliseconds());
+
+        var rows = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        return rows == 1;
+    }
+
+    /// <inheritdoc />
     public async Task RemoveAcceptedInputAsync(
         string threadId,
         string inputId,

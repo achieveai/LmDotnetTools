@@ -53,7 +53,7 @@ public sealed class S2SReviewAgentLoopFactoryTests
     {
         // No provision route is registered: the fake handler answers an unrouted request with 501, so any
         // ProvisionAsync call fails this test outright.
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-2\"}")
             .OnJson(
                 HttpMethod.Get,
@@ -78,7 +78,7 @@ public sealed class S2SReviewAgentLoopFactoryTests
     [Fact]
     public async Task Create_without_a_resume_thread_still_provisions_a_fresh_conversation()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(

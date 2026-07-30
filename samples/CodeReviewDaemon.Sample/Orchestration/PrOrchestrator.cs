@@ -148,18 +148,24 @@ internal sealed class PrOrchestrator
 
     /// <summary>
     /// Whether <paramref name="ex"/> is a failure the governor should charge against the run's budget. Any
-    /// ContextReady failure qualifies (the stuck-slot hot-loop). At Reviewed only two do:
+    /// ContextReady failure qualifies (the stuck-slot hot-loop). At Reviewed only three do:
     /// <see cref="ReviewBarrierDeadlineException"/> — the sub-agent completion barrier spent the review's whole
     /// absolute deadline waiting on a tree that never settled, so the next round would wait exactly as long on
-    /// exactly the same tree — and <see cref="ReviewCheckpointCorruptException"/>, where the stage cannot read
-    /// the checkpoint that says whether a hosted tree is already running, and re-reading it will keep failing.
-    /// Both are stuck reviews, not transients: they have to park eventually. A provider blip, a host 5xx or a
-    /// blank synthesis stays outside the budget and keeps retrying.
+    /// exactly the same tree; <see cref="ReviewCheckpointCorruptException"/>, where the stage cannot read
+    /// the checkpoint that says whether a hosted tree is already running, and re-reading it will keep failing;
+    /// and <see cref="ReviewHostContractException"/>, where the review host cannot keep a message contract the
+    /// turn depends on — an incompatibility that reproduces identically on every attempt, and whose attempts
+    /// are not free (each one can leave another turn running on the host). All three are stuck reviews, not
+    /// transients: they have to park eventually. A provider blip, a host 5xx or a blank synthesis stays
+    /// outside the budget and keeps retrying.
     /// </summary>
     private static bool IsGovernedFailure(ReviewStage stage, Exception ex) => stage switch
     {
         ReviewStage.ContextReady => true,
-        ReviewStage.Reviewed => ex is ReviewBarrierDeadlineException or ReviewCheckpointCorruptException,
+        ReviewStage.Reviewed => ex
+            is ReviewBarrierDeadlineException
+                or ReviewCheckpointCorruptException
+                or ReviewHostContractException,
         _ => false,
     };
 

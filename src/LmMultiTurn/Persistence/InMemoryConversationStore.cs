@@ -246,6 +246,22 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
     }
 
     /// <inheritdoc />
+    public Task<bool> TryReserveAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default)
+    {
+        // TryAdd is the whole reservation: ConcurrentDictionary resolves the race internally, so exactly
+        // one of N concurrent callers for the same key is told it won.
+        var won = _acceptedInputs.TryAdd(
+            (threadId, inputId),
+            new AcceptedInputEntry(threadId, inputId, acceptedAt));
+
+        return Task.FromResult(won);
+    }
+
+    /// <inheritdoc />
     public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default)
     {
         _ = _acceptedInputs.TryRemove((threadId, inputId), out _);

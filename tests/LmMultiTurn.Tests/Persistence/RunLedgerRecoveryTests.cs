@@ -326,6 +326,9 @@ public class RunLedgerRecoveryTests
         public Task RecordAcceptedInputAsync(string threadId, string inputId, DateTimeOffset acceptedAt, CancellationToken ct = default)
             => _inner.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
 
+        public Task<bool> TryReserveAcceptedInputAsync(string threadId, string inputId, DateTimeOffset acceptedAt, CancellationToken ct = default)
+            => _inner.TryReserveAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
+
         public Task RemoveAcceptedInputAsync(string threadId, string inputId, CancellationToken ct = default)
             => _inner.RemoveAcceptedInputAsync(threadId, inputId, ct);
 

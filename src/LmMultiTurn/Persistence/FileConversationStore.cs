@@ -366,7 +366,42 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore,
         string threadId,
         string inputId,
         DateTimeOffset acceptedAt,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        _ = await WriteAcceptedInputAsync(threadId, inputId, acceptedAt, onlyIfAbsent: false, ct);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The store-wide lock makes this atomic against other callers in THIS process. It is not a
+    /// cross-process reservation: two processes pointed at the same directory can both observe an absent
+    /// entry and both write. That is the same last-writer-wins exposure the rest of this store already has
+    /// (see <see cref="WriteJsonFileAsync"/>), and single-writer is this store's documented deployment
+    /// shape — a multi-process host wants the SQLite store, whose primary key arbitrates in the engine.
+    /// </remarks>
+    public async Task<bool> TryReserveAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default) =>
+        await WriteAcceptedInputAsync(threadId, inputId, acceptedAt, onlyIfAbsent: true, ct);
+
+    /// <summary>
+    /// Shared body of the record/reserve pair, so the two can never disagree about where the file lives or
+    /// what an existing entry means.
+    /// </summary>
+    /// <param name="threadId">The thread the input was accepted for.</param>
+    /// <param name="inputId">The input identifier.</param>
+    /// <param name="acceptedAt">When the input was accepted.</param>
+    /// <param name="onlyIfAbsent">
+    /// When true an existing entry is left untouched and the call reports that it did not write.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>True if this call wrote the entry; false if one already existed and was left alone.</returns>
+    private async Task<bool> WriteAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        bool onlyIfAbsent,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(threadId);
         ArgumentNullException.ThrowIfNull(inputId);
@@ -381,6 +416,11 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore,
             var accepted = await LoadJsonFileAsync<List<AcceptedInputEntry>>(acceptedFile, ct) ?? [];
 
             var idx = accepted.FindIndex(a => a.InputId == inputId);
+            if (idx >= 0 && onlyIfAbsent)
+            {
+                return false;
+            }
+
             var entry = new AcceptedInputEntry(threadId, inputId, acceptedAt);
             if (idx >= 0)
             {
@@ -392,6 +432,7 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore,
             }
 
             await WriteJsonFileAsync(acceptedFile, accepted, ct);
+            return true;
         }
         finally
         {

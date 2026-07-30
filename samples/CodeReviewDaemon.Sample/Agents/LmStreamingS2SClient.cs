@@ -153,6 +153,62 @@ internal sealed class LmStreamingS2SClient
     }
 
     /// <summary>
+    /// Verifies, WITHOUT queueing anything, that the host implements the two message-level contracts every
+    /// review turn depends on: per-turn spawn suppression and message idempotency.
+    /// <para>
+    /// Response acknowledgements alone are too late for the FIRST send. An old host ignores unknown request
+    /// properties, so the daemon only learns its key was never honored after that turn is already queued and
+    /// running — the duplicate the key exists to prevent has been created by the very call that detected the
+    /// problem. A capability read has no such side effect, which is also why it (not a probe send) is what a
+    /// RESUMED review uses: a resume must never enqueue to find out who it is talking to.
+    /// </para>
+    /// <para>
+    /// Old hosts have no such endpoint and answer 404/405; that is the expected shape of the failure, and it
+    /// is reported as a contract failure rather than a transport one so the daemon can bound its retries
+    /// instead of re-attempting an incompatibility forever.
+    /// </para>
+    /// </summary>
+    public async Task EnsureHostContractAsync(CancellationToken ct)
+    {
+        using var response = await ExecuteAsync(
+            HttpMethod.Get,
+            "api/conversations/capabilities",
+            body: null,
+            ct);
+
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        {
+            throw new ReviewHostContractException(
+                $"The LmStreaming review host at {_baseUrl} does not advertise conversation capabilities "
+                    + $"(GET api/conversations/capabilities returned {(int)response.StatusCode}), so it "
+                    + "predates the per-turn spawn suppression and message idempotency contracts this review "
+                    + "requires. Upgrade the review host.");
+        }
+
+        _ = response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        var missing = new List<string>();
+        if (!ReadBoolProperty(body, "messageIdempotency"))
+        {
+            missing.Add("messageIdempotency");
+        }
+
+        if (!ReadBoolProperty(body, "spawnSuppression"))
+        {
+            missing.Add("spawnSuppression");
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new ReviewHostContractException(
+                $"The LmStreaming review host at {_baseUrl} does not support "
+                    + $"{string.Join(" and ", missing)}, which this review requires before it may send. "
+                    + $"Body: {body}");
+        }
+    }
+
+    /// <summary>
     /// Queues a user message onto the thread and returns the input id to poll status by.
     /// <para>
     /// <paramref name="suppressSubAgentSpawning"/> asks the host to run THIS turn with no ability to start
@@ -193,7 +249,7 @@ internal sealed class LmStreamingS2SClient
 
         if (suppressSubAgentSpawning && !ReadBoolProperty(body, "spawningSuppressed"))
         {
-            throw new InvalidOperationException(
+            throw new ReviewHostContractException(
                 "The review host did not acknowledge the requested sub-agent spawn suppression "
                     + "('spawningSuppressed' was absent or false), so this turn cannot be guaranteed free of "
                     + $"new sub-agents. Upgrade the LmStreaming review host at {_baseUrl}. Body: {body}");
@@ -201,7 +257,7 @@ internal sealed class LmStreamingS2SClient
 
         if (idempotencyKey is not null && !ReadBoolProperty(body, "idempotencyKeyHonored"))
         {
-            throw new InvalidOperationException(
+            throw new ReviewHostContractException(
                 "The review host did not acknowledge the supplied idempotency key "
                     + "('idempotencyKeyHonored' was absent or false), so re-sending this turn after a lost "
                     + $"response would queue a second one. Upgrade the LmStreaming review host at {_baseUrl}. "
@@ -507,6 +563,20 @@ internal sealed record S2SWorkspace(
 /// run is terminal (null while still running).
 /// </summary>
 internal sealed record S2SStatusResult(string Status, string? RunId, string? ResponseText);
+
+/// <summary>
+/// Thrown when the review host cannot honour a message-level contract this review depends on — per-turn
+/// spawn suppression or message idempotency — either because it predates the contract or because it
+/// answered a send without acknowledging it.
+/// <para>
+/// A distinct type because the failure is NOT transient: retrying an incompatible host reproduces it
+/// exactly, and every attempt costs another (possibly duplicated) review turn. The daemon charges it to the
+/// bounded retry budget so an unexpected version skew parks the run instead of amplifying against the host
+/// forever. Derives from <see cref="InvalidOperationException"/> so callers that only care that the send
+/// failed are unaffected.
+/// </para>
+/// </summary>
+internal sealed class ReviewHostContractException(string message) : InvalidOperationException(message);
 
 /// <summary>
 /// Thrown when the daemon cannot open a TCP connection to the LmStreaming review host (it is not running).

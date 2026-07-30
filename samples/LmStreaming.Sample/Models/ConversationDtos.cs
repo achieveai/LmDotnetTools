@@ -144,6 +144,35 @@ public record ProvisionConversationResponse
 }
 
 /// <summary>
+/// What this host can promise about MESSAGES, independent of any one conversation. Read before the first
+/// send (<c>GET api/conversations/capabilities</c>) by a caller that must not discover an incompatibility
+/// from a response acknowledgement — by then the turn it asked about is already queued and running.
+/// <para>
+/// A host predating this endpoint answers 404, which is itself the answer: neither contract is available.
+/// </para>
+/// </summary>
+public record ConversationCapabilitiesResponse
+{
+    /// <summary>Schema version of this document, so a later shape change stays detectable.</summary>
+    public required int SchemaVersion { get; init; }
+
+    /// <summary>
+    /// True when <see cref="SendMessageRequest.IdempotencyKey"/> is durably honored — i.e. this host has a
+    /// store that can reserve an accepted input id, which is what makes a repeated key reconcile instead of
+    /// queueing a second turn. Derived from that store, not hard-coded, so it cannot advertise a promise the
+    /// deployment cannot keep.
+    /// </summary>
+    public required bool MessageIdempotency { get; init; }
+
+    /// <summary>
+    /// True when <see cref="SendMessageRequest.SuppressSubAgentSpawning"/> is understood: the host either
+    /// enforces it for the turn or refuses the send outright, and never silently ignores it. Whether the
+    /// specific conversation's agent can enforce it is still decided per send.
+    /// </summary>
+    public required bool SpawnSuppression { get; init; }
+}
+
+/// <summary>
 /// Request to enqueue a message onto a previously-provisioned conversation thread.
 /// </summary>
 public record SendMessageRequest

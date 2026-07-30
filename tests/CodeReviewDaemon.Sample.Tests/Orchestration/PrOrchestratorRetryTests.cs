@@ -128,6 +128,26 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     }
 
     [Fact]
+    public async Task A_review_host_contract_failure_at_Reviewed_is_charged_to_the_retry_budget()
+    {
+        // A host that cannot keep the message contracts the turn depends on refuses identically every poll —
+        // the deployment does not change between two 30s polls. Ungoverned that is an unbounded loop, and its
+        // attempts are not free: each one can leave another turn running on the host. Bounded then parked.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(
+            ReviewStage.Reviewed, () => new ReviewHostContractException("host predates message idempotency"));
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewHostContractException>();
+        executor.FailStageCalls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        executor.FailStageCalls.Should().Be(1, "the budget is spent, so the skewed host is parked rather than re-run");
+    }
+
+    [Fact]
     public async Task An_ordinary_failure_at_Reviewed_is_not_charged_to_the_retry_budget()
     {
         // Everything else that can fail a review — a provider blip, a host 5xx, a blank synthesis — is

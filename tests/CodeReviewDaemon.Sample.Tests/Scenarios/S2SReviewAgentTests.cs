@@ -43,6 +43,16 @@ public sealed class S2SReviewAgentTests
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
         new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
 
+    /// <summary>
+    /// Everything the agent sent EXCEPT the host-capability preflight. That GET verifies the message contract
+    /// before the first send and is not part of any turn, so the assertions about what a turn does filter it
+    /// out rather than being loosened.
+    /// </summary>
+    private static IEnumerable<FakeHttpMessageHandler.RecordedRequest> TurnRequests(
+        FakeHttpMessageHandler handler) =>
+        handler.Requests.Where(
+            r => !r.Uri.ToString().Contains("conversations/capabilities", StringComparison.Ordinal));
+
     private static async Task<List<IMessage>> DriveAsync(S2SReviewAgent agent, string userText)
     {
         var collected = new List<IMessage>();
@@ -61,7 +71,7 @@ public sealed class S2SReviewAgentTests
         // Route order matters: the messages POST url (api/conversations/{id}/messages) is a superset of the
         // provision POST url (api/conversations), and the handler is first-match-wins — so the more specific
         // "/messages" POST must be registered BEFORE the "api/conversations" provision POST.
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnSequence(
@@ -91,7 +101,7 @@ public sealed class S2SReviewAgentTests
         // the diff under LmStreaming's generic workspace-agent prompt and never followed the daemon's
         // methodology — most visibly, it dispatched zero code-reviewer:* sub-agents despite a fully populated
         // catalog. Provision carries no model or tool overrides, so the appendix is the only channel for it.
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}")
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-sp\"}");
@@ -117,7 +127,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_asks_the_host_to_suppress_spawning_only_inside_the_suppression_scope()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\",\"spawningSuppressed\":true}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}")
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-sup\"}");
@@ -157,7 +167,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public void The_agent_exposes_no_in_process_completion_source()
     {
-        using var http = NewHttp(new FakeHttpMessageHandler());
+        using var http = NewHttp(new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities());
         var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
 
         IReviewLoopSubAgentSurface surface = agent;
@@ -167,7 +177,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_throws_when_the_hosted_run_ends_errored_even_with_partial_text()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(
                 HttpMethod.Get,
@@ -187,7 +197,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_throws_when_a_completed_run_has_blank_review_text()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(
                 HttpMethod.Get,
@@ -210,7 +220,7 @@ public sealed class S2SReviewAgentTests
         // drained, then bound the SAME input to a real run that completed with the review text. Taking the
         // Interrupted reading at face value abandoned a review that was seconds from succeeding, so an
         // Interrupted status is only believed once it holds on the same run id through the grace window.
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnSequence(
                 HttpMethod.Get,
@@ -239,7 +249,7 @@ public sealed class S2SReviewAgentTests
         // The other half of the Interrupted contract: an input whose run really is dead (nothing ever re-binds
         // it) must not hold the review open to the overall timeout. Once the same run id keeps reading
         // Interrupted for the whole grace window it is taken as the input's final state — no text, ids intact.
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Interrupted\",\"runId\":\"run-dead\"}")
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-dead\"}");
@@ -262,7 +272,7 @@ public sealed class S2SReviewAgentTests
         // mint a second one — a fresh conversation would carry none of the review history the synthesis reads
         // and would orphan the deep-link already posted on the PR. NO provision route is registered here: the
         // fake handler answers an unrouted request with 501, so any ProvisionAsync call fails this test.
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-2\"}")
             .OnJson(
                 HttpMethod.Get,
@@ -280,7 +290,7 @@ public sealed class S2SReviewAgentTests
         handler.Requests.Should().NotContain(
             r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal),
             "a seeded thread is resumed, never re-provisioned");
-        handler.Requests.Should().OnlyContain(
+        TurnRequests(handler).Should().OnlyContain(
             r => r.Uri.ToString().Contains("thread-persisted", StringComparison.Ordinal),
             "every call targets the persisted conversation");
     }
@@ -294,7 +304,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_rejoins_an_armed_input_instead_of_queueing_a_second_turn()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(
                 HttpMethod.Get,
                 "/status",
@@ -311,7 +321,7 @@ public sealed class S2SReviewAgentTests
         messages.Should().ContainSingle().Subject.Should().BeOfType<TextMessage>()
             .Which.Text.Should().Be("## Review\nResumed.");
         reAccepted.Should().BeEmpty("nothing new was accepted — the checkpoint the caller supplied still stands");
-        handler.Requests.Should().OnlyContain(
+        TurnRequests(handler).Should().OnlyContain(
             r => r.Method == HttpMethod.Get && r.Uri.Query.Contains("inputId=input-inflight", StringComparison.Ordinal),
             "the resumed turn only polls the input the host already took");
     }
@@ -325,7 +335,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_reports_a_newly_accepted_input_id_before_it_starts_polling()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-minted\",\"idempotencyKeyHonored\":true}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
         using var http = NewHttp(handler);
@@ -359,7 +369,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_arms_only_the_next_turn()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-fresh\"}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
         using var http = NewHttp(handler);
@@ -386,7 +396,7 @@ public sealed class S2SReviewAgentTests
     {
         // Route order is load-bearing: the send URL is api/conversations/{id}/messages, so the narrower
         // "/messages" route has to be registered ahead of the conversation-create one to win the first match.
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-minted\"}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
@@ -414,7 +424,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_reports_no_mint_when_it_resumed_a_conversation()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
         using var http = NewHttp(handler);
@@ -438,7 +448,7 @@ public sealed class S2SReviewAgentTests
     [Fact]
     public async Task ExecuteRunAsync_fails_the_turn_when_the_minted_conversation_cannot_be_recorded()
     {
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-minted\"}");
         using var http = NewHttp(handler);
@@ -462,7 +472,7 @@ public sealed class S2SReviewAgentTests
         // then spend it AGAIN on synthesis. With a deadline already in the past the agent must give up
         // immediately — proven by the poll never issuing a single status request.
 
-        var handler = new FakeHttpMessageHandler()
+        var handler = new FakeHttpMessageHandler().OnCurrentReviewHostCapabilities()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"InProgress\",\"runId\":\"run-slow\"}")
             .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-budget\"}");
@@ -475,7 +485,61 @@ public sealed class S2SReviewAgentTests
 
         await act.Should().ThrowAsync<TimeoutException>();
         handler.Requests.Should().NotContain(
-            r => r.Method == HttpMethod.Get,
+            r => r.Uri.ToString().Contains("/status", StringComparison.Ordinal),
             "the exhausted shared budget must not open a fresh per-turn poll window");
+    }
+
+    /// <summary>
+    /// The point of a PREFLIGHT. A host that predates these contracts silently ignores the request fields
+    /// that carry them, so a caller that only reads response acknowledgements finds out once its turn is
+    /// already queued — with an unsuppressed sub-agent fan-out running on the host and a retry that would
+    /// duplicate the review. Both shapes of "cannot keep it" are the same failure: the endpoint is missing
+    /// (an older host), or it is present and answers no (a skewed deployment).
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "{\"error\":\"not_found\"}")]
+    [InlineData(HttpStatusCode.OK, "{\"schemaVersion\":1,\"messageIdempotency\":false,\"spawnSuppression\":true}")]
+    public async Task ExecuteRunAsync_sends_nothing_to_a_host_that_cannot_keep_the_message_contracts(
+        HttpStatusCode status,
+        string body)
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "conversations/capabilities", body, status)
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-old-host\"}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        _ = await act.Should().ThrowAsync<ReviewHostContractException>();
+        handler.Requests.Should().NotContain(
+            r => r.Method == HttpMethod.Post,
+            "nothing may be provisioned or queued on a host that cannot keep the contract the turn depends on");
+    }
+
+    /// <summary>
+    /// A resumed review never provisions, so the send is its FIRST call to the host — checking the contract
+    /// as part of provisioning would skip exactly the case that matters most, where a conversation with a
+    /// live sub-agent tree is about to be handed another turn.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_verifies_the_host_contract_on_a_resumed_thread_too()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "conversations/capabilities", "{}", HttpStatusCode.NotFound)
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-2\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-r\",\"response\":{\"text\":\"ok\"}}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(
+            new LmStreamingS2SClient(http, "s", "id", "key"), title: null, existingThreadId: "thread-persisted");
+
+        Func<Task> act = async () => _ = await DriveAsync(agent, "synthesize the final review");
+
+        _ = await act.Should().ThrowAsync<ReviewHostContractException>();
+        handler.Requests.Should().NotContain(
+            r => r.Uri.ToString().Contains("/messages", StringComparison.Ordinal),
+            "the resume path must fail before it queues a second turn onto the conversation");
     }
 }

@@ -590,6 +590,24 @@ public class ConversationsController(
     }
 
     /// <summary>
+    /// Reports the message-level contracts this host can keep, without touching any conversation. Exists so
+    /// a caller can fail BEFORE its first send rather than after: an old host silently ignores unknown
+    /// request properties, so a caller that only checks response acknowledgements finds out it had no
+    /// guarantee once the turn is already queued — and for a resumed conversation, checking by sending is
+    /// not an option at all.
+    /// </summary>
+    [HttpGet("capabilities")]
+    public IActionResult GetCapabilities() =>
+        Ok(new ConversationCapabilitiesResponse
+        {
+            SchemaVersion = 1,
+            // Answered from the same durable fact SendMessage reserves against, so the two can never
+            // disagree about whether a key will actually be honored.
+            MessageIdempotency = store is IRunLedgerStore,
+            SpawnSuppression = true,
+        });
+
+    /// <summary>
     /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
     /// input is durably recorded as accepted, before it is necessarily drained into a run — callers
     /// poll <see cref="GetStatus"/> by the returned <c>inputId</c> to learn when/how it resolved.
@@ -602,16 +620,19 @@ public class ConversationsController(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // A blank key is refused rather than read as "absent": it is the shape of a caller whose key
-        // derivation silently produced nothing, and treating it as absent would hand that caller an
-        // acknowledged-but-unprotected send — the one outcome the acknowledgement exists to rule out.
-        if (request.IdempotencyKey is not null && string.IsNullOrWhiteSpace(request.IdempotencyKey))
+        // A key that cannot be turned into a durable, unambiguous id is refused rather than read as
+        // "absent": absent means "no protection asked for", but a caller that SENT a key is asking for a
+        // guarantee, and treating its unusable key as absent would hand it an acknowledged-but-unprotected
+        // send — the one outcome the acknowledgement exists to rule out.
+        if (request.IdempotencyKey is not null && !IsUsableIdempotencyKey(request.IdempotencyKey))
         {
             return BadRequest(new
             {
                 error = "invalid_idempotency_key",
                 code = "invalid_idempotency_key",
-                detail = "IdempotencyKey, when supplied, must be a non-blank identifier for this turn.",
+                detail =
+                    "IdempotencyKey, when supplied, must be a non-blank identifier of at most "
+                    + $"{MaxIdempotencyKeyLength} characters and must not contain control characters.",
                 threadId,
             });
         }
@@ -704,55 +725,83 @@ public class ConversationsController(
         }
 
         // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
-        // turn does, and the resulting id is what the agent durably records on acceptance — so a repeat can be
+        // turn does, and the resulting id is RESERVED durably before anything is queued — so a repeat can be
         // reconciled against the same ledger a status poll reads, with no extra persistence. That is the
         // recovery a caller needs when it never saw the first response (socket reset, or a process that died
         // between acceptance and the answer): it gets the input the host already took, instead of queueing a
-        // second minutes-long, sub-agent-fanning turn onto the same conversation. Folding the options in keeps
-        // a repeat that asks for something DIFFERENT (suppression flipped) a different operation rather than a
-        // false dedupe, and the capability gate above runs first so no repeat can slip past it.
-        var inputId = request.IdempotencyKey is null
-            ? Guid.NewGuid().ToString()
-            : DeriveIdempotentInputId(request.IdempotencyKey, request.SuppressSubAgentSpawning);
-        if (request.IdempotencyKey is not null
-            && await statusResolver.ResolveByInputIdAsync(threadId, inputId, ct) is not null)
+        // second minutes-long, sub-agent-fanning turn onto the same conversation.
+        var ledger = store as IRunLedgerStore;
+        if (request.IdempotencyKey is not null && ledger is null)
         {
-            logger.LogInformation(
-                "SendMessage for thread {ThreadId} reconciled to already-accepted input {InputId}; "
-                    + "nothing was queued",
+            // Refused BEFORE the enqueue, because the alternative is queueing the turn and then telling the
+            // caller its key was not honored — by which point the duplicate this endpoint exists to prevent
+            // has already been created. Without a ledger there is nowhere to record the reservation, so the
+            // guarantee cannot be made at all.
+            logger.LogWarning(
+                "SendMessage for thread {ThreadId} rejected: store {StoreType} cannot durably reserve an "
+                    + "input id, so an idempotency key cannot be honored",
                 threadId,
-                inputId);
-            return Accepted(new SendMessageResponse
+                store.GetType().Name);
+            return BadRequest(new
             {
-                InputId = inputId,
-                Queued = false,
-                // The gate above already refused any request whose guarantee this thread's agent cannot make,
-                // so a reconciled repeat asking for suppression is being served an input that carries it.
-                SpawningSuppressed = request.SuppressSubAgentSpawning,
-                IdempotencyKeyHonored = true,
+                error = "idempotency_unsupported",
+                code = "idempotency_unsupported",
+                detail =
+                    "This host cannot durably record accepted inputs, so it cannot promise that a repeated "
+                    + "IdempotencyKey will not queue a second turn.",
+                threadId,
             });
+        }
+
+        var idempotent = request.IdempotencyKey is not null;
+        var inputId = idempotent
+            ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning)
+            : ServerMintedInputIdPrefix + Guid.NewGuid().ToString("N");
+
+        if (idempotent
+            && await TryReconcileAcceptedInputAsync(ledger!, threadId, inputId, ct) is { } reconciled)
+        {
+            return reconciled;
         }
 
         // A null return means the input channel is full — TrySendAsync guarantees no accepted-input
         // record survives in that case. A thrown exception (durable-store write failure) is left to
-        // propagate to a 500, per the REST contract (no inputId returned either way).
-        var receipt = agent is ISpawnSuppressingAgent suppressing
-            ? await suppressing.TrySendAsync(
-                new UserInput(
-                    [userMessage],
-                    inputId,
-                    ParentRunId: null,
-                    SuppressSubAgentSpawning: request.SuppressSubAgentSpawning),
-                ct)
-            : await agent.TrySendAsync([userMessage], inputId: inputId, parentRunId: null, ct);
+        // propagate to a 500, per the REST contract (no inputId returned either way). Either way the
+        // reservation taken above has to go back, or the id stays claimed by work that never ran and every
+        // later retry of it reconciles to a turn that does not exist.
+        SendReceipt? receipt;
+        try
+        {
+            receipt = agent is ISpawnSuppressingAgent suppressing
+                ? await suppressing.TrySendAsync(
+                    new UserInput(
+                        [userMessage],
+                        inputId,
+                        ParentRunId: null,
+                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning),
+                    ct)
+                : await agent.TrySendAsync([userMessage], inputId: inputId, parentRunId: null, ct);
+        }
+        catch when (idempotent)
+        {
+            await ReleaseReservationAsync(ledger!, threadId, inputId);
+            throw;
+        }
+
         if (receipt == null)
         {
             logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
+            if (idempotent)
+            {
+                await ReleaseReservationAsync(ledger!, threadId, inputId);
+            }
+
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
                 new { error = "queue_full", code = "queue_full", threadId });
         }
 
+        var keyHonored = idempotent;
         if (request.SuppressSubAgentSpawning && !receipt.SpawningSuppressed)
         {
             // The capability check got the request this far; the RECEIPT is what says this particular input
@@ -764,6 +813,16 @@ public class ConversationsController(
                     + "sub-agent spawn suppression; the response will not claim the guarantee",
                 threadId,
                 agent.GetType().Name);
+
+            if (idempotent)
+            {
+                // The reservation is what a later repeat reads the suppression outcome back out of, and this
+                // id says "suppressed" while the receipt says otherwise. Dropping it (and the honored claim
+                // with it) keeps the two honest together: no stored record survives to tell a retry that a
+                // guarantee held, and the caller is told plainly that this send was not deduped.
+                await ReleaseReservationAsync(ledger!, threadId, inputId);
+                keyHonored = false;
+            }
         }
 
         return Accepted(new SendMessageResponse
@@ -771,17 +830,118 @@ public class ConversationsController(
             InputId = inputId,
             Queued = true,
             SpawningSuppressed = receipt.SpawningSuppressed,
-            IdempotencyKeyHonored = request.IdempotencyKey is not null,
+            IdempotencyKeyHonored = keyHonored,
         });
     }
+
+    /// <summary>
+    /// Claims <paramref name="inputId"/> for this send, and returns the response to send INSTEAD of
+    /// queueing when the claim shows the input was already taken.
+    /// <para>
+    /// The resolver lookup comes first because it is the only thing that still sees an input which has
+    /// already been drained into a run (the agent folds accepted ids into the run row and then deletes the
+    /// acceptance record — in that order, so no instant exists where an accepted input is invisible to
+    /// both). The reservation then decides the concurrent case, in the store, without a read-then-write
+    /// window: two simultaneous sends of the same key both see nothing above, and exactly one of them wins
+    /// the right to enqueue.
+    /// </para>
+    /// </summary>
+    /// <returns>The reconciled response, or null when this caller won the reservation and must enqueue.</returns>
+    private async Task<IActionResult?> TryReconcileAcceptedInputAsync(
+        IRunLedgerStore ledger,
+        string threadId,
+        string inputId,
+        CancellationToken ct)
+    {
+        var alreadyResolvable = await statusResolver.ResolveByInputIdAsync(threadId, inputId, ct) is not null;
+        if (!alreadyResolvable
+            && await ledger.TryReserveAcceptedInputAsync(threadId, inputId, DateTimeOffset.UtcNow, ct))
+        {
+            return null;
+        }
+
+        logger.LogInformation(
+            "SendMessage for thread {ThreadId} reconciled to already-accepted input {InputId}; nothing was queued",
+            threadId,
+            inputId);
+
+        return Accepted(new SendMessageResponse
+        {
+            InputId = inputId,
+            Queued = false,
+            // Read back out of the id that was actually found accepted, not out of this request: the id is
+            // the record, and it can only have been written by a send whose capability check had already
+            // passed. A repeat that asks for something different derives a different id and never lands here.
+            SpawningSuppressed = SuppressionRecordedIn(inputId),
+            IdempotencyKeyHonored = true,
+        });
+    }
+
+    /// <summary>
+    /// Gives back a reservation whose send did not survive to become queued work. Best-effort and never
+    /// cancellable: the request's token is typically already cancelled on this path, and a reservation left
+    /// behind is worse than the extra work — it would make every later retry of that key reconcile to a turn
+    /// that never ran.
+    /// </summary>
+    private async Task ReleaseReservationAsync(IRunLedgerStore ledger, string threadId, string inputId)
+    {
+        try
+        {
+            await ledger.RemoveAcceptedInputAsync(threadId, inputId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Could not release the reservation for input {InputId} on thread {ThreadId}; a repeat of this "
+                    + "idempotency key will reconcile to a turn that was never queued",
+                inputId,
+                threadId);
+        }
+    }
+
+    /// <summary>Longest caller-supplied idempotency key this host will turn into a durable input id.</summary>
+    private const int MaxIdempotencyKeyLength = 200;
+
+    /// <summary>
+    /// Namespace for an id this HOST minted because no key was supplied. Distinct from
+    /// <see cref="IdempotentInputIdPrefix"/> so a server-minted id can never be produced by any caller key.
+    /// </summary>
+    private const string ServerMintedInputIdPrefix = "srv:";
+
+    /// <summary>Namespace for an id derived from a caller's idempotency key.</summary>
+    private const string IdempotentInputIdPrefix = "idem:";
+
+    /// <summary>
+    /// A key must be storable and unambiguous as part of an input id. Control characters are rejected
+    /// because they survive JSON but not logs, ids and file/db round-trips intact; the length cap bounds
+    /// what a caller can push into every accepted-input record and run row.
+    /// </summary>
+    private static bool IsUsableIdempotencyKey(string idempotencyKey) =>
+        !string.IsNullOrWhiteSpace(idempotencyKey)
+        && idempotencyKey.Length <= MaxIdempotencyKeyLength
+        && !idempotencyKey.Any(char.IsControl);
 
     /// <summary>
     /// Derives the durable input id an idempotent send is recorded under. The options that change what the
     /// turn DOES are folded in, so a repeat carrying different options is a different operation instead of
     /// silently resolving to the earlier, differently-behaving input.
+    /// <para>
+    /// The mapping is injective by construction: both variable parts sit at FIXED positions — a one-character
+    /// suppression flag immediately after the namespace, then the key as the entire remainder. A suffix
+    /// instead of a prefix would not be, because a key may itself end in whatever marker was chosen, letting
+    /// two different (key, flag) pairs derive the same id and dedupe against each other.
+    /// </para>
     /// </summary>
     private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning) =>
-        suppressSubAgentSpawning ? $"{idempotencyKey}:spawn-suppressed" : idempotencyKey;
+        $"{IdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
+
+    /// <summary>
+    /// Reads the suppression outcome back out of a derived input id — the inverse of
+    /// <see cref="DeriveIdempotentInputId"/>, and the reason that id is the authoritative record.
+    /// </summary>
+    private static bool SuppressionRecordedIn(string inputId) =>
+        inputId.StartsWith(IdempotentInputIdPrefix + "1:", StringComparison.Ordinal);
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or

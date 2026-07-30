@@ -265,7 +265,7 @@ public class TrySendAsyncDurabilityTests
     {
         private readonly InMemoryConversationStore _inner = new();
 
-        /// <summary>Runs first inside <see cref="RecordAcceptedInputAsync"/>; may throw to simulate a store failure.</summary>
+        /// <summary>Runs first inside <see cref="RecordAcceptedInputAsync"/> and <see cref="TryReserveAcceptedInputAsync"/>; may throw to simulate a store failure.</summary>
         public Func<string, Task>? OnRecordAcceptedInput { get; set; }
 
         /// <summary>Runs first inside <see cref="UpsertRunLedgerAsync"/>; may throw to simulate a store failure for a specific entry (e.g. only the terminal Completed/Errored write, leaving the earlier Queued/InProgress writes untouched).</summary>
@@ -296,6 +296,22 @@ public class TrySendAsyncDurabilityTests
         {
             CallLog.Add("RemoveAccepted:" + inputId);
             return _inner.RemoveAcceptedInputAsync(threadId, inputId, ct);
+        }
+
+        public async Task<bool> TryReserveAcceptedInputAsync(
+            string threadId,
+            string inputId,
+            DateTimeOffset acceptedAt,
+            CancellationToken ct = default)
+        {
+            CallLog.Add("ReserveAccepted:" + inputId);
+
+            if (OnRecordAcceptedInput != null)
+            {
+                await OnRecordAcceptedInput(inputId);
+            }
+
+            return await _inner.TryReserveAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
         }
 
         public Task<IReadOnlySet<string>> ListAcceptedInputIdsAsync(string threadId, CancellationToken ct = default) =>
