@@ -164,7 +164,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // The primary review agent must actually SEE the manifest in its user input so it can Read files by
         // exact path instead of globbing the repo root.
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var input = reviewAgent.ReceivedInputs.Should().ContainSingle().Subject;
+        var input = reviewAgent.ReceivedInputs[0];
         var text = input.Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("src/Foo/Bar.cs");
 
@@ -172,6 +172,69 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         // the input) via DaemonAgentFactory.CreateReviewProfile's workspace-layout variables.
         var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
         profile.SystemPrompt.Should().Contain("/workspace/target");
+    }
+
+    [Fact]
+    public async Task Reviewed_drives_the_provisional_turn_then_an_authoritative_synthesis_turn_on_one_agent()
+    {
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // ONE agent — one conversation — drives both turns. The first is collect-only; the second is the
+        // authoritative synthesis whose answer becomes the persisted review.
+        var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        agent.ReceivedInputs.Should().HaveCount(2, "collect-only provisional, then synthesis on the same agent");
+        agent.ReceivedInputs[1].Messages.OfType<TextMessage>().Single().Text
+            .Should().Contain("sub-agent", "the synthesis turn is told what the settled sub-agent roster was");
+    }
+
+    [Fact]
+    public async Task Reviewed_keeps_one_loop_alive_across_collect_barrier_and_synthesis()
+    {
+        // The central lifecycle guarantee of the completion barrier: the parent loop is NOT disposed between
+        // the provisional turn and the barrier — disposing it would tear down the very SubAgentManager the
+        // barrier polls (and the conversation synthesis must continue on). Disposal happens once, after
+        // synthesis. The barrier observes the world mid-scope, so its observation is the proof.
+        var observedRunsAtBarrier = new List<int>();
+        // Resolved lazily: the agent under observation does not exist until the Reviewed stage creates it, and
+        // the barrier only ever polls from inside that stage.
+        FakeReviewAgentLoopFactory? factory = null;
+        var source = new ObservingCompletionSource(
+            () => observedRunsAtBarrier.Add(factory!.CreatedAgents[0].Lifecycle.Count));
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions { ReviewSubAgentBarrierQuietSeconds = 1 },
+            completionSource: source);
+        factory = fixture.Factory;
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        agent.Lifecycle.Should().Equal(
+            FakeMultiTurnAgent.RunEvent,
+            FakeMultiTurnAgent.RunEvent,
+            FakeMultiTurnAgent.DisposeEvent);
+        observedRunsAtBarrier.Should().NotBeEmpty("the barrier ran").And.AllBeEquivalentTo(
+            1, "the barrier polls after exactly one turn, with the loop still alive (no dispose event yet)");
+    }
+
+    /// <summary>
+    /// A completion source with an empty (therefore immediately all-terminal) roster that reports each poll
+    /// to <paramref name="onPoll"/> — used to observe the parent loop's lifecycle from INSIDE the barrier.
+    /// </summary>
+    private sealed class ObservingCompletionSource(Action onPoll) : IReviewSubAgentCompletionSource
+    {
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run, string parentThreadId, CancellationToken ct)
+        {
+            onPoll();
+            return Task.FromResult(new ReviewSubAgentTreeSnapshot([]));
+        }
     }
 
     [Fact]
@@ -293,7 +356,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
         text.Should().Contain("Null-guard boundaries", "the seeded ToC entries are surfaced to the reviewer");
     }
@@ -332,7 +395,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await act.Should().NotThrowAsync("a KB/notes read failure must degrade, not kill the review (design §6)");
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Prior knowledge (KnowledgeBase/_toc.md)", "the failed KB read is skipped, not prepended");
     }
 
@@ -358,7 +421,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Prior knowledge", "a missing _toc.md leaves the review input unchanged");
     }
 
@@ -604,14 +667,13 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     public async Task Posted_does_not_post_a_comment_when_the_review_is_empty()
     {
         using var fixture = Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
-        // The agent produces no review prose. Posting a "_No review content was produced._" placeholder would
+        // The persisted review carries no prose. Posting a "_No review content was produced._" placeholder would
         // claim the head_sha's idempotency slot on the provider — the backstop scan would then adopt that
         // placeholder and permanently suppress a later REAL review of the same commit (e.g. a re-run on a
         // model that actually produces content). So an empty review must post NOTHING.
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = string.Empty;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
-        await RunAllStagesAsync(fixture, run);
+        await RunAllStagesAsync(fixture, run, SeedEmptyReviewArtifact);
 
         fixture.AdoPublisher!.PostedBodies.Should().BeEmpty("an empty review must not claim the head's dedup slot");
     }
@@ -702,10 +764,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ? Fixture.Ado(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true })
             : Fixture.GitHub(LoggerFactory, new CodeReviewDaemonOptions { EnableCommentPosting = true, EnableHostSummaryFallback = true });
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
-        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = string.Empty;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z");
 
-        await RunAllStagesAsync(fixture, run);
+        await RunAllStagesAsync(fixture, run, SeedEmptyReviewArtifact);
 
         publisher.PostedBodies.Should().BeEmpty("an empty review must not claim the head's dedup slot");
     }
@@ -755,13 +816,31 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         fixture.FileSystem.Seed("/workspace/reviewbot/KnowledgeBase/_toc.md", "# Knowledge Base");
     }
 
-    private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
+    private static async Task RunAllStagesAsync(
+        Fixture fixture, ReviewRun run, Action<Fixture, ReviewRun>? afterReviewed = null)
     {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        afterReviewed?.Invoke(fixture, run);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
     }
+
+    /// <summary>
+    /// Appends an EMPTY <c>review</c> artifact, which the later stages then read (artifacts are read
+    /// last-wins). The Reviewed stage can no longer emit one itself — a blank synthesis turn is now a hard
+    /// failure — so this is how the publisher's empty-review guard is reached, and it is the layer that guard
+    /// actually protects: what was PERSISTED, whatever produced it (including artifacts written by older builds).
+    /// </summary>
+    private static void SeedEmptyReviewArtifact(Fixture fixture, ReviewRun run) =>
+        _ = fixture.Store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Provider = "github",
+            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(string.Empty, "run-review", run.VariantId)),
+        });
 
     private sealed class Fixture : IDisposable
     {
@@ -773,7 +852,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             string repoProvider,
             CodeReviewDaemonOptions? options,
             SandboxCommandResult? diffResult,
-            IReviewCommentPublisher[]? publishersOverride)
+            IReviewCommentPublisher[]? publishersOverride,
+            IReviewSubAgentCompletionSource? completionSource)
         {
             _db = new TempSqliteDatabase();
             _repoProvider = repoProvider;
@@ -800,7 +880,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 FileSystem,
                 options,
                 publishers,
-                loggerFactory);
+                loggerFactory,
+                completionSource: completionSource);
         }
 
         public ReviewStore Store { get; }
@@ -815,14 +896,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ILoggerFactory loggerFactory,
             CodeReviewDaemonOptions? options = null,
             SandboxCommandResult? diffResult = null,
-            IReviewCommentPublisher[]? publishersOverride = null) =>
-            new(loggerFactory, "github", options, diffResult, publishersOverride);
+            IReviewCommentPublisher[]? publishersOverride = null,
+            IReviewSubAgentCompletionSource? completionSource = null) =>
+            new(loggerFactory, "github", options, diffResult, publishersOverride, completionSource);
 
         public static Fixture Ado(
             ILoggerFactory loggerFactory,
             CodeReviewDaemonOptions? options = null,
             IReviewCommentPublisher[]? publishersOverride = null) =>
-            new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride);
+            new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride, completionSource: null);
 
         public ReviewRun SeedRun(string watermark = "wm-1")
         {

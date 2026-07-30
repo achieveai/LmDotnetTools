@@ -25,8 +25,12 @@ internal interface IReviewAgentLoopFactory
     /// against (minted by <see cref="S2SReviewWorkspacePreparer"/>) — the whole record, not just its id,
     /// because the factory also titles the conversation from the PR it was prepared for. It is <c>null</c>
     /// — and ignored — on the in-process paths (<see cref="LiveReviewAgentLoopFactory"/> and the test
-    /// fake), which own the conversation locally. The caller owns the returned loop's lifetime (it is
-    /// <see cref="IAsyncDisposable"/>).
+    /// fake), which own the conversation locally. <paramref name="resumeHostedThreadId"/> rejoins an
+    /// ALREADY-PROVISIONED hosted conversation instead of minting a new one (S2S only): a review is two
+    /// turns — collect-only provisional, then authoritative synthesis after the sub-agent completion
+    /// barrier — and one picked up after a restart must continue on the thread its provisional turn ran on,
+    /// which is also the deep-link already posted on the PR. The caller owns the returned loop's lifetime
+    /// (it is <see cref="IAsyncDisposable"/>).
     /// </summary>
     IMultiTurnAgent Create(
         AgentProfile profile,
@@ -34,5 +38,6 @@ internal interface IReviewAgentLoopFactory
         string threadId,
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
-        PreparedReviewWorkspace? reviewWorkspace = null);
+        PreparedReviewWorkspace? reviewWorkspace = null,
+        string? resumeHostedThreadId = null);
 }

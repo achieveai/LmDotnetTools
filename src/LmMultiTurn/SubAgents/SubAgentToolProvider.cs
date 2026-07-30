@@ -14,8 +14,22 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// </summary>
 public class SubAgentToolProvider : IFunctionProvider
 {
+    /// <summary>
+    /// Name of the tool that starts a NEW sub-agent. Exposed so hosts can reason about the
+    /// tool that <see cref="SuppressSpawning"/> gates without duplicating the literal.
+    /// </summary>
+    public const string SpawnToolName = "Agent";
+
     private readonly SubAgentManager _manager;
     private readonly MutableSubAgentTemplateSource _source;
+
+    /// <summary>
+    /// Number of open <see cref="SuppressSpawning"/> scopes. Non-zero hides the spawn tool
+    /// from the contract set and makes its handler refuse. Reference-counted so nested
+    /// scopes compose, and read with <see cref="Volatile"/> because contract building and
+    /// tool dispatch can happen on different threads than the scope owner.
+    /// </summary>
+    private int _spawnSuppressionDepth;
 
     public SubAgentToolProvider(
         SubAgentManager manager,
@@ -34,11 +48,52 @@ public class SubAgentToolProvider : IFunctionProvider
     /// </summary>
     public int Priority => 100;
 
+    /// <summary>
+    /// Hides the spawn tool for the lifetime of the returned scope, keeping SendMessage and
+    /// CheckAgent available. Used when a turn must consume what already-running sub-agents
+    /// delivered without being able to start new ones (e.g. a synthesis turn that runs after
+    /// a completion barrier). Contracts are rebuilt per turn, so the next contract build
+    /// inside the scope simply omits the tool; the handler is additionally gated because the
+    /// loop snapshots handlers at construction time and the model can replay an older call.
+    /// Scopes are reference-counted and each scope's <c>Dispose</c> is idempotent.
+    /// </summary>
+    public IDisposable SuppressSpawning() => new SpawnSuppressionScope(this);
+
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
-        yield return CreateAgentDescriptor();
+        if (!IsSpawningSuppressed)
+        {
+            yield return CreateAgentDescriptor();
+        }
+
         yield return CreateSendMessageDescriptor();
         yield return CreateCheckAgentDescriptor();
+    }
+
+    private bool IsSpawningSuppressed => Volatile.Read(ref _spawnSuppressionDepth) > 0;
+
+    /// <summary>
+    /// Reference-counted, idempotent suppression scope handed out by <see cref="SuppressSpawning"/>.
+    /// </summary>
+    private sealed class SpawnSuppressionScope : IDisposable
+    {
+        private SubAgentToolProvider? _owner;
+
+        internal SpawnSuppressionScope(SubAgentToolProvider owner)
+        {
+            _owner = owner;
+            _ = Interlocked.Increment(ref owner._spawnSuppressionDepth);
+        }
+
+        public void Dispose()
+        {
+            // Exchange-to-null so a repeated Dispose cannot decrement a depth it no longer owns.
+            var owner = Interlocked.Exchange(ref _owner, null);
+            if (owner is not null)
+            {
+                _ = Interlocked.Decrement(ref owner._spawnSuppressionDepth);
+            }
+        }
     }
 
     private FunctionDescriptor CreateAgentDescriptor()
@@ -51,7 +106,7 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var contract = new FunctionContract
         {
-            Name = "Agent",
+            Name = SpawnToolName,
             Description =
                 "Delegate a task to a specialized sub-agent. By default this BLOCKS "
                 + "until the sub-agent finishes and returns its final answer as the "
@@ -257,6 +312,16 @@ public class SubAgentToolProvider : IFunctionProvider
         ToolCallContext context,
         CancellationToken cancellationToken)
     {
+        // Handlers are snapshotted by the loop at construction time, so dropping the contract
+        // is not enough — refuse here too if the model replays a spawn from earlier history.
+        if (IsSpawningSuppressed)
+        {
+            return ToolHandlerResult.FromError(
+                "Spawning new sub-agents is not available for this turn. Use CheckAgent to read what "
+                    + "the existing sub-agents delivered, or SendMessage to follow up with one of them.",
+                "spawn_suppressed");
+        }
+
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
 

@@ -51,7 +51,47 @@ internal interface IReviewSubAgentCompletionSource
 }
 
 /// <summary>One observation of the whole descendant roster, flattened across every depth.</summary>
-internal sealed record ReviewSubAgentTreeSnapshot(IReadOnlyList<ReviewSubAgentNode> Nodes);
+internal sealed record ReviewSubAgentTreeSnapshot(IReadOnlyList<ReviewSubAgentNode> Nodes)
+{
+    /// <summary>What <see cref="ToSafeInventory"/> renders for a review that dispatched no sub-agents. A
+    /// blank inventory would read as a truncated prompt; this says plainly there is nothing to fold in.</summary>
+    public const string NoSubAgents = "No sub-agents were dispatched.";
+
+    /// <summary>
+    /// Renders the settled roster for the synthesis prompt: one line per child carrying ONLY its
+    /// <see cref="ReviewSubAgentNode.Name"/>, <see cref="ReviewSubAgentNode.Template"/>,
+    /// <see cref="ReviewSubAgentNode.Status"/> and <see cref="ReviewSubAgentNode.FailureCode"/>.
+    /// <para>
+    /// Deliberately impoverished. The synthesis turn reads what the children actually produced through the
+    /// delivered-result tools, so the prompt needs only the roster's shape — enough for the model to notice
+    /// a reviewer that failed and to weigh its own analysis accordingly. Agent ids, thread ids, prompts and
+    /// raw failure text are all omitted: they are execution handles and untrusted content, and embedding
+    /// them would put transcript detail into the authoritative review's context. Output is sorted (not
+    /// snapshot order) so the same roster always renders the same prompt.
+    /// </para>
+    /// </summary>
+    public string ToSafeInventory()
+    {
+        var lines = Nodes
+            .Select(static n => new
+            {
+                Name = string.IsNullOrWhiteSpace(n.Name) ? n.Template : n.Name,
+                n.Template,
+                Status = n.Status.ToString(),
+                n.FailureCode,
+            })
+            .OrderBy(static n => n.Name, StringComparer.Ordinal)
+            .ThenBy(static n => n.Template, StringComparer.Ordinal)
+            .ThenBy(static n => n.Status, StringComparer.Ordinal)
+            .ThenBy(static n => n.FailureCode, StringComparer.Ordinal)
+            .Select(static n => string.IsNullOrWhiteSpace(n.FailureCode)
+                ? $"- {n.Name} ({n.Template}): {n.Status}"
+                : $"- {n.Name} ({n.Template}): {n.Status} — failure: {n.FailureCode}")
+            .ToArray();
+
+        return lines.Length == 0 ? NoSubAgents : string.Join("\n", lines);
+    }
+}
 
 /// <summary>
 /// Thrown when <see cref="ReviewSubAgentCompletionBarrier.WaitAsync"/> reaches its caller-supplied absolute

@@ -18,7 +18,8 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class S2SReviewAgentTests
 {
-    private static S2SReviewAgent NewAgent(LmStreamingS2SClient client, string? title) =>
+    private static S2SReviewAgent NewAgent(
+        LmStreamingS2SClient client, string? title, string? existingThreadId = null) =>
         new(
             client,
             workspaceId: "ws-1",
@@ -31,7 +32,8 @@ public sealed class S2SReviewAgentTests
             pollMaxInterval: TimeSpan.FromMilliseconds(1),
             overallTimeout: TimeSpan.FromSeconds(5),
             terminalConfirmDelay: TimeSpan.FromMilliseconds(1),
-            interruptedGrace: TimeSpan.FromMilliseconds(50));
+            interruptedGrace: TimeSpan.FromMilliseconds(50),
+            existingThreadId: existingThreadId);
 
     private static HttpClient NewHttp(FakeHttpMessageHandler handler) =>
         new(handler) { BaseAddress = new Uri("http://localhost:5051/") };
@@ -189,5 +191,60 @@ public sealed class S2SReviewAgentTests
         await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*run-dead*Interrupted*");
         agent.ThreadId.Should().Be("thread-dead");
         agent.CurrentRunId.Should().Be("run-dead");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_resumes_a_seeded_thread_without_provisioning_again()
+    {
+        // The synthesis turn of a review runs on the SAME hosted conversation the provisional turn used, and
+        // a resumed review (daemon restarted between the two) must rejoin that persisted thread rather than
+        // mint a second one — a fresh conversation would carry none of the review history the synthesis reads
+        // and would orphan the deep-link already posted on the PR. NO provision route is registered here: the
+        // fake handler answers an unrouted request with 501, so any ProvisionAsync call fails this test.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-2\"}")
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-synth\",\"response\":{\"text\":\"## Review\\nFinal.\"}}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+        var agent = NewAgent(client, title: "Review PR #118", existingThreadId: "thread-persisted");
+
+        var messages = await DriveAsync(agent, "synthesize now");
+
+        messages.Should().ContainSingle().Subject.Should().BeOfType<TextMessage>()
+            .Which.Text.Should().Be("## Review\nFinal.");
+        agent.ThreadId.Should().Be("thread-persisted");
+        handler.Requests.Should().NotContain(
+            r => r.Body != null && r.Body.Contains("\"modeId\"", StringComparison.Ordinal),
+            "a seeded thread is resumed, never re-provisioned");
+        handler.Requests.Should().OnlyContain(
+            r => r.Uri.ToString().Contains("thread-persisted", StringComparison.Ordinal),
+            "every call targets the persisted conversation");
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_obeys_the_supplied_absolute_deadline_instead_of_a_fresh_per_turn_window()
+    {
+        // Collect → barrier → synthesize share ONE absolute budget. Without clamping, each turn would start
+        // its own overallTimeout window, so a review could spend the whole budget on the provisional turn and
+        // then spend it AGAIN on synthesis. With a deadline already in the past the agent must give up
+        // immediately — proven by the poll never issuing a single status request.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"InProgress\",\"runId\":\"run-slow\"}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-budget\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+        var agent = NewAgent(client, title: null);
+        agent.UseDeadline(DateTimeOffset.UtcNow.AddSeconds(-1));
+
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        await act.Should().ThrowAsync<TimeoutException>();
+        handler.Requests.Should().NotContain(
+            r => r.Method == HttpMethod.Get,
+            "the exhausted shared budget must not open a fresh per-turn poll window");
     }
 }

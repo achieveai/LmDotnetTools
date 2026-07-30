@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
@@ -178,6 +179,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private volatile bool _gatewaySkillsVerified;
 
+    /// <summary>
+    /// The sub-agent completion source the review barrier polls when the review loop is NOT an in-process
+    /// one that carries its own <c>SubAgentManager</c> — i.e. the S2S path, where the children live on the
+    /// LmStreaming host (registered in Program.cs and auto-injected via <c>ActivatorUtilities.CreateInstance</c>).
+    /// Null on the in-process path, where the live loop supplies the source directly.
+    /// </summary>
+    private readonly IReviewSubAgentCompletionSource? _completionSource;
+
     public DaemonReviewStageExecutor(
         ReviewStore store,
         IReviewAgentLoopFactory loopFactory,
@@ -196,7 +205,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
         string? gatewayBaseUrl = null,
         S2SReviewWorkspacePreparer? preparer = null,
-        IGatewaySkillProbe? skillProbe = null)
+        IGatewaySkillProbe? skillProbe = null,
+        IReviewSubAgentCompletionSource? completionSource = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -217,6 +227,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _gatewayBaseUrl = gatewayBaseUrl;
         _preparer = preparer;
         _skillProbe = skillProbe;
+        _completionSource = completionSource;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -1760,10 +1771,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             run.Id, reviewInput.Length, reviewInput.Length / 4, toolContext is not null, run.ModelId ?? "(default)");
 
         ReviewAgentResult result;
+        // ONE absolute budget for the whole stage, computed once HERE rather than per attempt: the
+        // escalation ladder below can run up to three attempts, and each attempt is itself two turns plus a
+        // completion barrier. A per-attempt window would silently multiply the stage's worst case.
+        var deadlineUtc = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(_options.ReviewStageDeadlineMinutes);
         try
         {
             result = await RunReviewAttemptAsync(
-                    run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId), cancellationToken)
+                    run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId),
+                    deadlineUtc, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (IsContextExhaustionFailure(ex))
@@ -1789,7 +1805,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 {
                     result = await RunReviewAttemptAsync(
                             run, reviewInput, checkoutRoot, storeRoot, toolContext,
-                            ThreadId(run, run.VariantId + "-esc"), cancellationToken, modelOverride: escalation)
+                            ThreadId(run, run.VariantId + "-esc"), deadlineUtc, cancellationToken,
+                            modelOverride: escalation)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex2) when (toolContext is not null && IsContextExhaustionFailure(ex2))
@@ -1799,7 +1816,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         run.Id, escalation);
                     result = await RunReviewAttemptAsync(
                             run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
-                            ThreadId(run, run.VariantId + "-esc-ctxretry"), cancellationToken, modelOverride: escalation)
+                            ThreadId(run, run.VariantId + "-esc-ctxretry"), deadlineUtc, cancellationToken,
+                            modelOverride: escalation)
                         .ConfigureAwait(false);
                 }
             }
@@ -1810,7 +1828,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     run.Id, ex.GetType().Name);
                 result = await RunReviewAttemptAsync(
                         run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
-                        ThreadId(run, run.VariantId + "-ctxretry"), cancellationToken)
+                        ThreadId(run, run.VariantId + "-ctxretry"), deadlineUtc, cancellationToken)
                     .ConfigureAwait(false);
             }
             else
@@ -1833,10 +1851,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>
     /// Runs one primary-review attempt with the given <paramref name="toolContext"/> (non-null = tool-assisted
     /// with sub-agents; null = diff-only) on its own conversation <paramref name="threadId"/>, returning the
-    /// collected review. Split out of <see cref="RunPrimaryReviewAsync"/> so an attempt that overflows the
+    /// AUTHORITATIVE review. Split out of <see cref="RunPrimaryReviewAsync"/> so an attempt that overflows the
     /// model context window can be retried — diff-only and/or on a bigger-window <paramref name="modelOverride"/>
     /// (e.g. gpt-5.6-terra) — on a fresh thread without re-running context assembly. <paramref name="modelOverride"/>
     /// is <c>null</c> to use the run's configured model.
+    /// <para>
+    /// An attempt is THREE steps on ONE loop: a collect-only provisional turn, the sub-agent completion barrier,
+    /// then the synthesis turn whose answer is what this returns. All three live inside the single
+    /// <c>await using</c> scope below because disposing the loop disposes its <c>SubAgentManager</c> — the very
+    /// thing the barrier polls and the synthesis turn reads delivered results from. <paramref name="deadlineUtc"/>
+    /// is the ONE absolute budget all three share.
+    /// </para>
     /// </summary>
     private async Task<ReviewAgentResult> RunReviewAttemptAsync(
         ReviewRun run,
@@ -1845,6 +1870,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? storeRoot,
         ReviewToolContext? toolContext,
         string threadId,
+        DateTimeOffset deadlineUtc,
         CancellationToken cancellationToken,
         string? modelOverride = null)
     {
@@ -1862,12 +1888,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // the sandbox's egress proxy, which injects the bot's auth on api.github.com / dev.azure.com writes
         // (github-auth/ado-auth rules, Methods:[] = all methods). should_post drives the prompt's posting step.
         // Because the agent reliably WRITES the review but frequently SKIPS posting it (observed live: run 81
-        // emitted its review + notes at 17/150 turns and never posted), when posting is authorized we ALSO drive
-        // one post-enforcement turn AFTER the review (ReviewAgent) that makes it actually post. The host-side
-        // single-summary publisher stays an off-by-default fallback (EnableHostSummaryFallback).
+        // emitted its review + notes at 17/150 turns and never posted), the posting instructions are repeated on
+        // the synthesis turn — which is also the only turn whose answer is complete enough to be worth posting.
+        // The host-side single-summary publisher stays an off-by-default fallback (EnableHostSummaryFallback).
         // On the S2S path the review runs on the LmStreaming host, whose agent is domain-agnostic and CANNOT post
-        // to a GitHub/ADO PR — so agent-inline posting (the should_post prompt step AND the enforcement turn) is
-        // forced off; PostAsync posts host-side for both providers instead (with the deep-link appended).
+        // to a GitHub/ADO PR — so agent-inline posting is forced off; PostAsync posts host-side for both
+        // providers instead (with the deep-link appended).
         var shouldPost = _options.EnableCommentPosting && !_options.UseS2SReviewAgent;
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
@@ -1886,10 +1912,106 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
             reviewWorkspace: prepared);
-        var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
-        // Only when authorized to post: the follow-up turn that forces the agent to actually deliver its review.
-        var postEnforcement = shouldPost ? DaemonAgentFactory.CreatePostEnforcementPrompt(variables) : null;
-        return await agent.ReviewAsync(reviewInput, postEnforcement, cancellationToken).ConfigureAwait(false);
+        // Reach through any wrapper to the live loop: it alone carries the SubAgentManager the barrier polls and
+        // the spawn-suppression scope the synthesis turn runs in. Null on S2S (children live on the host) and in
+        // tests that supply a bare fake — both handled below.
+        var liveLoop = TryGetLiveLoop(loop);
+        var spawnTools = liveLoop?.SubAgentTools;
+        var agent = new ReviewAgent(
+            loop, _loggerFactory.CreateLogger<ReviewAgent>(),
+            spawnTools is null ? null : spawnTools.SuppressSpawning);
+
+        // 1. Provisional: the agent reviews and fans out. Its answer is written while children are still
+        //    running, so it is deliberately NOT persisted — it exists to start the work, not to record it.
+        var provisional = await agent.CollectProvisionalAsync(reviewInput, deadlineUtc, cancellationToken)
+            .ConfigureAwait(false);
+        // 2. Barrier: block until every descendant has settled (or the shared deadline expires).
+        var inventory = await AwaitSubAgentSettlementAsync(
+            run, liveLoop, provisional.ThreadId ?? threadId, deadlineUtc, cancellationToken).ConfigureAwait(false);
+        // 3. Synthesis: same agent, same thread, children's results now all delivered. THIS is the review.
+        var synthesisPrompt = DaemonAgentFactory.CreateSynthesisPrompt(variables, inventory);
+        return await agent.SynthesizeFinalAsync(synthesisPrompt, shouldPost, deadlineUtc, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Unwraps <paramref name="agent"/> to the live <see cref="MultiTurnAgentLoop"/> underneath, or <c>null</c>
+    /// when there is none (the S2S <see cref="S2SReviewAgent"/>, or a test fake). Recursive because the
+    /// tool-assisted path returns a <see cref="ToolScopedReviewLoop"/> wrapper.
+    /// </summary>
+    private static MultiTurnAgentLoop? TryGetLiveLoop(IMultiTurnAgent agent) => agent switch
+    {
+        MultiTurnAgentLoop loop => loop,
+        ToolScopedReviewLoop scoped => TryGetLiveLoop(scoped.Inner),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Blocks until this review's sub-agent tree has settled, then renders the safe roster the synthesis prompt
+    /// quotes. The completion source is chosen from what the attempt actually has: the LIVE loop's own
+    /// <c>SubAgentManager</c> when it has one (in-process — the manager is passed straight through, no registry
+    /// or handle lookup), otherwise the injected <see cref="_completionSource"/> (S2S, where the children live
+    /// on the host). With neither, spawning was never possible for this attempt, so there is nothing to wait for
+    /// and the roster is empty. A barrier timeout propagates — never treated as "probably done".
+    /// </summary>
+    private async Task<string> AwaitSubAgentSettlementAsync(
+        ReviewRun run,
+        MultiTurnAgentLoop? liveLoop,
+        string parentThreadId,
+        DateTimeOffset deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        var source = liveLoop?.SubAgentManager is { } manager
+            ? new InProcessReviewSubAgentCompletionSource(manager)
+            : _completionSource;
+        if (source is null)
+        {
+            return ReviewSubAgentTreeSnapshot.NoSubAgents;
+        }
+
+        var barrier = new ReviewSubAgentCompletionBarrier(
+            source,
+            TimeSpan.FromSeconds(_options.ReviewSubAgentBarrierQuietSeconds),
+            _loggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>());
+        var settled = await barrier
+            .WaitAsync(
+                run, parentThreadId, deadlineUtc,
+                ct => ValidateReviewStillCurrentAsync(run, ct), cancellationToken)
+            .ConfigureAwait(false);
+        _logger.LogInformation(
+            "Run {RunId}: sub-agent barrier opened on thread {ThreadId} with {Count} settled child(ren).",
+            run.Id, parentThreadId, settled.Nodes.Count);
+        return settled.ToSafeInventory();
+    }
+
+    /// <summary>
+    /// The barrier's lifecycle/head check, run once immediately before it opens: sub-agents can take minutes, so
+    /// re-read the run and refuse to synthesize (and therefore to post) against a PR that has since moved to a
+    /// new head or left the Open state. Throwing here fails the stage into RetryPending, which is correct — the
+    /// next round reviews the CURRENT head.
+    /// </summary>
+    private Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var current = _store.GetReviewRun(run.Id)
+            ?? throw new InvalidOperationException(
+                $"Review run {run.Id} no longer exists; abandoning its review before synthesis.");
+
+        if (!string.Equals(current.HeadSha, run.HeadSha, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"PR {run.PrId} moved from {run.HeadSha} to {current.HeadSha} while its sub-agents were "
+                    + "settling; abandoning this review so the next round reviews the current head.");
+        }
+
+        if (current.PrLifecycleState != PrLifecycleState.Open)
+        {
+            throw new InvalidOperationException(
+                $"PR {run.PrId} became {current.PrLifecycleState} while its sub-agents were settling; "
+                    + "abandoning this review rather than synthesizing against a closed PR.");
+        }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>

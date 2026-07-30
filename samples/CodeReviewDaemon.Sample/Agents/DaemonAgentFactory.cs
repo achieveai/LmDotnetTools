@@ -65,17 +65,28 @@ internal static class DaemonAgentFactory
     }
 
     /// <summary>
-    /// Renders the post-enforcement follow-up prompt (the <c>post-enforcement</c> template) from the same
-    /// <paramref name="variables"/> the review profile uses. The daemon drives this as one extra conversation
-    /// turn AFTER the review when posting is authorized: the review agent reliably WRITES the review but often
-    /// SKIPS posting it (observed live), so this turn tells it "you have not posted — do it now". Provider-aware
-    /// via <c>is_ado</c> (GitHub → post-pr-review skill / reviews API; ADO → threads REST API).
+    /// Renders the synthesis prompt (the <c>synthesis</c> template) — the second and AUTHORITATIVE turn of a
+    /// review — from the same <paramref name="variables"/> the review profile used, plus
+    /// <paramref name="subAgentInventory"/>: the safe roster of the children that settled behind the
+    /// completion barrier (see <see cref="ReviewSubAgentTreeSnapshot.ToSafeInventory"/>).
+    /// <para>
+    /// It carries the posting instructions too (under <c>should_post</c>, provider-aware via <c>is_ado</c>).
+    /// This is the ONE turn that both writes the review of record and delivers it, because the agent
+    /// reliably WRITES a review but often SKIPS posting it (observed live) — and because the provisional
+    /// turn's answer is by construction incomplete, so posting could never have belonged there.
+    /// </para>
     /// </summary>
-    public static string CreatePostEnforcementPrompt(IReadOnlyDictionary<string, object> variables)
+    public static string CreateSynthesisPrompt(
+        IReadOnlyDictionary<string, object> variables, string subAgentInventory)
     {
         ArgumentNullException.ThrowIfNull(variables);
+        ArgumentException.ThrowIfNullOrWhiteSpace(subAgentInventory);
 
-        return Prompts.GetPrompt("post-enforcement").PromptText(new Dictionary<string, object>(variables));
+        var withInventory = new Dictionary<string, object>(variables)
+        {
+            ["sub_agent_inventory"] = subAgentInventory,
+        };
+        return Prompts.GetPrompt("synthesis").PromptText(withInventory);
     }
 
     /// <summary>

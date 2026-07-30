@@ -31,7 +31,7 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// daemon only ever drives this agent collect-only through <see cref="ExecuteRunAsync"/>.
 /// </para>
 /// </summary>
-internal sealed class S2SReviewAgent : IMultiTurnAgent
+internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLoop
 {
     /// <summary>Terminal run statuses that end the poll loop (matches <c>ConversationRunStatus</c> names).</summary>
     private static readonly HashSet<string> TerminalStatuses = new(StringComparer.OrdinalIgnoreCase)
@@ -57,7 +57,15 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
 
     private string? _threadId;
     private string? _currentRunId;
+    private DateTimeOffset? _deadlineUtc;
 
+    /// <summary>
+    /// Builds the adapter. <paramref name="existingThreadId"/> seeds an ALREADY-PROVISIONED hosted
+    /// conversation: supplied, the agent rejoins that thread and never calls <c>ProvisionAsync</c>. That is
+    /// how a review resumed after a daemon restart continues on the conversation its provisional turn ran on
+    /// — minting a second one would lose the review history the synthesis turn depends on and orphan the
+    /// deep-link already posted on the PR.
+    /// </summary>
     public S2SReviewAgent(
         LmStreamingS2SClient client,
         string workspaceId,
@@ -71,7 +79,8 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         TimeSpan? overallTimeout = null,
         TimeSpan? terminalConfirmDelay = null,
         TimeSpan? interruptedGrace = null,
-        Action<string>? onConversationMinted = null)
+        Action<string>? onConversationMinted = null,
+        string? existingThreadId = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
@@ -84,6 +93,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         _title = title;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _onConversationMinted = onConversationMinted;
+        _threadId = string.IsNullOrWhiteSpace(existingThreadId) ? null : existingThreadId;
 
         // Live workspace-agent reviews are long (a run can reach turn 17 of 150), so the poll must be patient
         // but not busy: start tight, back off geometrically to a ceiling, and bound the whole wait.
@@ -110,6 +120,9 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
 
     /// <summary>Always false — this adapter has no background loop; it is driven collect-only.</summary>
     public bool IsRunning => false;
+
+    /// <inheritdoc />
+    public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
 
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
@@ -161,8 +174,10 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
 
     /// <summary>
     /// Provisions the conversation on first use and caches the minted thread id, so a second
-    /// <see cref="ExecuteRunAsync"/> (e.g. a would-be enforcement turn) reuses the same thread rather than
-    /// opening a new one. Best-effort sets a human-readable title once, right after provisioning.
+    /// <see cref="ExecuteRunAsync"/> (the authoritative synthesis turn) reuses the same thread rather than
+    /// opening a new one. A thread id seeded at construction (a resumed review) short-circuits here exactly
+    /// the same way, so a resume never re-provisions. Best-effort sets a human-readable title once, right
+    /// after provisioning.
     /// </summary>
     private async Task<string> EnsureProvisionedAsync(CancellationToken ct)
     {
@@ -236,10 +251,15 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
     /// the host never attaches response text to it — so we re-poll through <see cref="_interruptedGrace"/>
     /// before believing it. <c>Completed</c>/<c>Errored</c> carry resolved text and are returned immediately.
     /// </para>
+    /// <para>
+    /// The wait is bounded by <see cref="_overallTimeout"/> <b>clipped to the caller's absolute deadline</b>
+    /// (see <see cref="UseDeadline"/>) — collect → barrier → synthesize share ONE budget, so a later turn
+    /// must not open a fresh full-length window with most of that budget already spent.
+    /// </para>
     /// </summary>
     private async Task<S2SStatusResult> PollToTerminalAsync(string threadId, string inputId, CancellationToken ct)
     {
-        var deadline = DateTimeOffset.UtcNow + _overallTimeout;
+        var deadline = ClampToBudget(DateTimeOffset.UtcNow + _overallTimeout);
         var interval = _pollInterval;
         var status = new S2SStatusResult("NotStarted", null, null);
 
@@ -250,8 +270,8 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
             if (DateTimeOffset.UtcNow >= deadline)
             {
                 throw new TimeoutException(
-                    $"S2S review run on thread {threadId} did not reach a terminal status within "
-                    + $"{_overallTimeout.TotalMinutes:0} minutes (last status: {status.Status})."
+                    $"S2S review run on thread {threadId} did not reach a terminal status before {deadline:O} "
+                    + $"(last status: {status.Status})."
                 );
             }
 
@@ -287,6 +307,14 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         string.Equals(status.Status, "Interrupted", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Clips a per-turn window to the caller's shared absolute budget, when one was supplied. Without this
+    /// every turn would restart its own <see cref="_overallTimeout"/>, so a two-turn review could consume the
+    /// budget twice over.
+    /// </summary>
+    private DateTimeOffset ClampToBudget(DateTimeOffset windowEnd) =>
+        _deadlineUtc is { } budget && budget < windowEnd ? budget : windowEnd;
+
+    /// <summary>
     /// Decides whether an <c>Interrupted</c> reading is the input's real outcome. Re-polls every
     /// <see cref="_terminalConfirmDelay"/> for up to <see cref="_interruptedGrace"/>: returns the reading (the
     /// run really is dead — a lost input whose run will never restart) if it stays <c>Interrupted</c> on the
@@ -300,7 +328,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent
         CancellationToken ct
     )
     {
-        var graceEnd = DateTimeOffset.UtcNow + _interruptedGrace;
+        var graceEnd = ClampToBudget(DateTimeOffset.UtcNow + _interruptedGrace);
 
         while (DateTimeOffset.UtcNow < graceEnd)
         {

@@ -13,6 +13,15 @@ namespace CodeReviewDaemon.Sample.Agents;
 internal sealed class ToolScopedReviewLoop(IMultiTurnAgent inner, IReadOnlyList<McpClient> ownedClients)
     : IMultiTurnAgent
 {
+    /// <summary>
+    /// The wrapped loop. Exposed so the executor — which holds only the <see cref="IMultiTurnAgent"/> this
+    /// factory returned — can still reach the live <see cref="MultiTurnAgentLoop"/> underneath for the two
+    /// things only it can supply: the <c>SubAgentManager</c> the completion barrier polls, and the spawn
+    /// suppression scope the synthesis turn runs in. Both must come from the SAME instance the review is
+    /// running on, which is exactly what this pass-through preserves.
+    /// </summary>
+    public IMultiTurnAgent Inner => inner;
+
     public string? CurrentRunId => inner.CurrentRunId;
     public string ThreadId => inner.ThreadId;
     public bool IsRunning => inner.IsRunning;

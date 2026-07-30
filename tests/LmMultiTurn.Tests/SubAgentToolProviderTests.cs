@@ -255,6 +255,59 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         subagentTypeDesc.Should().Contain("reviewer");
     }
 
+    [Fact]
+    public void SuppressSpawning_DropsOnlyTheSpawnContract()
+    {
+        // The synthesis turn of a recursive review must not be able to start NEW children, but it must
+        // still be able to read what the children delivered (CheckAgent) and nudge one (SendMessage).
+        var provider = _provider!;
+
+        using (provider.SuppressSpawning())
+        {
+            provider.GetFunctions().Select(f => f.Contract.Name)
+                .Should().BeEquivalentTo(["SendMessage", "CheckAgent"]);
+        }
+
+        // Suppression is scoped: the very next contract build advertises spawning again.
+        provider.GetFunctions().Select(f => f.Contract.Name)
+            .Should().BeEquivalentTo(["Agent", "SendMessage", "CheckAgent"]);
+    }
+
+    [Fact]
+    public async Task SuppressSpawning_RefusesTheSpawnHandlerIfTheModelCallsItAnyway()
+    {
+        // Contracts are rebuilt per turn but tool HANDLERS are a construction-time snapshot on the loop,
+        // so hiding the contract alone still leaves the handler reachable if the model replays an Agent
+        // call from earlier history. The handler must refuse rather than start a child after the barrier.
+        var handler = GetHandler("Agent");
+        var args = JsonSerializer.Serialize(new { subagent_type = "researcher", prompt = "go" });
+
+        using var suppression = _provider!.SuppressSpawning();
+        var result = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        var payload = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be("spawn_suppressed");
+    }
+
+    [Fact]
+    public void SuppressSpawning_IsReentrantAndIdempotentOnDispose()
+    {
+        var provider = _provider!;
+        var outer = provider.SuppressSpawning();
+        var inner = provider.SuppressSpawning();
+
+        // Double-dispose of the inner scope must not decrement the depth twice, which would
+        // re-advertise spawning while the outer scope still expects it hidden.
+        inner.Dispose();
+        inner.Dispose();
+        provider.GetFunctions().Select(f => f.Contract.Name)
+            .Should().NotContain("Agent", "the outer scope is still open");
+
+        outer.Dispose();
+        provider.GetFunctions().Select(f => f.Contract.Name).Should().Contain("Agent");
+    }
+
     private ToolHandler GetHandler(string name)
     {
         return _provider!.GetFunctions().First(f => f.Contract.Name == name).Handler;

@@ -161,7 +161,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("## Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
         text.Should().Contain("KB-ENTRY-XYZ", "the seeded ToC entry is surfaced to the pooled reviewer");
     }
@@ -189,7 +189,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Repository guidance", "the reviewed repo's own guidance is prepended as a labelled block");
         text.Should().Contain("REPO-GUIDANCE-MARKER", "the reviewed repo's CLAUDE.md is surfaced to the reviewer");
         text.Should().Contain("AGENTS-MARKER", "the reviewed repo's AGENTS.md is surfaced to the reviewer");
@@ -207,7 +207,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Repository guidance", "an absent CLAUDE.md/AGENTS.md must not add an empty block");
     }
 
@@ -231,7 +231,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Already posted on this PR", "existing comments are prepended as a labelled dedup block");
         text.Should().Contain("from ALL authors", "the reviewer must consider comments from other bots and humans too");
         text.Should().Contain("Comments during past reviews", "the block is split into past vs new");
@@ -273,7 +273,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var pastIdx = text.IndexOf("Comments during past reviews", StringComparison.Ordinal);
         var newIdx = text.IndexOf("New comments since your last review", StringComparison.Ordinal);
         var pastFindingIdx = text.IndexOf("PAST-BOT-FINDING", StringComparison.Ordinal);
@@ -308,7 +308,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var rootIdx = text.IndexOf("ROOT-null-deref-finding", StringComparison.Ordinal);
         var replyIdx = text.IndexOf("REPLY-fixed-in-abc123", StringComparison.Ordinal);
         rootIdx.Should().BeGreaterThan(0, "the root finding must be rendered");
@@ -328,7 +328,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Already posted on this PR");
     }
 
@@ -764,9 +764,12 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await RunAllStagesAsync(fixture, run);
 
         // Agent-inline posting is forced OFF on S2S (the hosted agent is domain-agnostic and cannot reach a
-        // GitHub/ADO PR) even though posting is authorized — so no post-enforcement turn is driven…
-        fixture.Factory.CreatedAgents.Should().ContainSingle().Subject
-            .ReceivedInputs.Should().ContainSingle("S2S drives the review turn only — never the post-enforcement turn");
+        // GitHub/ADO PR) even though posting is authorized — so the synthesis turn, the one turn that would
+        // otherwise carry the posting instructions, carries none…
+        var inputs = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject.ReceivedInputs;
+        inputs.Should().HaveCount(2, "one hosted conversation still drives the provisional turn then synthesis");
+        inputs[1].Messages.OfType<TextMessage>().Single().Text.Should().NotContain(
+            "api.github.com", "S2S must never ask the hosted agent to post to the PR itself");
 
         // …and the host-side publisher is the ONLY delivery path, carrying the deep-link back to the hosted
         // conversation (the whole point of the S2S path: a human can open the review and its sub-agent tree).

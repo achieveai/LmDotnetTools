@@ -64,7 +64,8 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
         string threadId,
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
-        PreparedReviewWorkspace? reviewWorkspace = null)
+        PreparedReviewWorkspace? reviewWorkspace = null,
+        string? resumeHostedThreadId = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
 
@@ -106,7 +107,10 @@ internal sealed class S2SReviewAgentLoopFactory : IReviewAgentLoopFactory
             systemPrompt: profile.SystemPrompt,
             title: title,
             logger: _loggerFactory.CreateLogger<S2SReviewAgent>(),
-            onConversationMinted: recorder is null ? null : minted => recorder(minted, title));
+            onConversationMinted: recorder is null ? null : minted => recorder(minted, title),
+            // A resumed review rejoins the conversation it already minted: no second provision, no second
+            // retention row, no second deep-link. Null (the common case) provisions lazily as before.
+            existingThreadId: resumeHostedThreadId);
     }
 
     /// <summary>

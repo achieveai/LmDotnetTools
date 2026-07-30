@@ -44,6 +44,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
     public SubAgentManager? SubAgentManager { get; }
 
+    /// <summary>The sub-agent tool provider registered on this loop, or null when no sub-agent options
+    /// were supplied. Exposed so a host can scope the spawn tool out of a single turn via
+    /// <see cref="SubAgents.SubAgentToolProvider.SuppressSpawning"/> — e.g. a synthesis turn that must
+    /// consume already-delivered sub-agent results without starting new children.</summary>
+    public SubAgentToolProvider? SubAgentTools { get; }
+
     /// <inheritdoc />
     /// <remarks>
     /// Delegates to <see cref="SubAgents.SubAgentManager.TryDeliverToRunningAsync"/>. A loop with no
@@ -185,11 +191,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // Persist immediately on each descendant observation (covers late/background descendants).
                 persistUsageAsync: PersistCurrentUsageAsync);
 
-            var toolProvider = new SubAgentToolProvider(
+            SubAgentTools = new SubAgentToolProvider(
                 SubAgentManager,
                 source);
 
-            _ = functionRegistry.AddProvider(toolProvider);
+            _ = functionRegistry.AddProvider(SubAgentTools);
         }
 
         // When trigger options are supplied, stand up the Wait/trigger runtime and register the

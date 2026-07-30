@@ -3,95 +3,155 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
-/// Drives one collect-only review run (plan §4). Given the review input the stage executor assembled
-/// from the sandbox (the PR diff plus surrounding context), it sends a single user turn through an
-/// <see cref="IMultiTurnAgent"/> and collects the assistant's finalized prose into a structured result.
-/// It performs NO posting and holds NO provider/sandbox wiring: it depends only on the agent interface,
-/// so the executor (P4.4) owns the heavy live-loop construction while this collection logic stays
-/// verifiable against a fake agent.
+/// A review loop that can be bound to an absolute deadline supplied by its caller. Implemented by
+/// <see cref="S2SReviewAgent"/>, whose poll windows would otherwise restart per turn: collect → barrier →
+/// synthesize share ONE budget, so a second turn must not open a fresh window with most of that budget
+/// already spent. Loops that finish when the provider finishes (the in-process path) do not implement it.
+/// <para>
+/// The deadline is pushed rather than passed on <c>ExecuteRunAsync</c> because it is an attribute of the
+/// review ATTEMPT, not of the <see cref="IMultiTurnAgent"/> contract — keeping it off that interface is what
+/// lets the daemon express the shared budget without every loop implementation growing a parameter it
+/// ignores.
+/// </para>
+/// </summary>
+internal interface IDeadlineBoundedReviewLoop
+{
+    /// <summary>Binds the next turn(s) to the absolute <paramref name="deadlineUtc"/>.</summary>
+    void UseDeadline(DateTimeOffset deadlineUtc);
+}
+
+/// <summary>
+/// Drives ONE review conversation through its two phases (plan §4, recursive-review completion barrier):
+/// <list type="number">
+/// <item><see cref="CollectProvisionalAsync"/> — one collect-only turn over the review input the stage
+///   executor assembled. Its answer is PROVISIONAL: the parent may still have sub-agents in flight, so the
+///   answer is never posted, judged, or persisted as authoritative. There is no posting/enforcement
+///   parameter, so a collect-only turn is structurally all this phase can ever be.</item>
+/// <item><see cref="SynthesizeFinalAsync"/> — the authoritative turn, driven by the executor AFTER the
+///   sub-agent completion barrier opened, on the SAME agent and therefore the same conversation. Sub-agent
+///   spawning is suppressed for its duration (the children have settled; starting new ones would reopen the
+///   barrier it just waited on) while reading what they delivered stays available.</item>
+/// </list>
+/// Both phases share the caller's ONE absolute deadline; neither invents a window of its own. The class
+/// performs NO posting and holds NO provider/sandbox wiring: it depends only on
+/// <see cref="IMultiTurnAgent"/>, so the executor owns the heavy live-loop construction while this
+/// two-phase logic stays verifiable against a fake agent.
 /// </summary>
 internal sealed class ReviewAgent
 {
     private readonly IMultiTurnAgent _agent;
     private readonly ILogger<ReviewAgent> _logger;
+    private readonly Func<IDisposable>? _suppressSpawning;
 
-    public ReviewAgent(IMultiTurnAgent agent, ILogger<ReviewAgent> logger)
+    /// <summary>
+    /// Builds the agent. <paramref name="suppressSpawning"/> opens a scope in which the underlying loop
+    /// refuses to start NEW sub-agents; it is a delegate rather than the SDK's provider type so no
+    /// <c>LmMultiTurn.SubAgents</c> type leaks into this class and a test can supply a recording lambda.
+    /// <c>null</c> (the S2S and diff-only paths) means there is no in-process spawn surface to suppress.
+    /// </summary>
+    public ReviewAgent(
+        IMultiTurnAgent agent,
+        ILogger<ReviewAgent> logger,
+        Func<IDisposable>? suppressSpawning = null)
     {
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _suppressSpawning = suppressSpawning;
     }
 
     /// <summary>
-    /// Sends <paramref name="reviewInput"/> as one user turn and collects the assistant's review text. When
-    /// <paramref name="postEnforcementPrompt"/> is supplied (posting is authorized for this run), drives ONE
-    /// more turn afterwards that makes the agent actually POST its review to the PR before we finish.
-    /// <para>
-    /// Why the extra turn: the review agent reliably WRITES the review but frequently SKIPS the posting step
-    /// even though the prompt marks it required — observed live, run 81 (PR #208) emitted its review + notes at
-    /// 17 of 150 turns and never posted. Emphatic prompt text alone did not fix it; a follow-up "you have not
-    /// posted — do it now" turn does. The persisted review ARTIFACT stays the FIRST turn's text (this turn is
-    /// only for the posting side-effect), and it is BEST-EFFORT: a failed enforcement turn (e.g. a
-    /// context-window overflow on the larger conversation) must never discard the review we already collected.
-    /// </para>
+    /// Sends <paramref name="input"/> as one user turn and collects the assistant's provisional review text.
+    /// Tolerates a blank answer: this turn is never the authoritative review, so an empty provisional is a
+    /// fact about a parent that deferred everything to its children, not a failure.
     /// </summary>
-    public async Task<ReviewAgentResult> ReviewAsync(
-        string reviewInput,
-        string? postEnforcementPrompt,
+    public async Task<ReviewAgentResult> CollectProvisionalAsync(
+        string input,
+        DateTimeOffset deadlineUtc,
         CancellationToken cancellationToken)
     {
-        var collected = await AgentTextCollector
-            .CollectAsync(_agent, reviewInput, cancellationToken)
-            .ConfigureAwait(false);
+        ArgumentException.ThrowIfNullOrWhiteSpace(input);
 
-        // Capture the conversation thread id the review ran on. On the in-process path this is the daemon's
-        // own review-run-{id}-{variant} id; on the S2S path it is the id LmStreaming MINTED at provision (the
-        // deep-link target the executor posts on the PR). Read it AFTER the run so the S2S agent has lazily
-        // provisioned (its ThreadId is empty until then).
-        var threadId = _agent.ThreadId;
-
+        var result = await RunTurnAsync(input, deadlineUtc, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation(
-            "Collect-only review run {RunId} produced {Count} assistant message(s), {Length} chars.",
-            collected.RunId,
-            collected.AssistantMessageCount,
-            collected.Text.Length
-        );
+            "Provisional review turn {RunId} produced {Length} chars on thread {ThreadId}; children may still be running.",
+            result.RunId,
+            result.ReviewText.Length,
+            result.ThreadId);
+        return result;
+    }
 
-        if (!string.IsNullOrWhiteSpace(postEnforcementPrompt))
+    /// <summary>
+    /// Drives the authoritative synthesis turn on the SAME agent/conversation, with sub-agent spawning
+    /// suppressed for exactly this turn. <paramref name="allowInlinePosting"/> states whether THIS agent was
+    /// asked to deliver the review to the PR itself (in-process path) or whether delivery happens elsewhere
+    /// (the S2S host publishes it), and only shapes the failure wording an operator reads — it gates no
+    /// tools, which come from the run's tool context.
+    /// <para>
+    /// A generation failure or a blank answer THROWS: unlike the provisional turn there is no earlier
+    /// authoritative answer to fall back on, so promoting an empty artifact would silently publish "no
+    /// review". Provider VERIFICATION (did the comment actually land?) deliberately stays outside this
+    /// method so its failures remain eligible for the caller's fallback handling.
+    /// </para>
+    /// </summary>
+    public async Task<ReviewAgentResult> SynthesizeFinalAsync(
+        string synthesisPrompt,
+        bool allowInlinePosting,
+        DateTimeOffset deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(synthesisPrompt);
+
+        ReviewAgentResult result;
+        using (_suppressSpawning?.Invoke())
         {
-            try
-            {
-                var enforced = await AgentTextCollector
-                    .CollectAsync(_agent, postEnforcementPrompt, cancellationToken)
-                    .ConfigureAwait(false);
-                _logger.LogInformation(
-                    "Post-enforcement turn for run {RunId} completed ({Length} chars).",
-                    enforced.RunId ?? collected.RunId,
-                    enforced.Text.Length
-                );
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // The review (turn 1) is the valuable artifact and is already collected; a failed enforcement
-                // turn must not discard it. But a failed enforcement means the agent may NOT have posted, and with
-                // the host-side summary fallback off there is no other delivery path — so surface it at Error (an
-                // operational signal an operator can alert on / re-run against), not a quiet warning. Full
-                // delivery verification (parse/confirm a posting receipt and re-attempt on failure) is a tracked
-                // follow-up; this keeps the failure loud rather than silent.
-                _logger.LogError(
-                    ex,
-                    "Post-enforcement turn for run {RunId} failed; the review is retained but may NOT have been "
-                        + "posted to the PR — no host-side fallback will deliver it.",
-                    collected.RunId
-                );
-            }
+            result = await RunTurnAsync(synthesisPrompt, deadlineUtc, cancellationToken).ConfigureAwait(false);
         }
 
-        return new ReviewAgentResult(collected.Text, collected.RunId, threadId);
+        if (string.IsNullOrWhiteSpace(result.ReviewText))
+        {
+            throw new InvalidOperationException(
+                $"Synthesis turn {result.RunId} on thread {result.ThreadId} produced no review text; there is "
+                    + (allowInlinePosting
+                        ? "nothing authoritative to persist and the agent was expected to post it inline."
+                        : "nothing authoritative to persist or hand to the publisher."));
+        }
+
+        _logger.LogInformation(
+            "Synthesis turn {RunId} produced the authoritative review ({Length} chars, inline posting {InlinePosting}).",
+            result.RunId,
+            result.ReviewText.Length,
+            allowInlinePosting);
+        return result;
+    }
+
+    /// <summary>
+    /// Runs one turn under the shared budget: refuses to start a turn the budget can no longer cover, binds
+    /// a deadline-bounded loop to it, then collects the finalized assistant prose. The thread id is read
+    /// AFTER the run because the S2S agent provisions lazily (its <c>ThreadId</c> is empty until then).
+    /// </summary>
+    private async Task<ReviewAgentResult> RunTurnAsync(
+        string input,
+        DateTimeOffset deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        if (DateTimeOffset.UtcNow >= deadlineUtc)
+        {
+            throw new TimeoutException(
+                $"The review budget expired at {deadlineUtc:O}; refusing to start a turn it cannot finish.");
+        }
+
+        (_agent as IDeadlineBoundedReviewLoop)?.UseDeadline(deadlineUtc);
+
+        var collected = await AgentTextCollector
+            .CollectAsync(_agent, input, cancellationToken)
+            .ConfigureAwait(false);
+
+        return new ReviewAgentResult(collected.Text, collected.RunId, _agent.ThreadId);
     }
 }
 
 /// <summary>
-/// The collect-only output of a review run: the assistant's assembled review text, the agent run id that
+/// The collect-only output of one review turn: the assistant's assembled text, the agent run id that
 /// produced it (for correlation when the orchestrator persists the review artifact), and the conversation
 /// <see cref="ThreadId"/> it ran on. On the S2S path <see cref="ThreadId"/> is the LmStreaming-minted id the
 /// executor turns into the posted deep-link; on the in-process path it is the daemon's own thread id. No score

@@ -58,13 +58,18 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// <summary>Workspace ids passed to <see cref="Create"/>, in call order (null = in-process path, no S2S workspace).</summary>
     public List<string?> WorkspaceIds { get; } = [];
 
+    /// <summary>Hosted thread ids passed to <see cref="Create"/>, in call order (null = provision a fresh
+    /// hosted conversation rather than resume a persisted one).</summary>
+    public List<string?> ResumeHostedThreadIds { get; } = [];
+
     public IMultiTurnAgent Create(
         AgentProfile profile,
         string? modelId,
         string threadId,
         string? reasoningEffort = null,
         ReviewToolContext? toolContext = null,
-        PreparedReviewWorkspace? reviewWorkspace = null)
+        PreparedReviewWorkspace? reviewWorkspace = null,
+        string? resumeHostedThreadId = null)
     {
         CreatedProfileIds.Add(profile.Id);
         CreatedProfiles.Add(profile);
@@ -73,6 +78,7 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         ToolContexts.Add(toolContext);
         ModelIds.Add(modelId);
         WorkspaceIds.Add(reviewWorkspace?.WorkspaceId);
+        ResumeHostedThreadIds.Add(resumeHostedThreadId);
 
         if (toolContext is not null && ThrowWhenToolAssisted is not null
             && (ThrowOnlyForModel is null || string.Equals(modelId, ThrowOnlyForModel, StringComparison.Ordinal)))
