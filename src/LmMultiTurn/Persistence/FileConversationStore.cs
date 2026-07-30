@@ -1,4 +1,8 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
@@ -14,6 +18,10 @@ public sealed class FileConversationStore
     private const string RunsFileName = "runs.json";
     private const string AcceptedInputsFileName = "accepted-inputs.json";
     private const string AcceptancesDirectoryName = "acceptances";
+    private const string MutationGateSuffix = ".mutate";
+    private const int ReserveAttempts = 3;
+    private static readonly TimeSpan AcceptanceSettleTimeout = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan AcceptanceSettlePoll = TimeSpan.FromMilliseconds(5);
 
     // Deliberately a separate file from runs.json: the run ledger's shape is part of the status
     // API's contract, and lifecycle observation must be addable without rewriting it.
@@ -882,31 +890,66 @@ public sealed class FileConversationStore
     {
         ArgumentNullException.ThrowIfNull(acceptance);
         var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
-        var json = JsonSerializer.Serialize(acceptance, AcceptanceJsonOptions);
 
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            await using var stream = new FileStream(
-                acceptanceFile,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.Read,
-                bufferSize: 4096,
-                useAsync: true);
-            await using var writer = new StreamWriter(stream, Encoding.UTF8);
-            await writer.WriteAsync(json.AsMemory(), ct);
-            await writer.FlushAsync(ct);
-            return null;
-        }
-        catch (IOException)
-        {
-            var existing = await ReadAcceptanceFileAsync(acceptanceFile, ct);
-            if (existing != null)
+            FileStream claim;
+            try
             {
-                return existing;
+                claim = new FileStream(
+                    acceptanceFile,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    bufferSize: 4096,
+                    useAsync: true);
+            }
+            catch (IOException)
+            {
+                if (await ReadAcceptanceFileAsync(acceptanceFile, ct) is { } existing)
+                {
+                    return existing;
+                }
+
+                if (attempt >= ReserveAttempts)
+                {
+                    throw;
+                }
+
+                continue;
+            }
+            catch (UnauthorizedAccessException) when (attempt < ReserveAttempts)
+            {
+                await Task.Delay(AcceptanceSettlePoll, ct);
+                continue;
             }
 
-            throw;
+            try
+            {
+                await using (claim)
+                {
+                    await JsonSerializer.SerializeAsync(claim, acceptance, AcceptanceJsonOptions, ct);
+                }
+            }
+            catch
+            {
+                TryDeleteRecordFile(acceptanceFile);
+                throw;
+            }
+
+            return null;
+        }
+    }
+
+    private static void TryDeleteRecordFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The original write failure remains authoritative; a leftover claim stays fail closed.
         }
     }
 
@@ -918,16 +961,15 @@ public sealed class FileConversationStore
         ReadAcceptanceFileAsync(GetAcceptanceFile(threadId, inputId, createDirectory: false), ct);
 
     /// <inheritdoc />
-    public async Task<bool> TryRecordOutcomeAsync(
+    public Task<bool> TryRecordOutcomeAsync(
         InputAcceptance acceptance,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(acceptance);
-        return await TryMutateAcceptanceAsync(
-            acceptance.ThreadId,
-            acceptance.InputId,
+        return TryMutateAcceptanceAsync(
+            GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: false),
             acceptance.ReservationId,
-            replacement: acceptance,
+            acceptance,
             ct);
     }
 
@@ -937,60 +979,103 @@ public sealed class FileConversationStore
         string inputId,
         Guid reservationId,
         CancellationToken ct = default) =>
-        TryMutateAcceptanceAsync(threadId, inputId, reservationId, replacement: null, ct);
+        TryMutateAcceptanceAsync(
+            GetAcceptanceFile(threadId, inputId, createDirectory: false),
+            reservationId,
+            replacement: null,
+            ct);
 
     private async Task<bool> TryMutateAcceptanceAsync(
-        string threadId,
-        string inputId,
+        string acceptanceFile,
         Guid reservationId,
         InputAcceptance? replacement,
         CancellationToken ct)
     {
-        var acceptanceFile = GetAcceptanceFile(threadId, inputId, createDirectory: false);
-        var gateFile = acceptanceFile + ".mutate";
-        await using var gate = new FileStream(
-            gateFile,
-            FileMode.OpenOrCreate,
-            FileAccess.ReadWrite,
-            FileShare.None,
-            bufferSize: 1,
-            useAsync: true);
-
-        var existing = await ReadAcceptanceFileAsync(acceptanceFile, ct);
-        if (existing?.ReservationId != reservationId)
+        FileStream gate;
+        try
+        {
+            gate = new FileStream(
+                acceptanceFile + MutationGateSuffix,
+                FileMode.OpenOrCreate,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 1,
+                FileOptions.None);
+        }
+        catch (IOException)
         {
             return false;
         }
 
-        if (replacement == null)
+        await using (gate)
         {
-            File.Delete(acceptanceFile);
-        }
-        else
-        {
-            await WriteJsonFileAsync(acceptanceFile, replacement, AcceptanceJsonOptions, ct);
-        }
+            if (await ReadAcceptanceFileAsync(acceptanceFile, ct) is not { } stored
+                || stored.ReservationId != reservationId)
+            {
+                return false;
+            }
 
-        return true;
+            if (replacement == null)
+            {
+                File.Delete(acceptanceFile);
+                return true;
+            }
+
+            await WriteJsonFileAsync(acceptanceFile, replacement, AcceptanceJsonOptions, ct);
+            return true;
+        }
     }
 
     private static async Task<InputAcceptance?> ReadAcceptanceFileAsync(
         string acceptanceFile,
         CancellationToken ct)
     {
-        if (!File.Exists(acceptanceFile))
+        var deadline = Stopwatch.GetTimestamp()
+            + (long)(AcceptanceSettleTimeout.TotalSeconds * Stopwatch.Frequency);
+        while (true)
         {
-            return null;
-        }
+            try
+            {
+                await using var stream = new FileStream(
+                    acceptanceFile,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    bufferSize: 4096,
+                    useAsync: true);
+                if (stream.Length > 0
+                    && await JsonSerializer.DeserializeAsync<InputAcceptance>(
+                        stream,
+                        AcceptanceJsonOptions,
+                        ct) is { } record)
+                {
+                    return record;
+                }
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return null;
+            }
+            catch (Exception ex) when (ex is JsonException or IOException)
+            {
+                // The exclusive claim exists but has not settled yet.
+            }
+            catch (UnauthorizedAccessException) when (Stopwatch.GetTimestamp() < deadline)
+            {
+                // A Windows delete-pending name is transient; a real permission failure outlives the budget.
+            }
 
-        try
-        {
-            var json = await File.ReadAllTextAsync(acceptanceFile, ct);
-            return JsonSerializer.Deserialize<InputAcceptance>(json, AcceptanceJsonOptions);
-        }
-        catch (Exception ex) when (ex is JsonException or FileNotFoundException or DirectoryNotFoundException)
-        {
-            return null;
+            if (Stopwatch.GetTimestamp() >= deadline)
+            {
+                throw new IOException(
+                    $"The admission record '{acceptanceFile}' exists but never became readable.");
+            }
+
+            await Task.Delay(AcceptanceSettlePoll, ct);
         }
     }
 

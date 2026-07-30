@@ -322,6 +322,104 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A reservation that loses the exclusive create has to work out what the refusal MEANT, and it cannot do
+    /// that by looking at the record afterwards: the winner may retract in the same instant, so the record can
+    /// be gone by the time the look happens even though the refusal was an ordinary collision. Deciding from
+    /// that look — "refused, and nothing there, so this is a store fault" — fails a send whose id is free, and
+    /// the caller sees a 500 for an input it could simply have been granted. Only re-attempting the create
+    /// settles it.
+    /// <para>
+    /// The interleave is driven rather than stubbed, in the shape it occurs in: retries of one idempotency key
+    /// arriving while an admission whose work never got queued is being compensated away. Whoever is granted
+    /// the id gives it straight back, so refusals of that record and deletions of it overlap continuously.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AReservationRefusedWhileTheIdIsBeingRetracted_IsAdmittedRatherThanFailed()
+    {
+        const int Retries = 4;
+        const int HandoffsPerRetry = 120;
+        const string InputId = "idem:1:retracted-under-compensation";
+        var stores = Enumerable.Range(0, Retries)
+            .Select(_ => CreateStore(StoreKind.File, "reserve-vs-retract"))
+            .ToArray();
+
+        var contenders = stores.Select(store => Task.Run(async () =>
+        {
+            for (int taken = 0, attempts = 0; taken < HandoffsPerRetry; attempts++)
+            {
+                attempts.Should().BeLessThan(
+                    HandoffsPerRetry * 500,
+                    "a contender that can never take a repeatedly-freed id would hang the test");
+
+                var admission = Admission(InputId);
+                if (await store.TryReserveAcceptanceAsync(admission) is not null)
+                {
+                    continue;
+                }
+
+                taken++;
+                (await store.TryReleaseAcceptanceAsync(
+                        admission.ThreadId,
+                        admission.InputId,
+                        admission.ReservationId))
+                    .Should().BeTrue("a contender must be able to give back the id it was granted");
+            }
+        })).ToArray();
+
+        var settle = async () => await Task.WhenAll(contenders);
+
+        _ = await settle.Should().NotThrowAsync(
+            "a reservation refused for an id that is free by the time it looks must be re-attempted, not "
+            + "reported as a store failure");
+        (await stores[0].GetAcceptanceAsync("thread-1", InputId))
+            .Should().BeNull("every admission taken in the race was given back");
+    }
+
+    /// <summary>
+    /// The gate that serializes mutations of one record is an OS lock and nothing else. The file it is taken
+    /// on is left in place on purpose: a host killed outright cannot delete it, and a store that read the
+    /// file's EXISTENCE as "a mutation is in flight" would then refuse every later completion and retraction
+    /// of that admission for good — freezing the record in whatever state the dead host left it. Ownership is
+    /// the open handle, which the kernel drops when the holder exits however it exits.
+    /// </summary>
+    [Fact]
+    public async Task AGateFileLeftBehindByADeadHost_DoesNotFreezeTheAdmissionItGuards()
+    {
+        const string Backing = "stale-gate";
+        var store = CreateStore(StoreKind.File, Backing);
+        var admission = Admission();
+        (await store.TryReserveAcceptanceAsync(admission)).Should().BeNull();
+        var gateFile = SoleAcceptanceRecordFile(Backing) + ".mutate";
+        await File.WriteAllTextAsync(gateFile, string.Empty);
+
+        // A different store object over the same directory — the stand-in for the host that comes after.
+        var later = CreateStore(StoreKind.File, Backing);
+        var resolved = admission with { State = InputAcceptanceState.Enforced };
+        var completed = await later.TryRecordOutcomeAsync(resolved);
+
+        completed.Should().BeTrue("a gate file nobody holds open is not a mutation in flight");
+        (await later.GetAcceptanceAsync(admission.ThreadId, admission.InputId)).Should().Be(resolved);
+
+        // And the lock still excludes: while a handle is held the mutation stands down, and it lands as soon
+        // as that handle closes — without the gate file itself ever having to go away.
+        using (var held = new FileStream(gateFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+        {
+            (await later.TryReleaseAcceptanceAsync(
+                    admission.ThreadId,
+                    admission.InputId,
+                    admission.ReservationId))
+                .Should().BeFalse("the held handle is a mutation in flight");
+        }
+
+        (await later.TryReleaseAcceptanceAsync(
+                admission.ThreadId,
+                admission.InputId,
+                admission.ReservationId))
+            .Should().BeTrue("closing the handle releases the gate, leftover file and all");
+    }
+
+    /// <summary>
     /// An exclusive-creation protocol necessarily has a moment where the record EXISTS but its content has
     /// not landed yet — that is what makes the creation the arbitration point. A reader that meets that
     /// moment and answers "never admitted" would let the host queue a second turn for an input another

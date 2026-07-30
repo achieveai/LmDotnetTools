@@ -126,8 +126,8 @@ public static class SqliteSchemaInitializer
         );
         """;
 
-    private const string CreateNotifyWaitsTableSql = """;
-        CREATE TABLE IF NOT EXISTS notify_waits(
+    private const string CreateNotifyWaitsTableSql = """
+        CREATE TABLE IF NOT EXISTS notify_waits (
             wait_id TEXT NOT NULL,
             thread_id TEXT NOT NULL,
             kind TEXT NOT NULL,
