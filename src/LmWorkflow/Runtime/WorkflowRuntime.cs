@@ -532,8 +532,6 @@ public sealed class WorkflowRuntime
             {
                 TaskList = [],
                 OnFailure = null,
-                MaxVisits = null,
-                OnMaxVisits = null,
                 MaxParallel = null,
             },
             ConditionalNode conditional => new ProceduralNode

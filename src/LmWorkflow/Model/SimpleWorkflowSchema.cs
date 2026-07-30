@@ -51,7 +51,7 @@ public static class SimpleWorkflowSchema
                         "The step kind. Use 'parallel' (NOT several 'agent' steps, and NOT one 'agent' step "
                         + "instructed to run others) whenever multiple independent sub-agents should work at "
                         + "once — it is the only kind that fans work out concurrently.",
-                    Enum = ["start", "agent", "parallel", "branch", "end"],
+                    Enum = ["start", "agent", "parallel", "branch", "noop", "end"],
                 },
                 required: true
             )

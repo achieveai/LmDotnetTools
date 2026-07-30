@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
@@ -499,6 +500,44 @@ public class WorkflowRuntimeTests
         var proc = analyze.Should().BeOfType<ProceduralNode>().Which;
         proc.TaskList.Should().BeEmpty();
         proc.Next.Should().ContainSingle().Which.Should().Be("done");
+    }
+
+    [Fact]
+    public void RemoveNode_ProceduralNode_PreservesVisitCapAndRoundTripsThroughSimpleDsl()
+    {
+        var definition = WorkflowJson.Deserialize(
+            """
+            {
+              "schemaVersion": 1,
+              "objective": "capped procedural",
+              "nodes": [
+                { "id": "start", "type": "start", "title": "Start", "next": ["work"] },
+                { "id": "work", "type": "procedural", "title": "Work", "next": ["done"],
+                  "maxVisits": 2, "onMaxVisits": "done", "taskList": [
+                    { "id": "task", "delegate": "agent", "subagent_type": "gp", "promptTemplate": "work" }
+                  ] },
+                { "id": "done", "type": "terminal", "title": "Done" }
+              ]
+            }
+            """
+        );
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(definition);
+
+        runtime.RemoveNode("work");
+
+        var noOp = runtime.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "work");
+        noOp.TaskList.Should().BeEmpty();
+        noOp.MaxVisits.Should().Be(2);
+        noOp.OnMaxVisits.Should().Be("done");
+        var rendered = SimpleWorkflowTranslator.FromDefinition(runtime.Definition);
+        var reparsed = SimpleWorkflow.Deserialize(
+            JsonSerializer.Serialize(rendered, SimpleWorkflow.OutputJsonOptions)
+        ).ToDefinition();
+        var roundTripped = reparsed.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "work");
+        roundTripped.Next.Should().Equal(noOp.Next);
+        roundTripped.MaxVisits.Should().Be(2);
+        roundTripped.OnMaxVisits.Should().Be("done");
     }
 
     [Fact]

@@ -371,6 +371,17 @@ public static class SimpleWorkflowTranslator
             case "start":
                 return new StartNode { Id = id, Title = title, Next = ToList(ResolveNext(step.Next, fallThrough)) };
 
+            case "noop":
+                return new ProceduralNode
+                {
+                    Id = id,
+                    Title = title,
+                    Next = ToList(ResolveNext(step.Next, fallThrough)),
+                    MaxVisits = step.MaxVisits,
+                    OnMaxVisits = NullIfBlank(step.OnMaxVisits),
+                    TaskList = [],
+                };
+
             case "agent":
             case "task":
                 // 'prompt' stays required — a sub-agent with no instructions has nothing to do, and there is
@@ -539,7 +550,10 @@ public static class SimpleWorkflowTranslator
                 {
                     Id = agent.Id,
                     Title = title,
-                    Kind = "agent",
+                    // A task-less procedural node is an intentional no-op pass-through produced by
+                    // RemoveNode. Render it as start-shaped control flow so GetWorkflow remains
+                    // re-authorable without inventing a missing agent/prompt.
+                    Kind = task is null ? "noop" : "agent",
                     Next = agent.Next.FirstOrDefault(),
                     Agent = task?.SubagentType,
                     ModelIntelligence = task?.ModelIntelligence,

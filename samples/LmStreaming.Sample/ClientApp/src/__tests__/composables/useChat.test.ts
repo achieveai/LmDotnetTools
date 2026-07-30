@@ -139,6 +139,24 @@ describe('useChat mode-aware websocket lifecycle', () => {
     expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
   });
 
+  it('clears deferred sandbox retry when the active stream is cancelled', async () => {
+    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    await chat.sendMessage('use the workspace');
+    const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    await firstOptions.onSandboxSessionRefresh(true);
+
+    await chat.cancelStream();
+    await chat.sendMessage('next run');
+    const secondOptions = wsMocks.createWebSocketConnection.mock.calls[1]?.[0];
+    secondOptions.onDone();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(wsMocks.sendWebSocketMessage.mock.calls.map((call) => call[1])).toEqual([
+      'use the workspace',
+      'next run',
+    ]);
+  });
+
   it('does not retry more than once when the replacement session also refreshes', async () => {
     const chat = useChat({ getModeId: () => 'workspace-agent' });
 

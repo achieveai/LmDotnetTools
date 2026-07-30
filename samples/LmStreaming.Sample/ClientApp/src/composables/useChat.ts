@@ -1137,6 +1137,7 @@ export function useChat(options: UseChatOptions = {}) {
     log.info('Cancelling active stream');
 
     await disconnectWebSocket();
+    clearSandboxRefreshState();
 
     for (const message of messageIndex.value.values()) {
       if (message.isStreaming) {
