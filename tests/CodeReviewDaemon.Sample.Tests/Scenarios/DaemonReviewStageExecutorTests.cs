@@ -237,6 +237,36 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         }
     }
 
+    /// <summary>
+    /// Task 5 (fix round 1) — the lifecycle/head check must run even when there is NO completion source. The
+    /// barrier re-runs it just before it opens, but a review with no sub-agent source never reaches the
+    /// barrier, and it still took real time to produce: synthesizing (and, on the posting path, delivering)
+    /// against a PR that has since closed is exactly what the check exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_with_no_completion_source_still_refuses_to_synthesize_against_a_closed_pr()
+    {
+        // No completion source injected and no tool context — the tier where nothing can be waited on.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        // The PR closes while the review is running: the stage drives the run object it loaded BEFORE that,
+        // so the store and the in-flight run have diverged — the divergence the check looks for.
+        fixture.Store.UpdateReviewRunState(
+            run.Id, ReviewStage.Reviewed, WorkflowStatus.Running, PrLifecycleState.Closed);
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*became Closed*");
+
+        // The provisional turn ran; the AUTHORITATIVE synthesis turn did not, and nothing was persisted.
+        var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        agent.ReceivedInputs.Should().HaveCount(1, "the collect-only turn ran, the synthesis turn was refused");
+        fixture.Store.GetArtifacts(run.Id).Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
     [Fact]
     public async Task ContextReady_uses_the_cross_repo_store_when_the_reviewed_repo_is_a_submodule()
     {

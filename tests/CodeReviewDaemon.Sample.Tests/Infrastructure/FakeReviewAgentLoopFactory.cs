@@ -41,6 +41,12 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// inspect the <see cref="FakeMultiTurnAgent.ReceivedInputs"/> the executor sent each one.</summary>
     public List<FakeMultiTurnAgent> CreatedAgents { get; } = [];
 
+    /// <summary>When set, every scripted agent is passed through this hook before being returned, so a test
+    /// can configure its sub-agent surface and/or WRAP it in a decorator — which is what the live
+    /// tool-assisted path does (<c>ToolScopedReviewLoop</c>). <see cref="CreatedAgents"/> still records the
+    /// scripted agent underneath, not the decorator.</summary>
+    public Func<FakeMultiTurnAgent, IMultiTurnAgent>? DecorateCreatedAgent { get; set; }
+
     /// <summary>When set, a tool-assisted <see cref="Create"/> (non-null <c>toolContext</c>) returns an agent
     /// that THROWS this exception instead of scripted text — models the model API rejecting the accumulated
     /// tool-assisted context (e.g. a context-window 400) so the executor's diff-only degrade is exercised.
@@ -85,13 +91,16 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         {
             var throwing = FakeMultiTurnAgent.Throwing($"run-{profile.Id}-overflow", ThrowWhenToolAssisted);
             CreatedAgents.Add(throwing);
-            return throwing;
+            return Decorate(throwing);
         }
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";
         var agent = new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
         CreatedAgents.Add(agent);
-        return agent;
+        return Decorate(agent);
     }
+
+    private IMultiTurnAgent Decorate(FakeMultiTurnAgent agent) =>
+        DecorateCreatedAgent?.Invoke(agent) ?? agent;
 }

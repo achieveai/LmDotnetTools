@@ -51,15 +51,23 @@ internal static class DaemonAgentFactory
     /// reasons over the diff the executor supplies), so <see cref="AgentProfile.EnabledBuiltInTools"/> is
     /// empty; the MCP tool allow-list (<see cref="AgentProfile.EnabledTools"/>) is left to the
     /// capability-enforcing executor, which is the layer that knows the concrete sandbox tool names.
+    /// <para>
+    /// The first turn of a review is COLLECT-ONLY by construction: whatever the caller's actual posting
+    /// intent is, <c>should_post</c> is forced to <see langword="false"/> here so no rendering of this
+    /// profile can ever instruct the agent to deliver. Delivery belongs exclusively to
+    /// <see cref="CreateSynthesisPrompt"/>, which is the only turn whose answer is complete.
+    /// </para>
     /// </summary>
     public static AgentProfile CreateReviewProfile(IReadOnlyDictionary<string, object> variables)
     {
         ArgumentNullException.ThrowIfNull(variables);
 
+        var collectOnly = new Dictionary<string, object>(variables) { ["should_post"] = false };
+
         return new AgentProfile(
             Id: ReviewProfileId,
             Name: "Review Agent",
-            SystemPrompt: Prompts.GetPrompt("review").PromptText(new Dictionary<string, object>(variables)),
+            SystemPrompt: Prompts.GetPrompt("review").PromptText(collectOnly),
             EnabledTools: null,
             EnabledBuiltInTools: []);
     }

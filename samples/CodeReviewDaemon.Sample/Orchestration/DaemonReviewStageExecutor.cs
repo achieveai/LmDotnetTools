@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
@@ -1886,10 +1885,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Posting is AGENT-owned and INLINE: the review agent posts its findings as line-anchored comments
         // (and replies to open threads) via the provider REST API / the code-reviewer:post-pr-review skill over
         // the sandbox's egress proxy, which injects the bot's auth on api.github.com / dev.azure.com writes
-        // (github-auth/ado-auth rules, Methods:[] = all methods). should_post drives the prompt's posting step.
-        // Because the agent reliably WRITES the review but frequently SKIPS posting it (observed live: run 81
-        // emitted its review + notes at 17/150 turns and never posted), the posting instructions are repeated on
-        // the synthesis turn — which is also the only turn whose answer is complete enough to be worth posting.
+        // (github-auth/ado-auth rules, Methods:[] = all methods).
+        // The posting intent flows to the SYNTHESIS turn ONLY. The provisional turn is collect-only by
+        // construction (CreateReviewProfile forces should_post=false), because its answer is written while
+        // children are still running: posting there would publish a half-review the authoritative turn cannot
+        // retract, and it is also what made the agent skip the real posting step (observed live: run 81 emitted
+        // its review + notes at 17/150 turns and never posted). Synthesis is both the only complete answer and
+        // the only delivery point.
         // The host-side single-summary publisher stays an off-by-default fallback (EnableHostSummaryFallback).
         // On the S2S path the review runs on the LmStreaming host, whose agent is domain-agnostic and CANNOT post
         // to a GitHub/ADO PR — so agent-inline posting is forced off; PostAsync posts host-side for both
@@ -1912,14 +1914,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
             reviewWorkspace: prepared);
-        // Reach through any wrapper to the live loop: it alone carries the SubAgentManager the barrier polls and
-        // the spawn-suppression scope the synthesis turn runs in. Null on S2S (children live on the host) and in
-        // tests that supply a bare fake — both handled below.
-        var liveLoop = TryGetLiveLoop(loop);
-        var spawnTools = liveLoop?.SubAgentTools;
+        // Resolve the loop's sub-agent surface (unwrapping decorators): the completion source the barrier polls
+        // and the spawn-suppression scope the synthesis turn runs in. A loop that declares the surface with null
+        // members provably has no spawn surface (S2S, diff-only); a loop that declares nothing is UNKNOWN, so if
+        // this run was configured to spawn we refuse rather than silently skip BOTH the barrier and suppression.
+        var surface = ReviewLoopSubAgentSurface.Resolve(loop);
+        if (surface is null && toolContext?.SubAgentOptions is not null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the review loop ({loop.GetType().Name}) is configured to spawn sub-agents but "
+                    + "exposes no IReviewLoopSubAgentSurface, so the completion barrier and the synthesis-turn "
+                    + "spawn suppression cannot be applied. Implement IReviewLoopSubAgentSurface (or "
+                    + "IReviewLoopWrapper to forward to a loop that does) on it.");
+        }
+
+        var completionSource = surface?.CompletionSource;
         var agent = new ReviewAgent(
-            loop, _loggerFactory.CreateLogger<ReviewAgent>(),
-            spawnTools is null ? null : spawnTools.SuppressSpawning);
+            loop, _loggerFactory.CreateLogger<ReviewAgent>(), surface?.SuppressSpawning);
 
         // 1. Provisional: the agent reviews and fans out. Its answer is written while children are still
         //    running, so it is deliberately NOT persisted — it exists to start the work, not to record it.
@@ -1927,43 +1938,39 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             .ConfigureAwait(false);
         // 2. Barrier: block until every descendant has settled (or the shared deadline expires).
         var inventory = await AwaitSubAgentSettlementAsync(
-            run, liveLoop, provisional.ThreadId ?? threadId, deadlineUtc, cancellationToken).ConfigureAwait(false);
-        // 3. Synthesis: same agent, same thread, children's results now all delivered. THIS is the review.
+            run, completionSource, provisional.ThreadId ?? threadId, deadlineUtc, cancellationToken)
+            .ConfigureAwait(false);
+        // 3. Synthesis: same agent, same thread, children's results now all delivered. THIS is the review, and
+        //    the only turn carrying the posting contract.
         var synthesisPrompt = DaemonAgentFactory.CreateSynthesisPrompt(variables, inventory);
         return await agent.SynthesizeFinalAsync(synthesisPrompt, shouldPost, deadlineUtc, cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Unwraps <paramref name="agent"/> to the live <see cref="MultiTurnAgentLoop"/> underneath, or <c>null</c>
-    /// when there is none (the S2S <see cref="S2SReviewAgent"/>, or a test fake). Recursive because the
-    /// tool-assisted path returns a <see cref="ToolScopedReviewLoop"/> wrapper.
-    /// </summary>
-    private static MultiTurnAgentLoop? TryGetLiveLoop(IMultiTurnAgent agent) => agent switch
-    {
-        MultiTurnAgentLoop loop => loop,
-        ToolScopedReviewLoop scoped => TryGetLiveLoop(scoped.Inner),
-        _ => null,
-    };
-
-    /// <summary>
     /// Blocks until this review's sub-agent tree has settled, then renders the safe roster the synthesis prompt
-    /// quotes. The completion source is chosen from what the attempt actually has: the LIVE loop's own
-    /// <c>SubAgentManager</c> when it has one (in-process — the manager is passed straight through, no registry
-    /// or handle lookup), otherwise the injected <see cref="_completionSource"/> (S2S, where the children live
-    /// on the host). With neither, spawning was never possible for this attempt, so there is nothing to wait for
-    /// and the roster is empty. A barrier timeout propagates — never treated as "probably done".
+    /// quotes. <paramref name="loopCompletionSource"/> is the LIVE loop's own source when it has one (in-process
+    /// — the manager is passed straight through, no registry or handle lookup), otherwise the injected
+    /// <see cref="_completionSource"/> is used (S2S, where the children live on the host). With neither, spawning
+    /// was never possible for this attempt, so there is nothing to wait for and the roster is empty.
+    /// <para>
+    /// The lifecycle/head check runs UNCONDITIONALLY first — including on that no-source path. Even a review with
+    /// no children took time to produce, and synthesizing (and therefore posting) against a PR that has since
+    /// moved head or closed is exactly what the check exists to prevent; only the WAITING is conditional. On the
+    /// source-present path the barrier re-runs it immediately before it opens, since minutes can pass in between.
+    /// A barrier timeout propagates — never treated as "probably done".
+    /// </para>
     /// </summary>
     private async Task<string> AwaitSubAgentSettlementAsync(
         ReviewRun run,
-        MultiTurnAgentLoop? liveLoop,
+        IReviewSubAgentCompletionSource? loopCompletionSource,
         string parentThreadId,
         DateTimeOffset deadlineUtc,
         CancellationToken cancellationToken)
     {
-        var source = liveLoop?.SubAgentManager is { } manager
-            ? new InProcessReviewSubAgentCompletionSource(manager)
-            : _completionSource;
+        await ValidateReviewStillCurrentAsync(run, cancellationToken).ConfigureAwait(false);
+
+        var source = loopCompletionSource ?? _completionSource;
         if (source is null)
         {
             return ReviewSubAgentTreeSnapshot.NoSubAgents;
@@ -1985,10 +1992,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// The barrier's lifecycle/head check, run once immediately before it opens: sub-agents can take minutes, so
-    /// re-read the run and refuse to synthesize (and therefore to post) against a PR that has since moved to a
-    /// new head or left the Open state. Throwing here fails the stage into RetryPending, which is correct — the
-    /// next round reviews the CURRENT head.
+    /// The lifecycle/head check that guards synthesis: re-read the run and refuse to synthesize (and therefore
+    /// to post) against a PR that has since moved to a new head or left the Open state. Run once when the
+    /// provisional turn returns and, on the barrier path, again immediately before the barrier opens — sub-agents
+    /// can take minutes, so the two observations are genuinely different. Throwing here fails the stage into
+    /// RetryPending, which is correct — the next round reviews the CURRENT head.
     /// </summary>
     private Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
     {
@@ -2000,15 +2008,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         if (!string.Equals(current.HeadSha, run.HeadSha, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"PR {run.PrId} moved from {run.HeadSha} to {current.HeadSha} while its sub-agents were "
-                    + "settling; abandoning this review so the next round reviews the current head.");
+                $"PR {run.PrId} moved from {run.HeadSha} to {current.HeadSha} while this review was running; "
+                    + "abandoning it so the next round reviews the current head.");
         }
 
         if (current.PrLifecycleState != PrLifecycleState.Open)
         {
             throw new InvalidOperationException(
-                $"PR {run.PrId} became {current.PrLifecycleState} while its sub-agents were settling; "
-                    + "abandoning this review rather than synthesizing against a closed PR.");
+                $"PR {run.PrId} became {current.PrLifecycleState} while this review was running; abandoning "
+                    + "it rather than synthesizing against a closed PR.");
         }
 
         return Task.CompletedTask;

@@ -23,8 +23,14 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// assert that both turns received the SAME absolute deadline and that disposal happens only after the
 /// whole collect → barrier → synthesize sequence.
 /// </para>
+/// <para>
+/// It DECLARES <see cref="IReviewLoopSubAgentSurface"/> — with no spawn surface unless a test supplies one —
+/// because the executor treats a loop that declares nothing as UNKNOWN and refuses to run it when spawning
+/// was configured. Declaring it says "this double provably has the surface it says it has".
+/// </para>
 /// </summary>
-internal sealed class FakeMultiTurnAgent : IMultiTurnAgent, IDeadlineBoundedReviewLoop
+internal sealed class FakeMultiTurnAgent
+    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IReviewLoopSubAgentSurface
 {
     /// <summary><see cref="Lifecycle"/> entry appended at the start of every <see cref="ExecuteRunAsync"/>.</summary>
     public const string RunEvent = "run";
@@ -73,6 +79,13 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent, IDeadlineBoundedRevi
 
     /// <summary><see cref="RunEvent"/>/<see cref="DisposeEvent"/> transitions in the order they happened.</summary>
     public List<string> Lifecycle { get; } = [];
+
+    /// <summary>The completion source the executor should poll for this double's children. Null (the default)
+    /// = this loop provably has no in-process children, so the barrier falls back to the injected source.</summary>
+    public IReviewSubAgentCompletionSource? CompletionSource { get; set; }
+
+    /// <summary>The spawn-suppression scope factory. Null (the default) = no in-process spawn surface.</summary>
+    public Func<IDisposable>? SuppressSpawning { get; set; }
 
     public string? CurrentRunId { get; private set; }
 
