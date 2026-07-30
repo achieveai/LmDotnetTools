@@ -21,6 +21,35 @@ internal interface IDeadlineBoundedReviewLoop
 }
 
 /// <summary>
+/// A review loop whose turn is durable on a HOST that outlives the daemon process: the host records the turn
+/// as an accepted input before it starts producing, so the daemon can checkpoint that input id and, after a
+/// restart, rejoin the very same in-flight turn instead of queueing a second one on the same conversation.
+/// Implemented by <see cref="S2SReviewAgent"/> only — an in-process turn dies with the loop that started it,
+/// so there is nothing to rejoin and it deliberately declares nothing here rather than fabricating an id.
+/// <para>
+/// Pushed like <see cref="IDeadlineBoundedReviewLoop.UseDeadline"/>, and for the same reason: resumability is
+/// an attribute of the review ATTEMPT, not of the <see cref="IMultiTurnAgent"/> contract. Returning the id
+/// from the turn would be useless — the checkpoint has to exist BEFORE the minutes-long wait it protects, not
+/// after it.
+/// </para>
+/// </summary>
+internal interface IResumableReviewTurn
+{
+    /// <summary>
+    /// Arms the NEXT turn's checkpointing, one shot (a later turn on the same loop is unarmed again, so a
+    /// spent input can never be rejoined twice).
+    /// <para>
+    /// A non-null <paramref name="resumeInputId"/> makes that turn REJOIN an input the host already accepted:
+    /// it is polled to completion and never re-sent, because the host is already producing an answer for it
+    /// and a second send would run the same turn twice on one conversation. Otherwise the turn is sent
+    /// normally and <paramref name="onInputAccepted"/> is invoked with the accepted id the instant the host
+    /// takes it — before any polling — so the checkpoint is durable for the whole wait.
+    /// </para>
+    /// </summary>
+    void ArmTurnCheckpoint(string? resumeInputId, Action<string> onInputAccepted);
+}
+
+/// <summary>
 /// Drives ONE review conversation through its two phases (plan §4, recursive-review completion barrier):
 /// <list type="number">
 /// <item><see cref="CollectProvisionalAsync"/> — one collect-only turn over the review input the stage

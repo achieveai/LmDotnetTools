@@ -29,9 +29,15 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// the synthesis turn from fanning out, and refuses to run it. Declaring it says "this double provably has
 /// the surface it says it has"; a test that wants the refusal nulls <see cref="SuppressSpawning"/>.
 /// </para>
+/// <para>
+/// It also implements <see cref="IResumableReviewTurn"/> with the same one-shot semantics as the hosted loop
+/// it stands in for: an armed turn either REJOINS an input the host already accepted (recorded in
+/// <see cref="RejoinedInputIds"/>, nothing newly accepted) or reports the id it just accepted
+/// (<see cref="AcceptedInputIds"/>, from <see cref="NextInputId"/>) before producing anything.
+/// </para>
 /// </summary>
 internal sealed class FakeMultiTurnAgent
-    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IReviewLoopSubAgentSurface
+    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IResumableReviewTurn, IReviewLoopSubAgentSurface
 {
     /// <summary><see cref="Lifecycle"/> entry appended at the start of every <see cref="ExecuteRunAsync"/>.</summary>
     public const string RunEvent = "run";
@@ -131,6 +137,52 @@ internal sealed class FakeMultiTurnAgent
 
     public void UseDeadline(DateTimeOffset deadlineUtc) => Deadlines.Add(deadlineUtc);
 
+    /// <summary>The id this double reports as newly accepted when an armed turn is SENT rather than rejoined.</summary>
+    public string NextInputId { get; set; } = "input-1";
+
+    /// <summary>Every value passed to <see cref="ArmTurnCheckpoint"/>, in order (null = "send a new turn").</summary>
+    public List<string?> ArmedResumeInputIds { get; } = [];
+
+    /// <summary>Ids reported to the caller as newly accepted — i.e. turns this double SENT.</summary>
+    public List<string> AcceptedInputIds { get; } = [];
+
+    /// <summary>Ids of turns REJOINED rather than sent; nothing new was queued for these.</summary>
+    public List<string> RejoinedInputIds { get; } = [];
+
+    private string? _armedResumeInputId;
+    private Action<string>? _onInputAccepted;
+
+    public void ArmTurnCheckpoint(string? resumeInputId, Action<string> onInputAccepted)
+    {
+        ArgumentNullException.ThrowIfNull(onInputAccepted);
+        ArmedResumeInputIds.Add(resumeInputId);
+        _armedResumeInputId = resumeInputId;
+        _onInputAccepted = onInputAccepted;
+    }
+
+    /// <summary>Applies the one-shot arming to the turn that is starting, exactly as the hosted loop does:
+    /// consumed either way, so a later unarmed turn neither rejoins a spent input nor re-reports one.</summary>
+    private void ResolveArmedTurn()
+    {
+        var rejoin = _armedResumeInputId;
+        var onAccepted = _onInputAccepted;
+        _armedResumeInputId = null;
+        _onInputAccepted = null;
+        if (onAccepted is null)
+        {
+            return;
+        }
+
+        if (rejoin is not null)
+        {
+            RejoinedInputIds.Add(rejoin);
+            return;
+        }
+
+        AcceptedInputIds.Add(NextInputId);
+        onAccepted(NextInputId);
+    }
+
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
         [EnumeratorCancellation] CancellationToken ct = default
@@ -140,6 +192,7 @@ internal sealed class FakeMultiTurnAgent
         var turn = _turns[Math.Min(ReceivedInputs.Count, _turns.Count - 1)];
         ReceivedInputs.Add(userInput);
         Lifecycle.Add(RunEvent);
+        ResolveArmedTurn();
         if (turn.Throw is not null)
         {
             throw turn.Throw;

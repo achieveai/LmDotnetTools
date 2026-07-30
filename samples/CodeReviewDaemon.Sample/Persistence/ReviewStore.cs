@@ -549,19 +549,48 @@ internal sealed class ReviewStore : IDisposable
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            results.Add(new ReviewArtifact
-            {
-                Id = reader.GetInt64(reader.GetOrdinal("id")),
-                ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
-                ArtifactSchemaVersion = reader.GetInt32(reader.GetOrdinal("artifact_schema_version")),
-                ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
-                Provider = reader.GetString(reader.GetOrdinal("provider")),
-                Payload = reader.GetString(reader.GetOrdinal("payload")),
-            });
+            results.Add(MapArtifact(reader));
         }
 
         return results;
     }
+
+    /// <summary>
+    /// The most recently appended artifact of <paramref name="artifactKind"/> for a run, or <c>null</c> when the
+    /// run has none. This is the single lookup every "what did this run last record?" read goes through —
+    /// including the checkpoint reads that resume an interrupted review — so the "latest wins" rule is defined
+    /// in ONE place rather than re-derived by each caller filtering a full artifact list.
+    /// <para>
+    /// The append-only history is untouched: this SELECTs the highest id of the kind instead of collapsing or
+    /// replacing rows, so every earlier artifact stays readable through <see cref="GetArtifacts"/>.
+    /// </para>
+    /// </summary>
+    public ReviewArtifact? TryGetLatestArtifact(long reviewRunId, string artifactKind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactKind);
+
+        using var gate = _gate.EnterScope();
+        using var command = _connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM review_artifact
+            WHERE review_run_id = $runId AND artifact_kind = $kind
+            ORDER BY id DESC LIMIT 1;
+            """;
+        _ = command.Parameters.AddWithValue("$runId", reviewRunId);
+        _ = command.Parameters.AddWithValue("$kind", artifactKind);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? MapArtifact(reader) : null;
+    }
+
+    private static ReviewArtifact MapArtifact(SqliteDataReader reader) => new()
+    {
+        Id = reader.GetInt64(reader.GetOrdinal("id")),
+        ReviewRunId = reader.GetInt64(reader.GetOrdinal("review_run_id")),
+        ArtifactSchemaVersion = reader.GetInt32(reader.GetOrdinal("artifact_schema_version")),
+        ArtifactKind = reader.GetString(reader.GetOrdinal("artifact_kind")),
+        Provider = reader.GetString(reader.GetOrdinal("provider")),
+        Payload = reader.GetString(reader.GetOrdinal("payload")),
+    };
 
     // ── deep_link_conversation (deep-link retention ledger) ──────────────────────────────────────
 

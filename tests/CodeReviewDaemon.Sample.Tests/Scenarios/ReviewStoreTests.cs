@@ -449,6 +449,44 @@ public sealed class ReviewStoreTests
         artifacts[0].ArtifactSchemaVersion.Should().Be(1);
     }
 
+    [Fact]
+    public void TryGetLatestArtifact_returns_the_newest_of_a_kind_without_collapsing_the_history()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        // Two checkpoints of the SAME kind, as a retried review lifecycle writes them, plus an unrelated kind
+        // in between — a lookup that read the last row overall, or the first of the kind, would pick wrong.
+        _ = store.AddArtifact(SampleArtifact(runId, "review-provisional", "{\"n\":1}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "context", "{\"n\":0}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "review-provisional", "{\"n\":2}"));
+
+        store.TryGetLatestArtifact(runId, "review-provisional")!.Payload.Should().Be("{\"n\":2}");
+        store.GetArtifacts(runId)
+            .Should().HaveCount(3, "the lookup reads the newest row, it never replaces or prunes the append-only history");
+    }
+
+    [Fact]
+    public void TryGetLatestArtifact_returns_null_when_the_run_has_no_artifact_of_that_kind()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        _ = store.AddArtifact(SampleArtifact(runId, "context", "{}"));
+
+        // A missing checkpoint is the ordinary "fresh review" case, not an error: it must read as absent.
+        store.TryGetLatestArtifact(runId, "review-provisional").Should().BeNull();
+    }
+
+    private static ReviewArtifact SampleArtifact(long runId, string kind, string payload) => new()
+    {
+        ReviewRunId = runId,
+        ArtifactSchemaVersion = 1,
+        ArtifactKind = kind,
+        Provider = "github",
+        Payload = payload,
+    };
+
     // ── §7 GetRepo rehydration ──────────────────────────────────────────────────────────────────
 
     [Fact]

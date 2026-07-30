@@ -280,6 +280,93 @@ public sealed class S2SReviewAgentTests
             "every call targets the persisted conversation");
     }
 
+    /// <summary>
+    /// A daemon restart between the send and the answer must not queue a SECOND synthesis turn: the host has
+    /// already accepted the input and is producing for it, so the resumed lifecycle rejoins that exact input.
+    /// No <c>POST /messages</c> route is registered here — the fake handler answers an unrouted request with
+    /// 501, so any re-send fails this test outright.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_rejoins_an_armed_input_instead_of_queueing_a_second_turn()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "/status",
+                "{\"status\":\"Completed\",\"runId\":\"run-resumed\",\"response\":{\"text\":\"## Review\\nResumed.\"}}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(
+            new LmStreamingS2SClient(http, "s", "id", "key"), title: null, existingThreadId: "thread-persisted");
+        var reAccepted = new List<string>();
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ArmTurnCheckpoint("input-inflight", reAccepted.Add);
+        var messages = await DriveAsync(agent, "synthesize the final review");
+
+        messages.Should().ContainSingle().Subject.Should().BeOfType<TextMessage>()
+            .Which.Text.Should().Be("## Review\nResumed.");
+        reAccepted.Should().BeEmpty("nothing new was accepted — the checkpoint the caller supplied still stands");
+        handler.Requests.Should().OnlyContain(
+            r => r.Method == HttpMethod.Get && r.Uri.Query.Contains("inputId=input-inflight", StringComparison.Ordinal),
+            "the resumed turn only polls the input the host already took");
+    }
+
+    /// <summary>
+    /// The other half of the checkpoint contract: an armed turn with nothing to rejoin is sent normally, and
+    /// the accepted id is reported BEFORE the first poll. That ordering is the whole point — the wait it
+    /// protects can run for the review's entire budget, so a checkpoint written after it would be written too
+    /// late to survive the outage it exists for.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_reports_a_newly_accepted_input_id_before_it_starts_polling()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-minted\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(
+            new LmStreamingS2SClient(http, "s", "id", "key"), title: null, existingThreadId: "thread-persisted");
+        var accepted = new List<string>();
+        var pollsBeforeCheckpoint = -1;
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ArmTurnCheckpoint(
+            resumeInputId: null,
+            inputId =>
+            {
+                accepted.Add(inputId);
+                pollsBeforeCheckpoint = handler.CountRequests("/status");
+            });
+        _ = await DriveAsync(agent, "synthesize the final review");
+
+        accepted.Should().Equal("input-minted");
+        pollsBeforeCheckpoint.Should().Be(0, "the checkpoint must be durable before the minutes-long wait, not after it");
+    }
+
+    /// <summary>
+    /// Arming is ONE SHOT. A later turn on the same loop is unarmed again, so a spent input can never be
+    /// rejoined twice — which would poll an answer belonging to the previous turn and never send this one.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_arms_only_the_next_turn()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-fresh\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(
+            new LmStreamingS2SClient(http, "s", "id", "key"), title: null, existingThreadId: "thread-persisted");
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ArmTurnCheckpoint("input-inflight", _ => { });
+        _ = await DriveAsync(agent, "the rejoined turn");
+        _ = await DriveAsync(agent, "a later turn");
+
+        handler.Requests.Should().ContainSingle(
+            r => r.Method == HttpMethod.Post && r.Uri.ToString().Contains("/messages", StringComparison.Ordinal),
+            "the rejoined turn sent nothing, the unarmed turn after it sent normally");
+    }
+
     [Fact]
     public async Task ExecuteRunAsync_obeys_the_supplied_absolute_deadline_instead_of_a_fresh_per_turn_window()
     {
@@ -287,6 +374,7 @@ public sealed class S2SReviewAgentTests
         // its own overallTimeout window, so a review could spend the whole budget on the provisional turn and
         // then spend it AGAIN on synthesis. With a deadline already in the past the agent must give up
         // immediately — proven by the poll never issuing a single status request.
+
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"InProgress\",\"runId\":\"run-slow\"}")

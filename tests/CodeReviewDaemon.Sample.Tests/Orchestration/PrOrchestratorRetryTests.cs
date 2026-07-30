@@ -1,3 +1,4 @@
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -86,6 +87,42 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         executor.FailStageCalls.Should().Be(2, "a non-ContextReady failure is not governed by the context-retry budget");
     }
 
+    [Fact]
+    public async Task A_barrier_deadline_at_Reviewed_is_charged_to_the_retry_budget()
+    {
+        // A review whose sub-agent tree never settled inside the stage's whole absolute deadline would wait
+        // exactly as long on exactly the same tree next poll. That is a stuck review, so it has to park —
+        // the same reason the ContextReady hot-loop is governed.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new ReviewBarrierDeadlineException());
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewBarrierDeadlineException>();
+        executor.FailStageCalls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        executor.FailStageCalls.Should().Be(1, "the budget is spent, so the stuck review is parked rather than re-run");
+    }
+
+    [Fact]
+    public async Task An_ordinary_failure_at_Reviewed_is_not_charged_to_the_retry_budget()
+    {
+        // Everything else that can fail a review — a provider blip, a host 5xx, a blank synthesis — is
+        // usually transient. Charging those to the budget would park recoverable reviews on a bad minute.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(ReviewStage.Reviewed, () => new InvalidOperationException("host 503"));
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+        await attempt.Should().ThrowAsync<InvalidOperationException>();
+
+        executor.FailStageCalls.Should().Be(2, "a transient review failure keeps retrying on the poll interval");
+    }
+
     private RetryGovernor Governor(int maxAttempts) => new(
         maxAttempts,
         TimeSpan.FromSeconds(30),
@@ -131,8 +168,10 @@ public sealed class PrOrchestratorRetryTests : IDisposable
         public Task ReleaseReviewLeaseAsync(long runId, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
-    /// <summary>Succeeds every stage except <paramref name="failAt"/>, where it throws; counts those failures.</summary>
-    private sealed class FailsAtStageExecutor(ReviewStage failAt) : IReviewStageExecutor
+    /// <summary>Succeeds every stage except <paramref name="failAt"/>, where it throws what
+    /// <paramref name="error"/> produces (an <see cref="InvalidOperationException"/> by default); counts
+    /// those failures. The exception TYPE is load-bearing: the governor charges only some of them.</summary>
+    private sealed class FailsAtStageExecutor(ReviewStage failAt, Func<Exception>? error = null) : IReviewStageExecutor
     {
         public int FailStageCalls { get; private set; }
 
@@ -141,7 +180,7 @@ public sealed class PrOrchestratorRetryTests : IDisposable
             if (stage == failAt)
             {
                 FailStageCalls++;
-                throw new InvalidOperationException($"simulated {failAt} failure");
+                throw error?.Invoke() ?? new InvalidOperationException($"simulated {failAt} failure");
             }
 
             return Task.CompletedTask;

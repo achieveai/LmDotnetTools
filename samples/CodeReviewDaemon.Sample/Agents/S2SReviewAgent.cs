@@ -39,7 +39,8 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// out-of-process source over the recursive sub-agent endpoint.
 /// </para>
 /// </summary>
-internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IReviewLoopSubAgentSurface
+internal sealed class S2SReviewAgent
+    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IResumableReviewTurn, IReviewLoopSubAgentSurface
 {
     /// <summary>Terminal run statuses that end the poll loop (matches <c>ConversationRunStatus</c> names).</summary>
     private static readonly HashSet<string> TerminalStatuses = new(StringComparer.OrdinalIgnoreCase)
@@ -67,6 +68,8 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLo
     private string? _currentRunId;
     private DateTimeOffset? _deadlineUtc;
     private int _spawnSuppressionDepth;
+    private string? _resumeInputId;
+    private Action<string>? _onInputAccepted;
 
     /// <summary>
     /// Builds the adapter. <paramref name="existingThreadId"/> seeds an ALREADY-PROVISIONED hosted
@@ -133,6 +136,14 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLo
     /// <inheritdoc />
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
 
+    /// <inheritdoc />
+    public void ArmTurnCheckpoint(string? resumeInputId, Action<string> onInputAccepted)
+    {
+        ArgumentNullException.ThrowIfNull(onInputAccepted);
+        _resumeInputId = string.IsNullOrWhiteSpace(resumeInputId) ? null : resumeInputId;
+        _onInputAccepted = onInputAccepted;
+    }
+
     /// <summary>
     /// Always <c>null</c>: this agent's children run in the REVIEW HOST's process, so there is no in-process
     /// manager to read them from. The barrier uses the executor's injected out-of-process source instead.
@@ -171,15 +182,43 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLo
             Volatile.Read(ref _spawnSuppressionDepth) > 0 || userInput.SuppressSubAgentSpawning;
 
         var threadId = await EnsureProvisionedAsync(ct).ConfigureAwait(false);
-        var inputId = await _client
-            .SendMessageAsync(threadId, input, suppressSpawning, ct)
-            .ConfigureAwait(false);
-        _logger.LogInformation(
-            "S2S review message queued on thread {ThreadId} (inputId {InputId}, spawning suppressed "
-                + "{SuppressSpawning}); polling to terminal.",
-            threadId,
-            inputId,
-            suppressSpawning);
+
+        // Consume the arming BEFORE the turn runs: it applies to this turn only, so a later turn on the same
+        // agent can neither rejoin a spent input nor re-fire a checkpoint that has already been persisted.
+        var rejoinInputId = _resumeInputId;
+        var onInputAccepted = _onInputAccepted;
+        _resumeInputId = null;
+        _onInputAccepted = null;
+
+        string inputId;
+        if (rejoinInputId is not null)
+        {
+            // The host already accepted this input and is (or was) producing an answer for it. Sending the turn
+            // again would run the same review twice on one conversation and double-spend the shared budget, so
+            // a checkpointed input is only ever polled. The host resolves it from its persisted ledger, which
+            // is why this still works after BOTH processes have restarted.
+            inputId = rejoinInputId;
+            _logger.LogInformation(
+                "Rejoining already-accepted S2S review input {InputId} on thread {ThreadId} instead of "
+                    + "re-sending it; polling to terminal.",
+                inputId,
+                threadId);
+        }
+        else
+        {
+            inputId = await _client
+                .SendMessageAsync(threadId, input, suppressSpawning, ct)
+                .ConfigureAwait(false);
+            // Reported before the first poll so the caller's checkpoint covers the whole wait, not just a wait
+            // that happened to finish.
+            onInputAccepted?.Invoke(inputId);
+            _logger.LogInformation(
+                "S2S review message queued on thread {ThreadId} (inputId {InputId}, spawning suppressed "
+                    + "{SuppressSpawning}); polling to terminal.",
+                threadId,
+                inputId,
+                suppressSpawning);
+        }
 
         var status = await PollToTerminalAsync(threadId, inputId, ct).ConfigureAwait(false);
         _currentRunId = status.RunId;
