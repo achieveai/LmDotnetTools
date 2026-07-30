@@ -304,7 +304,7 @@ public class ResponsesToAnthropicSseTests
         var output = Run("""{"type":"response.created","response":{"id":"r","model":"m"}}""", failure);
 
         output.Should().Contain("event: error");
-        output.Should().Contain("The upstream Copilot stream failed.");
+        output.Should().Contain("The upstream Copilot API reported a failure.");
         output.Should().NotContain("Upstream code:");
     }
 

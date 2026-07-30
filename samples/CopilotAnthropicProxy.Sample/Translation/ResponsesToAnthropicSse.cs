@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -13,13 +14,23 @@ using System.Text.Json.Nodes;
 ///     There is deliberately no Finish(): if the upstream stream ends without a terminal event this
 ///     class emits nothing more, leaving the client to observe the truncation. Capping a failed stream
 ///     with a synthetic message_stop would turn an upstream error into a silently empty success. A
-///     failure the upstream DOES report — an <c>error</c> or <c>response.failed</c> event — is the
-///     opposite case and is translated into Anthropic's terminal <c>error</c> event.
+///     failure the upstream DOES report — an <c>error</c> or <c>response.failed</c> event, a terminal
+///     event whose response declares a failed lifecycle, or a tool call whose arguments could not be
+///     reassembled — is the opposite case and is translated into Anthropic's terminal <c>error</c>
+///     event.
 /// </summary>
 public sealed class ResponsesToAnthropicSse
 {
     private readonly string _fallbackMessageId;
     private readonly string _fallbackModel;
+
+    /// <summary>
+    ///     The argument text reassembled so far for the open <c>tool_use</c> block, exactly as it was
+    ///     forwarded to the client in <c>input_json_delta</c> frames. Anthropic's client concatenates
+    ///     those fragments and parses the result, so this is the client's view of the call — which is
+    ///     what has to be proven complete before the block is allowed to close.
+    /// </summary>
+    private readonly StringBuilder _toolArguments = new();
 
     private bool _started;
     private bool _finished;
@@ -33,6 +44,18 @@ public sealed class ResponsesToAnthropicSse
     ///     auto-open fallbacks below exist precisely because it sometimes does not.
     /// </summary>
     private string? _openKind;
+
+    /// <summary>How many deltas have been written into the open block. Reset when the block closes.</summary>
+    private int _openBlockDeltas;
+
+    /// <summary>
+    ///     Set once the upstream has reported an official refusal, through a <c>refusal</c> content
+    ///     part or a <c>response.refusal.*</c> event. The terminal event's response usually carries the
+    ///     same refusal part and <see cref="ResponsesToAnthropicJson.DeriveStopReason"/> would find it,
+    ///     but Copilot has been observed sending lean terminal payloads, and a refusal reported as
+    ///     <c>end_turn</c> is a safety decline presented to the user as a normal answer.
+    /// </summary>
+    private bool _sawRefusal;
 
     /// <summary>
     ///     <paramref name="messageId"/> and <paramref name="model"/> are used when the upstream stream
@@ -74,6 +97,7 @@ public sealed class ResponsesToAnthropicSse
         var frames = new List<string>();
         var response = evt["response"] as JsonObject;
         var item = evt["item"] as JsonObject;
+        var partType = Text((evt["part"] as JsonObject)?["type"]);
 
         switch (type)
         {
@@ -87,9 +111,11 @@ public sealed class ResponsesToAnthropicSse
                 Start(frames, response);
                 break;
 
-            case "response.content_part.added"
-                when Text((evt["part"] as JsonObject)?["type"]) == "output_text":
+            // A refusal part opens a text block, for the same reason the buffered translator emits one:
+            // Anthropic has no refusal content block and reports the decline through stop_reason.
+            case "response.content_part.added" when partType is "output_text" or "refusal":
                 Start(frames, response);
+                _sawRefusal |= partType == "refusal";
                 OpenBlock(frames, new JsonObject { ["type"] = "text", ["text"] = "" });
                 break;
 
@@ -101,6 +127,36 @@ public sealed class ResponsesToAnthropicSse
                 }
 
                 Delta(frames, "text", "text_delta", "text", Text(evt["delta"]) ?? "");
+                break;
+
+            // ResponseRefusalDeltaEvent carries its fragment under "delta", exactly like output text.
+            case "response.refusal.delta":
+                Start(frames, response);
+                _sawRefusal = true;
+                if (_openKind != "text")
+                {
+                    OpenBlock(frames, new JsonObject { ["type"] = "text", ["text"] = "" });
+                }
+
+                Delta(frames, "text", "text_delta", "text", Text(evt["delta"]) ?? "");
+                break;
+
+            // ResponseRefusalDoneEvent carries the COMPLETE refusal under "refusal", not "delta". It is
+            // the only carrier when the upstream sent no refusal deltas at all, so it is adopted then;
+            // once deltas have been forwarded, re-sending the whole text would duplicate it.
+            case "response.refusal.done":
+                Start(frames, response);
+                _sawRefusal = true;
+                if (_openKind != "text")
+                {
+                    OpenBlock(frames, new JsonObject { ["type"] = "text", ["text"] = "" });
+                }
+
+                if (_openBlockDeltas == 0)
+                {
+                    Delta(frames, "text", "text_delta", "text", Text(evt["refusal"]) ?? "");
+                }
+
                 break;
 
             case "response.reasoning_summary_part.added":
@@ -118,15 +174,31 @@ public sealed class ResponsesToAnthropicSse
                 Delta(frames, "thinking", "thinking_delta", "thinking", Text(evt["delta"]) ?? "");
                 break;
 
+            // A tool call the client can neither correlate nor dispatch is not a tool call. call_id is
+            // what the client echoes back in tool_result and name is what it dispatches on, and the
+            // only other event carrying either is output_item.done — so an announcement missing one
+            // fails the stream rather than opening a block that can never be honoured.
             case "response.output_item.added" when Text(item?["type"]) == "function_call":
                 Start(frames, response);
+                if (Text(item?["call_id"]) is not { Length: > 0 } callId)
+                {
+                    Fail(frames, "The upstream announced a tool call with no readable call id.");
+                    break;
+                }
+
+                if (Text(item?["name"]) is not { Length: > 0 } toolName)
+                {
+                    Fail(frames, "The upstream announced a tool call with no readable name.");
+                    break;
+                }
+
                 OpenBlock(
                     frames,
                     new JsonObject
                     {
                         ["type"] = "tool_use",
-                        ["id"] = Text(item?["call_id"]) ?? "",
-                        ["name"] = Text(item?["name"]) ?? "",
+                        ["id"] = callId,
+                        ["name"] = toolName,
                         ["input"] = new JsonObject(),
                     }
                 );
@@ -138,28 +210,79 @@ public sealed class ResponsesToAnthropicSse
             // whatever block happens to be open would splice tool-call JSON into rendered assistant
             // text. Dropping them silently is equally wrong: the client would be handed a tool call
             // with no arguments, or none at all, and no way to know arguments existed. So the stream
-            // fails visibly instead.
+            // fails visibly instead — and for the same reason, a fragment that cannot be READ ends the
+            // stream too. Ignoring it leaves the client concatenating a hole in the middle of the
+            // argument JSON, which either fails to parse or, worse, parses into a different call.
             case "response.function_call_arguments.delta":
                 Start(frames, response);
-                if (_openKind != "tool_use" && Text(evt["delta"]) is { Length: > 0 })
+                if (_openKind != "tool_use")
                 {
                     Fail(frames, "The upstream sent tool call arguments for a tool call it never announced.");
                     break;
                 }
 
-                Delta(frames, "tool_use", "input_json_delta", "partial_json", Text(evt["delta"]) ?? "");
+                if (Text(evt["delta"]) is not { } fragment)
+                {
+                    Fail(frames, "The upstream sent a tool call argument fragment that could not be read.");
+                    break;
+                }
+
+                _toolArguments.Append(fragment);
+                Delta(frames, "tool_use", "input_json_delta", "partial_json", fragment);
+                break;
+
+            // ResponseFunctionCallArgumentsDoneEvent carries the COMPLETE argument string. It is
+            // authoritative: it is what the model actually chose, and it is the only carrier when the
+            // deltas never arrived or could not be read.
+            case "response.function_call_arguments.done":
+                Start(frames, response);
+                if (_openKind != "tool_use")
+                {
+                    Fail(frames, "The upstream completed tool call arguments for a tool call it never announced.");
+                    break;
+                }
+
+                AdoptCompleteArguments(frames, evt["arguments"]);
                 break;
 
             case "response.content_part.done":
-            case "response.output_item.done":
+                _sawRefusal |= partType == "refusal";
+                CloseBlock(frames);
+                break;
+
             case "response.reasoning_summary_part.done":
+                CloseBlock(frames);
+                break;
+
+            // The completed item carries the final function_call, including its arguments — the last
+            // chance to reconcile what the client was streamed against what the model actually chose.
+            case "response.output_item.done":
+                if (_openKind == "tool_use" && !AdoptCompleteArguments(frames, item?["arguments"]))
+                {
+                    break;
+                }
+
                 CloseBlock(frames);
                 break;
 
             case "response.completed":
             case "response.incomplete":
                 Start(frames, response);
-                CloseBlock(frames);
+
+                // A terminal event whose own response declares a failed or unfinished lifecycle is the
+                // streamed twin of the buffered check, answered the same way rather than dressed up as
+                // a completed turn.
+                if (response is not null && ResponsesToAnthropicJson.DescribeLifecycleFailure(response) is { } broken)
+                {
+                    Fail(frames, broken);
+                    break;
+                }
+
+                if (!CloseBlock(frames))
+                {
+                    break;
+                }
+
                 Terminate(frames, response);
                 break;
 
@@ -168,11 +291,11 @@ public sealed class ResponsesToAnthropicSse
             // Both used to land in the silent default arm, so the client saw an unexplained truncation
             // and could not tell a failure from a dropped connection.
             case "error":
-                Fail(frames, DescribeUpstreamFailure(evt));
+                Fail(frames, ResponsesToAnthropicJson.DescribeUpstreamFailure(evt));
                 break;
 
             case "response.failed":
-                Fail(frames, DescribeUpstreamFailure(response?["error"] as JsonObject));
+                Fail(frames, ResponsesToAnthropicJson.DescribeUpstreamFailure(response?["error"] as JsonObject));
                 break;
         }
 
@@ -182,7 +305,7 @@ public sealed class ResponsesToAnthropicSse
     /// <summary>Emits message_start once, taking the id and model from the upstream response if it offered them.</summary>
     private void Start(List<string> frames, JsonObject? response)
     {
-        if (_started)
+        if (_started || _finished)
         {
             return;
         }
@@ -209,11 +332,16 @@ public sealed class ResponsesToAnthropicSse
 
     /// <summary>
     ///     Closes any block still open and starts a new one at the next index. The kind is taken from
-    ///     the block itself, so <see cref="_openKind"/> cannot drift from what was announced.
+    ///     the block itself, so <see cref="_openKind"/> cannot drift from what was announced. Nothing is
+    ///     opened when closing the previous block failed — the stream is already ending.
     /// </summary>
     private void OpenBlock(List<string> frames, JsonObject contentBlock)
     {
-        CloseBlock(frames);
+        if (!CloseBlock(frames))
+        {
+            return;
+        }
+
         _openKind = Text(contentBlock["type"]);
 
         frames.Add(
@@ -242,6 +370,8 @@ public sealed class ResponsesToAnthropicSse
             return;
         }
 
+        _openBlockDeltas++;
+
         frames.Add(
             Frame(
                 "content_block_delta",
@@ -255,7 +385,79 @@ public sealed class ResponsesToAnthropicSse
         );
     }
 
-    private void CloseBlock(List<string> frames)
+    /// <summary>
+    ///     Reconciles the authoritative complete argument string an upstream <c>*.done</c> event carries
+    ///     against the fragments already forwarded to the client, and returns false when the stream was
+    ///     failed instead.
+    ///
+    ///     Three cases. Absent: the event did not offer one, so the fragments remain the only source and
+    ///     <see cref="CloseBlock"/> validates them. Nothing forwarded yet: the complete string IS the
+    ///     call — ignoring it is how a lost delta could still produce a tool call announced to the
+    ///     client with <c>input: {}</c>. Already forwarded and different: the client has been streamed
+    ///     a call the model did not make and no later frame can retract it, so the stream fails.
+    /// </summary>
+    private bool AdoptCompleteArguments(List<string> frames, JsonNode? arguments)
+    {
+        if (arguments is null)
+        {
+            return true;
+        }
+
+        if (Text(arguments) is not { } complete)
+        {
+            Fail(frames, "The upstream reported completed tool call arguments that could not be read.");
+            return false;
+        }
+
+        if (_toolArguments.Length == 0)
+        {
+            _toolArguments.Append(complete);
+            Delta(frames, "tool_use", "input_json_delta", "partial_json", complete);
+            return true;
+        }
+
+        if (!string.Equals(_toolArguments.ToString(), complete, StringComparison.Ordinal))
+        {
+            Fail(frames, "The upstream's completed tool call arguments do not match the fragments it streamed.");
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    ///     Closes the open block, and returns false when the stream was failed instead of closed.
+    ///
+    ///     A <c>tool_use</c> block may only close once the argument text streamed to the client reads
+    ///     back as the JSON object Anthropic's <c>tool_use.input</c> requires — through the SAME check
+    ///     the buffered translator applies, so one argument string cannot be accepted streamed and
+    ///     rejected buffered. Closing it otherwise hands the client an executable call whose input
+    ///     silently lost every argument the model chose, which it cannot tell apart from a
+    ///     parameterless call.
+    /// </summary>
+    private bool CloseBlock(List<string> frames)
+    {
+        if (_openKind is null)
+        {
+            return true;
+        }
+
+        if (_openKind == "tool_use" && !ResponsesToAnthropicJson.TryParseArguments(_toolArguments.ToString(), out _))
+        {
+            Fail(frames, "The upstream completed a tool call whose arguments could not be reassembled.");
+            return false;
+        }
+
+        EmitBlockStop(frames);
+        return true;
+    }
+
+    /// <summary>
+    ///     Emits content_block_stop unconditionally and resets the per-block state. Used by
+    ///     <see cref="CloseBlock"/> once its checks pass, and by <see cref="Fail"/>, which must not
+    ///     re-run those checks: the stream is already ending in an error frame.
+    /// </summary>
+    private void EmitBlockStop(List<string> frames)
     {
         if (_openKind is null)
         {
@@ -266,6 +468,8 @@ public sealed class ResponsesToAnthropicSse
             Frame("content_block_stop", new JsonObject { ["type"] = "content_block_stop", ["index"] = _nextIndex })
         );
         _openKind = null;
+        _openBlockDeltas = 0;
+        _toolArguments.Clear();
         _nextIndex++;
     }
 
@@ -281,13 +485,7 @@ public sealed class ResponsesToAnthropicSse
                 new JsonObject
                 {
                     ["type"] = "message_delta",
-                    ["delta"] = new JsonObject
-                    {
-                        ["stop_reason"] = response is null
-                            ? "end_turn"
-                            : ResponsesToAnthropicJson.DeriveStopReason(response),
-                        ["stop_sequence"] = null,
-                    },
+                    ["delta"] = new JsonObject { ["stop_reason"] = StopReason(response), ["stop_sequence"] = null },
                     ["usage"] = new JsonObject
                     {
                         ["input_tokens"] = TokenCount(usage?["input_tokens"]),
@@ -301,6 +499,22 @@ public sealed class ResponsesToAnthropicSse
     }
 
     /// <summary>
+    ///     The stop reason for the terminal message_delta. A refusal seen ON THE STREAM outranks the
+    ///     terminal payload: that payload is what the buffered translator would read and the two must
+    ///     not disagree, but a lean terminal payload that omits the refusal part must not downgrade a
+    ///     decline this translator already watched arrive.
+    /// </summary>
+    private string StopReason(JsonObject? response)
+    {
+        if (_sawRefusal)
+        {
+            return "refusal";
+        }
+
+        return response is null ? "end_turn" : ResponsesToAnthropicJson.DeriveStopReason(response);
+    }
+
+    /// <summary>
     ///     Ends the stream with Anthropic's terminal <c>error</c> event. No message_delta and no
     ///     message_stop follow: the turn did not complete, and claiming it did is exactly the silent
     ///     failure this arm exists to remove. Any open block is closed first so the client's block
@@ -308,7 +522,7 @@ public sealed class ResponsesToAnthropicSse
     /// </summary>
     private void Fail(List<string> frames, string message)
     {
-        CloseBlock(frames);
+        EmitBlockStop(frames);
         _finished = true;
 
         frames.Add(
@@ -322,31 +536,6 @@ public sealed class ResponsesToAnthropicSse
             )
         );
     }
-
-    /// <summary>
-    ///     Describes an upstream failure without relaying its text. A provider's error message can
-    ///     echo the prompt, tool arguments, or account details back at whoever is listening, so only
-    ///     the machine-readable <c>code</c> is passed through, and only when it looks like a code
-    ///     rather than a sentence.
-    /// </summary>
-    private static string DescribeUpstreamFailure(JsonObject? error)
-    {
-        const string fallback = "The upstream Copilot stream failed.";
-        if (Text(error?["code"]) is not { } code || !IsErrorCode(code))
-        {
-            return fallback;
-        }
-
-        return $"{fallback} Upstream code: {code}.";
-    }
-
-    /// <summary>
-    ///     True for a short token-shaped identifier such as <c>server_error</c> or
-    ///     <c>rate_limit_exceeded</c>. Anything longer or containing whitespace or punctuation is
-    ///     treated as free text and withheld.
-    /// </summary>
-    private static bool IsErrorCode(string code) =>
-        code.Length is > 0 and <= 64 && code.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
 
     /// <summary>
     ///     Reads a JSON string, or null if <paramref name="node"/> is absent or carries another kind.
