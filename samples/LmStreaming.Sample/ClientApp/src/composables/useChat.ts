@@ -254,6 +254,9 @@ export function useChat(options: UseChatOptions = {}) {
   
   // Persistent WebSocket connection for full-duplex communication
   let wsConnection: import('@/api/wsClient').WebSocketConnection | null = null;
+  let pendingSandboxRefreshRetry: (() => Promise<void>) | null = null;
+  let pendingSandboxRefreshFailure: (() => void) | null = null;
+  let sandboxRefreshDeferred = false;
 
   // Deferred-auth prompts pushed by the backend while a sandbox webhook call is held
   // (providerId -> auth_required event). Replaced wholesale on change for Vue reactivity.
@@ -837,9 +840,49 @@ export function useChat(options: UseChatOptions = {}) {
       record: recordEnabled,
       ...callbacks,
       onAuthEvent: handleAuthEvent,
+      onSandboxSessionRefresh: async (deferred) => {
+        if (deferred) {
+          sandboxRefreshDeferred = true;
+          return;
+        }
+
+        const retry = pendingSandboxRefreshRetry;
+        const fail = pendingSandboxRefreshFailure;
+        pendingSandboxRefreshRetry = null;
+        pendingSandboxRefreshFailure = null;
+        if (wsConnection) {
+          const { closeWebSocketConnection } = await import('@/api/wsClient');
+          closeWebSocketConnection(wsConnection);
+          wsConnection = null;
+        }
+        if (retry) {
+          await retry();
+        } else {
+          fail?.();
+        }
+      },
       onDone: () => {
         log.debug('WebSocket stream done signal received');
         callbacks.onDone();
+        if (sandboxRefreshDeferred) {
+          sandboxRefreshDeferred = false;
+          const retry = pendingSandboxRefreshRetry;
+          const fail = pendingSandboxRefreshFailure;
+          pendingSandboxRefreshRetry = null;
+          pendingSandboxRefreshFailure = null;
+          void (async () => {
+            if (wsConnection) {
+              const { closeWebSocketConnection } = await import('@/api/wsClient');
+              closeWebSocketConnection(wsConnection);
+              wsConnection = null;
+            }
+            if (retry) {
+              await retry();
+            } else {
+              fail?.();
+            }
+          })();
+        }
         // Keep connection open for next message (don't close)
       },
       onError: async (error) => {
@@ -860,9 +903,17 @@ export function useChat(options: UseChatOptions = {}) {
    */
   async function sendMessageViaWebSocket(
     text: string,
-    callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void }
+    callbacks: { onMessage: (msg: Message) => void; onDone: () => void; onError: (err: string) => void },
+    sandboxRefreshRetried = false
   ): Promise<void> {
     const effectiveThreadId = getOrCreateThreadId();
+
+    pendingSandboxRefreshRetry = sandboxRefreshRetried
+      ? null
+      : () => sendMessageViaWebSocket(text, callbacks, true);
+    pendingSandboxRefreshFailure = sandboxRefreshRetried
+      ? () => callbacks.onError('The sandbox session changed again while reconnecting. Please retry.')
+      : null;
 
     // Check if we have an open connection that belongs to the current thread.
     // A socket bound to a previously-viewed conversation must not be reused for a

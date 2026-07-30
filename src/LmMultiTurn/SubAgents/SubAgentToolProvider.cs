@@ -319,6 +319,12 @@ public class SubAgentToolProvider : IFunctionProvider
         var name = GetOptionalString(root, "name");
         var model = GetOptionalString(root, "model");
         var modelIntelligence = GetOptionalInt(root, "modelIntelligence");
+        if (_manager.SpawnModelSelectionResolver?.Invoke(name) is { } authoritativeSelection)
+        {
+            model = authoritativeSelection.Model;
+            modelIntelligence = authoritativeSelection.ModelIntelligence;
+        }
+
         var runInBackground = GetOptionalBool(root, "run_in_background") ?? false;
 
         // 'description' is intentionally accepted but not read here: it is a short

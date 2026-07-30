@@ -68,6 +68,13 @@ public record SubAgentTemplate
     public bool IsModelTierResolved { get; init; }
 
     /// <summary>
+    /// Authored model-intelligence tier retained as routing provenance. Execution continues to use the
+    /// already-resolved <see cref="DefaultOptions"/> model; this value lets presentation surfaces explain
+    /// why that model was selected without reconstructing the host's tier ladder.
+    /// </summary>
+    public int? ModelIntelligence { get; init; }
+
+    /// <summary>
     /// Optional reasoning effort requested for this sub-agent.
     /// </summary>
     public ReasoningEffort? Effort { get; init; }

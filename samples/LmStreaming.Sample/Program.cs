@@ -259,6 +259,11 @@ try
     }
 
     _ = builder.Services.AddSingleton(sandboxOptions);
+    var workspaceCatalogIdentity = GatewayWorkspaceCatalogIdentity.Create(
+        sandboxOptions.BaseUrl,
+        sandboxOptions.AppId
+    );
+    _ = builder.Services.AddSingleton(workspaceCatalogIdentity);
 
     // Every gateway-bound HttpClient gets the per-app bearer handler (ADR 0029) so its REST calls carry
     // X-Sbx-App-Id/X-Sbx-App-Key under an AUTH_ENFORCE gateway. No-op when no AppKey is configured, so an
@@ -300,6 +305,7 @@ try
         GatewayHttpClient(TimeSpan.FromSeconds(10)),
         sp.GetRequiredService<ILogger<MarketplaceCatalogClient>>()
     ));
+    _ = builder.Services.AddSingleton<WorkspaceCatalogCompatibilityService>();
 
     // OAuth auth-provider services (GitHub + Azure DevOps token injection for sandbox egress).
     var authOptions =
@@ -500,13 +506,24 @@ try
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));
 
-    // Register the FileWorkspaceStore for workspace persistence. The seeded default workspace
-    // maps to today's configured sandbox leaf so the "default" workspace mounts the same directory
-    // it always did.
-    var workspacesPath = Path.Combine(AppContext.BaseDirectory, "workspaces");
+    // Scope workspace metadata to the active gateway URL + process AppId. The ambiguous legacy
+    // flat catalog is archived once and never assigned to the currently configured gateway.
+    var workspaceCatalogRoot = Path.Combine(AppContext.BaseDirectory, "workspaces");
+    var workspaceCatalogResolution = new GatewayWorkspaceCatalogResolver()
+        .ResolveAsync(workspaceCatalogRoot, workspaceCatalogIdentity)
+        .GetAwaiter()
+        .GetResult();
+    Log.Information(
+        "Workspace catalog scoped to gateway {GatewayBaseUrl}, app {AppId}, key {CatalogKeyPrefix}, path {CatalogPath}; legacy archive {LegacyArchive}",
+        workspaceCatalogIdentity.CanonicalBaseUrl,
+        workspaceCatalogIdentity.AppId,
+        workspaceCatalogIdentity.CatalogKey[..12],
+        workspaceCatalogResolution.CatalogDirectory,
+        workspaceCatalogResolution.LegacyArchivePath ?? "(none)"
+    );
     var defaultWorkspaceLeaf = sandboxOptions.ResolveWorkspace().Leaf;
     _ = builder.Services.AddSingleton<IWorkspaceStore>(
-        new FileWorkspaceStore(workspacesPath, defaultWorkspaceLeaf)
+        new FileWorkspaceStore(workspaceCatalogResolution.CatalogDirectory, defaultWorkspaceLeaf)
     );
 
     // Register built-in (server-side) tool definitions for the tools API. The list is
@@ -705,6 +722,34 @@ try
                         effectiveWorkspaceId,
                         workspace?.DirectoryRelPath,
                         workspace?.Marketplaces);
+                    if (workspace is not null)
+                    {
+                        try
+                        {
+                            sp.GetRequiredService<WorkspaceCatalogCompatibilityService>()
+                                .ValidateForSessionAsync(workspace)
+                                .GetAwaiter()
+                                .GetResult();
+                        }
+                        catch (UnsupportedWorkspaceMarketplacesException ex)
+                        {
+                            throw new SandboxSessionUnavailableException(
+                                effectiveWorkspaceId,
+                                StatusCodes.Status400BadRequest,
+                                ex.Message,
+                                ex
+                            );
+                        }
+                        catch (WorkspaceGatewayCatalogUnavailableException ex)
+                        {
+                            throw new SandboxSessionUnavailableException(
+                                effectiveWorkspaceId,
+                                StatusCodes.Status503ServiceUnavailable,
+                                ex.Message,
+                                ex
+                            );
+                        }
+                    }
 
                     // Use the liveness-checked variant: the gateway evicts idle sessions on its own
                     // schedule, and reusing a cached-but-evicted handle silently strips the session's
@@ -721,7 +766,8 @@ try
                     stagedBinding = new SandboxEstablishedBinding(
                         workspaceRef,
                         callerCredential ?? sandboxRegistry.DefaultCredential,
-                        callerCredential
+                        callerCredential,
+                        sandboxSession.SessionId
                     );
                     // Workspace Agent gets the full file/shell tool surface; Workflow Author mode only
                     // gets the narrower Read/Grep/Skill slice wired below — the suffix text must match
@@ -1619,7 +1665,12 @@ try
             logger: loggerFactory.CreateLogger<MultiTurnAgentPool>(),
             // The registry is the binding sink: the pool publishes/clears each conversation's
             // sandbox-established binding through it as part of the agent-entry commit/removal (WI #195).
-            bindingSink: sandboxRegistryForCleanup
+            bindingSink: sandboxRegistryForCleanup,
+            liveSessionResolver: (binding, ct) =>
+                sandboxRegistryForCleanup.GetOrCreateLiveSessionAsync(
+                    binding.WorkspaceRef,
+                    ct,
+                    binding.Credential)
         );
 
         // When a thread is fully removed (NOT recreated for a mode-switch — that preserves the

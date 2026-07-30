@@ -218,7 +218,11 @@ public static class WorkflowSession
         // leaving the unit pending and provoking a re-spawn loop. This rejects it up front at the Agent-tool
         // boundary with an actionable correction (the ready unit name(s)) so the controller re-issues the exact
         // name. Runtime backstop to the ControllerSystemPrompt guidance; covers StartAsync AND ResumeAsync.
-        subAgentOptions = subAgentOptions with { SpawnNameGate = runtime.DescribeSpawnNameRejection };
+        subAgentOptions = subAgentOptions with
+        {
+            SpawnNameGate = runtime.DescribeSpawnNameRejection,
+            SpawnModelSelectionResolver = runtime.ResolveSpawnModelSelection,
+        };
 
         return new MultiTurnAgentLoop(
             controllerAgent,

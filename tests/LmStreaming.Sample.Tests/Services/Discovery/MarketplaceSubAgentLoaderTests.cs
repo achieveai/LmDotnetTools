@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Services.Discovery;
@@ -64,7 +65,10 @@ public class MarketplaceSubAgentLoaderTests
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
         result.Keys.Should().BeEquivalentTo(
-            "code-reviewer", "test-analyzer", "logging-review", "orleans-reviewer");
+            "pr-toolkit:code-reviewer",
+            "pr-toolkit:test-analyzer",
+            "debugging:logging-review",
+            "orleans:orleans-reviewer");
     }
 
     [Fact]
@@ -76,11 +80,11 @@ public class MarketplaceSubAgentLoaderTests
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
-        result.Keys.Should().BeEquivalentTo("good");
+        result.Keys.Should().BeEquivalentTo("p:good");
     }
 
     [Fact]
-    public void MapCatalog_DuplicateAgentName_KeepsFirstOccurrence()
+    public void MapCatalog_SameBareNameInDifferentPlugins_PreservesBothQualifiedEntries()
     {
         var catalog = Catalog(
             Marketplace("official", error: null,
@@ -89,8 +93,36 @@ public class MarketplaceSubAgentLoaderTests
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
-        result.Should().ContainKey("dup");
-        result["dup"].Description.Should().Be("FIRST");
+        result.Should().ContainKey("a:dup");
+        result.Should().ContainKey("b:dup");
+        result["a:dup"].Description.Should().Be("FIRST");
+        result["b:dup"].Description.Should().Be("SECOND");
+    }
+
+    [Fact]
+    public void MapCatalog_DuplicateQualifiedKey_KeepsFirstOccurrence()
+    {
+        var catalog = Catalog(
+            Marketplace("official", error: null,
+                Plugin("same", Agent("dup", description: "FIRST")),
+                Plugin("same", Agent("dup", description: "SECOND"))));
+
+        var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
+
+        result.Should().ContainSingle();
+        result["same:dup"].Description.Should().Be("FIRST");
+    }
+
+    [Fact]
+    public void MapCatalog_BlankPluginContainerName_FallsBackToAgentPlugin()
+    {
+        var catalog = Catalog(
+            Marketplace("official", error: null,
+                Plugin("", Agent("reviewer", plugin: "actual-plugin"))));
+
+        var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
+
+        result.Should().ContainKey("actual-plugin:reviewer");
     }
 
     [Fact]
@@ -104,7 +136,7 @@ public class MarketplaceSubAgentLoaderTests
 
         var result = MarketplaceSubAgentLoader.MapCatalog(catalog, AgentFactory);
 
-        result.Keys.Should().BeEquivalentTo("ok");
+        result.Keys.Should().BeEquivalentTo("p:ok");
     }
 
     [Fact]
@@ -120,7 +152,7 @@ public class MarketplaceSubAgentLoaderTests
 
         MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, NullLogger.Instance);
 
-        existing.Should().ContainKey("code-reviewer");
+        existing.Should().ContainKey("p:code-reviewer");
     }
 
     [Fact]
@@ -135,10 +167,12 @@ public class MarketplaceSubAgentLoaderTests
             SystemPrompt = "REAL-BODY",
             AgentFactory = AgentFactory,
             MaxTurnsPerRun = WorkspaceSubAgentLoader.DefaultMaxTurnsPerRun,
+            DefaultOptions = new GenerateReplyOptions { ModelId = "tier-5-model" },
+            IsModelTierResolved = true,
         };
         var existing = new Dictionary<string, SubAgentTemplate>(StringComparer.Ordinal)
         {
-            ["code-reviewer"] = kept,
+            ["p:code-reviewer"] = kept,
         };
         var catalog = MarketplaceSubAgentLoader.MapCatalog(
             Catalog(Marketplace("official", null, Plugin("p", Agent("code-reviewer", description: "catalog stub")))),
@@ -146,8 +180,9 @@ public class MarketplaceSubAgentLoaderTests
 
         MarketplaceSubAgentLoader.MergeFillGaps(existing, catalog, NullLogger.Instance);
 
-        existing["code-reviewer"].SystemPrompt.Should().Be("REAL-BODY");
-        existing["code-reviewer"].Description.Should().Be("REAL workspace file");
+        existing["p:code-reviewer"].SystemPrompt.Should().Be("REAL-BODY");
+        existing["p:code-reviewer"].Description.Should().Be("REAL workspace file");
+        existing["p:code-reviewer"].IsModelTierResolved.Should().BeTrue();
     }
 
     [Fact]
@@ -176,7 +211,7 @@ public class MarketplaceSubAgentLoaderTests
 
         var result = await loader.LoadAsync(selected, AgentFactory);
 
-        result.Keys.Should().BeEquivalentTo("code-reviewer");
+        result.Keys.Should().BeEquivalentTo("p:code-reviewer");
         client.Verify(c => c.GetCatalogAsync(selected, It.IsAny<CancellationToken>()), Times.Once);
     }
 }

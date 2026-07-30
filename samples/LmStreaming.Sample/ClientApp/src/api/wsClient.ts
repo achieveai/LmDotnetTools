@@ -24,6 +24,11 @@ export interface WebSocketClientCallbacks {
    */
   onAuthEvent?: (event: AuthEvent) => void;
   /**
+   * The server replaced the sandbox session before accepting the pending chat message. The caller
+   * must reconnect and retry that same message once on the fresh pooled agent.
+   */
+  onSandboxSessionRefresh?: (deferred: boolean) => Promise<void> | void;
+  /**
    * Fired when the socket closes for ANY reason (clean or not) — after the `!wasClean` error
    * surfacing below. Lets a caller react to a server-initiated NormalClosure (which fires neither
    * `onDone` nor `onError`), e.g. the sub-agent focus view resuming after a backpressure drop.
@@ -191,7 +196,7 @@ export function openWebSocketConnection(
   connectionId: string,
   callbacks: WebSocketClientCallbacks
 ): Promise<WebSocketConnection> {
-  const { onMessage, onDone, onError, onAuthEvent, onClose } = callbacks;
+  const { onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose } = callbacks;
 
   return new Promise((resolve, reject) => {
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
@@ -218,6 +223,16 @@ export function openWebSocketConnection(
           const authEvent = JSON.parse(data) as AuthEvent;
           log.info('Received auth event', { type: authEvent.$type, providerId: authEvent.providerId });
           onAuthEvent?.(authEvent);
+          return;
+        }
+
+        if (
+          data.includes('"$type":"sandbox_session_refresh"') ||
+          data.includes('"$type":"sandbox_session_refresh_deferred"')
+        ) {
+          const deferred = data.includes('"$type":"sandbox_session_refresh_deferred"');
+          log.info('Sandbox session refresh requested', { deferred });
+          void onSandboxSessionRefresh?.(deferred);
           return;
         }
 

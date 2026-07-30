@@ -31,6 +31,9 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// <param name="ThreadId">The sub-agent's conversation thread id.</param>
 /// <param name="LastActivityUtc">Timestamp of the newest buffered turn, or null when no turn has
 /// been recorded yet.</param>
+/// <param name="EffectiveModelId">Concrete model selected after applying spawn, template, and parent precedence.</param>
+/// <param name="EffectiveModelIntelligence">Tier that selected the model, or null for non-tier selection.</param>
+/// <param name="ModelSelectionSource">Stable label identifying the winning selection input.</param>
 public sealed record SubAgentSnapshot(
     string AgentId,
     string? Name,
@@ -38,7 +41,16 @@ public sealed record SubAgentSnapshot(
     string Task,
     SubAgentStatus Status,
     string ThreadId,
-    DateTimeOffset? LastActivityUtc);
+    DateTimeOffset? LastActivityUtc,
+    string? EffectiveModelId,
+    int? EffectiveModelIntelligence,
+    string ModelSelectionSource);
+
+/// <summary>Final model-routing decision captured when a sub-agent provider is built.</summary>
+public sealed record SubAgentModelRouting(
+    string? EffectiveModelId,
+    int? EffectiveModelIntelligence,
+    string SelectionSource);
 
 /// <summary>
 /// Manages sub-agent lifecycle: spawning, monitoring, resuming, and disposal.
@@ -168,6 +180,10 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// (reject). Sourced from <see cref="SubAgentOptions.SpawnNameGate"/>; null when the host supplied none.
     /// </summary>
     internal Func<string?, string?>? SpawnNameGate => _options.SpawnNameGate;
+
+    /// <summary>Host authority for normalizing optional model selection on a named spawn.</summary>
+    internal Func<string?, SubAgentSpawnModelSelection?>? SpawnModelSelectionResolver =>
+        _options.SpawnModelSelectionResolver;
 
     /// <summary>
     /// Spawn a new sub-agent from a named template.
@@ -342,7 +358,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
-            var (agent, store, ownedProviderAgent, effectiveModelId) = await CreateSubAgentAsync(
+            var (agent, store, ownedProviderAgent, routing) = await CreateSubAgentAsync(
                 agentId,
                 template,
                 model,
@@ -360,7 +376,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Template = template,
                 ModelOverride = model,
                 ModelIntelligence = modelIntelligence,
-                EffectiveModelId = effectiveModelId,
+                EffectiveModelId = routing.EffectiveModelId,
+                EffectiveModelIntelligence = routing.EffectiveModelIntelligence,
+                ModelSelectionSource = routing.SelectionSource,
                 AddTools = addTools,
                 RemoveTools = removeTools,
                 Store = store,
@@ -368,6 +386,24 @@ public sealed class SubAgentManager : IAsyncDisposable
                 NotifyParentOnCompletion = runInBackground,
             };
             state.SetOwnedProviderAgent(ownedProviderAgent);
+
+            _logger.LogDebug(
+                "Resolved sub-agent model routing for {AgentId} named {SpawnName} from template {TemplateName}: "
+                    + "requested model {RequestedModel}, requested tier {RequestedModelIntelligence}, "
+                    + "template model {TemplateModel}, template tier {TemplateModelIntelligence}, "
+                    + "effective model {EffectiveModelId}, effective tier {EffectiveModelIntelligence}, "
+                    + "source {RoutingSelectionSource}",
+                agentId,
+                effectiveName,
+                templateName,
+                model,
+                modelIntelligence,
+                template.DefaultOptions?.ModelId,
+                template.ModelIntelligence,
+                routing.EffectiveModelId,
+                routing.EffectiveModelIntelligence,
+                routing.SelectionSource
+            );
 
             _agents[agentId] = state;
             if (!string.IsNullOrWhiteSpace(effectiveName))
@@ -1031,7 +1067,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 var previousAgent = state.Agent;
                 var previousStore = state.Store;
-                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, replacementEffectiveModelId) = await CreateSubAgentAsync(
+                var (replacementAgent, replacementStore, replacementOwnedProviderAgent, replacementRouting) = await CreateSubAgentAsync(
                     state.AgentId,
                     state.Template,
                     state.ModelOverride,
@@ -1106,7 +1142,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // not required to make the same UseParentModel/routing decision, so the effective model can differ
                 // from the original run. Without this, descendant usage after a restart would be attributed to the
                 // stale init-time model.
-                state.EffectiveModelId = replacementEffectiveModelId;
+                state.EffectiveModelId = replacementRouting.EffectiveModelId;
+                state.EffectiveModelIntelligence = replacementRouting.EffectiveModelIntelligence;
+                state.ModelSelectionSource = replacementRouting.SelectionSource;
 
                 // Presentation-only: atomically install the replacement as the live Agent AND wake any
                 // external observer whose subscription was bound to the now-disposed previous instance so
@@ -1230,7 +1268,10 @@ public sealed class SubAgentManager : IAsyncDisposable
                 Task: state.Task,
                 Status: state.Status,
                 ThreadId: state.Agent.ThreadId,
-                LastActivityUtc: GetLastActivityUtc(state)));
+                LastActivityUtc: GetLastActivityUtc(state),
+                EffectiveModelId: state.EffectiveModelId,
+                EffectiveModelIntelligence: state.EffectiveModelIntelligence,
+                ModelSelectionSource: state.ModelSelectionSource));
         }
 
         return snapshots;
@@ -1422,6 +1463,99 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// which ids are actually valid (the Agent tool returns short ids; a mismatched/hallucinated id is the
     /// common cause of an "unknown agent" check).</summary>
     public IReadOnlyCollection<string> KnownAgentIds() => [.. _agents.Keys];
+
+    /// <summary>
+    /// Performs a batch observation of sub-agents matching the given targets (agent IDs or names).
+    /// Returns one typed entry per input (in order, preserving duplicates and unknowns) with resolved
+    /// identity, status, recent turn snapshots, and summary counts.
+    /// </summary>
+    public SubAgentObservationBatch CheckAgents(IReadOnlyList<string> targets)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+
+        var entries = new List<SubAgentObservationEntry>(targets.Count);
+
+        foreach (var target in targets)
+        {
+            var entry = SnapshotObservationEntry(target);
+            entries.Add(entry);
+        }
+
+        return new SubAgentObservationBatch { Entries = entries.AsReadOnly() };
+    }
+
+    /// <summary>
+    /// Creates a single typed observation entry for the given target (agent ID or name).
+    /// Returns a populated entry if the target resolves to a known sub-agent; otherwise
+    /// returns an entry with "not_found" status and null AgentId.
+    /// </summary>
+    private SubAgentObservationEntry SnapshotObservationEntry(string target)
+    {
+        // Try to resolve the target to an agent ID (ID first, then name)
+        if (!TryResolveAgentId(target, out var agentId))
+        {
+            // Unknown target: return a minimal not_found entry
+            return new SubAgentObservationEntry
+            {
+                Target = target,
+                AgentId = null,
+                Name = null,
+                Status = "not_found",
+                TemplateName = null,
+                Task = null,
+                RecentTurns = [],
+                LastResult = null,
+                SendToParentFailed = false,
+                SendToParentError = null,
+            };
+        }
+
+        // Resolved: fetch the state and build a complete entry
+        if (!_agents.TryGetValue(agentId, out var state))
+        {
+            // Shouldn't happen (TryResolveAgentId checks ContainsKey), but handle defensively
+            return new SubAgentObservationEntry
+            {
+                Target = target,
+                AgentId = null,
+                Name = null,
+                Status = "not_found",
+                TemplateName = null,
+                Task = null,
+                RecentTurns = [],
+                LastResult = null,
+                SendToParentFailed = false,
+                SendToParentError = null,
+            };
+        }
+
+        // Build the typed snapshots for the recent turns
+        var recentTurns = state.TurnBuffer
+            .ToArray()
+            .TakeLast(3)
+            .Select(t => new SubAgentTurnSnapshot(
+                MessageType: t.MessageType,
+                ToolName: t.ToolName,
+                ToolArgsPreview: t.ToolArgsPreview,
+                TextPreview: t.TextPreview,
+                Timestamp: t.Timestamp))
+            .ToList()
+            .AsReadOnly();
+
+        return new SubAgentObservationEntry
+        {
+            Target = target,
+            AgentId = agentId,
+            Name = state.Name,
+            Status = state.Status.ToString().ToLowerInvariant(),
+            TemplateName = state.TemplateName,
+            Task = state.Task,
+            RecentTurns = recentTurns,
+            LastResult = state.LastResult,
+            SendToParentFailed = state.SendToParentFailed,
+            SendToParentError = state.SendToParentError,
+        };
+    }
 
     /// <summary>
     /// Observes a sub-agent's completion by id, returning its final text (or throwing its
@@ -1642,10 +1776,40 @@ public sealed class SubAgentManager : IAsyncDisposable
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
+    private SubAgentModelRouting BuildRouting(
+        SubAgentTemplate template,
+        string? modelOverride,
+        int? modelIntelligence,
+        string? tierResolvedModel,
+        string? effectiveModelId)
+    {
+        if (!string.IsNullOrWhiteSpace(modelOverride))
+        {
+            return new SubAgentModelRouting(effectiveModelId, null, "spawn-model");
+        }
+
+        if (modelIntelligence is { } spawnTier && tierResolvedModel is not null)
+        {
+            return new SubAgentModelRouting(effectiveModelId, spawnTier, "spawn-tier");
+        }
+
+        if (template.IsModelExplicitlySelected)
+        {
+            return new SubAgentModelRouting(effectiveModelId, null, "template-model");
+        }
+
+        if (template.IsModelTierResolved)
+        {
+            return new SubAgentModelRouting(effectiveModelId, template.ModelIntelligence, "template-tier");
+        }
+
+        return new SubAgentModelRouting(effectiveModelId, null, "parent");
+    }
+
     /// <summary>
     /// Creates a MultiTurnAgentLoop configured for a sub-agent with filtered tools.
     /// </summary>
-    private async Task<(IMultiTurnAgent Agent, IConversationStore? Store, IStreamingAgent? OwnedProviderAgent, string? EffectiveModelId)> CreateSubAgentAsync(
+    private async Task<(IMultiTurnAgent Agent, IConversationStore? Store, IStreamingAgent? OwnedProviderAgent, SubAgentModelRouting Routing)> CreateSubAgentAsync(
         string agentId,
         SubAgentTemplate template,
         string? modelOverride,
@@ -1694,7 +1858,12 @@ public sealed class SubAgentManager : IAsyncDisposable
                 TestAgentFactoryOverride(agentId, template),
                 null,
                 TestOwnedProviderOverride?.Invoke(agentId, template),
-                ResolveSubAgentOptions(template.DefaultOptions, effectiveModel, _parentModelId, _parentMaxToken)?.ModelId);
+                BuildRouting(
+                    template,
+                    modelOverride,
+                    modelIntelligence,
+                    tierResolvedModel,
+                    ResolveSubAgentOptions(template.DefaultOptions, effectiveModel, _parentModelId, _parentMaxToken)?.ModelId));
         }
 
         // Resolve the sub-agent's options with model + budget inheritance (override > tier > template > parent).
@@ -1763,9 +1932,20 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // agent factory, build the transport-correct provider for the effective model and own it for
                 // disposal; otherwise fall back to the template's provider (same-transport choices and every
                 // parent-model-reuse spawn are unaffected).
-                if (!string.IsNullOrWhiteSpace(effectiveModel) && _options.TierAgentFactory is { } tierAgentFactory)
+                // A copied workflow-controller template may already carry a model resolved from its own
+                // frontmatter tier. CharacteristicsAgentFactory is intentionally removed when rebinding that
+                // template to the controller, so use the preserved DefaultOptions model as the plain-path
+                // provider choice when no per-spawn override/tier supersedes it.
+                var plainProviderModel = !string.IsNullOrWhiteSpace(effectiveModel)
+                    ? effectiveModel
+                    : (template.IsModelExplicitlySelected || template.IsModelTierResolved)
+                        && !string.IsNullOrWhiteSpace(defaultOptions?.ModelId)
+                        ? defaultOptions.ModelId
+                        : null;
+                if (!string.IsNullOrWhiteSpace(plainProviderModel)
+                    && _options.TierAgentFactory is { } tierAgentFactory)
                 {
-                    providerAgent = tierAgentFactory(effectiveModel);
+                    providerAgent = tierAgentFactory(plainProviderModel);
                     ownedProviderAgent = providerAgent;
                 }
                 else
@@ -1776,11 +1956,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // A plain-path delegate (a template with no characteristics factory — e.g. a WorkflowAgent
                 // controller's transparent delegate) inherits the parent's PRE-SHAPED reasoning so it thinks
                 // like the launching conversation. Applied only when the delegate reuses the parent model (no
-                // explicit override AND no tier resolution — a different model may use a different transport
-                // than the shaped metadata targets) and carries no reasoning of its own, so a template that
-                // set ExtraProperties still wins.
+                // explicit, per-spawn-tier, OR template-tier model — a different model may use a different
+                // transport than the shaped metadata targets) and carries no reasoning of its own, so a template
+                // that set ExtraProperties still wins.
                 if (_options.InheritedReasoning is { Count: > 0 } inheritedReasoning
-                    && string.IsNullOrWhiteSpace(effectiveModel)
+                    && string.IsNullOrWhiteSpace(plainProviderModel)
                     && (defaultOptions is null || defaultOptions.ExtraProperties.Count == 0))
                 {
                     defaultOptions = (defaultOptions ?? new GenerateReplyOptions()) with
@@ -1842,11 +2022,15 @@ public sealed class SubAgentManager : IAsyncDisposable
                 ),
                 store,
                 ownedProviderAgent,
-                // The billed model is the FINAL resolved model — after ResolveSubAgentOptions (which treats a
-                // whitespace override/template id as absent) and after the characteristics path may have replaced
-                // it with the parent model (UseParentModel, above). Captured here so usage isn't attributed to a
-                // reconstructed model that could diverge from the one that actually handled the request.
-                defaultOptions?.ModelId
+                // Capture the FINAL resolved model and the winning selection input together. This is the
+                // authoritative presentation record; callers must not reconstruct routing from the LLM's raw
+                // Agent arguments because workflow authority may have replaced placeholder values.
+                BuildRouting(
+                    template,
+                    modelOverride,
+                    modelIntelligence,
+                    tierResolvedModel,
+                    defaultOptions?.ModelId)
             );
         }
         catch

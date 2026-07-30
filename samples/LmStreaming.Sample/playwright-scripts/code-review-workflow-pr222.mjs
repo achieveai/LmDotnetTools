@@ -70,8 +70,9 @@ async (page) => {
     //    (which provides the code-reviewer:pr-review skill).
     const workspaceId = await page.evaluate(
       async ({ name, dir, marketplaces }) => {
-        const list = await fetch(`${location.origin}/api/workspaces`).then((r) => r.json());
-        const found = (Array.isArray(list) ? list : []).find(
+        const response = await fetch(`${location.origin}/api/workspaces`).then((r) => r.json());
+        const list = Array.isArray(response) ? response : (response.workspaces ?? []);
+        const found = list.find(
           (w) => w.name === name || w.directoryRelPath === dir
         );
         if (found) return found.id;

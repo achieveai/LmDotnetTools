@@ -115,6 +115,10 @@ internal sealed class TaskCoordinator
         ];
     }
 
+    /// <summary>Returns an already-composed spawn unit by its exact correlation name.</summary>
+    public SpawnUnit? FindComposedUnit(string name) =>
+        _composed.TryGetValue(name, out var unit) ? unit : null;
+
     /// <summary>Whether <paramref name="name"/> is a currently-expected (composed) unit name.</summary>
     public bool IsExpectedUnit(string name) => _tasksByName.ContainsKey(name);
 

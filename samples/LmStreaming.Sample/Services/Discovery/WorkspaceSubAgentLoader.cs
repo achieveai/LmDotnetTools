@@ -288,6 +288,7 @@ public sealed class WorkspaceSubAgentLoader
             DefaultMaxTurnsPerRun) with
         {
             CharacteristicsAgentFactory = characteristicsAgentFactory,
+            ModelIntelligence = parsed.ModelIntelligence,
         };
     }
 

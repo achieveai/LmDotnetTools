@@ -86,6 +86,7 @@ public sealed class ContextDiscoveryController(
                 SessionId = body.SessionId,
                 Kind = item.Kind,
                 Name = item.Name,
+                QualifiedName = item.QualifiedName,
                 Description = item.Description,
                 Path = item.Path,
                 Content = item.Content,
@@ -248,7 +249,9 @@ public sealed class ContextDiscoveryController(
                 Kind: body.Kind!,
                 Name: body.Name!,
                 Description: body.Description,
-                Path: body.Path ?? string.Empty);
+                Path: body.Path ?? string.Empty,
+                Content: body.Content,
+                QualifiedName: body.QualifiedName);
         }
         catch (Exception ex)
         {
@@ -265,11 +268,14 @@ public sealed class ContextDiscoveryController(
         SubAgentTemplate? template = null;
         var loaded = false;
 
+        var registrationKey = string.IsNullOrWhiteSpace(body.QualifiedName)
+            ? body.Name!
+            : body.QualifiedName;
         foreach (var binding in bindings)
         {
-            // Fast-path: if this conversation already has a template with this name (built-in seed
-            // OR a previous discovery on this conversation), skip it entirely.
-            if (binding.Source.Templates.ContainsKey(body.Name!))
+            // Fast-path: if this conversation already has this qualified template (built-in seed OR a
+            // previous discovery on this conversation), skip it entirely.
+            if (binding.Source.Templates.ContainsKey(registrationKey))
             {
                 continue;
             }
@@ -315,7 +321,7 @@ public sealed class ContextDiscoveryController(
                 CharacteristicsAgentFactory = binding.CharacteristicsAgentFactory,
             };
 
-            if (binding.Source.TryRegister(conversationTemplate.Name!, conversationTemplate))
+            if (binding.Source.TryRegister(registrationKey, conversationTemplate))
             {
                 logger.LogInformation(
                     "ContextDiscovery subagent {Name}: activated for session {SessionId}.",
@@ -340,10 +346,16 @@ public sealed class ContextDiscoveryController(
 /// <see cref="WorkspaceSubAgentLoader.LoadOneAsync"/> expects, without leaking the controller's
 /// public payload contract into the loader.
 /// </summary>
-internal readonly record struct SubAgentSessionRegistryItem(string Kind, string Name, string? Description, string Path)
+internal readonly record struct SubAgentSessionRegistryItem(
+    string Kind,
+    string Name,
+    string? Description,
+    string Path,
+    string? Content,
+    string? QualifiedName)
 {
     public SandboxSessionRegistry.DiscoveredItem ToDiscovered() =>
-        new(Kind, Name, Description, Path);
+        new(Kind, Name, Description, Path, Content, QualifiedName);
 }
 
 /// <summary>
@@ -383,6 +395,9 @@ public sealed record ContextDiscoveryItem
 
     [JsonPropertyName("name")]
     public string? Name { get; init; }
+
+    [JsonPropertyName("qualified_name")]
+    public string? QualifiedName { get; init; }
 
     [JsonPropertyName("description")]
     public string? Description { get; init; }

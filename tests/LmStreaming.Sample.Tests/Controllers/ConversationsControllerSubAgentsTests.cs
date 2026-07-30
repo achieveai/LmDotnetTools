@@ -164,6 +164,10 @@ public sealed class ConversationsControllerSubAgentsTests
         alpha.Task.Should().Be("first task");
         alpha.Status.Should().Be("running");
         alpha.ThreadId.Should().Be($"subagent-{alphaId}");
+        alpha.GetType().GetProperty("EffectiveModelId")
+            .Should().NotBeNull("the presentation DTO must expose the child model actually selected at spawn");
+        alpha.GetType().GetProperty("ModelSelectionSource")
+            .Should().NotBeNull("the UI must distinguish effective routing from raw controller arguments");
 
         var beta = summaries.Single(s => s.AgentId == betaId);
         beta.Name.Should().Be("beta");

@@ -145,12 +145,15 @@ public sealed class ChatWebSocketManager
             IMultiTurnAgent agent;
             try
             {
-                agent = _agentPool.GetOrCreateAgent(
+                _ = _agentPool.GetOrCreateAgent(
                     threadId,
                     resolvedMode,
                     providerId,
                     requestResponseDumpFileName,
                     workspaceId);
+                agent = (await _agentPool
+                    .EnsureCurrentAgentAsync(threadId, ct: cancellationToken)
+                    .ConfigureAwait(false)).Agent;
             }
             catch (ProviderUnavailableException ex)
             {
@@ -204,7 +207,12 @@ public sealed class ChatWebSocketManager
             var subscriptionTask = StreamMessagesToClientAsync(connection, agent, threadId, recordWriter, connectionCts.Token);
 
             // Handle incoming messages from client
-            var receiveTask = ReceiveMessagesFromClientAsync(webSocket, agent, threadId, connectionCts.Token);
+            var receiveTask = ReceiveMessagesFromClientAsync(
+                webSocket,
+                connection,
+                agent,
+                threadId,
+                connectionCts.Token);
 
             try
             {
@@ -575,13 +583,14 @@ public sealed class ChatWebSocketManager
     /// </summary>
     private Task ReceiveMessagesFromClientAsync(
         System.Net.WebSockets.WebSocket webSocket,
+        RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
         CancellationToken ct)
         => ReceiveTextMessagesAsync(
             webSocket,
             $"thread {threadId}",
-            (message, token) => ProcessClientMessageAsync(agent, threadId, message, token),
+            (message, token) => ProcessClientMessageAsync(connection, agent, threadId, message, token),
             ct);
 
     /// <summary>
@@ -803,6 +812,7 @@ public sealed class ChatWebSocketManager
     /// Processes a message received from the client.
     /// </summary>
     private async Task ProcessClientMessageAsync(
+        RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
         string json,
@@ -821,6 +831,37 @@ public sealed class ChatWebSocketManager
                 "Processing chat request for thread {ThreadId}: {Message}",
                 threadId,
                 request.Message);
+
+            var refresh = await _agentPool
+                .EnsureCurrentAgentAsync(threadId, ct: ct, replace: false)
+                .ConfigureAwait(false);
+            var agentChanged = !ReferenceEquals(refresh.Agent, agent);
+            if (
+                agentChanged
+                || refresh.Status
+                    is MultiTurnAgentPool.AgentRefreshStatus.RefreshRequired
+                        or MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred
+            )
+            {
+                var refreshType = refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred
+                    ? "sandbox_session_refresh_deferred"
+                    : "sandbox_session_refresh";
+                var refreshed = JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["$type"] = refreshType,
+                });
+                _ = await connection.TrySendTextAsync(refreshed, ct).ConfigureAwait(false);
+                if (agentChanged || refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshRequired)
+                {
+                    await connection.TryCloseAsync(
+                        WebSocketCloseStatus.NormalClosure,
+                        "Sandbox session refreshed",
+                        ct).ConfigureAwait(false);
+                }
+                return;
+            }
+
+            agent = refresh.Agent;
 
             // Create user message
             var userMessage = new TextMessage

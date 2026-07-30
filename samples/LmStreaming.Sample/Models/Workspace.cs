@@ -1,3 +1,5 @@
+using LmStreaming.Sample.Services;
+
 namespace LmStreaming.Sample.Models;
 
 /// <summary>
@@ -72,4 +74,48 @@ public record WorkspaceUpdate
     /// Replacement set of plugin marketplaces for the workspace.
     /// </summary>
     public IReadOnlyList<string> Marketplaces { get; init; } = [];
+}
+
+public sealed record WorkspaceView(
+    string Id,
+    string Name,
+    string DirectoryRelPath,
+    IReadOnlyList<string> Marketplaces,
+    bool IsSystemDefined,
+    long CreatedAt,
+    long UpdatedAt,
+    string Compatibility,
+    IReadOnlyList<string> UnsupportedMarketplaces
+);
+
+public sealed record WorkspaceGatewayView(
+    string CanonicalBaseUrl,
+    string AppId,
+    bool Available,
+    string? Error
+);
+
+public sealed record WorkspaceListResponse(
+    WorkspaceGatewayView Gateway,
+    IReadOnlyList<WorkspaceView> Workspaces
+);
+
+public static class WorkspaceViewMapping
+{
+    public static WorkspaceView ToView(this Workspace workspace, WorkspaceCompatibilityResult compatibility)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentNullException.ThrowIfNull(compatibility);
+        return new(
+            workspace.Id,
+            workspace.Name,
+            workspace.DirectoryRelPath,
+            workspace.Marketplaces,
+            workspace.IsSystemDefined,
+            workspace.CreatedAt,
+            workspace.UpdatedAt,
+            compatibility.Compatibility.ToString().ToLowerInvariant(),
+            compatibility.UnsupportedMarketplaces
+        );
+    }
 }

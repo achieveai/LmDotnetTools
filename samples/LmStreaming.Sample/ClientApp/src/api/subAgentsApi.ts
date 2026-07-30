@@ -30,6 +30,12 @@ export interface SubAgentSummary {
   lastActivityUtc?: string | null;
   /** `'workflow'` for a workflow run, else `'subagent'`. Absent = `'subagent'`. */
   kind?: SubAgentKind;
+  /** Concrete model selected after applying spawn, template, and parent precedence. */
+  effectiveModelId?: string | null;
+  /** Tier that selected the effective model; absent for non-tier selection. */
+  effectiveModelIntelligence?: number | null;
+  /** Stable winning input: parent, spawn-model, spawn-tier, template-model, or template-tier. */
+  modelSelectionSource?: string | null;
 }
 
 /**

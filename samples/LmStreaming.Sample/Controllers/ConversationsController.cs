@@ -392,6 +392,9 @@ public class ConversationsController(
                         Status = s.Status.ToString().ToLowerInvariant(),
                         ThreadId = s.ThreadId,
                         LastActivityUtc = s.LastActivityUtc,
+                        EffectiveModelId = s.EffectiveModelId,
+                        EffectiveModelIntelligence = s.EffectiveModelIntelligence,
+                        ModelSelectionSource = s.ModelSelectionSource,
                     })
             );
         }
@@ -436,6 +439,9 @@ public class ConversationsController(
                             Status = s.Status.ToString().ToLowerInvariant(),
                             ThreadId = s.ThreadId,
                             LastActivityUtc = s.LastActivityUtc,
+                            EffectiveModelId = s.EffectiveModelId,
+                            EffectiveModelIntelligence = s.EffectiveModelIntelligence,
+                            ModelSelectionSource = s.ModelSelectionSource,
                         })
                 );
             }
@@ -520,12 +526,25 @@ public class ConversationsController(
         IMultiTurnAgent agent;
         try
         {
-            agent = agentPool.GetOrCreateAgent(
+            _ = agentPool.GetOrCreateAgent(
                 threadId,
                 mode,
                 requestedProviderId: null,
                 requestResponseDumpFileName: null,
                 callerCredential: callerCredential);
+            var refresh = await agentPool.EnsureCurrentAgentAsync(threadId, callerCredential, ct);
+            if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
+            {
+                return Conflict(new
+                {
+                    error = "sandbox_session_refresh_deferred",
+                    code = "sandbox_session_refresh_deferred",
+                    detail = "The sandbox session changed while a response was active. Retry after the current response completes.",
+                    threadId,
+                });
+            }
+
+            agent = refresh.Agent;
         }
         catch (ProviderUnavailableException ex)
         {

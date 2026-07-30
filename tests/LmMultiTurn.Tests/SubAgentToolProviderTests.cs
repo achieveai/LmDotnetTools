@@ -307,6 +307,94 @@ public class SubAgentToolProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HandleAgentToolAsync_WorkflowSelectionOverridesPlaceholderOptionalModelValues()
+    {
+        SubAgentSpawnModelSelection? observed = null;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            SpawnModelSelectionResolver = name =>
+                name == "unit:1:task"
+                    ? new SubAgentSpawnModelSelection(Model: null, ModelIntelligence: null)
+                    : null,
+            TierModelResolver = tier =>
+            {
+                observed = new SubAgentSpawnModelSelection(null, tier);
+                return "tier-model";
+            },
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        var args = JsonSerializer.Serialize(new
+        {
+            subagent_type = "researcher",
+            prompt = "work",
+            name = "unit:1:task",
+            model = "",
+            modelIntelligence = 0,
+        });
+
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        observed.Should().BeNull(because: "the workflow unit's authoritative null tier must erase the LLM's placeholder zero");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_OrdinaryHostPreservesIntentionalTierZero()
+    {
+        int? observedTier = null;
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            TierModelResolver = tier =>
+            {
+                observedTier = tier;
+                return "tier-model";
+            },
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        var args = JsonSerializer.Serialize(new
+        {
+            subagent_type = "researcher",
+            prompt = "work",
+            modelIntelligence = 0,
+        });
+
+        _ = await handler(args, new ToolCallContext(), CancellationToken.None);
+
+        observedTier.Should().Be(0);
+    }
+
+    [Fact]
     public void GetFunctions_AfterTryRegister_ReflectsNewTemplate()
     {
         // Mid-session activation contract (#77): when the discovery webhook registers a new

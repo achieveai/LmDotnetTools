@@ -140,4 +140,17 @@ public record SubAgentOptions
     /// sub-agent host keeps the previous pass-through behavior.
     /// </summary>
     public Func<string?, string?>? SpawnNameGate { get; init; }
+
+    /// <summary>
+    /// Optional host authority for a named spawn's model selection. When this resolver returns a
+    /// selection, the Agent-tool boundary replaces the caller/LLM supplied optional <c>model</c> and
+    /// <c>modelIntelligence</c> values with it — including authoritative nulls. Workflow hosts use this
+    /// to prevent tool-calling models from filling omitted optional fields with placeholders such as
+    /// <c>model=""</c> / <c>modelIntelligence=0</c>, which would otherwise override the authored unit or
+    /// discovered template. Null (default), or a null resolver result, preserves ordinary Agent behavior.
+    /// </summary>
+    public Func<string?, SubAgentSpawnModelSelection?>? SpawnModelSelectionResolver { get; init; }
 }
+
+/// <summary>An authoritative per-spawn model override/tier pair supplied by a host.</summary>
+public sealed record SubAgentSpawnModelSelection(string? Model, int? ModelIntelligence);

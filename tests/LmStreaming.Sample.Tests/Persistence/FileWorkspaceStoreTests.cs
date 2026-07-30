@@ -205,6 +205,21 @@ public class FileWorkspaceStoreTests
     }
 
     [Fact]
+    public async Task GetAllAsync_CorruptCatalogThrowsAndPreservesFile()
+    {
+        var dir = NewTempDir();
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "workspaces.json");
+        await File.WriteAllTextAsync(path, "not-json");
+        var store = new FileWorkspaceStore(dir);
+
+        var act = () => store.GetAllAsync();
+
+        await act.Should().ThrowAsync<WorkspaceCatalogCorruptException>();
+        (await File.ReadAllTextAsync(path)).Should().Be("not-json");
+    }
+
+    [Fact]
     public async Task UpdatedMarketplaces_PersistAcrossNewStoreInstance()
     {
         var dir = NewTempDir();

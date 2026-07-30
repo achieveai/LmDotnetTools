@@ -68,10 +68,13 @@ public sealed record WorkspaceRef(
 /// an app-id-bearing credential for an S2S caller. Provenance for the credential-conflict gate, kept
 /// separate from <paramref name="Credential"/> so an interactive caller and an S2S caller that happens to
 /// use the configured default app id are NOT conflated (mirrors <c>MultiTurnAgentPool.CallerCredential</c>).</param>
+/// <param name="SessionId">Gateway session id embedded in the committed agent's MCP configuration, or
+/// <c>null</c> for a non-sandbox/legacy binding that cannot be refreshed automatically.</param>
 public sealed record SandboxEstablishedBinding(
     WorkspaceRef WorkspaceRef,
     SandboxCredential Credential,
-    SandboxCredential? CallerCredential = null
+    SandboxCredential? CallerCredential = null,
+    string? SessionId = null
 );
 
 /// <summary>

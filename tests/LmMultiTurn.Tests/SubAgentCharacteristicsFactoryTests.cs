@@ -311,6 +311,83 @@ public class SubAgentCharacteristicsFactoryTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task SpawnAsync_ExplicitTemplateModel_PlainPathBuildsProviderForTemplateModel()
+    {
+        GenerateReplyOptions? modelAgentOptions = null;
+        var modelAgent = CreateRespondingAgent(options => modelAgentOptions = options);
+        string? factoryRequestedModel = null;
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are an explicit-model test agent.",
+            AgentFactory = () =>
+                throw new InvalidOperationException("Controller provider must not run for an explicit-model template."),
+            DefaultOptions = new GenerateReplyOptions { ModelId = "template-explicit-model" },
+            IsModelExplicitlySelected = true,
+        };
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "controller-model",
+            tierAgentFactory: model =>
+            {
+                factoryRequestedModel = model;
+                return modelAgent.Object;
+            }
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        factoryRequestedModel.Should().Be("template-explicit-model");
+        modelAgentOptions.Should().NotBeNull();
+        modelAgentOptions!.ModelId.Should().Be("template-explicit-model");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_TemplateTierResolvedModel_PlainPathBuildsProviderForTemplateModel()
+    {
+        GenerateReplyOptions? tierAgentOptions = null;
+        var tierAgent = CreateRespondingAgent(options => tierAgentOptions = options);
+        string? tierFactoryRequestedModel = null;
+        var template = new SubAgentTemplate
+        {
+            SystemPrompt = "You are a tier-resolved test agent.",
+            AgentFactory = () =>
+                throw new InvalidOperationException("Controller provider must not run for a tier-resolved template."),
+            DefaultOptions = new GenerateReplyOptions { ModelId = "template-tier-5-model" },
+            IsModelTierResolved = true,
+        };
+        var modelIntelligenceProperty = template.GetType().GetProperty("ModelIntelligence");
+        modelIntelligenceProperty
+            .Should().NotBeNull("tier provenance must be retained on the template");
+        modelIntelligenceProperty!.SetValue(template, 5);
+        await using var manager = CreateManager(
+            template,
+            parentModelId: "controller-model",
+            tierAgentFactory: model =>
+            {
+                tierFactoryRequestedModel = model;
+                return tierAgent.Object;
+            }
+        );
+
+        _ = await manager.SpawnAsync("test-agent", "test task");
+
+        tierFactoryRequestedModel.Should().Be("template-tier-5-model");
+        tierAgentOptions.Should().NotBeNull();
+        tierAgentOptions!.ModelId.Should().Be("template-tier-5-model");
+
+        var snapshot = manager.ListAgents().Should().ContainSingle().Subject;
+        snapshot.GetType().GetProperty("EffectiveModelId")
+            .Should().NotBeNull("snapshots must carry authoritative effective routing to presentation layers");
+        snapshot.GetType().GetProperty("EffectiveModelId")!.GetValue(snapshot)
+            .Should().Be("template-tier-5-model");
+        snapshot.GetType().GetProperty("EffectiveModelIntelligence")
+            .Should().NotBeNull("the authored template tier must be visible beside misleading raw Agent arguments");
+        snapshot.GetType().GetProperty("EffectiveModelIntelligence")!.GetValue(snapshot).Should().Be(5);
+        snapshot.GetType().GetProperty("ModelSelectionSource")!.GetValue(snapshot)
+            .Should().Be("template-tier");
+    }
+
+    [Fact]
     public async Task SpawnAsync_TierResolvesNull_PlainPath_FallsBackToTemplateFactoryAndSeedsInheritedReasoning()
     {
         // When the resolver returns null (unmapped tier / no routable candidate), the plain path is

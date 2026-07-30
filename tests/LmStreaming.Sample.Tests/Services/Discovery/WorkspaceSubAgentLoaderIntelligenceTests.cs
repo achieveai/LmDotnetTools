@@ -44,6 +44,9 @@ public sealed class WorkspaceSubAgentLoaderIntelligenceTests
 
         template.Should().NotBeNull();
         template!.DefaultOptions!.ModelId.Should().Be("routable-model");
+        template.GetType().GetProperty("ModelIntelligence")
+            .Should().NotBeNull("the authored tier must remain available for effective-routing observability");
+        template.GetType().GetProperty("ModelIntelligence")!.GetValue(template).Should().Be(3);
         template.IsModelExplicitlySelected.Should().BeFalse();
         template.IsModelTierResolved.Should().BeTrue();
         template.CharacteristicsAgentFactory.Should().BeSameAs(characteristicsAgentFactory);

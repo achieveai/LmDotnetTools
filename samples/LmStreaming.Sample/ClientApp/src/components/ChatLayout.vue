@@ -18,7 +18,12 @@ import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
 import { useConversationTabs } from '@/composables/useConversationTabs';
-import { GET_AGENT_COLOR } from '@/utils/agentColors';
+import {
+  GET_AGENT_COLOR,
+  GET_AGENT_ROUTING,
+  resolveAgentRoutingFromCall,
+  type AgentRoutingLookup,
+} from '@/utils/agentColors';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -67,6 +72,7 @@ const {
 // Workspace catalog + per-process selection for new conversations.
 const {
   workspaces,
+  gateway: workspaceGateway,
   selectedWorkspaceId,
   isLoading: workspacesLoading,
   loadWorkspaces,
@@ -170,6 +176,9 @@ provide('getResultForToolCall', getResultForToolCall);
 // Provide agentId → color so ToolPill (agent family) and NotificationPill (completion) can tint a
 // sub-agent's inline calls to match its tab.
 provide(GET_AGENT_COLOR, getAgentColor);
+const getAgentRouting: AgentRoutingLookup = (parsedArgs, resultText) =>
+  resolveAgentRoutingFromCall(parsedArgs, resultText, subAgentChildren.value);
+provide(GET_AGENT_ROUTING, getAgentRouting);
 
 const sidebarCollapsed = ref(false);
 const isSwitchingMode = ref(false);
@@ -245,7 +254,11 @@ const lockedWorkspaceId = computed<string | null>(() => {
 });
 
 const workspaceSelectorDisabled = computed(
-  () => workspacesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
+  () => workspaceGateway?.value?.available === false
+    || workspacesLoading.value
+    || chatLoading.value
+    || isSending.value
+    || isSwitchingMode.value
 );
 
 function handleSelectWorkspace(workspaceId: string): void {
@@ -586,6 +599,7 @@ onBeforeUnmount(() => {
             <WorkspaceSelector
               ref="workspaceSelectorRef"
               :workspaces="workspaces"
+              :gateway="workspaceGateway"
               :selected-workspace-id="selectedWorkspaceId"
               :locked-workspace-id="lockedWorkspaceId"
               :is-loading="workspacesLoading"

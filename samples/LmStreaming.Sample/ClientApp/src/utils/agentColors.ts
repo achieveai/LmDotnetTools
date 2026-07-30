@@ -6,6 +6,8 @@
  * an LLM, and used to tint a sub-agent's tab and its inline calls in the conversation.
  */
 
+import type { SubAgentSummary } from '@/api/subAgentsApi';
+
 /**
  * The rotating palette: distinct, AA-readable-on-white hues. Deliberately avoids the app's reserved
  * accent `#007bff` and error `#dc3545` so agent colors never read as "link" or "error". The pale tab
@@ -28,8 +30,17 @@ export const MAIN_TAB_COLOR = '#334155'; // slate
 /** provide/inject key for the agentId → color resolver (mirrors GET_RESULT_FOR_TOOL_CALL). */
 export const GET_AGENT_COLOR = 'getAgentColor';
 
+/** provide/inject key for resolving the exact child and its authoritative routing metadata. */
+export const GET_AGENT_ROUTING = 'getAgentRouting';
+
 /** Resolver injected into descendant pills: agentId → hue, or null when unknown/unassigned. */
 export type AgentColorLookup = (agentId: string | null | undefined) => string | null;
+
+/** Resolves a call's exact child summary; never guesses from template/subagent_type. */
+export type AgentRoutingLookup = (
+  parsedArgs: Record<string, unknown> | null,
+  resultText: string | null | undefined
+) => SubAgentSummary | null;
 
 /** The hue for a 0-based discovery index, wrapping around the palette. */
 export function hueForIndex(index: number): string {
@@ -71,4 +82,23 @@ export function resolveAgentIdFromCall(
     }
   }
   return null;
+}
+
+/**
+ * Correlates an Agent-family call to one exact child. Background calls carry an agent id; synchronous
+ * workflow calls return plain answer text, so they correlate by the workflow's exact unit name. A name
+ * must identify exactly one child. Template-only matching is intentionally forbidden.
+ */
+export function resolveAgentRoutingFromCall(
+  parsedArgs: Record<string, unknown> | null,
+  resultText: string | null | undefined,
+  children: readonly SubAgentSummary[]
+): SubAgentSummary | null {
+  const agentId = resolveAgentIdFromCall(parsedArgs, resultText);
+  if (agentId) return children.find(child => child.agentId === agentId) ?? null;
+
+  const name = firstStringField(parsedArgs, ['name']);
+  if (!name) return null;
+  const matches = children.filter(child => child.name === name);
+  return matches.length === 1 ? matches[0] : null;
 }

@@ -64,6 +64,17 @@ public class StartWorkflowToolProviderTests
     }
 
     [Fact]
+    public void StartWorkflowDescription_TreatsStartedAsSuccessAndSteersAgainstDuplicateLaunches()
+    {
+        var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));
+
+        var description = Tool(provider, "StartWorkflowAgent").Contract.Description;
+        description.Should().Contain("status of 'started' is SUCCESS");
+        description.Should().Contain("do NOT launch a second/replacement workflow");
+        description.Should().Contain("CheckWorkflow/WaitWorkflow");
+    }
+
+    [Fact]
     public void StartWorkflowAgent_WorkflowParam_AdvertisesTheFlatStepSchema()
     {
         var provider = new StartWorkflowToolProvider(NewManager(() => ScriptedController(DriveMinimalToTerminal).Object));

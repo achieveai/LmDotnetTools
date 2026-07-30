@@ -39,6 +39,37 @@ public class SpawnNameGateTests
     }
 
     [Fact]
+    public void ResolveSpawnModelSelection_ReturnsAuthoritativeNullTierForUntieredUnit()
+    {
+        var runtime = RuntimeAtAnalyze();
+        var unit = runtime.ComposeNextExpectedAction().Single();
+
+        var selection = runtime.ResolveSpawnModelSelection(unit.Name);
+
+        selection.Should().NotBeNull();
+        selection!.Model.Should().BeNull();
+        selection.ModelIntelligence.Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveSpawnModelSelection_ReturnsAuthoredTierInsteadOfCallerPlaceholder()
+    {
+        var json = Phase3Fixtures.LinearBlockingAgent.Replace(
+            "\"subagent_type\": \"general-purpose\",",
+            "\"subagent_type\": \"general-purpose\", \"modelIntelligence\": 5,");
+        var runtime = new WorkflowRuntime();
+        runtime.LoadDefinition(WorkflowJson.Deserialize(json));
+        runtime.AdvanceTo("start", "analyze", null);
+        var unit = runtime.ComposeNextExpectedAction().Single();
+
+        var selection = runtime.ResolveSpawnModelSelection(unit.Name);
+
+        selection.Should().NotBeNull();
+        selection!.Model.Should().BeNull();
+        selection.ModelIntelligence.Should().Be(5);
+    }
+
+    [Fact]
     public void DescribeSpawnNameRejection_RejectsTheBareNodeId_ListingTheReadyUnitName()
     {
         var runtime = RuntimeAtAnalyze();

@@ -29,6 +29,62 @@ public record SubAgentTurnSummary
 }
 
 /// <summary>
+/// Typed snapshot of a single turn within a sub-agent's execution.
+/// Used in batch observation results to provide structured recent activity.
+/// </summary>
+public sealed record SubAgentTurnSnapshot(
+    string MessageType,
+    string? ToolName,
+    string? ToolArgsPreview,
+    string? TextPreview,
+    DateTimeOffset Timestamp);
+
+/// <summary>
+/// Typed observation entry for a single target in a batch CheckAgents query.
+/// Contains the original target, resolved identity, status, and recent turn history.
+/// </summary>
+public sealed record SubAgentObservationEntry
+{
+    public required string Target { get; init; }
+    public string? AgentId { get; init; }
+    public string? Name { get; init; }
+    public required string Status { get; init; }
+    public string? TemplateName { get; init; }
+    public string? Task { get; init; }
+    public IReadOnlyList<SubAgentTurnSnapshot> RecentTurns { get; init; } = [];
+    public string? LastResult { get; init; }
+    public bool SendToParentFailed { get; init; }
+    public string? SendToParentError { get; init; }
+
+    /// <summary>True when the agent was successfully resolved and is tracked by the manager.</summary>
+    public bool IsFound => AgentId is not null;
+
+    /// <summary>True when the agent has reached a terminal state (completed, error, or stopped).</summary>
+    public bool IsTerminal => Status is "completed" or "error" or "stopped";
+}
+
+/// <summary>
+/// Typed batch observation result for a CheckAgents query.
+/// Contains an ordered entry per input target (including duplicates and unknowns) and summary counts.
+/// </summary>
+public sealed record SubAgentObservationBatch
+{
+    public required IReadOnlyList<SubAgentObservationEntry> Entries { get; init; }
+
+    /// <summary>Total number of targets requested (including duplicates).</summary>
+    public int Requested => Entries.Count;
+
+    /// <summary>Count of entries with "running" status.</summary>
+    public int Running => Entries.Count(x => x.Status == "running");
+
+    /// <summary>Count of entries in terminal states (completed, error, stopped).</summary>
+    public int Terminal => Entries.Count(x => x.IsTerminal);
+
+    /// <summary>Count of entries with "not_found" status.</summary>
+    public int NotFound => Entries.Count(x => x.Status == "not_found");
+}
+
+/// <summary>
 /// How a <c>SubAgentManager.SendMessageAsync</c> continuation must proceed, decided atomically by
 /// <see cref="SubAgentState.BeginContinuation"/> against a concurrent terminal completion and other
 /// concurrent continuations.
@@ -132,6 +188,14 @@ internal class SubAgentState
     /// actually handled the request, not a value re-derived later that could diverge. Refreshed on an
     /// owned-provider restart (the characteristics factory is re-invoked and may resolve differently).</summary>
     public string? EffectiveModelId { get; set; }
+
+    /// <summary>The intelligence tier that selected <see cref="EffectiveModelId"/>, or null when the
+    /// model came from an explicit override/template or parent inheritance.</summary>
+    public int? EffectiveModelIntelligence { get; set; }
+
+    /// <summary>Stable explanation of the winning model-selection input.</summary>
+    public string ModelSelectionSource { get; set; } = "parent";
+
     public string[]? AddTools { get; init; }
     public string[]? RemoveTools { get; init; }
 

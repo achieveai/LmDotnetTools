@@ -86,7 +86,11 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                 + "build and check the graph with those first, then pass the finished object here to run it "
                 + "independently of this conversation. Prefer mode: async — it returns immediately with "
                 + "{workflowId, status:\"started\"}, you get a proactive notification when it finishes, and "
-                + "you can poll anytime with CheckWorkflow or block for the result with WaitWorkflow. "
+                + "you can poll anytime with CheckWorkflow or block for the result with WaitWorkflow. A returned "
+                + "status of 'started' is SUCCESS: do NOT launch a second/replacement workflow for the same "
+                + "objective while it is active. Keep the workflowId and use CheckWorkflow/WaitWorkflow until it "
+                + "is terminal; only start another workflow when the first failed terminally and a genuinely "
+                + "different graph is required. "
                 + "(mode: sync instead BLOCKS this turn until the workflow reaches a terminal state and "
                 + "returns its result.) It runs on its own controller loop, so pass the graph complete; to "
                 + "change it afterward, start a new run with an updated graph.",

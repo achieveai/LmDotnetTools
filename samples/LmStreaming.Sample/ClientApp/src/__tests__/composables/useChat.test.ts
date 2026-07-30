@@ -107,6 +107,50 @@ describe('useChat mode-aware websocket lifecycle', () => {
     expect(wsMocks.createWebSocketConnection.mock.calls[1]?.[0]?.modeId).toBe('math-helper');
   });
 
+  it('reconnects and resends exactly once when the server refreshes the sandbox session', async () => {
+    const chat = useChat({ getModeId: () => 'workspace-agent' });
+
+    await chat.sendMessage('use the workspace');
+    const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    await firstOptions.onSandboxSessionRefresh(false);
+
+    expect(wsMocks.closeWebSocketConnection).toHaveBeenCalledTimes(1);
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(2);
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(2);
+    expect(wsMocks.sendWebSocketMessage.mock.calls.map((call) => call[1])).toEqual([
+      'use the workspace',
+      'use the workspace',
+    ]);
+  });
+
+  it('does not retry more than once when the replacement session also refreshes', async () => {
+    const chat = useChat({ getModeId: () => 'workspace-agent' });
+
+    await chat.sendMessage('use the workspace');
+    await wsMocks.createWebSocketConnection.mock.calls[0]?.[0].onSandboxSessionRefresh(false);
+    await wsMocks.createWebSocketConnection.mock.calls[1]?.[0].onSandboxSessionRefresh(false);
+
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(2);
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for the active run done signal before retrying a deferred sandbox refresh', async () => {
+    const chat = useChat({ getModeId: () => 'workspace-agent' });
+
+    await chat.sendMessage('use the workspace');
+    const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    await firstOptions.onSandboxSessionRefresh(true);
+
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(1);
+
+    firstOptions.onDone();
+    await vi.waitFor(() => expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(2));
+
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps reasoning pill when reasoning and text share run/generation without messageOrderIdx', async () => {
     const chat = useChat({ getModeId: () => 'default' });
 
