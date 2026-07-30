@@ -62,6 +62,57 @@ public static class SqliteSchemaInitializer
         );
         """;
 
+    // Kept beside run_ledger rather than added to it: the ledger's columns back the status API,
+    // and lifecycle observation must be addable without migrating that table.
+    private const string CreateRunLifecycleTableSql = """
+        CREATE TABLE IF NOT EXISTS run_lifecycle (
+            run_id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            parent_run_id TEXT,
+            parent_thread_id TEXT,
+            spawning_tool_call_id TEXT,
+            sub_agent_id TEXT,
+            cause_kind TEXT NOT NULL,
+            cause_tool_call_id TEXT,
+            phase TEXT NOT NULL,
+            outcome TEXT,
+            turn_count INTEGER NOT NULL,
+            started_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            terminal_at INTEGER
+        );
+        """;
+
+    private const string CreateRunLifecycleIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_run_lifecycle_thread
+        ON run_lifecycle (thread_id, started_at);
+        """;
+
+    // A table rather than a JSON column on run_lifecycle, because resolving a deferred call is a
+    // conditional single-row update keyed on (thread_id, tool_call_id) — the primary key below —
+    // and that is what makes concurrent resolutions of the same call resolve exactly once.
+    private const string CreateRunDeferredCallsTableSql = """
+        CREATE TABLE IF NOT EXISTS run_deferred_calls (
+            thread_id TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            generation_id TEXT,
+            ordinal INTEGER NOT NULL,
+            deferred_at INTEGER NOT NULL,
+            resolved_at INTEGER,
+            resolution_fingerprint TEXT,
+            child_run_id TEXT,
+            PRIMARY KEY (thread_id, tool_call_id)
+        );
+        """;
+
+    private const string CreateRunDeferredCallsIndexSql = """
+        CREATE INDEX IF NOT EXISTS idx_run_deferred_calls_run
+        ON run_deferred_calls (run_id, ordinal);
+        """;
+
     private const string CreateNotifyWaitsTableSql = """
         CREATE TABLE IF NOT EXISTS notify_waits (
             wait_id       TEXT NOT NULL,
@@ -82,6 +133,27 @@ public static class SqliteSchemaInitializer
         "CREATE INDEX IF NOT EXISTS ix_notify_waits_thread ON notify_waits (thread_id);";
 
     /// <summary>
+    /// Every schema statement, in dependency order, applied in one transaction. All are
+    /// <c>IF NOT EXISTS</c>, so this is also the upgrade path for a database created by an earlier
+    /// build: tables added here appear on next open without a migration step.
+    /// </summary>
+    private static readonly string[] SchemaStatements =
+    [
+        CreateMessagesTableSql,
+        CreateMessagesIndexSql,
+        CreateMetadataTableSql,
+        CreateRunLedgerTableSql,
+        CreateRunLedgerIndexSql,
+        CreateAcceptedInputsTableSql,
+        CreateRunLifecycleTableSql,
+        CreateRunLifecycleIndexSql,
+        CreateRunDeferredCallsTableSql,
+        CreateRunDeferredCallsIndexSql,
+        CreateNotifyWaitsTableSql,
+        CreateNotifyWaitsIndexSql,
+    ];
+
+    /// <summary>
     /// Initializes the database schema if it doesn't exist.
     /// </summary>
     /// <param name="connection">An open SQLite connection.</param>
@@ -96,45 +168,13 @@ public static class SqliteSchemaInitializer
 
         try
         {
-            using var createMessagesCmd = connection.CreateCommand();
-            createMessagesCmd.CommandText = CreateMessagesTableSql;
-            createMessagesCmd.Transaction = transaction;
-            _ = await createMessagesCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            using var createIndexCmd = connection.CreateCommand();
-            createIndexCmd.CommandText = CreateMessagesIndexSql;
-            createIndexCmd.Transaction = transaction;
-            _ = await createIndexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            using var createMetadataCmd = connection.CreateCommand();
-            createMetadataCmd.CommandText = CreateMetadataTableSql;
-            createMetadataCmd.Transaction = transaction;
-            _ = await createMetadataCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            using var createRunLedgerCmd = connection.CreateCommand();
-            createRunLedgerCmd.CommandText = CreateRunLedgerTableSql;
-            createRunLedgerCmd.Transaction = transaction;
-            _ = await createRunLedgerCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            using var createRunLedgerIndexCmd = connection.CreateCommand();
-            createRunLedgerIndexCmd.CommandText = CreateRunLedgerIndexSql;
-            createRunLedgerIndexCmd.Transaction = transaction;
-            _ = await createRunLedgerIndexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            using var createAcceptedInputsCmd = connection.CreateCommand();
-            createAcceptedInputsCmd.CommandText = CreateAcceptedInputsTableSql;
-            createAcceptedInputsCmd.Transaction = transaction;
-            _ = await createAcceptedInputsCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            using var createNotifyWaitsCmd = connection.CreateCommand();
-            createNotifyWaitsCmd.CommandText = CreateNotifyWaitsTableSql;
-            createNotifyWaitsCmd.Transaction = transaction;
-            _ = await createNotifyWaitsCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            using var createNotifyWaitsIndexCmd = connection.CreateCommand();
-            createNotifyWaitsIndexCmd.CommandText = CreateNotifyWaitsIndexSql;
-            createNotifyWaitsIndexCmd.Transaction = transaction;
-            _ = await createNotifyWaitsIndexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            foreach (var sql in SchemaStatements)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = sql;
+                command.Transaction = transaction;
+                _ = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
 
             transaction.Commit();
         }

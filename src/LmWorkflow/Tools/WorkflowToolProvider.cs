@@ -238,20 +238,21 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             return argsError!;
         }
 
-        string? nextNodeId;
         string? completedNodeId;
+        string nextNodeId;
         JsonNode? result;
 
         using (doc)
         {
             var root = doc.RootElement;
 
-            nextNodeId = OptionalString(root, "nextNodeId");
-            if (string.IsNullOrEmpty(nextNodeId))
+            var requestedNodeId = OptionalString(root, "nextNodeId");
+            if (string.IsNullOrEmpty(requestedNodeId))
             {
-                return await Error("The 'nextNodeId' parameter is required.", "invalid_args");
+                return ToolHandlerResult.FromError("The 'nextNodeId' parameter is required.", "invalid_args");
             }
 
+            nextNodeId = requestedNodeId;
             completedNodeId = OptionalString(root, "completedNodeId");
             result =
                 root.TryGetProperty("result", out var resultElement)
@@ -260,11 +261,14 @@ public sealed class WorkflowToolProvider : IFunctionProvider
                     : null;
         }
 
-        // Leaving a node ends its units' chance to contribute. AdvanceTo composes and validates a terminal
-        // node's result from state right here on the tool thread, so wait (bounded, usually not at all) for
-        // the writes of any unit still owing an answer — otherwise a fan-out that HAS been answered can be
-        // missing from the final result purely because the observer thread had not caught up yet.
-        await _runtime.WaitForNodeSettlementAsync(context.ToolCallId, cancellationToken);
+        // This handler runs INLINE on the controller loop's thread, while the sub-agent results that feed
+        // the transition reach the runtime only through the out-of-band observer. Routing into a terminal
+        // renders its resultTemplate immediately, so without this barrier a terminal could be finalized from
+        // state that still lags the results the controller had already collected. Waiting on THIS call's own
+        // tool-call id — published to subscribers before the loop invoked us — proves the observer has drained
+        // everything published earlier, including every prior tool result. No-ops when nothing observes.
+        await _runtime.WaitForObservationAsync(context.ToolCallId, cancellationToken).ConfigureAwait(false);
+        await _runtime.WaitForNodeSettlementAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -272,12 +276,14 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         }
         catch (InvalidOperationException ex)
         {
-            return await Error(ex.Message, "invalid_transition");
+            return ToolHandlerResult.FromError(ex.Message, "invalid_transition");
         }
 
         return _runtime.IsComplete
-            ? await Text("Workflow complete. " + _runtime.GetProjection("all").ToJsonString())
-            : await Text(_runtime.GetProjection(null).ToJsonString());
+            ? ToolHandlerResult.FromText(
+                "Workflow complete. " + _runtime.GetProjection("all").ToJsonString()
+            )
+            : ToolHandlerResult.FromText(_runtime.GetProjection(null).ToJsonString());
     }
 
     private Task<ToolHandlerResult> HandleSetStateAsync(

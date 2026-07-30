@@ -27,6 +27,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <!-- Referenced only so a test can pin LmCore's approval outcome codes to the wire contract's;
+         LmCore itself deliberately does not depend on LmLifecycle. -->
+    <ProjectReference Include="..\..\src\LmLifecycle\AchieveAi.LmDotnetTools.LmLifecycle.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
     <ProjectReference Include="..\..\src\Misc\AchieveAi.LmDotnetTools.Misc.csproj" />

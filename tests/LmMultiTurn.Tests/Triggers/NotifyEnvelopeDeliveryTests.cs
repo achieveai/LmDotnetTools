@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using FluentAssertions;
@@ -112,10 +113,10 @@ public class NotifyEnvelopeDeliveryTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: fireCount + 1);
+        var runsCompleted = SubscribeForRunCompletions(loop, cts.Token, expectedCount: fireCount + 1);
 
         await loop.SendAsync([new TextMessage { Text = "arm the notify wait", Role = Role.User }]);
-        await runsCompleted.WaitAsync(0);
+        await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Notify mode returns an immediate "armed" ack (no deferral); the arming run completes
         // normally and the wait stays armed, so its sink is registered under the tool-call id.
@@ -125,7 +126,7 @@ public class NotifyEnvelopeDeliveryTests
         {
             var sink = manual.Sinks["tc_notify"];
             await sink.FireAsync(new TriggerFireEvent($"fire-{i + 1}"), cts.Token);
-            await runsCompleted.WaitAsync(i + 1);
+            await runsCompleted[i + 1].Task.WaitAsync(TimeSpan.FromSeconds(5));
         }
 
         await cts.CancelAsync();
@@ -148,6 +149,57 @@ public class NotifyEnvelopeDeliveryTests
         }
 
         return history;
+    }
+
+    /// <summary>
+    /// Establishes a live subscription and returns one completion source per expected run.
+    /// Registration happens synchronously here, before this method returns: SubscribeAsync registers
+    /// the subscriber ahead of the iterator's first suspension point, so issuing (not awaiting) the
+    /// first move is what makes the subscription live. Leaving registration to the pump task instead
+    /// would race the caller's trigger — a run that completes before the subscriber registers closes
+    /// the replay buffer, and the late subscriber then sees nothing at all.
+    /// </summary>
+    private static List<TaskCompletionSource<bool>> SubscribeForRunCompletions(
+        MultiTurnAgentLoop loop, CancellationToken ct, int expectedCount)
+    {
+        var sources = Enumerable.Range(0, expectedCount)
+            .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToList();
+
+        var subscription = loop.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+        var firstMove = subscription.MoveNextAsync();
+
+        // Not scheduled with `ct`: the pump is already cancellation-bound through the enumerator, and
+        // handing the token to Task.Run would let a pre-cancelled token skip the body outright,
+        // stranding the move issued above with nothing to observe or dispose it.
+        _ = Task.Run(async () =>
+        {
+            var completed = 0;
+            try
+            {
+                for (var move = firstMove; await move; move = subscription.MoveNextAsync())
+                {
+                    if (subscription.Current is not RunCompletedMessage)
+                    {
+                        continue;
+                    }
+
+                    if (completed < sources.Count)
+                    {
+                        sources[completed].TrySetResult(true);
+                    }
+
+                    completed++;
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally
+            {
+                await subscription.DisposeAsync();
+            }
+        });
+
+        return sources;
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(

@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
@@ -52,6 +53,7 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
     private readonly ILoggerFactory _loggerFactory;
     private readonly CodeReviewDaemonOptions _options;
     private readonly IConversationStore? _conversationStore;
+    private readonly MultiTurnLifecycleServices? _lifecycleServices;
     private readonly ICopilotTokenProvider _tokenProvider = new CliCredentialCopilotTokenProvider();
     private readonly CopilotSessionContext _session = new();
     private readonly object _agentGate = new();
@@ -61,11 +63,15 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
     public LiveReviewAgentLoopFactory(
         ILoggerFactory loggerFactory,
         CodeReviewDaemonOptions options,
-        IConversationStore? conversationStore = null)
+        IConversationStore? conversationStore = null,
+        MultiTurnLifecycleServices? lifecycleServices = null)
     {
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _conversationStore = conversationStore;
+        // Null unless the host registered lifecycle observation (#227); every loop reads that as
+        // MultiTurnLifecycleServices.Disabled, so reviews behave exactly as before until it is wired.
+        _lifecycleServices = lifecycleServices;
     }
 
     /// <summary>
@@ -199,7 +205,8 @@ internal sealed class LiveReviewAgentLoopFactory : IReviewAgentLoopFactory, IDis
             logger: _loggerFactory.CreateLogger<MultiTurnAgentLoop>(),
             subAgentOptions: subAgentOptions,
             loggerFactory: _loggerFactory,
-            persistRunLedger: _conversationStore is not null);
+            persistRunLedger: _conversationStore is not null,
+            lifecycleServices: _lifecycleServices);
 
         // Start the loop's background processing task before returning: ExecuteRunAsync only enqueues input
         // and reads the output channel — it does NOT start RunLoopAsync — so without this the caller's

@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
@@ -286,7 +287,8 @@ IConversationStore? conversationStore = string.IsNullOrWhiteSpace(daemonOptions.
 builder.Services.AddSingleton<LiveReviewAgentLoopFactory>(sp => new LiveReviewAgentLoopFactory(
     sp.GetRequiredService<ILoggerFactory>(),
     daemonOptions,
-    conversationStore));
+    conversationStore,
+    sp.GetService<MultiTurnLifecycleServices>()));
 
 if (daemonOptions.UseS2SReviewAgent)
 {

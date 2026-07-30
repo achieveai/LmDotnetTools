@@ -173,4 +173,172 @@ public sealed class ModelRewriteTests
         JsonNode.Parse(forwardedBody!)!["model"]!.GetValue<string>()
             .Should().Be(ProxyWebAppFactory.ConfiguredModel);
     }
+
+    [Fact]
+    public void TryRewriteModel_strips_hosted_tools_but_keeps_client_defined_ones()
+    {
+        // Live-probed 2026-07-28: Copilot's /responses 400s on image_generation, local_shell,
+        // code_interpreter and mcp. It accepts web_search, which is dropped anyway because it is
+        // still a hosted tool and the translated Anthropic route drops web_search_20250305 too.
+        const string json = """
+        {
+          "model": "gpt-5.3-codex",
+          "tools": [
+            { "type": "function", "name": "shell", "parameters": { "type": "object" } },
+            { "type": "image_generation" },
+            { "type": "custom", "name": "apply_patch" },
+            { "type": "local_shell" },
+            { "type": "code_interpreter", "container": { "type": "auto" } },
+            { "type": "mcp", "server_label": "x" },
+            { "type": "web_search" }
+          ]
+        }
+        """;
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            Encoding.UTF8.GetBytes(json), "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        var tools = JsonNode.Parse(rewritten)!["tools"]!.AsArray();
+        tools.Select(t => t!["type"]!.GetValue<string>()).Should().Equal("function", "custom");
+        tools[0]!["name"]!.GetValue<string>().Should().Be("shell");
+        tools[1]!["name"]!.GetValue<string>().Should().Be("apply_patch", "current Codex sends apply_patch as a freeform custom tool");
+    }
+
+    [Fact]
+    public void TryRewriteModel_removes_the_tools_key_when_every_tool_is_hosted()
+    {
+        var body = Encoding.UTF8.GetBytes("""{"model":"m","tools":[{"type":"image_generation"}]}""");
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        JsonNode.Parse(rewritten)!.AsObject().ContainsKey("tools").Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryRewriteModel_drops_tool_entries_that_are_not_typed_objects()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            """{"model":"m","tools":["nonsense",42,null,{"noType":true},{"type":7},{"type":"function","name":"ok"}]}""");
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        var tools = JsonNode.Parse(rewritten)!["tools"]!.AsArray();
+        tools.Should().HaveCount(1);
+        tools[0]!["name"]!.GetValue<string>().Should().Be("ok");
+    }
+
+    [Fact]
+    public void TryRewriteModel_leaves_tools_alone_when_hosted_stripping_is_off()
+    {
+        // The Anthropic and Chat Completions routes forward tools verbatim; only Responses filters.
+        var body = Encoding.UTF8.GetBytes("""{"model":"m","tools":[{"type":"image_generation"}]}""");
+
+        var ok = ProxyModelResolver.TryRewriteModel(body, "opus-x", out var rewritten, out _);
+
+        ok.Should().BeTrue();
+        JsonNode.Parse(rewritten)!["tools"]!.AsArray().Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void TryRewriteModel_drops_tool_choice_when_every_tool_was_stripped()
+    {
+        // Responses answers 400 "'tool_choice' is only allowed when 'tools' are specified". Removing the
+        // tools and leaving the choice behind converts a request Copilot merely could not run into one it
+        // refuses outright — the proxy manufacturing an invalid body out of a valid one.
+        var body = Encoding.UTF8.GetBytes(
+            """{"model":"m","tools":[{"type":"image_generation"}],"tool_choice":"required"}"""
+        );
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        var obj = JsonNode.Parse(rewritten)!.AsObject();
+        obj.ContainsKey("tools").Should().BeFalse();
+        obj.ContainsKey("tool_choice").Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryRewriteModel_drops_a_tool_choice_naming_a_tool_that_was_stripped()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            """
+            {"model":"m",
+             "tools":[{"type":"function","name":"shell"},{"type":"image_generation","name":"draw"}],
+             "tool_choice":{"type":"function","name":"draw"}}
+            """
+        );
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        var obj = JsonNode.Parse(rewritten)!.AsObject();
+        obj["tools"]!.AsArray().Should().HaveCount(1);
+        obj.ContainsKey("tool_choice").Should().BeFalse("the named tool is no longer in the request");
+    }
+
+    [Fact]
+    public void TryRewriteModel_keeps_a_tool_choice_that_the_surviving_tools_can_still_satisfy()
+    {
+        // Over-removal is its own defect: dropping a satisfiable choice silently turns a forced tool call
+        // into an optional one, and the client cannot tell.
+        var body = Encoding.UTF8.GetBytes(
+            """
+            {"model":"m",
+             "tools":[{"type":"function","name":"shell"},{"type":"image_generation"}],
+             "tool_choice":{"type":"function","name":"shell"}}
+            """
+        );
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        var obj = JsonNode.Parse(rewritten)!.AsObject();
+        obj["tools"]!.AsArray().Should().HaveCount(1);
+        obj["tool_choice"]!["name"]!.GetValue<string>().Should().Be("shell");
+    }
+
+    [Theory]
+    [InlineData("\"auto\"")]
+    [InlineData("\"required\"")]
+    [InlineData("\"none\"")]
+    public void TryRewriteModel_keeps_a_bare_string_tool_choice_while_any_tool_survives(string choice)
+    {
+        var body = Encoding.UTF8.GetBytes(
+            $$"""
+            {"model":"m",
+             "tools":[{"type":"function","name":"shell"},{"type":"image_generation"}],
+             "tool_choice":{{choice}}}
+            """
+        );
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        JsonNode.Parse(rewritten)!.AsObject().ContainsKey("tool_choice").Should().BeTrue();
+    }
+
+    [Fact]
+    public void TryRewriteModel_leaves_tool_choice_untouched_when_no_tool_was_stripped()
+    {
+        // Nothing was filtered, so nothing may be second-guessed: a choice naming a tool this proxy does
+        // not recognise is still the client's to send.
+        var body = Encoding.UTF8.GetBytes(
+            """{"model":"m","tools":[{"type":"function","name":"shell"}],"tool_choice":{"type":"custom","name":"unknown"}}"""
+        );
+
+        var ok = ProxyModelResolver.TryRewriteModel(
+            body, "gpt-5.3-codex", out var rewritten, out _, stripHostedTools: true);
+
+        ok.Should().BeTrue();
+        JsonNode.Parse(rewritten)!["tool_choice"]!["name"]!.GetValue<string>().Should().Be("unknown");
+    }
 }

@@ -18,7 +18,7 @@ public delegate Task<ToolHandlerResult> ToolHandler(
 /// Post-adapter shape produced by <see cref="FunctionCallMiddleware"/> and consumed by
 /// <see cref="ToolCallExecutor"/>. Resolved/Deferred have already been reconciled into a
 /// single <see cref="ToolCallResult"/> with deferral fields populated. External callers
-/// invoking <see cref="ToolCallExecutor.ExecuteAsync"/> directly author handlers in this
+/// invoking <see cref="ToolCallExecutor"/> directly author handlers in this
 /// shape; most users register <see cref="ToolHandler"/>-shaped handlers via
 /// <see cref="FunctionRegistry"/> and let the middleware perform the adaptation.
 /// </summary>

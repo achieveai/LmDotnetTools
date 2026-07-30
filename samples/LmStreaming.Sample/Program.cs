@@ -19,6 +19,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -37,6 +38,7 @@ using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Context;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Lifecycle;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using LmStreaming.Sample.Auth;
 using LmStreaming.Sample.Controllers;
@@ -129,7 +131,20 @@ try
         options.WriteIndentedJson = builder.Environment.IsDevelopment();
     });
 
-    _ = builder.Services.AddControllers();
+    // Service-to-service lifecycle observation and remote tool approval (ADR 0003 + ADR 0005). Both
+    // are off unless the matching `Lifecycle:*:Enabled` flag is set, and this file carries no default
+    // for either — an absent section reads as disabled.
+    _ = builder.Services.AddLifecycleDelivery(builder.Configuration);
+    _ = builder.Services.AddRemoteToolApproval(builder.Configuration);
+
+    // AddLifecycleControlPlane is called unconditionally, and the disabled case is the one that needs
+    // it. The SDK emits an ApplicationPartAttribute for every referenced assembly that references MVC,
+    // so LmAgentInfra's controllers — the lifecycle ones included — are discovered here whether or not
+    // this sample asked for them. With the flags off those two would be published and unconstructible,
+    // because their dependencies are registered only when the flags are on. This removes them. The
+    // sample's existing surface, api/auth/webhook and api/auth/egress-keys among it, is untouched:
+    // this host supplied the application part, so the method leaves the rest of that assembly alone.
+    _ = builder.Services.AddControllers().AddLifecycleControlPlane(builder.Configuration);
     _ = builder.Services.AddEndpointsApiExplorer();
 
     // Raise the request-body ceiling so the file browser's multipart upload (WI #195) can carry a file of
@@ -376,7 +391,14 @@ try
         GatewayHttpClient(TimeSpan.FromSeconds(30)),
         authOptions,
         sp.GetRequiredService<SessionSecretStore>(),
-        sp.GetRequiredService<PredefinedKeyRegistry>()
+        sp.GetRequiredService<PredefinedKeyRegistry>(),
+        // Same bundle instance the agent pool resolves (see the hostLifecycleServices note below), so
+        // the registry's SandboxCreated events share the pool's producer epoch and sequence stream. A
+        // second bundle here would mint a second epoch, and a subscriber would read the interleaving
+        // as "the producer restarted" every time a session was created. Null unless a Lifecycle flag
+        // is set, in which case the registry falls back to MultiTurnLifecycleServices.Disabled and
+        // publishes nothing — the pre-#227 behavior.
+        sp.GetService<MultiTurnLifecycleServices>()
     ));
 
     // The registry also implements the narrow file-browser surface the FileBrowserController depends on
@@ -576,6 +598,14 @@ try
         var codexLifetime = sp.GetRequiredService<CodexMcpServerLifetime>();
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
+        // Lifecycle observation / tool approval (#227). Resolved once for the process — the bundle's
+        // sequence allocator owns the producer epoch, and loops that share it share that epoch, which
+        // is what lets a subscriber tell "producer restarted" from "events were lost". Handed to the
+        // pool, which puts it on every AgentCreationContext; the per-thread factory below reads it
+        // from there rather than closing over it, so the pool stays the single distributor. Registered
+        // only when a Lifecycle flag is set, so on a default configuration this is null and every loop
+        // falls back to MultiTurnLifecycleServices.Disabled — the sample behaves exactly as before.
+        var hostLifecycleServices = sp.GetService<MultiTurnLifecycleServices>();
 
         // Web tools (WebFetch/WebSearch) fallback provider. Built ONCE for the process (this factory
         // runs once for the singleton pool) and shared across conversations — the provider owns a
@@ -604,6 +634,7 @@ try
             {
                 var threadId = context.ThreadId;
                 var mode = context.Mode;
+                var lifecycleServices = context.LifecycleServices;
                 // Anchor the model to the real current date. Injected once at the single mode entry
                 // point so every derived system prompt (workspace suffix, medical context, etc.)
                 // carries it. Without it, models fall back to a training-era date, distrust
@@ -768,7 +799,8 @@ try
                             mcpBaseUrl,
                             llmQueryMcpExamType,
                             mockBaseUrlOverride: $"{mockBaseUrl}/v1",
-                            mockApiKeyOverride: "mock-token"
+                            mockApiKeyOverride: "mock-token",
+                            lifecycleServices: lifecycleServices
                         )
                     );
                 }
@@ -797,7 +829,8 @@ try
                             mcpBaseUrl,
                             llmQueryMcpExamType,
                             mockBaseUrlOverride: claudeMockBaseUrl,
-                            mockAuthTokenOverride: "mock-token"
+                            mockAuthTokenOverride: "mock-token",
+                            lifecycleServices: lifecycleServices
                         )
                     );
                 }
@@ -818,7 +851,8 @@ try
                                 conversationStore,
                                 loggerFactory,
                                 mockBaseUrlOverride: $"{mockBaseUrl}/v1",
-                                mockApiKeyOverride: "mock-token"
+                                mockApiKeyOverride: "mock-token",
+                                lifecycleServices: lifecycleServices
                             )
                         );
                 }
@@ -852,7 +886,8 @@ try
                             loggerFactory,
                             codexEndpoint,
                             mcpBaseUrl,
-                            llmQueryMcpExamType
+                            llmQueryMcpExamType,
+                            lifecycleServices: lifecycleServices
                         )
                     );
                 }
@@ -867,7 +902,8 @@ try
                             conversationStore,
                             loggerFactory,
                             mcpBaseUrl,
-                            llmQueryMcpExamType
+                            llmQueryMcpExamType,
+                            lifecycleServices: lifecycleServices
                         )
                     );
                 }
@@ -903,7 +939,8 @@ try
                             extraMcpServers: isWorkspaceMode
                                 ? BuildHttpMcpServer("sandbox", $"{sandboxLifetime.GatewayBaseUrl}/mcp", sandboxMcpHeaders!)
                                 : null,
-                            workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null
+                            workingDirectoryOverride: isWorkspaceMode ? sandboxSession!.HostPath : null,
+                            lifecycleServices: lifecycleServices
                         )
                     );
                 }
@@ -1239,7 +1276,8 @@ try
                             },
                             maxConcurrentWorkflows: maxConcurrentWorkflows,
                             controllerDefaultOptions: new GenerateReplyOptions { ModelId = controllerModelId },
-                            logger: loggerFactory.CreateLogger<WorkflowManager>()
+                            logger: loggerFactory.CreateLogger<WorkflowManager>(),
+                            lifecycleServices: lifecycleServices
                         );
 
                         _ = filteredRegistry.AddProvider(new StartWorkflowToolProvider(workflowManager));
@@ -1318,7 +1356,8 @@ try
                         // exercises deferred-tool park/resume deterministically via the mock
                         // instruction-chain. Broader rollout (enabling triggers for real providers behind a
                         // flag) is tracked in #161.
-                        triggerOptions: isTestMode ? triggerOptions : null
+                        triggerOptions: isTestMode ? triggerOptions : null,
+                        lifecycleServices: lifecycleServices
                     );
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
@@ -1348,7 +1387,8 @@ try
             logger: loggerFactory.CreateLogger<MultiTurnAgentPool>(),
             // The registry is the binding sink: the pool publishes/clears each conversation's
             // sandbox-established binding through it as part of the agent-entry commit/removal (WI #195).
-            bindingSink: sandboxRegistryForCleanup
+            bindingSink: sandboxRegistryForCleanup,
+            lifecycleServices: hostLifecycleServices
         );
 
         // When a thread is fully removed (NOT recreated for a mode-switch — that preserves the
@@ -1911,7 +1951,8 @@ public partial class Program
         string? llmQueryMcpBaseUrl,
         string? llmQueryMcpExamType,
         string? mockBaseUrlOverride = null,
-        string? mockApiKeyOverride = null
+        string? mockApiKeyOverride = null,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
     {
         var enabledTools = mode.EnabledTools;
@@ -1966,7 +2007,8 @@ public partial class Program
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CodexAgentLoop>(),
             loggerFactory: loggerFactory,
-            persistRunLedger: true
+            persistRunLedger: true,
+            lifecycleServices: lifecycleServices
         );
     }
 
@@ -2666,7 +2708,8 @@ public partial class Program
         string? llmQueryMcpBaseUrl,
         string? llmQueryMcpExamType,
         string? mockBaseUrlOverride = null,
-        string? mockAuthTokenOverride = null
+        string? mockAuthTokenOverride = null,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
     {
         // Build AllowedTools from mode's enabled tools:
@@ -2709,7 +2752,8 @@ public partial class Program
             store: conversationStore,
             logger: loggerFactory.CreateLogger<ClaudeAgentLoop>(),
             loggerFactory: loggerFactory,
-            persistRunLedger: true
+            persistRunLedger: true,
+            lifecycleServices: lifecycleServices
         );
     }
 
@@ -2723,7 +2767,8 @@ public partial class Program
         string? mockBaseUrlOverride = null,
         string? mockApiKeyOverride = null,
         IReadOnlyDictionary<string, McpServerConfig>? extraMcpServers = null,
-        string? workingDirectoryOverride = null
+        string? workingDirectoryOverride = null,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
     {
         var copilotCliPath = Environment.GetEnvironmentVariable("COPILOT_CLI_PATH") ?? "copilot";
@@ -2812,7 +2857,8 @@ public partial class Program
             store: conversationStore,
             logger: loggerFactory.CreateLogger<CopilotAgentLoop>(),
             loggerFactory: loggerFactory,
-            persistRunLedger: true
+            persistRunLedger: true,
+            lifecycleServices: lifecycleServices
         );
     }
 

@@ -84,6 +84,13 @@ internal class SubAgentState
     public required string Task { get; init; }
     public required IMultiTurnAgent Agent { get; set; }
 
+    // Where this sub-agent came from, captured once at spawn time. It lives here rather than in
+    // SpawnAsync's locals because a restart rebuilds the loop long after the spawning run ended:
+    // by then the parent's CurrentRunId has moved on, and re-deriving lineage would attribute the
+    // rebuilt agent to whatever run happens to be in flight. AgentLineage.None when the parent
+    // observes no lifecycle at all.
+    public AgentLineage Lineage { get; init; } = AgentLineage.None;
+
     // Presentation-only "agent replaced" signal. An owned-provider restart disposes the old loop
     // instance and swaps in a fresh one (SubAgentManager.RestartRunAsync); an external observer whose
     // subscription is bound to the OLD instance sees its stream end on that dispose. This awaitable lets

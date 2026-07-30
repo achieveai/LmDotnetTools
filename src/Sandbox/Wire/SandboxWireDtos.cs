@@ -57,7 +57,35 @@ internal sealed record DiscoveryWebhookDto(
 internal sealed record CreateSandboxResponseDto(
     [property: JsonPropertyName("session_id")] string SessionId,
     [property: JsonPropertyName("container_id")] string? ContainerId,
-    [property: JsonPropertyName("volumes")] VolumesDto? Volumes
+    [property: JsonPropertyName("volumes")] VolumesDto? Volumes,
+    // Both fields below are additive and absent on every gateway built before them. `status` stays
+    // null rather than being defaulted to a guess — the SDK reports what the gateway said, and an
+    // invented status would be indistinguishable from a reported one.
+    [property: JsonPropertyName("status")] string? Status = null,
+    [property: JsonPropertyName("inventory")] SandboxInventoryDto? Inventory = null
+);
+
+/// <summary>
+/// What the gateway confirmed it loaded into the session, reported atomically with the create
+/// result. Distinct from <see cref="MarketplaceCatalogDto"/> (a browse of what is <i>available</i>)
+/// and from the create request's own <c>marketplaces</c> selection (what was <i>asked for</i>) —
+/// see <see cref="SandboxInventory"/> for why the three must never be conflated.
+/// </summary>
+internal sealed record SandboxInventoryDto(
+    [property: JsonPropertyName("status")] string? Status,
+    [property: JsonPropertyName("unavailable_reason")] string? UnavailableReason,
+    [property: JsonPropertyName("items")] IReadOnlyList<SandboxInventoryItemDto>? Items
+);
+
+/// <summary>
+/// One confirmed-loaded item. Only identity and version cross the wire into
+/// <see cref="SandboxInventoryItem"/>; a gateway that sends more has the rest ignored by the JSON
+/// reader's default unknown-member handling.
+/// </summary>
+internal sealed record SandboxInventoryItemDto(
+    [property: JsonPropertyName("kind")] string? Kind,
+    [property: JsonPropertyName("id")] string? Id,
+    [property: JsonPropertyName("version")] string? Version
 );
 
 internal sealed record VolumesDto([property: JsonPropertyName("workspace")] WorkspaceVolumeDto? Workspace);

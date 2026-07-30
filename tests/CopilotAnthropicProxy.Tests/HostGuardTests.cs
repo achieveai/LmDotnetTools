@@ -111,4 +111,52 @@ public sealed class HostGuardTests
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
+
+    [Theory]
+    [InlineData("/v1/chat/completions")]
+    [InlineData("/chat/completions")]
+    [InlineData("/v1/responses")]
+    [InlineData("/responses")]
+    public async Task An_openai_caller_is_refused_in_the_openai_error_shape(string path)
+    {
+        // The guard used to answer every route in Anthropic's envelope. An OpenAI SDK deserialises
+        // `error` into its own type and reads `error.type` / `error.code`; handed
+        // {"type":"error","error":{...}} it raises a DESERIALISATION failure instead of the 403 it knows
+        // how to report, so the operator sees a parse error rather than "this proxy refused you".
+        await using var factory = new ProxyWebAppFactory((req, ct) => Task.FromResult(TestUpstream.Json("{}")));
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        node["error"]!["message"]!.GetValue<string>().Should().NotBeNullOrEmpty();
+        node["error"]!["type"]!.GetValue<string>().Should().Be("permission_error");
+        node["type"].Should().BeNull("the Anthropic envelope's top-level discriminator has no place here");
+    }
+
+    [Theory]
+    [InlineData("/v1/messages")]
+    [InlineData("/messages")]
+    [InlineData("/v1/models")]
+    public async Task An_anthropic_caller_is_refused_in_the_anthropic_error_shape(string path)
+    {
+        await using var factory = new ProxyWebAppFactory((req, ct) => Task.FromResult(TestUpstream.Json("{}")));
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-site");
+
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        node["type"]!.GetValue<string>().Should().Be("error");
+        node["error"]!["type"]!.GetValue<string>().Should().Be("permission_error");
+    }
 }

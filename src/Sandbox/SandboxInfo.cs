@@ -29,11 +29,28 @@ public sealed class SandboxInfo
     /// </summary>
     public long? WorkspaceMountId { get; }
 
+    /// <summary>
+    /// The gateway's own status word for the session at the moment it answered, when it reported
+    /// one. Open vocabulary, and empty against a gateway that reports none — the SDK never invents a
+    /// value, because a synthesized status would be indistinguishable from a reported one.
+    /// </summary>
+    public string Status { get; }
+
+    /// <summary>
+    /// What the gateway confirmed it loaded into the session. Never <see langword="null"/>: against
+    /// a gateway that does not report an inventory this is a
+    /// <see cref="SandboxInventoryStatuses.Unavailable"/> value carrying the reason, so a caller
+    /// always gets an answer rather than having to distinguish "no items" from "no field".
+    /// </summary>
+    public SandboxInventory Inventory { get; }
+
     public SandboxInfo(
         string sessionId,
         string? containerId = null,
         string? workspaceContainerPath = null,
-        long? workspaceMountId = null
+        long? workspaceMountId = null,
+        string? status = null,
+        SandboxInventory? inventory = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -41,5 +58,10 @@ public sealed class SandboxInfo
         ContainerId = containerId;
         WorkspaceContainerPath = workspaceContainerPath;
         WorkspaceMountId = workspaceMountId;
+        Status = status ?? string.Empty;
+        // A result that carries no inventory at all — a create against a gateway that predates the
+        // field, or any non-create result (ListAsync never reports one) — still answers the
+        // question, so a caller never has to distinguish "no items" from "no field".
+        Inventory = inventory ?? SandboxInventory.Unavailable(SandboxInventory.NoInventoryReported);
     }
 }

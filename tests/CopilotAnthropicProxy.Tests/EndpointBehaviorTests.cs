@@ -106,10 +106,15 @@ public sealed class EndpointBehaviorTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var node = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        node["object"]!.GetValue<string>().Should().Be("list");
         node["has_more"]!.GetValue<bool>().Should().BeFalse();
         var first = node["data"]!.AsArray()[0]!;
         first["type"]!.GetValue<string>().Should().Be("model");
+        first["object"]!.GetValue<string>().Should().Be("model");
         first["id"]!.GetValue<string>().Should().Be(ProxyWebAppFactory.ConfiguredModel);
+        // Pinned mode carries no vendor metadata, so owned_by falls back to the proxy's own label.
+        first["owned_by"]!.GetValue<string>().Should().Be("copilot");
+        first["created"]!.GetValue<long>().Should().BeGreaterThan(0);
     }
 
     [Fact]

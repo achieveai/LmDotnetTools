@@ -56,23 +56,38 @@ public sealed class WorkflowRuntime
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _spawnArgBuffers =
         new(StringComparer.Ordinal);
 
-    // Transition ordering (see WaitForNodeSettlementAsync). AdvanceTo composes and validates a terminal node's
-    // resultTemplate on the loop's TOOL-EXECUTION thread, while sub-agent writes are applied on the out-of-band
-    // OBSERVER thread — and nothing orders the two. Without a barrier a fan-out whose answers had already been
-    // delivered could still be missing from the composed final result. Keyed by the transition call's own
-    // tool-call id: the barrier lives only for the duration of one SetCurrentNode handler.
+    // ---- Route-away observation barrier -------------------------------------------------------------
+    // A transition (AdvanceTo) runs INLINE on the controller loop's thread, but the sub-agent results that
+    // feed it arrive only through the out-of-band observer, which lags the loop by however long the
+    // subscriber channel takes to drain. Routing into a terminal renders its resultTemplate from the state
+    // AS OF THAT MOMENT, so an unobserved result silently produced a terminal result missing the work the
+    // controller had already seen complete. The barrier closes that window: because every message is
+    // PUBLISHED before the loop executes it (MessagePublishingMiddleware wraps the provider stream) and the
+    // observer consumes in publish order, waiting until the routing tool call's OWN message has been
+    // observed proves every earlier message — including every prior tool result — is already correlated.
+    // Keyed on the tool-call id rather than task status: "join satisfied"/"nothing in flight" predicates
+    // all mis-handle the legitimate cases (a terminally failed unit routing to onFailure, a composed but
+    // deliberately unspawned unit, an as-yet-unobserved spawn registration).
+    private const int ObservedToolCallHistory = 256;
+    private static readonly TimeSpan ObservationBarrierTimeout = TimeSpan.FromSeconds(10);
+
+    // Guards ONLY the barrier bookkeeping. Deliberately NOT _lock: the observer thread signals waiters from
+    // inside ObserveMessage while a loop thread may be inside AdvanceTo holding _lock, so the two must not
+    // be nested. Waiter TCSs also use RunContinuationsAsynchronously so completing one never runs the
+    // routing handler's continuation on the observer thread.
+    private readonly object _observationLock = new();
+    private readonly HashSet<string> _observedToolCallIds = new(StringComparer.Ordinal);
+    private readonly Queue<string> _observedToolCallOrder = new();
+    private readonly Dictionary<string, TaskCompletionSource<bool>> _observationWaiters =
+        new(StringComparer.Ordinal);
+    private bool _orderedObserverAttached;
+    private bool _observationBarrierDisabled;
+
+    // A watermark orders already-published messages; this second barrier waits for observed in-flight
+    // units to actually settle before a terminal node composes its result.
     private const int TransitionBarrierTimeoutMs = 2000;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TransitionBarrier> _transitionBarriers =
         new(StringComparer.Ordinal);
-
-    // The drain markers: ids of SetCurrentNode calls the observer has already reached. Recorded here (not only
-    // on a registered barrier) because the loop PUBLISHES the tool call before it EXECUTES it, so the observer
-    // routinely reaches the call before the handler registers its barrier. Bounded ring — a long-lived
-    // conversation makes unboundedly many transitions and only the newest can still be waiting.
-    private const int MaxObservedTransitionIds = 64;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _observedTransitions =
-        new(StringComparer.Ordinal);
-    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _observedTransitionOrder = new();
 
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
 
@@ -304,6 +319,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>Shallow-merges <paramref name="inputs"/> into the inputs channel (caller-supplied seed).</summary>
@@ -504,28 +520,22 @@ public sealed class WorkflowRuntime
 
                 break;
 
-            // The controller's own SetCurrentNode call is the DRAIN MARKER for that transition's settlement
-            // barrier. The loop publishes every message BEFORE executing its tool call, and a subscriber
-            // channel is drained FIFO by a single reader — so once this message has been observed, everything
-            // published before it (crucially, the previous turn's Agent tool RESULTS) has already been applied.
-            // That is what lets the barrier release a unit that is still `pending`: it is pending because the
-            // controller never spawned it, not because its answer is still in the queue.
-            case ToolCallMessage
-            {
-                FunctionName: Tools.WorkflowToolProvider.SetCurrentNodeToolName,
-                ToolCallId: { } transitionId,
-            }:
-                MarkTransitionObserved(transitionId);
+            default:
+                break;
+        }
+
+        // Watermark LAST, so a waiter is only released once this message has been fully correlated. Both
+        // shapes are recorded because which one reaches the subscriber stream depends on the provider: a
+        // mocked agent yields the finalized ToolCallMessage, a real provider publishes only the streaming
+        // update fragments (see the Agent cases above).
+        switch (message)
+        {
+            case ToolCallMessage { ToolCallId: { } callId }:
+                MarkObserved(callId);
                 break;
 
-            // Same marker off a real provider, which publishes the call only as streaming update fragments.
-            // The FIRST fragment is enough: it is still published after everything that preceded the call.
-            case ToolCallUpdateMessage
-            {
-                FunctionName: Tools.WorkflowToolProvider.SetCurrentNodeToolName,
-                ToolCallId: { } transitionUpdateId,
-            }:
-                MarkTransitionObserved(transitionUpdateId);
+            case ToolCallUpdateMessage { ToolCallId: { } updateWatermark }:
+                MarkObserved(updateWatermark);
                 break;
 
             default:
@@ -534,71 +544,110 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>
-    ///     Waits — bounded, and normally not at all — until the units of the node being LEFT have settled, so
-    ///     that <see cref="AdvanceTo"/> cannot compose a terminal node's <c>resultTemplate</c> from state that
-    ///     is missing a sub-agent write whose answer has already been delivered. Called by the
-    ///     <c>SetCurrentNode</c> handler before it advances; <paramref name="transitionToolCallId"/> is that
-    ///     call's own id, which the observer reports back as the drain marker.
+    ///     Declares that a single ordered consumer feeds <b>every</b> published message of the controller run
+    ///     into <see cref="ObserveMessage"/>, in publish order. Only then can a transition wait for the
+    ///     observer to catch up (see <see cref="WaitForObservationAsync"/>); without it the barrier is a no-op
+    ///     so a host driving the runtime directly — with no observer at all — never stalls.
     /// </summary>
-    /// <remarks>
-    ///     <para>
-    ///         The three unit states are read differently, because only one of them is ambiguous. A
-    ///         <c>validated</c>/<c>failed</c> unit has settled. An <c>in_flight</c> unit's spawn WAS observed,
-    ///         so its result is still coming and must be waited for — this is what makes a controller that
-    ///         spawns and routes in the SAME turn correct. A <c>pending</c> unit is ambiguous: either it was
-    ///         never spawned (route away freely) or its spawn is sitting unprocessed in the observer's queue.
-    ///         The drain marker resolves it: past the marker, pending means never spawned.
-    ///     </para>
-    ///     <para>
-    ///         A node with no units returns without waiting at all (which is every direct tool-provider call in
-    ///         tests, where no observer is attached), and waiters are woken by result recording rather than
-    ///         polling. An expired <see cref="TransitionBarrierTimeoutMs"/> budget rejects the transition: a
-    ///         bounded failure is preferable to persisting a knowingly incomplete terminal result.
-    ///     </para>
-    /// </remarks>
-    internal async Task WaitForNodeSettlementAsync(
-        string? transitionToolCallId,
-        CancellationToken cancellationToken
-    )
+    internal void AttachOrderedObserver()
     {
-        var barrier = new TransitionBarrier();
-        if (transitionToolCallId is not null)
+        lock (_observationLock)
         {
-            _transitionBarriers[transitionToolCallId] = barrier;
+            _orderedObserverAttached = true;
+        }
+    }
 
-            // Registered second, so re-read the marker: the observer may have reached the call at any point
-            // before this, including before the handler was even entered.
-            if (_observedTransitions.ContainsKey(transitionToolCallId))
+    /// <summary>
+    ///     Waits until the observer has processed the message carrying <paramref name="toolCallId"/> — the
+    ///     routing tool call's own message, published before the loop invoked its handler. Returns
+    ///     immediately when no ordered observer is attached, when the id is unknown, or when the message has
+    ///     already been observed. If the watermark never arrives within
+    ///     <see cref="ObservationBarrierTimeout"/> the barrier logs once and DISABLES itself for the rest of
+    ///     the run, degrading to the previous (racy but non-blocking) behaviour rather than stalling every
+    ///     subsequent transition.
+    /// </summary>
+    internal async Task WaitForObservationAsync(string? toolCallId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(toolCallId))
+        {
+            return;
+        }
+
+        TaskCompletionSource<bool> waiter;
+        lock (_observationLock)
+        {
+            if (
+                !_orderedObserverAttached
+                || _observationBarrierDisabled
+                || _observedToolCallIds.Contains(toolCallId)
+            )
             {
-                barrier.MarkObserverDrained();
+                return;
+            }
+
+            if (!_observationWaiters.TryGetValue(toolCallId, out waiter!))
+            {
+                waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _observationWaiters[toolCallId] = waiter;
             }
         }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var delay = Task.Delay(ObservationBarrierTimeout, timeoutCts.Token);
+        var winner = await Task.WhenAny(waiter.Task, delay).ConfigureAwait(false);
+
+        // Always cancel the timer: when the watermark won, leaving it armed would keep a timer per transition
+        // alive for the full timeout.
+        timeoutCts.Cancel();
+
+        if (winner == waiter.Task)
+        {
+            return;
+        }
+
+        ct.ThrowIfCancellationRequested();
+
+        lock (_observationLock)
+        {
+            _ = _observationWaiters.Remove(toolCallId);
+            _observationBarrierDisabled = true;
+        }
+
+        _logger?.LogWarning(
+            "Workflow transition for tool call {ToolCallId} timed out after {TimeoutSeconds}s waiting for the "
+                + "run observer to reach it; the observation barrier is disabled for the rest of this run and "
+                + "a transition may now render from state that lags the controller.",
+            toolCallId,
+            ObservationBarrierTimeout.TotalSeconds
+        );
+    }
+
+    /// <summary>
+    /// Waits for every unit that the ordered observer has seen leave the active node to settle. The
+    /// observation watermark runs first, so a remaining pending unit means it was never spawned while an
+    /// in-flight unit still owes a result. A bounded failure rejects incomplete terminal composition.
+    /// </summary>
+    internal async Task WaitForNodeSettlementAsync(CancellationToken cancellationToken)
+    {
+        var barrier = new TransitionBarrier();
+        _transitionBarriers[Guid.NewGuid().ToString("N")] = barrier;
 
         try
         {
             using var timeout = new CancellationTokenSource(TransitionBarrierTimeoutMs);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                 timeout.Token,
-                cancellationToken
-            );
+                cancellationToken);
 
             while (true)
             {
-                // Read the pulse BEFORE testing, so a settle that lands between the two wakes this waiter
-                // rather than being missed.
                 var pulse = barrier.Pulse;
-
                 lock (_lock)
                 {
-                    if (IsNodeSettledNoLock(barrier.ObserverDrained))
+                    if (IsNodeSettledNoLock())
                     {
                         return;
                     }
-                }
-
-                if (barrier.Released)
-                {
-                    return;
                 }
 
                 try
@@ -608,12 +657,6 @@ public sealed class WorkflowRuntime
                 catch (OperationCanceledException)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    _logger?.LogError(
-                        "Workflow transition from node {NodeId} was rejected because its units did not settle "
-                            + "within {TimeoutMs}ms; no terminal result was composed.",
-                        CurrentNodeId,
-                        TransitionBarrierTimeoutMs
-                    );
                     throw new TimeoutException(
                         $"Workflow units for node '{CurrentNodeId}' did not settle within "
                             + $"{TransitionBarrierTimeoutMs}ms.");
@@ -622,51 +665,25 @@ public sealed class WorkflowRuntime
         }
         finally
         {
-            if (transitionToolCallId is not null)
+            foreach (var item in _transitionBarriers.Where(item => ReferenceEquals(item.Value, barrier)))
             {
-                _ = _transitionBarriers.TryRemove(transitionToolCallId, out _);
+                _ = _transitionBarriers.TryRemove(item.Key, out _);
             }
         }
     }
 
-    /// <summary>
-    ///     Whether every unit of the node the controller is currently on has settled. <c>true</c> for a node
-    ///     with no units at all, which is the zero-cost path for every non-fan-out transition.
-    /// </summary>
-    private bool IsNodeSettledNoLock(bool observerDrained)
+    private bool IsNodeSettledNoLock()
     {
         if (CurrentNodeId is not { } nodeId)
         {
             return true;
         }
 
-        var units = _coordinator.ActiveUnits(nodeId);
-        if (units.Count == 0)
-        {
-            return true;
-        }
-
         var statuses = _coordinator.Statuses;
-        foreach (var unit in units)
+        foreach (var unit in _coordinator.ActiveUnits(nodeId))
         {
-            if (!statuses.TryGetValue(unit.Name, out var status))
-            {
-                continue;
-            }
-
-            if (status is WorkflowTaskStatus.Validated or WorkflowTaskStatus.Failed)
-            {
-                continue;
-            }
-
-            // Spawn observed, answer still owed.
-            if (status is WorkflowTaskStatus.InFlight)
-            {
-                return false;
-            }
-
-            // Pending: only readable as "never spawned" once the observer has reached this transition.
-            if (!observerDrained)
+            if (statuses.TryGetValue(unit.Name, out var status)
+                && status is WorkflowTaskStatus.InFlight)
             {
                 return false;
             }
@@ -675,32 +692,6 @@ public sealed class WorkflowRuntime
         return true;
     }
 
-    /// <summary>
-    ///     Records that the observer has reached the <c>SetCurrentNode</c> call <paramref name="toolCallId"/>
-    ///     and releases its barrier's pending units. Idempotent; the id ring is bounded.
-    /// </summary>
-    private void MarkTransitionObserved(string toolCallId)
-    {
-        if (_observedTransitions.TryAdd(toolCallId, 0))
-        {
-            _observedTransitionOrder.Enqueue(toolCallId);
-            while (
-                _observedTransitionOrder.Count > MaxObservedTransitionIds
-                && _observedTransitionOrder.TryDequeue(out var evicted)
-            )
-            {
-                _ = _observedTransitions.TryRemove(evicted, out _);
-            }
-        }
-
-        if (_transitionBarriers.TryGetValue(toolCallId, out var barrier))
-        {
-            barrier.MarkObserverDrained();
-            barrier.Signal();
-        }
-    }
-
-    /// <summary>Wakes every waiting transition barrier to re-test its predicate. Never called under the lock.</summary>
     private void PulseTransitionBarriers()
     {
         foreach (var barrier in _transitionBarriers.Values)
@@ -710,15 +701,38 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>
-    ///     Releases every waiting transition barrier because the run is over: no further result will ever be
-    ///     observed, so waiting out the remaining budget would only delay the caller.
+    ///     Records that the observer has fully processed the message carrying <paramref name="toolCallId"/>
+    ///     and releases any transition waiting on it. The observed-id history is capped: the gap between a
+    ///     message being published and its handler awaiting the watermark is a handful of messages, so a
+    ///     bounded window is sufficient and cannot leak across a long-lived controller conversation.
     /// </summary>
-    private void ReleaseTransitionBarriers()
+    private void MarkObserved(string toolCallId)
     {
-        foreach (var barrier in _transitionBarriers.Values)
+        if (string.IsNullOrEmpty(toolCallId))
         {
-            barrier.Release();
+            return;
         }
+
+        TaskCompletionSource<bool>? waiter = null;
+        lock (_observationLock)
+        {
+            if (_observedToolCallIds.Add(toolCallId))
+            {
+                _observedToolCallOrder.Enqueue(toolCallId);
+                while (_observedToolCallOrder.Count > ObservedToolCallHistory)
+                {
+                    _ = _observedToolCallIds.Remove(_observedToolCallOrder.Dequeue());
+                }
+            }
+
+            if (_observationWaiters.Remove(toolCallId, out var pending))
+            {
+                waiter = pending;
+            }
+        }
+
+        // Outside the lock: even with RunContinuationsAsynchronously, never complete a waiter while holding it.
+        _ = waiter?.TrySetResult(true);
     }
 
     /// <summary>
@@ -932,6 +946,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>Writes <paramref name="value"/> into the state channel at <paramref name="path"/> using the given mode.</summary>
@@ -951,6 +966,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>Sets a scoped note (<c>notes[scope][key] = value</c>).</summary>
@@ -974,6 +990,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>
@@ -1034,18 +1051,10 @@ public sealed class WorkflowRuntime
     }
 
     /// <summary>Signals normal completion of the controller run to <see cref="Completion"/> waiters.</summary>
-    internal void SignalCompletion()
-    {
-        ReleaseTransitionBarriers();
-        _ = _completion.TrySetResult();
-    }
+    internal void SignalCompletion() => _completion.TrySetResult();
 
     /// <summary>Faults <see cref="Completion"/> with <paramref name="ex"/> (controller run threw).</summary>
-    internal void SignalFailure(Exception ex)
-    {
-        ReleaseTransitionBarriers();
-        _ = _completion.TrySetException(ex);
-    }
+    internal void SignalFailure(Exception ex) => _completion.TrySetException(ex);
 
     /// <summary>
     ///     Captures a deep-cloned <see cref="WorkflowInstanceSnapshot"/> of all mutable runtime state under
@@ -1261,45 +1270,20 @@ public sealed class WorkflowRuntime
             ),
         };
 
-    /// <summary>
-    ///     One in-flight node transition's wait state: a replaceable pulse the waiter re-arms on every pass,
-    ///     plus the two facts that can end the wait early — the observer having reached this transition, and
-    ///     the run having finished. Signalling never blocks the signaller, so recording a sub-agent result is
-    ///     no slower for a barrier being present.
-    /// </summary>
     private sealed class TransitionBarrier
     {
         private TaskCompletionSource _pulse = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private volatile bool _observerDrained;
-        private volatile bool _released;
 
-        /// <summary>The task to await for the next settle; re-read it before each test.</summary>
         public Task Pulse => Volatile.Read(ref _pulse).Task;
 
-        /// <summary>Whether the observer has reached this transition's own tool call.</summary>
-        public bool ObserverDrained => _observerDrained;
-
-        /// <summary>Whether the run ended while this barrier was waiting.</summary>
-        public bool Released => _released;
-
-        public void MarkObserverDrained() => _observerDrained = true;
-
-        /// <summary>Wakes the waiter and arms a fresh pulse for its next pass.</summary>
         public void Signal()
         {
             var current = Volatile.Read(ref _pulse);
             _ = Interlocked.CompareExchange(
                 ref _pulse,
                 new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
-                current
-            );
+                current);
             _ = current.TrySetResult();
-        }
-
-        public void Release()
-        {
-            _released = true;
-            Signal();
         }
     }
 }

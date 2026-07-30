@@ -26,6 +26,11 @@
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Both providers drive byte-identical stdio JSON-RPC, so the CLI fake is written once and
+         shared rather than copied. -->
+    <Compile Include="..\CodexSdkProvider.Tests\Transport\FakeCliProcess.cs" Link="Transport\FakeCliProcess.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\CopilotSdkProvider\AchieveAi.LmDotnetTools.CopilotSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
   </ItemGroup>

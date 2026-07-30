@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using FluentAssertions;
@@ -120,11 +121,23 @@ public class NotifyRestoreLoopTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
+        // The subscription must be LIVE before the fire. SubscribeAsync registers the subscriber
+        // synchronously — under the replay lock, ahead of the iterator's first suspension point —
+        // so issuing (deliberately not awaiting) the first move is what makes it live. Registering
+        // on a scheduled continuation instead races the run to completion, and RunCompletedMessage
+        // closes the replay buffer: a subscriber that joins after it sees nothing at all and waits
+        // forever. Under whole-solution thread-pool load that race is what this test used to lose.
+        var subscription = loop.SubscribeAsync(cts.Token).GetAsyncEnumerator(cts.Token);
+        var firstMove = subscription.MoveNextAsync();
 
         await manual.Sinks[waitId].FireAsync(new TriggerFireEvent("fire-after-restore"), cts.Token);
-        await runsCompleted.WaitAsync(0);
 
+        var sawRunCompleted = await DrainToRunCompletedAsync(subscription, firstMove)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        sawRunCompleted.Should().BeTrue();
+
+        // No move is in flight here, so disposal is safe and unregisters the subscriber.
+        await subscription.DisposeAsync();
         await cts.CancelAsync();
 
         // AddToHistory persists fire-and-forget, so give the write a brief window to land.
@@ -144,6 +157,27 @@ public class NotifyRestoreLoopTests
 
         history.OfType<TextMessage>().Should().Contain(
             m => m.Role == Role.User && m.Text.Contains("<trigger>") && m.Text.Contains("fire-after-restore"));
+    }
+
+    /// <summary>
+    /// Drains an already-established subscription until a <see cref="RunCompletedMessage"/> arrives.
+    /// The first move is passed in rather than issued here because that move is what registered the
+    /// subscriber: it has to be issued before whatever starts the run, or the run can complete —
+    /// and close the replay buffer — before anyone is listening.
+    /// </summary>
+    private static async Task<bool> DrainToRunCompletedAsync(
+        IAsyncEnumerator<IMessage> subscription,
+        ValueTask<bool> firstMove)
+    {
+        for (var move = firstMove; await move; move = subscription.MoveNextAsync())
+        {
+            if (subscription.Current is RunCompletedMessage)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
