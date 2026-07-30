@@ -137,6 +137,24 @@ public class MultiTurnAgentBaseTests
             "this agent accepts the flag but has nothing that will act on it");
     }
 
+    /// <summary>
+    /// Task 5 (fix round 4) — the same invariant on the blocking send. Both overloads hand back a
+    /// <see cref="SendReceipt"/> a host relays as a guarantee, so a caller must not be able to get an honest
+    /// answer from one path and a silently-unstamped one from the other by picking a different method.
+    /// </summary>
+    [Fact]
+    public async Task SendAsync_MakesTheSameSpawnSuppressionStatementAsTrySendAsync()
+    {
+        await using var agent = new TestMultiTurnAgent("thread-enforcement-send");
+
+        var receipt = await agent.SendAsync(new UserInput(
+            [new TextMessage { Text = "synthesize", Role = Role.User }],
+            SuppressSubAgentSpawning: true));
+
+        receipt.SpawningSuppressed.Should().BeFalse(
+            "SendAsync must state enforcement exactly as TrySendAsync does");
+    }
+
     [Fact]
     public async Task SendAsync_WhenNotRunning_QueuesMessage()
     {

@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using Moq;
@@ -165,36 +166,16 @@ public class SubAgentSpawnSuppressionTests
         var resumedTurnStarted = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var registry = new FunctionRegistry();
-        _ = registry.AddFunction(
-            Contract("wait_for_children"),
-            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
-
         var parent = RecordingParent(
             advertisedPerCall,
-            turn =>
-            {
-                if (turn == 1)
-                {
-                    return
-                    [
-                        new ToolCallMessage
-                        {
-                            FunctionName = "wait_for_children",
-                            FunctionArgs = "{}",
-                            ToolCallId = "call_wait_1",
-                            Role = Role.Assistant,
-                        },
-                    ];
-                }
+            turn => turn == 1
+                ? [DeferringToolCall()]
 
                 // Signalled AFTER the resumed turn's contracts were recorded, so the assertion below
                 // never races the model call it is about.
-                resumedTurnStarted.TrySetResult(true);
-                return [new TextMessage { Text = "answer", Role = Role.Assistant }];
-            });
+                : Answer(resumedTurnStarted));
 
-        await using var loop = CreateLoop(parent, registry: registry);
+        await using var loop = CreateLoop(parent, registry: DeferringRegistry());
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
@@ -243,6 +224,135 @@ public class SubAgentSpawnSuppressionTests
     }
 
     /// <summary>
+    /// The latch that carries suppression across a deferral pause is meaningless if it only lives in
+    /// memory: the pause can last as long as whatever the deferral is waiting on, so a host restart in
+    /// between is ordinary rather than exotic. The acknowledgement was already given to the caller, so the
+    /// marker has to be durable next to the deferral it belongs to and be restored with it.
+    /// </summary>
+    [Fact]
+    public async Task Suppression_survives_a_host_restart_into_the_resumed_run()
+    {
+        const string threadId = "spawn-suppression-restart";
+        var store = new InMemoryConversationStore();
+        using var cts = new CancellationTokenSource();
+
+        var beforeRestart = new List<IReadOnlyList<string>>();
+        await using (var first = CreateLoop(
+            RecordingParent(beforeRestart, _ => [DeferringToolCall()]),
+            registry: DeferringRegistry(),
+            store: store,
+            threadId: threadId))
+        {
+            _ = first.RunAsync(cts.Token);
+            _ = await DrainAsync(first, NewInput("synthesize", suppressSpawning: true), cts.Token);
+
+            // History is persisted fire-and-forget, so wait for the deferral itself to land: a restart
+            // can only restore what the previous process actually wrote.
+            await WaitForPersistedAsync(
+                store,
+                threadId,
+                history => history.OfType<ToolCallResultMessage>().Any(r => r.IsDeferred),
+                "The deferral was never persisted, so there is nothing for a restart to restore.",
+                cts.Token);
+        }
+
+        beforeRestart.Should().ContainSingle().Which.Should().NotContain(
+            "Agent", "the run that took the input was suppressed before the restart");
+
+        // Restart: a brand-new loop over the same store, with nothing carried in memory.
+        var afterRestart = new List<IReadOnlyList<string>>();
+        var resumedTurnStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var second = CreateLoop(
+            RecordingParent(afterRestart, _ => Answer(resumedTurnStarted)),
+            registry: DeferringRegistry(),
+            store: store,
+            threadId: threadId);
+
+        _ = await second.RecoverAsync(cts.Token);
+        _ = second.RunAsync(cts.Token);
+
+        // Precondition, not the subject: without the restored deferral there is no resumed run for the
+        // suppression marker to apply to, and the assertion below would fail for the wrong reason.
+        var restored = await second.GetDeferredToolCallsAsync(cts.Token);
+        _ = restored.Should().ContainSingle(
+            "the restart must restore the deferral the resume continues from");
+
+        await second.ResolveToolCallAsync(DeferredToolCallId, "children settled");
+        await resumedTurnStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), cts.Token);
+
+        afterRestart.Should().ContainSingle().Which.Should().NotContain(
+            "Agent", "the acknowledged guarantee must outlive the process that made it");
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
+    /// A notification that arrives while the conversation is parked on an unresolved deferral cannot start
+    /// a turn, so it is folded into history and delivered by the RESUME. Suppression it asked for must ride
+    /// along to that run: the receipt has already told the caller the guarantee holds, and there is no
+    /// other run for it to apply to.
+    /// </summary>
+    [Fact]
+    public async Task Suppressed_notification_parked_on_a_deferral_suppresses_the_run_that_delivers_it()
+    {
+        const string threadId = "spawn-suppression-parked";
+        var store = new InMemoryConversationStore();
+        var advertisedPerCall = new List<IReadOnlyList<string>>();
+        var resumedTurnStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var parent = RecordingParent(
+            advertisedPerCall,
+            turn => turn == 1 ? [DeferringToolCall()] : Answer(resumedTurnStarted));
+
+        await using var loop = CreateLoop(
+            parent, registry: DeferringRegistry(), store: store, threadId: threadId);
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        // Run 1 is NOT suppressed and parks on the deferral.
+        _ = await DrainAsync(loop, NewInput("review"), cts.Token);
+        advertisedPerCall.Should().ContainSingle().Which.Should().Contain(
+            "Agent", "the parked run started unsuppressed");
+
+        var receipt = await loop.TrySendAsync(
+            new UserInput(
+                [
+                    new NotifyMessage
+                    {
+                        NotifyKind = NotifyKinds.SubAgentCompletion,
+                        Label = "researcher",
+                        Detail = "child settled",
+                    },
+                ],
+                SuppressSubAgentSpawning: true),
+            cts.Token);
+
+        receipt!.SpawningSuppressed.Should().BeTrue(
+            "this loop enforces the flag, so accepting the input acknowledged the guarantee");
+
+        // The fold is observable through the store: it persists the notification under the parked run.
+        await WaitForPersistedAsync(
+            store,
+            threadId,
+            history => history.OfType<NotifyMessage>().Any(),
+            "The parked notification was never folded into persisted history.",
+            cts.Token);
+
+        await loop.ResolveToolCallAsync(DeferredToolCallId, "children settled");
+        await resumedTurnStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), cts.Token);
+
+        advertisedPerCall.Should().HaveCount(2);
+        advertisedPerCall[1].Should().NotContain(
+            "Agent",
+            "the run that finally delivers the parked notification is the run its receipt was about");
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
     /// The receipt reports ENFORCEMENT, not the request. A host relays it to a caller as a guarantee, so an
     /// agent with no suppression machinery must leave it false rather than echo what it was asked for.
     /// </summary>
@@ -259,17 +369,97 @@ public class SubAgentSpawnSuppressionTests
         suppressed!.SpawningSuppressed.Should().BeTrue();
     }
 
+    /// <summary>
+    /// <c>SendAsync</c> enqueues the very same <see cref="UserInput"/> into the very same run loop, so its
+    /// receipt has to make the same enforcement statement. Leaving it unstamped there would tell a caller
+    /// on that path that the guarantee is unavailable when it is in fact being enforced.
+    /// </summary>
+    [Fact]
+    public async Task SendAsync_makes_the_same_enforcement_statement_as_TrySendAsync()
+    {
+        var parent = TextOnlyParent([]);
+        await using var loop = CreateLoop(parent);
+
+        var plain = await loop.SendAsync(NewInput("plain"));
+        var suppressed = await loop.SendAsync(NewInput("suppressed", suppressSpawning: true));
+
+        plain.SpawningSuppressed.Should().BeFalse("nothing was asked for, so nothing is promised");
+        suppressed.SpawningSuppressed.Should().BeTrue();
+    }
+
     #region Helpers
+
+    /// <summary>Tool call id of the deferring call issued by <see cref="DeferringToolCall"/>.</summary>
+    private const string DeferredToolCallId = "call_wait_1";
 
     private static UserInput NewInput(string text, bool suppressSpawning = false) =>
         new(
             [new TextMessage { Text = text, Role = Role.User }],
             SuppressSubAgentSpawning: suppressSpawning);
 
+    /// <summary>A registry whose single tool always defers, so a turn calling it parks the run.</summary>
+    private static FunctionRegistry DeferringRegistry()
+    {
+        var registry = new FunctionRegistry();
+        _ = registry.AddFunction(
+            Contract("wait_for_children"),
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(new ToolHandlerResult.Deferred()));
+        return registry;
+    }
+
+    /// <summary>The model turn that calls <see cref="DeferringRegistry"/>'s deferring tool.</summary>
+    private static ToolCallMessage DeferringToolCall() => new()
+    {
+        FunctionName = "wait_for_children",
+        FunctionArgs = "{}",
+        ToolCallId = DeferredToolCallId,
+        Role = Role.Assistant,
+    };
+
+    /// <summary>
+    /// A plain-text answer that signals <paramref name="turnStarted"/> as it is produced — i.e. after the
+    /// turn's contracts have already been recorded, so a test never races the model call it asserts on.
+    /// </summary>
+    private static List<IMessage> Answer(TaskCompletionSource<bool> turnStarted)
+    {
+        _ = turnStarted.TrySetResult(true);
+        return [new TextMessage { Text = "answer", Role = Role.Assistant }];
+    }
+
+    /// <summary>
+    /// Waits until persisted history satisfies <paramref name="condition"/>. <c>AddToHistory</c> persists
+    /// fire-and-forget, so anything a test asserts about what a RESTART — or a run parked between turns —
+    /// can see has to wait for the write itself, not merely for the run that scheduled it.
+    /// </summary>
+    private static async Task WaitForPersistedAsync(
+        IConversationStore store,
+        string threadId,
+        Func<IReadOnlyList<IMessage>, bool> condition,
+        string timeoutMessage,
+        CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var history = MessagePersistenceConverter.FromPersistedMessages(
+                await store.LoadMessagesAsync(threadId, ct));
+            if (condition(history))
+            {
+                return;
+            }
+
+            await Task.Delay(20, ct);
+        }
+
+        throw new TimeoutException(timeoutMessage);
+    }
+
     private static MultiTurnAgentLoop CreateLoop(
         IStreamingAgent parent,
         Action? onSpawn = null,
-        FunctionRegistry? registry = null)
+        FunctionRegistry? registry = null,
+        IConversationStore? store = null,
+        string threadId = "spawn-suppression-thread")
     {
         var subAgent = new Mock<IStreamingAgent>();
         _ = subAgent
@@ -302,7 +492,8 @@ public class SubAgentSpawnSuppressionTests
         return new MultiTurnAgentLoop(
             parent,
             registry ?? new FunctionRegistry(),
-            threadId: "spawn-suppression-thread",
+            threadId: threadId,
+            store: store,
             subAgentOptions: options);
     }
 
@@ -317,6 +508,12 @@ public class SubAgentSpawnSuppressionTests
     /// <paramref name="reply"/> returns for that 1-based turn number. Turn-aware so a test can drive a
     /// multi-turn run (tool call, then text) and assert the CONTRACTS turn by turn — which is where
     /// suppression is observable.
+    /// <para>
+    /// Replies are stamped with the run identity the loop advertised, because that is what every real
+    /// provider does (<see cref="MessageExtensions.WithIds(IMessage, GenerateReplyOptions?)"/>) and what
+    /// persisted history therefore carries. Without it a restart restores messages with no run or
+    /// generation id and can never resume.
+    /// </para>
     /// </summary>
     private static IStreamingAgent RecordingParent(
         List<IReadOnlyList<string>> advertisedPerCall,
@@ -338,7 +535,8 @@ public class SubAgentSpawnSuppressionTests
                         turn = advertisedPerCall.Count;
                     }
 
-                    return Task.FromResult(ToAsyncEnumerable(reply(turn)));
+                    return Task.FromResult(ToAsyncEnumerable(
+                        [.. reply(turn).Select(m => m.WithIds(options))]));
                 });
         return mock.Object;
     }

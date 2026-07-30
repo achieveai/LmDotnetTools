@@ -18,6 +18,16 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 public interface ISpawnSuppressingAgent : IMultiTurnAgent
 {
     /// <summary>
+    /// Whether this instance will actually enforce the flag. The interface proves the type can CARRY
+    /// suppression; this proves the instance KEEPS it — an implementation can satisfy the signature and
+    /// still ignore the flag, and a host that gated on the type alone would have already queued an
+    /// unsuppressed message by the time the receipt told it so. Check this BEFORE enqueuing; the response
+    /// a caller is given must still come from <see cref="SendReceipt.SpawningSuppressed"/>, which is the
+    /// per-input statement.
+    /// </summary>
+    bool EnforcesSpawnSuppression { get; }
+
+    /// <summary>
     /// Non-blocking enqueue of a full <see cref="UserInput"/>, preserving
     /// <see cref="UserInput.SuppressSubAgentSpawning"/> through to the run that consumes it. Queue-full
     /// semantics match

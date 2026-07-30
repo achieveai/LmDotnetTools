@@ -32,6 +32,10 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
     /// write failure (the controller lets this propagate to a 500).</summary>
     public bool ThrowOnTrySend { get; set; }
 
+    /// <summary>How many inputs reached the enqueue path. Lets a test prove a request was refused
+    /// BEFORE anything was queued, rather than merely reported as unsuppressed afterwards.</summary>
+    public int SendCount { get; private set; }
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
@@ -42,6 +46,7 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
         _ = parentRunId;
         _ = ct;
 
+        SendCount++;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         return ValueTask.FromResult(new SendReceipt(receiptId, inputId, DateTimeOffset.UtcNow));
     }
@@ -106,10 +111,10 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
 }
 
 /// <summary>
-/// A fake that CAN enforce per-turn sub-agent spawn suppression. Declaring
-/// <see cref="ISpawnSuppressingAgent"/> is the capability signal the controller gates on, and
-/// <see cref="LastInput"/> records the <see cref="UserInput"/> it received so a test can prove the flag
-/// actually reached the agent rather than merely being echoed back.
+/// A fake that CAN carry per-turn sub-agent spawn suppression. Declaring
+/// <see cref="ISpawnSuppressingAgent"/> plus <see cref="EnforcesSpawnSuppression"/> is the capability signal
+/// the controller gates on, and <see cref="LastInput"/> records the <see cref="UserInput"/> it received so a
+/// test can prove the flag actually reached the agent rather than merely being echoed back.
 /// </summary>
 internal sealed class SpawnSuppressingFakeAgent(string threadId)
     : FakeMultiTurnAgent(threadId), ISpawnSuppressingAgent
@@ -117,12 +122,19 @@ internal sealed class SpawnSuppressingFakeAgent(string threadId)
     /// <summary>The last input handed to the capability-aware send path (null until one arrives).</summary>
     public UserInput? LastInput { get; private set; }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Settable so a test can build the "declares the interface but cannot keep the promise" fixture — the
+    /// case the controller must refuse before it enqueues anything.
+    /// </remarks>
+    public bool EnforcesSpawnSuppression { get; set; } = true;
+
     /// <summary>
-    /// When false the agent still DECLARES the capability but its receipt does not confirm enforcement —
-    /// the shape of an implementation that accepts the flag and then ignores it. The host must relay the
-    /// RECEIPT, so it must not turn that into a promise.
+    /// When false the agent claims the capability but its receipt does not confirm enforcement for the
+    /// input — the shape of an implementation that accepts a particular flag and then ignores it. The host
+    /// must relay the RECEIPT, so it must not turn that into a promise.
     /// </summary>
-    public bool EnforcesSuppression { get; set; } = true;
+    public bool ConfirmsSuppressionOnReceipt { get; set; } = true;
 
     public async ValueTask<SendReceipt?> TrySendAsync(UserInput input, CancellationToken ct = default)
     {
@@ -132,7 +144,7 @@ internal sealed class SpawnSuppressingFakeAgent(string threadId)
             ? null
             : receipt with
             {
-                SpawningSuppressed = input.SuppressSubAgentSpawning && EnforcesSuppression,
+                SpawningSuppressed = input.SuppressSubAgentSpawning && ConfirmsSuppressionOnReceipt,
             };
     }
 }

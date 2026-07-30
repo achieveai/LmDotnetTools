@@ -668,11 +668,12 @@ public class ConversationsController(
         var inputId = Guid.NewGuid().ToString();
         var userMessage = new TextMessage { Role = Role.User, Text = request.Text };
 
-        // Per-turn spawn suppression is a GUARANTEE, so it fails closed: only an agent that declares
-        // ISpawnSuppressingAgent actually enforces UserInput.SuppressSubAgentSpawning on the run that
-        // consumes the input. Sending the flag through the message-list overload of any other agent would
-        // drop it silently and let the turn fan out anyway, so the request is refused instead.
-        if (request.SuppressSubAgentSpawning && agent is not ISpawnSuppressingAgent)
+        // Per-turn spawn suppression is a GUARANTEE, so it fails closed BEFORE anything is queued: the agent
+        // must both declare ISpawnSuppressingAgent and report that it enforces the flag. Declaring the
+        // interface alone only proves the input can carry the flag — an implementation can satisfy the
+        // signature and ignore it, and by the time an unconfirmed receipt said so the message would already
+        // be in the run's channel with nothing suppressed.
+        if (request.SuppressSubAgentSpawning && agent is not ISpawnSuppressingAgent { EnforcesSpawnSuppression: true })
         {
             logger.LogWarning(
                 "SendMessage for thread {ThreadId} rejected: agent {AgentType} cannot enforce per-turn sub-agent spawn suppression",
@@ -711,10 +712,10 @@ public class ConversationsController(
 
         if (request.SuppressSubAgentSpawning && !receipt.SpawningSuppressed)
         {
-            // Declaring the interface got the request this far; the RECEIPT is what says the accepting
-            // agent will actually enforce it. Relaying a false here (rather than the request) is what makes
-            // the client's fail-closed check meaningful — an agent that declares the capability but does not
-            // stamp the receipt cannot make this host advertise a guarantee.
+            // The capability check got the request this far; the RECEIPT is what says this particular input
+            // will actually be enforced. Relaying a false here (rather than the request) is what makes the
+            // client's fail-closed check meaningful — an agent that claims the capability but does not stamp
+            // the receipt cannot make this host advertise a guarantee.
             logger.LogWarning(
                 "SendMessage for thread {ThreadId}: agent {AgentType} accepted the input but did not confirm "
                     + "sub-agent spawn suppression; the response will not claim the guarantee",

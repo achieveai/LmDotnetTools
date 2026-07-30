@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -56,7 +57,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// that consumes the input — whether the input starts the run or is injected into one already in
     /// flight — so a receipt it issues may honestly claim the guarantee. See <see cref="RunSpawnSuppression"/>.
     /// </remarks>
-    protected override bool EnforcesSpawnSuppression => true;
+    public override bool EnforcesSpawnSuppression => true;
 
     /// <inheritdoc />
     /// <remarks>
@@ -97,7 +98,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // The run that paused on a deferral while sub-agent spawning was suppressed, or null when the last
     // pause was from an unsuppressed run. Guarded by _resumeLock alongside the _lastDeferring* pair it
     // is set with. Read on the resume path so the continuation re-latches — see RunSpawnSuppression.
+    // Mirrored into thread metadata (SpawnSuppressedRunIdProperty) because a pause outlives the process.
     private string? _spawnSuppressedRunId;
+
+    /// <summary>
+    /// Thread-metadata property holding <see cref="_spawnSuppressedRunId"/>. A pause lasts as long as
+    /// whatever the deferral is waiting on, so a host restart in between is ordinary rather than exotic —
+    /// and the caller was already told the guarantee holds. Only a durable marker can honour that in the
+    /// resumed run, so it travels with the deferral state rather than only in memory.
+    /// </summary>
+    private const string SpawnSuppressedRunIdProperty = "spawn_suppressed_run_id";
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -334,9 +344,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // correct at-resume delivery. A regular user input while deferred deliberately keeps the
                 // existing fail-fast guard (the caller must resolve the deferral first), so this is
                 // restricted to batches that are entirely notifications.
-                if (resumeSentinels.Count == 0 && !_deferred.IsEmpty && AllMessagesAreNotifications(realInputs))
+                if (resumeSentinels.Count == 0
+                    && !_deferred.IsEmpty
+                    && AllMessagesAreNotifications(realInputs)
+                    && await TryAppendParkedInputsAsync(realInputs, ct))
                 {
-                    await AppendParkedInputsAsync(realInputs, ct);
                     continue;
                 }
 
@@ -590,6 +602,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // tool calls are tagged with it, so this stays internally consistent.
             if (HasUnresolvedDeferralsForGeneration(turnGenerationId))
             {
+                string? suppressedRunId;
                 lock (_resumeLock)
                 {
                     _lastDeferringRunId = runId;
@@ -600,8 +613,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     // always mints a fresh id), so the continuation can only recognise itself by the run id
                     // the sentinel points back at. Recording null when unsuppressed matters just as much:
                     // it stops a later, unrelated pause from inheriting a stale latch.
-                    _spawnSuppressedRunId = spawnSuppression.IsLatched ? runId : null;
+                    suppressedRunId = spawnSuppression.IsLatched ? runId : null;
+                    _spawnSuppressedRunId = suppressedRunId;
                 }
+
+                // Awaited, not fire-and-forget: a marker that failed to write would silently downgrade an
+                // acknowledgement already given, so the run fails instead of pausing on a promise it can
+                // no longer keep.
+                await PersistSuppressedRunMarkerAsync(suppressedRunId, ct);
 
                 Logger.LogInformation(
                     "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
@@ -674,12 +693,39 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// live — without starting a model turn. The resume-sentinel path delivers them to the model once the
     /// deferral resolves. See the call site in <see cref="RunLoopAsync"/> for why a turn cannot run here.
     /// </summary>
-    private async Task AppendParkedInputsAsync(List<QueuedInput> realInputs, CancellationToken ct)
+    /// <returns>
+    /// False when the batch must NOT be parked, which today means only one thing: it asked for spawn
+    /// suppression and there is no parked run for that guarantee to attach to. The caller then falls
+    /// through to the normal path, which latches suppression on a run of its own — a receipt that already
+    /// claimed enforcement must never be left with no run enforcing it.
+    /// </returns>
+    private async Task<bool> TryAppendParkedInputsAsync(List<QueuedInput> realInputs, CancellationToken ct)
     {
+        var requestsSuppression = realInputs.Any(i => i.Input.SuppressSubAgentSpawning);
+
         string? parkRunId;
         lock (_resumeLock)
         {
             parkRunId = _lastDeferringRunId;
+
+            // A parked input is only ever delivered to the model by the RESUME of the run it parks on, so
+            // that resume IS the run its receipt was about. Latching here — under the same lock that owns
+            // the park run id — keeps a concurrent TryScheduleAutoResume from clearing the id between the
+            // read and the latch, which would leave the resume unsuppressed.
+            if (requestsSuppression)
+            {
+                if (parkRunId == null)
+                {
+                    return false;
+                }
+
+                _spawnSuppressedRunId = parkRunId;
+            }
+        }
+
+        if (requestsSuppression)
+        {
+            await PersistSuppressedRunMarkerAsync(parkRunId, ct);
         }
 
         var count = 0;
@@ -696,6 +742,66 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         Logger.LogInformation(
             "Parked on unresolved deferral(s); folded {Count} input message(s) into history for delivery on resume.",
             count);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Makes the suppressed-run marker durable so a restart can restore it — see
+    /// <see cref="SpawnSuppressedRunIdProperty"/>. Uses the store's atomic read-modify-write so it cannot
+    /// clobber a concurrent metadata writer, and is a no-op for a store-less (purely in-memory) loop, where
+    /// a restart cannot restore anything anyway.
+    /// </summary>
+    private Task PersistSuppressedRunMarkerAsync(string? suppressedRunId, CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return store.UpdateMetadataAsync(
+            ThreadId,
+            existing =>
+            {
+                var properties = existing?.Properties?.ToBuilder()
+                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+                if (suppressedRunId == null)
+                {
+                    _ = properties.Remove(SpawnSuppressedRunIdProperty);
+                }
+                else
+                {
+                    properties[SpawnSuppressedRunIdProperty] = suppressedRunId;
+                }
+
+                return (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 0 }) with
+                {
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Properties = properties.ToImmutable(),
+                };
+            },
+            ct);
+    }
+
+    /// <summary>
+    /// Reads back the marker written by <see cref="PersistSuppressedRunMarkerAsync"/>. Stores that round-trip
+    /// the property bag through JSON hand back a <c>JsonElement</c> rather than a string, so the value is
+    /// converted rather than cast.
+    /// </summary>
+    private async Task<string?> LoadSuppressedRunMarkerAsync(CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return null;
+        }
+
+        var metadata = await store.LoadMetadataAsync(ThreadId, ct);
+        return metadata?.Properties?.TryGetValue(SpawnSuppressedRunIdProperty, out var marker) == true
+            ? marker?.ToString()
+            : null;
     }
 
     private async Task<bool> ExecuteTurnAsync(
@@ -1158,28 +1264,38 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 FunctionName: sourceCall?.FunctionName ?? tcr.ToolName ?? string.Empty,
                 FunctionArgs: sourceCall?.FunctionArgs ?? "{}",
                 DeferredAtUnixMs: tcr.DeferredAt ?? 0,
-                RunId: tcr.RunId,
-                GenerationId: tcr.GenerationId);
+
+                // The placeholder is built from the tool CALL and inherits only its generation id, so its
+                // own RunId is routinely null on the wire. Fall back to the call the provider stamped:
+                // without a run id here the restored pause can never schedule its resume at all.
+                RunId: tcr.RunId ?? sourceCall?.RunId,
+                GenerationId: tcr.GenerationId ?? sourceCall?.GenerationId);
             _deferred[tcr.ToolCallId] = entry;
 
             // Track the most recent (last in load order) deferring run/generation so a
             // resolution after restart will trigger an auto-resume into the right context.
-            mostRecentDeferringRun = tcr.RunId ?? mostRecentDeferringRun;
-            mostRecentDeferringGen = tcr.GenerationId ?? mostRecentDeferringGen;
+            mostRecentDeferringRun = entry.RunId ?? mostRecentDeferringRun;
+            mostRecentDeferringGen = entry.GenerationId ?? mostRecentDeferringGen;
         }
 
         if (_deferred.Count > 0)
         {
+            // Restore the suppressed-run marker with the pause it belongs to. Without it a resumed turn
+            // regains the spawn tool after a restart even though its caller was already told otherwise.
+            var suppressedRunId = await LoadSuppressedRunMarkerAsync(ct);
+
             lock (_resumeLock)
             {
                 _lastDeferringRunId = mostRecentDeferringRun;
                 _lastDeferringGenerationId = mostRecentDeferringGen;
                 _resumeScheduled = false;
+                _spawnSuppressedRunId = suppressedRunId;
             }
 
             Logger.LogInformation(
-                "Restored {Count} deferred tool call(s) from persisted history",
-                _deferred.Count);
+                "Restored {Count} deferred tool call(s) from persisted history (suppressed run: {SuppressedRunId})",
+                _deferred.Count,
+                suppressedRunId ?? "(none)");
         }
 
         // Reconcile restored block waits so no parked Wait is left hanging: a restorable source

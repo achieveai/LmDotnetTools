@@ -765,6 +765,36 @@ public class ConversationsControllerTests
     }
 
     /// <summary>
+    /// Declaring <c>ISpawnSuppressingAgent</c> only proves the agent can CARRY the flag. An implementation
+    /// that satisfies the signature and cannot keep the promise must be refused BEFORE the enqueue: once the
+    /// message is in the run's channel, a receipt saying "not suppressed" is too late — the caller's turn
+    /// runs unsuppressed regardless of what the response says.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_RejectsBeforeQueueing_WhenTheAgentDeclaresSuppressionButCannotEnforceIt()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-suppress-incapable";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.EnforcesSpawnSuppression = false;
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "synthesize", SuppressSubAgentSpawning = true },
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+        JsonSerializer.Serialize(badRequest.Value).Should().Contain("spawn_suppression_unsupported");
+        agent.SendCount.Should().Be(0, "a refused request must leave nothing queued to run unsuppressed");
+        agent.LastInput.Should().BeNull("the input never reached the agent at all");
+    }
+
+    /// <summary>
     /// A capable agent gets the flag on the actual input (not just a friendly echo), and the response
     /// acknowledges the guarantee so the caller can verify it was made.
     /// </summary>
@@ -808,7 +838,7 @@ public class ConversationsControllerTests
         var threadId = "thread-send-suppress-unenforced";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
-        agent.EnforcesSuppression = false;
+        agent.ConfirmsSuppressionOnReceipt = false;
         await SeedDefaultModeThreadAsync(store, threadId);
 
         var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
