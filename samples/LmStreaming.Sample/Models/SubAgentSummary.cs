@@ -31,8 +31,12 @@ public sealed record SubAgentSummary
 
     /// <summary>
     /// Thread id of the conversation that spawned this sub-agent, or null when the node has no
-    /// persisted parent link. Additive: populated by the recursive descendant-graph reader
-    /// (<c>GET .../subagents?recursive=true</c>); the flat (non-recursive) listing does not set it.
+    /// persisted parent link. Populated by the no-filter provenance projection
+    /// (<c>SubAgentProvenance.TryProject(ThreadMetadata)</c>) for any persisted node — this includes
+    /// a persisted-only child on the flat (non-recursive) listing, not just recursive nodes. It reads
+    /// null only when a LIVE <c>SubAgentManager</c> snapshot for the same agent id wins the flat
+    /// listing's merge, since that live projection does not carry a parent id. Required (never null)
+    /// on every node of the recursive contract (<c>GET .../subagents?recursive=true</c>).
     /// </summary>
     public string? ParentThreadId { get; init; }
 
@@ -43,9 +47,12 @@ public sealed record SubAgentSummary
     public int? Depth { get; init; }
 
     /// <summary>
-    /// UTC instant the sub-agent reached a terminal status, or null while running or unknown.
-    /// Additive: populated by the recursive descendant-graph reader from the same stamped value
-    /// <see cref="LastActivityUtc"/> already falls back to for a persisted-only child.
+    /// UTC instant the sub-agent reached a terminal status, or null while running, unknown, or when
+    /// a live <c>SubAgentManager</c> snapshot for the same agent id wins the flat listing's merge
+    /// (that live projection does not carry it). Populated identically for a persisted-only child of
+    /// the flat (non-recursive) listing and for every node of the recursive contract, via the same
+    /// no-filter provenance projection <see cref="ParentThreadId"/> uses — it is the same stamped
+    /// value <see cref="LastActivityUtc"/> already falls back to.
     /// </summary>
     public DateTimeOffset? TerminalAtUtc { get; init; }
 

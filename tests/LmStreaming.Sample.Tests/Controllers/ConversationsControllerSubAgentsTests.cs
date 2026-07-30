@@ -108,6 +108,27 @@ public sealed class ConversationsControllerSubAgentsTests
         payload.Should().Contain("does-not-exist");
     }
 
+    /// <summary>
+    /// The recursive contract must 404 for a thread that is unknown everywhere (not live, not
+    /// persisted, and not referenced as anyone's parent) exactly like the flat listing does — an
+    /// empty subtree alone does not justify 404, so <c>BuildDescendantTreeAsync</c> only checks
+    /// existence when the traversal discovers zero descendants (mirrors
+    /// <see cref="ListSubAgents_Returns404_ForUnknownParentThread"/> for the recursive path).
+    /// </summary>
+    [Fact]
+    public async Task ListSubAgents_Recursive_UnknownThread_ReturnsNotFound()
+    {
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool);
+
+        var result = await controller.ListSubAgents("does-not-exist", recursive: true);
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        var payload = JsonSerializer.Serialize(notFound.Value);
+        payload.Should().Contain("unknown_thread");
+        payload.Should().Contain("does-not-exist");
+    }
+
     [Fact]
     public async Task ListSubAgents_ReturnsEmptyArray_WhenAgentHasNoSubAgentManager()
     {

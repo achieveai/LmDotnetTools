@@ -12,9 +12,14 @@ export type SubAgentStatus = 'running' | 'completed' | 'error' | 'stopped' | 'un
  * thread (`subagent-{agentId}`) — pass it to `loadConversationMessages` to load the child's
  * persisted transcript.
  *
- * The `parentThreadId`, `depth`, `terminalAtUtc`, and `failureCode` fields are additive: they are
- * only populated by the recursive descendant graph (`?recursive=true`, see
- * `SubAgentTreeResponse` on the backend) and are `undefined`/absent on the flat listing.
+ * `parentThreadId` and `terminalAtUtc` come from the backend's persisted-metadata projection, so
+ * they can already be present on the flat (non-recursive) listing for a child that is
+ * persisted-only (not currently live) — they read `undefined` only when a live snapshot for that
+ * same agent id wins the flat listing's merge. `depth` and `failureCode` are genuinely
+ * recursive-only: `depth` is never set outside the recursive descendant graph
+ * (`?recursive=true`, see `SubAgentTreeResponse` on the backend), and `failureCode` is reserved
+ * for future use and always absent today on any listing. All four are required (present, though
+ * possibly `null`) on every node of the recursive contract.
  */
 export interface SubAgentSummary {
   agentId: string;
