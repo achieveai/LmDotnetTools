@@ -585,11 +585,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         // Fail CLOSED when a pool is configured but declined the run. The only decline is "the reviewed repo is
-        // not a submodule of the review store", and the S2S degrade below answers it by minting a PERMANENT
-        // per-PR host clone + gateway workspace that nothing in this system ever deletes — pooled slots are
-        // recycled, these are not, so every PR of an un-onboarded repo silently leaks another copy. Onboarding
-        // the repo into the store is the fix, so say that instead of quietly degrading. Non-pooled S2S
-        // (UsePooledReview false) keeps the degrade: there is no pool to have declined.
+        // not a submodule of the review store", and the S2S degrade below (now removed — see the next guard)
+        // used to answer it by minting a PERMANENT per-PR host clone + gateway workspace that nothing in this
+        // system ever deletes — pooled slots are recycled, these are not, so every PR of an un-onboarded repo
+        // silently leaked another copy. Onboarding the repo into the store is the fix, so say that instead of
+        // quietly degrading.
         if (UsePooledReview && _preparer is not null)
         {
             throw new InvalidOperationException(
@@ -599,15 +599,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 + "workspace, which is never cleaned up.");
         }
 
-        // S2S degrade: the review runs inside LmStreaming against a workspace whose checkout the preparer
-        // clones HOST-side under the shared gateway base — so the tree this stage needs for the bounded diff
-        // already exists on this host. Diff it there rather than cloning a second copy inside a daemon-owned
-        // sandbox: the diff-only boot session has no workspace mount at all, and a per-run sandbox would
-        // duplicate the very checkout LmStreaming is about to mount.
+        // Fail CLOSED when S2S is enabled but no recyclable pooled workspace is configured at all (UsePooledReview
+        // is false here — not merely declined; see the pooled-decline guard above). S2SReviewWorkspacePreparer is
+        // wired unconditionally whenever UseS2SReviewAgent is on (Program.cs), independent of the SEPARATE
+        // EnableToolAssistedReview + EnableReviewerWrites + review-store gate that wires the pool. Without the
+        // pool, the only alternative left was the S2S "degrade": S2SReviewWorkspacePreparer.PrepareAsync mints a
+        // PERMANENT per-PR host clone plus a LmStreaming workspace REST record that nothing in this system ever
+        // reclaims — pooled slots are recycled, these are not, so every S2S review of every PR would leak another
+        // copy. Reject the run instead of calling PrepareAsync, so no host clone or workspace REST request is
+        // ever made for this misconfiguration.
         if (_preparer is not null)
         {
-            await FetchContextFromPreparedCheckoutAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
-            return;
+            throw new InvalidOperationException(
+                $"Run {run.Id}: S2S review is enabled but no recyclable pooled workspace is configured. Set "
+                + "EnableToolAssistedReview and EnableReviewerWrites, and onboard a review store/pool "
+                + "(CrossRepoStoreUrl plus the Layer-1 slot pool) so the daemon can lease a warm, recyclable slot "
+                + "— it will not fall back to an unmanaged per-PR host clone and LmStreaming workspace, which is "
+                + "never cleaned up.");
         }
 
         var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);

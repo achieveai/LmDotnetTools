@@ -783,6 +783,40 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("the stage failed, so it persisted no partial context");
     }
 
+    /// <summary>
+    /// PR #230 follow-up: an operator can turn on <c>UseS2SReviewAgent</c> (which unconditionally wires
+    /// <see cref="S2SReviewWorkspacePreparer"/> in Program.cs) without ever satisfying the pool-onboarding
+    /// conditions (<c>EnableToolAssistedReview</c> + <c>EnableReviewerWrites</c> + a resolved review store) —
+    /// so <see cref="DaemonReviewStageExecutor"/>'s <c>UsePooledReview</c> is <c>false</c> while the preparer is
+    /// still non-null. Before this fix that combination fell through to the S2S "degrade" path and called
+    /// <c>S2SReviewWorkspacePreparer.PrepareAsync</c> — a bare per-PR HOST CLONE plus a PERMANENT LmStreaming
+    /// workspace REST record that nothing in this system ever cleans up. That is strictly worse than the
+    /// pooled-but-declined case above (which at least fails closed): here there was no pool to decline, so the
+    /// unmanaged clone+workspace was minted on every single S2S review of every PR. The fix rejects the review
+    /// instead, before any preparer call, REST request, or host git — the same "fail closed rather than leak an
+    /// unmanaged workspace" posture as the pooled-decline case, just for the "no pool configured at all" cause.
+    /// </summary>
+    [Fact]
+    public async Task S2S_rejects_the_review_when_no_pooled_workspace_is_configured()
+    {
+        using var fixture = Fixture.CreateS2SWithoutPool();
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
+        thrown.Message.Should().Contain("EnableToolAssistedReview", "the error names the flag that must be turned on");
+        thrown.Message.Should().Contain("EnableReviewerWrites", "the error names the other flag that must be turned on");
+        thrown.Message.Should().MatchRegex(
+            "(?i)review store|pool", "the error points at onboarding a review store/pool, not just the flags");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "no unmanaged per-PR host clone may be created when no recyclable pooled workspace is configured");
+        fixture.S2SHandler.Requests.Should().BeEmpty(
+            "no permanent per-PR LmStreaming workspace may be minted when no recyclable pooled workspace is configured");
+        fixture.Pool.LeaseCount.Should().Be(0, "no pool is configured at all, so nothing is ever leased");
+        fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("the stage failed, so it persisted no partial context");
+    }
+
     [Fact]
     public async Task S2S_posts_host_side_with_the_deep_link_once_and_still_commits_only_the_notes_dir()
     {
@@ -949,11 +983,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
     {
         private readonly TempSqliteDatabase _db;
         private readonly CodeReviewDaemonOptions _options;
-        private readonly ReviewSlotWorkspace _slotWorkspace;
+        private readonly ReviewSlotWorkspace? _slotWorkspace;
         private readonly HttpClient? _s2sHttp;
         private readonly S2SReviewWorkspacePreparer? _s2sPreparer;
 
-        private Fixture(bool s2s, int slots)
+        /// <param name="s2s">Whether the review runs over the LmStreaming S2S API (wires the preparer) or
+        /// in-process.</param>
+        /// <param name="slots">How many slot leaves the fake pool is primed with.</param>
+        /// <param name="wirePool">Mirrors Program.cs's SEPARATE pool-onboarding gate (EnableToolAssistedReview +
+        /// EnableReviewerWrites + a resolved review store): when false, no <see cref="ReviewSlotWorkspace"/> is
+        /// built at all, so <c>UsePooledReview</c> is false even though the S2S preparer (below) is still wired —
+        /// exactly the "UseS2SReviewAgent on, pool never onboarded" operator misconfiguration PR #230 closes.</param>
+        private Fixture(bool s2s, int slots, bool wirePool = true)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -984,9 +1025,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
             _options = new CodeReviewDaemonOptions
             {
-                EnableToolAssistedReview = true,
-                EnableReviewerWrites = true,
-                CrossRepoStoreUrl = StoreUrl,
+                EnableToolAssistedReview = wirePool,
+                EnableReviewerWrites = wirePool,
+                CrossRepoStoreUrl = wirePool ? StoreUrl : null,
                 UseS2SReviewAgent = s2s,
                 LmStreamingBaseUrl = s2s ? LmStreamingBaseUrl : null,
                 // Host-side posting is the ONLY delivery path on S2S, so the S2S fixture authorizes it — that is
@@ -996,28 +1037,30 @@ public sealed class DaemonReviewStageExecutorPooledTests
             // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
             // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
             Factory.Resumable = s2s;
-            _slotWorkspace = new ReviewSlotWorkspace(
-                Pool,
-                Preparer,
-                (session, _) =>
-                {
-                    // The production factory builds a preparer over the run session. The fake preparer records
-                    // orchestration inputs; keep its SDK filesystem in sync with fixture-host seeds used by
-                    // prior-notes/KB/root-guidance tests.
-                    foreach (var (path, content) in HostFileSystem.Files)
+            _slotWorkspace = wirePool
+                ? new ReviewSlotWorkspace(
+                    Pool,
+                    Preparer,
+                    (session, _) =>
                     {
-                        var sessionPath = path.Replace(
-                            $"/pool/{(s2s ? "review-slot-" : "slot-")}0/store",
-                            "/workspace/store",
-                            StringComparison.Ordinal);
-                        session.FileSystem.WriteFileAsync(sessionPath, content, CancellationToken.None)
-                            .GetAwaiter().GetResult();
-                    }
+                        // The production factory builds a preparer over the run session. The fake preparer records
+                        // orchestration inputs; keep its SDK filesystem in sync with fixture-host seeds used by
+                        // prior-notes/KB/root-guidance tests.
+                        foreach (var (path, content) in HostFileSystem.Files)
+                        {
+                            var sessionPath = path.Replace(
+                                $"/pool/{(s2s ? "review-slot-" : "slot-")}0/store",
+                                "/workspace/store",
+                                StringComparison.Ordinal);
+                            session.FileSystem.WriteFileAsync(sessionPath, content, CancellationToken.None)
+                                .GetAwaiter().GetResult();
+                        }
 
-                    return Preparer;
-                },
-                HostRunner,
-                HostFileSystem);
+                        return Preparer;
+                    },
+                    HostRunner,
+                    HostFileSystem)
+                : null;
 
             if (s2s)
             {
@@ -1101,6 +1144,13 @@ public sealed class DaemonReviewStageExecutorPooledTests
         /// with the deep-link back to that conversation. <paramref name="slots"/> is how many slot leaves the
         /// fake pool is primed with — &gt;1 lets a test hold two leases at once.</summary>
         public static Fixture CreateS2S(int slots = 1) => new(s2s: true, slots);
+
+        /// <summary>The "explicit non-pooled S2S" variant (PR #230): <c>UseS2SReviewAgent</c> is on — so the
+        /// S2S preparer is wired, mirroring Program.cs's unconditional registration — but none of the pool's
+        /// own onboarding conditions are, so no <see cref="ReviewSlotWorkspace"/> exists and <c>UsePooledReview</c>
+        /// is false. This is the misconfiguration that used to fall through to an unmanaged, never-cleaned-up
+        /// per-PR host clone + LmStreaming workspace.</summary>
+        public static Fixture CreateS2SWithoutPool() => new(s2s: true, slots: 1, wirePool: false);
 
         /// <summary>Reads <c>directoryRelPath</c> out of a create-workspace request body so the scripted
         /// endpoint can echo the leaf back as the workspace id.</summary>
