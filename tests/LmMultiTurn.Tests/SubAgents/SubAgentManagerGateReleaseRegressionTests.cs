@@ -599,6 +599,36 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ForegroundCancellationAfterPermitAcquisition_StopsBeforeRegistration()
+    {
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["worker"] = DummyTemplate("worker"),
+        });
+        _manager = manager;
+        var constructed = new FakeMultiTurnAgent();
+        manager.TestAgentFactoryOverride = (_, _) => constructed;
+        var reachedRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.TestBeforeAgentRegistrationAsync = async () =>
+        {
+            reachedRegistration.SetResult();
+            await releaseRegistration.Task;
+        };
+        using var cts = new CancellationTokenSource();
+
+        var spawn = manager.SpawnAsync("worker", "task", ct: cts.Token);
+        await reachedRegistration.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cts.Cancel();
+        releaseRegistration.SetResult();
+
+        var act = async () => await spawn;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        manager.ListAgents().Should().BeEmpty();
+        constructed.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task DisposeRacingInlineSpawn_RejectsRegistrationAndDisposesConstructedAgent()
     {
         var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>

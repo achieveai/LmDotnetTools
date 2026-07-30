@@ -207,6 +207,41 @@ public class WorkflowManagerRollupTests
     }
 
     [Fact]
+    public async Task StartAsync_WithPreferredProvider_UsesProfileDefaultModel()
+    {
+        GenerateReplyOptions? capturedOptions = null;
+        var turn = 0;
+        var profileController = new Mock<IStreamingAgent>();
+        profileController
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, options, _) => capturedOptions ??= options)
+            .Returns(() => Task.FromResult(ToAsyncEnumerable([DriveMinimalToTerminal(++turn)])));
+        await using var manager = new WorkflowManager(
+            controllerAgentFactory: () => ScriptedController(NeverComplete).Object,
+            controllerSubAgentOptions: EmptyControllerOptions(),
+            controllerDefaultOptions: new GenerateReplyOptions { ModelId = "launching-model" },
+            controllerProfileByProvider: _ => new WorkflowControllerProfile(
+                () => profileController.Object,
+                EmptyControllerOptions(),
+                ControllerDefaultOptions: new GenerateReplyOptions { ModelId = "profile-model" }
+            )
+        );
+
+        _ = await manager.StartAsync(
+            "wf-profile-model",
+            MinimalDefinition(),
+            WorkflowStartMode.Sync,
+            preferredProvider: "anthropic"
+        );
+
+        capturedOptions!.ModelId.Should().Be("profile-model");
+    }
+
+    [Fact]
     public async Task StartAsync_WithoutPreferredProvider_UsesTheFixedDefaultFactory()
     {
         var factoryInvoked = false;

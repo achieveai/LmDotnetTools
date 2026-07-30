@@ -352,6 +352,26 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SendMessageAsync_QueuedTargetReturnsActionableError()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager(maxConcurrent: 1);
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        var queuedJson = await _manager.SpawnAsync(
+            "test-agent", "queued", name: "queued-worker", runInBackground: true);
+        using var queuedDoc = JsonDocument.Parse(queuedJson);
+        var queuedId = queuedDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        var byId = () => _manager.SendMessageAsync(queuedId, "follow up");
+        var byName = () => _manager.SendMessageAsync("queued-worker", "follow up");
+
+        await byId.Should().ThrowAsync<InvalidOperationException>().WithMessage("*queued*CheckAgent*");
+        await byName.Should().ThrowAsync<InvalidOperationException>().WithMessage("*queued*CheckAgent*");
+        release.SetResult(true);
+    }
+
+    [Fact]
     public async Task SpawnAsync_RejectsAfterDisposalBegins()
     {
         _manager = CreateManager();

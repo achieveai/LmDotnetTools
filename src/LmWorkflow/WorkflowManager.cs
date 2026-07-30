@@ -142,10 +142,15 @@ public sealed record WorkflowRunSummary
 ///     (default) = the host supplies no per-provider reasoning; the manager then clears ExtraProperties on a
 ///     model-only override to avoid a transport mismatch, and otherwise leaves the fixed default untouched.
 /// </param>
+/// <param name="ControllerDefaultOptions">
+///     Provider-specific request defaults, including the provider's default model. Used when a run switches
+///     provider without an explicit model override, so it never carries the launching provider's model id.
+/// </param>
 public sealed record WorkflowControllerProfile(
     Func<IStreamingAgent> ControllerAgentFactory,
     SubAgentOptions ControllerSubAgentOptions,
-    ImmutableDictionary<string, object?>? ControllerReasoningExtraProperties = null
+    ImmutableDictionary<string, object?>? ControllerReasoningExtraProperties = null,
+    GenerateReplyOptions? ControllerDefaultOptions = null
 );
 
 /// <summary>Thrown when a <c>workflowId</c> is already reserved (in flight or completed but still queryable).</summary>
@@ -475,9 +480,10 @@ public sealed class WorkflowManager : IAsyncDisposable
             var controllerAgentFactory = profile?.ControllerAgentFactory ?? _controllerAgentFactory;
 
             // Fold a per-run model override onto the configured controller defaults (ModelId wins).
+            var profileDefaults = profile?.ControllerDefaultOptions ?? _controllerDefaultOptions;
             var runControllerDefaultOptions = string.IsNullOrWhiteSpace(preferredModel)
-                ? _controllerDefaultOptions
-                : (_controllerDefaultOptions ?? new GenerateReplyOptions()) with { ModelId = preferredModel };
+                ? profileDefaults
+                : (profileDefaults ?? new GenerateReplyOptions()) with { ModelId = preferredModel };
 
             // Reasoning must follow the controller's actual model/transport. When the run has a provider profile,
             // adopt its pre-shaped reasoning (the host inherited the parent's thinking as a fixed effort floor and

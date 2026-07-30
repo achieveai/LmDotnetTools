@@ -1581,7 +1581,11 @@ subAgentFactory,
                                 // provider/model so a preferred-provider controller reasons on the correct
                                 // transport. For Copilot, providerId == model id; non-Copilot falls back to the
                                 // provider-id reasoning mapping.
-                                BuildControllerReasoningExtraProperties(providerRegistry, providerId, providerId)
+                                BuildControllerReasoningExtraProperties(providerRegistry, providerId, providerId),
+                                // Provider switch must also replace the launching provider's default model.
+                                // For discovered Copilot providers the provider id is the raw model id; for
+                                // family providers this is the same id the host's agent factory accepts.
+                                new GenerateReplyOptions { ModelId = providerId }
                             ),
                             // Scope the controller's persistence thread to THIS conversation so a human-chosen
                             // (non-unique) workflowId can never map two different conversations onto the same

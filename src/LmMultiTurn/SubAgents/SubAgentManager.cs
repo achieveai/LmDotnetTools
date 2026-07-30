@@ -410,6 +410,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         try
         {
+            ct.ThrowIfCancellationRequested();
             var (agent, store, ownedProviderAgent, routing) = await CreateSubAgentAsync(
                 agentId,
                 template,
@@ -463,6 +464,8 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 await beforeRegistration();
             }
+
+            ct.ThrowIfCancellationRequested();
 
             // Registration is the commit point for a constructed agent. Serialize it with the same
             // shutdown gate used by queue admission: if disposal started while provider construction was
@@ -904,6 +907,14 @@ public sealed class SubAgentManager : IAsyncDisposable
         CancellationToken ct = default)
     {
         var agentId = ResolveAgentId(target);
+        if (_queuedSpawns.TryGetValue(agentId, out _))
+        {
+            throw new InvalidOperationException(
+                $"Sub-agent '{target}' is queued and cannot receive messages until it starts. "
+                    + "Poll it with CheckAgent/CheckAgents and retry when status is running."
+            );
+        }
+
         var state = _agents[agentId];
 
         // Decide how to continue this sub-agent atomically against a concurrent terminal completion and
