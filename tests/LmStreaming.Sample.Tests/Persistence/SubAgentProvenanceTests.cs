@@ -42,13 +42,20 @@ public sealed class SubAgentProvenanceTests
     }
 
     [Fact]
-    public void Build_StampsRunningStatus_ButNoTerminalTimestamp()
+    public void Build_StampsRunningStatus_AndMarksTerminalTimestampForRemoval()
     {
         var properties = SubAgentProvenance.Build(ParentThreadId, MakeSnapshot(SubAgentStatus.Running));
 
         properties[SubAgentProvenance.StatusKey].Should().Be("running");
-        properties.ContainsKey(SubAgentProvenance.TerminalAtKey).Should().BeFalse(
-            "a still-running sub-agent has no terminal instant to record");
+
+        // A running sub-agent has no terminal instant, but a PRIOR terminal transition may have left one
+        // persisted (e.g. after a restart). Build() must explicitly mark the key for removal rather than
+        // merely omitting it, so NonOwningConversationStore's additive merge actually clears it.
+        properties.Should().ContainKey(SubAgentProvenance.TerminalAtKey);
+        ReferenceEquals(properties[SubAgentProvenance.TerminalAtKey], SubAgentProvenance.RemovalMarker)
+            .Should().BeTrue(
+                "a running sub-agent's terminal timestamp must be explicitly marked for removal, not " +
+                "merely omitted, so a stale value from a prior terminal transition is cleared");
     }
 
     [Fact]

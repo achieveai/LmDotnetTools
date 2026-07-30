@@ -464,8 +464,9 @@ internal class SubAgentState
     /// <summary>
     /// Publishes <see cref="SubAgentStatus.Running"/> for <paramref name="generation"/> UNLESS that run
     /// has already reached a terminal completion (its owned provider may already be disposed) — so a fast
-    /// restarted run that completed before this publish executed is never resurrected to Running. Returns
-    /// true if Running was published.
+    /// restarted run that completed before this publish executed is never resurrected to Running. Also
+    /// clears any terminal instant left by a PRIOR generation's terminal transition, so a restarted run
+    /// never reports a stale terminal timestamp while Running. Returns true if Running was published.
     /// </summary>
     public bool TryArmRunning(long generation)
     {
@@ -477,6 +478,7 @@ internal class SubAgentState
             }
 
             _status = SubAgentStatus.Running;
+            _terminalAtUtc = null;
             return true;
         }
     }
@@ -486,17 +488,23 @@ internal class SubAgentState
     /// SAME generation-aware transition as a graceful terminal completion, so a racing restart's
     /// <see cref="TryArmRunning"/> cannot resurrect a monitor-faulted run back to Running. Applied only
     /// while that generation is still the current run (a newer restart supersedes an older run's fault).
+    /// Returns true if the fault was actually recorded for this generation — callers use this to decide
+    /// whether a durable causal persistence push is warranted (a superseded generation's fault must not
+    /// race a newer restart's own Running publish).
     /// </summary>
-    public void MarkRunFaulted(long generation)
+    public bool MarkRunFaulted(long generation)
     {
         lock (_lifecycleLock)
         {
-            if (_runGeneration == generation)
+            if (_runGeneration != generation)
             {
-                _terminalGeneration = generation;
-                _status = SubAgentStatus.Error;
-                _terminalAtUtc = DateTimeOffset.UtcNow;
+                return false;
             }
+
+            _terminalGeneration = generation;
+            _status = SubAgentStatus.Error;
+            _terminalAtUtc = DateTimeOffset.UtcNow;
+            return true;
         }
     }
 

@@ -144,7 +144,12 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
     /// <summary>
     /// Merges <paramref name="stamp"/> into the metadata's property bag, overwriting same-named keys
     /// (the stamp is derived state, so the freshest resolution wins) and leaving every other property
-    /// — the usage projection's records above all — untouched.
+    /// — the usage projection's records above all — untouched. A stamped value that is
+    /// <see cref="SubAgentProvenance.RemovalMarker"/> (by reference) REMOVES the key instead of
+    /// writing it — <see cref="SubAgentProvenance.Build"/> uses this to actually clear a stale
+    /// <see cref="SubAgentProvenance.TerminalAtKey"/> left by a prior terminal transition once the
+    /// child is Running again, since merely omitting the key from a later stamp would otherwise leave
+    /// it in place forever (this merge never removes a key just because a new stamp doesn't mention it).
     /// </summary>
     private static ThreadMetadata Stamp(
         ThreadMetadata metadata,
@@ -158,7 +163,14 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         var builder = (metadata.Properties ?? ImmutableDictionary<string, object>.Empty).ToBuilder();
         foreach (var (key, value) in stamp)
         {
-            builder[key] = value;
+            if (ReferenceEquals(value, SubAgentProvenance.RemovalMarker))
+            {
+                _ = builder.Remove(key);
+            }
+            else
+            {
+                builder[key] = value;
+            }
         }
 
         return metadata with { Properties = builder.ToImmutable() };

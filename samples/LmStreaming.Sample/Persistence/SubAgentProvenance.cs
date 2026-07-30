@@ -58,11 +58,23 @@ public static class SubAgentProvenance
 
     /// <summary>
     /// Unix milliseconds the child reached a terminal status. Present only once <see cref="StatusKey"/>
-    /// is terminal; absent while <c>Running</c>. Captured once at the transition
-    /// (<see cref="SubAgentSnapshot.TerminalAtUtc"/>) rather than recomputed on every stamp, so a
-    /// later idempotent refresh (the child's own post-run save) never shifts it forward.
+    /// is terminal; while <c>Running</c>, this key holds <see cref="RemovalMarker"/> instead of being
+    /// omitted, so a stale value from a PRIOR terminal transition (e.g. before a restart) is actually
+    /// cleared from persisted metadata rather than silently surviving it. Captured once at the
+    /// transition (<see cref="SubAgentSnapshot.TerminalAtUtc"/>) rather than recomputed on every stamp,
+    /// so a later idempotent refresh (the child's own post-run save) never shifts it forward.
     /// </summary>
     public const string TerminalAtKey = "sample.subAgentTerminalAt";
+
+    /// <summary>
+    /// Sentinel value for <see cref="TerminalAtKey"/> meaning "remove this key" rather than "set this
+    /// value". <see cref="ThreadMetadata.Properties"/> is a non-nullable-value dictionary, so a null
+    /// cannot be used as a tombstone; <see cref="NonOwningConversationStore"/>'s additive metadata merge
+    /// recognizes this exact reference (via <see cref="object.ReferenceEquals(object?, object?)"/>) and
+    /// removes the key instead of writing it. Internal: only <see cref="Build"/> produces it and only
+    /// the sample's store decorator interprets it — never a value a caller should compare directly.
+    /// </summary>
+    internal static readonly object RemovalMarker = new();
 
     /// <summary>
     /// Status reported for a child whose metadata predates this stamp (legacy data) or that was
@@ -124,6 +136,14 @@ public static class SubAgentProvenance
             {
                 var terminalAt = snapshot.TerminalAtUtc ?? DateTimeOffset.UtcNow;
                 builder[TerminalAtKey] = terminalAt.ToUnixTimeMilliseconds();
+            }
+            else
+            {
+                // Explicitly mark for removal (not merely omit) so a stale terminal instant left by
+                // a PRIOR terminal transition is actually cleared by NonOwningConversationStore's
+                // additive merge — otherwise a restart back to Running would leave the old value
+                // untouched in persisted metadata even though the in-memory snapshot has moved on.
+                builder[TerminalAtKey] = RemovalMarker;
             }
         }
 

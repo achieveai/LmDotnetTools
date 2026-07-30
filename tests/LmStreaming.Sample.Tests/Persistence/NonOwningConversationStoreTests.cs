@@ -170,5 +170,63 @@ public sealed class NonOwningConversationStoreTests
             "the exact terminal instant captured at the transition must survive, not a value " +
             "recomputed at write time");
     }
+
+    /// <summary>
+    /// Task 1 review, Finding 2: <see cref="NonOwningConversationStore"/>'s metadata-write merge is
+    /// purely additive — it never removes a key merely because a later stamp omits it. Combined with
+    /// the live provenance supplier being re-resolved on EVERY write (mirroring
+    /// <c>Program.cs</c>'s <c>describeChild</c>), a stale <see cref="SubAgentProvenance.TerminalAtKey"/>
+    /// from a PRIOR terminal transition would otherwise survive in the PERSISTED metadata even after
+    /// a restarted child returns to Running — not just the in-memory snapshot.
+    /// </summary>
+    [Fact]
+    public async Task NonOwningWrapper_RemovesStaleTerminalTimestamp_WhenAFollowingWriteReportsRunning()
+    {
+        var underlying = new InMemoryConversationStore();
+        var status = SubAgentStatus.Completed;
+        var terminalAt = DateTimeOffset.FromUnixTimeMilliseconds(1_000_000);
+
+        // Mirrors Program.cs's describeChild: re-resolved fresh on every write from the live
+        // (mutable) manager state, not frozen at construction time.
+        SubAgentSnapshot Snapshot() => new(
+            AgentId: "child-1",
+            Name: "alpha",
+            TemplateName: "code-reviewer:security",
+            Task: "check auth",
+            Status: status,
+            ThreadId: ThreadId,
+            LastActivityUtc: null,
+            TerminalAtUtc: status == SubAgentStatus.Completed ? terminalAt : null);
+
+        var wrapper = new NonOwningConversationStore(
+            underlying, ThreadId, () => SubAgentProvenance.Build("thread-parent", Snapshot()));
+
+        // First write: terminal (Completed) — TerminalAtKey lands in persisted metadata.
+        await wrapper.SaveMetadataAsync(ThreadId, new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 });
+        var afterTerminal = await underlying.LoadMetadataAsync(ThreadId);
+        afterTerminal!.Properties!.Should().ContainKey(SubAgentProvenance.TerminalAtKey);
+
+        // Restart: the child is Running again (mirrors SubAgentState.TryArmRunning clearing
+        // TerminalAtUtc, Finding 2's in-memory half).
+        status = SubAgentStatus.Running;
+
+        // Second write: the REAL path MultiTurnAgentBase uses after each run —
+        // UpdateMetadataAsync, preserving the existing persisted properties (carrying the stale
+        // TerminalAtKey forward) and only touching its own. This must REMOVE the stale terminal
+        // timestamp, not merely leave it un-refreshed — a bare SaveMetadataAsync with a fresh,
+        // property-less ThreadMetadata would mask the bug by discarding the stale key anyway.
+        await wrapper.UpdateMetadataAsync(
+            ThreadId,
+            existing => (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 1 }) with
+            {
+                LastUpdated = 2,
+            });
+        var afterRestart = await underlying.LoadMetadataAsync(ThreadId);
+
+        afterRestart!.Properties!.Should().NotContainKey(SubAgentProvenance.TerminalAtKey,
+            "a restarted, currently-running child must not still report a stale terminal instant " +
+            "in its PERSISTED metadata");
+        SubAgentProvenance.TryProject(afterRestart, "thread-parent")!.Status.Should().Be("running");
+    }
 }
 

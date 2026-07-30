@@ -105,6 +105,15 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     internal Func<string, SubAgentTemplate, IStreamingAgent?>? TestOwnedProviderOverride { get; set; }
 
+    /// <summary>
+    /// Test-only companion to <see cref="TestAgentFactoryOverride"/>: when set, supplies the child's
+    /// <see cref="IConversationStore"/>, so a unit test can verify a causal metadata push (e.g. the
+    /// monitor-fault persistence <see cref="PersistTerminalStateAsync"/> performs) against a
+    /// controllable store even though the plain <see cref="TestAgentFactoryOverride"/> path — which
+    /// returns a null store — cannot. Null (the default) keeps the fake loop's store null.
+    /// </summary>
+    internal Func<string, SubAgentTemplate, IConversationStore?>? TestConversationStoreOverride { get; set; }
+
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
@@ -1213,7 +1222,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             return (
                 TestAgentFactoryOverride(agentId, template),
-                null,
+                TestConversationStoreOverride?.Invoke(agentId, template),
                 TestOwnedProviderOverride?.Invoke(agentId, template),
                 ResolveSubAgentOptions(template.DefaultOptions, modelOverride, _parentModelId)?.ModelId);
         }
@@ -1576,12 +1585,21 @@ public sealed class SubAgentManager : IAsyncDisposable
             // run's monitor can fault before RestartRunAsync's TryArmRunning(runGeneration) executes, and
             // that publish must observe this generation's terminal record and refuse to overwrite Error
             // with Running (which would advertise a dead run).
-            state.MarkRunFaulted(runGeneration);
+            var faulted = state.MarkRunFaulted(runGeneration);
             state.SendToParentError = $"Monitor failed: {ex.Message}";
             _logger.LogError(
                 ex,
                 "Error monitoring sub-agent {AgentId}",
                 state.AgentId);
+
+            if (faulted)
+            {
+                // Same causal push HandleRunCompletionAsync performs for a graceful terminal: a
+                // background child that never writes metadata again would otherwise leave its
+                // persisted state claiming "running" forever. Skipped when a newer restart already
+                // superseded this generation, so this can't race that restart's own Running publish.
+                await PersistTerminalStateAsync(state);
+            }
 
             // Fault the completion latch: the run ended here without ever producing a
             // RunCompletedMessage, so nothing else will resolve it, and an
