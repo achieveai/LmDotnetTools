@@ -869,6 +869,16 @@ public sealed class SubAgentManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Classifies whether <paramref name="status"/> is a terminal lifecycle status
+    /// (<see cref="SubAgentStatus.Completed"/>, <see cref="SubAgentStatus.Error"/>, or
+    /// <see cref="SubAgentStatus.Stopped"/>) as opposed to <see cref="SubAgentStatus.Running"/>. Gives
+    /// callers reading <see cref="ListAgents"/> snapshots (e.g. a review-completion source) a single
+    /// canonical classification instead of each re-deriving the 3-of-4-case terminal set.
+    /// </summary>
+    public static bool IsTerminal(SubAgentStatus status) =>
+        status is SubAgentStatus.Completed or SubAgentStatus.Error or SubAgentStatus.Stopped;
+
+    /// <summary>
     /// Derives the timestamp of the newest buffered turn for <paramref name="state"/>, or null when
     /// the buffer is empty. The buffer is a lock-free <see cref="System.Collections.Concurrent.ConcurrentQueue{T}"/>;
     /// snapshotting it with <c>ToArray</c> gives a consistent view even while the monitor enqueues.

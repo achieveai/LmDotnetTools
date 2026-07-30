@@ -325,6 +325,17 @@ if (daemonOptions.UseS2SReviewAgent)
         daemonAppId,
         daemonKeyMissing ? null : daemonAppKey));
 
+    // Completion-source seam for the recursive review completion barrier (S2S mode): reads the review
+    // host's versioned recursive sub-agent tree over the same S2S client. IMPORTANT — the review host
+    // (LmStreaming.Sample) must be deployed with the recursive `?recursive=true` endpoint BEFORE the daemon
+    // barrier is enabled; an old host silently ignores the unknown query parameter and returns the flat,
+    // unversioned response, which this source's client fails closed on rather than treating as empty-success.
+    // The in-process mode's equivalent source is NOT registered here — it is constructed directly from the
+    // live SubAgentManager in the executor's own call stack (no DI, no loop-lookup registry), since a fresh
+    // live manager exists per review attempt.
+    builder.Services.AddSingleton<IReviewSubAgentCompletionSource>(sp =>
+        new S2SReviewSubAgentCompletionSource(sp.GetRequiredService<LmStreamingS2SClient>()));
+
     // Host-side workspace preparer: clones the PR checkout under the shared WORKSPACE_BASE_PATH and ensures
     // the LmStreaming workspace points at that leaf. Uses the SAME host-backed GitRunner the pooled path uses
     // (privileged, credentialed, never the sandbox runner). Registered only on the S2S path so the executor

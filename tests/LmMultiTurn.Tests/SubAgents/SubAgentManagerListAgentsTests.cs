@@ -418,6 +418,21 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             "instant from its prior run");
     }
 
+    [Theory]
+    [InlineData(SubAgentStatus.Completed, true)]
+    [InlineData(SubAgentStatus.Error, true)]
+    [InlineData(SubAgentStatus.Stopped, true)]
+    [InlineData(SubAgentStatus.Running, false)]
+    public void IsTerminal_ClassifiesEveryStatus_CompletedErrorStoppedTerminal_RunningNot(
+        SubAgentStatus status,
+        bool expectedTerminal)
+    {
+        // Task 4 (daemon-recursive-review-completion-barrier): a single canonical classification of
+        // which SubAgentStatus values are terminal, so callers reading ListAgents() snapshots (e.g. the
+        // in-process review completion source) don't each re-derive the 3-of-4-case terminal set.
+        SubAgentManager.IsTerminal(status).Should().Be(expectedTerminal);
+    }
+
     #region Helpers
 
     private SubAgentManager CreateManager(

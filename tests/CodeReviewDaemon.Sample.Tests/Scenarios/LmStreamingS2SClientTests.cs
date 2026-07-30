@@ -218,4 +218,178 @@ public sealed class LmStreamingS2SClientTests
         (await act.Should().ThrowAsync<S2SConnectionException>())
             .Which.Message.Should().Contain("http://localhost:5051");
     }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_MapsEveryFieldAndAttachesTheAuthHeaders_ForASchemaV1Graph()
+    {
+        string? capturedS2SAuth = null;
+        var handler = new FakeHttpMessageHandler()
+            .On(
+                req => req.Method == HttpMethod.Get
+                    && req.RequestUri!.ToString().Contains("subagents?recursive=true", StringComparison.Ordinal),
+                req =>
+                {
+                    capturedS2SAuth = req.Headers.TryGetValues("X-S2S-Auth", out var values)
+                        ? values.FirstOrDefault()
+                        : null;
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"name\":\"reviewer-a\","
+                                + "\"template\":\"reviewer\",\"task\":\"review file X\",\"status\":\"completed\","
+                                + "\"threadId\":\"thread-a1\",\"lastActivityUtc\":\"2026-01-01T00:00:00Z\","
+                                + "\"parentThreadId\":\"thread-root\",\"depth\":1,"
+                                + "\"terminalAtUtc\":\"2026-01-01T00:05:00Z\",\"failureCode\":null}]}"),
+                    };
+                });
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(
+            http, s2sSecret: "s2s-secret", sandboxAppId: "codereview-daemon", sandboxAppKey: "sbx-key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        var node = snapshot.Nodes.Should().ContainSingle().Subject;
+        node.AgentId.Should().Be("a1");
+        node.Name.Should().Be("reviewer-a");
+        node.Template.Should().Be("reviewer");
+        node.ThreadId.Should().Be("thread-a1");
+        node.ParentThreadId.Should().Be("thread-root");
+        node.Depth.Should().Be(1);
+        node.Status.Should().Be(ReviewSubAgentStatus.Completed);
+        node.TerminalAtUtc.Should().NotBeNull();
+        node.FailureCode.Should().BeNull();
+
+        var recorded = handler.Requests.Should().ContainSingle().Subject;
+        recorded.Uri.ToString().Should().Contain("api/conversations/thread-root/subagents?recursive=true");
+        // Same S2S/app auth headers as every other request on this client — never logged, only in headers.
+        capturedS2SAuth.Should().Be("s2s-secret");
+        recorded.SbxAppId.Should().Be("codereview-daemon");
+        recorded.SbxAppKey.Should().Be("sbx-key");
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_FailsClosed_OnTheOldFlatPreVersionedArrayShape()
+    {
+        // The non-recursive (pre-Task-2) endpoint returns a bare SubAgentSummary[] with no envelope at
+        // all — a daemon polling a not-yet-upgraded host must not silently misread that as an empty tree.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "[{\"agentId\":\"a1\",\"template\":\"reviewer\",\"task\":\"t\",\"status\":\"completed\","
+                    + "\"threadId\":\"thread-a1\"}]");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_FailsClosed_WhenSchemaVersionIsAbsent()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "subagents", "{\"nodes\":[]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_FailsClosed_WhenSchemaVersionIsUnsupported()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Get, "subagents", "{\"schemaVersion\":2,\"nodes\":[]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_FailsClosed_WhenANodeIsMissingARequiredRelationshipField()
+    {
+        // "parentThreadId" is missing — a required relationship field on the recursive contract (unlike
+        // the flat, non-recursive SubAgentSummary shape, where it is optional).
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\",\"depth\":1,"
+                    + "\"template\":\"reviewer\",\"status\":\"completed\"}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_MapsAnUnrecognizedStatusStringToUnknown_WithoutThrowing()
+    {
+        // A malformed/new wire status must fail closed onto the NONTERMINAL Unknown status (which keeps
+        // the barrier waiting) rather than throwing a JSON enum error or silently defaulting to terminal.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                    + "\"status\":\"Paused\"}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        snapshot.Nodes.Should().ContainSingle().Which.Status.Should().Be(ReviewSubAgentStatus.Unknown);
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_MapsARecognizedStatusStringCaseInsensitively()
+    {
+        // ParseNodeStatus's doc comment promises case-insensitive matching for recognized values, not just
+        // the always-lowercase wire convention — pin a PascalCase status so a regression that drops the
+        // ToLowerInvariant() normalization (and would otherwise fail closed to Unknown) is caught here.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"a1\",\"threadId\":\"thread-a1\","
+                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                    + "\"status\":\"Completed\"}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var snapshot = await client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        snapshot.Nodes.Should().ContainSingle().Which.Status.Should().Be(ReviewSubAgentStatus.Completed);
+    }
+
+    [Fact]
+    public async Task GetSubAgentTreeAsync_FailsClosed_WhenARequiredRelationshipFieldIsAnEmptyString()
+    {
+        // An empty "agentId" is present in the JSON shape but semantically absent — the same fail-closed
+        // guarantee that applies to a missing relationship field must apply here too, matching the stricter
+        // empty-string rejection this file already applies via ReadStringProperty for other endpoints.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "subagents",
+                "{\"schemaVersion\":1,\"nodes\":[{\"agentId\":\"\",\"threadId\":\"thread-a1\","
+                    + "\"parentThreadId\":\"thread-root\",\"depth\":1,\"template\":\"reviewer\","
+                    + "\"status\":\"completed\"}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.GetSubAgentTreeAsync("thread-root", CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+    }
 }

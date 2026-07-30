@@ -182,6 +182,34 @@ internal sealed class LmStreamingS2SClient
         return ParseStatus(body);
     }
 
+    /// <summary>
+    /// Reads the versioned recursive descendant graph (schema v1) for <paramref name="rootThreadId"/> via
+    /// <c>GET api/conversations/{rootThreadId}/subagents?recursive=true</c>, for the S2S review-completion
+    /// source to feed the shared review-completion barrier.
+    /// Fails closed (throws <see cref="InvalidOperationException"/> with the raw body embedded) on
+    /// anything that is not an unambiguous schema-v1 tree: a missing/unsupported <c>schemaVersion</c>,
+    /// the OLD flat (bare-array, pre-versioned) response shape, or a node missing a required
+    /// relationship field (<c>agentId</c>/<c>threadId</c>/<c>parentThreadId</c>/<c>depth</c>/
+    /// <c>template</c>/<c>status</c>) — an incompatible response is never silently treated as an empty,
+    /// successful tree. An unrecognized <c>status</c> string maps to <see cref="ReviewSubAgentStatus.Unknown"/>
+    /// rather than throwing or defaulting to a terminal value.
+    /// <para>
+    /// <b>Deployment order:</b> the review host's recursive endpoint must already be deployed and
+    /// serving schema v1 before this client (and the daemon completion barrier that depends on it) is
+    /// enabled — enabling the barrier first would fail closed against a host that has not been upgraded
+    /// yet.
+    /// </para>
+    /// </summary>
+    public async Task<ReviewSubAgentTreeSnapshot> GetSubAgentTreeAsync(string rootThreadId, CancellationToken ct)
+    {
+        var body = await SendReadAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(rootThreadId)}/subagents?recursive=true",
+            body: null,
+            ct);
+        return ParseSubAgentTree(body);
+    }
+
     // ── HTTP plumbing ────────────────────────────────────────────────────────────────────────────
 
     private async Task SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
@@ -303,6 +331,112 @@ internal sealed class LmStreamingS2SClient
             ?? throw new InvalidOperationException(
                 $"Could not parse a {typeof(T).Name} from the server response. Body: {body}");
     }
+
+    private static ReviewSubAgentTreeSnapshot ParseSubAgentTree(string body)
+    {
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            // The OLD flat (pre-versioned) endpoint returns a bare SubAgentSummary[] array — never treat
+            // that as an empty, successful schema-v1 tree.
+            throw new InvalidOperationException(
+                $"Sub-agent tree response was not a schema-v1 object (got a bare array — the old, "
+                    + $"pre-versioned flat shape?). Body: {body}");
+        }
+
+        if (!root.TryGetProperty("schemaVersion", out var versionElement)
+            || versionElement.ValueKind != JsonValueKind.Number
+            || versionElement.GetInt32() != 1)
+        {
+            throw new InvalidOperationException(
+                $"Sub-agent tree response has a missing or unsupported schemaVersion (only 1 is "
+                    + $"supported). Body: {body}");
+        }
+
+        if (!root.TryGetProperty("nodes", out var nodesElement) || nodesElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"Sub-agent tree response did not contain a 'nodes' array. Body: {body}");
+        }
+
+        var nodes = new List<ReviewSubAgentNode>(nodesElement.GetArrayLength());
+        foreach (var element in nodesElement.EnumerateArray())
+        {
+            nodes.Add(ParseNode(element, body));
+        }
+
+        return new ReviewSubAgentTreeSnapshot(nodes);
+    }
+
+    private static ReviewSubAgentNode ParseNode(JsonElement element, string fullBody)
+    {
+        return new ReviewSubAgentNode
+        {
+            AgentId = RequireString(element, "agentId", fullBody),
+            ThreadId = RequireString(element, "threadId", fullBody),
+            ParentThreadId = RequireString(element, "parentThreadId", fullBody),
+            Depth = RequireInt(element, "depth", fullBody),
+            Template = RequireString(element, "template", fullBody),
+            Status = ParseNodeStatus(RequireString(element, "status", fullBody)),
+            Name = OptionalString(element, "name"),
+            TerminalAtUtc = OptionalDateTimeOffset(element, "terminalAtUtc"),
+            FailureCode = OptionalString(element, "failureCode"),
+        };
+    }
+
+    private static string RequireString(JsonElement element, string propertyName, string fullBody)
+    {
+        // An empty string is treated the same as an absent property: a relationship field such as
+        // "agentId"/"threadId"/"parentThreadId" is never legitimately empty, so this must fail closed
+        // rather than let a blank identifier flow into the barrier — mirroring ReadStringProperty's
+        // existing IsNullOrEmpty rejection elsewhere in this file.
+        if (element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString();
+            if (!string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Sub-agent tree node is missing the required '{propertyName}' string field. Body: {fullBody}");
+    }
+
+    private static int RequireInt(JsonElement element, string propertyName, string fullBody) =>
+        element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Number
+            ? value.GetInt32()
+            : throw new InvalidOperationException(
+                $"Sub-agent tree node is missing the required '{propertyName}' number field. Body: {fullBody}");
+
+    private static string? OptionalString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static DateTimeOffset? OptionalDateTimeOffset(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetDateTimeOffset()
+            : null;
+
+    /// <summary>
+    /// Maps the wire status string to <see cref="ReviewSubAgentStatus"/> case-insensitively. Any value that
+    /// is not exactly one of Running/Completed/Error/Stopped maps to <see cref="ReviewSubAgentStatus.Unknown"/>
+    /// — parsed as a plain string first (never <c>JsonSerializer.Deserialize&lt;ReviewSubAgentStatus&gt;</c>
+    /// against the C# enum directly), so an unrecognized or new wire status never throws a JSON enum error
+    /// and never silently defaults to a terminal value.
+    /// </summary>
+    private static ReviewSubAgentStatus ParseNodeStatus(string status) =>
+        status.ToLowerInvariant() switch
+        {
+            "running" => ReviewSubAgentStatus.Running,
+            "completed" => ReviewSubAgentStatus.Completed,
+            "error" => ReviewSubAgentStatus.Error,
+            "stopped" => ReviewSubAgentStatus.Stopped,
+            _ => ReviewSubAgentStatus.Unknown,
+        };
 }
 
 /// <summary>A workspace as returned by the review host's <c>api/workspaces</c> list/create endpoints.</summary>
