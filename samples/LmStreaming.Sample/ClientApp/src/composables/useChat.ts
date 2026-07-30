@@ -261,6 +261,14 @@ export function useChat(options: UseChatOptions = {}) {
   let pendingSandboxRefreshRetry: (() => Promise<void>) | null = null;
   let pendingSandboxRefreshFailure: (() => void) | null = null;
   let sandboxRefreshDeferred = false;
+  let sandboxRefreshThreadId: string | null = null;
+
+  function clearSandboxRefreshState(): void {
+    pendingSandboxRefreshRetry = null;
+    pendingSandboxRefreshFailure = null;
+    sandboxRefreshDeferred = false;
+    sandboxRefreshThreadId = null;
+  }
 
   // Deferred-auth prompts pushed by the backend while a sandbox webhook call is held
   // (providerId -> auth_required event). Replaced wholesale on change for Vue reactivity.
@@ -845,6 +853,10 @@ export function useChat(options: UseChatOptions = {}) {
       ...callbacks,
       onAuthEvent: handleAuthEvent,
       onSandboxSessionRefresh: async (deferred) => {
+        if (sandboxRefreshThreadId !== effectiveThreadId || threadId.value !== effectiveThreadId) {
+          clearSandboxRefreshState();
+          return;
+        }
         if (deferred) {
           sandboxRefreshDeferred = true;
           return;
@@ -868,7 +880,11 @@ export function useChat(options: UseChatOptions = {}) {
       onDone: () => {
         log.debug('WebSocket stream done signal received');
         callbacks.onDone();
-        if (sandboxRefreshDeferred) {
+        if (
+          sandboxRefreshDeferred &&
+          sandboxRefreshThreadId === effectiveThreadId &&
+          threadId.value === effectiveThreadId
+        ) {
           sandboxRefreshDeferred = false;
           const retry = pendingSandboxRefreshRetry;
           const fail = pendingSandboxRefreshFailure;
@@ -912,9 +928,13 @@ export function useChat(options: UseChatOptions = {}) {
   ): Promise<void> {
     const effectiveThreadId = getOrCreateThreadId();
 
+    sandboxRefreshThreadId = effectiveThreadId;
     pendingSandboxRefreshRetry = sandboxRefreshRetried
       ? null
-      : () => sendMessageViaWebSocket(text, callbacks, true);
+      : () =>
+          threadId.value === effectiveThreadId
+            ? sendMessageViaWebSocket(text, callbacks, true)
+            : Promise.resolve();
     pendingSandboxRefreshFailure = sandboxRefreshRetried
       ? () => callbacks.onError('The sandbox session changed again while reconnecting. Please retry.')
       : null;
@@ -1089,6 +1109,7 @@ export function useChat(options: UseChatOptions = {}) {
     // idle existing conversation) and in handleNewChat (a fresh chat is always idle).
     resetContentTurnEpoch();
     reset();
+    clearSandboxRefreshState();
 
     // Close WebSocket connection
     await disconnectWebSocket();
@@ -1136,6 +1157,9 @@ export function useChat(options: UseChatOptions = {}) {
    */
   function setThreadId(newThreadId: string | null): void {
     log.info('Setting thread ID externally', { oldThreadId: threadId.value, newThreadId });
+    if (threadId.value !== newThreadId) {
+      clearSandboxRefreshState();
+    }
     threadId.value = newThreadId;
   }
 

@@ -391,15 +391,19 @@ public class WorkflowRuntimeTests
     }
 
     [Fact]
-    public void AddNode_ViaPreviousNodeIdOnly_AppendsToPreviousNextAndSeedsOutputs()
+    public void AddNode_ViaPreviousNodeIdOnly_ReplacesPreviousNextAndSeedsOutputs()
     {
         var runtime = LoadedRuntime();
 
-        runtime.AddNode(new TerminalNode { Id = "extra", Title = "Extra" }, previousNodeId: "analyze", nextNodeId: null);
+        runtime.AddNode(
+            new ProceduralNode { Id = "extra", Title = "Extra", Next = [], TaskList = [] },
+            previousNodeId: "analyze",
+            nextNodeId: null
+        );
 
         var analyze = runtime.Definition!.Nodes.Single(n => n.Id == "analyze");
-        analyze.Should().BeOfType<ProceduralNode>().Which.Next.Should().Contain("extra");
-        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra");
+        analyze.Should().BeOfType<ProceduralNode>().Which.Next.Should().Equal("extra");
+        runtime.Definition!.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "extra").Next.Should().Equal("done");
         runtime.Outputs.Should().ContainKey("extra");
         runtime.Outputs["extra"].Should().BeOfType<JsonObject>().Which.Should().BeEmpty();
     }

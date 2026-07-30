@@ -124,6 +124,21 @@ describe('useChat mode-aware websocket lifecycle', () => {
     ]);
   });
 
+  it('does not replay a deferred sandbox message after switching conversations', async () => {
+    const chat = useChat({ getModeId: () => 'workspace-agent' });
+    chat.setThreadId('thread-A');
+    await chat.sendMessage('use workspace A');
+    const firstOptions = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+
+    await firstOptions.onSandboxSessionRefresh(true);
+    chat.setThreadId('thread-B');
+    firstOptions.onDone();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(wsMocks.sendWebSocketMessage).toHaveBeenCalledTimes(1);
+    expect(wsMocks.createWebSocketConnection).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry more than once when the replacement session also refreshes', async () => {
     const chat = useChat({ getModeId: () => 'workspace-agent' });
 

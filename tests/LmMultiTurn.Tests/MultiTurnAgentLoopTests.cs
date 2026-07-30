@@ -650,6 +650,67 @@ public class MultiTurnAgentLoopTests
         await cts.CancelAsync();
     }
 
+    [Fact]
+    public async Task ExecuteRunAsync_CapHit_WrapUpProviderFailureReportsErrorTurn()
+    {
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\":\"Seattle\"}",
+            ToolCallId = "call_error",
+            Role = Role.Assistant,
+        };
+        var callCount = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                if (Interlocked.Increment(ref callCount) == 2)
+                {
+                    throw new InvalidOperationException("wrap-up failed");
+                }
+
+                return Task.FromResult(ToAsyncEnumerable([toolCall]));
+            });
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "get_weather",
+                Description = "weather",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        ParameterType = JsonSchemaObject.String(),
+                        IsRequired = true,
+                    },
+                ],
+            },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+        var publisher = new RecordingLifecyclePublisher();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "wrap-error-thread",
+            maxTurnsPerRun: 1,
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher });
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        await foreach (var _ in loop.ExecuteRunAsync(
+            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)) { }
+
+        var wrapUpTurn = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)[1];
+        wrapUpTurn.Outcome.Should().Be(LifecycleTurnOutcomes.Error);
+        wrapUpTurn.MessageCount.Should().Be(1, "the deterministic fallback is still observed");
+        await cts.CancelAsync();
+    }
+
     // Wrap-up on turn-cap hit, fallback path: if the model keeps emitting tool calls even in the
     // wrap-up turn (ignoring the instruction), the loop must NOT execute them and must still close
     // the run on a deterministic assistant status message so it never dead-ends on a tool result.

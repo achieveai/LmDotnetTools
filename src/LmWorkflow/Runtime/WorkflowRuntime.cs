@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -362,46 +363,65 @@ public sealed class WorkflowRuntime
             }
 
             WorkflowNode? mutatedPrevious = null;
+            var newNode = node;
             if (!string.IsNullOrEmpty(previousNodeId))
             {
                 var previous =
                     FindNodeNoLock(previousNodeId)
                     ?? throw new InvalidOperationException($"Node '{previousNodeId}' does not exist.");
 
-                mutatedPrevious = previous switch
+                // Insertion semantics: previous -> old successor becomes previous -> new -> old successor.
+                // When nextNodeId is supplied it explicitly selects the new node's successor; otherwise a
+                // predecessor with exactly one outgoing edge donates that edge to the inserted node. A
+                // branching procedural predecessor has no unambiguous displaced edge, so callers must say
+                // which successor they intend.
+                var previousNext = previous switch
                 {
-                    StartNode start => start with { Next = [.. start.Next, node.Id] },
-                    ProceduralNode procedural => procedural with { Next = [.. procedural.Next, node.Id] },
+                    StartNode start => start.Next,
+                    ProceduralNode procedural => procedural.Next,
                     _ => throw new InvalidOperationException(
                         $"Node '{previousNodeId}' is a {previous.Type} node; splicing via 'previousNodeId' is "
                             + "only supported for start/procedural nodes. Use SetWorkflow to edit its "
                             + "branches/else directly."
                     ),
                 };
+                var successor = nextNodeId;
+                if (string.IsNullOrEmpty(successor))
+                {
+                    successor = previousNext.Count == 1
+                        ? previousNext[0]
+                        : throw new InvalidOperationException(
+                            $"Node '{previousNodeId}' has {previousNext.Count} successors; provide 'nextNodeId' "
+                                + "to select the edge the new node should displace."
+                        );
+                }
+                else if (!previousNext.Contains(successor))
+                {
+                    throw new InvalidOperationException(
+                        $"Node '{nextNodeId}' is not an outgoing edge of '{previousNodeId}' and cannot be displaced."
+                    );
+                }
+
+                mutatedPrevious = previous switch
+                {
+                    StartNode start => start with { Next = [node.Id] },
+                    ProceduralNode procedural => procedural with
+                    {
+                        Next = [.. procedural.Next.Where(id => id != successor), node.Id],
+                    },
+                    _ => throw new UnreachableException(),
+                };
+                newNode = node is TerminalNode ? node : AppendNext(node, successor);
             }
 
-            var newNode = node;
-            if (!string.IsNullOrEmpty(nextNodeId))
+            if (!string.IsNullOrEmpty(nextNodeId) && string.IsNullOrEmpty(previousNodeId))
             {
                 if (FindNodeNoLock(nextNodeId) is null)
                 {
                     throw new InvalidOperationException($"Node '{nextNodeId}' does not exist.");
                 }
 
-                newNode = node switch
-                {
-                    StartNode start => start.Next.Contains(nextNodeId)
-                        ? start
-                        : start with { Next = [.. start.Next, nextNodeId] },
-                    ProceduralNode procedural => procedural.Next.Contains(nextNodeId)
-                        ? procedural
-                        : procedural with { Next = [.. procedural.Next, nextNodeId] },
-                    _ => throw new InvalidOperationException(
-                        $"'{node.Id}' is a {node.Type} node; 'nextNodeId' auto-wiring is only supported for "
-                            + "start/procedural nodes. Fully specify branches/else (or omit nextNodeId for a "
-                            + "terminal) on the node payload."
-                    ),
-                };
+                newNode = AppendNext(node, nextNodeId);
             }
 
             var candidateNodes = Definition
@@ -420,6 +440,21 @@ public sealed class WorkflowRuntime
 
         Persist(snapshot);
     }
+
+    private static WorkflowNode AppendNext(WorkflowNode node, string nextNodeId) =>
+        node switch
+        {
+            StartNode start => start.Next.Contains(nextNodeId)
+                ? start
+                : start with { Next = [.. start.Next, nextNodeId] },
+            ProceduralNode procedural => procedural.Next.Contains(nextNodeId)
+                ? procedural
+                : procedural with { Next = [.. procedural.Next, nextNodeId] },
+            _ => throw new InvalidOperationException(
+                $"'{node.Id}' is a {node.Type} node; automatic successor wiring is only supported for "
+                    + "start/procedural nodes. Fully specify branches/else on conditional nodes."
+            ),
+        };
 
     /// <summary>
     ///     "Removes" the node <paramref name="nodeId"/> by neutering it into a no-op pass-through IN PLACE

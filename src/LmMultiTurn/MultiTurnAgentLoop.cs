@@ -860,6 +860,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         var wrapUpGenerationId = Guid.NewGuid().ToString("N");
         BeginTurn(runId, wrapUpGenerationId);
 
+        var turnOutcome = LifecycleTurnOutcomes.Completed;
         try
         {
             var options = DefaultOptions with
@@ -893,7 +894,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             {
                 // The wrap-up is best-effort: if the model call itself fails, still close the run on a
                 // deterministic status rather than propagating (which would fail the whole run) or
-                // leaving it on a tool result.
+                // leaving it on a tool result. The lifecycle turn remains an error even though the run gets
+                // a fallback assistant message.
+                turnOutcome = LifecycleTurnOutcomes.Error;
                 Logger.LogWarning(ex, "Wrap-up model turn failed for run {RunId}; publishing fallback status", runId);
                 await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
                 return;
@@ -927,9 +930,19 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
             }
         }
+        catch (OperationCanceledException)
+        {
+            turnOutcome = LifecycleTurnOutcomes.Cancelled;
+            throw;
+        }
+        catch
+        {
+            turnOutcome = LifecycleTurnOutcomes.Error;
+            throw;
+        }
         finally
         {
-            await CompleteTurnAsync(runId, wrapUpGenerationId, ct: ct);
+            await CompleteTurnAsync(runId, wrapUpGenerationId, turnOutcome, CancellationToken.None);
         }
     }
 

@@ -221,22 +221,23 @@ public class WorkflowHardeningTests
     }
 
     [Fact]
-    public async Task AddNode_ValidSplice_ReturnsUpdatedProjection()
+    public async Task AddNode_AfterStart_SplicesDisplacedSuccessorBehindNewNode()
     {
         var runtime = new WorkflowRuntime();
-        runtime.LoadDefinition(WorkflowJson.Deserialize(MergeGuardWorkflow));
+        runtime.LoadDefinition(WorkflowJson.Deserialize(Phase3Fixtures.LinearBlockingAgent));
 
-        // "proc" is a procedural node (>= 1 'next' allowed), unlike a start node (exactly 1 required),
-        // so appending a second outgoing edge here doesn't trip the node-structure validator.
         var args = new JsonObject
         {
-            ["node"] = JsonNode.Parse("""{ "id": "extra", "type": "terminal", "title": "Extra" }"""),
-            ["previousNodeId"] = "proc",
+            ["node"] = JsonNode.Parse(
+                """{ "id": "extra", "kind": "agent", "prompt": "Inserted work." }"""
+            ),
+            ["previousNodeId"] = "start",
         };
         var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
 
         result.Payload.IsError.Should().BeFalse();
-        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra");
+        runtime.Definition!.Nodes.OfType<StartNode>().Single().Next.Should().Equal("extra");
+        runtime.Definition.Nodes.OfType<ProceduralNode>().Single(n => n.Id == "extra").Next.Should().Equal("analyze");
     }
 
     [Fact]
@@ -337,6 +338,54 @@ public class WorkflowHardeningTests
     }
 
     [Fact]
+    public async Task SetWorkflow_DslUnknownField_ReturnsInvalidWorkflow()
+    {
+        var runtime = new WorkflowRuntime();
+        var args = new JsonObject
+        {
+            ["definition"] = JsonNode.Parse(
+                """
+                { "objective": "x", "steps": [
+                  { "id": "start", "kind": "start", "nxet": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            ),
+        };
+
+        var result = await Invoke(Tool(runtime, "SetWorkflow"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+    }
+
+    [Fact]
+    public async Task SetWorkflow_DslBranchMissingGoto_ReturnsInvalidWorkflow()
+    {
+        var runtime = new WorkflowRuntime();
+        var args = new JsonObject
+        {
+            ["definition"] = JsonNode.Parse(
+                """
+                { "objective": "x", "steps": [
+                  { "id": "start", "kind": "start", "next": "choose" },
+                  { "id": "choose", "kind": "branch", "branches": [
+                    { "when": "always" }
+                  ], "else": "done" },
+                  { "id": "done", "kind": "end" }
+                ] }
+                """
+            ),
+        };
+
+        var result = await Invoke(Tool(runtime, "SetWorkflow"), args.ToJsonString());
+
+        result.Payload.IsError.Should().BeTrue();
+        result.Payload.ErrorCode.Should().Be("invalid_workflow");
+        result.Payload.Text.Should().Contain("goto");
+    }
+
+    [Fact]
     public async Task SetWorkflow_DslMissingAgentFields_ReturnsInvalidWorkflow()
     {
         var runtime = new WorkflowRuntime();
@@ -367,14 +416,16 @@ public class WorkflowHardeningTests
 
         var args = new JsonObject
         {
-            ["node"] = JsonNode.Parse("""{ "id": "extra", "kind": "end" }"""),
+            ["node"] = JsonNode.Parse(
+                """{ "id": "extra", "kind": "agent", "prompt": "Inserted work." }"""
+            ),
             ["previousNodeId"] = "proc",
         };
 
         var result = await Invoke(Tool(runtime, "AddNode"), args.ToJsonString());
 
         result.Payload.IsError.Should().BeFalse();
-        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra" && n is TerminalNode);
+        runtime.Definition!.Nodes.Should().Contain(n => n.Id == "extra" && n is ProceduralNode);
     }
 
     [Fact]

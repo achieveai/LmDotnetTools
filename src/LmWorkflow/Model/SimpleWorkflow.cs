@@ -32,7 +32,11 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Model;
 public sealed record SimpleWorkflow
 {
     /// <summary>Case-insensitive options so a model may use camelCase (<c>saveAs</c>, <c>onMaxVisits</c>, …).</summary>
-    public static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+    public static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+    };
 
     /// <summary>Output options: camelCase field names and no null/absent fields, so a read-back matches the authoring shape.</summary>
     public static readonly JsonSerializerOptions OutputJsonOptions = new()
@@ -442,6 +446,14 @@ public static class SimpleWorkflowTranslator
                 if (branches.Count == 0)
                 {
                     errors.Add($"Branch step '{id}' needs at least one 'branches' entry.");
+                }
+
+                for (var branchIndex = 0; branchIndex < branches.Count; branchIndex++)
+                {
+                    if (string.IsNullOrWhiteSpace(branches[branchIndex].Goto))
+                    {
+                        errors.Add($"Branch step '{id}' branch {branchIndex + 1} needs a 'goto'.");
+                    }
                 }
 
                 return new ConditionalNode
