@@ -29,6 +29,20 @@ namespace AchieveAi.LmDotnetTools.LmWorkflow.Tests;
 /// </summary>
 public class WorkflowAuthoringErgonomicsTests
 {
+    [Fact]
+    public void AuthoringSchema_AdvertisesModelIntelligenceAndRejectsUnknownFields()
+    {
+        var workflow = SimpleWorkflowSchema.Workflow();
+        var step = workflow.Properties!["steps"].Items!;
+        var parallelAgent = step.Properties!["agents"].Items!;
+
+        workflow.AdditionalProperties.Should().BeFalse();
+        step.AdditionalProperties.Should().BeFalse();
+        parallelAgent.AdditionalProperties.Should().BeFalse();
+        step.Properties.Should().ContainKey("modelIntelligence");
+        parallelAgent.Properties.Should().ContainKey("modelIntelligence");
+    }
+
     // ---- Fix A: SetWorkflow advertises a usable flat-step schema -------------------------------
 
     [Fact]

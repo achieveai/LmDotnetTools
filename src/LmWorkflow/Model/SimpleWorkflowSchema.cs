@@ -28,7 +28,7 @@ public static class SimpleWorkflowSchema
             )
             .WithProperty("objective", JsonSchemaObject.String("The high-level objective the workflow pursues."), required: true)
             .WithProperty("steps", JsonSchemaObject.Array(Step(), "The workflow steps."), required: true)
-            .AllowAdditionalProperties(true)
+            .AllowAdditionalProperties(false)
             .Build();
 
     /// <summary>Schema for one uniform step. Which optional fields apply depends on <c>kind</c>.</summary>
@@ -82,6 +82,13 @@ public static class SimpleWorkflowSchema
                 )
             )
             .WithProperty(
+                "modelIntelligence",
+                JsonSchemaObject.Integer(
+                    "agent steps (optional): capability tier forwarded to Agent.modelIntelligence. Higher values "
+                        + "request a more capable configured model; omit to keep the selected agent's default."
+                )
+            )
+            .WithProperty(
                 "forEach",
                 JsonSchemaObject.String(
                     "agent steps (optional): fan the SAME agent out over each element of a state array, e.g. "
@@ -109,7 +116,7 @@ public static class SimpleWorkflowSchema
             )
             .WithProperty("maxVisits", JsonSchemaObject.Integer("optional loop cap: the maximum times this step may be entered."))
             .WithProperty("onMaxVisits", JsonSchemaObject.String("optional loop escape: the step id to go to once maxVisits is exceeded."))
-            .AllowAdditionalProperties(true)
+            .AllowAdditionalProperties(false)
             .Build();
 
     private static JsonSchemaObject Agent() =>
@@ -122,8 +129,14 @@ public static class SimpleWorkflowSchema
                 )
             )
             .WithProperty("prompt", JsonSchemaObject.String("The prompt for the sub-agent."), required: true)
+            .WithProperty(
+                "modelIntelligence",
+                JsonSchemaObject.Integer(
+                    "optional capability tier forwarded to Agent.modelIntelligence; omit to keep the agent default."
+                )
+            )
             .WithProperty("saveAs", JsonSchemaObject.String("optional: capture this agent's output into state.<saveAs>."))
-            .AllowAdditionalProperties(true)
+            .AllowAdditionalProperties(false)
             .Build();
 
     private static JsonSchemaObject Branch() =>
@@ -131,6 +144,6 @@ public static class SimpleWorkflowSchema
             .Create("object")
             .WithProperty("when", JsonSchemaObject.String("The (prose) condition that selects this branch."), required: true)
             .WithProperty("goto", JsonSchemaObject.String("The step id to go to when 'when' holds."), required: true)
-            .AllowAdditionalProperties(true)
+            .AllowAdditionalProperties(false)
             .Build();
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   closeWebSocketConnection,
   normalizeKeys,
+  createWebSocketConnection,
   openWebSocketConnection,
   type WebSocketConnection,
 } from '@/api/wsClient';
@@ -191,6 +192,26 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
     socket.onmessage?.({ data: JSON.stringify({ $type: 'error', message: 'Unstructured failure' }) });
 
     expect(onError).toHaveBeenCalledWith('Unstructured failure', undefined);
+  });
+
+  it('forwards sandbox refresh through the chat connection wrapper', async () => {
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    const onSandboxSessionRefresh = vi.fn();
+    const promise = createWebSocketConnection({
+      threadId: 'thread-wrapper',
+      onMessage: () => {},
+      onDone: () => {},
+      onError: () => {},
+      onSandboxSessionRefresh,
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    await promise;
+
+    socket.onmessage?.({ data: JSON.stringify({ $type: 'sandbox_session_refresh' }) });
+
+    expect(onSandboxSessionRefresh).toHaveBeenCalledWith(false);
   });
 
   it('surfaces sandbox session refresh as a non-error reconnect signal', async () => {

@@ -60,6 +60,19 @@ public class TaskOutputToleranceTests
     }
 
     [Fact]
+    public void NoSchema_ProseContainingJson_IsPreservedVerbatim()
+    {
+        var runtime = RuntimeAtAnalyze(Phase4Fixtures.NoSchemaSingleTask(maxValidationRetries: 0));
+        runtime.RegisterSpawn("tc1", Unit);
+        var reply = "The endpoint returned {\"status\":500}; retry through the existing failure path.";
+
+        runtime.ObserveResult("tc1", reply, isError: false);
+
+        StatusOf(runtime, Unit).Should().Be("validated");
+        runtime.Outputs["analyze"]!["task"]!.GetValue<string>().Should().Be(reply);
+    }
+
+    [Fact]
     public void NoSchema_FencedJson_IsUnwrappedAndStoredAsJson()
     {
         var runtime = RuntimeAtAnalyze(Phase4Fixtures.NoSchemaSingleTask(maxValidationRetries: 0));

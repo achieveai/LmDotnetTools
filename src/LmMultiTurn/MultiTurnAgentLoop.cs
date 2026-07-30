@@ -150,6 +150,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// <param name="lifecycleServices">
     ///     Optional lifecycle observation and tool approval. Null leaves both off.
     /// </param>
+    /// <param name="subAgentLifecycleServices">
+    ///     Optional lifecycle bundle inherited by spawned sub-agents when it must differ from this loop's
+    ///     own bundle. Null uses <paramref name="lifecycleServices"/> after this loop stamps it.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -168,7 +172,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         TriggerOptions? triggerOptions = null,
         IPricingResolver? pricingResolver = null,
         IUsageSink? externalUsageSink = null,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        MultiTurnLifecycleServices? subAgentLifecycleServices = null)
         : base(
             threadId,
             systemPrompt,
@@ -295,8 +300,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 persistUsageAsync: PersistCurrentUsageAsync,
                 // The parent's own wiring, from which each child derives its bundle at spawn time.
                 // A sub-agent's events belong in the parent's ordered stream, and a host that gates
-                // the parent's tools did not mean to leave the children's ungated.
-                lifecycleServices: LifecycleServices);
+                // the parent's tools did not mean to leave the children's ungated. A workflow controller
+                // can exempt only its own control-plane tools while explicitly retaining the host bundle
+                // for delegates through subAgentLifecycleServices.
+                lifecycleServices: subAgentLifecycleServices ?? LifecycleServices);
 
             var toolProvider = new SubAgentToolProvider(
                 SubAgentManager,
@@ -851,69 +858,78 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // this wrap-up included, gets a fresh one) so its messages don't collide with earlier turns
         // on the client merge key kind-runId-generationId-messageOrderIdx.
         var wrapUpGenerationId = Guid.NewGuid().ToString("N");
+        BeginTurn(runId, wrapUpGenerationId);
 
-        var options = DefaultOptions with
-        {
-            RunId = runId,
-            ThreadId = ThreadId,
-            GenerationId = wrapUpGenerationId,
-        };
-
-        // Ephemeral instruction, appended to the sent messages only (NOT AddToHistory). Anthropic
-        // merges consecutive same-role messages, so a Role.User instruction after the final
-        // tool_result (also a user-role turn) is safe cross-provider.
-        var wrapUpInstruction = new TextMessage
-        {
-            Text =
-                "You have reached the maximum number of tool-use turns for this run. Do not call any "
-                + "more tools. Write a concise final message that summarizes what you accomplished, "
-                + "the current status, and any remaining or unfinished work so nothing is left "
-                + "mid-stream.",
-            Role = Role.User,
-        };
-
-        var messagesToSend = GetMessagesWithSystemPrompt().Concat([wrapUpInstruction]);
-
-        IAsyncEnumerable<IMessage> stream;
         try
         {
-            stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // The wrap-up is best-effort: if the model call itself fails, still close the run on a
-            // deterministic status rather than propagating (which would fail the whole run) or
-            // leaving it on a tool result.
-            Logger.LogWarning(ex, "Wrap-up model turn failed for run {RunId}; publishing fallback status", runId);
-            await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
-            return;
-        }
-
-        var producedText = false;
-        await foreach (var msg in stream.WithCancellation(ct))
-        {
-            // Drop any tool call the model emits despite the instruction: do not execute it and do
-            // not persist it. Not executing guarantees the turn adds no new work and ends on text;
-            // not persisting avoids a dangling tool_use with no tool_result that would break a later
-            // resume. It was already surfaced to subscribers by the in-pipeline publishing middleware
-            // (result-less pill), which is cosmetic and rare.
-            if (msg is ToolCallMessage or ToolsCallMessage or ToolCallUpdateMessage or ToolsCallUpdateMessage)
+            var options = DefaultOptions with
             {
-                continue;
+                RunId = runId,
+                ThreadId = ThreadId,
+                GenerationId = wrapUpGenerationId,
+            };
+
+            // Ephemeral instruction, appended to the sent messages only (NOT AddToHistory). Anthropic
+            // merges consecutive same-role messages, so a Role.User instruction after the final
+            // tool_result (also a user-role turn) is safe cross-provider.
+            var wrapUpInstruction = new TextMessage
+            {
+                Text =
+                    "You have reached the maximum number of tool-use turns for this run. Do not call any "
+                    + "more tools. Write a concise final message that summarizes what you accomplished, "
+                    + "the current status, and any remaining or unfinished work so nothing is left "
+                    + "mid-stream.",
+                Role = Role.User,
+            };
+
+            var messagesToSend = GetMessagesWithSystemPrompt().Concat([wrapUpInstruction]);
+
+            IAsyncEnumerable<IMessage> stream;
+            try
+            {
+                stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The wrap-up is best-effort: if the model call itself fails, still close the run on a
+                // deterministic status rather than propagating (which would fail the whole run) or
+                // leaving it on a tool result.
+                Logger.LogWarning(ex, "Wrap-up model turn failed for run {RunId}; publishing fallback status", runId);
+                await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
+                return;
             }
 
-            AddToHistory(msg);
-
-            // A finalized, non-thinking, non-blank text message counts as a real wrap-up.
-            if (msg is TextMessage { IsThinking: false } text && !string.IsNullOrWhiteSpace(text.Text))
+            var producedText = false;
+            await foreach (var msg in stream.WithCancellation(ct))
             {
-                producedText = true;
+                // Drop any tool call the model emits despite the instruction: do not execute it and do
+                // not persist it. Not executing guarantees the turn adds no new work and ends on text;
+                // not persisting avoids a dangling tool_use with no tool_result that would break a later
+                // resume. It was already surfaced to subscribers by the in-pipeline publishing middleware
+                // (result-less pill), which is cosmetic and rare.
+                if (msg is ToolCallMessage or ToolsCallMessage or ToolCallUpdateMessage or ToolsCallUpdateMessage)
+                {
+                    continue;
+                }
+
+                AddToHistory(msg);
+                ObserveTurnMessage(runId, wrapUpGenerationId, msg);
+
+                // A finalized, non-thinking, non-blank text message counts as a real wrap-up.
+                if (msg is TextMessage { IsThinking: false } text && !string.IsNullOrWhiteSpace(text.Text))
+                {
+                    producedText = true;
+                }
+            }
+
+            if (!producedText)
+            {
+                await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
             }
         }
-
-        if (!producedText)
+        finally
         {
-            await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
+            await CompleteTurnAsync(runId, wrapUpGenerationId, ct: ct);
         }
     }
 
@@ -935,6 +951,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }.WithIds(runId, parentRunId: null, threadId: ThreadId, generationId: generationId);
 
         AddToHistory(fallback);
+        ObserveTurnMessage(runId, generationId, fallback);
         await PublishToAllAsync(fallback, ct);
     }
 

@@ -42,11 +42,15 @@ internal readonly record struct SpawnSchemaCheck(bool HasSchema, bool IsValid, s
 internal sealed class WorkflowJsonRepairer
 {
     private readonly IAgent _repairAgent;
+    private readonly string _modelId;
     private readonly ILogger? _logger;
 
-    internal WorkflowJsonRepairer(IAgent repairAgent, ILogger? logger = null)
+    internal WorkflowJsonRepairer(IAgent repairAgent, string modelId, ILogger? logger = null)
     {
         _repairAgent = repairAgent ?? throw new ArgumentNullException(nameof(repairAgent));
+        _modelId = string.IsNullOrWhiteSpace(modelId)
+            ? throw new ArgumentException("A repair model id is required.", nameof(modelId))
+            : modelId;
         _logger = logger;
     }
 
@@ -67,7 +71,11 @@ internal sealed class WorkflowJsonRepairer
 
             // json_object mode nudges JSON-only output across cheap-tier transports without depending on the
             // provider's own schema enforcement; correctness is owned by the caller's re-validation, not here.
-            var options = new GenerateReplyOptions { ResponseFormat = ResponseFormat.JSON };
+            var options = new GenerateReplyOptions
+            {
+                ModelId = _modelId,
+                ResponseFormat = ResponseFormat.JSON,
+            };
 
             var replies = await _repairAgent.GenerateReplyAsync(messages, options, ct).ConfigureAwait(false);
             var text = replies.OfType<TextMessage>().FirstOrDefault()?.Text;

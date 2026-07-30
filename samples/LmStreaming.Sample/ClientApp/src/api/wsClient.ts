@@ -303,7 +303,7 @@ export function openWebSocketConnection(
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { threadId, onMessage, onDone, onError, onAuthEvent } = options;
+  const { threadId, onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose } = options;
   const connectionId = generateConnectionId();
   const effectiveThreadId = threadId || generateThreadId();
   const wsUrl = buildChatWebSocketUrl(options, effectiveThreadId, connectionId);
@@ -312,6 +312,8 @@ export function createWebSocketConnection(
     onDone,
     onError,
     onAuthEvent,
+    onSandboxSessionRefresh,
+    onClose,
   });
 }
 

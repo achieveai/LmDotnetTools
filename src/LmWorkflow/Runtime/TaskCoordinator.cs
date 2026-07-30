@@ -546,9 +546,14 @@ internal sealed class TaskCoordinator
             return;
         }
 
-        // No schema: accept free-form output. Store the extracted JSON when the reply is (or embeds) JSON,
-        // otherwise store the raw text as a JSON string value. Never fail the task for "not valid JSON".
-        RecordValidated(taskRef, parsed ?? JsonValue.Create(resultText));
+        // No schema: preserve prose verbatim. Parse only when the whole reply is JSON or a pure JSON
+        // Markdown fence; an embedded object can be an example/status fragment inside a larger report and
+        // must not replace that report. Never fail the task for "not valid JSON".
+        var trimmed = resultText.Trim();
+        var structured = parsed is not null
+            && (string.Equals(extractedJson, trimmed, StringComparison.Ordinal)
+                || IsPureJsonFence(trimmed, extractedJson));
+        RecordValidated(taskRef, structured ? parsed! : JsonValue.Create(resultText));
     }
 
     /// <summary>
@@ -581,6 +586,22 @@ internal sealed class TaskCoordinator
         return _schemaValidator.ValidateDetailed(extractedJson, schemaJson).IsValid
             ? SpawnSchemaCheck.Valid
             : SpawnSchemaCheck.Invalid(schemaJson);
+    }
+
+    private static bool IsPureJsonFence(string text, string extractedJson)
+    {
+        if (!text.StartsWith("```", StringComparison.Ordinal) || !text.EndsWith("```", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var firstLineEnd = text.IndexOf('\n');
+        if (firstLineEnd < 0)
+        {
+            return false;
+        }
+
+        return string.Equals(text[(firstLineEnd + 1)..^3].Trim(), extractedJson, StringComparison.Ordinal);
     }
 
     /// <summary>Parses an already-extracted JSON candidate, returning <c>null</c> for the literal <c>null</c> (or the defensive parse-failure case).</summary>

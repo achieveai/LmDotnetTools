@@ -4,8 +4,12 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using LmMultiTurn.Tests.Lifecycle;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -576,6 +580,73 @@ public class MultiTurnAgentLoopTests
         var lastContent = messages.LastOrDefault(m => m is TextMessage or ToolCallResultMessage);
         lastContent.Should().BeOfType<TextMessage>();
 
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_CapHit_ReportsWrapUpAsLifecycleTurn()
+    {
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\":\"Seattle\"}",
+            ToolCallId = "call_lifecycle",
+            Role = Role.Assistant,
+        };
+        var callCount = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((messages, _, _) =>
+            {
+                callCount++;
+                var wrapUp = messages.OfType<TextMessage>().Any(m =>
+                    m.Role == Role.User && m.Text.Contains("maximum number of tool-use turns"));
+                List<IMessage> reply = wrapUp
+                    ? [new TextMessage { Text = "final", Role = Role.Assistant }]
+                    : [toolCall];
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "get_weather",
+                Description = "weather",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        ParameterType = JsonSchemaObject.String(),
+                        IsRequired = true,
+                    },
+                ],
+            },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+        var publisher = new RecordingLifecyclePublisher();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "wrap-lifecycle-thread",
+            maxTurnsPerRun: 1,
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher });
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        await foreach (var _ in loop.ExecuteRunAsync(
+            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)) { }
+
+        publisher.EventTypes.Count(t => t == LifecycleEventTypes.TurnCompleted).Should().Be(2);
+        var wrapUpTurn = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)[1];
+        wrapUpTurn.MessageCount.Should().Be(1);
+        wrapUpTurn.ToolCallCount.Should().Be(0);
+        publisher.Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
+            .Should().ContainSingle().Which.TurnCount.Should().Be(2);
+        callCount.Should().Be(2);
         await cts.CancelAsync();
     }
 

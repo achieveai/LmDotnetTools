@@ -99,7 +99,7 @@ public class SpawnResultJsonRepairTests
         var runtime = RuntimeAtAnalyze(Phase4Fixtures.SingleTask(maxValidationRetries: 0));
         runtime.RegisterSpawn("tc1", Unit);
         var message = Result(BrokenJson);
-        var repairer = new WorkflowJsonRepairer(RepairAgentReturning(RepairedJson).Object);
+        var repairer = new WorkflowJsonRepairer(RepairAgentReturning(RepairedJson).Object, "repair-model");
 
         var observed = await WorkflowSession.MaybeRepairSpawnResultAsync(
             runtime,
@@ -125,7 +125,7 @@ public class SpawnResultJsonRepairTests
         var runtime = RuntimeAtAnalyze(Phase4Fixtures.SingleTask(maxValidationRetries: 0));
         runtime.RegisterSpawn("tc1", Unit);
         var message = Result(BrokenJson);
-        var repairer = new WorkflowJsonRepairer(RepairAgentReturning(GarbageRepair).Object);
+        var repairer = new WorkflowJsonRepairer(RepairAgentReturning(GarbageRepair).Object, "repair-model");
 
         var observed = await WorkflowSession.MaybeRepairSpawnResultAsync(
             runtime,
@@ -153,7 +153,7 @@ public class SpawnResultJsonRepairTests
 
         var observed = await WorkflowSession.MaybeRepairSpawnResultAsync(
             runtime,
-            new WorkflowJsonRepairer(mock.Object),
+            new WorkflowJsonRepairer(mock.Object, "repair-model"),
             message,
             CancellationToken.None
         );
@@ -172,7 +172,7 @@ public class SpawnResultJsonRepairTests
 
         var observed = await WorkflowSession.MaybeRepairSpawnResultAsync(
             runtime,
-            new WorkflowJsonRepairer(mock.Object),
+            new WorkflowJsonRepairer(mock.Object, "repair-model"),
             message,
             CancellationToken.None
         );
@@ -192,7 +192,7 @@ public class SpawnResultJsonRepairTests
 
         var observed = await WorkflowSession.MaybeRepairSpawnResultAsync(
             runtime,
-            new WorkflowJsonRepairer(mock.Object),
+            new WorkflowJsonRepairer(mock.Object, "repair-model"),
             message,
             CancellationToken.None
         );
@@ -211,7 +211,7 @@ public class SpawnResultJsonRepairTests
 
         var observed = await WorkflowSession.MaybeRepairSpawnResultAsync(
             runtime,
-            new WorkflowJsonRepairer(mock.Object),
+            new WorkflowJsonRepairer(mock.Object, "repair-model"),
             message,
             CancellationToken.None
         );
@@ -288,11 +288,32 @@ public class WorkflowJsonRepairerTests
                 )
             )
             .Returns(handler);
-        return new WorkflowJsonRepairer(mock.Object);
+        return new WorkflowJsonRepairer(mock.Object, "repair-model");
     }
 
     private static WorkflowJsonRepairer RepairerReplying(params IMessage[] reply) =>
         RepairerFrom((_, _, _) => Task.FromResult<IEnumerable<IMessage>>(reply));
+
+    [Fact]
+    public async Task TryRepairAsync_SendsTheResolvedRepairModel()
+    {
+        GenerateReplyOptions? captured = null;
+        var mock = new Mock<IAgent>();
+        mock.Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>((_, options, _) => captured = options)
+            .ReturnsAsync([new TextMessage { Text = "{}", Role = Role.Assistant }]);
+        var repairer = new WorkflowJsonRepairer(mock.Object, "cheap-model");
+
+        _ = await repairer.TryRepairAsync("broken", SchemaJson, CancellationToken.None);
+
+        captured!.ModelId.Should().Be("cheap-model");
+    }
 
     [Fact]
     public async Task TryRepairAsync_TrimsTheRewrittenText()

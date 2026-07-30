@@ -94,6 +94,61 @@ public class SubAgentLineagePropagationTests
     }
 
     [Fact]
+    public async Task QueuedSpawnCapturesLineageWhenAccepted_NotWhenCapacityFrees()
+    {
+        var publisher = new RecordingLifecyclePublisher();
+        var parent = new Mock<IMultiTurnAgent>();
+        _ = parent.SetupGet(a => a.ThreadId).Returns("parent-thread");
+        _ = parent.SetupGet(a => a.CurrentRunId).Returns("parent-run-original");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        IStreamingAgent Factory()
+        {
+            var agent = new Mock<IStreamingAgent>();
+            _ = agent.Setup(a => a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions?>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(() => Task.FromResult(Interlocked.Increment(ref calls) == 1
+                    ? WaitThenReply(gate.Task)
+                    : Reply()));
+            return agent.Object;
+        }
+
+        var options = new SubAgentOptions
+        {
+            MaxConcurrentSubAgents = 1,
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                [TemplateName] = new SubAgentTemplate { SystemPrompt = "test", AgentFactory = Factory },
+            },
+        };
+        await using var manager = new SubAgentManager(
+            parent.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates),
+            lifecycleServices: CreateBundle(publisher));
+
+        _ = await manager.SpawnAsync(TemplateName, "block", runInBackground: true);
+        _ = await manager.SpawnAsync(
+            TemplateName,
+            "queued",
+            runInBackground: true,
+            spawningToolCallId: "call-queued");
+        _ = parent.SetupGet(a => a.CurrentRunId).Returns("parent-run-later");
+        gate.SetResult();
+
+        await WaitUntilAsync(
+            () => publisher.CorrelationsFor(LifecycleEventTypes.RunStarted).Count >= 2,
+            TimeSpan.FromSeconds(10));
+        var queued = publisher.CorrelationsFor(LifecycleEventTypes.RunStarted)
+            .Single(c => c.SpawningToolCallId == "call-queued");
+        queued.ParentRunId.Should().Be("parent-run-original");
+    }
+
+    [Fact]
     public async Task RestartAttributesTheChildToTheRunThatSpawnedIt_NotWhateverRunIsInFlight()
     {
         // The regression this exists for: a restart rebuilds the loop long after the spawning run
@@ -230,6 +285,27 @@ public class SubAgentLineagePropagationTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(ToAsyncEnumerable([new TextMessage { Text = "done", Role = Role.Assistant }]));
         return agent.Object;
+    }
+
+    private static async IAsyncEnumerable<IMessage> WaitThenReply(Task gate)
+    {
+        await gate;
+        yield return new TextMessage { Text = "done", Role = Role.Assistant };
+    }
+
+    private static async IAsyncEnumerable<IMessage> Reply()
+    {
+        yield return new TextMessage { Text = "done", Role = Role.Assistant };
+        await Task.Yield();
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        while (!predicate())
+        {
+            await Task.Delay(10, cts.Token);
+        }
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(IEnumerable<IMessage> messages)

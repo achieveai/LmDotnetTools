@@ -248,6 +248,13 @@ public sealed class SubAgentManager : IAsyncDisposable
         // each spawn unique. Guid stays FIRST so the readable-name suffix (agentId[..6]) and any short
         // display slice remain per-spawn distinct rather than collapsing onto a shared conversation prefix.
         var agentId = Guid.NewGuid().ToString("N")[..12] + "-" + ConversationTag(_parentAgent.ThreadId);
+        var lineage = new AgentLineage
+        {
+            ParentThreadId = _parentAgent.ThreadId,
+            ParentRunId = _parentAgent.CurrentRunId,
+            SpawningToolCallId = spawningToolCallId,
+            SubAgentId = agentId,
+        };
 
         // Every spawned agent gets a human-readable handle. When the caller omits `name`
         // (a controller/loop that forgot, or a direct spawn), derive a readable one from the
@@ -279,7 +286,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 addTools,
                 removeTools,
                 modelIntelligence,
-                spawningToolCallId,
+                lineage,
                 runInBackground,
                 gateGuard,
                 ct);
@@ -314,7 +321,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             AddTools = addTools,
             RemoveTools = removeTools,
             ModelIntelligence = modelIntelligence,
-            SpawningToolCallId = spawningToolCallId,
+            Lineage = lineage,
             RunInBackground = runInBackground,
         };
         _spawnQueue.Enqueue(queued);
@@ -357,23 +364,12 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? addTools,
         string[]? removeTools,
         int? modelIntelligence,
-        string? spawningToolCallId,
+        AgentLineage lineage,
         bool runInBackground,
         GateReleaseGuard gateGuard,
         CancellationToken ct)
     {
         SubAgentState? state = null;
-
-        // Captured now, not at rebuild time: by the time a restart re-creates this agent the
-        // parent's CurrentRunId has moved on or gone null, and the run that asked for the child
-        // is the one a subscriber needs to attribute the whole sub-tree to.
-        var lineage = new AgentLineage
-        {
-            ParentThreadId = _parentAgent.ThreadId,
-            ParentRunId = _parentAgent.CurrentRunId,
-            SpawningToolCallId = spawningToolCallId,
-            SubAgentId = agentId,
-        };
 
         try
         {
@@ -537,7 +533,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     queued.AddTools,
                     queued.RemoveTools,
                     queued.ModelIntelligence,
-                    queued.SpawningToolCallId,
+                    queued.Lineage,
                     queued.RunInBackground,
                     gateGuard,
                     pumpCt);
@@ -1794,7 +1790,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         public string[]? AddTools { get; init; }
         public string[]? RemoveTools { get; init; }
         public int? ModelIntelligence { get; init; }
-        public string? SpawningToolCallId { get; init; }
+        public required AgentLineage Lineage { get; init; }
 
         // RunContinuationsAsynchronously so the pump thread that completes this never inline-runs a
         // foreground caller's AwaitCompletionAsync continuation while it should be moving to the next

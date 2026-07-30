@@ -270,7 +270,10 @@ public static class WorkflowSession
             // Fold the isolated controller loop's own turns AND its task sub-agents' usage into the
             // originating conversation's root sink when one is supplied (#196).
             externalUsageSink: usageSink,
-            lifecycleServices: MultiTurnLifecycleServices.ForObservationOnly(lifecycleServices)
+            lifecycleServices: MultiTurnLifecycleServices.ForObservationOnly(lifecycleServices),
+            // Only the controller's workflow control-plane tools are exempt from approval. Delegates can
+            // inherit the launching host's domain tools, so they must retain that host approval gate.
+            subAgentLifecycleServices: lifecycleServices
 
         );
     }
@@ -321,7 +324,7 @@ public static class WorkflowSession
 
         try
         {
-            return new WorkflowJsonRepairer(buildTierAgent(model), logger);
+            return new WorkflowJsonRepairer(buildTierAgent(model), model, logger);
         }
         catch (Exception ex)
         {
