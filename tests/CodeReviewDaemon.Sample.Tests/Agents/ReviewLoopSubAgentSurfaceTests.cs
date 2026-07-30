@@ -33,6 +33,39 @@ public sealed class ReviewLoopSubAgentSurfaceTests
             inner.SuppressSpawning, "a capability the wrapper does NOT declare must not be lost");
     }
 
+    /// <summary>
+    /// Task 5 (fix round 3) — a wrapper that reports itself as its own inner loop must fail with a CATCHABLE
+    /// exception. Unguarded recursion would raise StackOverflowException, which .NET does not let anyone
+    /// catch: one malformed decorator would kill the daemon process instead of failing one review.
+    /// </summary>
+    [Fact]
+    public void A_wrapper_that_wraps_itself_fails_instead_of_recursing()
+    {
+        var loop = new MutableWrappingLoop(new FakeMultiTurnAgent("run-1"));
+        loop.Inner = loop;
+
+        var act = () => ReviewLoopSubAgentSurface.Resolve(loop);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*its own inner loop*");
+    }
+
+    /// <summary>
+    /// The same hazard one step removed: two decorators that wrap each other. No single hop looks wrong, so
+    /// only a depth bound catches it.
+    /// </summary>
+    [Fact]
+    public void Mutually_wrapping_decorators_fail_instead_of_recursing()
+    {
+        var first = new MutableWrappingLoop(new FakeMultiTurnAgent("run-1"));
+        var second = new MutableWrappingLoop(new FakeMultiTurnAgent("run-2"));
+        first.Inner = second;
+        second.Inner = first;
+
+        var act = () => ReviewLoopSubAgentSurface.Resolve(first);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*exceeded*levels*");
+    }
+
     private sealed class NoopScope : IDisposable
     {
         public void Dispose() { }

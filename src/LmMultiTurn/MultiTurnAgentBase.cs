@@ -901,6 +901,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         TrySendAsync(new UserInput(messages, inputId, parentRunId), ct);
 
     /// <summary>
+    /// Whether THIS agent will actually ENFORCE <see cref="UserInput.SuppressSubAgentSpawning"/> on the run
+    /// that consumes an accepted input. It gates <see cref="SendReceipt.SpawningSuppressed"/>, which a host
+    /// relays to a caller as a guarantee — so the base reports <c>false</c>: it has no spawn machinery to
+    /// police, and an agent that merely accepts the flag must never let a receipt claim the guarantee.
+    /// </summary>
+    protected virtual bool EnforcesSpawnSuppression => false;
+
+    /// <summary>
     /// <see cref="TrySendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
     /// <see cref="UserInput"/>. This is the single enqueue path, so per-input flags — notably
     /// <see cref="UserInput.SuppressSubAgentSpawning"/> — survive as far as the run that consumes them
@@ -944,7 +952,14 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         Logger.LogDebug("Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
-        return new SendReceipt(receiptId, inputId, queuedAt);
+        // The receipt reports ENFORCEMENT, never the request: a caller reading it needs to know whether the
+        // run that consumes this input will genuinely be unable to spawn, and echoing the flag back would
+        // let an agent that ignores it advertise a guarantee nothing is keeping.
+        return new SendReceipt(
+            receiptId,
+            inputId,
+            queuedAt,
+            SpawningSuppressed: input.SuppressSubAgentSpawning && EnforcesSpawnSuppression);
     }
 
     /// <inheritdoc />

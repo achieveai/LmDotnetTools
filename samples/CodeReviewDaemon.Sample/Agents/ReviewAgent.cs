@@ -47,7 +47,9 @@ internal sealed class ReviewAgent
     /// Builds the agent. <paramref name="suppressSpawning"/> opens a scope in which the underlying loop
     /// refuses to start NEW sub-agents; it is a delegate rather than the SDK's provider type so no
     /// <c>LmMultiTurn.SubAgents</c> type leaks into this class and a test can supply a recording lambda.
-    /// <c>null</c> (the S2S and diff-only paths) means there is no in-process spawn surface to suppress.
+    /// <c>null</c> means there is no spawn surface to suppress at all (the diff-only path). The S2S path is
+    /// NOT null: <see cref="S2SReviewAgent"/> supplies a scope that carries the suppression over the wire to
+    /// the hosted loop, which enforces it there.
     /// </summary>
     public ReviewAgent(
         IMultiTurnAgent agent,

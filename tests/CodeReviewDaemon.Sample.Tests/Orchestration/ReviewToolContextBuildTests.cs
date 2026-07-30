@@ -275,6 +275,80 @@ public sealed class ReviewToolContextBuildTests
         factory.ToolContexts.Should().BeEmpty("cancellation propagated before any review loop was built");
     }
 
+    /// <summary>
+    /// Task 5 (fix round 3) — declaring the surface is not the guarantee; having a SCOPE is. A loop that
+    /// declares <c>IReviewLoopSubAgentSurface</c> but leaves <c>SuppressSpawning</c> null is exactly as unable
+    /// to keep the synthesis turn from fanning out as one that declares nothing, so it must fail the same way
+    /// instead of passing the old "did it declare anything?" check.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_SpawnCapableLoopWithNoSuppressionScope_FailsFast()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory
+        {
+            DecorateCreatedAgent = agent =>
+            {
+                agent.SuppressSpawning = null;
+                return agent;
+            },
+        };
+        var executor = BuildExecutor(
+            store,
+            factory,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = true },
+            new FakeReviewSessionProvisioner("session-abc"),
+            DiscoveryWithCodeReviewerSubAgent);
+        var run = SeedRunWithContext(store);
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*IReviewLoopSubAgentSurface*");
+        factory.CreatedAgents.Should().ContainSingle().Which.ReceivedInputs.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Task 5 (fix round 3) — on the S2S path the sub-agent options live on the REVIEW HOST, so the daemon's
+    /// own tool context says nothing about whether the run can spawn. Gating the fail-fast on that context
+    /// alone let an S2S loop with no suppression scope through unchecked, which is the one path where the
+    /// synthesis turn's children are hardest to see.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_S2SRunWithNoSuppressionScope_FailsFastEvenWithoutALocalToolContext()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory
+        {
+            DecorateCreatedAgent = agent =>
+            {
+                agent.SuppressSpawning = null;
+                return agent;
+            },
+        };
+        var executor = BuildExecutor(
+            store,
+            factory,
+            new CodeReviewDaemonOptions
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+            },
+            new FakeReviewSessionProvisioner("session-abc"));
+        var run = SeedRunWithContext(store);
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*IReviewLoopSubAgentSurface*");
+
+        // The local tool context really was null — the refusal came from the S2S path, not from a
+        // discovered sub-agent roster.
+        factory.ToolContexts.Should().ContainSingle().Which.Should().BeNull();
+    }
+
     private static DaemonReviewStageExecutor BuildExecutor(
         ReviewStore store,
         FakeReviewAgentLoopFactory factory,

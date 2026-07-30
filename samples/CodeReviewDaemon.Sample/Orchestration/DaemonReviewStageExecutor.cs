@@ -1920,13 +1920,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // children live on the host, but a REAL suppression scope); a loop that declares nothing is UNKNOWN, so
         // if this run was configured to spawn we refuse rather than silently skip BOTH barrier and suppression.
         var surface = ReviewLoopSubAgentSurface.Resolve(loop);
-        if (surface is null && toolContext?.SubAgentOptions is not null)
+
+        // "Can this run spawn?" is answered differently per path: in-process it is written into the tool
+        // context, while on S2S the sub-agent options live on the HOST, so the local tool context says nothing
+        // and gating on it alone would let an S2S loop with no surface through unchecked. Where spawning is
+        // possible, a usable suppression scope is REQUIRED — a declared surface with a null SuppressSpawning
+        // is just as unable to keep the synthesis turn from fanning out as no surface at all.
+        var runCanSpawn = toolContext?.SubAgentOptions is not null || _options.UseS2SReviewAgent;
+        if (runCanSpawn && surface?.SuppressSpawning is null)
         {
             throw new InvalidOperationException(
-                $"Run {run.Id}: the review loop ({loop.GetType().Name}) is configured to spawn sub-agents but "
-                    + "exposes no IReviewLoopSubAgentSurface, so the completion barrier and the synthesis-turn "
-                    + "spawn suppression cannot be applied. Implement IReviewLoopSubAgentSurface (or "
-                    + "IReviewLoopWrapper to forward to a loop that does) on it.");
+                $"Run {run.Id}: the review loop ({loop.GetType().Name}) can spawn sub-agents but exposes no "
+                    + "IReviewLoopSubAgentSurface spawn-suppression scope, so the synthesis turn cannot be kept "
+                    + "from fanning out. Implement IReviewLoopSubAgentSurface with a non-null SuppressSpawning "
+                    + "(or IReviewLoopWrapper to forward to a loop that does) on it.");
         }
 
         var completionSource = surface?.CompletionSource;

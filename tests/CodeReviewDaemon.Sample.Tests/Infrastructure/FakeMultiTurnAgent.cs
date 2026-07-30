@@ -24,9 +24,10 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// whole collect → barrier → synthesize sequence.
 /// </para>
 /// <para>
-/// It DECLARES <see cref="IReviewLoopSubAgentSurface"/> — with no spawn surface unless a test supplies one —
-/// because the executor treats a loop that declares nothing as UNKNOWN and refuses to run it when spawning
-/// was configured. Declaring it says "this double provably has the surface it says it has".
+/// It DECLARES <see cref="IReviewLoopSubAgentSurface"/> with a real (counting, no-op) suppression scope,
+/// because the executor treats a loop that declares nothing — or one whose scope is null — as unable to keep
+/// the synthesis turn from fanning out, and refuses to run it. Declaring it says "this double provably has
+/// the surface it says it has"; a test that wants the refusal nulls <see cref="SuppressSpawning"/>.
 /// </para>
 /// </summary>
 internal sealed class FakeMultiTurnAgent
@@ -43,12 +44,14 @@ internal sealed class FakeMultiTurnAgent
     public FakeMultiTurnAgent(string runId, params IMessage[] scripted)
     {
         CurrentRunId = runId;
+        SuppressSpawning = OpenCountingSuppression;
         _turns.Add(new TurnScript(scripted, null));
     }
 
     private FakeMultiTurnAgent(string runId, Exception throwOnRun)
     {
         CurrentRunId = runId;
+        SuppressSpawning = OpenCountingSuppression;
         _turns.Add(new TurnScript([], throwOnRun));
     }
 
@@ -84,8 +87,41 @@ internal sealed class FakeMultiTurnAgent
     /// = this loop provably has no in-process children, so the barrier falls back to the injected source.</summary>
     public IReviewSubAgentCompletionSource? CompletionSource { get; set; }
 
-    /// <summary>The spawn-suppression scope factory. Null (the default) = no in-process spawn surface.</summary>
+    /// <summary>
+    /// The spawn-suppression scope factory. Defaults to a counting no-op scope rather than null because the
+    /// executor treats a missing scope on a spawn-capable path as a defect and refuses the run; tests that
+    /// want to exercise that refusal set this to null explicitly. <see cref="SuppressionScopesOpened"/> /
+    /// <see cref="SuppressionScopesClosed"/> let a test assert the scope was opened AND balanced.
+    /// </summary>
     public Func<IDisposable>? SuppressSpawning { get; set; }
+
+    /// <summary>How many times the default <see cref="SuppressSpawning"/> scope was opened.</summary>
+    public int SuppressionScopesOpened { get; private set; }
+
+    /// <summary>How many times the default <see cref="SuppressSpawning"/> scope was disposed.</summary>
+    public int SuppressionScopesClosed { get; private set; }
+
+    private IDisposable OpenCountingSuppression()
+    {
+        SuppressionScopesOpened++;
+        return new CallbackDisposable(() => SuppressionScopesClosed++);
+    }
+
+    private sealed class CallbackDisposable(Action onDispose) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            onDispose();
+        }
+    }
 
     public string? CurrentRunId { get; private set; }
 

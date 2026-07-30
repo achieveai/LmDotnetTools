@@ -794,6 +794,37 @@ public class ConversationsControllerTests
         agent.LastInput.InputId.Should().Be(response.InputId);
     }
 
+    /// <summary>
+    /// Task 5 (fix round 3) — the acknowledgement must come from ENFORCEMENT, never from the request. An
+    /// agent that declares the capability but whose receipt does not confirm it (an implementation that
+    /// accepts the flag and ignores it) must not be able to make the host promise a guarantee: echoing the
+    /// request would hand the caller a suppression it never got, and the caller has no other way to tell.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DoesNotClaimSuppression_WhenTheAgentsReceiptDoesNotConfirmIt()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-suppress-unenforced";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.EnforcesSuppression = false;
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "synthesize", SuppressSubAgentSpawning = true },
+            CancellationToken.None);
+
+        var accepted = Assert.IsType<AcceptedResult>(result);
+        Assert.IsType<SendMessageResponse>(accepted.Value).SpawningSuppressed.Should().BeFalse(
+            "the host relays the agent's enforcement, not the caller's request");
+        agent.LastInput!.SuppressSubAgentSpawning.Should().BeTrue(
+            "the request still reached the agent — what changed is only what the host claims about it");
+    }
+
     /// <summary>An ordinary send is unaffected: no suppression asked for, none claimed.</summary>
     [Fact]
     public async Task SendMessage_DoesNotClaimSuppression_WhenNotRequested()

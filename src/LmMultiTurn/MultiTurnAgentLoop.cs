@@ -52,6 +52,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
     /// <inheritdoc />
     /// <remarks>
+    /// True: this loop latches <see cref="Messages.UserInput.SuppressSubAgentSpawning"/> for the whole run
+    /// that consumes the input — whether the input starts the run or is injected into one already in
+    /// flight — so a receipt it issues may honestly claim the guarantee. See <see cref="RunSpawnSuppression"/>.
+    /// </remarks>
+    protected override bool EnforcesSpawnSuppression => true;
+
+    /// <inheritdoc />
+    /// <remarks>
     /// Delegates to <see cref="SubAgents.SubAgentManager.TryDeliverToRunningAsync"/>. A loop with no
     /// sub-agent manager owns no sub-agents, so every id is <see cref="SubAgentContextDeliveryResult.NotOwned"/>.
     /// </remarks>
@@ -85,6 +93,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private bool _runActive;
     private string? _lastDeferringRunId;
     private string? _lastDeferringGenerationId;
+
+    // The run that paused on a deferral while sub-agent spawning was suppressed, or null when the last
+    // pause was from an unsuppressed run. Guarded by _resumeLock alongside the _lastDeferring* pair it
+    // is set with. Read on the resume path so the continuation re-latches — see RunSpawnSuppression.
+    private string? _spawnSuppressedRunId;
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -341,6 +354,21 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     ThreadId = ThreadId,
                 }, ct);
 
+                // ISpawnSuppressingAgent: an input may forbid the run it lands in from starting new
+                // sub-agents. The latch is RUN-scoped and monotonic rather than derived from this starting
+                // batch, because a flagged input can also arrive mid-run and be injected by
+                // ExecuteRunTurnsAsync — deriving it here only would leave that turn free to fan out. It is
+                // opened before history folding and before any turn builds contracts, and disposed exactly
+                // once when this iteration ends (normally, by exception, or by cancellation).
+                using var spawnSuppression = new RunSpawnSuppression(this);
+                _ = spawnSuppression.LatchIfContinuing(resumeSentinels);
+                _ = spawnSuppression.LatchIfRequested(realInputs);
+                if (spawnSuppression.IsLatched)
+                {
+                    Logger.LogInformation(
+                        "Run {RunId} starts with sub-agent spawning suppressed", assignment.RunId);
+                }
+
                 // Add real-input messages to history. Resume sentinels contribute no new
                 // messages — the loop continues from history that already has the resolved
                 // tool_results in place of the prior placeholders.
@@ -358,20 +386,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     _runActive = true;
                 }
 
-                // ISpawnSuppressingAgent: an input may forbid THIS run from starting new sub-agents. The
-                // scope is opened here, after the batch is known and before any turn builds contracts, and
-                // disposed at the end of this iteration — so the guarantee covers every turn of the run
-                // (including replayed spawn calls, which the handler refuses) and is released for the next
-                // one. A loop with no sub-agent tools has no spawn surface to open a scope on and none to
-                // advertise either, so the guarantee already holds.
-                using var spawnSuppression = realInputs.Exists(i => i.Input.SuppressSubAgentSpawning)
-                    ? SubAgentTools?.SuppressSpawning()
-                    : null;
-
                 try
                 {
                     // Execute turns - poll for new input between turns
-                    await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
+                    await ExecuteRunTurnsAsync(
+                        assignment.RunId, assignment.GenerationId, spawnSuppression, ct);
 
                     // Complete the run, reporting the input that arrived WHILE it was running. The
                     // outer loop drains that input into a follow-on run through this same
@@ -479,7 +498,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// Ends the run early if any tool call deferrals from the current generation remain
     /// unresolved at the end of a turn — see <see cref="ResolveToolCallAsync"/>.
     /// </summary>
-    private async Task ExecuteRunTurnsAsync(string runId, string generationId, CancellationToken ct)
+    private async Task ExecuteRunTurnsAsync(
+        string runId,
+        string generationId,
+        RunSpawnSuppression spawnSuppression,
+        CancellationToken ct)
     {
         var turnCount = 0;
 
@@ -494,6 +517,19 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 var realNewInputs = newInputs.Where(b => b.Resume == null).ToList();
                 if (realNewInputs.Count > 0)
                 {
+                    // An injected input can demand suppression just as a starting one can — this is the
+                    // interleaving the caller cannot control, since it only knows the host accepted its
+                    // message, not whether a run happened to be active. Latch BEFORE the messages are
+                    // folded into history and before the next turn builds its contracts, so the very turn
+                    // that first sees this input already has no spawn tool.
+                    if (spawnSuppression.LatchIfRequested(realNewInputs))
+                    {
+                        Logger.LogInformation(
+                            "Input injected into run {RunId} requested sub-agent spawn suppression; "
+                                + "suppressed for the remainder of the run",
+                            runId);
+                    }
+
                     var injectionAssignment = new RunAssignment(
                         RunId: runId,
                         GenerationId: generationId,
@@ -559,6 +595,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     _lastDeferringRunId = runId;
                     _lastDeferringGenerationId = turnGenerationId;
                     _resumeScheduled = false;
+
+                    // Carry the latch across the pause. The resume arrives as a brand-new run (StartRunAsync
+                    // always mints a fresh id), so the continuation can only recognise itself by the run id
+                    // the sentinel points back at. Recording null when unsuppressed matters just as much:
+                    // it stops a later, unrelated pause from inheriting a stale latch.
+                    _spawnSuppressedRunId = spawnSuppression.IsLatched ? runId : null;
                 }
 
                 Logger.LogInformation(
@@ -1399,4 +1441,87 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         long DeferredAtUnixMs,
         string? RunId,
         string? GenerationId);
+
+    /// <summary>
+    /// True when this resume sentinel continues a run that was suppressing spawning when it paused on a
+    /// deferral. Matched on the exact run id the sentinel points back at — a resume for any other run
+    /// must not inherit the latch.
+    /// </summary>
+    private bool ContinuesSuppressedRun(ResumeSentinel sentinel)
+    {
+        lock (_resumeLock)
+        {
+            return _spawnSuppressedRunId is not null
+                && string.Equals(_spawnSuppressedRunId, sentinel.ResumeForRunId, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Run-owned latch for <see cref="UserInput.SuppressSubAgentSpawning"/>.
+    /// </summary>
+    /// <remarks>
+    /// Suppression cannot be a property of the batch that STARTED a run. Inputs are accepted whenever the
+    /// caller sends them, and the caller only learns that the host queued its message — not whether a run
+    /// happened to be active — so a flagged input routinely lands mid-run and is injected between turns by
+    /// <see cref="ExecuteRunTurnsAsync"/>. Deriving the scope from the starting batch alone left exactly the
+    /// turn the flagged input is asking about free to fan out.
+    /// <para>
+    /// The latch therefore belongs to the RUN: any input may set it, the first one that does opens the
+    /// underlying <see cref="SubAgentToolProvider"/> scope, and it stays open for every remaining turn and
+    /// for the resume continuation of that run. It is monotonic on purpose — a later unflagged input must
+    /// not hand the spawn tool back to a turn an earlier input was promised would not have it. Only
+    /// spawning is affected; reading from and messaging already-running sub-agents is untouched.
+    /// </para>
+    /// </remarks>
+    private sealed class RunSpawnSuppression(MultiTurnAgentLoop owner) : IDisposable
+    {
+        private IDisposable? _scope;
+        private bool _disposed;
+
+        /// <summary>True once some input has latched suppression for this run.</summary>
+        internal bool IsLatched { get; private set; }
+
+        /// <summary>Latches when this batch resumes a run that was suppressing when it paused.</summary>
+        internal bool LatchIfContinuing(IReadOnlyList<QueuedInput> resumeSentinels) =>
+            Latch(resumeSentinels.Any(s => s.Resume is not null && owner.ContinuesSuppressedRun(s.Resume)));
+
+        /// <summary>Latches when any input in the batch requests suppression.</summary>
+        internal bool LatchIfRequested(IReadOnlyList<QueuedInput> inputs) =>
+            Latch(inputs.Any(i => i.Input.SuppressSubAgentSpawning));
+
+        /// <summary>
+        /// Returns true only for the transition that opens the scope, so callers can log the latch once.
+        /// </summary>
+        private bool Latch(bool requested)
+        {
+            if (!requested || IsLatched || _disposed)
+            {
+                return false;
+            }
+
+            IsLatched = true;
+
+            // Resolved at latch time rather than captured at construction: the provider is reachable only
+            // once the sub-agent context is wired. A null one means this agent has no spawn tool to take
+            // away, so the guarantee holds vacuously and the latch still records that it was asked for.
+            _scope = owner.SubAgentTools?.SuppressSpawning();
+            return true;
+        }
+
+        /// <summary>
+        /// Releases the provider scope exactly once, however the run ended — normally, by exception, or by
+        /// cancellation — so the reference count always returns to where it started.
+        /// </summary>
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _scope?.Dispose();
+            _scope = null;
+        }
+    }
 }

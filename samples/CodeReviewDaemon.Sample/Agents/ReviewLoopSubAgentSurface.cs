@@ -54,9 +54,27 @@ internal static class ReviewLoopSubAgentSurface
     /// still looking like a declared, and therefore trusted, surface.
     /// </para>
     /// </summary>
-    public static IReviewLoopSubAgentSurface? Resolve(IMultiTurnAgent agent)
+    /// <exception cref="InvalidOperationException">
+    /// The decorator chain is cyclic or nested past <see cref="MaxWrapperDepth"/>. A wrapper that returns
+    /// itself (or two that return each other) would otherwise recurse until the stack overflows, and a
+    /// StackOverflowException cannot be caught — it kills the daemon process instead of failing this one
+    /// review. Thrown so the executor's existing fail-fast handles it like any other unusable surface.
+    /// </exception>
+    public static IReviewLoopSubAgentSurface? Resolve(IMultiTurnAgent agent) => Resolve(agent, depth: 0);
+
+    /// <summary>How deep a decorator chain may nest before it is treated as malformed.</summary>
+    private const int MaxWrapperDepth = 32;
+
+    private static IReviewLoopSubAgentSurface? Resolve(IMultiTurnAgent agent, int depth)
     {
         ArgumentNullException.ThrowIfNull(agent);
+
+        if (depth > MaxWrapperDepth)
+        {
+            throw new InvalidOperationException(
+                $"Review loop decorator chain exceeded {MaxWrapperDepth} levels while resolving the "
+                    + $"sub-agent surface of '{agent.GetType().Name}'; the wrappers are probably cyclic.");
+        }
 
         var declared = agent switch
         {
@@ -64,7 +82,21 @@ internal static class ReviewLoopSubAgentSurface
             MultiTurnAgentLoop loop => new LiveLoopSurface(loop),
             _ => null,
         };
-        var wrapped = agent is IReviewLoopWrapper wrapper ? Resolve(wrapper.Inner) : null;
+
+        IReviewLoopSubAgentSurface? wrapped = null;
+        if (agent is IReviewLoopWrapper wrapper)
+        {
+            // A wrapper handing back the very agent it decorates is the tightest cycle and the easiest one
+            // to write by accident, so it is named directly rather than left to the depth limit.
+            if (ReferenceEquals(wrapper.Inner, agent))
+            {
+                throw new InvalidOperationException(
+                    $"Review loop wrapper '{agent.GetType().Name}' reports itself as its own inner loop, "
+                        + "so its sub-agent surface cannot be resolved.");
+            }
+
+            wrapped = Resolve(wrapper.Inner, depth + 1);
+        }
 
         return (declared, wrapped) switch
         {

@@ -709,11 +709,24 @@ public class ConversationsController(
                 new { error = "queue_full", code = "queue_full", threadId });
         }
 
+        if (request.SuppressSubAgentSpawning && !receipt.SpawningSuppressed)
+        {
+            // Declaring the interface got the request this far; the RECEIPT is what says the accepting
+            // agent will actually enforce it. Relaying a false here (rather than the request) is what makes
+            // the client's fail-closed check meaningful — an agent that declares the capability but does not
+            // stamp the receipt cannot make this host advertise a guarantee.
+            logger.LogWarning(
+                "SendMessage for thread {ThreadId}: agent {AgentType} accepted the input but did not confirm "
+                    + "sub-agent spawn suppression; the response will not claim the guarantee",
+                threadId,
+                agent.GetType().Name);
+        }
+
         return Accepted(new SendMessageResponse
         {
             InputId = inputId,
             Queued = true,
-            SpawningSuppressed = request.SuppressSubAgentSpawning,
+            SpawningSuppressed = receipt.SpawningSuppressed,
         });
     }
 

@@ -117,9 +117,22 @@ internal sealed class SpawnSuppressingFakeAgent(string threadId)
     /// <summary>The last input handed to the capability-aware send path (null until one arrives).</summary>
     public UserInput? LastInput { get; private set; }
 
+    /// <summary>
+    /// When false the agent still DECLARES the capability but its receipt does not confirm enforcement —
+    /// the shape of an implementation that accepts the flag and then ignores it. The host must relay the
+    /// RECEIPT, so it must not turn that into a promise.
+    /// </summary>
+    public bool EnforcesSuppression { get; set; } = true;
+
     public async ValueTask<SendReceipt?> TrySendAsync(UserInput input, CancellationToken ct = default)
     {
         LastInput = input;
-        return await TrySendAsync(input.Messages, input.InputId, input.ParentRunId, ct);
+        var receipt = await TrySendAsync(input.Messages, input.InputId, input.ParentRunId, ct);
+        return receipt is null
+            ? null
+            : receipt with
+            {
+                SpawningSuppressed = input.SuppressSubAgentSpawning && EnforcesSuppression,
+            };
     }
 }
