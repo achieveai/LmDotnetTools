@@ -391,7 +391,7 @@ public sealed class FileConversationStore
     /// The store-wide lock makes this atomic against other callers in THIS process. It is not a
     /// cross-process reservation: two processes pointed at the same directory can both observe an absent
     /// entry and both write. That is the same last-writer-wins exposure the rest of this store already has
-    /// (see <see cref="WriteJsonFileAsync"/>), and single-writer is this store's documented deployment
+    /// (see the atomic JSON writer below), and single-writer is this store's documented deployment
     /// shape — a multi-process host wants the SQLite store, whose primary key arbitrates in the engine.
     /// </remarks>
     public async Task<bool> TryReserveAcceptedInputAsync(
@@ -1138,11 +1138,18 @@ public sealed class FileConversationStore
         }
     }
 
-    private static async Task WriteJsonFileAsync<T>(string filePath, T data, CancellationToken ct)
+    private static Task WriteJsonFileAsync<T>(string filePath, T data, CancellationToken ct) =>
+        WriteJsonFileAsync(filePath, data, JsonOptions, ct);
+
+    private static async Task WriteJsonFileAsync<T>(
+        string filePath,
+        T data,
+        JsonSerializerOptions options,
+        CancellationToken ct)
     {
         // Write to temp file first, then rename for atomic operation
         var tempFile = filePath + ".tmp";
-        var json = JsonSerializer.Serialize(data, JsonOptions);
+        var json = JsonSerializer.Serialize(data, options);
 
         await File.WriteAllTextAsync(tempFile, json, ct);
 

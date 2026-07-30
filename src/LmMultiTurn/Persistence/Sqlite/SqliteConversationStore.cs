@@ -596,6 +596,7 @@ public sealed class SqliteConversationStore
         InputAcceptance acceptance,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(acceptance);
         await EnsureSchemaAsync(ct).ConfigureAwait(false);
         await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
         using var command = connection.CreateCommand();
