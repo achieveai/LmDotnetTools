@@ -12,7 +12,7 @@ namespace AchieveAi.LmDotnetTools.CopilotLive.Tests;
 public sealed class CopilotLiveFixture
 {
     private readonly SemaphoreSlim _modelsGate = new(1, 1);
-    private IReadOnlyList<string>? _models;
+    private IReadOnlyList<CopilotCatalogEntry>? _catalog;
 
     public CopilotLiveFixture()
     {
@@ -45,17 +45,28 @@ public sealed class CopilotLiveFixture
     /// <summary>Lists model ids from <c>GET {host}/models</c> (cached for the run).</summary>
     public async Task<IReadOnlyList<string>> GetModelsAsync(CancellationToken cancellationToken)
     {
-        if (_models is not null)
+        var catalog = await GetCatalogAsync(cancellationToken).ConfigureAwait(false);
+        return [.. catalog.Select(entry => entry.Id)];
+    }
+
+    /// <summary>
+    ///     Lists every model from <c>GET {host}/models</c> with its vendor and the transports it
+    ///     advertises (cached for the run). Selecting a model by the endpoints it ADVERTISES rather
+    ///     than by the shape of its id is what keeps a probe from silently testing the wrong quadrant.
+    /// </summary>
+    public async Task<IReadOnlyList<CopilotCatalogEntry>> GetCatalogAsync(CancellationToken cancellationToken)
+    {
+        if (_catalog is not null)
         {
-            return _models;
+            return _catalog;
         }
 
         await _modelsGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_models is not null)
+            if (_catalog is not null)
             {
-                return _models;
+                return _catalog;
             }
 
             using var http = CopilotHttpClientFactory.Create(Options.BaseUrl, TokenProvider, Session, Options);
@@ -63,8 +74,8 @@ public sealed class CopilotLiveFixture
             _ = response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            _models = ParseModelIds(json);
-            return _models;
+            _catalog = ParseCatalog(json);
+            return _catalog;
         }
         finally
         {
@@ -124,9 +135,9 @@ public sealed class CopilotLiveFixture
         return candidates[0];
     }
 
-    private static IReadOnlyList<string> ParseModelIds(string json)
+    private static IReadOnlyList<CopilotCatalogEntry> ParseCatalog(string json)
     {
-        var ids = new List<string>();
+        var entries = new List<CopilotCatalogEntry>();
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -134,25 +145,48 @@ public sealed class CopilotLiveFixture
             ? data
             : root;
 
-        if (list.ValueKind == JsonValueKind.Array)
+        if (list.ValueKind != JsonValueKind.Array)
         {
-            foreach (var item in list.EnumerateArray())
-            {
-                if (item.ValueKind == JsonValueKind.Object
-                    && item.TryGetProperty("id", out var idEl)
-                    && idEl.ValueKind == JsonValueKind.String)
-                {
-                    var id = idEl.GetString();
-                    if (!string.IsNullOrWhiteSpace(id))
-                    {
-                        ids.Add(id);
-                    }
-                }
-            }
+            return entries;
         }
 
-        return ids;
+        foreach (var item in list.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object
+                || !item.TryGetProperty("id", out var idEl)
+                || idEl.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var id = idEl.GetString();
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            var vendor = item.TryGetProperty("vendor", out var vendorEl) && vendorEl.ValueKind == JsonValueKind.String
+                ? vendorEl.GetString() ?? string.Empty
+                : string.Empty;
+
+            var endpoints =
+                item.TryGetProperty("supported_endpoints", out var endpointsEl)
+                && endpointsEl.ValueKind == JsonValueKind.Array
+                    ? endpointsEl.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToList()
+                    : [];
+
+            entries.Add(new CopilotCatalogEntry(id, vendor, endpoints));
+        }
+
+        return entries;
     }
+}
+
+/// <summary>One model as Copilot's <c>/models</c> describes it: id, vendor, and advertised transports.</summary>
+public sealed record CopilotCatalogEntry(string Id, string Vendor, IReadOnlyList<string> Endpoints)
+{
+    /// <summary>True when this model advertises <paramref name="endpoint"/> (case-insensitive).</summary>
+    public bool Advertises(string endpoint) => Endpoints.Contains(endpoint, StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>xUnit collection so the fixture (token + session + model list) is shared across tests.</summary>
