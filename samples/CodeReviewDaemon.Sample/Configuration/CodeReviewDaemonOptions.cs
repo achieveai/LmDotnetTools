@@ -441,6 +441,23 @@ internal sealed class CodeReviewDaemonOptions
     /// </summary>
     public double DeepLinkRetentionHours { get; init; } = 24;
 
+    /// <summary>
+    /// The single absolute budget, in minutes, a review stage gets to wait for its recursive sub-agent tree
+    /// to settle before giving up. Default 30. Read once by the caller that computes the absolute deadline
+    /// passed into <c>ReviewSubAgentCompletionBarrier.WaitAsync</c> — the barrier itself never reads this
+    /// option and never fabricates or resets a budget of its own; a resumed wait only ever gets whatever
+    /// time remains of this original window.
+    /// </summary>
+    public int ReviewStageDeadlineMinutes { get; init; } = 30;
+
+    /// <summary>
+    /// How long, in seconds, two observations of the review sub-agent tree must be identical (same node
+    /// ids, parent relationships, and statuses) before <c>ReviewSubAgentCompletionBarrier</c> treats the
+    /// tree as settled. Default 2. Guards against synthesizing/posting against a roster that is still
+    /// mid-transition (e.g. a child that finished and a grandchild about to be spawned in response).
+    /// </summary>
+    public int ReviewSubAgentBarrierQuietSeconds { get; init; } = 2;
+
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>
     public string? ResolvedStoreUrl =>
