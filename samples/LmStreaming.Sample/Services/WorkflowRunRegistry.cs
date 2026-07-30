@@ -93,7 +93,20 @@ public sealed class WorkflowRunRegistry
 
             try
             {
-                File.WriteAllText(PathFor(threadId), JsonSerializer.Serialize(merged.Values, IndexJson));
+                var path = PathFor(threadId);
+                var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    File.WriteAllText(temp, JsonSerializer.Serialize(merged.Values, IndexJson));
+                    File.Move(temp, path, overwrite: true);
+                }
+                finally
+                {
+                    if (File.Exists(temp))
+                    {
+                        File.Delete(temp);
+                    }
+                }
             }
             catch (IOException)
             {
@@ -121,9 +134,11 @@ public sealed class WorkflowRunRegistry
         return
         [
             .. (JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? [])
-                .Select(tab => string.Equals(tab.Status, "running", StringComparison.OrdinalIgnoreCase)
-                    ? tab with { Status = "interrupted" }
-                    : tab),
+                .Select(tab =>
+                    string.Equals(tab.Status, "running", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(tab.Status, "queued", StringComparison.OrdinalIgnoreCase)
+                        ? tab with { Status = "interrupted" }
+                        : tab),
         ];
     }
 

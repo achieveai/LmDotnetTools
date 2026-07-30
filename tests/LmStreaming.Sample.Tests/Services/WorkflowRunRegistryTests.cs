@@ -86,6 +86,30 @@ public sealed class WorkflowRunRegistryTests : IDisposable
     }
 
     [Fact]
+    public void FreshRegistry_ReconcilesPersistedQueuedTabsToInterrupted()
+    {
+        var writer = new WorkflowRunRegistry(_dir);
+        writer.PersistTabs("t1", [Tab("subagent", "d1", "queued")]);
+
+        var restarted = new WorkflowRunRegistry(_dir);
+
+        restarted.GetPersistedTabs("t1").Should().ContainSingle().Which.Status.Should().Be("interrupted");
+    }
+
+    [Fact]
+    public void CorruptIndex_IsSurfacedInsteadOfTreatedAsEmpty()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+        registry.PersistTabs("t1", [Tab("workflow", "wf1", "completed")]);
+        var path = Directory.GetFiles(_dir, "*.json").Single();
+        File.WriteAllText(path, "{truncated");
+
+        var act = () => registry.GetPersistedTabs("t1");
+
+        act.Should().Throw<JsonException>();
+    }
+
+    [Fact]
     public void Persistence_IsNoOp_WhenNoIndexDirectoryConfigured()
     {
         var registry = new WorkflowRunRegistry();

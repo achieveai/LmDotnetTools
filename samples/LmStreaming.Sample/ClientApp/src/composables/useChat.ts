@@ -907,6 +907,7 @@ export function useChat(options: UseChatOptions = {}) {
       },
       onError: async (error) => {
         log.error('WebSocket error', { error });
+        clearSandboxRefreshState();
         callbacks.onError(error);
         // Close and cleanup on error
         if (wsConnection) {
