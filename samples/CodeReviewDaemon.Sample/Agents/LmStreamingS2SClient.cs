@@ -165,7 +165,10 @@ internal sealed class LmStreamingS2SClient
     /// <para>
     /// Old hosts have no such endpoint and answer 404/405; that is the expected shape of the failure, and it
     /// is reported as a contract failure rather than a transport one so the daemon can bound its retries
-    /// instead of re-attempting an incompatibility forever.
+    /// instead of re-attempting an incompatibility forever. A rejected CREDENTIAL (401/403) is bounded the
+    /// same way and for the same reason: this endpoint carries the host's ordinary inbound-auth policy, so a
+    /// refusal here means every subsequent call is refused too. Retrying a wrong or missing shared secret
+    /// until the governor's clock runs out only delays the same conclusion.
     /// </para>
     /// </summary>
     public async Task EnsureHostContractAsync(CancellationToken ct)
@@ -183,6 +186,15 @@ internal sealed class LmStreamingS2SClient
                     + $"(GET api/conversations/capabilities returned {(int)response.StatusCode}), so it "
                     + "predates the per-turn spawn suppression and message idempotency contracts this review "
                     + "requires. Upgrade the review host.");
+        }
+
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            throw new ReviewHostContractException(
+                $"The LmStreaming review host at {_baseUrl} rejected this daemon's credential on the "
+                    + $"capability read (GET api/conversations/capabilities returned "
+                    + $"{(int)response.StatusCode}). The inbound S2S secret this daemon presents does not "
+                    + "match the host's; no send would be accepted either. Fix the shared secret.");
         }
 
         _ = response.EnsureSuccessStatusCode();

@@ -165,6 +165,7 @@ public class ConversationsController(
     IWorkspaceStore workspaceStore,
     ProviderRegistry providerRegistry,
     ConversationStatusResolver statusResolver,
+    TimeProvider timeProvider,
     ILogger<ConversationsController> logger) : ControllerBase
 {
     /// <summary>
@@ -601,9 +602,12 @@ public class ConversationsController(
         Ok(new ConversationCapabilitiesResponse
         {
             SchemaVersion = 1,
-            // Answered from the same durable fact SendMessage reserves against, so the two can never
-            // disagree about whether a key will actually be honored.
-            MessageIdempotency = store is IRunLedgerStore,
+            // Answered from the same durable fact SendMessage admits against, so the two can never disagree
+            // about whether a key will actually be honored. Deliberately NOT keyed off IRunLedgerStore: a
+            // run ledger only records which inputs are outstanding, and the drain deletes those. Only a
+            // store that opts into IInputAcceptanceStore claims the atomic, drain-surviving admission this
+            // capability actually promises.
+            MessageIdempotency = store is IInputAcceptanceStore,
             SpawnSuppression = true,
         });
 
@@ -725,20 +729,20 @@ public class ConversationsController(
         }
 
         // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
-        // turn does, and the resulting id is RESERVED durably before anything is queued — so a repeat can be
-        // reconciled against the same ledger a status poll reads, with no extra persistence. That is the
-        // recovery a caller needs when it never saw the first response (socket reset, or a process that died
-        // between acceptance and the answer): it gets the input the host already took, instead of queueing a
-        // second minutes-long, sub-agent-fanning turn onto the same conversation.
-        var ledger = store as IRunLedgerStore;
-        if (request.IdempotencyKey is not null && ledger is null)
+        // turn does, and the resulting id is ADMITTED durably before anything is queued — so a repeat can be
+        // answered from the record of what this host actually granted. That is the recovery a caller needs
+        // when it never saw the first response (socket reset, or a process that died between acceptance and
+        // the answer): it gets the input the host already took, instead of queueing a second minutes-long,
+        // sub-agent-fanning turn onto the same conversation.
+        var acceptances = store as IInputAcceptanceStore;
+        if (request.IdempotencyKey is not null && acceptances is null)
         {
             // Refused BEFORE the enqueue, because the alternative is queueing the turn and then telling the
             // caller its key was not honored — by which point the duplicate this endpoint exists to prevent
-            // has already been created. Without a ledger there is nowhere to record the reservation, so the
-            // guarantee cannot be made at all.
+            // has already been created. Without an admission store there is nowhere to record the grant, so
+            // the guarantee cannot be made at all.
             logger.LogWarning(
-                "SendMessage for thread {ThreadId} rejected: store {StoreType} cannot durably reserve an "
+                "SendMessage for thread {ThreadId} rejected: store {StoreType} cannot durably admit an "
                     + "input id, so an idempotency key cannot be honored",
                 threadId,
                 store.GetType().Name);
@@ -754,12 +758,23 @@ public class ConversationsController(
         }
 
         var idempotent = request.IdempotencyKey is not null;
-        var inputId = idempotent
-            ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning)
-            : ServerMintedInputIdPrefix + Guid.NewGuid().ToString("N");
+
+        // The admission describes what this send is asking to be granted. Every response below — fresh,
+        // reconciled, or downgraded — is a projection of one of these, so the answer a caller gets first and
+        // the answer it gets on a retry are shaped by the same fact and cannot drift apart.
+        var admission = new InputAcceptance(
+            threadId,
+            idempotent
+                ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning)
+                : ServerMintedInputIdPrefix + Guid.NewGuid().ToString("N"),
+            timeProvider.GetUtcNow(),
+            InputAcceptanceState.Pending,
+            SpawningSuppressed: request.SuppressSubAgentSpawning,
+            IdempotencyHonored: idempotent,
+            ReservationId: Guid.NewGuid());
 
         if (idempotent
-            && await TryReconcileAcceptedInputAsync(ledger!, threadId, inputId, ct) is { } reconciled)
+            && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
         {
             return reconciled;
         }
@@ -767,7 +782,7 @@ public class ConversationsController(
         // A null return means the input channel is full — TrySendAsync guarantees no accepted-input
         // record survives in that case. A thrown exception (durable-store write failure) is left to
         // propagate to a 500, per the REST contract (no inputId returned either way). Either way the
-        // reservation taken above has to go back, or the id stays claimed by work that never ran and every
+        // admission taken above has to go back, or the id stays claimed by work that never ran and every
         // later retry of it reconciles to a turn that does not exist.
         SendReceipt? receipt;
         try
@@ -776,15 +791,15 @@ public class ConversationsController(
                 ? await suppressing.TrySendAsync(
                     new UserInput(
                         [userMessage],
-                        inputId,
+                        admission.InputId,
                         ParentRunId: null,
                         SuppressSubAgentSpawning: request.SuppressSubAgentSpawning),
                     ct)
-                : await agent.TrySendAsync([userMessage], inputId: inputId, parentRunId: null, ct);
+                : await agent.TrySendAsync([userMessage], inputId: admission.InputId, parentRunId: null, ct);
         }
         catch when (idempotent)
         {
-            await ReleaseReservationAsync(ledger!, threadId, inputId);
+            await ReleaseAdmissionAsync(acceptances!, admission);
             throw;
         }
 
@@ -793,7 +808,7 @@ public class ConversationsController(
             logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
             if (idempotent)
             {
-                await ReleaseReservationAsync(ledger!, threadId, inputId);
+                await ReleaseAdmissionAsync(acceptances!, admission);
             }
 
             return StatusCode(
@@ -801,102 +816,136 @@ public class ConversationsController(
                 new { error = "queue_full", code = "queue_full", threadId });
         }
 
-        var keyHonored = idempotent;
-        if (request.SuppressSubAgentSpawning && !receipt.SpawningSuppressed)
+        // The capability check got the request this far; the RECEIPT is what says this particular input will
+        // actually be enforced. An agent that claims the capability but does not stamp the receipt cannot
+        // make this host advertise a guarantee — and the negative is RECORDED, not just returned, so a retry
+        // that arrives after the turn has been drained still reads "not suppressed" instead of being told by
+        // a rebuilt-from-the-request answer that the guarantee held.
+        var guaranteeKept = !request.SuppressSubAgentSpawning || receipt.SpawningSuppressed;
+        if (!guaranteeKept)
         {
-            // The capability check got the request this far; the RECEIPT is what says this particular input
-            // will actually be enforced. Relaying a false here (rather than the request) is what makes the
-            // client's fail-closed check meaningful — an agent that claims the capability but does not stamp
-            // the receipt cannot make this host advertise a guarantee.
             logger.LogWarning(
                 "SendMessage for thread {ThreadId}: agent {AgentType} accepted the input but did not confirm "
                     + "sub-agent spawn suppression; the response will not claim the guarantee",
                 threadId,
                 agent.GetType().Name);
-
-            if (idempotent)
-            {
-                // The reservation is what a later repeat reads the suppression outcome back out of, and this
-                // id says "suppressed" while the receipt says otherwise. Dropping it (and the honored claim
-                // with it) keeps the two honest together: no stored record survives to tell a retry that a
-                // guarantee held, and the caller is told plainly that this send was not deduped.
-                await ReleaseReservationAsync(ledger!, threadId, inputId);
-                keyHonored = false;
-            }
         }
 
-        return Accepted(new SendMessageResponse
+        var granted = admission with
         {
-            InputId = inputId,
-            Queued = true,
+            State = guaranteeKept ? InputAcceptanceState.Enforced : InputAcceptanceState.Unenforced,
             SpawningSuppressed = receipt.SpawningSuppressed,
-            IdempotencyKeyHonored = keyHonored,
-        });
+        };
+
+        if (idempotent && !await acceptances!.TryRecordOutcomeAsync(granted, ct))
+        {
+            logger.LogError(
+                "Could not record the outcome of input {InputId} on thread {ThreadId}; the turn is queued but "
+                    + "a repeat of this idempotency key may not reconcile to it",
+                granted.InputId,
+                threadId);
+        }
+
+        return AcceptedAdmission(granted, queued: true);
     }
 
     /// <summary>
-    /// Claims <paramref name="inputId"/> for this send, and returns the response to send INSTEAD of
-    /// queueing when the claim shows the input was already taken.
+    /// Takes the admission for this send, and returns the response to send INSTEAD of queueing when it turns
+    /// out the input was already taken.
     /// <para>
-    /// The resolver lookup comes first because it is the only thing that still sees an input which has
-    /// already been drained into a run (the agent folds accepted ids into the run row and then deletes the
-    /// acceptance record — in that order, so no instant exists where an accepted input is invisible to
-    /// both). The reservation then decides the concurrent case, in the store, without a read-then-write
-    /// window: two simultaneous sends of the same key both see nothing above, and exactly one of them wins
-    /// the right to enqueue.
+    /// Two distinct "already taken" cases, in the order they can be decided. The reservation settles the
+    /// normal one entirely in the store, with no read-then-write window: N simultaneous sends of one key all
+    /// attempt it and exactly one is told it won, while every loser is handed the winner's RECORD — which
+    /// outlives the drain, so this stays exact long after the turn has started or finished.
+    /// </para>
+    /// <para>
+    /// Winning still isn't proof the input is new: an input admitted by an EARLIER build of this host (or one
+    /// whose record was released after its turn was already queued) has no record to lose against. So the
+    /// winner confirms against the thread's live accepted/run state before enqueueing, and if the id is
+    /// already in flight there it gives the admission back rather than starting a second turn. That answer
+    /// claims no suppression: there is no record to back a guarantee with, and inventing one from the request
+    /// is exactly the re-derivation this endpoint must not do.
     /// </para>
     /// </summary>
-    /// <returns>The reconciled response, or null when this caller won the reservation and must enqueue.</returns>
-    private async Task<IActionResult?> TryReconcileAcceptedInputAsync(
-        IRunLedgerStore ledger,
-        string threadId,
-        string inputId,
+    /// <returns>The reconciled response, or null when this caller may enqueue.</returns>
+    private async Task<IActionResult?> TryReconcileAdmissionAsync(
+        IInputAcceptanceStore acceptances,
+        InputAcceptance admission,
         CancellationToken ct)
     {
-        var alreadyResolvable = await statusResolver.ResolveByInputIdAsync(threadId, inputId, ct) is not null;
-        if (!alreadyResolvable
-            && await ledger.TryReserveAcceptedInputAsync(threadId, inputId, DateTimeOffset.UtcNow, ct))
+        if (await acceptances.TryReserveAcceptanceAsync(admission, ct) is { } granted)
+        {
+            logger.LogInformation(
+                "SendMessage for thread {ThreadId} reconciled to already-admitted input {InputId} "
+                    + "({State}); nothing was queued",
+                admission.ThreadId,
+                admission.InputId,
+                granted.State);
+
+            return AcceptedAdmission(granted, queued: false);
+        }
+
+        if (await statusResolver.ResolveByInputIdAsync(admission.ThreadId, admission.InputId, ct) is null)
         {
             return null;
         }
 
+        await ReleaseAdmissionAsync(acceptances, admission);
         logger.LogInformation(
-            "SendMessage for thread {ThreadId} reconciled to already-accepted input {InputId}; nothing was queued",
-            threadId,
-            inputId);
+            "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} that carries no "
+                + "admission record; nothing was queued and no suppression is claimed",
+            admission.ThreadId,
+            admission.InputId);
 
-        return Accepted(new SendMessageResponse
-        {
-            InputId = inputId,
-            Queued = false,
-            // Read back out of the id that was actually found accepted, not out of this request: the id is
-            // the record, and it can only have been written by a send whose capability check had already
-            // passed. A repeat that asks for something different derives a different id and never lands here.
-            SpawningSuppressed = SuppressionRecordedIn(inputId),
-            IdempotencyKeyHonored = true,
-        });
+        return AcceptedAdmission(
+            admission with { State = InputAcceptanceState.Unenforced, SpawningSuppressed = false },
+            queued: false);
     }
 
     /// <summary>
-    /// Gives back a reservation whose send did not survive to become queued work. Best-effort and never
-    /// cancellable: the request's token is typically already cancelled on this path, and a reservation left
-    /// behind is worse than the extra work — it would make every later retry of that key reconcile to a turn
-    /// that never ran.
+    /// The one place a <see cref="SendMessageResponse"/> is shaped, so a fresh send and a repeat of the same
+    /// key can only ever answer with the same projection of the same record.
     /// </summary>
-    private async Task ReleaseReservationAsync(IRunLedgerStore ledger, string threadId, string inputId)
+    private IActionResult AcceptedAdmission(InputAcceptance acceptance, bool queued) =>
+        Accepted(new SendMessageResponse
+        {
+            InputId = acceptance.InputId,
+            Queued = queued,
+            SpawningSuppressed = acceptance.SpawningSuppressed,
+            IdempotencyKeyHonored = acceptance.IdempotencyHonored,
+        });
+
+    /// <summary>
+    /// Gives back an admission whose send did not survive to become queued work. Best-effort and never
+    /// cancellable: the request's token is typically already cancelled on this path, and an admission left
+    /// behind is worse than the extra work — it would make every later retry of that key reconcile to a turn
+    /// that never ran. The reservation token means this can only ever retract THIS request's admission.
+    /// </summary>
+    private async Task ReleaseAdmissionAsync(IInputAcceptanceStore acceptances, InputAcceptance admission)
     {
         try
         {
-            await ledger.RemoveAcceptedInputAsync(threadId, inputId, CancellationToken.None);
+            if (!await acceptances.TryReleaseAcceptanceAsync(
+                    admission.ThreadId,
+                    admission.InputId,
+                    admission.ReservationId,
+                    CancellationToken.None))
+            {
+                logger.LogWarning(
+                    "Admission for input {InputId} on thread {ThreadId} was not retracted because it is no "
+                        + "longer this request's to retract",
+                    admission.InputId,
+                    admission.ThreadId);
+            }
         }
         catch (Exception ex)
         {
             logger.LogError(
                 ex,
-                "Could not release the reservation for input {InputId} on thread {ThreadId}; a repeat of this "
+                "Could not retract the admission for input {InputId} on thread {ThreadId}; a repeat of this "
                     + "idempotency key will reconcile to a turn that was never queued",
-                inputId,
-                threadId);
+                admission.InputId,
+                admission.ThreadId);
         }
     }
 
@@ -935,13 +984,6 @@ public class ConversationsController(
     /// </summary>
     private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning) =>
         $"{IdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
-
-    /// <summary>
-    /// Reads the suppression outcome back out of a derived input id — the inverse of
-    /// <see cref="DeriveIdempotentInputId"/>, and the reason that id is the authoritative record.
-    /// </summary>
-    private static bool SuppressionRecordedIn(string inputId) =>
-        inputId.StartsWith(IdempotentInputIdPrefix + "1:", StringComparison.Ordinal);
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or

@@ -1,4 +1,5 @@
 using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Tests.TestDoubles;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -170,6 +171,51 @@ public class ConversationStatusResolverTests
         result!.RunId.Should().BeNull();
         result.Status.Should().Be(ConversationRunStatus.NotStarted);
         result.Response.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The drain is not atomic with respect to a poll: the agent writes the run row and only then deletes
+    /// the acceptance, so a resolver that consults the two sets in the wrong order can look between them
+    /// and see NEITHER. Reporting live work as unknown is the one answer that does damage — a caller reads
+    /// it as "never accepted" and re-sends, putting a second minutes-long turn on the conversation. The
+    /// drain here lands after whichever lookup the resolver makes first, so only the safe order survives.
+    /// </summary>
+    [Fact]
+    public async Task ResolveByInputIdAsync_NeverReportsUnknown_WhenTheInputIsDrainedBetweenItsLookups()
+    {
+        var store = new InMemoryConversationStore();
+        await store.RecordAcceptedInputAsync(ThreadId, "input-1", DateTimeOffset.UtcNow);
+        var draining = new DrainingLedgerStore(store, ThreadId, "input-1", "run-1");
+        var resolver = new ConversationStatusResolver(store, draining);
+
+        var result = await resolver.ResolveByInputIdAsync(ThreadId, "input-1");
+
+        result.Should().NotBeNull("this input is live work — a caller told 'unknown' answers by re-sending");
+        result!.Status.Should().Be(
+            ConversationRunStatus.InProgress,
+            "the acceptance snapshot only had to keep the input from vanishing; the run row it was drained "
+                + "into is what the answer is built from");
+        result.RunId.Should().Be("run-1");
+    }
+
+    /// <summary>
+    /// An acceptance record is not always transient. Restart reconciliation synthesizes an Interrupted run
+    /// for an input that was accepted and never drained, and deliberately LEAVES the acceptance in place —
+    /// so a resolver that answered from the acceptance snapshot alone would report a turn that can never run
+    /// as NotStarted on every poll, forever, and its caller would wait for a status that never arrives.
+    /// </summary>
+    [Fact]
+    public async Task ResolveByInputIdAsync_PrefersTheLedger_WhenAnOrphanedAcceptanceOutlivesReconciliation()
+    {
+        var store = new InMemoryConversationStore();
+        await store.RecordAcceptedInputAsync(ThreadId, "input-1", DateTimeOffset.UtcNow);
+        await store.UpsertRunLedgerAsync(Entry(ThreadId, "run-orphan", RunStatus.Interrupted, "input-1"));
+        var resolver = new ConversationStatusResolver(store, store);
+
+        var result = await resolver.ResolveByInputIdAsync(ThreadId, "input-1");
+
+        result!.Status.Should().Be(ConversationRunStatus.Interrupted);
+        result.RunId.Should().Be("run-orphan");
     }
 
     [Fact]

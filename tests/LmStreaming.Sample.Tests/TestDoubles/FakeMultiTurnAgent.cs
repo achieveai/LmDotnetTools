@@ -36,6 +36,18 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
     /// BEFORE anything was queued, rather than merely reported as unsuppressed afterwards.</summary>
     public int SendCount { get; private set; }
 
+    /// <summary>
+    /// When set, <see cref="TrySendAsync(List{IMessage}, string?, string?, CancellationToken)"/> signals
+    /// <see cref="SendEntered"/> and then parks until this gate is completed. It holds a send inside the
+    /// agent — admitted but not yet acknowledged — so a test can drive a SECOND send through the whole
+    /// controller path while the first is still in flight, which is the interleave a retry that overlaps
+    /// the send it is retrying actually hits.
+    /// </summary>
+    public TaskCompletionSource? SendGate { get; set; }
+
+    /// <summary>Completes once a gated send has arrived and parked.</summary>
+    public TaskCompletionSource SendEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
@@ -57,6 +69,15 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
         string? parentRunId = null,
         CancellationToken ct = default)
     {
+        if (SendGate is { } gate)
+        {
+            _ = SendEntered.TrySetResult();
+
+            // Bounded so a mis-wired fixture fails loudly instead of hanging the run. It is a guard, never
+            // a sleep: the wait ends the moment the test opens the gate.
+            await gate.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        }
+
         if (ThrowOnTrySend)
         {
             throw new InvalidOperationException("Simulated durable accepted-input write failure.");

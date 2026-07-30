@@ -493,15 +493,29 @@ public sealed class S2SReviewAgentTests
     /// The point of a PREFLIGHT. A host that predates these contracts silently ignores the request fields
     /// that carry them, so a caller that only reads response acknowledgements finds out once its turn is
     /// already queued — with an unsuppressed sub-agent fan-out running on the host and a retry that would
-    /// duplicate the review. Both shapes of "cannot keep it" are the same failure: the endpoint is missing
-    /// (an older host), or it is present and answers no (a skewed deployment).
+    /// duplicate the review. Every shape of "cannot keep it" is the same failure and must reach the caller
+    /// as the same governed <see cref="ReviewHostContractException"/>: the endpoint is missing (an older
+    /// host), it is present and answers no (a skewed deployment), or it refuses this daemon's credential
+    /// (401/403 — the capability read carries the same inbound S2S secret a send would, so a refusal there
+    /// means no turn could be accepted either). The credential cases matter most: an unmapped 401 would
+    /// surface as a raw transport failure that the retry governor does not charge, and the review would
+    /// hammer a host that will never admit it.
     /// </summary>
     [Theory]
-    [InlineData(HttpStatusCode.NotFound, "{\"error\":\"not_found\"}")]
-    [InlineData(HttpStatusCode.OK, "{\"schemaVersion\":1,\"messageIdempotency\":false,\"spawnSuppression\":true}")]
+    [InlineData(HttpStatusCode.NotFound, "{\"error\":\"not_found\"}", "does not advertise conversation capabilities")]
+    [InlineData(
+        HttpStatusCode.OK,
+        "{\"schemaVersion\":1,\"messageIdempotency\":false,\"spawnSuppression\":true}",
+        "does not support messageIdempotency")]
+    [InlineData(
+        HttpStatusCode.Unauthorized,
+        "{\"error\":\"unauthorized\",\"code\":\"s2s_auth_failed\"}",
+        "rejected this daemon's credential")]
+    [InlineData(HttpStatusCode.Forbidden, "{\"error\":\"forbidden\"}", "rejected this daemon's credential")]
     public async Task ExecuteRunAsync_sends_nothing_to_a_host_that_cannot_keep_the_message_contracts(
         HttpStatusCode status,
-        string body)
+        string body,
+        string expectedDiagnosis)
     {
         var handler = new FakeHttpMessageHandler()
             .OnJson(HttpMethod.Get, "conversations/capabilities", body, status)
@@ -513,7 +527,10 @@ public sealed class S2SReviewAgentTests
 
         Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
 
-        _ = await act.Should().ThrowAsync<ReviewHostContractException>();
+        // The parked run's message is the only thing an operator gets, so each refusal must name its OWN
+        // cause: telling them to upgrade a host whose version is fine, when the real fault is a stale shared
+        // secret, sends them down the wrong path with the review already parked.
+        _ = await act.Should().ThrowAsync<ReviewHostContractException>().WithMessage($"*{expectedDiagnosis}*");
         handler.Requests.Should().NotContain(
             r => r.Method == HttpMethod.Post,
             "nothing may be provisioned or queued on a host that cannot keep the contract the turn depends on");

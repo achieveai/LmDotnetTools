@@ -63,34 +63,6 @@ public interface IRunLedgerStore
         CancellationToken ct = default);
 
     /// <summary>
-    /// Records acceptance ONLY IF no entry already exists for
-    /// (<paramref name="threadId"/>, <paramref name="inputId"/>), atomically with respect to concurrent
-    /// callers, and reports whether this caller is the one that recorded it.
-    /// <para>
-    /// This is the primitive that makes an input id an admission ticket rather than a label. A caller that
-    /// checks "has this been accepted?" and then enqueues has a window in which a second caller does the
-    /// same and both enqueue; winning this reservation is what lets exactly one of them proceed. The winner
-    /// owns the enqueue AND the compensation: if it then fails to queue the input it must call
-    /// <see cref="RemoveAcceptedInputAsync"/>, or the id stays reserved for work that never ran.
-    /// </para>
-    /// <para>
-    /// A loser reconciles against the thread's existing accepted/run state rather than being handed the
-    /// entry, because by then the input may already have been drained into a run and have no
-    /// accepted-input entry left at all.
-    /// </para>
-    /// </summary>
-    /// <param name="threadId">The thread the input is being accepted for.</param>
-    /// <param name="inputId">The input identifier to reserve.</param>
-    /// <param name="acceptedAt">When the input was accepted.</param>
-    /// <param name="ct">Cancellation token.</param>
-    /// <returns><c>true</c> if this call recorded the acceptance; <c>false</c> if one already existed.</returns>
-    Task<bool> TryReserveAcceptedInputAsync(
-        string threadId,
-        string inputId,
-        DateTimeOffset acceptedAt,
-        CancellationToken ct = default);
-
-    /// <summary>
     /// Removes a previously-recorded accepted-input entry. Idempotent — a no-op if no such
     /// entry exists (e.g. it was already removed, or never recorded).
     /// </summary>

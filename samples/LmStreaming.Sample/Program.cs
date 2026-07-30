@@ -509,6 +509,11 @@ try
         return new ConversationStatusResolver(store, ledger);
     });
 
+    // The clock the REST layer stamps durable records with. Registered (rather than reached for via
+    // DateTimeOffset.UtcNow) so a test can pin acceptance timestamps; TryAdd so a test host that
+    // supplied a fake clock before this point keeps it.
+    builder.Services.TryAddSingleton(TimeProvider.System);
+
     // Register the FileChatModeStore for chat mode persistence
     var chatModesPath = Path.Combine(AppContext.BaseDirectory, "chat-modes");
     _ = builder.Services.AddSingleton<IChatModeStore>(new FileChatModeStore(chatModesPath));

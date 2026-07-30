@@ -33,6 +33,7 @@ public class ConversationsControllerTests
             workspaceStore ?? Mock.Of<IWorkspaceStore>(),
             providerRegistry ?? new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
+            TimeProvider.System,
             NullLogger<ConversationsController>.Instance);
     }
 
@@ -946,6 +947,53 @@ public class ConversationsControllerTests
     }
 
     /// <summary>
+    /// The window the post-reservation confirmation exists for. Winning the reservation is not proof the
+    /// input is new — an input admitted by an EARLIER build of this host is in flight with no record to lose
+    /// against — so the winner re-checks the thread's live state. That check races the DRAIN, which moves the
+    /// input out of the accepted set and into a run in two separate writes. Here the drain lands between the
+    /// confirmation's two lookups: the reservation has already been won, so nothing but the confirmation can
+    /// stop a second minutes-long turn from being queued onto a conversation that is already running this one.
+    /// The retry is then answered with the status of the turn that exists, not a new one.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_WhoseInputDrainsWhileItIsBeingConfirmed_QueuesNothingAndResolvesToTheLiveRun()
+    {
+        const string InputId = "idem:0:review-run-7:2";
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-drain-race";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+        // Accepted, but with NO admission record — so the reservation below succeeds and the confirmation
+        // is the only thing left between this send and a duplicate turn.
+        await store.RecordAcceptedInputAsync(threadId, InputId, DateTimeOffset.UtcNow);
+
+        var draining = new DrainingLedgerStore(store, threadId, InputId, "run-drained");
+        var controller = CreateController(
+            store,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            statusResolver: new ConversationStatusResolver(store, draining));
+        var request = new SendMessageRequest { Text = "synthesize", IdempotencyKey = "review-run-7:2" };
+
+        var response = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+
+        response.InputId.Should().Be(InputId);
+        response.Queued.Should().BeFalse("the input was already in flight when the reservation was won");
+        agent.SendCount.Should().Be(0, "exactly one turn may exist for this key, and it is already running");
+
+        var status = Assert.IsType<ConversationStatusResponse>(
+            Assert.IsType<OkObjectResult>(
+                await controller.GetStatus(threadId, runId: null, inputId: response.InputId, default)).Value);
+        status.RunId.Should().Be("run-drained");
+        status.Status.Should().Be(
+            nameof(ConversationRunStatus.InProgress),
+            "the caller has to be able to poll the turn it was handed back");
+    }
+
+    /// <summary>
     /// A key identifies one turn INCLUDING what it does. A repeat that asks for something different (here:
     /// suppression flipped on) is a different operation, so reconciling it to the earlier input would quietly
     /// serve the caller a turn without the guarantee it just asked for.
@@ -1167,23 +1215,39 @@ public class ConversationsControllerTests
     }
 
     /// <summary>
-    /// The honored claim is a promise about DURABLE state, so a host whose store cannot record a reservation
+    /// The honored claim is a promise about DURABLE state, so a host whose store cannot record an admission
     /// has to refuse before it queues anything. Queueing first and then reporting "not honored" would already
-    /// have created the duplicate the key exists to prevent.
+    /// have created the duplicate the key exists to prevent. Run against BOTH shapes of incapable store: one
+    /// with no ledger at all, and one with a perfectly good run ledger — which is not enough, because the
+    /// drain deletes exactly what a run ledger records.
     /// </summary>
-    [Fact]
-    public async Task SendMessage_RefusesAKey_WhenTheStoreCannotDurablyReserveTheInput()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SendMessage_RefusesAKey_WhenTheStoreCannotRecordAnAdmission(bool hasRunLedger)
     {
         var threadId = "thread-send-idem-no-ledger";
-        var store = new Mock<IConversationStore>();
-        store
-            .Setup(s => s.LoadMetadataAsync(threadId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(DefaultModeMetadata(threadId));
+        IConversationStore store;
+        if (hasRunLedger)
+        {
+            var inner = new InMemoryConversationStore();
+            await SeedDefaultModeThreadAsync(inner, threadId);
+            store = LedgerOnlyStore(inner);
+        }
+        else
+        {
+            var mock = new Mock<IConversationStore>();
+            mock
+                .Setup(s => s.LoadMetadataAsync(threadId, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(DefaultModeMetadata(threadId));
+            store = mock.Object;
+        }
+
         await using var pool = CreateSuppressionCapablePool();
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
 
-        var controller = CreateController(store.Object, pool, ModeStoreResolvingSystemModes());
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
 
         var result = await controller.SendMessage(
             threadId,
@@ -1196,42 +1260,38 @@ public class ConversationsControllerTests
     }
 
     /// <summary>
-    /// The race the reservation exists for: the daemon's retry can overlap the send it is retrying (the first
-    /// response was lost, not the request). Both sends are held inside the accepted-input lookup until each
-    /// has been told the input is not there, so a check-then-write acceptance would let BOTH enqueue — two
-    /// minutes-long, sub-agent-fanning turns on one conversation, and a double-posted review.
+    /// The race the admission exists for: the daemon's retry can overlap the send it is retrying (the first
+    /// response was lost, not the request). The first send is held INSIDE the agent — admitted, not yet
+    /// acknowledged — while the second runs the whole controller path, so the only thing that can refuse it
+    /// is the admission itself. A host that decided by looking for finished work would let both through:
+    /// two minutes-long, sub-agent-fanning turns on one conversation, and a double-posted review.
     /// </summary>
     [Fact]
-    public async Task SendMessage_WithTwoConcurrentSendsOfOneKey_EnqueuesExactlyOnce()
+    public async Task SendMessage_WithASecondSendOfOneKey_WhileTheFirstIsStillInFlight_EnqueuesExactlyOnce()
     {
         var store = new InMemoryConversationStore();
         await using var pool = CreateSuppressionCapablePool();
         var threadId = "thread-send-idem-concurrent";
         var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
         var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.SendGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await SeedDefaultModeThreadAsync(store, threadId);
 
-        // One rendezvous shared by both controllers: neither may leave the lookup until both have arrived.
-        var rendezvous = new RendezvousLedgerStore(store, participants: 2);
-        ConversationsController Controller() => CreateController(
-            store,
-            pool,
-            ModeStoreResolvingSystemModes(),
-            statusResolver: new ConversationStatusResolver(store, rendezvous));
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
         var request = new SendMessageRequest { Text = "synthesize", IdempotencyKey = "review-run-7:2" };
 
-        var first = Controller().SendMessage(threadId, request, default);
-        var second = Controller().SendMessage(threadId, request, default);
-        var responses = (await Task.WhenAll(first, second))
-            .Select(r => Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(r).Value))
-            .ToList();
+        var inFlight = controller.SendMessage(threadId, request, default);
+        await agent.SendEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var overlapping = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+        agent.SendGate.SetResult();
+        var first = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(await inFlight).Value);
 
-        responses.Select(r => r.InputId).Distinct().Should().ContainSingle(
-            "both callers named the same turn, so both must be told the same input id");
-        responses.Count(r => r.Queued).Should().Be(1, "exactly one of the two may become queued work");
-        responses.Should().OnlyContain(
-            r => r.IdempotencyKeyHonored, "both sends were covered by the same durable reservation");
-        agent.SendCount.Should().Be(1, "the loser must not put a second turn onto the conversation");
+        first.Queued.Should().BeTrue();
+        overlapping.InputId.Should().Be(first.InputId, "both callers named the same turn");
+        overlapping.Queued.Should().BeFalse("the turn was already admitted, even though it had not been acknowledged");
+        overlapping.IdempotencyKeyHonored.Should().BeTrue("both sends were covered by the same admission");
+        agent.SendCount.Should().Be(1, "the retry must not put a second turn onto the conversation");
     }
 
     /// <summary>
@@ -1311,12 +1371,15 @@ public class ConversationsControllerTests
     }
 
     /// <summary>
-    /// When the receipt refuses the guarantee the record would have claimed, the host keeps the two honest
-    /// together: it drops the reservation, tells the caller its key was NOT honored, and lets the retry queue
-    /// a real turn — instead of leaving behind a record that would later promise a suppression that never held.
+    /// An agent that accepts the input and refuses the guarantee makes a LASTING fact, not just a one-off
+    /// response: the host records the failure. Deriving the answer from the request (or from the shape of
+    /// the input id) instead would let the very next retry — especially one arriving after the turn was
+    /// drained, when nothing else remembers what happened — be told the suppression held.
     /// </summary>
-    [Fact]
-    public async Task SendMessage_DoesNotHonorAKey_WhenTheReceiptContradictsTheRecordedSuppression()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SendMessage_RecordsAFailedSuppression_SoNoRetryCanReportItAsHonored(bool drainFirst)
     {
         var store = new InMemoryConversationStore();
         await using var pool = CreateSuppressionCapablePool();
@@ -1336,36 +1399,112 @@ public class ConversationsControllerTests
 
         var first = Assert.IsType<SendMessageResponse>(
             Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+        if (drainFirst)
+        {
+            await DrainAcceptedInputAsync(store, threadId, first.InputId);
+        }
+
         var repeat = Assert.IsType<SendMessageResponse>(
             Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
 
-        first.IdempotencyKeyHonored.Should().BeFalse("no record survives that could dedupe a repeat");
-        repeat.Queued.Should().BeTrue("the caller was told plainly that its first send was not protected");
-        agent.SendCount.Should().Be(2);
+        first.SpawningSuppressed.Should().BeFalse("the receipt refused the guarantee this send asked for");
+        repeat.SpawningSuppressed.Should().BeFalse(
+            "the stored outcome is the failure, so no repeat can be told the guarantee held");
+        repeat.Queued.Should().BeFalse("the first turn is real work — the caller failed closed, it did not lose it");
+        agent.SendCount.Should().Be(1, "a refused guarantee is not a reason to run the turn twice");
+        (await store.GetAcceptanceAsync(threadId, first.InputId))!.State
+            .Should().Be(InputAcceptanceState.Unenforced);
+    }
+
+    /// <summary>
+    /// The retry that matters most arrives AFTER the drain has deleted every trace of the input from the
+    /// accepted set. The admission record is what survives that, and it is what the answer is built from —
+    /// the same projection the first response used, so the two cannot drift apart.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_AnsweringARepeatAfterTheDrain_ReportsTheSameGrantAsTheFirstResponse()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-post-drain";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var request = new SendMessageRequest
+        {
+            Text = "synthesize",
+            IdempotencyKey = "review-run-7:2",
+            SuppressSubAgentSpawning = true,
+        };
+
+        var first = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+        await DrainAcceptedInputAsync(store, threadId, first.InputId);
+        var repeat = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+
+        repeat.InputId.Should().Be(first.InputId);
+        repeat.SpawningSuppressed.Should().Be(first.SpawningSuppressed).And.Be(true);
+        repeat.IdempotencyKeyHonored.Should().Be(first.IdempotencyKeyHonored).And.Be(true);
+        repeat.Queued.Should().BeFalse();
+        agent.SendCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// What the agent loop does when it starts a run: fold the input into the run row, THEN forget it was
+    /// pending. The admission record is deliberately untouched — that is the whole reason it is a separate
+    /// fact from the accepted-input marker.
+    /// </summary>
+    private static async Task DrainAcceptedInputAsync(
+        InMemoryConversationStore store,
+        string threadId,
+        string inputId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await store.UpsertRunLedgerAsync(
+            new RunLedgerEntry(threadId, "run-drained", RunStatus.InProgress, [inputId], now, now));
+        await store.RemoveAcceptedInputAsync(threadId, inputId);
     }
 
     /// <summary>
     /// The preflight a caller checks before its first send. It reports the same durable fact the send path
-    /// reserves against, so the two can never disagree: a host whose store cannot reserve must not advertise
-    /// message idempotency, or a caller would fail closed only after its turn was already queued.
+    /// admits against, so the two can never disagree: a host whose store cannot record an admission must not
+    /// advertise message idempotency, or a caller would fail closed only after its turn was already queued.
+    /// A run ledger is NOT enough — it records what is outstanding, and the drain deletes exactly that.
     /// </summary>
     [Fact]
-    public async Task GetCapabilities_ReportsMessageIdempotency_OnlyWhenTheStoreCanReserve()
+    public async Task GetCapabilities_ReportsMessageIdempotency_OnlyWhenTheStoreCanRecordAnAdmission()
     {
         await using var pool = CreateSuppressionCapablePool();
 
-        var reserving = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(
+        var admitting = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(
             CreateController(new InMemoryConversationStore(), pool, ModeStoreResolvingSystemModes())
                 .GetCapabilities()).Value);
-        var nonReserving = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(
+        var ledgerOnly = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(
+            CreateController(LedgerOnlyStore(), pool, ModeStoreResolvingSystemModes())
+                .GetCapabilities()).Value);
+        var plainStore = Assert.IsType<ConversationCapabilitiesResponse>(Assert.IsType<OkObjectResult>(
             CreateController(Mock.Of<IConversationStore>(), pool, ModeStoreResolvingSystemModes())
                 .GetCapabilities()).Value);
 
-        reserving.MessageIdempotency.Should().BeTrue();
-        reserving.SpawnSuppression.Should().BeTrue();
-        nonReserving.MessageIdempotency.Should().BeFalse(
+        admitting.MessageIdempotency.Should().BeTrue();
+        admitting.SpawnSuppression.Should().BeTrue();
+        ledgerOnly.MessageIdempotency.Should().BeFalse(
+            "a run ledger cannot answer a retry that arrives after the drain deleted the input");
+        plainStore.MessageIdempotency.Should().BeFalse(
             "advertising a guarantee this store cannot record is what makes a caller fail late");
     }
+
+    /// <summary>
+    /// A store that keeps a run ledger but cannot record admissions — the shape every store outside this
+    /// repository still has, since the capability is opt-in. Deliberately reuses the sample's real
+    /// non-owning wrapper rather than a bespoke stub: if that wrapper ever starts forwarding admissions,
+    /// this fixture stops being the "cannot" case and the test says so.
+    /// </summary>
+    private static IConversationStore LedgerOnlyStore(InMemoryConversationStore? inner = null) =>
+        new NonOwningConversationStore(inner ?? new InMemoryConversationStore());
 
     private static MultiTurnAgentPool CreateSuppressionCapablePool()
     {

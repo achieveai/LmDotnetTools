@@ -214,14 +214,6 @@ public sealed class NonOwningConversationStore : IConversationStore, IRunLedgerS
         RunLedger.RecordAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
 
     /// <inheritdoc />
-    public Task<bool> TryReserveAcceptedInputAsync(
-        string threadId,
-        string inputId,
-        DateTimeOffset acceptedAt,
-        CancellationToken ct = default) =>
-        RunLedger.TryReserveAcceptedInputAsync(threadId, inputId, acceptedAt, ct);
-
-    /// <inheritdoc />
     public Task RemoveAcceptedInputAsync(
         string threadId,
         string inputId,

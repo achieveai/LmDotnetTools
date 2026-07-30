@@ -6,12 +6,14 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// File-based implementation of IConversationStore.
 /// Stores messages and metadata as JSON files in a directory structure.
 /// </summary>
-public sealed class FileConversationStore : IConversationStore, IRunLedgerStore, IRunLifecycleStore
+public sealed class FileConversationStore
+    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IInputAcceptanceStore
 {
     private const string MessagesFileName = "messages.json";
     private const string MetadataFileName = "metadata.json";
     private const string RunsFileName = "runs.json";
     private const string AcceptedInputsFileName = "accepted-inputs.json";
+    private const string AcceptancesDirectoryName = "acceptances";
 
     // Deliberately a separate file from runs.json: the run ledger's shape is part of the status
     // API's contract, and lifecycle observation must be addable without rewriting it.
@@ -24,6 +26,13 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore,
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    private static readonly JsonSerializerOptions AcceptanceJsonOptions = new()
+    {
+        WriteIndented = false,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter() },
     };
 
     /// <summary>
@@ -864,6 +873,137 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore,
         }
 
         return null;
+    }
+
+    /// <inheritdoc />
+    public async Task<InputAcceptance?> TryReserveAcceptanceAsync(
+        InputAcceptance acceptance,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(acceptance);
+        var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
+        var json = JsonSerializer.Serialize(acceptance, AcceptanceJsonOptions);
+
+        try
+        {
+            await using var stream = new FileStream(
+                acceptanceFile,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.Read,
+                bufferSize: 4096,
+                useAsync: true);
+            await using var writer = new StreamWriter(stream, Encoding.UTF8);
+            await writer.WriteAsync(json.AsMemory(), ct);
+            await writer.FlushAsync(ct);
+            return null;
+        }
+        catch (IOException)
+        {
+            var existing = await ReadAcceptanceFileAsync(acceptanceFile, ct);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<InputAcceptance?> GetAcceptanceAsync(
+        string threadId,
+        string inputId,
+        CancellationToken ct = default) =>
+        ReadAcceptanceFileAsync(GetAcceptanceFile(threadId, inputId, createDirectory: false), ct);
+
+    /// <inheritdoc />
+    public async Task<bool> TryRecordOutcomeAsync(
+        InputAcceptance acceptance,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(acceptance);
+        return await TryMutateAcceptanceAsync(
+            acceptance.ThreadId,
+            acceptance.InputId,
+            acceptance.ReservationId,
+            replacement: acceptance,
+            ct);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> TryReleaseAcceptanceAsync(
+        string threadId,
+        string inputId,
+        Guid reservationId,
+        CancellationToken ct = default) =>
+        TryMutateAcceptanceAsync(threadId, inputId, reservationId, replacement: null, ct);
+
+    private async Task<bool> TryMutateAcceptanceAsync(
+        string threadId,
+        string inputId,
+        Guid reservationId,
+        InputAcceptance? replacement,
+        CancellationToken ct)
+    {
+        var acceptanceFile = GetAcceptanceFile(threadId, inputId, createDirectory: false);
+        var gateFile = acceptanceFile + ".mutate";
+        await using var gate = new FileStream(
+            gateFile,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None,
+            bufferSize: 1,
+            useAsync: true);
+
+        var existing = await ReadAcceptanceFileAsync(acceptanceFile, ct);
+        if (existing?.ReservationId != reservationId)
+        {
+            return false;
+        }
+
+        if (replacement == null)
+        {
+            File.Delete(acceptanceFile);
+        }
+        else
+        {
+            await WriteJsonFileAsync(acceptanceFile, replacement, AcceptanceJsonOptions, ct);
+        }
+
+        return true;
+    }
+
+    private static async Task<InputAcceptance?> ReadAcceptanceFileAsync(
+        string acceptanceFile,
+        CancellationToken ct)
+    {
+        if (!File.Exists(acceptanceFile))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(acceptanceFile, ct);
+            return JsonSerializer.Deserialize<InputAcceptance>(json, AcceptanceJsonOptions);
+        }
+        catch (Exception ex) when (ex is JsonException or FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    private string GetAcceptanceFile(string threadId, string inputId, bool createDirectory)
+    {
+        var acceptancesDir = Path.Combine(GetThreadDirectory(threadId), AcceptancesDirectoryName);
+        if (createDirectory)
+        {
+            _ = Directory.CreateDirectory(acceptancesDir);
+        }
+
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(inputId)));
+        return Path.Combine(acceptancesDir, $"{digest}.json");
     }
 
     private string GetThreadDirectory(string threadId)
