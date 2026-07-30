@@ -21,6 +21,13 @@ public record SubAgentOptions
     public int MaxConcurrentSubAgents { get; init; } = 5;
 
     /// <summary>
+    /// Maximum number of accepted spawns waiting for a concurrency slot. Once full, new over-capacity
+    /// requests fail immediately with a recoverable <c>queue_full</c> tool result instead of retaining
+    /// unbounded prompts and future billable work. Defaults to 100; set lower for constrained hosts.
+    /// </summary>
+    public int MaxQueuedSubAgents { get; init; } = 100;
+
+    /// <summary>
     /// Fallback conversation store factory when a template doesn't specify one.
     /// Null = no persistence for sub-agents.
     /// </summary>

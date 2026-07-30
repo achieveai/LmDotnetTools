@@ -361,6 +361,10 @@ public class SubAgentToolProvider : IFunctionProvider
 
             return ToolHandlerResult.FromText(result);
         }
+        catch (SubAgentQueueFullException ex)
+        {
+            return ToolHandlerResult.FromError(ex.Message, "queue_full");
+        }
         catch (ArgumentException ex)
         {
             // An unknown or ambiguous subagent_type is a MODEL mistake (a bare/mis-prefixed name, or

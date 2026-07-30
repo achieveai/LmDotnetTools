@@ -881,6 +881,16 @@ public sealed class ChatWebSocketManager
                 threadId,
                 receipt.InputId);
         }
+        catch (SandboxSessionUnavailableException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Sandbox refresh failed before dispatch for thread {ThreadId} (gateway status {StatusCode})",
+                threadId,
+                ex.StatusCode
+            );
+            await SendSandboxUnavailableErrorAsync(connection, ex, recordWriter: null, ct);
+        }
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Invalid JSON from thread {ThreadId}: {Json}", threadId, json);

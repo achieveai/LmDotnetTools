@@ -200,7 +200,11 @@ export function useChat(options: UseChatOptions = {}) {
     try {
       const { getConversationUsage } = await import('@/api/conversationsApi');
       const aggregate = await getConversationUsage(id);
-      if (aggregate && aggregate.totalTokens >= cumulativeUsage.value.totalTokens) {
+      if (
+        threadId.value === id &&
+        aggregate &&
+        aggregate.totalTokens >= cumulativeUsage.value.totalTokens
+      ) {
         applyAggregateToBanner(aggregate);
       }
     } catch (e) {

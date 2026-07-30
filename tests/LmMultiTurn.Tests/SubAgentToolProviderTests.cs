@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -80,6 +81,13 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         {
             await _manager.DisposeAsync();
         }
+    }
+
+    private static async IAsyncEnumerable<IMessage> BlockingStream(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        yield break;
     }
 
     [Fact]
@@ -218,6 +226,55 @@ public class SubAgentToolProviderTests : IAsyncLifetime
         resolved.Payload.ErrorCode.Should().Be("unknown_subagent_type");
         resolved.Payload.Text.Should().Contain("Unknown template")
             .And.Contain("researcher").And.Contain("coder");
+    }
+
+    [Fact]
+    public async Task HandleAgentToolAsync_QueueFull_ReturnsRecoverableError()
+    {
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["researcher"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "research",
+                    AgentFactory = () => _subAgentMock.Object,
+                },
+            },
+            MaxConcurrentSubAgents = 1,
+            MaxQueuedSubAgents = 0,
+        };
+        var source = new MutableSubAgentTemplateSource(options.Templates);
+        await using var manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            source);
+        var provider = new SubAgentToolProvider(manager, source);
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == "Agent").Handler;
+        _subAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                (_, _, ct) => Task.FromResult(BlockingStream(ct)));
+        _ = await manager.SpawnAsync("researcher", "first", runInBackground: true);
+
+        var result = await handler(
+            JsonSerializer.Serialize(new
+            {
+                subagent_type = "researcher",
+                prompt = "overflow",
+                run_in_background = true,
+            }),
+            new ToolCallContext(),
+            CancellationToken.None);
+
+        var resolved = result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject;
+        resolved.Payload.IsError.Should().BeTrue();
+        resolved.Payload.ErrorCode.Should().Be("queue_full");
     }
 
     [Fact]

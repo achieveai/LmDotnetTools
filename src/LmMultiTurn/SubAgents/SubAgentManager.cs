@@ -91,6 +91,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     // permit — the deadlock the old 5s-timeout valve guarded against cannot arise here (each loop owns
     // its own manager + gate, so this gate never has a permit-holder blocked awaiting itself).
     private readonly ConcurrentQueue<QueuedSpawn> _spawnQueue = new();
+    private readonly ConcurrentDictionary<string, QueuedSpawn> _queuedSpawns = new();
+    private readonly ConcurrentDictionary<string, string> _queuedNamesToIds = new();
     private readonly SemaphoreSlim _queueSignal = new(0);
     private readonly CancellationTokenSource _pumpCts = new();
     private readonly Task _pumpTask;
@@ -125,6 +127,9 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     internal Func<string, SubAgentTemplate, IStreamingAgent?>? TestOwnedProviderOverride { get; set; }
 
+    /// <summary>Test-only barrier immediately before the shutdown-serialized registration commit.</summary>
+    internal Func<Task>? TestBeforeAgentRegistrationAsync { get; set; }
+
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
@@ -143,6 +148,22 @@ public sealed class SubAgentManager : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(parentHandlers);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(source);
+
+        if (options.MaxConcurrentSubAgents <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "MaxConcurrentSubAgents must be greater than zero."
+            );
+        }
+
+        if (options.MaxQueuedSubAgents < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "MaxQueuedSubAgents cannot be negative."
+            );
+        }
 
         _parentAgent = parentAgent;
         _parentContracts = parentContracts;
@@ -265,6 +286,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             : name;
 
         ct.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
 
         // Cap behaviour is DEFER-QUEUE, not reject: try to take a concurrency permit without blocking.
         // Wait(0) returns immediately whether or not a permit is free, so the historical hot path (a
@@ -310,6 +332,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         // starts it when a permit frees. A background spawn returns a "queued" receipt now and relays
         // its eventual result to the parent (NotifyParentOnCompletion); a foreground (blocking) spawn
         // waits for the pump to create+start the agent (StateReady) and then awaits its completion.
+        // Registration and enqueue are serialized with disposal so a successful receipt can never name
+        // work accepted after shutdown began.
         var queued = new QueuedSpawn
         {
             AgentId = agentId,
@@ -323,9 +347,22 @@ public sealed class SubAgentManager : IAsyncDisposable
             ModelIntelligence = modelIntelligence,
             Lineage = lineage,
             RunInBackground = runInBackground,
+            CallerCancellation = runInBackground ? CancellationToken.None : ct,
         };
-        _spawnQueue.Enqueue(queued);
-        _ = _queueSignal.Release();
+
+        lock (_spawnQueue)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+            if (_queuedSpawns.Count >= _options.MaxQueuedSubAgents)
+            {
+                throw new SubAgentQueueFullException(_options.MaxQueuedSubAgents);
+            }
+
+            _spawnQueue.Enqueue(queued);
+            _queuedSpawns[agentId] = queued;
+            _queuedNamesToIds[effectiveName] = agentId;
+            _ = _queueSignal.Release();
+        }
 
         _logger.LogInformation(
             "Sub-agent pool full ({Max} in flight); queued spawn {AgentId} from template {Template} "
@@ -422,21 +459,34 @@ public sealed class SubAgentManager : IAsyncDisposable
                 routing.SelectionSource
             );
 
-            _agents[agentId] = state;
-            if (!string.IsNullOrWhiteSpace(effectiveName))
+            if (TestBeforeAgentRegistrationAsync is { } beforeRegistration)
             {
-                if (_namesToIds.TryGetValue(effectiveName, out var existingId)
-                    && existingId != agentId
-                    && _agents.ContainsKey(existingId))
-                {
-                    _logger.LogWarning(
-                        "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
-                            + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
-                            + "address the new agent.",
-                        effectiveName, existingId, agentId);
-                }
+                await beforeRegistration();
+            }
 
-                _namesToIds[effectiveName] = agentId;
+            // Registration is the commit point for a constructed agent. Serialize it with the same
+            // shutdown gate used by queue admission: if disposal started while provider construction was
+            // awaiting, fail here so cleanup disposes the uncommitted agent instead of registering it after
+            // DisposeAsync already enumerated the registry.
+            lock (_spawnQueue)
+            {
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+                _agents[agentId] = state;
+                if (!string.IsNullOrWhiteSpace(effectiveName))
+                {
+                    if (_namesToIds.TryGetValue(effectiveName, out var existingId)
+                        && existingId != agentId
+                        && _agents.ContainsKey(existingId))
+                    {
+                        _logger.LogWarning(
+                            "Sub-agent name '{Name}' already maps to agent {ExistingId}; reassigning it "
+                                + "to the newly spawned agent {AgentId}. SendMessage by this name will now "
+                                + "address the new agent.",
+                            effectiveName, existingId, agentId);
+                    }
+
+                    _namesToIds[effectiveName] = agentId;
+                }
             }
 
             // Start the agent loop in the background
@@ -469,10 +519,9 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
             else
             {
-                // Failed after the state was registered - possibly after the monitor already
-                // started (e.g. agent.SendAsync threw). Roll back the partial registration so a
-                // failed spawn never lingers in Peek/SendMessage lookups, then cancel + observe
-                // any started run/monitor tasks so they don't leak as orphaned background work.
+                // State may have been constructed but rejected at the shutdown-serialized registration
+                // boundary, or it may have registered and failed later. The shared cleanup handles both:
+                // dictionary removals are idempotent and it disposes the constructed loop/provider.
                 await CleanupFailedSpawnAsync(agentId, effectiveName, state, gateGuard);
             }
 
@@ -508,18 +557,46 @@ public sealed class SubAgentManager : IAsyncDisposable
                 continue;
             }
 
+            if (queued.CallerCancellation.IsCancellationRequested)
+            {
+                RemoveQueuedSpawn(queued);
+                _ = queued.StateReady.TrySetCanceled(queued.CallerCancellation);
+                continue;
+            }
+
+            using var waitCts = queued.RunInBackground
+                ? null
+                : CancellationTokenSource.CreateLinkedTokenSource(pumpCt, queued.CallerCancellation);
             try
             {
-                await _concurrencyGate.WaitAsync(pumpCt);
+                await _concurrencyGate.WaitAsync(waitCts?.Token ?? pumpCt);
+            }
+            catch (OperationCanceledException) when (
+                queued.CallerCancellation.IsCancellationRequested && !pumpCt.IsCancellationRequested
+            )
+            {
+                RemoveQueuedSpawn(queued);
+                _ = queued.StateReady.TrySetCanceled(queued.CallerCancellation);
+                continue;
             }
             catch (OperationCanceledException)
             {
                 // Manager disposing before a permit was available: fault the waiter so a foreground
                 // caller unblocks (with cancellation) instead of hanging, then stop pumping.
+                RemoveQueuedSpawn(queued);
                 _ = queued.StateReady.TrySetCanceled(pumpCt);
                 break;
             }
 
+            if (queued.CallerCancellation.IsCancellationRequested)
+            {
+                _ = _concurrencyGate.Release();
+                RemoveQueuedSpawn(queued);
+                _ = queued.StateReady.TrySetCanceled(queued.CallerCancellation);
+                continue;
+            }
+
+            RemoveQueuedSpawn(queued);
             var gateGuard = new GateReleaseGuard();
             try
             {
@@ -536,7 +613,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                     queued.Lineage,
                     queued.RunInBackground,
                     gateGuard,
-                    pumpCt);
+                    queued.RunInBackground ? pumpCt : queued.CallerCancellation);
 
                 if (queued.RunInBackground)
                 {
@@ -564,7 +641,20 @@ public sealed class SubAgentManager : IAsyncDisposable
         // not hang past disposal.
         while (_spawnQueue.TryDequeue(out var pending))
         {
+            RemoveQueuedSpawn(pending);
             _ = pending.StateReady.TrySetCanceled(CancellationToken.None);
+        }
+    }
+
+    private void RemoveQueuedSpawn(QueuedSpawn queued)
+    {
+        _ = _queuedSpawns.TryRemove(queued.AgentId, out _);
+        if (
+            _queuedNamesToIds.TryGetValue(queued.EffectiveName, out var mapped)
+            && mapped == queued.AgentId
+        )
+        {
+            _ = _queuedNamesToIds.TryRemove(queued.EffectiveName, out _);
         }
     }
 
@@ -1006,13 +1096,19 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     private bool TryResolveAgentId(string target, out string agentId)
     {
-        if (_agents.ContainsKey(target))
+        if (_agents.ContainsKey(target) || _queuedSpawns.ContainsKey(target))
         {
             agentId = target;
             return true;
         }
 
         if (_namesToIds.TryGetValue(target, out var id) && _agents.ContainsKey(id))
+        {
+            agentId = id;
+            return true;
+        }
+
+        if (_queuedNamesToIds.TryGetValue(target, out id) && _queuedSpawns.ContainsKey(id))
         {
             agentId = id;
             return true;
@@ -1280,7 +1376,21 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<SubAgentSnapshot> ListAgents()
     {
-        var snapshots = new List<SubAgentSnapshot>(_agents.Count);
+        var snapshots = new List<SubAgentSnapshot>(_agents.Count + _queuedSpawns.Count);
+        foreach (var queued in _queuedSpawns.Values)
+        {
+            snapshots.Add(new SubAgentSnapshot(
+                AgentId: queued.AgentId,
+                Name: queued.EffectiveName,
+                TemplateName: queued.TemplateName,
+                Task: queued.Task,
+                Status: SubAgentStatus.Queued,
+                ThreadId: $"subagent-{queued.AgentId}",
+                LastActivityUtc: null,
+                EffectiveModelId: null,
+                EffectiveModelIntelligence: null,
+                ModelSelectionSource: "pending"));
+        }
         foreach (var state in _agents.Values)
         {
             snapshots.Add(new SubAgentSnapshot(
@@ -1446,6 +1556,23 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     public bool TryPeek(string agentId, out string status)
     {
+        if (_queuedSpawns.TryGetValue(agentId, out var queued))
+        {
+            status = JsonSerializer.Serialize(new
+            {
+                agent_id = queued.AgentId,
+                name = queued.EffectiveName,
+                status = "queued",
+                template = queued.TemplateName,
+                task = queued.Task,
+                recent_turns = Array.Empty<object>(),
+                last_result = (string?)null,
+                send_to_parent_failed = false,
+                send_to_parent_error = (string?)null,
+            });
+            return true;
+        }
+
         if (!_agents.TryGetValue(agentId, out var state))
         {
             status = string.Empty;
@@ -1484,7 +1611,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>The ids of the sub-agents currently tracked, so an unknown-id CheckAgent can tell the model
     /// which ids are actually valid (the Agent tool returns short ids; a mismatched/hallucinated id is the
     /// common cause of an "unknown agent" check).</summary>
-    public IReadOnlyCollection<string> KnownAgentIds() => [.. _agents.Keys];
+    public IReadOnlyCollection<string> KnownAgentIds() => [.. _agents.Keys, .. _queuedSpawns.Keys];
 
     /// <summary>
     /// Performs a batch observation of sub-agents matching the given targets (agent IDs or names).
@@ -1532,10 +1659,27 @@ public sealed class SubAgentManager : IAsyncDisposable
             };
         }
 
+        if (_queuedSpawns.TryGetValue(agentId, out var queued))
+        {
+            return new SubAgentObservationEntry
+            {
+                Target = target,
+                AgentId = queued.AgentId,
+                Name = queued.EffectiveName,
+                Status = "queued",
+                TemplateName = queued.TemplateName,
+                Task = queued.Task,
+                RecentTurns = [],
+                LastResult = null,
+                SendToParentFailed = false,
+                SendToParentError = null,
+            };
+        }
+
         // Resolved: fetch the state and build a complete entry
         if (!_agents.TryGetValue(agentId, out var state))
         {
-            // Shouldn't happen (TryResolveAgentId checks ContainsKey), but handle defensively
+            // Shouldn't happen (TryResolveAgentId checks both registries), but handle defensively
             return new SubAgentObservationEntry
             {
                 Target = target,
@@ -1640,9 +1784,12 @@ public sealed class SubAgentManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        lock (_spawnQueue)
         {
-            return;
+            if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+            {
+                return;
+            }
         }
 
         // Stop the defer-queue pump FIRST so it can't register a new sub-agent into _agents while we
@@ -1761,9 +1908,13 @@ public sealed class SubAgentManager : IAsyncDisposable
         // this covers a race where an enqueue landed after the pump exited) so a foreground caller
         // blocked on StateReady unblocks with cancellation instead of hanging, then dispose the
         // defer-queue primitives.
-        while (_spawnQueue.TryDequeue(out var pending))
+        lock (_spawnQueue)
         {
-            _ = pending.StateReady.TrySetCanceled(CancellationToken.None);
+            while (_spawnQueue.TryDequeue(out var pending))
+            {
+                RemoveQueuedSpawn(pending);
+                _ = pending.StateReady.TrySetCanceled(CancellationToken.None);
+            }
         }
 
         _queueSignal.Dispose();
@@ -1791,6 +1942,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         public string[]? RemoveTools { get; init; }
         public int? ModelIntelligence { get; init; }
         public required AgentLineage Lineage { get; init; }
+        public CancellationToken CallerCancellation { get; init; }
 
         // RunContinuationsAsynchronously so the pump thread that completes this never inline-runs a
         // foreground caller's AwaitCompletionAsync continuation while it should be moving to the next

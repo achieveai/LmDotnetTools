@@ -283,6 +283,86 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SpawnAsync_QueuedHandleIsImmediatelyObservable()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager(maxConcurrent: 1);
+
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        var queuedJson = await _manager.SpawnAsync(
+            "test-agent", "second", name: "queued-worker", runInBackground: true);
+        using var queuedDoc = JsonDocument.Parse(queuedJson);
+        var queuedId = queuedDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        _manager.TryPeek(queuedId, out var peek).Should().BeTrue();
+        JsonDocument.Parse(peek).RootElement.GetProperty("status").GetString().Should().Be("queued");
+        _manager.KnownAgentIds().Should().Contain(queuedId);
+        var observed = _manager.CheckAgents([queuedId, "queued-worker"]);
+        observed.Entries.Should().OnlyContain(x => x.Status == "queued" && x.AgentId == queuedId);
+        _manager.ListAgents().Should().Contain(x => x.AgentId == queuedId && x.Status == SubAgentStatus.Queued);
+
+        release.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_CanceledForegroundQueueEntryNeverStarts()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager(maxConcurrent: 1);
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        using var cts = new CancellationTokenSource();
+
+        var queued = _manager.SpawnAsync("test-agent", "must-not-run", ct: cts.Token);
+        cts.Cancel();
+        var act = async () => await queued;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        release.SetResult(true);
+        await Task.Delay(150);
+
+        _subAgentMock.Verify(
+            a => a.GenerateReplyStreamingAsync(
+                It.Is<IEnumerable<IMessage>>(messages =>
+                    messages.OfType<TextMessage>().Any(m => m.Text == "must-not-run")),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_RejectsWhenBoundedQueueIsFull()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        var options = CreateOptions(maxConcurrent: 1) with { MaxQueuedSubAgents = 1 };
+        _manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        _ = await _manager.SpawnAsync("test-agent", "queued", runInBackground: true);
+        var act = () => _manager.SpawnAsync("test-agent", "overflow", runInBackground: true);
+
+        await act.Should().ThrowAsync<SubAgentQueueFullException>();
+        release.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_RejectsAfterDisposalBegins()
+    {
+        _manager = CreateManager();
+        await _manager.DisposeAsync();
+
+        var act = () => _manager.SpawnAsync("test-agent", "late", runInBackground: true);
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    [Fact]
     public async Task SpawnAsync_QueuedSpawn_StartsAndCompletesOncePermitFrees()
     {
         // RED->GREEN for defer-queue end-to-end: with a pool of 1, a second background spawn is

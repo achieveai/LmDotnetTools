@@ -599,6 +599,36 @@ public class SubAgentManagerGateReleaseRegressionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DisposeRacingInlineSpawn_RejectsRegistrationAndDisposesConstructedAgent()
+    {
+        var manager = CreateManagerWithTemplates(1, new Dictionary<string, SubAgentTemplate>
+        {
+            ["worker"] = DummyTemplate("worker"),
+        });
+        _manager = manager;
+        var constructed = new FakeMultiTurnAgent();
+        manager.TestAgentFactoryOverride = (_, _) => constructed;
+        var reachedRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        manager.TestBeforeAgentRegistrationAsync = async () =>
+        {
+            reachedRegistration.SetResult();
+            await releaseRegistration.Task;
+        };
+
+        var spawn = manager.SpawnAsync("worker", "task", runInBackground: true);
+        await reachedRegistration.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var dispose = manager.DisposeAsync().AsTask();
+        releaseRegistration.SetResult();
+
+        var act = async () => await spawn;
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+        await dispose;
+        manager.ListAgents().Should().BeEmpty();
+        constructed.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task MonitorSubAgentAsync_PendingMessageCompletion_HoldsConcurrencyPermitUntilTerminal()
     {
         // Blocker D: with limit 1, a nonterminal (HasPendingMessages) completion must NOT release the
@@ -728,6 +758,9 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 {
     private int _sendCallCount;
     private int _subscribeCallCount;
+    private int _disposeCount;
+
+    public int DisposeCount => Volatile.Read(ref _disposeCount);
 
     public string? CurrentRunId => null;
 
@@ -826,6 +859,7 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
 
     public ValueTask DisposeAsync()
     {
+        _ = Interlocked.Increment(ref _disposeCount);
         return ValueTask.CompletedTask;
     }
 

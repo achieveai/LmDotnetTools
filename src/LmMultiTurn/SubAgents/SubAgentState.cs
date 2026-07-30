@@ -9,10 +9,18 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// </summary>
 public enum SubAgentStatus
 {
+    Queued,
     Running,
     Completed,
     Error,
     Stopped,
+}
+
+/// <summary>Thrown when the bounded deferred-spawn queue has no remaining capacity.</summary>
+public sealed class SubAgentQueueFullException(int capacity)
+    : InvalidOperationException($"The sub-agent queue is full ({capacity} waiting). Retry after an agent completes.")
+{
+    public int Capacity { get; } = capacity;
 }
 
 /// <summary>

@@ -964,6 +964,31 @@ describe('useChat usage banner (#196)', () => {
     expect(chat.cumulativeUsage.value.completionTokens).toBe(140);
   });
 
+  it('ignores a completed usage read after switching conversations', async () => {
+    let resolveUsage!: (value: ReturnType<typeof aggregate>) => void;
+    conversationsMocks.getConversationUsage.mockImplementation(
+      () => new Promise((resolve) => { resolveUsage = resolve; }),
+    );
+
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-A');
+    await chat.sendMessage('hi');
+    const options = wsMocks.createWebSocketConnection.mock.calls[0]?.[0];
+    options.onMessage({
+      $type: MessageType.RunCompleted,
+      role: 'assistant',
+      completedRunId: 'run-A',
+      isError: false,
+    });
+    await vi.waitFor(() => expect(conversationsMocks.getConversationUsage).toHaveBeenCalledWith('thread-A'));
+
+    chat.setThreadId('thread-B');
+    resolveUsage(aggregate(1140));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(chat.cumulativeUsage.value.totalTokens).toBe(0);
+  });
+
   it('does not downgrade a fresher live banner when the persisted read is stale', async () => {
     // Persisted aggregate lags the live frames (fire-and-forget write still in flight).
     conversationsMocks.getConversationUsage.mockResolvedValue(aggregate(500));
