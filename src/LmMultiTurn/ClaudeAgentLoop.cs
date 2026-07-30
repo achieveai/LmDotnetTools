@@ -7,6 +7,8 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
@@ -128,6 +130,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public ClaudeAgentLoop(
         ClaudeAgentSdkOptions claudeOptions,
         Dictionary<string, McpServerConfig>? mcpServers,
@@ -141,7 +146,8 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         ILoggerFactory? loggerFactory = null,
         Func<ClaudeAgentSdkOptions, ILogger?, IClaudeAgentSdkClient>? clientFactory = null,
         string? initialSessionId = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : base(
             threadId,
             systemPrompt,
@@ -151,7 +157,11 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             outputChannelCapacity,
             store,
             logger,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: MultiTurnLifecycleServices.ForAgent(
+                lifecycleServices,
+                LifecycleAgentKinds.Claude,
+                defaultOptions?.ModelId))
     {
         ArgumentNullException.ThrowIfNull(claudeOptions);
 
@@ -489,7 +499,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 // ParentRunId / WasForked is sourced from explicit caller fork signal
                 // (UserInput.ParentRunId); absence falls back to _latestRunId continuation.
                 var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-                var assignment = await StartRunAsync(batch, batchParent, ct);
+                var assignment = await StartRunAsync(batch, batchParent, ct, wasForked: isExplicitFork);
 
                 // Track each input for correlation with enqueue/dequeue events
                 foreach (var input in batch)
@@ -512,8 +522,22 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     }
                 }
 
+                // The CLI runs its own agentic loop behind this one generation id, so the run has
+                // exactly one turn from the lifecycle's point of view. The run's outcome is
+                // reported per path — a run that died mid-stream must not terminalize as
+                // "completed", because the turn the finalizer sweeps inherits the run's outcome
+                // and a subscriber would be told a failed generation succeeded. A cancellation
+                // completes neither path, matching the other loops: the finalizer's terminal
+                // sweep reports it as cancelled.
+                BeginTurn(assignment.RunId, assignment.GenerationId);
                 try
                 {
+                    // Read the discovered context out of the batch that is about to be handed to
+                    // the CLI. What the CLI already holds from its own session start is its to
+                    // report; this reports what this process is sending it.
+                    await ReportContextLoadedAsync(
+                        assignment.RunId, assignment.GenerationId, messagesToSend, ct);
+
                     if (_claudeOptions.Mode == ClaudeAgentSdkMode.Interactive)
                     {
                         await ExecuteInteractiveModeAsync(assignment, messagesToSend, ct);
@@ -522,9 +546,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                     {
                         await ExecuteOneShotModeAsync(assignment, messagesToSend, ct);
                     }
-                }
-                finally
-                {
+
+                    await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
+
                     // Safety net: if the dequeue heuristic never fired (e.g., CLI exited
                     // without producing a recognizable signal, mock providers, or a
                     // partial protocol response), the RunAssignmentMessage was never
@@ -541,6 +565,26 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                         forkedToRunId: isExplicitFork ? assignment.RunId : null,
                         pendingMessageCount: _localMessageQueue.Count,
                         ct: ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Logger.LogError(ex, "Error during run {RunId}", assignment.RunId);
+
+                    await FlushPendingRunAssignmentsAsync(assignment.RunId, ct);
+
+                    await CompleteRunAsync(
+                        assignment.RunId,
+                        assignment.GenerationId,
+                        wasForked: isExplicitFork,
+                        forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                        pendingMessageCount: _localMessageQueue.Count,
+                        isError: true,
+                        errorMessage: ex.Message,
+                        ct: ct);
+
+                    // Rethrown deliberately: this loop has always surfaced a run failure to its
+                    // caller rather than swallowing it and waiting for the next input.
+                    throw;
                 }
             }
         }
@@ -686,6 +730,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
                 // Add to conversation history
                 AddToHistory(msg);
+                ObserveTurnMessage(assignment.RunId, assignment.GenerationId, msg);
             }
         }
         finally
@@ -747,6 +792,9 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                             }
                         }
 
+                        await ReportContextLoadedAsync(
+                            assignment.RunId, assignment.GenerationId, messagesToSend, ct);
+
                         // Set flags BEFORE SendAsync to prevent race condition
                         _runInProgress = true;
                         _awaitingDequeue = true;
@@ -795,7 +843,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
         // Start a SINGLE run for ALL merged inputs. Caller-supplied ParentRunId on
         // any merged input promotes this to an explicit fork.
         var (mergedParent, isExplicitFork) = ResolveBatchParent(mergedInputs);
-        var assignment = await StartRunAsync(mergedInputs, mergedParent, ct);
+        var assignment = await StartRunAsync(mergedInputs, mergedParent, ct, wasForked: isExplicitFork);
 
         // Track ALL inputs for dequeue correlation with the SAME assignment
         foreach (var input in mergedInputs)
@@ -812,13 +860,21 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
             }
         }
 
+        // One generation id, one lifecycle turn — same shape as the ordinary run path above.
+        BeginTurn(assignment.RunId, assignment.GenerationId);
         try
         {
+            // Context that was locally queued while a run was in progress reaches the model here,
+            // not when it was queued — which is why the report sits on the dispatch and not on the
+            // enqueue.
+            await ReportContextLoadedAsync(
+                assignment.RunId, assignment.GenerationId, mergedMessages, ct);
+
             // Execute the merged batch as a full interactive run (waits for ResultEvent)
             await ExecuteInteractiveModeAsync(assignment, mergedMessages, ct);
-        }
-        finally
-        {
+
+            await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
+
             // No pending messages after merge (we processed all of them)
             await CompleteRunAsync(
                 assignment.RunId,
@@ -827,6 +883,24 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
                 pendingMessageCount: 0,
                 ct: ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Same outcome discipline as the ordinary run path: a merged run that failed is
+            // reported as failed, so the turn swept behind it does not claim success.
+            Logger.LogError(ex, "Error during merged run {RunId}", assignment.RunId);
+
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                wasForked: isExplicitFork,
+                forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                pendingMessageCount: 0,
+                isError: true,
+                errorMessage: ex.Message,
+                ct: ct);
+
+            throw;
         }
     }
 
@@ -987,6 +1061,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
 
             // Add to conversation history
             AddToHistory(msg);
+            ObserveTurnMessage(assignment.RunId, assignment.GenerationId, msg);
 
             // OneShot's SendMessagesAsync intentionally suppresses SystemInitMessage,
             // but the underlying client still updates CurrentSession.SessionId when

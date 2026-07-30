@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
@@ -143,6 +144,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly GenerateReplyOptions? _controllerDefaultOptions;
     private readonly ILogger _logger;
     private readonly IJsonSchemaValidator? _schemaValidator;
+    private readonly MultiTurnLifecycleServices? _lifecycleServices;
 
     private readonly WorkflowValidator _validator = new();
     private readonly ConcurrentDictionary<string, WorkflowEntry> _workflows = new(StringComparer.Ordinal);
@@ -174,6 +176,11 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// </param>
     /// <param name="logger">Optional logger.</param>
     /// <param name="schemaValidator">Optional JSON-Schema validator forwarded to the runtime.</param>
+    /// <param name="lifecycleServices">
+    ///     Optional lifecycle observation, forwarded to every controller loop this manager starts.
+    ///     <see cref="WorkflowSession"/> strips any approval gate from it — see
+    ///     <see cref="MultiTurnLifecycleServices.ForObservationOnly"/>.
+    /// </param>
     public WorkflowManager(
         Func<IStreamingAgent> controllerAgentFactory,
         SubAgentOptions controllerSubAgentOptions,
@@ -183,7 +190,8 @@ public sealed class WorkflowManager : IAsyncDisposable
         TimeSpan? gateWaitTimeout = null,
         GenerateReplyOptions? controllerDefaultOptions = null,
         ILogger? logger = null,
-        IJsonSchemaValidator? schemaValidator = null
+        IJsonSchemaValidator? schemaValidator = null,
+        MultiTurnLifecycleServices? lifecycleServices = null
     )
     {
         ArgumentNullException.ThrowIfNull(controllerAgentFactory);
@@ -202,6 +210,9 @@ public sealed class WorkflowManager : IAsyncDisposable
         _controllerDefaultOptions = controllerDefaultOptions;
         _logger = logger ?? NullLogger.Instance;
         _schemaValidator = schemaValidator;
+        // Handed to each controller loop WorkflowSession builds. It strips the approval gate there —
+        // this manager deliberately does not pre-filter, so there is one place that decides.
+        _lifecycleServices = lifecycleServices;
         _concurrencyGate = new SemaphoreSlim(maxConcurrentWorkflows, maxConcurrentWorkflows);
     }
 
@@ -282,7 +293,8 @@ public sealed class WorkflowManager : IAsyncDisposable
                     includeAuthoringTool: false,
                     controllerMaxTurnsPerRun: _controllerMaxTurnsPerRun,
                     controllerDefaultOptions: _controllerDefaultOptions,
-                    ct: CancellationToken.None
+                    ct: CancellationToken.None,
+                    lifecycleServices: _lifecycleServices
                 )
                 .ConfigureAwait(false);
 

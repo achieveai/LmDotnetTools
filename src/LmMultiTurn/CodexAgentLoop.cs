@@ -8,6 +8,8 @@ using AchieveAi.LmDotnetTools.CodexSdkProvider.Tools;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
@@ -48,6 +50,9 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -60,7 +65,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : this(
             options,
             mcpServers,
@@ -75,7 +81,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             logger,
             loggerFactory,
             clientFactory,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: lifecycleServices)
     {
     }
 
@@ -99,6 +106,9 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public CodexAgentLoop(
         CodexSdkOptions options,
         IReadOnlyDictionary<string, CodexMcpServerConfig>? mcpServers,
@@ -113,7 +123,8 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
         ILogger<CodexAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CodexSdkOptions, ILogger?, ICodexSdkClient>? clientFactory = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : base(
             threadId,
             systemPrompt,
@@ -123,7 +134,11 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             outputChannelCapacity,
             store,
             logger,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: MultiTurnLifecycleServices.ForAgent(
+                lifecycleServices,
+                LifecycleAgentKinds.Codex,
+                options?.Model))
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _mcpServers = mcpServers ?? new Dictionary<string, CodexMcpServerConfig>();
@@ -321,7 +336,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             }
 
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-            var assignment = await StartRunAsync(batch, batchParent, ct);
+            var assignment = await StartRunAsync(batch, batchParent, ct, wasForked: isExplicitFork);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {
@@ -365,7 +380,13 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
             try
             {
                 await OnBeforeRunAsync();
+
+                // The CLI runs its own agentic loop behind this one generation id, so the run has
+                // exactly one turn from the lifecycle's point of view. A run that fails or is
+                // cancelled reports its turn from the finalizer's terminal sweep instead.
+                BeginTurn(assignment.RunId, assignment.GenerationId);
                 await ExecuteRunAsync(batch, assignment.RunId, assignment.GenerationId, streamMetrics, ct);
+                await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
 
                 await CompleteRunAsync(
                     assignment.RunId,
@@ -463,6 +484,11 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
 
         try
         {
+            // The prompt is this provider's whole request, so it is also the only place a
+            // mid-session context delivery can be read back from before it is dispatched. Boot
+            // instructions travel through thread start instead and are not this run's to report.
+            await ReportContextLoadedAsync(runId, generationId, prompt, ct: ct);
+
             await foreach (var envelope in _client.RunStreamingAsync(prompt, ct))
             {
                 eventSequence++;
@@ -510,6 +536,7 @@ public sealed class CodexAgentLoop : MultiTurnAgentBase
                 foreach (var message in messages)
                 {
                     AddToHistory(message);
+                    ObserveTurnMessage(runId, generationId, message);
                     await PublishToAllAsync(message, ct);
                     LogStreamingPublishTelemetry(
                         message,

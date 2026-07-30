@@ -227,7 +227,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
             || projection.Contains("text", StringComparison.OrdinalIgnoreCase)
         );
 
-    private Task<ToolHandlerResult> HandleSetCurrentNodeAsync(
+    private async Task<ToolHandlerResult> HandleSetCurrentNodeAsync(
         string argsJson,
         ToolCallContext context,
         CancellationToken cancellationToken
@@ -235,39 +235,54 @@ public sealed class WorkflowToolProvider : IFunctionProvider
     {
         if (!TryParseArgs(argsJson, out var doc, out var argsError))
         {
-            return Task.FromResult<ToolHandlerResult>(argsError!);
+            return argsError!;
         }
+
+        string? completedNodeId;
+        string nextNodeId;
+        JsonNode? result;
 
         using (doc)
         {
             var root = doc.RootElement;
 
-            var nextNodeId = OptionalString(root, "nextNodeId");
-            if (string.IsNullOrEmpty(nextNodeId))
+            var requestedNodeId = OptionalString(root, "nextNodeId");
+            if (string.IsNullOrEmpty(requestedNodeId))
             {
-                return Error("The 'nextNodeId' parameter is required.", "invalid_args");
+                return ToolHandlerResult.FromError("The 'nextNodeId' parameter is required.", "invalid_args");
             }
 
-            var completedNodeId = OptionalString(root, "completedNodeId");
-            var result =
+            nextNodeId = requestedNodeId;
+            completedNodeId = OptionalString(root, "completedNodeId");
+            result =
                 root.TryGetProperty("result", out var resultElement)
                 && resultElement.ValueKind != JsonValueKind.Null
                     ? JsonNode.Parse(resultElement.GetRawText())
                     : null;
-
-            try
-            {
-                _runtime.AdvanceTo(completedNodeId, nextNodeId, result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Error(ex.Message, "invalid_transition");
-            }
-
-            return _runtime.IsComplete
-                ? Text("Workflow complete. " + _runtime.GetProjection("all").ToJsonString())
-                : Text(_runtime.GetProjection(null).ToJsonString());
         }
+
+        // This handler runs INLINE on the controller loop's thread, while the sub-agent results that feed
+        // the transition reach the runtime only through the out-of-band observer. Routing into a terminal
+        // renders its resultTemplate immediately, so without this barrier a terminal could be finalized from
+        // state that still lags the results the controller had already collected. Waiting on THIS call's own
+        // tool-call id — published to subscribers before the loop invoked us — proves the observer has drained
+        // everything published earlier, including every prior tool result. No-ops when nothing observes.
+        await _runtime.WaitForObservationAsync(context.ToolCallId, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            _runtime.AdvanceTo(completedNodeId, nextNodeId, result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ToolHandlerResult.FromError(ex.Message, "invalid_transition");
+        }
+
+        return _runtime.IsComplete
+            ? ToolHandlerResult.FromText(
+                "Workflow complete. " + _runtime.GetProjection("all").ToJsonString()
+            )
+            : ToolHandlerResult.FromText(_runtime.GetProjection(null).ToJsonString());
     }
 
     private Task<ToolHandlerResult> HandleSetStateAsync(

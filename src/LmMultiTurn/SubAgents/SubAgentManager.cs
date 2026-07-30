@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
@@ -52,6 +53,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly SubAgentOptions _options;
     private readonly MutableSubAgentTemplateSource _source;
     private readonly ILogger _logger;
+    private readonly MultiTurnLifecycleServices _lifecycleServices;
 
     // Optional root-conversation usage sink. When set, every UsageMessage a sub-agent (or workflow
     // task — same relay path) emits is folded into the root conversation's usage total (issue #196).
@@ -106,7 +108,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         ILogger? logger = null,
         string? parentModelId = null,
         IUsageSink? usageSink = null,
-        Func<Task>? persistUsageAsync = null)
+        Func<Task>? persistUsageAsync = null,
+        MultiTurnLifecycleServices? lifecycleServices = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -125,6 +128,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         // The parent's model, inherited by sub-agents whose template/override sets none (see
         // ResolveSubAgentOptions). Null when the parent has no model (e.g. CLI-backed parents).
         _parentModelId = parentModelId;
+        // The parent's lifecycle wiring, from which each child's bundle is derived at spawn time.
+        // Disabled when the parent observes nothing, which is what keeps sub-agents free.
+        _lifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
             options.MaxConcurrentSubAgents);
@@ -145,7 +151,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         bool runInBackground = false,
         string[]? addTools = null,
         string[]? removeTools = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? spawningToolCallId = null)
     {
         // Snapshot the live source view so a concurrent TryRegister cannot make the
         // diagnostic Available list inconsistent with the lookup that produced template.
@@ -174,6 +181,17 @@ public sealed class SubAgentManager : IAsyncDisposable
         var agentId = Guid.NewGuid().ToString("N")[..12];
         SubAgentState? state = null;
 
+        // Captured now, not at rebuild time: by the time a restart re-creates this agent the
+        // parent's CurrentRunId has moved on or gone null, and the run that asked for the child
+        // is the one a subscriber needs to attribute the whole sub-tree to.
+        var lineage = new AgentLineage
+        {
+            ParentThreadId = _parentAgent.ThreadId,
+            ParentRunId = _parentAgent.CurrentRunId,
+            SpawningToolCallId = spawningToolCallId,
+            SubAgentId = agentId,
+        };
+
         try
         {
             var (agent, store, ownedProviderAgent, effectiveModelId) = await CreateSubAgentAsync(
@@ -181,12 +199,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 template,
                 model,
                 addTools,
-                removeTools
+                removeTools,
+                lineage
             );
 
             state = new SubAgentState
             {
                 AgentId = agentId,
+                Lineage = lineage,
                 TemplateName = templateName,
                 Task = task,
                 Agent = agent,
@@ -651,7 +671,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                     state.Template,
                     state.ModelOverride,
                     state.AddTools,
-                    state.RemoveTools
+                    state.RemoveTools,
+                    // The rebuilt agent is the same sub-agent, so it keeps the lineage captured
+                    // when it was first spawned rather than acquiring a new one from whatever run
+                    // happens to be in flight now.
+                    state.Lineage
                 );
 
                 // Presentation-only: the replacement is now built and we are about to dispose the previous
@@ -1198,7 +1222,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         SubAgentTemplate template,
         string? modelOverride,
         string[]? addTools,
-        string[]? removeTools)
+        string[]? removeTools,
+        AgentLineage lineage)
     {
         if (TestAgentFactoryOverride != null)
         {
@@ -1290,7 +1315,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                     defaultOptions: defaultOptions,
                     maxTurnsPerRun: template.MaxTurnsPerRun,
                     store: store,
-                    logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger)
+                    logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
+                    lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(
+                        _lifecycleServices, lineage)
                 ),
                 store,
                 ownedProviderAgent,

@@ -3,6 +3,10 @@ using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmLifecycle.Serialization;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
 
@@ -258,6 +262,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     private readonly SessionSecretStore _sessionSecretStore;
     private readonly PredefinedKeyRegistry? _predefinedKeys;
     private readonly SandboxCredential _defaultCredential;
+    private readonly MultiTurnLifecycleServices _lifecycle;
     private bool _disposed;
 
     /// <summary>
@@ -281,6 +286,48 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Sessions that have been committed but whose <see cref="LifecycleEventTypes.SandboxCreated"/>
+    /// event has not yet been published, keyed by gateway session id.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The event is deliberately NOT published from <see cref="CreateSessionAsync"/>: that method
+    /// runs inside the single-flight <see cref="Lazy{T}"/> that every concurrent caller for the same
+    /// (workspace id, app id) pair awaits, so publishing there would put a subscriber's latency
+    /// directly in front of session creation. Instead the create leaves the finished payload here and
+    /// <see cref="AwaitAndEvictOnFailureAsync"/> — which runs after the shared task has completed and
+    /// holds nothing — takes it and publishes.
+    /// </para>
+    /// <para>
+    /// The hand-off is also what makes the event fire exactly once. Concurrent callers all reach the
+    /// drain, but only one <c>TryRemove</c> wins, so N waiters on one creation still produce one
+    /// event. A cache hit stashes nothing, and a create that fails or rolls back never reaches the
+    /// stash, so neither produces one either.
+    /// </para>
+    /// <para>
+    /// Nothing is stashed at all unless a real subscriber is attached, so a host that observes
+    /// nothing pays no allocation and the map stays permanently empty.
+    /// </para>
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, SandboxCreatedPayload> _unreportedCreations =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The dead session a given (workspace id, app id) slot is about to replace, recorded by
+    /// <see cref="InvalidateSessionAsync"/> and consumed by the very next
+    /// <see cref="CreateSessionAsync"/> for that slot.
+    /// </summary>
+    /// <remarks>
+    /// Only <see cref="InvalidateSessionAsync"/> — the gateway-evicted-it path — writes here.
+    /// A deliberate destroy is not a replacement: the workspace was torn down, and a later create for
+    /// the same id is a first session, not a successor. Whichever caller's create wins the race for
+    /// an invalidated slot claims the marker, so the linkage follows the replacement rather than the
+    /// caller that noticed the eviction.
+    /// </remarks>
+    private readonly ConcurrentDictionary<(string WorkspaceId, string AppId), string> _replacedSessions =
+        new();
+
+    /// <summary>
     /// Initialises the registry.
     /// </summary>
     /// <param name="gateway">Gateway lifetime, used for the base URL.</param>
@@ -294,6 +341,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// <param name="predefinedKeys">Optional predefined-egress-key registry; when supplied, each
     /// configured entry contributes a webhook auth-provider + host-scoped allow rule. Null (the
     /// headless daemon and every test that does not exercise egress keys) emits none — fail-closed.</param>
+    /// <param name="lifecycle">Where committed session creations are reported. Null — every existing
+    /// construction site — observes nothing and costs nothing. Pass the SAME bundle the process's
+    /// agent loops were given: the sequence allocator inside it owns the producer epoch, and a
+    /// registry with its own allocator would number its sandbox streams under an epoch no subscriber
+    /// could line up with the thread streams beside them.</param>
     public SandboxSessionRegistry(
         SandboxGatewayLifetime gateway,
         SandboxGatewayOptions options,
@@ -301,7 +353,8 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         HttpClient httpClient,
         AuthOptions authOptions,
         SessionSecretStore sessionSecretStore,
-        PredefinedKeyRegistry? predefinedKeys = null
+        PredefinedKeyRegistry? predefinedKeys = null,
+        MultiTurnLifecycleServices? lifecycle = null
     )
     {
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
@@ -311,6 +364,7 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         _authOptions = authOptions ?? throw new ArgumentNullException(nameof(authOptions));
         _sessionSecretStore = sessionSecretStore ?? throw new ArgumentNullException(nameof(sessionSecretStore));
         _predefinedKeys = predefinedKeys;
+        _lifecycle = lifecycle ?? MultiTurnLifecycleServices.Disabled;
         // Non-null default even when no key is configured: contextless paths (liveness/destroy on
         // a session with no side-table entry) always resolve to a credential, never null. An empty
         // AppKey is exactly the keyless AUTH_ENFORCE=off dev path.
@@ -345,6 +399,30 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
         // Clearing a binding only forgets the browse-resolution hint; it never destroys the shared
         // (workspaceId, appId) gateway session, which other conversations may still be using.
         _ = _establishedBindings.TryRemove(threadId, out _);
+    }
+
+    /// <summary>
+    /// Reads the established binding for <paramref name="threadId"/>, if the thread has one. A
+    /// read-only companion to <see cref="PublishEstablishedBinding"/> for callers that need to know
+    /// which caller a conversation belongs to — notably lifecycle owner resolution (ADR 0005), where
+    /// <see cref="SandboxEstablishedBinding.CallerCredential"/> is the authoritative answer to "whose
+    /// conversation is this?".
+    /// </summary>
+    /// <param name="threadId">The conversation thread to look up.</param>
+    /// <param name="binding">The binding when one exists; otherwise <c>null</c>.</param>
+    /// <returns><c>true</c> when the thread has an established binding.</returns>
+    public bool TryGetEstablishedBinding(
+        string? threadId,
+        out SandboxEstablishedBinding? binding
+    )
+    {
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            binding = null;
+            return false;
+        }
+
+        return _establishedBindings.TryGetValue(threadId, out binding);
     }
 
     /// <summary>
@@ -656,16 +734,20 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
 
     /// <summary>
     /// Awaits the cached creation task. On failure the cached <see cref="Lazy{T}"/> is evicted so a
-    /// later call retries instead of replaying the cached fault.
+    /// later call retries instead of replaying the cached fault. On success this is also where a
+    /// freshly committed session's <see cref="LifecycleEventTypes.SandboxCreated"/> event is
+    /// published — see <see cref="_unreportedCreations"/> for why it happens here and not inside the
+    /// creation itself.
     /// </summary>
     private async Task<SandboxSession> AwaitAndEvictOnFailureAsync(
         (string WorkspaceId, string AppId) key,
         Lazy<Task<SandboxSession>> lazy
     )
     {
+        SandboxSession session;
         try
         {
-            return await lazy.Value.ConfigureAwait(false);
+            session = await lazy.Value.ConfigureAwait(false);
         }
         catch
         {
@@ -675,7 +757,83 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             );
             throw;
         }
+
+        // Outside the catch on purpose: the session is committed and healthy, and an observation
+        // failure must never look like a creation failure and evict it.
+        await PublishPendingCreationAsync(session).ConfigureAwait(false);
+        return session;
     }
+
+    /// <summary>
+    /// Publishes the <see cref="LifecycleEventTypes.SandboxCreated"/> event for
+    /// <paramref name="session"/> if this caller is the one that claims it, and does nothing at all
+    /// otherwise — a cache hit, a second concurrent waiter, or a host that observes nothing.
+    /// </summary>
+    /// <remarks>
+    /// No-throw by contract, including on cancellation. Session creation succeeded; a subscriber that
+    /// could not be reached is a dropped event, which the sequence gap already makes visible, and is
+    /// never a reason to fail the caller that now holds a perfectly good session.
+    /// </remarks>
+    private async Task PublishPendingCreationAsync(SandboxSession session)
+    {
+        if (!_lifecycle.PublishesEvents || !_unreportedCreations.TryRemove(session.SessionId, out var payload))
+        {
+            return;
+        }
+
+        try
+        {
+            var envelope = LifecycleSerializer.CreateEnvelope(
+                LifecycleEventTypes.SandboxCreated,
+                payload,
+                LifecycleSourceStream.ForSandbox(session.SessionId),
+                _lifecycle.SequenceAllocator,
+                _lifecycle.TimeProvider.GetUtcNow(),
+                new LifecycleCorrelation
+                {
+                    SandboxSessionId = session.SessionId,
+                    WorkspaceId = session.WorkspaceId,
+                }
+            );
+
+            await _lifecycle.Publisher.PublishAsync(envelope).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Dropping lifecycle event {EventType} for sandbox session {SessionId}",
+                LifecycleEventTypes.SandboxCreated,
+                session.SessionId
+            );
+        }
+    }
+
+    /// <summary>
+    /// Projects the SDK's confirmed-inventory read model onto the event payload's.
+    /// </summary>
+    /// <remarks>
+    /// A straight field copy, deliberately. The SDK already applied the fail-closed rule — only a
+    /// gateway that said <c>confirmed</c> yields items, and anything else arrives as unavailable with
+    /// a reason and no items — so re-deriving it here would be a second place for the two answers to
+    /// disagree. Identity and version are all that crosses: manifests, install paths, and publisher
+    /// metadata are not on the SDK model and are not wanted on the event.
+    /// </remarks>
+    private static SandboxInventorySummary ToInventorySummary(SandboxInventory inventory) =>
+        new()
+        {
+            Status = inventory.Status,
+            UnavailableReason = inventory.UnavailableReason,
+            Items =
+            [
+                .. inventory.Items.Select(item => new SandboxInventoryEntry
+                {
+                    Kind = item.Kind,
+                    Id = item.Id,
+                    Version = item.Version,
+                }),
+            ],
+        };
 
     /// <summary>
     /// Like <see cref="GetOrCreateSessionAsync(string, CancellationToken, SandboxCredential?)"/>,
@@ -829,6 +987,14 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             ).Remove(
                 new KeyValuePair<(string WorkspaceId, string AppId), Lazy<Task<SandboxSession>>>(key, lazy)
             );
+
+            // Only when this call actually freed the slot: the next create for it is this session's
+            // successor, and its event says so. Recording it when a concurrent caller had already
+            // replaced the entry would attribute the replacement to a session that was never removed.
+            if (_lifecycle.PublishesEvents)
+            {
+                _replacedSessions[key] = session.SessionId;
+            }
         }
 
         // Clear every per-session-id-indexed collection so a gateway-evicted session leaves no stale
@@ -847,6 +1013,13 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
     /// issue the gateway DELETE — only <see cref="DestroyWorkspaceSessionAsync"/> does that, and it calls
     /// this AFTER the DELETE so the session's creating credential is still resolvable for it.
     /// </summary>
+    /// <remarks>
+    /// <see cref="_unreportedCreations"/> is the one per-session-id collection deliberately left alone.
+    /// It holds a fact that already happened — this session WAS created — and the caller that is
+    /// awaiting the creation drains it moments later regardless of what happens here. Evicting it would
+    /// be the only way to lose a true event, and it cannot leak: every stashed entry has an awaiting
+    /// caller by construction.
+    /// </remarks>
     private async Task EvictSessionStateAsync(SandboxSession session)
     {
         // Reverse map removal is exact: only drops the entry when it still points at this session, so a
@@ -1106,6 +1279,24 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             // so the finally does not roll it back.
             reservationCommitted = true;
 
+            // Past the commit boundary: the gateway session exists, its maps are published, its secret
+            // is on disk, and nothing after this point can roll it back. Only now is there a created
+            // session to report. The event itself is left for the awaiting caller to publish so a
+            // subscriber's latency never lands inside this shared creation — see _unreportedCreations.
+            if (_lifecycle.PublishesEvents)
+            {
+                _ = _replacedSessions.TryRemove((workspaceId, effectiveCredential.AppId), out var replacedSessionId);
+                _unreportedCreations[session.SessionId] = new SandboxCreatedPayload
+                {
+                    SessionId = session.SessionId,
+                    WorkspaceId = workspaceId,
+                    WasRecreated = replacedSessionId is not null,
+                    ReplacedSessionId = replacedSessionId,
+                    Status = info.Status,
+                    Inventory = ToInventorySummary(info.Inventory),
+                };
+            }
+
             _logger.LogInformation(
                 "Created sandbox session {SessionId} for workspace {WorkspaceId} at host path {HostPath}",
                 session.SessionId,
@@ -1155,6 +1346,11 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             // cancellation, so the caller could never reliably retry). Throwing here instead leaves the
             // remaining cache entries intact for a clean retry.
             ct.ThrowIfCancellationRequested();
+
+            // A deliberate teardown is not a replacement. Whatever the slot was about to succeed is
+            // forgotten here, so a later create for the same id reports itself as a first session
+            // rather than as the successor of one the caller asked to be destroyed.
+            _ = _replacedSessions.TryRemove(key, out _);
 
             if (
                 !_sessions.TryRemove(key, out var lazy)
@@ -1235,6 +1431,8 @@ public sealed class SandboxSessionRegistry : IAsyncDisposable, ISandboxBindingSi
             _sessionThreads.Clear();
             _discoverySeen.Clear();
             _sessionCredentials.Clear();
+            _unreportedCreations.Clear();
+            _replacedSessions.Clear();
         }
         finally
         {

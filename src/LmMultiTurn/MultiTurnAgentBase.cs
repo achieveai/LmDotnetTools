@@ -4,6 +4,9 @@ using System.Threading.Channels;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
@@ -61,6 +64,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
 
+    // Cancelled once, at disposal. Distinct from _internalCts, which is recreated by every
+    // RunAsync and cancelled by every StopAsync: work that belongs to the agent rather than to one
+    // incarnation of its loop — an internal enqueue that must not be abandoned because whichever
+    // caller happened to trigger it cancelled its own token — hangs off this instead.
+    private readonly CancellationTokenSource _lifetimeCts = new();
+
     // Set once history has been (attempted to be) recovered from the store, so RunAsync's
     // startup recovery and any explicit RecoverAsync call never double-restore (RestoreHistory
     // appends). Guards the "recover persisted history on (re)create" path used by the agent pool.
@@ -78,6 +87,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     // re-reconciles on an explicit restart within the same process (only a genuine new process
     // start should treat prior Queued/InProgress rows as dangling).
     private bool _runLedgerReconciled;
+
+    // The same once-per-process guard for lifecycle runs, kept separate because lifecycle
+    // persistence and run-ledger persistence are configured independently.
+    private bool _lifecycleReconciled;
 
     #endregion
 
@@ -97,6 +110,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// The maximum turns per run.
     /// </summary>
     protected int MaxTurnsPerRun { get; }
+
+    /// <summary>
+    /// Cancelled when the agent is disposed, and at no other time.
+    /// </summary>
+    /// <remarks>
+    /// For internal work whose lifetime is the agent's, not one caller's and not one run's: an
+    /// enqueue the loop owes itself must not be abandoned because the arbitrary thread that
+    /// triggered it — a webhook handler, a UI callback — cancelled the token it happened to pass
+    /// in. Stays valid after disposal has cancelled it: an already-cancelled token is exactly what
+    /// such work should see — which is also why it is captured at construction rather than read
+    /// from the source on demand: a disposed source refuses to hand out its token, while the token
+    /// itself keeps working and correctly reports cancellation.
+    /// </remarks>
+    protected CancellationToken LifetimeToken { get; }
 
     /// <summary>
     /// The default options for generating replies.
@@ -140,6 +167,27 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// separate bool — is the single source of truth for whether run-ledger persistence is on.
     /// </summary>
     protected IRunLedgerStore? RunLedgerStore { get; }
+
+    /// <summary>
+    /// What the host wired up for lifecycle observation and tool approval.
+    /// <see cref="MultiTurnLifecycleServices.Disabled"/> when the host wired up nothing.
+    /// </summary>
+    /// <remarks>
+    /// Subclasses read this to publish the events only they can produce — a provider loop's
+    /// per-turn usage, a sandbox-backed loop's session creation — and to derive a spawned
+    /// agent's bundle with <c>with { Lineage = ... }</c>.
+    /// </remarks>
+    protected MultiTurnLifecycleServices LifecycleServices { get; }
+
+    /// <summary>
+    /// Owns this thread's run and turn lifecycle: which run is in flight, which caller ends it,
+    /// and the events that go out when one starts, turns, or completes.
+    /// </summary>
+    /// <remarks>
+    /// Inert unless the constructor received a bundle that enables something, so subclasses can
+    /// call it unconditionally.
+    /// </remarks>
+    protected RunTurnLifecycleFinalizer Lifecycle { get; }
 
     /// <summary>
     /// Grace period the deferred-fallback in <see cref="ExecuteRunAsync"/> waits
@@ -208,6 +256,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// (which must then also implement <see cref="IRunLedgerStore"/>) — enables <see cref="TrySendAsync"/>
     /// and restart reconciliation. Default false preserves existing in-memory-only behavior.
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Lifecycle observation and tool approval for this agent. Omit — or pass
+    /// <see cref="MultiTurnLifecycleServices.Disabled"/> — and the loop behaves exactly as it did
+    /// before lifecycle hooks existed: nothing is published, nothing extra is persisted, and no
+    /// tool call is gated.
+    /// </param>
     protected MultiTurnAgentBase(
         string threadId,
         string? systemPrompt = null,
@@ -219,10 +273,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         ILogger? logger = null,
         int maxReplayBufferSize = 10_000,
         long maxReplayBufferBytes = 8L * 1024 * 1024,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
+        LifetimeToken = _lifetimeCts.Token;
         ThreadId = threadId;
         SystemPrompt = systemPrompt;
         MaxTurnsPerRun = maxTurnsPerRun;
@@ -241,6 +297,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     $"{nameof(persistRunLedger)} is true but {nameof(store)} is null or does not implement {nameof(IRunLedgerStore)}.",
                     nameof(store));
         }
+
+        LifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
+
+        // The conversation store doubles as the lifecycle store when it can, but only for a host
+        // that actually asked for lifecycle — persisting to SQLite must not by itself start writing
+        // run_lifecycle rows.
+        Lifecycle = new RunTurnLifecycleFinalizer(
+            threadId,
+            LifecycleServices,
+            store as IRunLifecycleStore,
+            Logger);
 
         // Create initial channel
         _inputChannel = CreateInputChannel();
@@ -1295,6 +1362,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             await ReconcileRunLedgerAsync(ct);
         }
 
+        // The same restart argument, one guard of its own: lifecycle persistence is configured
+        // independently of the run ledger, so a host can have dangling lifecycle runs to close
+        // without having a ledger at all.
+        if (!_lifecycleReconciled)
+        {
+            _lifecycleReconciled = true;
+            await Lifecycle.ReconcileInterruptedRunsAsync(ct);
+        }
+
         // Rebuild conversation usage accounting from durable per-attempt records before processing input,
         // so an agent recreated after a restart continues the running total (and dedups already-counted
         // attempts) instead of overwriting the persisted aggregate with only post-restart usage (#196).
@@ -1376,6 +1452,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         _internalCts?.Dispose();
         _internalCts = null;
 
+        // A run cancelled mid-flight never reaches CompleteRunAsync — the loops deliberately let
+        // OperationCanceledException escape their per-run handler — so its completion has to come
+        // from here or a subscriber holds an unpaired start forever. CancellationToken.None: the
+        // token that ended the run must not also cancel the event that says so.
+        await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Cancelled, CancellationToken.None);
+
         Logger.LogInformation("{AgentType} stopped, ready for restart", GetType().Name);
     }
 
@@ -1389,13 +1471,23 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         _isDisposed = true;
 
+        // Before StopAsync, so an internal enqueue still parked on a full channel is released
+        // rather than holding the loop's shutdown open behind it.
+        await _lifetimeCts.CancelAsync();
+
         await StopAsync();
+
+        // Normally a no-op: StopAsync has already closed whatever was in flight. It matters for the
+        // agent that is disposed without ever having been started-and-stopped, whose runs would
+        // otherwise never be closed by anyone.
+        await Lifecycle.TerminalizeOutstandingAsync(LifecycleRunOutcomes.Interrupted, CancellationToken.None);
 
         // Final durability boundary: flush any usage write scheduled by a late/background descendant that
         // finished after the run stopped, so it is persisted rather than lost at shutdown (#196).
         await FlushUsageAsync();
 
         _internalCts?.Dispose();
+        _lifetimeCts.Dispose();
 
         await OnDisposeAsync();
 
@@ -1487,15 +1579,34 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="inputs">The queued inputs to process in this run</param>
     /// <param name="parentRunId">Optional parent run ID (defaults to latest run)</param>
     /// <param name="ct">Cancellation token</param>
+    /// <param name="wasForked">
+    /// Whether the caller asked this run to inherit provider-side context from
+    /// <paramref name="parentRunId"/>. Reported on the lifecycle <c>run_started</c> event, where it
+    /// describes context inheritance only — a run can carry a parent without being a fork.
+    /// </param>
+    /// <param name="runId">
+    /// The id to start the run under, when the caller already committed to one. A delayed tool
+    /// result has to name the run its resolution will cause <em>before</em> that run exists, so that
+    /// the durable resolution record and the run itself cannot disagree; every other caller leaves
+    /// this null and gets a freshly minted id.
+    /// </param>
+    /// <param name="causeKind">Why the run started. See <c>LifecycleRunCauseKinds</c>.</param>
+    /// <param name="causeToolCallId">
+    /// The tool call whose result caused the run, for a delayed-result child.
+    /// </param>
     /// <returns>The run assignment</returns>
     protected async Task<RunAssignment> StartRunAsync(
         IReadOnlyList<QueuedInput> inputs,
         string? parentRunId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool wasForked = false,
+        string? runId = null,
+        string? causeKind = null,
+        string? causeToolCallId = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
 
-        var runId = Guid.NewGuid().ToString("N");
+        runId ??= Guid.NewGuid().ToString("N");
         var generationId = Guid.NewGuid().ToString("N");
         var inputIds = inputs.Select(i => i.ReceiptId).ToList();
 
@@ -1523,6 +1634,15 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             }
         }
 
+        await Lifecycle.RunStartedAsync(
+            runId,
+            generationId,
+            parentRunId,
+            causeKind: causeKind,
+            causeToolCallId: causeToolCallId,
+            wasForked: wasForked,
+            ct: ct);
+
         Logger.LogInformation(
             "Starting run {RunId} (parent: {ParentRunId}, generation: {GenerationId}, inputs: {InputCount})",
             runId,
@@ -1532,6 +1652,119 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         return new RunAssignment(runId, generationId, inputIds, parentRunId);
     }
+
+    /// <summary>
+    /// Marks the start of a model turn for lifecycle reporting. Emits nothing on its own.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The generation id the turn runs under.</param>
+    /// <remarks>
+    /// Pair every call with <see cref="CompleteTurnAsync"/> on the path where the turn finishes
+    /// normally. Abnormal endings need no call: a turn still open when the run terminalizes is
+    /// reported by the finalizer with the run's own outcome, which is what keeps error,
+    /// cancellation, and teardown from needing a copy of this logic in each loop.
+    /// </remarks>
+    protected void BeginTurn(string runId, string generationId) =>
+        Lifecycle.TurnStarted(runId, generationId);
+
+    /// <summary>
+    /// Folds a message the current turn produced into that turn's lifecycle report.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The generation id the turn runs under.</param>
+    /// <param name="message">The message the turn produced.</param>
+    /// <remarks>
+    /// Call this for every message a turn emits, streaming fragments included — the seam decides
+    /// what counts, so <c>message_count</c> means the same thing whichever loop reported it.
+    /// </remarks>
+    protected void ObserveTurnMessage(string runId, string generationId, IMessage message) =>
+        Lifecycle.ObserveTurnMessage(runId, generationId, message);
+
+    /// <summary>
+    /// Reports a turn that reached its final state.
+    /// </summary>
+    /// <param name="runId">The run the turn belongs to.</param>
+    /// <param name="generationId">The generation id the turn ran under.</param>
+    /// <param name="outcome">How it ended. Defaults to <see cref="LifecycleTurnOutcomes.Completed"/>.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// This is the one turn-finalization seam every loop shares. What a "turn" is differs by
+    /// provider — the raw loop takes one per model round-trip, while a CLI-backed loop runs its own
+    /// agentic loop behind a single generation id and so reports one turn per run — but the event a
+    /// subscriber receives is the same shape and the same guarantee either way: one final report per
+    /// generation the loop accepted, never a streaming fragment.
+    /// </remarks>
+    protected Task CompleteTurnAsync(
+        string runId,
+        string generationId,
+        string? outcome = null,
+        CancellationToken ct = default) =>
+        Lifecycle.TurnCompletedAsync(
+            runId,
+            generationId,
+            outcome ?? LifecycleTurnOutcomes.Completed,
+            ct: ct);
+
+    /// <summary>
+    /// Reports the discovered context a provider request is about to carry, reading it back out of
+    /// the request itself.
+    /// </summary>
+    /// <param name="runId">The run whose request carries the context.</param>
+    /// <param name="generationId">The turn whose request carries it.</param>
+    /// <param name="request">The request as it will be dispatched.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// Call this from the dispatch site, on the snapshot that is being sent and after nothing else
+    /// will touch it. Reporting from anywhere earlier would describe context that was merely
+    /// intended — the discovery that got cancelled, superseded, or dropped between rendering and
+    /// sending would be announced as delivered.
+    /// </para>
+    /// <para>
+    /// The scan is skipped entirely when nobody subscribes, so a loop without lifecycle pays nothing
+    /// for it.
+    /// </para>
+    /// </remarks>
+    protected Task ReportContextLoadedAsync(
+        string runId,
+        string generationId,
+        IEnumerable<IMessage>? request,
+        CancellationToken ct = default) =>
+        Lifecycle.PublishesEvents
+            ? Lifecycle.ContextLoadedAsync(
+                runId,
+                generationId,
+                RenderedContextBlock.ScanRequest(request),
+                ct)
+            : Task.CompletedTask;
+
+    /// <summary>
+    /// Reports the discovered context a rendered prompt is about to carry, for providers whose
+    /// request is a single string rather than a message list.
+    /// </summary>
+    /// <param name="runId">The run whose prompt carries the context.</param>
+    /// <param name="generationId">The turn whose prompt carries it.</param>
+    /// <param name="prompt">The prompt as it will be dispatched.</param>
+    /// <param name="phase">
+    /// How context in this prompt entered the conversation. Defaults to
+    /// <see cref="LifecycleContextPhases.MidSession"/>, which is what a per-turn prompt carries — a
+    /// CLI provider takes its boot instructions through a separate session-start call, not through
+    /// the turn prompt.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    protected Task ReportContextLoadedAsync(
+        string runId,
+        string generationId,
+        string? prompt,
+        string? phase = null,
+        CancellationToken ct = default) =>
+        Lifecycle.PublishesEvents
+            ? Lifecycle.ContextLoadedAsync(
+                runId,
+                generationId,
+                RenderedContextBlock.Scan(prompt, phase ?? LifecycleContextPhases.MidSession),
+                ct)
+            : Task.CompletedTask;
 
     /// <summary>
     /// Durably folds newly-injected input receipt ids into the active run's ledger entry.
@@ -1595,6 +1828,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="pendingMessageCount">Number of pending message batches waiting to be processed</param>
     /// <param name="isError">Whether the run completed due to an error</param>
     /// <param name="errorMessage">Error message when isError is true</param>
+    /// <param name="outcome">
+    /// The lifecycle outcome to report, overriding the completed/error default. Used by a
+    /// delayed-result child that deliberately took no turn, which is a success the plain
+    /// <c>completed</c> outcome would misdescribe. The <em>ledger</em> status is unaffected — such a
+    /// run really did complete, so a caller polling status must not be told otherwise.
+    /// </param>
     /// <param name="ct">Cancellation token</param>
     protected async Task CompleteRunAsync(
         string runId,
@@ -1604,6 +1843,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         int pendingMessageCount = 0,
         bool isError = false,
         string? errorMessage = null,
+        string? outcome = null,
         CancellationToken ct = default)
     {
         if (RunLedgerStore != null)
@@ -1623,6 +1863,18 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                     runId);
             }
         }
+
+        // Terminalize before broadcasting, for the same reason the ledger write comes first: the
+        // durable CAS is what decides whether this caller is the one that ends the run, and a
+        // subscriber must not see a completion that lost that race.
+        _ = await Lifecycle.TryCompleteRunAsync(
+            runId,
+            generationId,
+            outcome ?? (isError ? LifecycleRunOutcomes.Error : LifecycleRunOutcomes.Completed),
+            isError
+                ? new LifecycleError { Message = errorMessage ?? "The run failed." }
+                : null,
+            ct: ct);
 
         await PublishToAllAsync(new RunCompletedMessage
         {

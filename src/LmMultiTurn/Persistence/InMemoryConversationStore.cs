@@ -6,14 +6,19 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// In-memory implementation of IConversationStore for testing and development.
 /// Thread-safe using ConcurrentDictionary.
 /// </summary>
-public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerStore
+public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerStore, IRunLifecycleStore
 {
     private readonly ConcurrentDictionary<string, List<PersistedMessage>> _messages = new();
     private readonly ConcurrentDictionary<string, ThreadMetadata> _metadata = new();
     private readonly ConcurrentDictionary<string, RunLedgerEntry> _runLedger = new();
     private readonly ConcurrentDictionary<(string ThreadId, string InputId), AcceptedInputEntry> _acceptedInputs = new();
+    private readonly Dictionary<string, RunLifecycleState> _runLifecycle = new(StringComparer.Ordinal);
     private readonly object _messagesLock = new();
     private readonly object _metadataLock = new();
+
+    // Every lifecycle mutation is a compare-and-set, so they all serialize on one lock rather than
+    // living in a ConcurrentDictionary that would let two terminalizations both believe they won.
+    private readonly object _lifecycleLock = new();
 
     /// <inheritdoc />
     public Task AppendMessagesAsync(
@@ -256,6 +261,242 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
             _acceptedInputs.Keys.Where(k => k.ThreadId == threadId).Select(k => k.InputId));
 
         return Task.FromResult<IReadOnlySet<string>>(result);
+    }
+
+    /// <inheritdoc />
+    public Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        RunLifecycleGuards.ValidateStart(state);
+
+        lock (_lifecycleLock)
+        {
+            if (_runLifecycle.TryGetValue(state.RunId, out var existing)
+                && existing.Phase == RunLifecyclePhase.Terminal)
+            {
+                throw new InvalidOperationException(
+                    $"Run '{state.RunId}' already reached a terminal boundary; it cannot be restarted.");
+            }
+
+            // A re-record refreshes how the run describes itself; it does not roll back what the
+            // run has already committed. Deferrals and turns are facts recorded after the start,
+            // and SQLite's upsert leaves both alone — the three stores have to agree.
+            _runLifecycle[state.RunId] = state with
+            {
+                UpdatedAt = state.StartedAt,
+                TurnCount = existing?.TurnCount ?? state.TurnCount,
+                DeferredToolCalls = existing?.DeferredToolCalls ?? state.DeferredToolCalls,
+            };
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<RunLifecycleState?> LoadRunLifecycleAsync(string runId, CancellationToken ct = default)
+    {
+        lock (_lifecycleLock)
+        {
+            _ = _runLifecycle.TryGetValue(runId, out var state);
+            return Task.FromResult(state);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        lock (_lifecycleLock)
+        {
+            var result = _runLifecycle.Values
+                .Where(s => s.ThreadId == threadId)
+                .OrderByDescending(s => s.StartedAt)
+                .ThenBy(s => s.RunId, StringComparer.Ordinal)
+                .ToList();
+
+            return Task.FromResult<IReadOnlyList<RunLifecycleState>>(result);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<RunLifecycleState>> ListNonTerminalRunsAsync(
+        string threadId,
+        CancellationToken ct = default)
+    {
+        lock (_lifecycleLock)
+        {
+            var result = _runLifecycle.Values
+                .Where(s => s.ThreadId == threadId && s.Phase == RunLifecyclePhase.Running)
+                .OrderBy(s => s.StartedAt)
+                .ThenBy(s => s.RunId, StringComparer.Ordinal)
+                .ToList();
+
+            return Task.FromResult<IReadOnlyList<RunLifecycleState>>(result);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<bool> TryMarkRunTerminalAsync(
+        string runId,
+        string outcome,
+        int turnCount,
+        DateTimeOffset terminalAt,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(outcome);
+
+        lock (_lifecycleLock)
+        {
+            if (!_runLifecycle.TryGetValue(runId, out var existing)
+                || existing.Phase == RunLifecyclePhase.Terminal)
+            {
+                return Task.FromResult(false);
+            }
+
+            _runLifecycle[runId] = existing with
+            {
+                Phase = RunLifecyclePhase.Terminal,
+                Outcome = outcome,
+                TurnCount = turnCount,
+                TerminalAt = terminalAt,
+                UpdatedAt = terminalAt,
+            };
+
+            return Task.FromResult(true);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<DeferredToolCallRecord> RecordDeferredToolCallAsync(
+        string runId,
+        DeferredToolCallRecord record,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        lock (_lifecycleLock)
+        {
+            if (!_runLifecycle.TryGetValue(runId, out var existing))
+            {
+                throw new InvalidOperationException(
+                    $"Run '{runId}' was never recorded as started; cannot record deferral '{record.ToolCallId}'.");
+            }
+
+            var already = existing.DeferredToolCalls
+                .FirstOrDefault(d => d.ToolCallId == record.ToolCallId);
+            if (already != null)
+            {
+                return Task.FromResult(already);
+            }
+
+            var committed = record with { Ordinal = existing.DeferredToolCalls.Count + 1 };
+            _runLifecycle[runId] = existing with
+            {
+                DeferredToolCalls = [.. existing.DeferredToolCalls, committed],
+                UpdatedAt = record.DeferredAt,
+            };
+
+            return Task.FromResult(committed);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
+        string threadId,
+        string toolCallId,
+        string resolutionFingerprint,
+        string? childRunId,
+        DateTimeOffset resolvedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(resolutionFingerprint);
+
+        lock (_lifecycleLock)
+        {
+            foreach (var state in _runLifecycle.Values.Where(s => s.ThreadId == threadId))
+            {
+                var index = RunLifecycleGuards.IndexOfDeferral(state, toolCallId);
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                var existing = state.DeferredToolCalls[index];
+                if (existing.IsResolved)
+                {
+                    return Task.FromResult(
+                        string.Equals(
+                            existing.ResolutionFingerprint,
+                            resolutionFingerprint,
+                            StringComparison.Ordinal)
+                            ? DeferredResolutionOutcome.Duplicate
+                            : DeferredResolutionOutcome.Conflict);
+                }
+
+                var updated = state.DeferredToolCalls.ToArray();
+                updated[index] = existing with
+                {
+                    ResolvedAt = resolvedAt,
+                    ResolutionFingerprint = resolutionFingerprint,
+                    ChildRunId = childRunId,
+                };
+
+                _runLifecycle[state.RunId] = state with
+                {
+                    DeferredToolCalls = updated,
+                    UpdatedAt = resolvedAt,
+                };
+
+                return Task.FromResult(DeferredResolutionOutcome.Resolved);
+            }
+
+            return Task.FromResult(DeferredResolutionOutcome.NotFound);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<string?> AttachDeferredChildRunAsync(
+        string threadId,
+        string toolCallId,
+        string childRunId,
+        DateTimeOffset attachedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(childRunId);
+
+        lock (_lifecycleLock)
+        {
+            foreach (var state in _runLifecycle.Values.Where(s => s.ThreadId == threadId))
+            {
+                var index = RunLifecycleGuards.IndexOfDeferral(state, toolCallId);
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                var existing = state.DeferredToolCalls[index];
+                var (standing, needsWrite) =
+                    RunLifecycleGuards.ClassifyChildRunAttach(existing, childRunId);
+                if (!needsWrite)
+                {
+                    return Task.FromResult(standing);
+                }
+
+                var updated = state.DeferredToolCalls.ToArray();
+                updated[index] = existing with { ChildRunId = childRunId };
+
+                _runLifecycle[state.RunId] = state with
+                {
+                    DeferredToolCalls = updated,
+                    UpdatedAt = attachedAt,
+                };
+
+                return Task.FromResult<string?>(childRunId);
+            }
+
+            return Task.FromResult<string?>(null);
+        }
     }
 
     /// <summary>

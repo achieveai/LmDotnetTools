@@ -19,6 +19,11 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <!-- The loops emit lifecycle events and read the shared cause/outcome vocabulary from here.
+         LmLifecycle references nothing, so this cannot introduce a cycle. (LmCore deliberately
+         does NOT take this reference - it mirrors the approval outcome strings instead, kept
+         honest by a reflection parity test.) -->
+    <ProjectReference Include="..\LmLifecycle\AchieveAi.LmDotnetTools.LmLifecycle.csproj" />
     <ProjectReference Include="..\ClaudeAgentSdkProvider\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj" />
     <ProjectReference Include="..\CodexSdkProvider\AchieveAi.LmDotnetTools.CodexSdkProvider.csproj" />
     <ProjectReference Include="..\CopilotSdkProvider\AchieveAi.LmDotnetTools.CopilotSdkProvider.csproj" />
