@@ -91,6 +91,106 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task RecloneStoreAsync_HostPreparer_DeletesTheStoreWithHostFilesystemApis()
+    {
+        // The host-backed pooled preparer owns a store on the DAEMON HOST, so removing a corrupt one through
+        // the POSIX `rm -rf` the sandbox path uses is wrong twice over: `rm` does not exist on Windows, and a
+        // git store is full of read-only pack/object files that a naive recursive delete refuses. Delete it
+        // with the same host filesystem pattern the scratch wipe already uses (clear ReadOnly, then delete).
+        var slot = CreateSlot();
+        var packDir = Path.Combine(slot.StorePath, ".git", "objects", "pack");
+        Directory.CreateDirectory(packDir);
+        var readOnlyPack = Path.Combine(packDir, "pack-deadbeef.idx");
+        File.WriteAllText(readOnlyPack, "idx");
+        File.SetAttributes(readOnlyPack, FileAttributes.ReadOnly);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        await preparer.RecloneStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        Directory.Exists(slot.StorePath).Should().BeFalse(
+            "the corrupt host store is removed outright so the clone below lands in a fresh directory");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.StartsWith("rm -rf --", StringComparison.Ordinal),
+            "host paths must not be passed to sandbox/POSIX command semantics");
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().Contain(
+            command => command.Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task EnsureStoreAsync_HostPreparer_ClonesWithNoWorkingDirectory()
+    {
+        // `/workspace` is the CONTAINER mount root; it does not exist on the daemon host, and
+        // HostGitCommandRunner refuses a command whose working directory is missing (exit 1) — so the very
+        // first host-side store clone can never succeed while that sandbox path is pinned as the cwd. The
+        // clone names an absolute target, so it needs no working directory at all.
+        var slot = CreateSlot(withGitDir: false);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        var clone = runner.Commands.Should().ContainSingle(
+            c => string.Join(' ', c.Argv).Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal))
+            .Subject;
+        clone.WorkingDirectory.Should().BeNull(
+            "the daemon host has no /workspace, so pinning it as the clone's cwd fails the first-use clone");
+    }
+
+    [Fact]
+    public async Task EnsureStoreAsync_SandboxPreparer_ClonesFromTheContainerWorkspaceRoot()
+    {
+        // Non-regression for the host fix above: inside the sandbox `/workspace` IS a real, mounted directory
+        // and stays the clone's working directory.
+        var slot = CreateSlot(withGitDir: false);
+        var runner = new FakeSandboxCommandRunner();
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new FakeSandboxFileSystem(), "github", NullLoggerFactory.Instance);
+
+        await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        var clone = runner.Commands.Should().ContainSingle(
+            c => string.Join(' ', c.Argv).Contains($"clone {StoreUrl} {slot.StorePath}", StringComparison.Ordinal))
+            .Subject;
+        clone.WorkingDirectory.Should().Be("/workspace");
+    }
+
+    [Fact]
+    public async Task PrepareAsync_HostPreparer_ClearsStaleStateWithoutPosixFind()
+    {
+        // Clean-on-entry on the HOST: the daemon host has no POSIX `find`, and hygiene ignores that command's
+        // result — so a stale index.lock / MERGE_HEAD / rebase-merge left by a crashed prior lease silently
+        // survives and the next prepare wedges on "index.lock: File exists". Model the host deterministically
+        // (find fails) and require the stale state to be gone anyway.
+        var slot = CreateSlot();
+        var gitDir = Path.Combine(slot.StorePath, ".git");
+        var staleLock = Path.Combine(gitDir, "index.lock");
+        File.WriteAllText(staleLock, string.Empty);
+        File.WriteAllText(Path.Combine(gitDir, "MERGE_HEAD"), "deadbeef");
+        Directory.CreateDirectory(Path.Combine(gitDir, "rebase-merge"));
+        File.WriteAllText(
+            Path.Combine(slot.StorePath, ".gitmodules"),
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
+                + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains("find ", new SandboxCommandResult(1, string.Empty, "'find' is not recognized"));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner), new HostFileSystem(), "github", NullLoggerFactory.Instance);
+
+        _ = await preparer.PrepareAsync(
+            slot, CreateRun(), StoreUrl, SubmoduleRelPath, Branch, DefaultBranch, NotesRelPath, BuildPolicy(), CancellationToken.None);
+
+        File.Exists(staleLock).Should().BeFalse("clean-on-entry clears the stale lock with host filesystem APIs");
+        File.Exists(Path.Combine(gitDir, "MERGE_HEAD")).Should().BeFalse();
+        Directory.Exists(Path.Combine(gitDir, "rebase-merge")).Should().BeFalse();
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.StartsWith("find ", StringComparison.Ordinal),
+            "host stale-state cleanup must not be routed through POSIX find");
+    }
+
+    [Fact]
     public async Task EnsureStoreAsync_HostPreparer_ReusesAnUnmarkedStore()
     {
         var slot = CreateSlot();

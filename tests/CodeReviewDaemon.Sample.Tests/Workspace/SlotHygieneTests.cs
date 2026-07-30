@@ -65,6 +65,34 @@ public sealed class SlotHygieneTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureClean_on_a_host_backed_store_clears_stale_state_without_posix_find()
+    {
+        // The host-backed pool keeps its store on the DAEMON HOST, where the runner is a local process runner
+        // with no POSIX `find` — and the sweep ignores its result, so a silent failure there would hand the
+        // reset a still-wedged store. Passing the host filesystem must route the sweep through the host helpers
+        // instead. The runner is scripted to reject `find` so this cannot pass on the fake's POSIX emulation.
+        var store = SeedStore();
+        var gitDir = Path.Combine(store, ".git");
+        var storeLock = Path.Combine(gitDir, "index.lock");
+        File.WriteAllText(storeLock, string.Empty);
+        File.WriteAllText(Path.Combine(gitDir, "MERGE_HEAD"), "deadbeef");
+        Directory.CreateDirectory(Path.Combine(gitDir, "rebase-merge"));
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains("find ", new SandboxCommandResult(1, string.Empty, "'find' is not recognized"));
+
+        var verdict = await SlotHygiene.EnsureCleanAsync(
+            new GitRunner(runner), store, CancellationToken.None, NullLogger.Instance, new HostFileSystem());
+
+        File.Exists(storeLock).Should().BeFalse("a stale lock is cleared with host filesystem APIs");
+        File.Exists(Path.Combine(gitDir, "MERGE_HEAD")).Should().BeFalse();
+        Directory.Exists(Path.Combine(gitDir, "rebase-merge")).Should().BeFalse();
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.StartsWith("find ", StringComparison.Ordinal),
+            "the daemon host has no POSIX find");
+        verdict.Should().Be(HygieneVerdict.Clean);
+    }
+
+    [Fact]
     public async Task EnsureClean_issues_reset_clean_and_submodule_recursion()
     {
         var store = SeedStore();

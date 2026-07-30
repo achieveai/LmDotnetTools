@@ -123,13 +123,23 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
     public async Task RecloneStoreAsync(string storeRoot, string storeUrl, CancellationToken cancellationToken)
     {
-        var remove = await _git.CommandRunner
-            .RunAsync(new SandboxCommand(["rm", "-rf", "--", storeRoot]), cancellationToken)
-            .ConfigureAwait(false);
-        if (!remove.Succeeded)
+        // The host-backed pooled preparer owns a store on the DAEMON HOST, where the sandbox's POSIX `rm` does
+        // not exist — and a git store is full of read-only pack/object files a naive recursive delete refuses.
+        // Remove it with the same host filesystem pattern the scratch wipe uses; keep `rm -rf` for the sandbox.
+        if (_fileSystem is HostFileSystem)
         {
-            throw new InvalidOperationException(
-                $"Removing corrupt review store '{storeRoot}' failed (exit {remove.ExitCode}): {remove.Stderr}");
+            DeleteHostDirectory(storeRoot);
+        }
+        else
+        {
+            var remove = await _git.CommandRunner
+                .RunAsync(new SandboxCommand(["rm", "-rf", "--", storeRoot]), cancellationToken)
+                .ConfigureAwait(false);
+            if (!remove.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"Removing corrupt review store '{storeRoot}' failed (exit {remove.ExitCode}): {remove.Stderr}");
+            }
         }
 
         await CloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
@@ -140,8 +150,12 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         string storeUrl,
         CancellationToken cancellationToken)
     {
+        // `/workspace` is the container mount root: real inside the sandbox, absent on the daemon host — and
+        // HostGitCommandRunner fails a command whose working directory does not exist, so pinning it there
+        // would make the first-use host clone impossible. The clone names an absolute target either way.
+        var workingDirectory = _fileSystem is HostFileSystem ? null : "/workspace";
         var clone = await _git
-            .RunAsync(["clone", storeUrl, storeRoot], "/workspace", cancellationToken)
+            .RunAsync(["clone", storeUrl, storeRoot], workingDirectory, cancellationToken)
             .ConfigureAwait(false);
         if (!clone.Succeeded)
         {
@@ -202,7 +216,9 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
         ArgumentNullException.ThrowIfNull(policy);
 
         await EnsureStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
-        if (await SlotHygiene.EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger).ConfigureAwait(false)
+        if (await SlotHygiene
+                .EnsureCleanAsync(_git, storeRoot, cancellationToken, _logger, _fileSystem)
+                .ConfigureAwait(false)
             == HygieneVerdict.NeedsReclone)
         {
             throw new SlotNeedsRecloneException(
@@ -310,21 +326,31 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
 
     private static void ClearHostScratch(string scratchRoot)
     {
-        if (Directory.Exists(scratchRoot))
-        {
-            foreach (var file in Directory.EnumerateFiles(scratchRoot, "*", SearchOption.AllDirectories))
-            {
-                var attributes = File.GetAttributes(file);
-                if ((attributes & FileAttributes.ReadOnly) != 0)
-                {
-                    File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
-                }
-            }
+        DeleteHostDirectory(scratchRoot);
+        Directory.CreateDirectory(scratchRoot);
+    }
 
-            Directory.Delete(scratchRoot, recursive: true);
+    /// <summary>
+    /// Recursively deletes a host directory, clearing the read-only attribute first: a git store is full of
+    /// read-only pack/object files that <see cref="Directory.Delete(string, bool)"/> otherwise refuses.
+    /// </summary>
+    private static void DeleteHostDirectory(string root)
+    {
+        if (!Directory.Exists(root))
+        {
+            return;
         }
 
-        Directory.CreateDirectory(scratchRoot);
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            var attributes = File.GetAttributes(file);
+            if ((attributes & FileAttributes.ReadOnly) != 0)
+            {
+                File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
+            }
+        }
+
+        Directory.Delete(root, recursive: true);
     }
 
     private async Task RunCommandOrThrowAsync(

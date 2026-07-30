@@ -584,6 +584,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return;
         }
 
+        // Fail CLOSED when a pool is configured but declined the run. The only decline is "the reviewed repo is
+        // not a submodule of the review store", and the S2S degrade below answers it by minting a PERMANENT
+        // per-PR host clone + gateway workspace that nothing in this system ever deletes — pooled slots are
+        // recycled, these are not, so every PR of an un-onboarded repo silently leaks another copy. Onboarding
+        // the repo into the store is the fix, so say that instead of quietly degrading. Non-pooled S2S
+        // (UsePooledReview false) keeps the degrade: there is no pool to have declined.
+        if (UsePooledReview && _preparer is not null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: pooled review is configured but the reviewed repo '{repo.NormalizedKey}' is not a "
+                + $"submodule of the review store '{_options.ResolvedStoreUrl}'. Onboard the repo into that store "
+                + "(add it under repos/ and push) — the daemon will not fall back to an unmanaged per-PR "
+                + "workspace, which is never cleaned up.");
+        }
+
         // S2S degrade: the review runs inside LmStreaming against a workspace whose checkout the preparer
         // clones HOST-side under the shared gateway base — so the tree this stage needs for the bounded diff
         // already exists on this host. Diff it there rather than cloning a second copy inside a daemon-owned

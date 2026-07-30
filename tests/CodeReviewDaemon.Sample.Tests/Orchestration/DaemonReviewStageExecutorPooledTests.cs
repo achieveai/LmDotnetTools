@@ -757,6 +757,33 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task S2S_fails_closed_when_the_pooled_store_does_not_carry_the_reviewed_repo()
+    {
+        using var fixture = Fixture.CreateS2S();
+        // The store declares a DIFFERENT submodule, so the pooled attempt DECLINES. On S2S the degrade below it
+        // host-clones a permanent per-PR checkout under the shared gateway base and mints a workspace pointing
+        // at it — neither of which anything ever reclaims, so every un-onboarded repo leaks a full clone plus a
+        // workspace record. A configured pool that declines must fail closed instead, with an actionable error.
+        fixture.HostFileSystem.Files.Clear();
+        fixture.HostFileSystem.Seed(
+            "/pool/review-slot-0/store/.gitmodules",
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
+        thrown.Message.Should().Contain("achieveai/lmdotnettools", "the error names the repo that must be onboarded");
+        thrown.Message.Should().Contain(StoreUrl, "the error names the review store to onboard it into");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "no unmanaged per-PR clone may be created for a pooled-but-declined review");
+        fixture.S2SHandler.Requests.Should().BeEmpty(
+            "no permanent per-PR LmStreaming workspace may be minted for a pooled-but-declined review");
+        fixture.Pool.ReturnCount.Should().Be(1, "the declined lease is still returned normally, before the failure");
+        fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("the stage failed, so it persisted no partial context");
+    }
+
+    [Fact]
     public async Task S2S_posts_host_side_with_the_deep_link_once_and_still_commits_only_the_notes_dir()
     {
         using var fixture = Fixture.CreateS2S();

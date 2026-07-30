@@ -45,8 +45,17 @@ internal static class SlotHygiene
         "-c", "protocol.ftps.allow=never",
     ];
 
+    /// <summary>
+    /// Clean-on-entry. <paramref name="fileSystem"/> is the filesystem the store lives on: when it is the host
+    /// filesystem the stale-lock/abandoned-operation sweep runs through the host helpers below instead of the
+    /// container commands (see the step 1-2 comment). Null keeps the container behaviour.
+    /// </summary>
     public static async Task<HygieneVerdict> EnsureCleanAsync(
-        GitRunner git, string storePath, CancellationToken ct, ILogger? logger = null)
+        GitRunner git,
+        string storePath,
+        CancellationToken ct,
+        ILogger? logger = null,
+        ISandboxFileSystem? fileSystem = null)
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentException.ThrowIfNullOrWhiteSpace(storePath);
@@ -61,54 +70,67 @@ internal static class SlotHygiene
         // 1-2. Clear stale locks and abandoned operation markers THROUGH the injected runner. In production
         // that runner is SandboxSessionAdapter over typed SandboxClient, so pre-review hygiene never reaches
         // around the mounted session with host filesystem APIs. Explicit argv keeps every path a distinct token.
-        await git.CommandRunner.RunAsync(
-                new SandboxCommand(
-                    [
-                        "find",
-                        $"{storePath}/.git",
-                        "-type",
-                        "f",
-                        "(",
-                        "-name",
-                        "*.lock",
-                        "-o",
-                        "-name",
-                        "MERGE_HEAD",
-                        "-o",
-                        "-name",
-                        "CHERRY_PICK_HEAD",
-                        "-o",
-                        "-name",
-                        "REVERT_HEAD",
-                        ")",
-                        "-delete",
-                    ]),
-                ct)
-            .ConfigureAwait(false);
-        await git.CommandRunner.RunAsync(
-                new SandboxCommand(
-                    [
-                        "find",
-                        $"{storePath}/.git",
-                        "-type",
-                        "d",
-                        "(",
-                        "-name",
-                        "rebase-merge",
-                        "-o",
-                        "-name",
-                        "rebase-apply",
-                        ")",
-                        "-prune",
-                        "-exec",
-                        "rm",
-                        "-rf",
-                        "--",
-                        "{}",
-                        "+",
-                    ]),
-                ct)
-            .ConfigureAwait(false);
+        // On the HOST-backed pool the store is a plain host directory and the runner is a local process runner
+        // with no POSIX `find` (a Windows daemon host has none) — and this step ignores its result, so there the
+        // sweep would fail silently and leave the wedged store for the reset below to trip over. Use the host
+        // helpers for that case only.
+        if (fileSystem is HostFileSystem)
+        {
+            var gitDir = Path.Combine(storePath, ".git");
+            RemoveStaleLocks(gitDir);
+            AbortInProgress(gitDir);
+        }
+        else
+        {
+            await git.CommandRunner.RunAsync(
+                    new SandboxCommand(
+                        [
+                            "find",
+                            $"{storePath}/.git",
+                            "-type",
+                            "f",
+                            "(",
+                            "-name",
+                            "*.lock",
+                            "-o",
+                            "-name",
+                            "MERGE_HEAD",
+                            "-o",
+                            "-name",
+                            "CHERRY_PICK_HEAD",
+                            "-o",
+                            "-name",
+                            "REVERT_HEAD",
+                            ")",
+                            "-delete",
+                        ]),
+                    ct)
+                .ConfigureAwait(false);
+            await git.CommandRunner.RunAsync(
+                    new SandboxCommand(
+                        [
+                            "find",
+                            $"{storePath}/.git",
+                            "-type",
+                            "d",
+                            "(",
+                            "-name",
+                            "rebase-merge",
+                            "-o",
+                            "-name",
+                            "rebase-apply",
+                            ")",
+                            "-prune",
+                            "-exec",
+                            "rm",
+                            "-rf",
+                            "--",
+                            "{}",
+                            "+",
+                        ]),
+                    ct)
+                .ConfigureAwait(false);
+        }
 
         // 3. Reset + clean the superproject, then restore ALL submodule checkouts (top-level AND nested,
         //    recursively) to the superproject's RECORDED gitlink. Restoring to the gitlink keeps a warm slot
