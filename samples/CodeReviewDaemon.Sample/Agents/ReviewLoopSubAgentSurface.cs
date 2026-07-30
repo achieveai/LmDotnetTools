@@ -38,7 +38,9 @@ internal interface IReviewLoopWrapper
 }
 
 /// <summary>
-/// Resolves the <see cref="IReviewLoopSubAgentSurface"/> of a review loop, unwrapping decorators on the way.
+/// Resolves the <see cref="IReviewLoopSubAgentSurface"/> of a review loop — and, through
+/// <see cref="ReviewLoopSubAgentSurface.ResolveCapability{T}"/>, any other capability a loop in the same
+/// chain declares — unwrapping decorators on the way.
 /// </summary>
 internal static class ReviewLoopSubAgentSurface
 {
@@ -64,6 +66,54 @@ internal static class ReviewLoopSubAgentSurface
 
     /// <summary>How deep a decorator chain may nest before it is treated as malformed.</summary>
     private const int MaxWrapperDepth = 32;
+
+    /// <summary>
+    /// Returns the first loop in <paramref name="agent"/>'s decorator chain that implements
+    /// <typeparamref name="T"/>, or <c>null</c> when none does.
+    /// <para>
+    /// Used for capabilities the executor PROBES for rather than merges — resumable-turn checkpointing today.
+    /// Resolving through the chain, instead of having each decorator re-declare the interface and forward, is
+    /// what keeps the probe honest: a wrapper that declared the capability would answer "yes" even when the
+    /// loop underneath cannot supply it, turning a fail-fast into a silently non-resumable review. The
+    /// converse — a wrapper that simply forgets to forward — is the reason this is not a plain cast.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The decorator chain is cyclic or nested past <see cref="MaxWrapperDepth"/> (see
+    /// <see cref="Resolve(IMultiTurnAgent)"/>).
+    /// </exception>
+    public static T? ResolveCapability<T>(IMultiTurnAgent agent)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+
+        var current = agent;
+        for (var depth = 0; depth <= MaxWrapperDepth; depth++)
+        {
+            if (current is T capability)
+            {
+                return capability;
+            }
+
+            if (current is not IReviewLoopWrapper wrapper)
+            {
+                return null;
+            }
+
+            if (ReferenceEquals(wrapper.Inner, current))
+            {
+                throw new InvalidOperationException(
+                    $"Review loop wrapper '{current.GetType().Name}' reports itself as its own inner loop, "
+                        + $"so its '{typeof(T).Name}' capability cannot be resolved.");
+            }
+
+            current = wrapper.Inner;
+        }
+
+        throw new InvalidOperationException(
+            $"Review loop decorator chain exceeded {MaxWrapperDepth} levels while resolving the "
+                + $"'{typeof(T).Name}' capability of '{agent.GetType().Name}'; the wrappers are probably cyclic.");
+    }
 
     private static IReviewLoopSubAgentSurface? Resolve(IMultiTurnAgent agent, int depth)
     {

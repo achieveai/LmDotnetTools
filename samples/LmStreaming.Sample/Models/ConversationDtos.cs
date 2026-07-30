@@ -163,6 +163,22 @@ public record SendMessageRequest
     /// </para>
     /// </summary>
     public bool SuppressSubAgentSpawning { get; init; }
+
+    /// <summary>
+    /// Makes this send safe to REPEAT. When supplied, the host records the input under an id derived from
+    /// this key (plus the options that change what the turn does) and reconciles a repeat against its
+    /// durable accepted-input ledger, so a caller whose response was lost — a socket reset, or a process
+    /// that died between the host accepting and the answer arriving — recovers the SAME input instead of
+    /// queueing a second (minutes-long, sub-agent-fanning) turn.
+    /// <para>
+    /// The key must identify one turn including its options; it is scoped to the thread, so callers only
+    /// need it to be unique within a conversation. A blank key is refused (400
+    /// <c>invalid_idempotency_key</c>) rather than treated as absent, and a honoured key is acknowledged
+    /// via <see cref="SendMessageResponse.IdempotencyKeyHonored"/> so a caller talking to a host that
+    /// predates this field can fail closed instead of retrying into a duplicate review.
+    /// </para>
+    /// </summary>
+    public string? IdempotencyKey { get; init; }
 }
 
 /// <summary>
@@ -181,6 +197,14 @@ public record SendMessageResponse
     /// unsupported host rather than silently proceeding without suppression.
     /// </summary>
     public bool SpawningSuppressed { get; init; }
+
+    /// <summary>
+    /// Acknowledgement that <see cref="SendMessageRequest.IdempotencyKey"/> was supplied AND applied — i.e.
+    /// repeating the identical send returns this same <see cref="InputId"/> rather than queueing another
+    /// turn. Absent/false is exactly what a host predating the field returns, so a caller that depends on
+    /// safe retries can fail closed instead of retrying into a duplicate review.
+    /// </summary>
+    public bool IdempotencyKeyHonored { get; init; }
 }
 
 /// <summary>

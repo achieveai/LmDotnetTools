@@ -18,6 +18,11 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class S2SReviewAgentTests
 {
+    /// <summary>A turn idempotency key shaped like the ones the executor derives — see
+    /// <c>DaemonReviewStageExecutor.TurnIdempotencyKey</c>. Its VALUE is irrelevant here; what matters is that
+    /// arming a turn always supplies one, so a repeat of the send resolves to the input already accepted.</summary>
+    private const string SynthesisKey = "review-run-7-primary:synthesis";
+
     private static S2SReviewAgent NewAgent(
         LmStreamingS2SClient client, string? title, string? existingThreadId = null) =>
         new(
@@ -300,7 +305,7 @@ public sealed class S2SReviewAgentTests
         var reAccepted = new List<string>();
 
         IResumableReviewTurn resumable = agent;
-        resumable.ArmTurnCheckpoint("input-inflight", reAccepted.Add);
+        resumable.ArmTurnCheckpoint(SynthesisKey, "input-inflight", reAccepted.Add);
         var messages = await DriveAsync(agent, "synthesize the final review");
 
         messages.Should().ContainSingle().Subject.Should().BeOfType<TextMessage>()
@@ -321,7 +326,7 @@ public sealed class S2SReviewAgentTests
     public async Task ExecuteRunAsync_reports_a_newly_accepted_input_id_before_it_starts_polling()
     {
         var handler = new FakeHttpMessageHandler()
-            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-minted\"}")
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-minted\",\"idempotencyKeyHonored\":true}")
             .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
         using var http = NewHttp(handler);
         var agent = NewAgent(
@@ -331,7 +336,8 @@ public sealed class S2SReviewAgentTests
 
         IResumableReviewTurn resumable = agent;
         resumable.ArmTurnCheckpoint(
-            resumeInputId: null,
+            SynthesisKey,
+            acceptedInputId: null,
             inputId =>
             {
                 accepted.Add(inputId);
@@ -341,6 +347,9 @@ public sealed class S2SReviewAgentTests
 
         accepted.Should().Equal("input-minted");
         pollsBeforeCheckpoint.Should().Be(0, "the checkpoint must be durable before the minutes-long wait, not after it");
+        handler.Requests.Single(r => r.Method == HttpMethod.Post).Body.Should().Contain(
+            $"\"idempotencyKey\":\"{SynthesisKey}\"",
+            "the key is what makes a repeat of this send resolve to the same input instead of a second turn");
     }
 
     /// <summary>
@@ -358,13 +367,91 @@ public sealed class S2SReviewAgentTests
             new LmStreamingS2SClient(http, "s", "id", "key"), title: null, existingThreadId: "thread-persisted");
 
         IResumableReviewTurn resumable = agent;
-        resumable.ArmTurnCheckpoint("input-inflight", _ => { });
+        resumable.ArmTurnCheckpoint(SynthesisKey, "input-inflight", _ => { });
         _ = await DriveAsync(agent, "the rejoined turn");
         _ = await DriveAsync(agent, "a later turn");
 
         handler.Requests.Should().ContainSingle(
             r => r.Method == HttpMethod.Post && r.Uri.ToString().Contains("/messages", StringComparison.Ordinal),
             "the rejoined turn sent nothing, the unarmed turn after it sent normally");
+    }
+
+    /// <summary>
+    /// The mint window: between the host creating the conversation and the caller recording it, a crash leaves
+    /// a sub-agent tree running that nothing can find. The checkpoint therefore fires the moment the id exists
+    /// — before the turn that fans out on it is even sent.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_reports_a_minted_conversation_before_the_turn_that_fans_out_on_it()
+    {
+        // Route order is load-bearing: the send URL is api/conversations/{id}/messages, so the narrower
+        // "/messages" route has to be registered ahead of the conversation-create one to win the first match.
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-minted\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+        var minted = new List<string>();
+        var sendsBeforeCheckpoint = -1;
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationMint(threadId =>
+        {
+            minted.Add(threadId);
+            sendsBeforeCheckpoint = handler.CountRequests("/messages");
+        });
+        _ = await DriveAsync(agent, "review this PR");
+
+        minted.Should().Equal("thread-minted");
+        sendsBeforeCheckpoint.Should().Be(0, "the conversation is recorded before anything is queued onto it");
+    }
+
+    /// <summary>
+    /// A resumed conversation was minted by an earlier process, so there is nothing new to record — and firing
+    /// the hook would rewrite a checkpoint that already describes this exact lifecycle.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_reports_no_mint_when_it_resumed_a_conversation()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(
+            new LmStreamingS2SClient(http, "s", "id", "key"), title: null, existingThreadId: "thread-persisted");
+        var minted = new List<string>();
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationMint(minted.Add);
+        _ = await DriveAsync(agent, "synthesize the final review");
+
+        minted.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The mint checkpoint is the one hook here allowed to take the review down. Swallowing its failure would
+    /// leave a hosted conversation fanning out a sub-agent tree that no restart could ever find, so the next
+    /// attempt would mint a second one on top of it — two live reviews of one PR. Failing instead leaves one
+    /// unrecorded conversation, which the host's retention sweep collects.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_fails_the_turn_when_the_minted_conversation_cannot_be_recorded()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-minted\"}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+
+        IResumableReviewTurn resumable = agent;
+        resumable.ObserveConversationMint(_ => throw new InvalidOperationException("checkpoint store is down"));
+        Func<Task> act = async () => _ = await DriveAsync(agent, "review this PR");
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*checkpoint store is down*");
+        handler.Requests.Should().NotContain(
+            r => r.Method == HttpMethod.Post && r.Uri.ToString().Contains("/messages", StringComparison.Ordinal),
+            "no fan-out is started on a conversation the caller could not record");
     }
 
     [Fact]

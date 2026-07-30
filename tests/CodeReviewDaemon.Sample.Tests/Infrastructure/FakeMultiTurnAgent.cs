@@ -30,14 +30,13 @@ namespace CodeReviewDaemon.Sample.Tests.Infrastructure;
 /// the surface it says it has"; a test that wants the refusal nulls <see cref="SuppressSpawning"/>.
 /// </para>
 /// <para>
-/// It also implements <see cref="IResumableReviewTurn"/> with the same one-shot semantics as the hosted loop
-/// it stands in for: an armed turn either REJOINS an input the host already accepted (recorded in
-/// <see cref="RejoinedInputIds"/>, nothing newly accepted) or reports the id it just accepted
-/// (<see cref="AcceptedInputIds"/>, from <see cref="NextInputId"/>) before producing anything.
+/// It is deliberately NOT resumable: an in-process turn dies with the loop that produced it, so this double
+/// must be exactly as unable to rejoin a turn as the loop it stands in for. Tests of the hosted path wrap it
+/// in <see cref="ResumableFakeLoop"/>, which is what the S2S fixture does.
 /// </para>
 /// </summary>
 internal sealed class FakeMultiTurnAgent
-    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IResumableReviewTurn, IReviewLoopSubAgentSurface
+    : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IReviewLoopSubAgentSurface
 {
     /// <summary><see cref="Lifecycle"/> entry appended at the start of every <see cref="ExecuteRunAsync"/>.</summary>
     public const string RunEvent = "run";
@@ -77,6 +76,14 @@ internal sealed class FakeMultiTurnAgent
     public FakeMultiTurnAgent ThenThrows(Exception ex)
     {
         _turns.Add(new TurnScript([], ex));
+        return this;
+    }
+
+    /// <summary>Rewrites the FIRST turn to fail with <paramref name="ex"/> — the review lifecycle's provisional
+    /// turn, i.e. a process that died while the sub-agent tree it started was still running.</summary>
+    public FakeMultiTurnAgent FailsFirstTurn(Exception ex)
+    {
+        _turns[0] = new TurnScript([], ex);
         return this;
     }
 
@@ -137,52 +144,6 @@ internal sealed class FakeMultiTurnAgent
 
     public void UseDeadline(DateTimeOffset deadlineUtc) => Deadlines.Add(deadlineUtc);
 
-    /// <summary>The id this double reports as newly accepted when an armed turn is SENT rather than rejoined.</summary>
-    public string NextInputId { get; set; } = "input-1";
-
-    /// <summary>Every value passed to <see cref="ArmTurnCheckpoint"/>, in order (null = "send a new turn").</summary>
-    public List<string?> ArmedResumeInputIds { get; } = [];
-
-    /// <summary>Ids reported to the caller as newly accepted — i.e. turns this double SENT.</summary>
-    public List<string> AcceptedInputIds { get; } = [];
-
-    /// <summary>Ids of turns REJOINED rather than sent; nothing new was queued for these.</summary>
-    public List<string> RejoinedInputIds { get; } = [];
-
-    private string? _armedResumeInputId;
-    private Action<string>? _onInputAccepted;
-
-    public void ArmTurnCheckpoint(string? resumeInputId, Action<string> onInputAccepted)
-    {
-        ArgumentNullException.ThrowIfNull(onInputAccepted);
-        ArmedResumeInputIds.Add(resumeInputId);
-        _armedResumeInputId = resumeInputId;
-        _onInputAccepted = onInputAccepted;
-    }
-
-    /// <summary>Applies the one-shot arming to the turn that is starting, exactly as the hosted loop does:
-    /// consumed either way, so a later unarmed turn neither rejoins a spent input nor re-reports one.</summary>
-    private void ResolveArmedTurn()
-    {
-        var rejoin = _armedResumeInputId;
-        var onAccepted = _onInputAccepted;
-        _armedResumeInputId = null;
-        _onInputAccepted = null;
-        if (onAccepted is null)
-        {
-            return;
-        }
-
-        if (rejoin is not null)
-        {
-            RejoinedInputIds.Add(rejoin);
-            return;
-        }
-
-        AcceptedInputIds.Add(NextInputId);
-        onAccepted(NextInputId);
-    }
-
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
         [EnumeratorCancellation] CancellationToken ct = default
@@ -192,7 +153,6 @@ internal sealed class FakeMultiTurnAgent
         var turn = _turns[Math.Min(ReceivedInputs.Count, _turns.Count - 1)];
         ReceivedInputs.Add(userInput);
         Lifecycle.Add(RunEvent);
-        ResolveArmedTurn();
         if (turn.Throw is not null)
         {
             throw turn.Throw;

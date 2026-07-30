@@ -107,6 +107,27 @@ public sealed class PrOrchestratorRetryTests : IDisposable
     }
 
     [Fact]
+    public async Task An_unreadable_review_checkpoint_is_charged_to_the_retry_budget()
+    {
+        // An unreadable checkpoint cannot heal itself: the artifact is append-only, so every poll reads the
+        // same broken row and refuses the same way. Ungoverned, that is an unbounded loop; ignoring the row
+        // instead would be worse, since it may describe a sub-agent tree still running on the host and each
+        // round would fan out another on top of it. Bounded attempts then park is the only terminating option.
+        var governor = Governor(maxAttempts: 1);
+        var executor = new FailsAtStageExecutor(
+            ReviewStage.Reviewed, () => new ReviewCheckpointCorruptException("unreadable", new FormatException()));
+        var orchestrator = new PrOrchestrator(_store, executor, NullLogger<PrOrchestrator>.Instance, retryGovernor: governor);
+        var run = SeedRun();
+
+        var attempt = async () => await orchestrator.RunAsync(run, CancellationToken.None);
+        await attempt.Should().ThrowAsync<ReviewCheckpointCorruptException>();
+        executor.FailStageCalls.Should().Be(1);
+
+        _ = await orchestrator.RunAsync(run, CancellationToken.None);
+        executor.FailStageCalls.Should().Be(1, "the budget is spent, so the run is parked rather than retried forever");
+    }
+
+    [Fact]
     public async Task An_ordinary_failure_at_Reviewed_is_not_charged_to_the_retry_budget()
     {
         // Everything else that can fail a review — a provider blip, a host 5xx, a blank synthesis — is

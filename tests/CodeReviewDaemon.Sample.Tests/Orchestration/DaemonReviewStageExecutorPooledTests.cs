@@ -33,10 +33,11 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// <summary>The S2S review host this fixture's deep-links point at (never production's 5050).</summary>
     private const string LmStreamingBaseUrl = "http://localhost:5051";
 
-    /// <summary>The deep-link the Posted stage must append on the S2S path. <c>fake-thread</c> is
-    /// <see cref="FakeMultiTurnAgent.ThreadId"/> — standing in for the id LmStreaming MINTS at provision, which
-    /// is deliberately NOT the daemon's own <c>review-run-{id}-primary</c> thread id.</summary>
-    private const string S2SDeepLink = $"{LmStreamingBaseUrl}/?threadId=fake-thread&focus=1";
+    /// <summary>The deep-link the Posted stage must append on the S2S path. The hosted loop reports
+    /// <c>hosted-{threadId}</c> — standing in for the id LmStreaming MINTS at provision, which is deliberately
+    /// NOT the daemon's own <c>review-run-{id}-primary</c> thread id.</summary>
+    private static string S2SDeepLink(ReviewRun run) =>
+        $"{LmStreamingBaseUrl}/?threadId=hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}&focus=1";
 
     [Fact]
     public async Task ContextReady_leases_a_slot_prepares_it_and_diffs_the_prepared_target()
@@ -775,10 +776,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // conversation (the whole point of the S2S path: a human can open the review and its sub-agent tree).
         fixture.Publisher.PostCount.Should().Be(1);
         var body = fixture.Publisher.PostedBodies.Should().ContainSingle().Subject;
-        body.Split(S2SDeepLink, StringSplitOptions.None).Length.Should().Be(
+        body.Split(S2SDeepLink(run), StringSplitOptions.None).Length.Should().Be(
             2, "the deep link is appended exactly once — a duplicated link means the body was assembled twice");
         body.Should().NotContain(
-            $"review-run-{run.Id}",
+            $"threadId=review-run-{run.Id}",
             "the link carries the id LmStreaming minted, not the daemon's own thread id (which resolves to nothing)");
 
         // The commit gate is unchanged by S2S: still ONLY the PR notes dir, never `add -A`.
@@ -965,6 +966,9 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 // what makes the posted body (and its deep-link) observable on the fake publisher.
                 EnableCommentPosting = s2s,
             };
+            // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
+            // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
+            Factory.Resumable = s2s;
             _slotWorkspace = new ReviewSlotWorkspace(
                 Pool,
                 Preparer,

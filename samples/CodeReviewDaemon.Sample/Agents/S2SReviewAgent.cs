@@ -68,8 +68,10 @@ internal sealed class S2SReviewAgent
     private string? _currentRunId;
     private DateTimeOffset? _deadlineUtc;
     private int _spawnSuppressionDepth;
-    private string? _resumeInputId;
+    private string? _armedIdempotencyKey;
+    private string? _armedAcceptedInputId;
     private Action<string>? _onInputAccepted;
+    private Action<string>? _onRunConversationMinted;
 
     /// <summary>
     /// Builds the adapter. <paramref name="existingThreadId"/> seeds an ALREADY-PROVISIONED hosted
@@ -137,10 +139,18 @@ internal sealed class S2SReviewAgent
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
 
     /// <inheritdoc />
-    public void ArmTurnCheckpoint(string? resumeInputId, Action<string> onInputAccepted)
+    public void ObserveConversationMint(Action<string> onConversationMinted)
     {
-        ArgumentNullException.ThrowIfNull(onInputAccepted);
-        _resumeInputId = string.IsNullOrWhiteSpace(resumeInputId) ? null : resumeInputId;
+        ArgumentNullException.ThrowIfNull(onConversationMinted);
+        _onRunConversationMinted = onConversationMinted;
+    }
+
+    /// <inheritdoc />
+    public void ArmTurnCheckpoint(string idempotencyKey, string? acceptedInputId, Action<string>? onInputAccepted)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
+        _armedIdempotencyKey = idempotencyKey;
+        _armedAcceptedInputId = string.IsNullOrWhiteSpace(acceptedInputId) ? null : acceptedInputId;
         _onInputAccepted = onInputAccepted;
     }
 
@@ -185,9 +195,11 @@ internal sealed class S2SReviewAgent
 
         // Consume the arming BEFORE the turn runs: it applies to this turn only, so a later turn on the same
         // agent can neither rejoin a spent input nor re-fire a checkpoint that has already been persisted.
-        var rejoinInputId = _resumeInputId;
+        var rejoinInputId = _armedAcceptedInputId;
+        var idempotencyKey = _armedIdempotencyKey;
         var onInputAccepted = _onInputAccepted;
-        _resumeInputId = null;
+        _armedAcceptedInputId = null;
+        _armedIdempotencyKey = null;
         _onInputAccepted = null;
 
         string inputId;
@@ -207,16 +219,19 @@ internal sealed class S2SReviewAgent
         else
         {
             inputId = await _client
-                .SendMessageAsync(threadId, input, suppressSpawning, ct)
+                .SendMessageAsync(threadId, input, suppressSpawning, idempotencyKey, ct)
                 .ConfigureAwait(false);
             // Reported before the first poll so the caller's checkpoint covers the whole wait, not just a wait
-            // that happened to finish.
+            // that happened to finish. When the send carried a key this is a confirmation rather than the only
+            // record of it — the key is reconstructible, so losing this callback costs one extra send, not a
+            // duplicate turn.
             onInputAccepted?.Invoke(inputId);
             _logger.LogInformation(
-                "S2S review message queued on thread {ThreadId} (inputId {InputId}, spawning suppressed "
-                    + "{SuppressSpawning}); polling to terminal.",
+                "S2S review message queued on thread {ThreadId} (inputId {InputId}, idempotency key {Key}, "
+                    + "spawning suppressed {SuppressSpawning}); polling to terminal.",
                 threadId,
                 inputId,
+                idempotencyKey ?? "(none)",
                 suppressSpawning);
         }
 
@@ -260,6 +275,10 @@ internal sealed class S2SReviewAgent
     {
         if (_threadId is not null)
         {
+            // A seeded thread is a RESUME. Whether it is still the right conversation to continue on — same
+            // workspace, same review lifecycle — is decided by whoever seeded it, before this agent exists;
+            // there is nothing here that could re-derive it, and re-provisioning would silently discard the
+            // in-flight sub-agent tree the caller is resuming onto.
             return _threadId;
         }
 
@@ -276,10 +295,18 @@ internal sealed class S2SReviewAgent
             _modeId,
             _systemPrompt?.Length ?? 0);
 
-        // Record the mint BEFORE the (best-effort, failure-tolerated) title update, so a cosmetic failure can
-        // never cost the conversation its retention row. This is the single choke point through which the
-        // review, judge and A/B arms all provision — and only the review's thread id ever reaches an artifact,
-        // so recording anywhere downstream would leave the other arms un-aged and permanent.
+        // The run-scoped checkpoint comes FIRST and is deliberately NOT guarded: from this line on there is a
+        // hosted conversation that will fan out a sub-agent tree, and a caller that cannot record its identity
+        // cannot find it again after a restart — it would mint a second conversation and fan out a second tree
+        // on top of the first. Failing the mint leaves one unrecorded conversation; swallowing leaves two
+        // running reviews, so this is the one hook here that is allowed to take the review down with it.
+        _onRunConversationMinted?.Invoke(threadId);
+
+        // Retention bookkeeping, by contrast, is best-effort and runs BEFORE the (also best-effort) title
+        // update so a cosmetic failure can never cost the conversation its retention row. This is the single
+        // choke point through which the review, judge and A/B arms all provision — and only the review's
+        // thread id ever reaches an artifact, so recording anywhere downstream would leave the other arms
+        // un-aged and permanent.
         if (_onConversationMinted is not null)
         {
             try
@@ -288,8 +315,8 @@ internal sealed class S2SReviewAgent
             }
             catch (Exception ex)
             {
-                // Bookkeeping must never fail a review. The cost of losing this row is a conversation that
-                // outlives its retention window — strictly better than a review that dies over a ledger write.
+                // The cost of losing this row is a conversation that outlives its retention window — strictly
+                // better than a review that dies over a ledger write.
                 _logger.LogWarning(
                     ex,
                     "Could not record S2S review conversation {ThreadId} in the deep-link retention ledger; "

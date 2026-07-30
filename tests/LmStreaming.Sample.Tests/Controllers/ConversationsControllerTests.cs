@@ -878,7 +878,207 @@ public class ConversationsControllerTests
         agent.LastInput!.SuppressSubAgentSpawning.Should().BeFalse();
     }
 
+    /// <summary>
+    /// The point of the whole contract: a caller that repeats a send because it never saw the first response
+    /// gets the input the host ALREADY took. Without this, the daemon's synthesis retry would put a second
+    /// minutes-long, sub-agent-fanning turn onto the same conversation and double-post the review.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_WithARepeatedIdempotencyKey_EnqueuesOnce_AndReturnsTheSameInputId()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-repeat";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.Ledger = store;
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var request = new SendMessageRequest { Text = "synthesize", IdempotencyKey = "review-run-7:2" };
+
+        var first = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+        var second = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+
+        first.Queued.Should().BeTrue();
+        first.IdempotencyKeyHonored.Should().BeTrue("the caller may only retry once the host says it can");
+        second.InputId.Should().Be(first.InputId, "the retry must recover the first input, not mint a new one");
+        second.Queued.Should().BeFalse("nothing new was accepted — the caller is being handed the old input");
+        second.IdempotencyKeyHonored.Should().BeTrue();
+        agent.SendCount.Should().Be(1, "exactly one turn may reach the agent");
+    }
+
+    /// <summary>
+    /// The retry that matters most crosses a PROCESS boundary — the daemon died between the host accepting
+    /// and the artifact being written locally. Reconciliation therefore has to work off durable state alone,
+    /// including after the input was drained out of the accepted set into a run.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_WithARepeatedIdempotencyKey_ReconcilesAgainstAnInputAlreadyDrainedIntoARun()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-drained";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+        // What a previous process left behind: the input is no longer "accepted, pending" — it is running.
+        await store.UpsertRunLedgerAsync(new RunLedgerEntry(
+            threadId,
+            "run-earlier",
+            RunStatus.InProgress,
+            ["review-run-7:2"],
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow));
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "synthesize", IdempotencyKey = "review-run-7:2" },
+            CancellationToken.None);
+
+        var response = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(result).Value);
+        response.InputId.Should().Be("review-run-7:2");
+        response.Queued.Should().BeFalse();
+        agent.SendCount.Should().Be(0, "the turn this key names is already running — re-sending would duplicate it");
+    }
+
+    /// <summary>
+    /// A key identifies one turn INCLUDING what it does. A repeat that asks for something different (here:
+    /// suppression flipped on) is a different operation, so reconciling it to the earlier input would quietly
+    /// serve the caller a turn without the guarantee it just asked for.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_TreatsAFlippedSuppressionRequestAsADifferentOperation()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-options";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.Ledger = store;
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var plain = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest { Text = "review", IdempotencyKey = "review-run-7:2" },
+                default)).Value);
+        var suppressed = Assert.IsType<SendMessageResponse>(Assert.IsType<AcceptedResult>(
+            await controller.SendMessage(
+                threadId,
+                new SendMessageRequest
+                {
+                    Text = "synthesize",
+                    IdempotencyKey = "review-run-7:2",
+                    SuppressSubAgentSpawning = true,
+                },
+                default)).Value);
+
+        suppressed.InputId.Should().NotBe(plain.InputId);
+        suppressed.Queued.Should().BeTrue();
+        suppressed.SpawningSuppressed.Should().BeTrue("the second turn really did run suppressed");
+        agent.SendCount.Should().Be(2, "two different operations, two turns");
+    }
+
+    /// <summary>
+    /// Order matters: reconciliation must not become a side door around the capability gate. A repeat asking
+    /// for a guarantee this thread's agent cannot make is still refused, even though an input under that
+    /// derived id already exists.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_StillRefusesAnUnenforceableSuppression_EvenWhenTheKeyWasAlreadyAccepted()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-gate-order";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.EnforcesSpawnSuppression = false;
+        await SeedDefaultModeThreadAsync(store, threadId);
+        await store.RecordAcceptedInputAsync(
+            threadId, "review-run-7:2:spawn-suppressed", DateTimeOffset.UtcNow);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest
+            {
+                Text = "synthesize",
+                IdempotencyKey = "review-run-7:2",
+                SuppressSubAgentSpawning = true,
+            },
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+        JsonSerializer.Serialize(badRequest.Value).Should().Contain("spawn_suppression_unsupported");
+    }
+
+    /// <summary>
+    /// A blank key is the shape of a caller whose key derivation produced nothing. Reading it as "absent"
+    /// would acknowledge nothing while the caller believes its retry is safe, so it is refused outright.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task SendMessage_ReturnsBadRequest_WhenTheIdempotencyKeyIsBlank(string key)
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-blank";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "synthesize", IdempotencyKey = key },
+            CancellationToken.None);
+
+        JsonSerializer.Serialize(Assert.IsType<BadRequestObjectResult>(result).Value)
+            .Should().Contain("invalid_idempotency_key");
+        agent.SendCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The other half of the version handshake: a send WITHOUT a key claims nothing. This is what a caller
+    /// talking to a host that predates the field also sees, which is what lets it fail closed rather than
+    /// retry into a duplicate review.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ClaimsNoIdempotency_WhenNoKeyWasSupplied()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-idem-absent";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        agent.Ledger = store;
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+        var request = new SendMessageRequest { Text = "review" };
+
+        var first = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+        var second = Assert.IsType<SendMessageResponse>(
+            Assert.IsType<AcceptedResult>(await controller.SendMessage(threadId, request, default)).Value);
+
+        first.IdempotencyKeyHonored.Should().BeFalse();
+        second.InputId.Should().NotBe(first.InputId, "without a key each send is its own turn");
+        agent.SendCount.Should().Be(2);
+    }
+
     private static MultiTurnAgentPool CreateSuppressionCapablePool()
+
     {
         return new MultiTurnAgentPool(
             (threadId, _, _) =>

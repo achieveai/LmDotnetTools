@@ -240,8 +240,12 @@ public sealed class GatewaySkillSupportGateTests
         FakeReviewAgentLoopFactory factory,
         CodeReviewDaemonOptions options,
         IGatewaySkillProbe probe,
-        IHostApplicationLifetime lifetime) =>
-        new(
+        IHostApplicationLifetime lifetime)
+    {
+        // Only the HOSTED path's turns are durable, and the executor refuses an S2S review whose loop cannot
+        // checkpoint them — so the double is resumable on exactly the path production is, and no other.
+        factory.Resumable = options.UseS2SReviewAgent;
+        return new DaemonReviewStageExecutor(
             store,
             factory,
             new FakeSandboxCommandRunner(),
@@ -251,6 +255,7 @@ public sealed class GatewaySkillSupportGateTests
             NullLoggerFactory.Instance,
             appLifetime: lifetime,
             skillProbe: probe);
+    }
 
     /// <summary>
     /// Seeds a run plus the 'review-context' artifact the Reviewed stage reads, so a test can drive that stage

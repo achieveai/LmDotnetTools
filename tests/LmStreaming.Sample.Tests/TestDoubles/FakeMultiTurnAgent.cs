@@ -36,6 +36,11 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
     /// BEFORE anything was queued, rather than merely reported as unsuppressed afterwards.</summary>
     public int SendCount { get; private set; }
 
+    /// <summary>When set, an accepted input is durably recorded here on the way in, as the real agent
+    /// loop does. That record is the ONLY trace a repeated send can reconcile against, so a test of
+    /// idempotent sends has to reproduce it rather than seed the ledger behind the agent's back.</summary>
+    public IRunLedgerStore? Ledger { get; set; }
+
     public ValueTask<SendReceipt> SendAsync(
         List<IMessage> messages,
         string? inputId = null,
@@ -65,6 +70,11 @@ internal class FakeMultiTurnAgent : IMultiTurnAgent
         if (RejectAsQueueFull)
         {
             return null;
+        }
+
+        if (Ledger != null && inputId != null)
+        {
+            await Ledger.RecordAcceptedInputAsync(ThreadId, inputId, DateTimeOffset.UtcNow, ct);
         }
 
         return await SendAsync(messages, inputId, parentRunId, ct);

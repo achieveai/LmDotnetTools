@@ -53,11 +53,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>
     /// Artifact kind for the PROVISIONAL review turn — the checkpoint that lets a Reviewed stage interrupted
     /// by a daemon restart resume mid-lifecycle instead of re-reviewing the PR from scratch. It records the
-    /// hosted conversation the review is running on and the stage's original absolute budget.
+    /// hosted conversation the review is running on, the identity of the lifecycle that conversation belongs
+    /// to, and the stage's original absolute budget.
     /// <para>
-    /// It is a CHECKPOINT, never an answer. It is written before the sub-agent completion barrier, so it can
-    /// cite children that had not finished writing and has never been through the synthesis turn that
-    /// de-duplicates and grades them. Nothing promotes it: the judge and the posting arm both read
+    /// It is appended TWICE per lifecycle, and the first append is the important one: at the moment the hosted
+    /// conversation is minted, before the provisional turn has been sent and therefore before any sub-agent
+    /// tree exists. That row carries NO review text — it is a lifecycle checkpoint and nothing else — and it
+    /// is what makes the minutes-long provisional turn recoverable. The second append adds the provisional
+    /// answer once the turn returns.
+    /// </para>
+    /// <para>
+    /// It is a CHECKPOINT, never an answer. Even the completed one is written before the sub-agent completion
+    /// barrier, so it can cite children that had not finished writing and has never been through the synthesis
+    /// turn that de-duplicates and grades them. Nothing promotes it: the judge and the posting arm both read
     /// <see cref="ReviewArtifactKind"/> exactly, so a run that dies after this point has no review at all —
     /// which is the intended outcome.
     /// </para>
@@ -71,6 +79,18 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// S2S-only: an in-process turn dies with its loop, leaving nothing to rejoin.
     /// </summary>
     public const string SynthesisRequestArtifactKind = "review-synthesis-request";
+
+    /// <summary><see cref="ReviewLifecycleIdentity.Modality"/> for a review hosted on LmStreaming (S2S).</summary>
+    public const string S2SModality = "s2s";
+
+    /// <summary><see cref="ReviewLifecycleIdentity.Modality"/> for a review run on an in-process loop.</summary>
+    public const string InProcessModality = "in-process";
+
+    /// <summary>Turn discriminator in a send's idempotency key (see <see cref="TurnIdempotencyKey"/>).</summary>
+    public const string ProvisionalTurn = "provisional";
+
+    /// <summary>Turn discriminator in a send's idempotency key (see <see cref="TurnIdempotencyKey"/>).</summary>
+    public const string SynthesisTurn = "synthesis";
 
     /// <summary>
     /// Outbox operation discriminator for the durable ReviewBot retention push (plan §2). The row records
@@ -1796,7 +1816,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // started fresh. It is computed once HERE rather than per attempt: the escalation ladder below can run
         // up to three attempts, and each attempt is itself two turns plus a completion barrier. A per-attempt
         // window — or a window recomputed on restart — would silently multiply the stage's worst case.
-        var checkpoint = LoadOrStartCheckpoint(run);
+        // The checkpoint is matched against the identity of the attempt that is about to run — the BASE rung,
+        // the only one a resume can pick up (see LoadOrStartCheckpoint) — so a persisted lifecycle is resumed
+        // only when this process would reconstruct the very same review.
+        var checkpoint = LoadOrStartCheckpoint(
+            run,
+            BuildLifecycleIdentity(run, ThreadId(run, run.VariantId), run.ModelId, toolContext is not null));
         try
         {
             result = await RunReviewAttemptAsync(
@@ -1967,43 +1992,61 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var agent = new ReviewAgent(
             loop, _loggerFactory.CreateLogger<ReviewAgent>(), surface?.SuppressSpawning);
 
-        // 1. Provisional: the agent reviews and fans out. Its answer is written while children are still
-        //    running, so it is persisted only as a CHECKPOINT — under a kind nothing downstream reads —
-        //    recording the conversation the review is on and the stage's original absolute budget. A RESUMED
-        //    lifecycle already has that checkpoint and skips straight to the barrier: re-running this turn
-        //    would fan out a second sub-agent tree on top of the one still settling.
-        var conversationThreadId = checkpoint.HostedThreadId;
-        if (conversationThreadId is null)
+        // Resumability is a property of WHERE the turn runs, resolved THROUGH any decorators: an S2S turn is
+        // durable on a host that outlives this process, so a restart can rejoin it. Requiring it on the S2S
+        // path turns a wrapper that hides the capability — or a factory wired to the wrong loop — into a loud
+        // failure instead of a review that silently mints a second conversation on every restart. The
+        // in-process path stays deliberately non-resumable: its turn dies with the loop that started it.
+        var resumable = ReviewLoopSubAgentSurface.ResolveCapability<IResumableReviewTurn>(loop);
+        if (_options.UseS2SReviewAgent && resumable is null)
         {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the S2S review loop ({loop.GetType().Name}) exposes no IResumableReviewTurn, so "
+                    + "its hosted conversation and accepted turns could not be checkpointed and a restart would "
+                    + "start a second review on a second conversation. Implement IResumableReviewTurn (or "
+                    + "IReviewLoopWrapper to resolve to a loop that does) on it.");
+        }
+
+        var identity = BuildLifecycleIdentity(
+            run, threadId, modelOverride ?? run.ModelId, toolContext is not null);
+
+        // Checkpoint the conversation the INSTANT it is minted — before the provisional turn is sent, and so
+        // before any sub-agent tree exists. Everything after this line is recoverable; a mint that went
+        // unrecorded is not, because the daemon would have no way to find the tree it started.
+        resumable?.ObserveConversationMint(
+            minted => RecordLifecycleCheckpoint(run, provider, minted, checkpoint, identity, provisional: null));
+
+        // 1. Provisional: the agent reviews and fans out. Its answer is written while children are still
+        //    running, so it is persisted only as a CHECKPOINT — under a kind nothing downstream reads. A
+        //    lifecycle resumed AFTER this turn completed skips straight to the barrier; one interrupted DURING
+        //    it re-drives the turn on the conversation it already minted, where the idempotency key makes the
+        //    send resolve to the in-flight turn instead of fanning out a second sub-agent tree.
+        var conversationThreadId = checkpoint.HostedThreadId;
+        if (!checkpoint.ProvisionalComplete)
+        {
+            resumable?.ArmTurnCheckpoint(
+                TurnIdempotencyKey(threadId, ProvisionalTurn), acceptedInputId: null, onInputAccepted: null);
             var provisional = await agent
                 .CollectProvisionalAsync(reviewInput, checkpoint.DeadlineUtc, cancellationToken)
                 .ConfigureAwait(false);
             conversationThreadId = provisional.ThreadId ?? threadId;
-            _ = _store.AddArtifact(new ReviewArtifact
-            {
-                ReviewRunId = run.Id,
-                ArtifactSchemaVersion = ReviewArtifactSchemaVersion,
-                ArtifactKind = ProvisionalReviewArtifactKind,
-                Provider = provider,
-                Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(
-                    provisional.ReviewText, provisional.RunId, run.VariantId, conversationThreadId,
-                    checkpoint.StartedAtUtc, checkpoint.DeadlineUtc)),
-            });
+            RecordLifecycleCheckpoint(run, provider, conversationThreadId, checkpoint, identity, provisional);
         }
 
         // 2. Barrier: block until every descendant has settled (or the shared deadline expires). A resumed
         //    lifecycle re-queries it from scratch and must re-prove stability, which is why no snapshot is
         //    checkpointed: one taken before an outage says nothing about what the children did during it.
         var inventory = await AwaitSubAgentSettlementAsync(
-                run, completionSource, conversationThreadId, checkpoint.DeadlineUtc, cancellationToken)
+                run, completionSource, conversationThreadId!, checkpoint.DeadlineUtc, cancellationToken)
             .ConfigureAwait(false);
         // 3. Synthesis: same agent, same thread, children's results now all delivered. THIS is the review, and
-        //    the only turn carrying the posting contract. Where the loop's turn is durable on a host that
-        //    outlives this process, arm it first: a restart mid-synthesis then rejoins the accepted input
-        //    rather than queueing a second synthesis on the same conversation.
-        (loop as IResumableReviewTurn)?.ArmTurnCheckpoint(
+        //    the only turn carrying the posting contract. Arm it first: a restart mid-synthesis then rejoins
+        //    the accepted input rather than queueing a second synthesis on the same conversation, and a send
+        //    whose response was lost before the id could be recorded resolves to the same input by key.
+        resumable?.ArmTurnCheckpoint(
+            TurnIdempotencyKey(threadId, SynthesisTurn),
             checkpoint.SynthesisInputId,
-            inputId => RecordSynthesisRequest(run, provider, inputId, conversationThreadId));
+            inputId => RecordSynthesisRequest(run, provider, inputId, conversationThreadId!));
         var synthesisPrompt = DaemonAgentFactory.CreateSynthesisPrompt(variables, inventory);
         return await agent
             .SynthesizeFinalAsync(synthesisPrompt, shouldPost, checkpoint.DeadlineUtc, cancellationToken)
@@ -2011,37 +2054,134 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
+    /// The idempotency key a turn is SENT under: a pure function of state that survives a restart, so every
+    /// attempt at the same turn of the same lifecycle derives the identical key without having to have
+    /// persisted it first. That is what closes the window a persisted "I am about to send" row cannot — the
+    /// daemon can die between the host accepting a send and the response arriving, and the recovery is simply
+    /// to send again under the same key and let the host hand back the input it already accepted.
+    /// <para>
+    /// Keys only have to be unique within a hosted conversation (the host reconciles them per thread), and
+    /// <paramref name="localThreadId"/> already encodes the run, the A/B variant and the escalation rung. A
+    /// lifecycle that starts over mints a NEW conversation, whose ledger is empty, so reusing the key there
+    /// cannot resolve to the abandoned lifecycle's turn.
+    /// </para>
+    /// </summary>
+    public static string TurnIdempotencyKey(string localThreadId, string turn) => $"{localThreadId}:{turn}";
+
+    /// <summary>
+    /// The identity a persisted checkpoint must still match for this process to resume it: WHERE the review
+    /// runs (<paramref name="localThreadId"/> encodes the variant and escalation rung; the workspace is the
+    /// checkout the hosted conversation is bound to), WHAT runs it (modality, model, tool-assisted) and WHICH
+    /// context generation it was built from.
+    /// <para>
+    /// Every field is a real failure mode, not defensive noise. The pooled workspace id is re-derived from
+    /// whichever slot this process leased, so after a restart the same run can be re-leased a slot holding a
+    /// DIFFERENT PR — resuming the old conversation would then synthesize a review of the wrong tree. The
+    /// modality flips with configuration, and an in-process checkpoint's thread id is a daemon-local
+    /// <c>review-run-*</c> string that no host would recognise. The context generation changes whenever the
+    /// ContextReady stage is re-entered, which is the documented rollback path: the diff the checkpointed
+    /// conversation reviewed is no longer the diff this run is about.
+    /// </para>
+    /// </summary>
+    private ReviewLifecycleIdentity BuildLifecycleIdentity(
+        ReviewRun run, string localThreadId, string? modelId, bool toolAssisted)
+    {
+        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        return new ReviewLifecycleIdentity(
+            _options.UseS2SReviewAgent ? S2SModality : InProcessModality,
+            localThreadId,
+            prepared?.WorkspaceId,
+            modelId,
+            toolAssisted,
+            _store.TryGetLatestArtifact(run.Id, ContextArtifactKind)?.Id ?? 0);
+    }
+
+    /// <summary>
+    /// Appends the lifecycle checkpoint for this attempt: at mint time with no <paramref name="provisional"/>
+    /// answer yet (a pure lifecycle row), then again once the provisional turn returns. Append-only, so the
+    /// mint row survives as the record of when the conversation came into existence and the latest row is
+    /// always the fullest.
+    /// </summary>
+    private void RecordLifecycleCheckpoint(
+        ReviewRun run,
+        string provider,
+        string conversationThreadId,
+        ReviewCheckpoint checkpoint,
+        ReviewLifecycleIdentity identity,
+        ReviewAgentResult? provisional)
+    {
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ReviewArtifactSchemaVersion,
+            ArtifactKind = ProvisionalReviewArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(
+                provisional?.ReviewText ?? string.Empty,
+                provisional?.RunId,
+                run.VariantId,
+                conversationThreadId,
+                checkpoint.StartedAtUtc,
+                checkpoint.DeadlineUtc,
+                identity,
+                provisional is not null)),
+        });
+    }
+
+    /// <summary>
     /// Resumes the durable checkpoint of a Reviewed lifecycle a daemon restart interrupted, or starts a fresh
-    /// one. The returned budget is the review's ONE absolute deadline; the two handles are non-null only when
-    /// this stage is genuinely picking up where a previous process stopped.
+    /// one. The returned budget is the review's ONE absolute deadline; the handles are non-null only when this
+    /// stage is genuinely picking up where a previous process stopped.
+    /// <para>
+    /// A checkpoint is resumed ONLY when this process would reconstruct the very same review — same modality,
+    /// conversation, hosted workspace, model, tool mode and context generation (see
+    /// <see cref="ReviewLifecycleIdentity"/>). Anything else is discarded and the lifecycle starts over.
+    /// Starting over costs one duplicate review; resuming a mismatched one is unbounded, because a hosted
+    /// conversation is bound to a checkout this process may no longer hold — the synthesis would then review
+    /// whatever PR now sits in it and post those findings to THIS PR, with nothing anywhere reporting an error.
+    /// </para>
     /// <para>
     /// Only the S2S path is resumable, and that is a property of where the turn RUNS, not a policy choice: its
-    /// provisional turn ran on a hosted conversation that outlives the daemon process, so a restart can rejoin
-    /// it. An in-process turn died with the loop that produced it — there is no conversation to re-enter and
-    /// no accepted input to poll — so its attempt safely restarts collect-only rather than fabricating
+    /// turns run on a hosted conversation that outlives the daemon process, so a restart can rejoin them. An
+    /// in-process turn died with the loop that produced it — there is no conversation to re-enter and no
+    /// accepted input to poll — so its attempt safely restarts collect-only rather than fabricating
     /// resumability. Either way the provisional itself is never promoted: only a synthesis turn writes
     /// <see cref="ReviewArtifactKind"/>.
     /// </para>
     /// </summary>
-    private ReviewCheckpoint LoadOrStartCheckpoint(ReviewRun run)
+    /// <exception cref="ReviewCheckpointCorruptException">
+    /// A checkpoint artifact exists but cannot be read (see <see cref="ReadCheckpointPayload{T}"/>).
+    /// </exception>
+    private ReviewCheckpoint LoadOrStartCheckpoint(ReviewRun run, ReviewLifecycleIdentity identity)
     {
         var now = DateTimeOffset.UtcNow;
-        var fresh = new ReviewCheckpoint(
-            now, now + TimeSpan.FromMinutes(_options.ReviewStageDeadlineMinutes), null, null);
+        var budget = TimeSpan.FromMinutes(_options.ReviewStageDeadlineMinutes);
+        var fresh = new ReviewCheckpoint(now, now + budget, null, null, ProvisionalComplete: false);
         if (!_options.UseS2SReviewAgent)
         {
             return fresh;
         }
 
-        // The variant guard keeps the primary arm's checkpoint from being applied to any other arm, and the
-        // start/deadline guard rejects a checkpoint written before those fields existed — an artifact that
+        // The start/deadline guard rejects a checkpoint written before those fields existed — an artifact that
         // cannot say what budget it belongs to cannot be resumed onto one.
-        var provisional = TryReadArtifactPayload<ReviewArtifactPayload>(run.Id, ProvisionalReviewArtifactKind);
+        var provisional = ReadCheckpointPayload<ReviewArtifactPayload>(run, ProvisionalReviewArtifactKind);
         if (provisional?.ThreadId is not { Length: > 0 } hostedThreadId
             || provisional.ReviewedStartedAtUtc is not { } startedAtUtc
-            || provisional.ReviewedDeadlineUtc is not { } deadlineUtc
-            || !string.Equals(provisional.VariantId, run.VariantId, StringComparison.Ordinal))
+            || provisional.ReviewedDeadlineUtc is not { } deadlineUtc)
         {
+            return fresh;
+        }
+
+        // Value equality over the whole identity, so a field added later is enforced by construction rather
+        // than by remembering to extend a hand-written comparison. A row predating the field (Lifecycle null)
+        // is unverifiable and therefore not resumable — which also subsumes the old variant guard, since the
+        // identity's thread id already encodes both the A/B variant and the escalation rung.
+        if (provisional.Lifecycle != identity)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: discarding the review checkpoint on thread {ThreadId} — it belongs to a different "
+                    + "review lifecycle (checkpoint {Persisted}, this process {Current}); starting a fresh one.",
+                run.Id, hostedThreadId, provisional.Lifecycle, identity);
             return fresh;
         }
 
@@ -2058,10 +2198,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return fresh;
         }
 
+        // Clamp to BOTH ceilings. The persisted deadline is one: a restart continues a budget, it never
+        // extends one. A full budget from now is the other: a checkpoint written by a process configured with
+        // a longer window (or by a clock that had run ahead) must not hold this stage open for longer than the
+        // configuration in force allows.
+        var resumedDeadline = deadlineUtc < now + budget ? deadlineUtc : now + budget;
+
         // A synthesis request is only honoured on the conversation it was accepted on; one from an earlier
         // lifecycle (a different thread) is stale and rejoining it would poll an input that answers a review
         // this one never asked for.
-        var synthesis = TryReadArtifactPayload<SynthesisRequestPayload>(run.Id, SynthesisRequestArtifactKind);
+        var synthesis = ReadCheckpointPayload<SynthesisRequestPayload>(run, SynthesisRequestArtifactKind);
         var synthesisInputId = synthesis is not null
             && string.Equals(synthesis.ParentThreadId, hostedThreadId, StringComparison.Ordinal)
                 ? synthesis.InputId
@@ -2069,9 +2215,40 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         _logger.LogInformation(
             "Run {RunId}: resuming the review on hosted thread {ThreadId} with {Remaining:0} min of its "
-                + "original budget left (synthesis input {InputId}).",
-            run.Id, hostedThreadId, (deadlineUtc - now).TotalMinutes, synthesisInputId ?? "(not yet queued)");
-        return new ReviewCheckpoint(startedAtUtc, deadlineUtc, hostedThreadId, synthesisInputId);
+                + "original budget left (provisional {Provisional}, synthesis input {InputId}).",
+            run.Id, hostedThreadId, (resumedDeadline - now).TotalMinutes,
+            provisional.ProvisionalComplete ? "done" : "not finished",
+            synthesisInputId ?? "(not yet queued)");
+        return new ReviewCheckpoint(
+            startedAtUtc, resumedDeadline, hostedThreadId, synthesisInputId, provisional.ProvisionalComplete);
+    }
+
+    /// <summary>
+    /// Reads a checkpoint artifact, turning an unreadable payload into a <see cref="ReviewCheckpointCorruptException"/>.
+    /// <para>
+    /// Deliberately NOT swallowed into "start fresh". The row's very existence proves a lifecycle was started,
+    /// and an unreadable one is indistinguishable from one whose sub-agent tree is still running on a host:
+    /// ignoring it would fan out a second tree on top of the first, every round, for as long as the row stays
+    /// unreadable. Surfacing it instead lets the retry governor charge the failure, so the run parks after a
+    /// bounded number of attempts (see <c>PrOrchestrator.IsGovernedFailure</c>) with the artifact intact for
+    /// diagnosis, rather than retrying — or duplicating — forever.
+    /// </para>
+    /// </summary>
+    private T? ReadCheckpointPayload<T>(ReviewRun run, string kind)
+        where T : class
+    {
+        try
+        {
+            return TryReadArtifactPayload<T>(run.Id, kind);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
+        {
+            _logger.LogError(
+                ex, "Run {RunId}: the '{Kind}' review checkpoint could not be read; the run will be retried a "
+                    + "bounded number of times and then parked.", run.Id, kind);
+            throw new ReviewCheckpointCorruptException(
+                $"Run {run.Id}: the '{kind}' review checkpoint artifact could not be read.", ex);
+        }
     }
 
     /// <summary>
@@ -2653,7 +2830,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return input + "\n\nTracked files in the reviewed repository (Read any of these by exact path):\n" + fileManifest;
     }
 
-    private static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";
+    /// <summary>The daemon-local conversation id of one review attempt. Encodes the run, the A/B variant and
+    /// (via the variant suffix) the escalation rung, which is what makes it usable as the lifecycle identity's
+    /// discriminator and as the stable prefix of a turn's idempotency key.</summary>
+    public static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";
 
     /// <summary>
     /// On the S2S path (<see cref="_preparer"/> non-null) ensures this run's LmStreaming review workspace exists
@@ -2731,11 +2911,18 @@ internal sealed record ContextArtifactPayload(
 /// deep-link; on the in-process path the daemon's own <c>review-run-*</c> id (never linked). Null on older
 /// artifacts written before the field existed.
 /// <para>
-/// The same shape is reused for the <c>review-provisional</c> checkpoint, where the two trailing fields carry
-/// the Reviewed stage's ORIGINAL start and absolute deadline so a resumed lifecycle continues on the budget it
-/// was granted instead of buying itself a fresh one on every restart. They are appended and nullable, so old
-/// rows still deserialize here and an older reader still sees the shape it expects — the authoritative
-/// <c>review</c> artifact leaves both null.
+/// The same shape is reused for the <c>review-provisional</c> checkpoint, where the trailing fields carry the
+/// Reviewed stage's ORIGINAL start and absolute deadline (so a resumed lifecycle continues on the budget it was
+/// granted instead of buying itself a fresh one on every restart), the identity a resume must still match, and
+/// whether the provisional turn actually finished. They are appended and nullable/defaulted, so old rows still
+/// deserialize here and an older reader still sees the shape it expects — the authoritative <c>review</c>
+/// artifact leaves them all at their defaults.
+/// </para>
+/// <para>
+/// <see cref="ProvisionalComplete"/> is what makes an EMPTY <see cref="ReviewText"/> unambiguous. The mint-time
+/// checkpoint has no review text yet because no turn has run; a provisional turn that legitimately answered
+/// with nothing looks identical on the text alone. The flag says which, so an empty payload is never mistaken
+/// for a completed provisional (nor a completed one re-driven as if it had never happened).
 /// </para></summary>
 internal sealed record ReviewArtifactPayload(
     string ReviewText,
@@ -2743,38 +2930,76 @@ internal sealed record ReviewArtifactPayload(
     string VariantId,
     string? ThreadId = null,
     DateTimeOffset? ReviewedStartedAtUtc = null,
-    DateTimeOffset? ReviewedDeadlineUtc = null);
+    DateTimeOffset? ReviewedDeadlineUtc = null,
+    ReviewLifecycleIdentity? Lifecycle = null,
+    bool ProvisionalComplete = false);
+
+/// <summary>
+/// Everything about a Reviewed lifecycle that must still hold for a checkpoint of it to be resumable: WHERE it
+/// runs (<see cref="Modality"/>, <see cref="LocalThreadId"/>, <see cref="WorkspaceId"/>), WHAT runs it
+/// (<see cref="ModelId"/>, <see cref="ToolAssisted"/>) and WHICH context it was built from
+/// (<see cref="ContextGeneration"/>). Compared by value, so adding a field automatically tightens the check.
+/// <para>
+/// <see cref="WorkspaceId"/> is the load-bearing one. The hosted workspace of a pooled review is named after
+/// the SLOT this process leased, and slots are re-assigned from an in-memory pool that resets on restart — so
+/// the same run can come back holding a slot whose checkout is a different PR entirely. Resuming the old
+/// conversation there would synthesize a review of that other PR and post it here, silently.
+/// <see cref="ContextGeneration"/> is the id of the latest <c>review-context</c> artifact, which changes every
+/// time the ContextReady stage is re-entered: the documented rollback path, after which the checkpointed
+/// conversation is reviewing a diff this run is no longer about.
+/// </para>
+/// </summary>
+internal sealed record ReviewLifecycleIdentity(
+    string Modality,
+    string LocalThreadId,
+    string? WorkspaceId,
+    string? ModelId,
+    bool ToolAssisted,
+    long ContextGeneration);
 
 /// <summary>
 /// An S2S synthesis turn the review host accepted but has not answered yet (kind
 /// <c>review-synthesis-request</c>). <see cref="InputId"/> is the host-minted id a resumed review polls
 /// instead of re-sending the turn, <see cref="ParentThreadId"/> is the hosted conversation it was accepted on
-/// (a request from any OTHER conversation is stale and must not be rejoined), and <see cref="RunId"/> is the
-/// daemon review run it belongs to — carried in the payload so a checkpoint is self-describing in logs and
-/// exports, where the row's foreign key is not in view.
+/// (a request from any OTHER conversation is stale and must not be rejoined), and <see cref="ReviewRunId"/> is
+/// the daemon review run it belongs to — carried in the payload so a checkpoint is self-describing in logs and
+/// exports, where the row's foreign key is not in view. Named for the daemon run to keep it distinct from the
+/// PROVIDER run id that <see cref="ReviewArtifactPayload.RunId"/> carries.
 /// </summary>
-internal sealed record SynthesisRequestPayload(string InputId, string RunId, string ParentThreadId);
+internal sealed record SynthesisRequestPayload(string InputId, string ReviewRunId, string ParentThreadId);
 
 /// <summary>
 /// The resumable state of ONE Reviewed lifecycle: the single absolute budget its provisional turn, completion
 /// barrier and synthesis turn all share, plus the handles that let a restart pick the lifecycle up mid-flight.
-/// <see cref="HostedThreadId"/> non-null means the provisional turn already ran on that conversation (so this
-/// attempt starts at the barrier); <see cref="SynthesisInputId"/> non-null means the host already accepted the
-/// synthesis turn (so it is polled, never re-sent). Both null is a lifecycle starting from the beginning.
+/// <see cref="HostedThreadId"/> non-null means the conversation has been minted;
+/// <see cref="ProvisionalComplete"/> additionally means its provisional turn finished (so this attempt starts
+/// at the barrier rather than re-driving that turn); <see cref="SynthesisInputId"/> non-null means the host
+/// already accepted the synthesis turn (so it is polled, never re-sent). All unset is a lifecycle starting
+/// from the beginning.
 /// </summary>
 internal sealed record ReviewCheckpoint(
     DateTimeOffset StartedAtUtc,
     DateTimeOffset DeadlineUtc,
     string? HostedThreadId,
-    string? SynthesisInputId)
+    string? SynthesisInputId,
+    bool ProvisionalComplete)
 {
     /// <summary>
     /// The same budget with the resume handles dropped — for an escalation retry, which reviews the same PR on
-    /// a deliberately FRESH conversation (no history to rejoin, no accepted input to poll) and must not be
-    /// granted a new window for doing so.
+    /// a deliberately FRESH conversation (no history to rejoin, no provisional to skip, no accepted input to
+    /// poll) and must not be granted a new window for doing so.
     /// </summary>
-    public ReviewCheckpoint Restarted() => this with { HostedThreadId = null, SynthesisInputId = null };
+    public ReviewCheckpoint Restarted() =>
+        this with { HostedThreadId = null, SynthesisInputId = null, ProvisionalComplete = false };
 }
+
+/// <summary>
+/// A review checkpoint artifact exists but could not be read. Charged against the run's retry budget so a run
+/// whose checkpoint is unreadable parks instead of re-fanning a sub-agent tree on every poll (see
+/// <c>DaemonReviewStageExecutor.ReadCheckpointPayload</c>).
+/// </summary>
+internal sealed class ReviewCheckpointCorruptException(string message, Exception innerException)
+    : InvalidOperationException(message, innerException);
 
 /// <summary>
 /// The host-side pooled-review dependencies (Layer 1), non-null in <see cref="DaemonReviewStageExecutor"/>

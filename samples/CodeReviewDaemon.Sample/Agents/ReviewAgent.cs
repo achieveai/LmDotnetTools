@@ -36,17 +36,40 @@ internal interface IDeadlineBoundedReviewLoop
 internal interface IResumableReviewTurn
 {
     /// <summary>
+    /// Registers a callback invoked the instant a hosted conversation is MINTED for this loop — before the
+    /// first turn is sent, and therefore before any sub-agent fan-out exists.
+    /// <para>
+    /// This is the narrowest window in the whole lifecycle and the one that matters most: a daemon that dies
+    /// between the mint and the end of the (minutes-long) provisional turn has already started a sub-agent
+    /// tree it can no longer find, and would start a second one on a second conversation. Checkpointing here
+    /// is what makes that window recoverable.
+    /// </para>
+    /// <para>
+    /// Unlike a bookkeeping hook this one is load-bearing, so implementations must let it FAIL the mint: a
+    /// conversation whose identity could not be recorded is precisely the orphan this exists to prevent.
+    /// </para>
+    /// </summary>
+    void ObserveConversationMint(Action<string> onConversationMinted);
+
+    /// <summary>
     /// Arms the NEXT turn's checkpointing, one shot (a later turn on the same loop is unarmed again, so a
     /// spent input can never be rejoined twice).
     /// <para>
-    /// A non-null <paramref name="resumeInputId"/> makes that turn REJOIN an input the host already accepted:
-    /// it is polled to completion and never re-sent, because the host is already producing an answer for it
-    /// and a second send would run the same turn twice on one conversation. Otherwise the turn is sent
-    /// normally and <paramref name="onInputAccepted"/> is invoked with the accepted id the instant the host
-    /// takes it — before any polling — so the checkpoint is durable for the whole wait.
+    /// A non-null <paramref name="acceptedInputId"/> makes that turn REJOIN an input the host already
+    /// accepted: it is polled to completion and never re-sent, because the host is already producing an
+    /// answer for it and a second send would run the same turn twice on one conversation.
+    /// </para>
+    /// <para>
+    /// Otherwise the turn is SENT under <paramref name="idempotencyKey"/> — which the caller derives from
+    /// durable state so it is identical on every attempt at the same turn — and
+    /// <paramref name="onInputAccepted"/>, when supplied, is invoked with the accepted id the instant the host
+    /// takes it, before any polling. The key is what closes the lost-response window the callback cannot: a
+    /// daemon that dies after the host accepted the send but before the response arrived has no id to
+    /// checkpoint, and re-sending under the same key returns that same input instead of queueing a second turn.
+    /// A caller whose recovery rests on the key alone therefore passes no callback.
     /// </para>
     /// </summary>
-    void ArmTurnCheckpoint(string? resumeInputId, Action<string> onInputAccepted);
+    void ArmTurnCheckpoint(string idempotencyKey, string? acceptedInputId, Action<string>? onInputAccepted);
 }
 
 /// <summary>

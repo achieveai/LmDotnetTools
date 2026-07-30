@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
@@ -583,10 +584,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        agent.ArmedResumeInputIds.Should().Equal("input-inflight");
-        agent.RejoinedInputIds.Should().Equal("input-inflight");
-        agent.AcceptedInputIds.Should().BeEmpty("nothing new was queued — the accepted input was polled");
+        var loop = fixture.Factory.ResumableLoops.Should().ContainSingle().Subject;
+        loop.ArmedResumeInputIds.Should().Equal("input-inflight");
+        loop.RejoinedInputIds.Should().Equal("input-inflight");
+        loop.AcceptedInputIds.Should().BeEmpty("nothing new was queued — the accepted input was polled");
     }
 
     [Fact]
@@ -602,10 +603,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
-        var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        agent.ArmedResumeInputIds.Should().ContainSingle().Which.Should().BeNull();
-        agent.RejoinedInputIds.Should().BeEmpty();
-        agent.AcceptedInputIds.Should().ContainSingle("the synthesis turn is sent normally and re-checkpointed");
+        var loop = fixture.Factory.ResumableLoops.Should().ContainSingle().Subject;
+        loop.ArmedResumeInputIds.Should().ContainSingle().Which.Should().BeNull();
+        loop.RejoinedInputIds.Should().BeEmpty();
+        loop.AcceptedInputIds.Should().ContainSingle("the synthesis turn is sent normally and re-checkpointed");
     }
 
     [Fact]
@@ -622,8 +623,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        agent.Deadlines.Should().AllBeEquivalentTo(
-            originalDeadline, "the resumed turn inherits what is LEFT of the original budget, never a fresh one");
+        agent.Deadlines.Should().ContainSingle(
+            "the resumed lifecycle runs exactly one turn — the synthesis").Which.Should().Be(
+            originalDeadline, "a resumed turn inherits what is LEFT of the original budget, never a fresh one");
     }
 
     [Fact]
@@ -661,12 +663,233 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull();
+        fixture.Factory.ResumableLoops.Should().BeEmpty("an in-process loop is not resumable, so none is wrapped");
         var agent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         agent.ReceivedInputs.Should().HaveCount(2, "the attempt restarts collect-only");
-        agent.RejoinedInputIds.Should().BeEmpty("an in-process input cannot be rejoined");
+        ArtifactsOf(fixture, run, DaemonReviewStageExecutor.SynthesisRequestArtifactKind).Should().ContainSingle(
+            "the seeded row is the only one — an in-process turn cannot be rejoined, so none is checkpointed");
         ReviewTextOf(fixture.Store.GetArtifacts(run.Id), DaemonReviewStageExecutor.ReviewArtifactKind)
             .Should().Be(fixture.Factory.DefaultText).And.NotBe(
                 StaleProvisionalText, "a provisional is never promoted to the authoritative review");
+    }
+
+    [Theory]
+    [InlineData("workspace")]
+    [InlineData("modality")]
+    [InlineData("model")]
+    [InlineData("rung")]
+    [InlineData("tool-mode")]
+    [InlineData("context-generation")]
+    public async Task Reviewed_discards_a_checkpoint_whose_lifecycle_identity_no_longer_matches(string mismatch)
+    {
+        // A hosted conversation is bound to a checkout, a model and a context this process may no longer be
+        // holding. Resuming a mismatched one is unbounded: the synthesis reviews whatever the conversation is
+        // actually attached to and posts those findings to THIS PR, with nothing anywhere reporting an error.
+        // Starting over costs exactly one duplicate review. Each case below isolates ONE discriminator; the
+        // all-fields-match control is Reviewed_resumes_the_persisted_hosted_conversation_… above.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var current = LifecycleOf(fixture, run);
+        var persisted = mismatch switch
+        {
+            // The pooled slot is re-leased per process, so after a restart the same run can hold a slot whose
+            // checkout is a DIFFERENT PR while its checkpointed conversation is bound to the old slot.
+            "workspace" => current with { WorkspaceId = "review-slot-3" },
+            // Configuration flipped to hosted: an in-process checkpoint's thread id is a daemon-local
+            // review-run-* string that no host would recognise.
+            "modality" => current with { Modality = DaemonReviewStageExecutor.InProcessModality },
+            "model" => current with { ModelId = "gpt-5.6-terra" },
+            // An escalation rung runs on its own thread with the overflowing history shed; resuming it as the
+            // base attempt would review under a model and window this attempt never chose.
+            "rung" => current with
+            {
+                LocalThreadId = DaemonReviewStageExecutor.ThreadId(run, run.VariantId + "-esc"),
+            },
+            "tool-mode" => current with { ToolAssisted = true },
+            // ContextReady was re-entered: the diff the checkpointed conversation reviewed is superseded.
+            _ => current with { ContextGeneration = current.ContextGeneration + 1 },
+        };
+        SeedProvisionalCheckpoint(
+            fixture, run, "thread-from-another-lifecycle", DateTimeOffset.UtcNow.AddMinutes(20),
+            lifecycle: persisted);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull(
+            "a checkpoint this process cannot prove it wrote is not a conversation it may rejoin");
+        fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().ContainSingle(
+            "a discarded checkpoint starts over on a NEW conversation");
+        fixture.Factory.CreatedAgents.Should().ContainSingle().Which.ReceivedInputs.Should().HaveCount(
+            2, "the fresh lifecycle runs provisional and synthesis again");
+    }
+
+    [Fact]
+    public async Task Reviewed_starts_a_fresh_lifecycle_when_the_context_stage_was_re_entered_after_the_checkpoint()
+    {
+        // The documented rollback path: a run is reset to ContextReady and its context rebuilt. The checkpoint
+        // is keyed to the context generation it was built from — a new 'review-context' row — so re-entering
+        // the stage invalidates it without needing a tombstone to be written by whoever did the rollback.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMinutes(20));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().BeNull(
+            "the conversation reviewed a diff this run is no longer about");
+        fixture.Factory.ResumableLoops.Should().ContainSingle().Which.MintedThreadIds.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Reviewed_checkpoints_the_hosted_conversation_the_instant_it_is_minted()
+    {
+        // The mint window is the one genuinely unrecoverable gap: between the host creating the conversation
+        // and the daemon recording it, a crash leaves a fan-out running that nothing can find. Checkpointing
+        // at mint time — before the provisional turn is even sent — closes it. The row carries no review text,
+        // which is precisely what marks it a LIFECYCLE record rather than an answer.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        fixture.Factory.DecorateCreatedAgent = agent => agent.FailsFirstTurn(new InvalidOperationException("host 503"));
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*host 503*");
+        var checkpoint = PayloadOf<ReviewArtifactPayload>(
+            fixture, run, DaemonReviewStageExecutor.ProvisionalReviewArtifactKind);
+        checkpoint.ThreadId.Should().Be(
+            $"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}",
+            "the minted conversation is recorded before the turn that fans out on it");
+        checkpoint.ProvisionalComplete.Should().BeFalse("the provisional turn never returned");
+        checkpoint.ReviewText.Should().BeEmpty();
+        checkpoint.Lifecycle.Should().Be(
+            LifecycleOf(fixture, run), "a checkpoint only a matching process may resume");
+        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
+            a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    [Fact]
+    public async Task Reviewed_re_drives_an_unfinished_provisional_turn_on_the_conversation_it_already_minted()
+    {
+        // A restart INSIDE the provisional turn. The conversation exists, so minting a second one would fan
+        // out a second sub-agent tree against the same PR; the turn is re-sent on the SAME conversation under
+        // the same idempotency key instead, which the host reconciles to the turn it already accepted.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        SeedProvisionalCheckpoint(
+            fixture, run, "thread-minted", DateTimeOffset.UtcNow.AddMinutes(20),
+            text: string.Empty, provisionalComplete: false);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().Be("thread-minted");
+        var localThreadId = DaemonReviewStageExecutor.ThreadId(run, run.VariantId);
+        var loop = fixture.Factory.ResumableLoops.Should().ContainSingle().Subject;
+        loop.MintedThreadIds.Should().BeEmpty("the conversation already exists");
+        loop.ArmedIdempotencyKeys.Should().Equal(
+            DaemonReviewStageExecutor.TurnIdempotencyKey(localThreadId, DaemonReviewStageExecutor.ProvisionalTurn),
+            DaemonReviewStageExecutor.TurnIdempotencyKey(localThreadId, DaemonReviewStageExecutor.SynthesisTurn));
+        ReviewTextOf(fixture.Store.GetArtifacts(run.Id), DaemonReviewStageExecutor.ReviewArtifactKind)
+            .Should().Be(
+                fixture.Factory.DefaultText,
+                "the empty mint-time payload is a lifecycle record, never an authoritative answer");
+    }
+
+    [Fact]
+    public async Task Reviewed_checkpoints_the_accepted_synthesis_input_against_the_conversation_it_ran_on()
+    {
+        // The last re-sendable moment of the lifecycle: once the host has accepted the synthesis turn, a
+        // restart must POLL it rather than send a second one. That is only decidable if the row records which
+        // conversation the input belongs to — an id alone would be rejoined on a conversation that never saw
+        // it. The run id is carried for the same reason artifacts carry one: to be readable in isolation.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMinutes(20));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var loop = fixture.Factory.ResumableLoops.Should().ContainSingle().Subject;
+        loop.ArmedResumeInputIds.Should().ContainSingle().Which.Should().BeNull(
+            "no accepted-input row survived, so the turn is sent rather than polled");
+        PayloadOf<SynthesisRequestPayload>(
+            fixture, run, DaemonReviewStageExecutor.SynthesisRequestArtifactKind).Should().Be(
+            new SynthesisRequestPayload(
+                loop.NextInputId, run.Id.ToString(CultureInfo.InvariantCulture), "thread-persisted"));
+    }
+
+    [Fact]
+    public async Task Reviewed_clamps_a_resumed_deadline_to_the_configured_maximum()
+    {
+        // A checkpoint written by a process configured with a longer window — or by a clock that had run
+        // ahead — must not hold this stage open for longer than the configuration in force allows. The
+        // persisted deadline is the other ceiling: a restart continues a budget, it never extends one.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                UseS2SReviewAgent = true,
+                ReviewSubAgentBarrierQuietSeconds = 1,
+                ReviewStageDeadlineMinutes = 1,
+            });
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var ceiling = DateTimeOffset.UtcNow.AddMinutes(1);
+        SeedProvisionalCheckpoint(fixture, run, "thread-persisted", DateTimeOffset.UtcNow.AddMinutes(90));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Factory.ResumeHostedThreadIds.Should().ContainSingle().Which.Should().Be(
+            "thread-persisted", "the checkpoint is still resumed — only its budget is clamped");
+        fixture.Factory.CreatedAgents.Should().ContainSingle().Which.Deadlines.Should().ContainSingle()
+            .Which.Should().BeOnOrBefore(ceiling.AddSeconds(5)).And.BeAfter(DateTimeOffset.UtcNow);
+    }
+
+    [Fact]
+    public async Task Reviewed_refuses_a_hosted_review_whose_loop_cannot_checkpoint_its_turns()
+    {
+        // Resumability is REQUIRED on the hosted path, resolved through any decorator. A wrapper that hides
+        // the capability, or a factory wired to the wrong loop, would otherwise mint a second conversation and
+        // fan out a second sub-agent tree on every restart — silently, and for as long as restarts happen.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        fixture.Factory.Resumable = false;
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).WithMessage("*IResumableReviewTurn*");
+        fixture.Store.GetArtifacts(run.Id).Should().NotContain(
+            a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
+    [Fact]
+    public async Task Reviewed_surfaces_an_unreadable_checkpoint_instead_of_starting_a_second_review_on_top_of_it()
+    {
+        // An unreadable checkpoint is indistinguishable from one whose sub-agent tree is still running on the
+        // host. Treating it as "no checkpoint" would fan out a second tree on top of the first EVERY round,
+        // forever. Surfacing it lets the retry governor charge the failure and park the run after a bounded
+        // number of attempts (PrOrchestratorRetryTests), with the artifact intact for diagnosis.
+        using var fixture = Fixture.GitHub(LoggerFactory, S2SResumeOptions());
+        var run = fixture.SeedRun();
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        _ = fixture.Store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = DaemonReviewStageExecutor.ReviewArtifactSchemaVersion,
+            ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
+            Provider = "github",
+            Payload = "{ truncated by a half-written",
+        });
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        await act.Should().ThrowAsync<ReviewCheckpointCorruptException>();
+        fixture.Factory.CreatedAgents.Should().BeEmpty("no review is started while an existing lifecycle is unreadable");
     }
 
     [Fact]
@@ -1059,9 +1282,10 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     // When the review runs over the LmStreaming S2S API (UseS2SReviewAgent), the hosted conversation is the
     // deliverable a human judge opens. The daemon still owns posting, so it is the single provider-uniform
     // place that appends the deep-link — {LmStreamingBaseUrl}/?threadId={mintedThreadId}&focus=1 — under the
-    // [{BotName}] prefix, exactly once, for BOTH providers. (The fake agent mints "fake-thread"; no workspace
-    // preparer is wired on this ctor, so Create receives workspaceId: null and the agent still surfaces its
-    // thread id.) UseS2SReviewAgent alone opens the host-side post path (postHostSide) — the host summary
+    // [{BotName}] prefix, exactly once, for BOTH providers. (The S2S fixture's loop mints "hosted-{threadId}",
+    // standing in for the id LmStreaming assigns at provision — deliberately NOT the daemon's own thread id; no
+    // workspace preparer is wired on this ctor, so Create receives workspaceId: null and the loop still surfaces
+    // its conversation.) UseS2SReviewAgent alone opens the host-side post path (postHostSide) — the host summary
     // fallback is not required — while shouldPost stays false, so no would-be enforcement turn runs.
     [Theory]
     [InlineData("github")]
@@ -1083,7 +1307,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         await RunAllStagesAsync(fixture, run);
 
-        const string expectedLink = "http://localhost:5051/?threadId=fake-thread&focus=1";
+        var hostedThreadId = $"hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}";
+        var expectedLink = $"http://localhost:5051/?threadId={hostedThreadId}&focus=1";
         var body = publisher.PostedBodies.Should().ContainSingle().Subject;
         body.Should().StartWith("[Revobot]\n\n", "the deep-link is appended under the existing bot prefix");
         body.Should().Contain($"🔎 Full review conversation: {expectedLink}");
@@ -1131,14 +1356,44 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     private static CodeReviewDaemonOptions S2SResumeOptions() =>
         new() { UseS2SReviewAgent = true, ReviewSubAgentBarrierQuietSeconds = 1 };
 
+    /// <summary>
+    /// The lifecycle identity the fixture's own Reviewed stage would build for the BASE attempt — the one a
+    /// checkpoint has to still match to be resumable. Each parameter overrides exactly one field, so a test
+    /// that seeds a mismatch isolates the single discriminator it is about. (No workspace preparer is wired on
+    /// this ctor, so the hosted workspace id is null here, as it is in every other test on this fixture.)
+    /// </summary>
+    private static ReviewLifecycleIdentity LifecycleOf(
+        Fixture fixture,
+        ReviewRun run,
+        string modality = DaemonReviewStageExecutor.S2SModality,
+        string? localThreadId = null,
+        string? workspaceId = null,
+        string? modelId = null,
+        bool toolAssisted = false,
+        long? contextGeneration = null) =>
+        new(
+            modality,
+            localThreadId ?? DaemonReviewStageExecutor.ThreadId(run, run.VariantId),
+            workspaceId,
+            modelId ?? run.ModelId,
+            toolAssisted,
+            contextGeneration
+                ?? fixture.Store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ContextArtifactKind)?.Id
+                ?? 0);
+
     /// <summary>Writes the checkpoint a Reviewed stage leaves behind when it is interrupted between the
-    /// provisional turn and the synthesis turn — the state every restart test starts from.</summary>
+    /// provisional turn and the synthesis turn — the state every restart test starts from. Defaults to the
+    /// identity this fixture would rebuild (i.e. resumable) so a test that wants a discarded checkpoint has to
+    /// say which field diverged. <paramref name="provisionalComplete"/> false is the narrower mint-time
+    /// checkpoint: the conversation exists, but the provisional turn never returned.</summary>
     private static void SeedProvisionalCheckpoint(
         Fixture fixture,
         ReviewRun run,
         string hostedThreadId,
         DateTimeOffset deadlineUtc,
-        string text = StaleProvisionalText) =>
+        string text = StaleProvisionalText,
+        ReviewLifecycleIdentity? lifecycle = null,
+        bool provisionalComplete = true) =>
         _ = fixture.Store.AddArtifact(new ReviewArtifact
         {
             ReviewRunId = run.Id,
@@ -1146,7 +1401,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ArtifactKind = DaemonReviewStageExecutor.ProvisionalReviewArtifactKind,
             Provider = "github",
             Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(
-                text, "run-provisional", run.VariantId, hostedThreadId, deadlineUtc.AddMinutes(-10), deadlineUtc)),
+                text, "run-provisional", run.VariantId, hostedThreadId, deadlineUtc.AddMinutes(-10), deadlineUtc,
+                lifecycle ?? LifecycleOf(fixture, run), provisionalComplete)),
         });
 
     /// <summary>Records that the host accepted a synthesis input, i.e. the restart landed AFTER the last
@@ -1159,13 +1415,24 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             ArtifactKind = DaemonReviewStageExecutor.SynthesisRequestArtifactKind,
             Provider = "github",
             Payload = JsonSerializer.Serialize(new SynthesisRequestPayload(
-                inputId, run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), parentThreadId)),
+                inputId, run.Id.ToString(CultureInfo.InvariantCulture), parentThreadId)),
         });
 
     /// <summary>The review text of the newest artifact of <paramref name="kind"/> (artifacts are append-only).</summary>
     private static string ReviewTextOf(IReadOnlyList<ReviewArtifact> artifacts, string kind) =>
         JsonSerializer.Deserialize<ReviewArtifactPayload>(
             artifacts.Last(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal)).Payload)!.ReviewText;
+
+    /// <summary>The newest checkpoint artifact of <paramref name="kind"/>, deserialized — the row a restarting
+    /// process would read back.</summary>
+    private static T PayloadOf<T>(Fixture fixture, ReviewRun run, string kind) =>
+        JsonSerializer.Deserialize<T>(fixture.Store
+            .GetArtifacts(run.Id)
+            .Last(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal)).Payload)!;
+
+    /// <summary>The artifacts of one <paramref name="kind"/>, in append order.</summary>
+    private static IEnumerable<ReviewArtifact> ArtifactsOf(Fixture fixture, ReviewRun run, string kind) =>
+        fixture.Store.GetArtifacts(run.Id).Where(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal));
 
     private sealed class Fixture : IDisposable
     {
@@ -1193,6 +1460,9 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             AdoPublisher = repoProvider == "azure-devops" ? new FakeReviewCommentPublisher("ado") : null;
 
             options ??= new CodeReviewDaemonOptions();
+            // Resumability is a property of WHERE the turn runs, so the double is resumable on exactly the
+            // path production's is: hosted (S2S) turns survive this process, in-process ones do not.
+            Factory.Resumable = options.UseS2SReviewAgent;
             var publishers = publishersOverride
                 ?? (AdoPublisher is null
                     ? [GitHubPublisher]

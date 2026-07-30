@@ -162,17 +162,33 @@ internal sealed class LmStreamingS2SClient
     /// field happily ignores the unknown request property and returns a normal 202, so without the
     /// acknowledgement check the daemon would believe it had a guarantee it never got.
     /// </para>
+    /// <para>
+    /// <paramref name="idempotencyKey"/> is acknowledged the same way and for the same reason. It makes the
+    /// send safe to REPEAT: the host records the input under an id derived from the key (folding in the
+    /// options that change what the turn does) and reconciles a repeat against its durable accepted-input
+    /// ledger, so a caller whose response was lost — a socket reset, or a process that
+    /// died between the host accepting and the answer arriving — recovers the same input instead of queueing
+    /// a second (minutes-long, sub-agent-fanning) turn. An unacknowledged key means the host minted its own
+    /// id and the repeat WOULD duplicate, so the send is failed rather than silently retried into a double
+    /// review.
+    /// </para>
     /// </summary>
     public async Task<string> SendMessageAsync(
         string threadId,
         string text,
         bool suppressSubAgentSpawning,
+        string? idempotencyKey,
         CancellationToken ct)
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
-            new { Text = text, SuppressSubAgentSpawning = suppressSubAgentSpawning },
+            new
+            {
+                Text = text,
+                SuppressSubAgentSpawning = suppressSubAgentSpawning,
+                IdempotencyKey = idempotencyKey,
+            },
             ct);
 
         if (suppressSubAgentSpawning && !ReadBoolProperty(body, "spawningSuppressed"))
@@ -181,6 +197,15 @@ internal sealed class LmStreamingS2SClient
                 "The review host did not acknowledge the requested sub-agent spawn suppression "
                     + "('spawningSuppressed' was absent or false), so this turn cannot be guaranteed free of "
                     + $"new sub-agents. Upgrade the LmStreaming review host at {_baseUrl}. Body: {body}");
+        }
+
+        if (idempotencyKey is not null && !ReadBoolProperty(body, "idempotencyKeyHonored"))
+        {
+            throw new InvalidOperationException(
+                "The review host did not acknowledge the supplied idempotency key "
+                    + "('idempotencyKeyHonored' was absent or false), so re-sending this turn after a lost "
+                    + $"response would queue a second one. Upgrade the LmStreaming review host at {_baseUrl}. "
+                    + $"Body: {body}");
         }
 
         return ReadStringProperty(body, "inputId");

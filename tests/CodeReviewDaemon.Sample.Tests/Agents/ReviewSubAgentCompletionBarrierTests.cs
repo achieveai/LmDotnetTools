@@ -78,15 +78,14 @@ public sealed class ReviewSubAgentCompletionBarrierTests : LoggingTestBase
             clock.Advance(step);
 
             // Task.Delay(..., TimeProvider, ...) resumes its awaiter on the thread pool rather than
-            // inline, so a tight Advance() loop can race ahead of the barrier's continuation under real
-            // thread-pool load — stranding a not-yet-registered timer beyond the reach of any further
-            // Advance() call. Yielding (no real time delay, still fully TimeProvider-driven) gives that
-            // continuation real scheduling opportunities to catch up and register its next timer before
-            // the clock moves again.
-            for (var drain = 0; drain < 20 && !task.IsCompleted; drain++)
-            {
-                await Task.Yield();
-            }
+            // inline, so the barrier may not have registered its next timer by the time this loop comes
+            // back around. Yielding is NOT enough to guarantee it gets to: a yield queues onto the same
+            // pool this loop is competing for, so under a saturated pool (the whole suite running in
+            // parallel) the loop can burn every step before the barrier is ever scheduled, and then the
+            // safety net below waits 30s against a clock nothing is advancing any more. Waiting a real
+            // moment on the task itself gives the pool actual time to run that continuation, and costs
+            // nothing on the happy path because the wait ends the instant the barrier settles.
+            await Task.WhenAny(task, Task.Delay(TimeSpan.FromMilliseconds(20)));
         }
 
         // Safety net: if the barrier genuinely never settles, fail fast with a clear timeout instead of

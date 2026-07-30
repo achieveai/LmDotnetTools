@@ -11,9 +11,12 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// would leak one MCP connection.
 /// <para>
 /// It is a TRANSPARENT decorator: everything the review lifecycle needs from the loop underneath — the
-/// sub-agent surface (via <see cref="IReviewLoopWrapper"/>) and the shared absolute deadline (via
-/// <see cref="IDeadlineBoundedReviewLoop"/>) — is forwarded, so wrapping a loop can never silently drop a
-/// capability the executor depends on.
+/// sub-agent surface and the resumable-turn checkpointing (both via <see cref="IReviewLoopWrapper"/>, which
+/// <see cref="ReviewLoopSubAgentSurface"/> resolves through) and the shared absolute deadline (via
+/// <see cref="IDeadlineBoundedReviewLoop"/>) — stays reachable, so wrapping a loop can never silently drop a
+/// capability the executor depends on. Capabilities the executor PROBES for are deliberately not re-declared
+/// here: declaring one this wrapper cannot actually supply would answer "yes" on behalf of an inner loop that
+/// has no such ability.
 /// </para>
 /// </summary>
 internal sealed class ToolScopedReviewLoop(IMultiTurnAgent inner, IReadOnlyList<McpClient> ownedClients)

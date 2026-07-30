@@ -602,6 +602,20 @@ public class ConversationsController(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // A blank key is refused rather than read as "absent": it is the shape of a caller whose key
+        // derivation silently produced nothing, and treating it as absent would hand that caller an
+        // acknowledged-but-unprotected send — the one outcome the acknowledgement exists to rule out.
+        if (request.IdempotencyKey is not null && string.IsNullOrWhiteSpace(request.IdempotencyKey))
+        {
+            return BadRequest(new
+            {
+                error = "invalid_idempotency_key",
+                code = "invalid_idempotency_key",
+                detail = "IdempotencyKey, when supplied, must be a non-blank identifier for this turn.",
+                threadId,
+            });
+        }
+
         var metadata = await store.LoadMetadataAsync(threadId, ct);
         if (metadata == null)
         {
@@ -665,7 +679,6 @@ public class ConversationsController(
                 new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
         }
 
-        var inputId = Guid.NewGuid().ToString();
         var userMessage = new TextMessage { Role = Role.User, Text = request.Text };
 
         // Per-turn spawn suppression is a GUARANTEE, so it fails closed BEFORE anything is queued: the agent
@@ -687,6 +700,36 @@ public class ConversationsController(
                     "This conversation's agent cannot suppress sub-agent spawning for a single turn, so the "
                     + "requested guarantee cannot be made.",
                 threadId,
+            });
+        }
+
+        // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
+        // turn does, and the resulting id is what the agent durably records on acceptance — so a repeat can be
+        // reconciled against the same ledger a status poll reads, with no extra persistence. That is the
+        // recovery a caller needs when it never saw the first response (socket reset, or a process that died
+        // between acceptance and the answer): it gets the input the host already took, instead of queueing a
+        // second minutes-long, sub-agent-fanning turn onto the same conversation. Folding the options in keeps
+        // a repeat that asks for something DIFFERENT (suppression flipped) a different operation rather than a
+        // false dedupe, and the capability gate above runs first so no repeat can slip past it.
+        var inputId = request.IdempotencyKey is null
+            ? Guid.NewGuid().ToString()
+            : DeriveIdempotentInputId(request.IdempotencyKey, request.SuppressSubAgentSpawning);
+        if (request.IdempotencyKey is not null
+            && await statusResolver.ResolveByInputIdAsync(threadId, inputId, ct) is not null)
+        {
+            logger.LogInformation(
+                "SendMessage for thread {ThreadId} reconciled to already-accepted input {InputId}; "
+                    + "nothing was queued",
+                threadId,
+                inputId);
+            return Accepted(new SendMessageResponse
+            {
+                InputId = inputId,
+                Queued = false,
+                // The gate above already refused any request whose guarantee this thread's agent cannot make,
+                // so a reconciled repeat asking for suppression is being served an input that carries it.
+                SpawningSuppressed = request.SuppressSubAgentSpawning,
+                IdempotencyKeyHonored = true,
             });
         }
 
@@ -728,8 +771,17 @@ public class ConversationsController(
             InputId = inputId,
             Queued = true,
             SpawningSuppressed = receipt.SpawningSuppressed,
+            IdempotencyKeyHonored = request.IdempotencyKey is not null,
         });
     }
+
+    /// <summary>
+    /// Derives the durable input id an idempotent send is recorded under. The options that change what the
+    /// turn DOES are folded in, so a repeat carrying different options is a different operation instead of
+    /// silently resolving to the earlier, differently-behaving input.
+    /// </summary>
+    private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning) =>
+        suppressSubAgentSpawning ? $"{idempotencyKey}:spawn-suppressed" : idempotencyKey;
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or

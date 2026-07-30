@@ -68,6 +68,19 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// hosted conversation rather than resume a persisted one).</summary>
     public List<string?> ResumeHostedThreadIds { get; } = [];
 
+    /// <summary>
+    /// When true, every created loop is wrapped in a <see cref="ResumableFakeLoop"/> — the hosted (S2S) path,
+    /// whose turns are durable on a process-outliving host. Left false the double is deliberately NON-resumable,
+    /// which is exactly what an in-process loop is; the executor must then neither arm nor checkpoint a turn.
+    /// The fixture sets it from <c>UseS2SReviewAgent</c> so the two paths differ here as they do in production.
+    /// </summary>
+    public bool Resumable { get; set; }
+
+    /// <summary>The resumable decorators returned by <see cref="Create"/>, in call order — empty unless
+    /// <see cref="Resumable"/>. This is where the turn-checkpointing assertions live, because this is the
+    /// object that implements the capability.</summary>
+    public List<ResumableFakeLoop> ResumableLoops { get; } = [];
+
     public IMultiTurnAgent Create(
         AgentProfile profile,
         string? modelId,
@@ -91,16 +104,28 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         {
             var throwing = FakeMultiTurnAgent.Throwing($"run-{profile.Id}-overflow", ThrowWhenToolAssisted);
             CreatedAgents.Add(throwing);
-            return Decorate(throwing);
+            return Decorate(throwing, threadId, resumeHostedThreadId);
         }
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";
         var agent = new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
         CreatedAgents.Add(agent);
-        return Decorate(agent);
+        return Decorate(agent, threadId, resumeHostedThreadId);
     }
 
-    private IMultiTurnAgent Decorate(FakeMultiTurnAgent agent) =>
-        DecorateCreatedAgent?.Invoke(agent) ?? agent;
+    /// <summary>The minted conversation id is derived from the daemon-local thread id, so it is deterministic
+    /// (a test can predict it) yet distinct per A/B arm and escalation rung, exactly as a real host's would be.</summary>
+    private IMultiTurnAgent Decorate(FakeMultiTurnAgent agent, string threadId, string? resumeHostedThreadId)
+    {
+        var decorated = DecorateCreatedAgent?.Invoke(agent) ?? agent;
+        if (!Resumable)
+        {
+            return decorated;
+        }
+
+        var loop = new ResumableFakeLoop(decorated, resumeHostedThreadId, $"hosted-{threadId}");
+        ResumableLoops.Add(loop);
+        return loop;
+    }
 }

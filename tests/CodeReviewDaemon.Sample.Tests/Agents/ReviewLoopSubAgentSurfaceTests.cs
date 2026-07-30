@@ -66,6 +66,46 @@ public sealed class ReviewLoopSubAgentSurfaceTests
         act.Should().Throw<InvalidOperationException>().WithMessage("*exceeded*levels*");
     }
 
+    /// <summary>
+    /// Task 6 (fix round 1) — the live tool-assisted path hands the executor a <c>ToolScopedReviewLoop</c>, not
+    /// the loop that owns the hosted conversation. A plain cast would find no resumable turn there and the
+    /// hosted review would be refused (or, worse, silently mint a second conversation per restart), so the
+    /// capability is resolved through the decorator chain exactly as the sub-agent surface is.
+    /// </summary>
+    [Fact]
+    public void A_probed_capability_resolves_through_a_decorator_that_does_not_declare_it()
+    {
+        var resumable = new ResumableFakeLoop(new FakeMultiTurnAgent("run-1"), null, "hosted-1");
+        var wrapper = new WrappingLoop(resumable);
+
+        ReviewLoopSubAgentSurface.ResolveCapability<IResumableReviewTurn>(wrapper).Should().BeSameAs(resumable);
+    }
+
+    /// <summary>
+    /// The probe must be able to say NO. An in-process loop genuinely cannot checkpoint a turn, and the hosted
+    /// path's fail-fast depends on that answer being null rather than a nearest-fit object.
+    /// </summary>
+    [Fact]
+    public void A_probed_capability_no_loop_in_the_chain_declares_resolves_to_null()
+    {
+        var wrapper = new WrappingLoop(new FakeMultiTurnAgent("run-1"));
+
+        ReviewLoopSubAgentSurface.ResolveCapability<IResumableReviewTurn>(wrapper).Should().BeNull();
+    }
+
+    /// <summary>A malformed chain must fail the same catchable way here as it does for the surface — this walk
+    /// has its own loop, so the guard has to be proven on it too.</summary>
+    [Fact]
+    public void A_probed_capability_on_a_cyclic_chain_fails_instead_of_recursing()
+    {
+        var loop = new MutableWrappingLoop(new FakeMultiTurnAgent("run-1"));
+        loop.Inner = loop;
+
+        var act = () => ReviewLoopSubAgentSurface.ResolveCapability<IResumableReviewTurn>(loop);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*its own inner loop*");
+    }
+
     private sealed class NoopScope : IDisposable
     {
         public void Dispose() { }

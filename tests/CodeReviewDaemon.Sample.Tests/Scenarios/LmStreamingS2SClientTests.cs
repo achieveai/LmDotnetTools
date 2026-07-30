@@ -123,7 +123,8 @@ public sealed class LmStreamingS2SClientTests
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var inputId = await client.SendMessageAsync(
-            "thread-1", "review this PR", suppressSubAgentSpawning: false, CancellationToken.None);
+            "thread-1", "review this PR", suppressSubAgentSpawning: false, idempotencyKey: null,
+            CancellationToken.None);
         inputId.Should().Be("input-1");
 
         var status = await client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
@@ -145,7 +146,8 @@ public sealed class LmStreamingS2SClientTests
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var inputId = await client.SendMessageAsync(
-            "thread-1", "synthesize", suppressSubAgentSpawning: true, CancellationToken.None);
+            "thread-1", "synthesize", suppressSubAgentSpawning: true, idempotencyKey: null,
+            CancellationToken.None);
 
         inputId.Should().Be("input-1");
         handler.Requests.Single().Body.Should().Contain("\"suppressSubAgentSpawning\":true");
@@ -165,10 +167,49 @@ public sealed class LmStreamingS2SClientTests
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var act = () => client.SendMessageAsync(
-            "thread-1", "synthesize", suppressSubAgentSpawning: true, CancellationToken.None);
+            "thread-1", "synthesize", suppressSubAgentSpawning: true, idempotencyKey: null,
+            CancellationToken.None);
 
         _ = await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*spawningSuppressed*");
+    }
+
+    /// <summary>The key has to reach the host, and the host's echo is what proves the send is REPEATABLE:
+    /// only a host that adopted the key can hand the same input back after a lost response.</summary>
+    [Fact]
+    public async Task SendMessageAsync_puts_the_idempotency_key_on_the_wire_and_accepts_the_hosts_acknowledgement()
+    {
+        var handler = new FakeHttpMessageHandler().OnJson(
+            HttpMethod.Post, "/messages", "{\"inputId\":\"turn-key-1\",\"idempotencyKeyHonored\":true}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var inputId = await client.SendMessageAsync(
+            "thread-1", "synthesize", suppressSubAgentSpawning: false, idempotencyKey: "turn-key-1",
+            CancellationToken.None);
+
+        inputId.Should().Be("turn-key-1");
+        handler.Requests.Single().Body.Should().Contain("\"idempotencyKey\":\"turn-key-1\"");
+    }
+
+    /// <summary>
+    /// The same version trap as the suppression flag, with a worse failure: a host predating the field mints
+    /// its own input id and returns a normal 202, so the daemon would believe the send was safe to repeat when
+    /// repeating it queues a second minutes-long, sub-agent-fanning review turn.
+    /// </summary>
+    [Fact]
+    public async Task SendMessageAsync_fails_closed_when_the_host_does_not_acknowledge_the_idempotency_key()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"host-minted-id\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.SendMessageAsync(
+            "thread-1", "synthesize", suppressSubAgentSpawning: false, idempotencyKey: "turn-key-1",
+            CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*idempotencyKeyHonored*");
     }
 
     /// <summary>An ordinary send asks for nothing, so an un-acknowledging host is fine.</summary>
@@ -181,7 +222,8 @@ public sealed class LmStreamingS2SClientTests
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
         var inputId = await client.SendMessageAsync(
-            "thread-1", "review this PR", suppressSubAgentSpawning: false, CancellationToken.None);
+            "thread-1", "review this PR", suppressSubAgentSpawning: false, idempotencyKey: null,
+            CancellationToken.None);
 
         inputId.Should().Be("input-1");
         handler.Requests.Single().Body.Should().Contain("\"suppressSubAgentSpawning\":false");
