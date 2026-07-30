@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.LmLifecycle</PackageId>
+    <Description>Dependency-neutral wire contract for agent lifecycle events and tool-approval decisions: versioned envelopes, per-stream ordering, forward-compatible open discriminators, and a single source-generated canonical JSON encoding. References no other project in this repository.</Description>
+    <PackageTags>$(PackageTags);lifecycle;events;approval;wire-contract</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AchieveAi.LmDotnetTools.LmLifecycle.Tests" />
+  </ItemGroup>
+</Project>

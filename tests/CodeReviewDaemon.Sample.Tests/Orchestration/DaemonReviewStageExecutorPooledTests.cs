@@ -199,6 +199,127 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Reviewed_prepends_existing_pr_comments_so_the_reviewer_posts_only_new_findings()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // Simulate a PR that already has prior review comments — the daemon fetches them HOST-side (via the
+        // provider's IReviewCommentPublisher) and folds them into the review INPUT so the reviewer adds only
+        // genuinely NEW findings instead of re-posting a full review every run (the "45 reviews on one PR" bug).
+        // The block must surface each comment's ACTIVE/RESOLVED status and its author (from ANY author — other
+        // bots and humans), and instruct the reviewer to answer questions directed at it.
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment("src/Foo.cs", "42", "Must — null deref EXISTING-FINDING", "revobot", IsActive: true));
+        fixture.Publisher.ExistingComments.Add(
+            new ExistingReviewComment("src/Bar.cs", "7", "Should — extract EXISTING-RESOLVED", "alice", IsActive: false));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("Already posted on this PR", "existing comments are prepended as a labelled dedup block");
+        text.Should().Contain("from ALL authors", "the reviewer must consider comments from other bots and humans too");
+        text.Should().Contain("Comments during past reviews", "the block is split into past vs new");
+        text.Should().Contain("New comments since your last review", "…so new discussion is called out for focus");
+        text.Should().Contain("src/Foo.cs:42 [status: active]", "an open thread shows its location + status hint");
+        text.Should().Contain("(revobot", "each comment is attributed to its author");
+        text.Should().Contain("src/Bar.cs:7 [status: resolved]", "a resolved thread is tagged resolved");
+        text.Should().Contain("(alice", "a human author is attributed too");
+        text.Should().Contain("EXISTING-FINDING");
+        text.Should().Contain("EXISTING-RESOLVED");
+        text.Should().Contain(
+            "UNTRUSTED DATA", "existing comment bodies must be framed as untrusted quoted data (prompt-injection defense)");
+        text.Should().Contain(
+            "«Must — null deref EXISTING-FINDING»", "each untrusted body is wrapped in guillemet delimiters");
+        text.Should().Contain("ANSWER it as an in-thread reply", "a question directed at the bot must be answered");
+        text.Should().Contain(
+            "No new findings since the last review", "the reviewer is told to post nothing when there is nothing new");
+    }
+
+    [Fact]
+    public async Task Reviewed_splits_existing_comments_into_past_reviews_and_new_since_last_review()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // The cutoff is the bot's most recent finding: a "[…bot…]"-prefixed comment (here "[Revobot] …"). A human
+        // comment posted AFTER it belongs under "New comments since your last review"; the bot's own older finding
+        // belongs under "Comments during past reviews". Different thread ids keep them as separate threads.
+        var botFindingTime = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+        var humanReplyTime = DateTimeOffset.Parse("2026-07-21T09:00:00Z");
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "[Revobot] PAST-BOT-FINDING", "revobot", IsActive: true,
+            PublishedAt: botFindingTime, ThreadId: "th-bot"));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "20", "Alice asks: NEW-HUMAN-QUESTION for the bot?", "alice", IsActive: true,
+            PublishedAt: humanReplyTime, ThreadId: "th-human"));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var pastIdx = text.IndexOf("Comments during past reviews", StringComparison.Ordinal);
+        var newIdx = text.IndexOf("New comments since your last review", StringComparison.Ordinal);
+        var pastFindingIdx = text.IndexOf("PAST-BOT-FINDING", StringComparison.Ordinal);
+        var newQuestionIdx = text.IndexOf("NEW-HUMAN-QUESTION", StringComparison.Ordinal);
+
+        pastIdx.Should().BeGreaterThan(0);
+        newIdx.Should().BeGreaterThan(pastIdx, "the new-comments section comes after the past-reviews section");
+        pastFindingIdx.Should().BeInRange(pastIdx, newIdx, "the bot's older finding sits under past reviews");
+        newQuestionIdx.Should().BeGreaterThan(newIdx, "the later human question sits under new-since-last-review");
+    }
+
+    [Fact]
+    public async Task Reviewed_renders_each_thread_oldest_first_even_when_fetched_newest_first()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // GitHub inline comments are fetched NEWEST-first (so the page cap keeps the most recent activity). Within a
+        // single thread that reverses the conversation — the reviewer is told to read root-finding → replies to judge
+        // resolution, so each thread must render OLDEST-first regardless of fetch order. Seed reply-before-root to
+        // mirror the descending fetch and assert the root finding renders before its later reply.
+        var rootTime = DateTimeOffset.Parse("2026-07-20T10:00:00Z");
+        var replyTime = DateTimeOffset.Parse("2026-07-22T15:00:00Z");
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "REPLY-fixed-in-abc123", "alice", IsActive: true,
+            PublishedAt: replyTime, ThreadId: "th-1"));
+        fixture.Publisher.ExistingComments.Add(new ExistingReviewComment(
+            "src/Foo.cs", "10", "ROOT-null-deref-finding", "revobot", IsActive: true,
+            PublishedAt: rootTime, ThreadId: "th-1"));
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var rootIdx = text.IndexOf("ROOT-null-deref-finding", StringComparison.Ordinal);
+        var replyIdx = text.IndexOf("REPLY-fixed-in-abc123", StringComparison.Ordinal);
+        rootIdx.Should().BeGreaterThan(0, "the root finding must be rendered");
+        replyIdx.Should().BeGreaterThan(
+            rootIdx,
+            "within a thread the root finding renders before its later reply so the reviewer reads the conversation in order");
+    }
+
+    [Fact]
+    public async Task Reviewed_skips_the_existing_comments_block_when_the_pr_has_none()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        // No prior comments seeded → the dedup block must be omitted (a first review has nothing to dedup against).
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("Already posted on this PR");
+    }
+
+    [Fact]
     public async Task Reviewed_escalates_to_the_bigger_model_then_diff_only_when_the_context_window_overflows()
     {
         using var fixture = Fixture.Create();
@@ -594,13 +715,14 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 BootRunner,
                 BootFileSystem,
                 _options,
-                [new FakeReviewCommentPublisher("github")],
+                [Publisher],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
                 slotWorkspace: _slotWorkspace);
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
+        public FakeReviewCommentPublisher Publisher { get; } = new("github");
         public RecordingProvisioner Provisioner { get; } = new();
         public List<string> CleanupOrder { get; } = [];
         public FakeSandboxCommandRunner BootRunner { get; }

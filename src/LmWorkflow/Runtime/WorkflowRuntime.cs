@@ -57,6 +57,33 @@ public sealed class WorkflowRuntime
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _spawnArgBuffers =
         new(StringComparer.Ordinal);
 
+    // ---- Route-away observation barrier -------------------------------------------------------------
+    // A transition (AdvanceTo) runs INLINE on the controller loop's thread, but the sub-agent results that
+    // feed it arrive only through the out-of-band observer, which lags the loop by however long the
+    // subscriber channel takes to drain. Routing into a terminal renders its resultTemplate from the state
+    // AS OF THAT MOMENT, so an unobserved result silently produced a terminal result missing the work the
+    // controller had already seen complete. The barrier closes that window: because every message is
+    // PUBLISHED before the loop executes it (MessagePublishingMiddleware wraps the provider stream) and the
+    // observer consumes in publish order, waiting until the routing tool call's OWN message has been
+    // observed proves every earlier message — including every prior tool result — is already correlated.
+    // Keyed on the tool-call id rather than task status: "join satisfied"/"nothing in flight" predicates
+    // all mis-handle the legitimate cases (a terminally failed unit routing to onFailure, a composed but
+    // deliberately unspawned unit, an as-yet-unobserved spawn registration).
+    private const int ObservedToolCallHistory = 256;
+    private static readonly TimeSpan ObservationBarrierTimeout = TimeSpan.FromSeconds(10);
+
+    // Guards ONLY the barrier bookkeeping. Deliberately NOT _lock: the observer thread signals waiters from
+    // inside ObserveMessage while a loop thread may be inside AdvanceTo holding _lock, so the two must not
+    // be nested. Waiter TCSs also use RunContinuationsAsynchronously so completing one never runs the
+    // routing handler's continuation on the observer thread.
+    private readonly object _observationLock = new();
+    private readonly HashSet<string> _observedToolCallIds = new(StringComparer.Ordinal);
+    private readonly Queue<string> _observedToolCallOrder = new();
+    private readonly Dictionary<string, TaskCompletionSource<bool>> _observationWaiters =
+        new(StringComparer.Ordinal);
+    private bool _orderedObserverAttached;
+    private bool _observationBarrierDisabled;
+
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
 
     // O(1) node-id -> node lookup rebuilt whenever Definition changes; it replaces a linear node-list scan
@@ -800,6 +827,138 @@ public sealed class WorkflowRuntime
             default:
                 break;
         }
+
+        // Watermark LAST, so a waiter is only released once this message has been fully correlated. Both
+        // shapes are recorded because which one reaches the subscriber stream depends on the provider: a
+        // mocked agent yields the finalized ToolCallMessage, a real provider publishes only the streaming
+        // update fragments (see the Agent cases above).
+        switch (message)
+        {
+            case ToolCallMessage { ToolCallId: { } callId }:
+                MarkObserved(callId);
+                break;
+
+            case ToolCallUpdateMessage { ToolCallId: { } updateWatermark }:
+                MarkObserved(updateWatermark);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
+    ///     Declares that a single ordered consumer feeds <b>every</b> published message of the controller run
+    ///     into <see cref="ObserveMessage"/>, in publish order. Only then can a transition wait for the
+    ///     observer to catch up (see <see cref="WaitForObservationAsync"/>); without it the barrier is a no-op
+    ///     so a host driving the runtime directly — with no observer at all — never stalls.
+    /// </summary>
+    internal void AttachOrderedObserver()
+    {
+        lock (_observationLock)
+        {
+            _orderedObserverAttached = true;
+        }
+    }
+
+    /// <summary>
+    ///     Waits until the observer has processed the message carrying <paramref name="toolCallId"/> — the
+    ///     routing tool call's own message, published before the loop invoked its handler. Returns
+    ///     immediately when no ordered observer is attached, when the id is unknown, or when the message has
+    ///     already been observed. If the watermark never arrives within
+    ///     <see cref="ObservationBarrierTimeout"/> the barrier logs once and DISABLES itself for the rest of
+    ///     the run, degrading to the previous (racy but non-blocking) behaviour rather than stalling every
+    ///     subsequent transition.
+    /// </summary>
+    internal async Task WaitForObservationAsync(string? toolCallId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(toolCallId))
+        {
+            return;
+        }
+
+        TaskCompletionSource<bool> waiter;
+        lock (_observationLock)
+        {
+            if (
+                !_orderedObserverAttached
+                || _observationBarrierDisabled
+                || _observedToolCallIds.Contains(toolCallId)
+            )
+            {
+                return;
+            }
+
+            if (!_observationWaiters.TryGetValue(toolCallId, out waiter!))
+            {
+                waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _observationWaiters[toolCallId] = waiter;
+            }
+        }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var delay = Task.Delay(ObservationBarrierTimeout, timeoutCts.Token);
+        var winner = await Task.WhenAny(waiter.Task, delay).ConfigureAwait(false);
+
+        // Always cancel the timer: when the watermark won, leaving it armed would keep a timer per transition
+        // alive for the full timeout.
+        timeoutCts.Cancel();
+
+        if (winner == waiter.Task)
+        {
+            return;
+        }
+
+        ct.ThrowIfCancellationRequested();
+
+        lock (_observationLock)
+        {
+            _ = _observationWaiters.Remove(toolCallId);
+            _observationBarrierDisabled = true;
+        }
+
+        _logger?.LogWarning(
+            "Workflow transition for tool call {ToolCallId} timed out after {TimeoutSeconds}s waiting for the "
+                + "run observer to reach it; the observation barrier is disabled for the rest of this run and "
+                + "a transition may now render from state that lags the controller.",
+            toolCallId,
+            ObservationBarrierTimeout.TotalSeconds
+        );
+    }
+
+    /// <summary>
+    ///     Records that the observer has fully processed the message carrying <paramref name="toolCallId"/>
+    ///     and releases any transition waiting on it. The observed-id history is capped: the gap between a
+    ///     message being published and its handler awaiting the watermark is a handful of messages, so a
+    ///     bounded window is sufficient and cannot leak across a long-lived controller conversation.
+    /// </summary>
+    private void MarkObserved(string toolCallId)
+    {
+        if (string.IsNullOrEmpty(toolCallId))
+        {
+            return;
+        }
+
+        TaskCompletionSource<bool>? waiter = null;
+        lock (_observationLock)
+        {
+            if (_observedToolCallIds.Add(toolCallId))
+            {
+                _observedToolCallOrder.Enqueue(toolCallId);
+                while (_observedToolCallOrder.Count > ObservedToolCallHistory)
+                {
+                    _ = _observedToolCallIds.Remove(_observedToolCallOrder.Dequeue());
+                }
+            }
+
+            if (_observationWaiters.Remove(toolCallId, out var pending))
+            {
+                waiter = pending;
+            }
+        }
+
+        // Outside the lock: even with RunContinuationsAsynchronously, never complete a waiter while holding it.
+        _ = waiter?.TrySetResult(true);
     }
 
     /// <summary>

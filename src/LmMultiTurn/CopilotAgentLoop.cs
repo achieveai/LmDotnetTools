@@ -6,6 +6,8 @@ using AchieveAi.LmDotnetTools.CopilotSdkProvider.Models;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Tools;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using Microsoft.Extensions.Logging;
@@ -49,6 +51,9 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public CopilotAgentLoop(
         CopilotSdkOptions options,
         string threadId,
@@ -60,7 +65,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         ILogger<CopilotAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : this(
             options,
             functionRegistry: null,
@@ -74,7 +80,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             logger,
             loggerFactory,
             clientFactory,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: lifecycleServices)
     {
     }
 
@@ -97,6 +104,9 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
     /// When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/>
     /// (requires <paramref name="store"/> to implement it).
     /// </param>
+    /// <param name="lifecycleServices">
+    /// Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
     public CopilotAgentLoop(
         CopilotSdkOptions options,
         FunctionRegistry? functionRegistry,
@@ -110,7 +120,8 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
         ILogger<CopilotAgentLoop>? logger = null,
         ILoggerFactory? loggerFactory = null,
         Func<CopilotSdkOptions, ILogger?, ICopilotSdkClient>? clientFactory = null,
-        bool persistRunLedger = false)
+        bool persistRunLedger = false,
+        MultiTurnLifecycleServices? lifecycleServices = null)
         : base(
             threadId,
             systemPrompt,
@@ -120,7 +131,11 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             outputChannelCapacity,
             store,
             logger,
-            persistRunLedger: persistRunLedger)
+            persistRunLedger: persistRunLedger,
+            lifecycleServices: MultiTurnLifecycleServices.ForAgent(
+                lifecycleServices,
+                LifecycleAgentKinds.Copilot,
+                options?.Model))
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _loggerFactory = loggerFactory;
@@ -253,7 +268,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             }
 
             var (batchParent, isExplicitFork) = ResolveBatchParent(batch);
-            var assignment = await StartRunAsync(batch, batchParent, ct);
+            var assignment = await StartRunAsync(batch, batchParent, ct, wasForked: isExplicitFork);
             var queueDepth = InputReader.CanCount ? InputReader.Count : -1;
             await PublishToAllAsync(new RunAssignmentMessage
             {
@@ -297,7 +312,13 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
             try
             {
                 await OnBeforeRunAsync();
+
+                // The CLI runs its own agentic loop behind this one generation id, so the run has
+                // exactly one turn from the lifecycle's point of view. A run that fails or is
+                // cancelled reports its turn from the finalizer's terminal sweep instead.
+                BeginTurn(assignment.RunId, assignment.GenerationId);
                 await ExecuteRunAsync(batch, assignment.RunId, assignment.GenerationId, streamMetrics, ct);
+                await CompleteTurnAsync(assignment.RunId, assignment.GenerationId, ct: ct);
 
                 await CompleteRunAsync(
                     assignment.RunId,
@@ -395,6 +416,11 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
 
         try
         {
+            // The prompt is this provider's whole request, so it is also the only place a
+            // mid-session context delivery can be read back from before it is dispatched. Boot
+            // instructions travel through session start instead and are not this run's to report.
+            await ReportContextLoadedAsync(runId, generationId, prompt, ct: ct);
+
             await foreach (var envelope in _client.RunStreamingAsync(prompt, ct))
             {
                 eventSequence++;
@@ -425,6 +451,7 @@ public sealed class CopilotAgentLoop : MultiTurnAgentBase
                 foreach (var message in messages)
                 {
                     AddToHistory(message);
+                    ObserveTurnMessage(runId, generationId, message);
                     await PublishToAllAsync(message, ct);
                 }
             }

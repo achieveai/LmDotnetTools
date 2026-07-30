@@ -117,7 +117,7 @@ public sealed class StreamingTests
         await using var body = await response.Content.ReadAsStreamAsync();
 
         // Frame "a" arrives immediately; the keep-alive comment(s) follow while the gate is held closed.
-        var seen = await ReadUntilAsync(body, s => s.Contains(": copilot-anthropic-proxy keep-alive"),
+        var seen = await TestUpstream.ReadUntilAsync(body, s => s.Contains(": copilot-anthropic-proxy keep-alive"),
             TimeSpan.FromSeconds(15));
         seen.Should().Contain("event: a");
         seen.Should().Contain(": copilot-anthropic-proxy keep-alive",
@@ -128,33 +128,4 @@ public sealed class StreamingTests
         rest.Should().Contain("event: b", "real frames still flow after the keep-alives");
     }
 
-    /// <summary>Reads the response stream, accumulating text, until <paramref name="predicate"/> holds or the
-    /// timeout elapses. Keep-alive/frame content here is ASCII, so chunk boundaries don't corrupt matching.</summary>
-    private static async Task<string> ReadUntilAsync(Stream body, Func<string, bool> predicate, TimeSpan timeout)
-    {
-        var accumulated = new StringBuilder();
-        var buffer = new byte[256];
-        using var cts = new CancellationTokenSource(timeout);
-        while (!predicate(accumulated.ToString()))
-        {
-            int read;
-            try
-            {
-                read = await body.ReadAsync(buffer, cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-
-            if (read == 0)
-            {
-                break;
-            }
-
-            accumulated.Append(Encoding.UTF8.GetString(buffer, 0, read));
-        }
-
-        return accumulated.ToString();
-    }
 }

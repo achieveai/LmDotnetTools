@@ -151,32 +151,54 @@ public class NotifyEnvelopeDeliveryTests
         return history;
     }
 
+    /// <summary>
+    /// Establishes a live subscription and returns one completion source per expected run.
+    /// Registration happens synchronously here, before this method returns: SubscribeAsync registers
+    /// the subscriber ahead of the iterator's first suspension point, so issuing (not awaiting) the
+    /// first move is what makes the subscription live. Leaving registration to the pump task instead
+    /// would race the caller's trigger — a run that completes before the subscriber registers closes
+    /// the replay buffer, and the late subscriber then sees nothing at all.
+    /// </summary>
     private static List<TaskCompletionSource<bool>> SubscribeForRunCompletions(
         MultiTurnAgentLoop loop, CancellationToken ct, int expectedCount)
     {
         var sources = Enumerable.Range(0, expectedCount)
             .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
             .ToList();
-        var completed = 0;
+
+        var subscription = loop.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+        var firstMove = subscription.MoveNextAsync();
+
+        // Not scheduled with `ct`: the pump is already cancellation-bound through the enumerator, and
+        // handing the token to Task.Run would let a pre-cancelled token skip the body outright,
+        // stranding the move issued above with nothing to observe or dispose it.
         _ = Task.Run(async () =>
         {
+            var completed = 0;
             try
             {
-                await foreach (var msg in loop.SubscribeAsync(ct))
+                for (var move = firstMove; await move; move = subscription.MoveNextAsync())
                 {
-                    if (msg is RunCompletedMessage)
+                    if (subscription.Current is not RunCompletedMessage)
                     {
-                        var idx = completed;
-                        completed++;
-                        if (idx < sources.Count)
-                        {
-                            sources[idx].TrySetResult(true);
-                        }
+                        continue;
                     }
+
+                    if (completed < sources.Count)
+                    {
+                        sources[completed].TrySetResult(true);
+                    }
+
+                    completed++;
                 }
             }
             catch (OperationCanceledException) { }
-        }, ct);
+            finally
+            {
+                await subscription.DisposeAsync();
+            }
+        });
+
         return sources;
     }
 

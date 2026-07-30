@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
@@ -17,6 +18,12 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 {
     private const string BaseUrl = "https://api.github.com";
     private const string UserAgent = "LmDotnetTools-CodeReviewDaemon";
+
+    /// <summary>Cap on inline-comment pages fetched when listing existing findings (100 per page).</summary>
+    private const int MaxListPages = 5;
+
+    /// <summary>Per-comment body cap when listing existing findings — enough to recognize a duplicate.</summary>
+    private const int MaxBodyChars = 280;
 
     private readonly HttpClient _httpClient;
     private readonly IOAuthTokenProvider _tokenProvider;
@@ -85,6 +92,166 @@ internal sealed class GitHubReviewCommentPublisher : IReviewCommentPublisher
 
     private static string CommentsUrl(ReviewCommentTarget target) =>
         $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}/issues/{target.PrId}/comments";
+
+    public async Task<IReadOnlyList<ExistingReviewComment>> ListExistingReviewCommentsAsync(
+        ReviewCommentTarget target,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        var results = new List<ExistingReviewComment>();
+        var repoBase = $"{BaseUrl}/repos/{target.Repo.OrgOrOwner}/{target.Repo.RepoName}";
+        var pullsBase = $"{repoBase}/pulls/{target.PrId}";
+
+        // Review-level summaries (the top-level "Reviewed PR X…" bodies). Fetched FIRST so we can collect the ids of
+        // PENDING/unsubmitted drafts before scanning inline comments below. Skip PENDING drafts: a draft is not
+        // posted discussion, and treating its body as such lets a stale draft from a failed posting run suppress the
+        // valid submitted replacement on the next review.
+        var pendingReviewIds = new HashSet<long>();
+        await foreach (var review in EnumerateAsync($"{pullsBase}/reviews?per_page=100", cancellationToken))
+        {
+            if (IsPendingReview(review))
+            {
+                if (LongOf(review, "id") is { } pendingId)
+                {
+                    pendingReviewIds.Add(pendingId);
+                }
+
+                continue;
+            }
+
+            var body = GetString(review, "body");
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                results.Add(new ExistingReviewComment(
+                    null, null, Trim(body), AuthorOf(review), IsActive: true, PublishedAt: TimeOf(review, "submitted_at")));
+            }
+        }
+
+        // Inline review comments — the actual per-line findings. Fetched NEWEST-first (sort=created&direction=desc)
+        // so that once a PR exceeds the MaxListPages cap we keep the most RECENT findings/replies (which drive
+        // dedup + reply handling) rather than the oldest. Paginated 100/page. A comment whose pull_request_review_id
+        // belongs to a PENDING draft (above) is skipped — GitHub still returns the draft's per-line comments to the
+        // authenticated author, and letting one seed dedup would suppress its valid submitted replacement.
+        for (var page = 1; page <= MaxListPages; page++)
+        {
+            var count = 0;
+            await foreach (var comment in EnumerateAsync(
+                $"{pullsBase}/comments?per_page=100&page={page}&sort=created&direction=desc", cancellationToken))
+            {
+                count++;
+                var body = GetString(comment, "body");
+                if (string.IsNullOrWhiteSpace(body))
+                {
+                    continue;
+                }
+
+                if (LongOf(comment, "pull_request_review_id") is { } reviewId && pendingReviewIds.Contains(reviewId))
+                {
+                    continue; // belongs to an unsubmitted draft review
+                }
+
+                results.Add(new ExistingReviewComment(
+                    GetString(comment, "path"), LineOf(comment), Trim(body), AuthorOf(comment),
+                    IsActive: true, PublishedAt: TimeOf(comment, "created_at"), ThreadId: ThreadIdOf(comment)));
+            }
+
+            if (count < 100)
+            {
+                break; // last page reached
+            }
+        }
+
+        // Ordinary PR-conversation (issue) comments — this publisher posts its summaries via /issues/{pr}/comments,
+        // so prior summaries AND the human PR-conversation (questions directed at the bot) live here, not on the
+        // review-comment endpoints; fold them into the model so dedup/reply handling can see them. PR-level (no
+        // path/line).
+        await foreach (var comment in EnumerateAsync($"{repoBase}/issues/{target.PrId}/comments?per_page=100", cancellationToken))
+        {
+            var body = GetString(comment, "body");
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                results.Add(new ExistingReviewComment(
+                    null, null, Trim(body), AuthorOf(comment), IsActive: true,
+                    PublishedAt: TimeOf(comment, "created_at"), ThreadId: ThreadIdOf(comment)));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>True when a review is an unsubmitted PENDING draft (GitHub reports <c>state == "PENDING"</c> and
+    /// no <c>submitted_at</c>). A draft is not posted discussion, so it must never seed dedup — otherwise a stale
+    /// draft left by a failed posting run could suppress the valid submitted review on the next pass.</summary>
+    private static bool IsPendingReview(JsonElement review) =>
+        string.Equals(GetString(review, "state"), "PENDING", StringComparison.OrdinalIgnoreCase);
+
+    private async IAsyncEnumerable<JsonElement> EnumerateAsync(
+        string url,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var request = await BuildRequestAsync(
+            HttpMethod.Get, url, SandboxOperation.ReadProviderMetadata, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        foreach (var element in document.RootElement.EnumerateArray())
+        {
+            yield return element;
+        }
+    }
+
+    private static string? GetString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>Reads a numeric field (e.g. a review's <c>id</c> or a comment's <c>pull_request_review_id</c>) as a
+    /// long, so inline comments can be correlated back to the PENDING draft review they belong to.</summary>
+    private static long? LongOf(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.Number && v.TryGetInt64(out var n)
+            ? n
+            : null;
+
+    private static string? LineOf(JsonElement comment) =>
+        comment.TryGetProperty("line", out var l) && l.ValueKind is JsonValueKind.Number
+            ? l.GetInt32().ToString(CultureInfo.InvariantCulture)
+            : comment.TryGetProperty("original_line", out var ol) && ol.ValueKind is JsonValueKind.Number
+                ? ol.GetInt32().ToString(CultureInfo.InvariantCulture)
+                : null;
+
+    private static string? AuthorOf(JsonElement element) =>
+        element.TryGetProperty("user", out var u) && u.ValueKind is JsonValueKind.Object ? GetString(u, "login") : null;
+
+    /// <summary>Reads an ISO-8601 timestamp field (e.g. <c>created_at</c>/<c>submitted_at</c>) — orders past vs. new.</summary>
+    private static DateTimeOffset? TimeOf(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.String
+            && DateTimeOffset.TryParse(v.GetString(), CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind, out var dt)
+            ? dt
+            : null;
+
+    /// <summary>
+    /// The thread a review comment belongs to: its reply-root (<c>in_reply_to_id</c>) if it is a reply,
+    /// otherwise its own <c>id</c> — so a finding and its replies group under one conversation.
+    /// </summary>
+    private static string? ThreadIdOf(JsonElement comment)
+    {
+        if (comment.TryGetProperty("in_reply_to_id", out var r) && r.ValueKind is JsonValueKind.Number)
+        {
+            return r.GetInt64().ToString(CultureInfo.InvariantCulture);
+        }
+
+        return comment.TryGetProperty("id", out var id) && id.ValueKind is JsonValueKind.Number
+            ? id.GetInt64().ToString(CultureInfo.InvariantCulture)
+            : null;
+    }
+
+    private static string Trim(string body)
+    {
+        var oneLine = body.ReplaceLineEndings(" ").Trim();
+        return oneLine.Length <= MaxBodyChars ? oneLine : oneLine[..MaxBodyChars] + "…";
+    }
 
     private async Task<HttpRequestMessage> BuildRequestAsync(
         HttpMethod method, string url, SandboxOperation operation, CancellationToken cancellationToken)

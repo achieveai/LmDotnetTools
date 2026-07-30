@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.AgentRuntime;
+using AchieveAi.LmDotnetTools.LmCore.Transport;
 using AchieveAi.LmDotnetTools.ProcessLauncher;
 using Microsoft.Extensions.Logging;
 
@@ -15,6 +16,13 @@ namespace AchieveAi.LmDotnetTools.CopilotSdkProvider.Transport;
 /// </summary>
 internal sealed class CopilotAcpTransport : IAsyncDisposable
 {
+    /// <summary>
+    /// How many ACP requests may be handled at once. A turn issues tool calls a few at a time, so
+    /// this is headroom rather than a throttle; its job is to bound what an agent that floods
+    /// requests — or a run whose tool calls all sit at an approval gate — can accumulate.
+    /// </summary>
+    private const int MaxConcurrentServerRequests = 8;
+
     private readonly CopilotSdkOptions _options;
     private readonly ILogger? _logger;
     private readonly ConcurrentDictionary<long, PendingRequest> _pendingRequests = new();
@@ -32,6 +40,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
     private Task? _stdoutTask;
     private Task? _stderrTask;
     private CancellationTokenSource? _processCts;
+    private BoundedServerRequestDispatcher? _serverRequests;
     private Func<string, JsonElement?, CancellationToken, Task<JsonElement>>? _requestHandler;
     private Action<string, JsonElement?>? _notificationHandler;
     private CopilotRpcTraceWriter? _rpcTraceWriter;
@@ -176,6 +185,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             _stderr = _process.StandardError;
 
             _processCts = new CancellationTokenSource();
+            _serverRequests = new BoundedServerRequestDispatcher(MaxConcurrentServerRequests, _logger);
             _stdoutTask = Task.Run(() => ReadStdoutLoopAsync(_processCts.Token), CancellationToken.None);
             _stderrTask = Task.Run(() => ReadStderrLoopAsync(_processCts.Token), CancellationToken.None);
         }
@@ -330,6 +340,14 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 }
             }
 
+            // After the read loops are done, so nothing new can be dispatched, and before the
+            // streams below go away, so a handler still writing a response is cancelled rather
+            // than left to discover a disposed stdin.
+            if (_serverRequests != null)
+            {
+                await _serverRequests.DisposeAsync();
+            }
+
             FailPendingRequests(new InvalidOperationException("Copilot ACP transport has been stopped."));
         }
         finally
@@ -347,6 +365,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
             CleanupMcpConfigTempFile();
 
             _processCts = null;
+            _serverRequests = null;
             _stdin = null;
             _stdout = null;
             _stderr = null;
@@ -490,7 +509,7 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 JsonElement? parameters = root.TryGetProperty("params", out var paramsProp)
                     ? paramsProp.Clone()
                     : null;
-                await HandleServerRequestAsync(idProp.Clone(), method, parameters, ct);
+                await DispatchServerRequest(idProp.Clone(), method, parameters, ct);
                 return;
             }
 
@@ -553,6 +572,51 @@ internal sealed class CopilotAcpTransport : IAsyncDisposable
                 pending.TrySetResult(CreateEmptyObject());
             }
         }
+    }
+
+    /// <summary>
+    /// Hands a request the agent made of us to the dispatcher and returns, so the stdout loop reads
+    /// the next line instead of waiting for the handler.
+    /// </summary>
+    /// <remarks>
+    /// The wait this avoids is not hypothetical: a tool call can now be held at an approval gate
+    /// until a person answers. Handled inline, that would stop the loop that carries the rest of
+    /// the turn — including the cancellation that would end the wait — so the run could only ever
+    /// time out. Both <paramref name="requestId"/> and <paramref name="parameters"/> arrive already
+    /// cloned off the parsed document, so outliving it is safe; the id is what correlates whichever
+    /// response finishes first back to its request.
+    /// </remarks>
+    private Task DispatchServerRequest(
+        JsonElement requestId,
+        string method,
+        JsonElement? parameters,
+        CancellationToken ct)
+    {
+        var dispatcher = _serverRequests;
+        if (dispatcher != null
+            && dispatcher.TryDispatch(token => HandleServerRequestAsync(requestId, method, parameters, token), ct))
+        {
+            return Task.CompletedTask;
+        }
+
+        _logger?.LogWarning(
+            "{event_type} {event_status} {provider} {provider_mode} {error_code} {method}",
+            "copilot.acp_server.request",
+            "refused",
+            _options.Provider,
+            _options.ProviderMode,
+            dispatcher == null ? "transport_stopped" : "dispatcher_saturated",
+            method);
+
+        // Answering is still ours to do — an agent waiting on a response that never comes would
+        // hang the turn rather than fail it. Written from here rather than dispatched, because the
+        // dispatcher is what just refused. A write waits only on the outbound lock, which is held
+        // for one line at a time, so this cannot reintroduce the stall above.
+        return SendErrorAsync(
+            requestId,
+            -32000,
+            "Copilot ACP request was refused: too many concurrent requests.",
+            ct);
     }
 
     private async Task HandleServerRequestAsync(

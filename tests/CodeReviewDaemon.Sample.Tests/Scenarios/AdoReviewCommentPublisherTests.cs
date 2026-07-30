@@ -113,4 +113,89 @@ public sealed class AdoReviewCommentPublisherTests : LoggingTestBase
 
         await act.Should().ThrowAsync<HttpRequestException>();
     }
+
+    [Fact]
+    public async Task ListExisting_returns_thread_comments_with_file_line_and_author()
+    {
+        var threads = JsonSerializer.Serialize(new
+        {
+            value = new object[]
+            {
+                new
+                {
+                    threadContext = new { filePath = "/src/Foo.cs", rightFileStart = new { line = 42 } },
+                    comments = new object[] { new { content = "Must — null deref here", author = new { displayName = "Revobot" } } },
+                },
+                new
+                {
+                    // no thread context (PR-level) + one blank comment that must be skipped
+                    comments = new object[]
+                    {
+                        new { content = "General note", author = new { displayName = "Alice" } },
+                        new { content = "   ", author = new { displayName = "Revobot" } },
+                    },
+                },
+            },
+        });
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().HaveCount(2, "one inline finding + one PR-level note; the blank comment is skipped");
+        existing.Should().ContainSingle(e =>
+            e.Path == "/src/Foo.cs" && e.Line == "42" && e.Body.Contains("null deref") && e.Author == "Revobot");
+        existing.Should().ContainSingle(e => e.Path == null && e.Body.Contains("General note") && e.Author == "Alice");
+    }
+
+    [Fact]
+    public async Task ListExisting_maps_thread_status_to_active_or_resolved()
+    {
+        // The daemon must not re-post a finding that is already an ACTIVE (open) comment, but MAY re-raise a
+        // RESOLVED one if the issue persists — so the publisher reports each thread's status. ADO returns
+        // 'status' as a string; 'active'/'pending' are open, 'fixed'/'closed'/'wontFix'/'byDesign' are resolved,
+        // and a thread with NO status is treated as active (conservative — never re-post a possibly-open one).
+        var threads = JsonSerializer.Serialize(new
+        {
+            value = new object[]
+            {
+                new { status = "active", comments = new object[] { new { content = "still open", author = new { displayName = "Revobot" } } } },
+                new { status = "fixed", comments = new object[] { new { content = "already fixed", author = new { displayName = "Revobot" } } } },
+                new { comments = new object[] { new { content = "no status field", author = new { displayName = "Revobot" } } } },
+            },
+        });
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(e => e.Body.Contains("still open") && e.IsActive);
+        existing.Should().ContainSingle(e => e.Body.Contains("already fixed") && !e.IsActive);
+        existing.Should().ContainSingle(e => e.Body.Contains("no status field") && e.IsActive);
+    }
+
+    [Fact]
+    public async Task ListExisting_skips_system_activity_and_deleted_comments()
+    {
+        // ADO threads also carry non-discussion entries: system activity (merges/votes/reviewer updates all use
+        // commentType "system") and deleted comments. Those are non-blank but not review discussion, so they must
+        // not consume the bounded existing-comment budget and displace real findings/questions.
+        var threads = JsonSerializer.Serialize(new
+        {
+            value = new object[]
+            {
+                new { status = "active", comments = new object[]
+                {
+                    new { content = "REAL-FINDING here", commentType = "text", author = new { displayName = "Revobot" } },
+                    new { content = "Gautam voted -5", commentType = "system", author = new { displayName = "Azure DevOps" } },
+                    new { content = "DELETED-BODY", commentType = "text", isDeleted = true, author = new { displayName = "alice" } },
+                } },
+            },
+        });
+        var handler = new FakeHttpMessageHandler().OnJson(HttpMethod.Get, "/pullRequests/7/threads", threads);
+
+        var existing = await Publisher(handler).ListExistingReviewCommentsAsync(Target, CancellationToken.None);
+
+        existing.Should().ContainSingle(e => e.Body.Contains("REAL-FINDING"));
+        existing.Should().NotContain(e => e.Body.Contains("voted"), "system activity is not review discussion");
+        existing.Should().NotContain(e => e.Body.Contains("DELETED-BODY"), "deleted comments are excluded");
+    }
 }

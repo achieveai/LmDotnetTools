@@ -49,6 +49,25 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
+    public void ReviewProfile_Prompt_EncodesTheFourReviewRequirements()
+    {
+        // The user's standing rules for how Revobot reviews/posts (see memory
+        // revobot-review-posting-requirements): (1) review the FULL PR; (2/5) judge resolution from each thread's
+        // conversation, not just a status hint; (3) weigh comments from ALL authors (bots + humans); (4) answer a
+        // question directed at the bot; (6) the existing-comments block is split past-vs-new. Rendered with
+        // should_post=true (posting step present).
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        prompt.Should().Contain("FULL PR"); // (1) review the whole PR, not just a sample/delta
+        prompt.Should().MatchRegex("(?i)ALL AUTHORS"); // (3) consider other bots + humans
+        prompt.Should().MatchRegex("(?i)resolved"); // (2/5) resolution judgment, not blind re-post
+        prompt.Should().Contain("[status]"); // (5) status is a HINT — the LLM decides resolution
+        prompt.Should().Contain("New comments since your last review"); // (6) the two-part split
+        prompt.Should().MatchRegex("(?i)ANSWER any question"); // (4) a question aimed at the bot must be answered
+    }
+
+    [Fact]
     public void CreateReviewProfile_grants_no_built_in_tools_and_defers_the_mcp_allow_list()
     {
         var profile = DaemonAgentFactory.CreateReviewProfile();
@@ -167,7 +186,7 @@ public sealed class DaemonAgentFactoryTests
     public void ReviewProfile_Prompt_InstructsSkillSubAgentsAndInjectionSafety()
     {
         // Render with should_post=true so the posting step (step 5) is present; a GitHub run (is_ado unset)
-        // posts inline via the code-reviewer:post-pr-review skill.
+        // reviews via the code-reviewer:pr-review skill and its sub-agents.
         var prompt = DaemonAgentFactory.CreateReviewProfile(
             new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
 
@@ -175,8 +194,63 @@ public sealed class DaemonAgentFactoryTests
         prompt.Should().Contain("Skill"); // via the Skill tool
         prompt.Should().Contain("Contracts/"); // cross-repo reading
         prompt.Should().MatchRegex("(?i)injection|untrusted"); // injection framing
-        prompt.Should().Contain("code-reviewer:post-pr-review"); // the agent posts inline via the post-pr-review skill
         prompt.Should().MatchRegex("(?i)inline"); // findings must be posted inline, not as one summary
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_MandatesOneBatchedGithubReview_AndForbidsPerCommentPosting()
+    {
+        // Regression (empty-review spam, live #215/#219): GitHub posting MUST be ONE batched POST /reviews
+        // carrying all findings in comments[]. The per-comment POST /pulls/{pr}/comments endpoint is forbidden
+        // because GitHub wraps each standalone review comment in its OWN empty-bodied review (N findings → N
+        // empty reviews), and the post-pr-review skill — which posts per-comment — must NOT be used to POST on
+        // GitHub. Rendered with should_post=true and is_ado unset (a GitHub run).
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        prompt.Should().MatchRegex("(?i)EXACTLY ONE review"); // one batched review per run
+        prompt.Should().Contain("FORBIDDEN"); // the per-comment endpoint is called out as forbidden
+        prompt.Should().MatchRegex("(?i)empty.{0,40}review"); // ...because it creates empty reviews
+        prompt.Should().Contain("Do NOT use the code-reviewer:post-pr-review skill to POST"); // no skill posting on GitHub
+        prompt.Should().NotContain("You MAY use the code-reviewer:post-pr-review"); // the old permission is gone
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_RoutesGithubThreadAnswers_WithoutTheEmptyReviewSpammingRepliesEndpoint()
+    {
+        // Regression (empty-review spam, live #224): the old guidance told the agent that replying via
+        // POST /pulls/{pr}/comments/{comment_id}/replies "does NOT create a new review, so it is fine" — that
+        // is FALSE. GitHub wraps EACH reply in its own submitted, empty-bodied COMMENTED review (proven on #224:
+        // six replies → six empty reviews). The corrected GitHub guidance must (a) drop that false claim and (b)
+        // call out the /replies endpoint as empty-review spam. Rendered with should_post=true and is_ado unset.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        prompt.Should().NotContain("does NOT create a new review"); // the false "replies are safe" claim is gone
+        prompt.Should().MatchRegex("(?is)replies.{0,200}empty"); // the /replies endpoint is now called out as empty-review spam
+        prompt.Should().Contain("issues/"); // PR-conversation answers route through the wrapper-free issue-comments endpoint
+    }
+
+    [Fact]
+    public void ReviewProfile_Prompt_DoesNotClaimBatchedCommentsCanReplyInThread()
+    {
+        // Regression (PR #226 Must, comment 3651558773): the first #224 fix replaced the /replies endpoint with
+        // "fold your answer into the SAME single batched POST /reviews: add a comments[] entry anchored to that
+        // thread's file+line". That is ALSO wrong — the batched comments[] array has NO in_reply_to field, so an
+        // entry at the old path/line opens a NEW top-level thread (GitHubReviewCommentPublisher.ThreadIdOf groups
+        // it under its own id), leaving the original thread active; and an outdated original line 422s the whole
+        // batch. There is no REST way to reply in-thread without an empty-review wrapper, so the prompt must NOT
+        // claim comments[] answers/continues an existing thread. A prior-thread answer must route to the review
+        // SUMMARY BODY or the wrapper-free POST /issues/{pr}/comments; comments[] carries NEW in-diff findings only.
+        var prompt = DaemonAgentFactory.CreateReviewProfile(
+            new Dictionary<string, object> { ["bot_name"] = "Revobot", ["should_post"] = true }).SystemPrompt;
+
+        // The flawed "anchor a comments[] reply to the old thread's line" instruction must be gone.
+        prompt.Should().NotContain("anchored to that thread's file+line");
+        // The prompt must state comments[] cannot reply in-thread (no in_reply_to on the batched endpoint).
+        prompt.Should().MatchRegex("(?is)comments\\[\\].{0,160}(cannot|can't|does not|do not|no in_reply_to).{0,160}(thread|reply)");
+        // A prior-thread answer routes to the summary body or the wrapper-free issues endpoint, not a fake reply.
+        prompt.Should().MatchRegex("(?is)(summary body|issues/)");
     }
 
     [Fact]

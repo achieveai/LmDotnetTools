@@ -354,7 +354,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 addTools,
                 removeTools,
                 cancellationToken,
-                modelIntelligence);
+                modelIntelligence,
+                // The only place the spawning call's identity is in scope. Without it a
+                // subscriber sees a sub-agent appear with a parent run but no reason.
+                context.ToolCallId);
 
             return ToolHandlerResult.FromText(result);
         }

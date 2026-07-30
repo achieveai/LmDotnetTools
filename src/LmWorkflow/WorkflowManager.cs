@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
@@ -210,11 +211,15 @@ public sealed class WorkflowManager : IAsyncDisposable
     private readonly GenerateReplyOptions? _controllerDefaultOptions;
     private readonly ILogger _logger;
     private readonly IJsonSchemaValidator? _schemaValidator;
+
     private readonly Func<IUsageSink?>? _rootUsageSink;
     private readonly Func<InheritableToolSnapshot?>? _inheritedToolSnapshot;
     private readonly IConversationStore? _controllerConversationStore;
     private readonly Func<string, WorkflowControllerProfile>? _controllerProfileByProvider;
     private readonly Func<string?>? _launchConversationId;
+
+    private readonly MultiTurnLifecycleServices? _lifecycleServices;
+
 
     private readonly WorkflowValidator _validator = new();
     private readonly ConcurrentDictionary<string, WorkflowEntry> _workflows = new(StringComparer.Ordinal);
@@ -249,6 +254,7 @@ public sealed class WorkflowManager : IAsyncDisposable
     /// </param>
     /// <param name="logger">Optional logger.</param>
     /// <param name="schemaValidator">Optional JSON-Schema validator forwarded to the runtime.</param>
+
     /// <param name="rootUsageSink">
     ///     Optional LATE-BOUND getter for the originating conversation's root usage sink (issue #196). It is
     ///     resolved once per run at <see cref="StartAsync"/> time (not at construction), so a host that creates
@@ -296,6 +302,11 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     a getter returning null/blank) keeps the legacy unscoped <c>workflow-{workflowId}</c> thread — e.g.
     ///     headless/test hosts with no launching conversation.
     /// </param>
+    /// <param name="lifecycleServices">
+    ///     Optional lifecycle observation, forwarded to every controller loop this manager starts.
+    ///     <see cref="WorkflowSession"/> strips any approval gate from it — see
+    ///     <see cref="MultiTurnLifecycleServices.ForObservationOnly"/>.
+    /// </param>
     public WorkflowManager(
         Func<IStreamingAgent> controllerAgentFactory,
         SubAgentOptions controllerSubAgentOptions,
@@ -306,11 +317,14 @@ public sealed class WorkflowManager : IAsyncDisposable
         GenerateReplyOptions? controllerDefaultOptions = null,
         ILogger? logger = null,
         IJsonSchemaValidator? schemaValidator = null,
+
         Func<IUsageSink?>? rootUsageSink = null,
         Func<InheritableToolSnapshot?>? inheritedToolSnapshot = null,
         IConversationStore? controllerConversationStore = null,
         Func<string, WorkflowControllerProfile>? controllerProfileByProvider = null,
-        Func<string?>? launchConversationId = null
+        Func<string?>? launchConversationId = null,
+        MultiTurnLifecycleServices? lifecycleServices = null
+
     )
     {
         ArgumentNullException.ThrowIfNull(controllerAgentFactory);
@@ -329,11 +343,17 @@ public sealed class WorkflowManager : IAsyncDisposable
         _controllerDefaultOptions = controllerDefaultOptions;
         _logger = logger ?? NullLogger.Instance;
         _schemaValidator = schemaValidator;
+
         _rootUsageSink = rootUsageSink;
         _inheritedToolSnapshot = inheritedToolSnapshot;
         _controllerConversationStore = controllerConversationStore;
         _controllerProfileByProvider = controllerProfileByProvider;
         _launchConversationId = launchConversationId;
+
+        // Handed to each controller loop WorkflowSession builds. It strips the approval gate there —
+        // this manager deliberately does not pre-filter, so there is one place that decides.
+        _lifecycleServices = lifecycleServices;
+
         _concurrencyGate = new SemaphoreSlim(maxConcurrentWorkflows, maxConcurrentWorkflows);
     }
 
@@ -506,9 +526,12 @@ public sealed class WorkflowManager : IAsyncDisposable
                     schemaValidator: _schemaValidator,
                     includeAuthoringTool: false,
                     controllerMaxTurnsPerRun: _controllerMaxTurnsPerRun,
+
                     controllerDefaultOptions: runControllerDefaultOptions,
                     usageSink: rootUsageSink,
-                    ct: CancellationToken.None
+                    ct: CancellationToken.None,
+                    lifecycleServices: _lifecycleServices
+
                 )
                 .ConfigureAwait(false);
 

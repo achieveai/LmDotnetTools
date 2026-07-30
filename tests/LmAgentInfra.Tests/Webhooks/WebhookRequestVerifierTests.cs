@@ -1,11 +1,11 @@
 using System.Text;
-using CodeReviewDaemon.Sample.Auth;
+using AchieveAi.LmDotnetTools.LmAgentInfra.Webhooks;
 
-namespace CodeReviewDaemon.Sample.Tests.Scenarios;
+namespace AchieveAi.LmDotnetTools.LmAgentInfra.Tests.Webhooks;
 
 /// <summary>
-/// Plan §9 — the deterministic webhook verifier + its signing-secret and replay-cache collaborators.
-/// These pin the security contract the daemon enforces in front of the auth webhook: a callback is
+/// ADR 0005 — the deterministic webhook verifier + its signing-secret and replay-cache collaborators.
+/// These pin the security contract a receiver enforces in front of the auth webhook: a callback is
 /// accepted only when it targets a known provider, is <c>application/json</c>, is within the size cap,
 /// carries the signature/timestamp/delivery headers, has a fresh timestamp, and bears an HMAC signature
 /// over the exact body under that timestamp. The threat cases (tampered body, swapped timestamp, replay)
@@ -43,7 +43,7 @@ public sealed class WebhookRequestVerifierTests
     public void A_tampered_body_is_rejected_even_with_a_valid_looking_signature()
     {
         var input = SignedInput();
-        // The signature was computed over the original Body; the gateway-claimed body is different.
+        // The signature was computed over the original Body; the caller-claimed body is different.
         var tampered = input with { Body = Encoding.UTF8.GetBytes("""{"provider_id":"github","destination_host":"evil.example"}""") };
 
         Verifier().Verify(tampered, Now).Rejection.Should().Be(WebhookRejection.InvalidSignature);
@@ -139,7 +139,7 @@ public sealed class WebhookRequestVerifierTests
     }
 }
 
-/// <summary>Plan §9 — the delivery-id replay cache that rejects a duplicate callback within its TTL.</summary>
+/// <summary>ADR 0005 — the delivery-id replay cache that rejects a duplicate callback within its TTL.</summary>
 public sealed class DeliveryReplayCacheTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_750_000_000);
@@ -169,5 +169,71 @@ public sealed class DeliveryReplayCacheTests
 
         cache.TryRegister("abc", Now).Should().BeTrue();
         cache.TryRegister("abc", Now.AddMinutes(6)).Should().BeTrue("the prior sighting has expired");
+    }
+
+    [Fact]
+    public void A_flood_of_unique_ids_evicts_the_oldest_but_keeps_the_newest()
+    {
+        // The cap is the memory bound, so it has to bite even when nothing has expired: a long TTL means
+        // TTL pruning reclaims nothing and only the hard cap can. Distinct, increasing sighting times make
+        // "oldest" unambiguous, so which entries go is deterministic rather than dictionary-order luck.
+        var cache = new DeliveryReplayCache(TimeSpan.FromMinutes(10), maxEntries: 8);
+        for (var i = 1; i <= 10; i++)
+        {
+            cache.TryRegister($"id{i}", Now.AddSeconds(i)).Should().BeTrue($"id{i} is unique");
+        }
+
+        var after = Now.AddSeconds(11);
+        cache.TryRegister("id10", after).Should().BeFalse("the newest sighting is still remembered");
+        cache.TryRegister("id1", after).Should().BeTrue("the oldest sighting was evicted by the cap");
+    }
+
+    [Fact]
+    public void Registrations_beyond_the_cap_still_reject_replays_of_surviving_ids()
+    {
+        // Amortized sweeping must not weaken the contract: an id that is still held is still a replay,
+        // however many sweeps have run since it was recorded.
+        var cache = new DeliveryReplayCache(TimeSpan.FromMinutes(10), maxEntries: 4);
+        for (var i = 1; i <= 20; i++)
+        {
+            _ = cache.TryRegister($"id{i}", Now.AddSeconds(i));
+        }
+
+        cache.TryRegister("id20", Now.AddSeconds(21)).Should().BeFalse("the most recent id is retained");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_non_positive_ttl_is_rejected(int ttlSeconds)
+    {
+        // A non-positive TTL would expire every entry the instant it was written, silently accepting
+        // every replay — so it is a construction error, not a configuration nuance.
+        var act = () => new DeliveryReplayCache(TimeSpan.FromSeconds(ttlSeconds));
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithParameterName("ttl");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void A_non_positive_max_entries_is_rejected(int maxEntries)
+    {
+        var act = () => new DeliveryReplayCache(TimeSpan.FromMinutes(5), maxEntries);
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithParameterName("maxEntries");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void A_blank_delivery_id_is_rejected(string? deliveryId)
+    {
+        var cache = new DeliveryReplayCache(TimeSpan.FromMinutes(5));
+
+        var act = () => cache.TryRegister(deliveryId!, Now);
+
+        act.Should().Throw<ArgumentException>().WithParameterName("deliveryId");
     }
 }
