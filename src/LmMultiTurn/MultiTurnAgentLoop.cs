@@ -52,6 +52,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
 
+    /// <summary>
+    /// Names of the tools that declare at least one required parameter, snapshot at construction from
+    /// the same registry the handlers came from. Consulted by the tool-dispatch guard in
+    /// <see cref="ExecuteToolCallAsync"/> so an empty argument payload is rejected only for tools that
+    /// actually need arguments — a genuinely parameterless tool called with empty args still runs.
+    /// Ordinal, matching the handler-dictionary lookup.
+    /// </summary>
+    private readonly HashSet<string> _functionsRequiringArgs;
+
     /// <summary>The sub-agent manager for this loop, or null when no sub-agent options were supplied.
     /// Exposed so a host-side trigger source (e.g. the sample's subagent-completion source) can observe
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
@@ -65,9 +74,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// <inheritdoc />
     public override bool EnforcesSpawnSuppression => true;
 
+    /// <summary>
+    ///     This loop's own usage sink (its <c>UsageLedger</c>), or null when usage accounting is disabled.
+    ///     Exposed so a host can fold an out-of-band descendant loop's usage into this conversation's total.
+    /// </summary>
+    public IUsageSink? UsageSink => UsageLedger;
+
     /// <inheritdoc />
     /// <remarks>
-    /// Delegates to <see cref="SubAgents.SubAgentManager.TryDeliverToRunningAsync"/>. A loop with no
+    /// Delegates to <see cref="SubAgentManager.TryDeliverToRunningAsync"/>. A loop with no
     /// sub-agent manager owns no sub-agents, so every id is <see cref="SubAgentContextDeliveryResult.NotOwned"/>.
     /// </remarks>
     public Task<SubAgentContextDeliveryResult> TryDeliverContextAsync(
@@ -143,9 +158,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional public-pricing resolver for conversation-wide usage accounting (#196). When supplied,
     ///     the usage ledger fills an estimated public cost per model; null still captures token totals.
     /// </param>
+    /// <param name="externalUsageSink">
+    ///     Optional external root sink this loop's usage ledger forwards every record to (#196).
+    /// </param>
     /// <param name="lifecycleServices">
-    ///     Optional lifecycle observation and tool approval. Null leaves both off, which is exactly
-    ///     how the loop behaved before lifecycle hooks existed.
+    ///     Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
+    /// <param name="subAgentLifecycleServices">
+    ///     Optional lifecycle bundle inherited by spawned sub-agents when it must differ from this loop's
+    ///     own bundle. Null uses <paramref name="lifecycleServices"/> after this loop stamps it.
     /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
@@ -164,7 +185,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         bool persistRunLedger = false,
         TriggerOptions? triggerOptions = null,
         IPricingResolver? pricingResolver = null,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        IUsageSink? externalUsageSink = null,
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        MultiTurnLifecycleServices? subAgentLifecycleServices = null)
         : base(
             threadId,
             systemPrompt,
@@ -185,8 +208,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         // Conversation-wide usage accounting (#196): one ledger per root conversation, shared below with
         // the SubAgentManager so the primary loop's own usage and every descendant's usage accumulate
-        // into a single root total. Usage is captured in MultiTurnAgentBase.AddToHistory.
-        UsageLedger = new UsageLedger(threadId, pricingResolver);
+        // into a single root total. Usage is captured in MultiTurnAgentBase.AddToHistory. When an external
+        // sink is supplied (a nested-root loop, e.g. a workflow controller), the ledger also forwards each
+        // record there so this whole subtree folds into the parent conversation's total.
+        UsageLedger = new UsageLedger(
+            threadId,
+            pricingResolver,
+            forwardTo: externalUsageSink,
+            onAggregateUpdated: PublishUsageAggregateFrame);
 
         // When sub-agent orchestration is configured, snapshot the current tools
         // and register Agent/CheckAgent tools before building the middleware stack.
@@ -197,7 +226,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // Agent/CheckAgent tools, preventing unbounded recursive delegation.
             var (contracts, handlers) = functionRegistry.Build();
 
-            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflow/
+            // Additionally drop any host-declared non-inherited tools (e.g. StartWorkflowAgent/
             // CheckWorkflow/WaitWorkflow) from the snapshot handed to sub-agents. Unlike the
             // Agent-family tools — excluded structurally because they're registered AFTER this
             // snapshot — these are registered on the parent's own registry BEFORE the loop is
@@ -205,7 +234,58 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // sub-agent whose template sets EnabledTools = null. Filtering the snapshot copy does
             // not touch the parent's own tool set (built from the full registry below).
             var inheritableContracts =
-                FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames);
+                FilterInheritableContracts(contracts, subAgentOptions.NonInheritedToolNames)
+                    .ToList();
+
+            // Transparency seam (WorkflowAgent): a nested-root loop — a workflow controller — runs on
+            // its own isolated, workflow-only registry, yet its delegate sub-agents must inherit the
+            // tools of the first non-WorkflowAgent ancestor (the launching conversation). Those
+            // ancestor tools arrive via ExternalInheritableTools and are merged into the snapshot
+            // handed to THIS loop's sub-agents. The loop's OWN advertised tools (built from the full
+            // registry below) are untouched, so the controller surface stays workflow-only. Skip any
+            // name excluded from inheritance or already present, so an external tool can never shadow
+            // a control-plane tool.
+            if (subAgentOptions.ExternalInheritableTools is { } externalTools)
+            {
+                var excluded = subAgentOptions.NonInheritedToolNames is { } names
+                    ? new HashSet<string>(names, StringComparer.Ordinal)
+                    : new HashSet<string>(StringComparer.Ordinal);
+                var present = new HashSet<string>(
+                    inheritableContracts.Select(c => c.Name),
+                    StringComparer.Ordinal);
+                var mergedHandlers = new Dictionary<string, ToolHandler>(handlers);
+                var beforeMerge = inheritableContracts.Count;
+
+                foreach (var contract in externalTools.Contracts)
+                {
+                    if (excluded.Contains(contract.Name)
+                        || present.Contains(contract.Name)
+                        || !externalTools.Handlers.TryGetValue(contract.Name, out var handler))
+                    {
+                        continue;
+                    }
+
+                    inheritableContracts.Add(contract);
+                    mergedHandlers[contract.Name] = handler;
+                    _ = present.Add(contract.Name);
+                }
+
+                handlers = mergedHandlers;
+
+                // Observability (content-free: counts only, no task/prompt text): make the transparency
+                // merge traceable in the logs so "did the delegate inherit the ancestor's tools?" is
+                // answerable from JSONL rather than inferred from the /subagents API.
+                var mergedCount = inheritableContracts.Count - beforeMerge;
+                logger?.LogDebug(
+                    "Merged external inheritable tools into the sub-agent snapshot for {ThreadId}: "
+                        + "offered {OfferedCount}, merged {MergedCount}, skipped {SkippedCount}, "
+                        + "inheritable total {InheritableTotal}.",
+                    threadId,
+                    externalTools.Contracts.Count,
+                    mergedCount,
+                    externalTools.Contracts.Count - mergedCount,
+                    inheritableContracts.Count);
+            }
 
             // Use the caller-supplied source when present (so an outer owner — typically
             // a sandbox session registry — can activate discovered subagents mid-session
@@ -224,14 +304,20 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // Sub-agents whose template/override sets no model inherit the parent's model, so a
                 // built-in template doesn't fall back to the provider's stale hardcoded default.
                 parentModelId: DefaultOptions.ModelId,
+                // Sub-agents whose template sets no budget inherit the parent's effective per-turn output
+                // budget (never null here — MultiTurnAgentBase floors it), so a delegate's Write/Bash
+                // tool_use JSON isn't truncated by the provider's 4096 default (stop_reason=max_tokens).
+                parentMaxToken: DefaultOptions.MaxToken,
                 // Share the root ledger so descendant usage folds into the same conversation total (#196).
                 usageSink: UsageLedger,
                 // Persist immediately on each descendant observation (covers late/background descendants).
                 persistUsageAsync: PersistCurrentUsageAsync,
                 // The parent's own wiring, from which each child derives its bundle at spawn time.
                 // A sub-agent's events belong in the parent's ordered stream, and a host that gates
-                // the parent's tools did not mean to leave the children's ungated.
-                lifecycleServices: LifecycleServices);
+                // the parent's tools did not mean to leave the children's ungated. A workflow controller
+                // can exempt only its own control-plane tools while explicitly retaining the host bundle
+                // for delegates through subAgentLifecycleServices.
+                lifecycleServices: subAgentLifecycleServices ?? LifecycleServices);
 
             SubAgentTools = new SubAgentToolProvider(
                 SubAgentManager,
@@ -265,6 +351,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         // Build tool call components from registry
         var (toolCallMiddleware, finalHandlers) = functionRegistry.BuildToolCallComponents(name: "MultiTurnAgentTools");
         _toolHandlers = finalHandlers;
+
+        // Snapshot which tools declare a required parameter so the dispatch guard in
+        // ExecuteToolCallAsync can reject an empty/truncated argument payload for a tool that needs
+        // args (e.g. Write/Bash) while still letting a genuinely parameterless tool run with empty
+        // args. Sourced from the same registry the handlers came from, so names line up with
+        // _toolHandlers (Build() applies the same collision-renaming BuildToolCallComponents does).
+        var (registeredContracts, _) = functionRegistry.Build();
+        _functionsRequiringArgs = new HashSet<string>(
+            registeredContracts
+                .Where(c => c.Parameters?.Any(p => p.IsRequired) == true)
+                .Select(c => c.Name),
+            StringComparer.Ordinal);
 
         // Create publishing middleware that publishes to subscribers
         // Positioned BEFORE MessageUpdateJoinerMiddleware to capture streaming updates
@@ -300,7 +398,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// Filters the parent-tool snapshot handed to sub-agents, dropping any contract whose name is
     /// in <paramref name="nonInheritedToolNames"/>. Returns the input unchanged when there is
     /// nothing to exclude. The parent's own tool set is unaffected — only the inherited copy is
-    /// filtered. See <see cref="SubAgents.SubAgentOptions.NonInheritedToolNames"/>.
+    /// filtered. See <see cref="SubAgentOptions.NonInheritedToolNames"/>.
     /// </summary>
     internal static IReadOnlyList<FunctionContract> FilterInheritableContracts(
         IEnumerable<FunctionContract> contracts,
@@ -488,7 +586,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 long chars = 0;
                 foreach (var m in snapshot)
                 {
-                    try { chars += System.Text.Json.JsonSerializer.Serialize<IMessage>(m).Length; }
+                    try { chars += JsonSerializer.Serialize(m).Length; }
                     catch { /* a message that won't serialize contributes 0 to the estimate */ }
                 }
 
@@ -640,6 +738,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     {
         var turnCount = 0;
 
+        // Tracks WHY the loop stopped. The trailing `turnCount >= MaxTurnsPerRun` test is also true
+        // when a turn broke naturally (or on a deferral) exactly AT the budget boundary, so it can't
+        // by itself distinguish a genuine cap hit. Only a genuine cap hit — the while-condition going
+        // false with the last turn still holding tool calls — needs the synthesizing wrap-up turn.
+        var brokeEarly = false;
+
         while (turnCount < MaxTurnsPerRun)
         {
             ct.ThrowIfCancellationRequested();
@@ -756,20 +860,163 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
                     runId,
                     unresolvedCount);
+                brokeEarly = true;
                 break;
             }
 
             if (!hasToolCalls)
             {
                 Logger.LogDebug("No tool calls in turn {Turn}, run complete", turnCount);
+                brokeEarly = true;
                 break;
             }
         }
 
-        if (turnCount >= MaxTurnsPerRun)
+        // Only a genuine cap hit reaches here without brokeEarly: the loop ran out of turn budget
+        // while the last turn still emitted tool calls, so the run would otherwise end on a tool
+        // result mid-stream. Run one synthesizing wrap-up turn so the run always terminates on an
+        // assistant status message. The natural-completion and deferral-pause exits set brokeEarly
+        // (they already end on assistant text or intentionally park for auto-resume), so they skip
+        // this — even when they happen to land exactly on the budget boundary.
+        if (!brokeEarly && turnCount >= MaxTurnsPerRun)
         {
-            Logger.LogWarning("Max turns ({MaxTurns}) reached for run {RunId}", MaxTurnsPerRun, runId);
+            Logger.LogWarning(
+                "Max turns ({MaxTurns}) reached for run {RunId}; running a wrap-up turn to return a final status",
+                MaxTurnsPerRun,
+                runId);
+            await ExecuteWrapUpTurnAsync(runId, ct);
         }
+    }
+
+    /// <summary>
+    /// Runs a single final turn after a run exhausts its turn budget, so the run ends on a
+    /// synthesizing assistant status message instead of a bare tool result left mid-stream.
+    /// </summary>
+    /// <remarks>
+    /// The loop — not the provider — executes tools, so a text-only close is guaranteed here without
+    /// relying on <c>ToolChoice</c> (which is serialized inconsistently across providers and would
+    /// 400 on Anthropic). This turn simply does not route any tool call the model emits: it is not
+    /// executed and not added to history (persisting a dangling <c>tool_use</c> with no matching
+    /// <c>tool_result</c> would break a later resume on providers that require the pair). A transient
+    /// wrap-up instruction is appended to the SENT messages only — never to history — so the persisted
+    /// transcript is not polluted with a synthetic "you hit the limit" user turn. If the model returns
+    /// no usable text, a deterministic fallback status is published so the run never dead-ends on a
+    /// tool result.
+    /// </remarks>
+    private async Task ExecuteWrapUpTurnAsync(string runId, CancellationToken ct)
+    {
+        // A distinct turn gets its own generationId (turn 1 reuses the run's id; every later turn,
+        // this wrap-up included, gets a fresh one) so its messages don't collide with earlier turns
+        // on the client merge key kind-runId-generationId-messageOrderIdx.
+        var wrapUpGenerationId = Guid.NewGuid().ToString("N");
+        BeginTurn(runId, wrapUpGenerationId);
+
+        var turnOutcome = LifecycleTurnOutcomes.Completed;
+        try
+        {
+            var options = DefaultOptions with
+            {
+                RunId = runId,
+                ThreadId = ThreadId,
+                GenerationId = wrapUpGenerationId,
+            };
+
+            // Ephemeral instruction, appended to the sent messages only (NOT AddToHistory). Anthropic
+            // merges consecutive same-role messages, so a Role.User instruction after the final
+            // tool_result (also a user-role turn) is safe cross-provider.
+            var wrapUpInstruction = new TextMessage
+            {
+                Text =
+                    "You have reached the maximum number of tool-use turns for this run. Do not call any "
+                    + "more tools. Write a concise final message that summarizes what you accomplished, "
+                    + "the current status, and any remaining or unfinished work so nothing is left "
+                    + "mid-stream.",
+                Role = Role.User,
+            };
+
+            var messagesToSend = GetMessagesWithSystemPrompt().Concat([wrapUpInstruction]);
+
+            IAsyncEnumerable<IMessage> stream;
+            try
+            {
+                stream = await _agent.GenerateReplyStreamingAsync(messagesToSend, options, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The wrap-up is best-effort: if the model call itself fails, still close the run on a
+                // deterministic status rather than propagating (which would fail the whole run) or
+                // leaving it on a tool result. The lifecycle turn remains an error even though the run gets
+                // a fallback assistant message.
+                turnOutcome = LifecycleTurnOutcomes.Error;
+                Logger.LogWarning(ex, "Wrap-up model turn failed for run {RunId}; publishing fallback status", runId);
+                await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
+                return;
+            }
+
+            var producedText = false;
+            await foreach (var msg in stream.WithCancellation(ct))
+            {
+                // Drop any tool call the model emits despite the instruction: do not execute it and do
+                // not persist it. Not executing guarantees the turn adds no new work and ends on text;
+                // not persisting avoids a dangling tool_use with no tool_result that would break a later
+                // resume. It was already surfaced to subscribers by the in-pipeline publishing middleware
+                // (result-less pill), which is cosmetic and rare.
+                if (msg is ToolCallMessage or ToolsCallMessage or ToolCallUpdateMessage or ToolsCallUpdateMessage)
+                {
+                    continue;
+                }
+
+                AddToHistory(msg);
+                ObserveTurnMessage(runId, wrapUpGenerationId, msg);
+
+                // A finalized, non-thinking, non-blank text message counts as a real wrap-up.
+                if (msg is TextMessage { IsThinking: false } text && !string.IsNullOrWhiteSpace(text.Text))
+                {
+                    producedText = true;
+                }
+            }
+
+            if (!producedText)
+            {
+                await PublishWrapUpFallbackAsync(runId, wrapUpGenerationId, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            turnOutcome = LifecycleTurnOutcomes.Cancelled;
+            throw;
+        }
+        catch
+        {
+            turnOutcome = LifecycleTurnOutcomes.Error;
+            throw;
+        }
+        finally
+        {
+            await CompleteTurnAsync(runId, wrapUpGenerationId, turnOutcome, CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Publishes and records a deterministic final assistant status so a wrapped-up run always ends
+    /// on an assistant message even when the model produced no usable text. Stamped via
+    /// <see cref="MessageExtensions.WithIds(IMessage, string?, string?, string?, string?)"/> so its
+    /// client merge key is consistent with the rest of the run.
+    /// </summary>
+    private async Task PublishWrapUpFallbackAsync(string runId, string generationId, CancellationToken ct)
+    {
+        var fallback = new TextMessage
+        {
+            Text =
+                "This run reached its maximum number of tool-use turns and was stopped before the "
+                + "task was fully completed. Some work may be unfinished — please review the steps "
+                + "above and continue if needed.",
+            Role = Role.Assistant,
+        }.WithIds(runId, parentRunId: null, threadId: ThreadId, generationId: generationId);
+
+        AddToHistory(fallback);
+        ObserveTurnMessage(runId, generationId, fallback);
+        await PublishToAllAsync(fallback, ct);
     }
 
     /// <summary>
@@ -1298,9 +1545,46 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ToolCallId = toolCall.ToolCallId,
             };
 
-            // The frozen arguments, not the caller's copy: whoever approved this decided on
-            // exactly these bytes, and nothing may edit them in the gap between the two.
+
+            // Truncation guard: when the provider hits its per-turn output ceiling it stops with
+            // stop_reason=max_tokens and cuts the streaming tool_use argument JSON off mid-string (or
+            // emits nothing at all). Executing a side-effecting tool — Write a file, run a Bash command —
+            // with those corrupt/empty args is the actual harm. For a tool that declares a required
+            // parameter, refuse to dispatch when the payload is empty/whitespace or not well-formed JSON,
+            // returning a recoverable, LLM-visible error so the run survives and the model can retry.
+            // Parameterless tools are exempt (empty args are legitimate for them).
+            if (_functionsRequiringArgs.Contains(toolCall.FunctionName)
+                && !ArgumentsAreWellFormed(functionArgs))
+            {
+                Logger.LogWarning(
+                    "Rejecting tool call '{FunctionName}' with malformed/empty arguments (likely truncated " +
+                    "at the provider max_tokens ceiling). Returning a recoverable error to the LLM. " +
+                    "ToolCallId: {ToolCallId}, ArgsLength: {ArgsLength}",
+                    toolCall.FunctionName,
+                    toolCall.ToolCallId,
+                    toolCall.FunctionArgs?.Length ?? 0);
+
+                return new ToolCallResultMessage
+                {
+                    ToolCallId = toolCall.ToolCallId,
+                    ToolName = toolCall.FunctionName,
+                    Result = JsonSerializer.Serialize(new
+                    {
+                        error =
+                            $"Malformed arguments for '{toolCall.FunctionName}': the tool-call argument JSON was "
+                            + "empty or not well-formed (it may have been truncated). Re-issue the tool call with "
+                            + "complete, valid JSON arguments.",
+                    }),
+                    IsError = true,
+                    ExecutionTarget = ExecutionTarget.LocalFunction,
+                    Role = Role.User,
+                    FromAgent = toolCall.FromAgent,
+                    GenerationId = toolCall.GenerationId,
+                };
+            }
+
             var result = await handler(prepared.Arguments.Json, ctx, ct);
+
             return BuildResultMessage(toolCall, result);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1325,6 +1609,33 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 FromAgent = toolCall.FromAgent,
                 GenerationId = toolCall.GenerationId,
             };
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="functionArgs"/> is a non-empty, well-formed JSON document — the
+    /// precondition for dispatching a tool that declares required parameters. Empty/whitespace text
+    /// (Bash args arriving as 0 bytes) and a truncated fragment (Write args cut off mid-string at the
+    /// max_tokens ceiling, so the JSON never closes) both return false. A well-formed but incomplete
+    /// object (missing a required field) still parses here and is left to the handler's own
+    /// deserialization to surface — this guard targets the truncation failure mode, not schema
+    /// validation.
+    /// </summary>
+    private static bool ArgumentsAreWellFormed(string functionArgs)
+    {
+        if (string.IsNullOrWhiteSpace(functionArgs))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var _ = JsonDocument.Parse(functionArgs);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

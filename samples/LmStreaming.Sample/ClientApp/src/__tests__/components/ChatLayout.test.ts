@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import ChatLayout from '@/components/ChatLayout.vue';
+import SubAgentListPanel from '@/components/SubAgentListPanel.vue';
 
 interface ConversationSummary {
   threadId: string;
@@ -31,6 +32,9 @@ const sharedMocks = vi.hoisted(() => ({
   resumeStreamIfActive: vi.fn(async () => {}),
   markStreamIdle: vi.fn(),
   markStreamLoading: vi.fn(),
+  // Captures the thread-id getter ChatLayout passes to useSubAgentPanel, so a test can assert the
+  // start-gating (the getter returns null until the conversation has a sidebar entry).
+  subAgentThreadGetter: null as (() => string | null) | null,
 }));
 
 vi.mock('@/composables/useConversations', async () => {
@@ -127,6 +131,7 @@ vi.mock('@/composables/useChat', async () => {
       clearMessages: vi.fn(),
       cancelStream: vi.fn(async () => {}),
       disconnectWebSocket: sharedMocks.disconnectWebSocket,
+      threadId: ref(sharedMocks.currentThreadId),
       setThreadId: vi.fn(),
       loadMessagesFromBackend: vi.fn(async () => {}),
       resumeStreamIfActive: sharedMocks.resumeStreamIfActive,
@@ -177,20 +182,27 @@ vi.mock('@/api/conversationsApi', () => ({
 vi.mock('@/composables/useSubAgentPanel', async () => {
   const { ref } = await import('vue');
   return {
-    useSubAgentPanel: () => ({
-      children: ref([]),
-      focusedAgentId: ref<string | null>(null),
-      focusedDisplayItems: ref([]),
-      isFocusedStreaming: ref(false),
-      error: ref<string | null>(null),
-      startPolling: vi.fn(),
-      stopPolling: vi.fn(),
-      refreshChildren: vi.fn(async () => {}),
-      focusChild: vi.fn(async () => {}),
-      unfocusChild: vi.fn(async () => {}),
-      sendToFocusedChild: vi.fn(),
-      getResultForToolCall: vi.fn(() => null),
-    }),
+    useSubAgentPanel: (getParentThreadId?: () => string | null) => {
+      // Capture the gating getter so the start-gating tests can evaluate it directly (the panel no
+      // longer receives a parentThreadId prop after the #221 tabs refactor).
+      if (getParentThreadId) {
+        sharedMocks.subAgentThreadGetter = getParentThreadId;
+      }
+      return {
+        children: ref([]),
+        focusedAgentId: ref<string | null>(null),
+        focusedDisplayItems: ref([]),
+        isFocusedStreaming: ref(false),
+        error: ref<string | null>(null),
+        startPolling: vi.fn(),
+        stopPolling: vi.fn(),
+        refreshChildren: vi.fn(async () => {}),
+        focusChild: vi.fn(async () => {}),
+        unfocusChild: vi.fn(async () => {}),
+        sendToFocusedChild: vi.fn(),
+        getResultForToolCall: vi.fn(() => null),
+      };
+    },
   };
 });
 
@@ -567,17 +579,15 @@ describe('ChatLayout ?threadId= deep link', () => {
   });
 });
 
-/**
- * Focus mode hides the sidebar, so the header title bar becomes the ONLY thing identifying the
- * conversation. A deep-link posted on a PR ("Review PR #222 — Review Agent") must therefore title the
- * header with the conversation, not the static app name — otherwise a reader following the link
- * cannot tell which PR's review they landed on.
- */
-describe('ChatLayout ?focus=1 header title', () => {
-  const setQuery = (query: string) => {
-    window.history.pushState({}, '', query ? `/?${query}` : '/');
-  };
-
+// Regression: a freshly-created chat (handleNewChat) assigns useChat's threadId immediately,
+// well before any message is sent, but the backend's agent pool has no entry for that thread
+// yet. Feeding that id straight to useSubAgentPanel made it poll listSubAgents immediately and
+// hit a 404 ("unknown_thread") on every new conversation. After the #221 tabs refactor the gating
+// moved off a SubAgentListPanel prop onto the getter ChatLayout passes to useSubAgentPanel
+// (`() => subAgentParentThreadId.value`), which stays null until the conversation has a sidebar
+// entry (added by handleSend only after the first message is dispatched) — mirroring the same
+// start-gating used for mode and provider switching above.
+describe('ChatLayout sub-agent panel start-gating', () => {
   const mountLayout = () =>
     mount(ChatLayout, {
       global: {
@@ -594,47 +604,28 @@ describe('ChatLayout ?focus=1 header title', () => {
     sharedMocks.chatLoading = false;
     sharedMocks.isSending = false;
     sharedMocks.modesLoading = false;
-    sharedMocks.resumeStreamIfActive.mockReset();
-    sharedMocks.resumeStreamIfActive.mockResolvedValue(undefined);
+    sharedMocks.subAgentThreadGetter = null;
   });
 
-  afterEach(() => {
-    setQuery('');
-  });
+  it('withholds the thread id from the sub-agent panel on a fresh, messageless conversation', async () => {
+    sharedMocks.currentThreadId = 'thread-new';
+    sharedMocks.conversations = [];
 
-  it('titles the header with the deep-linked conversation in focus mode', async () => {
-    sharedMocks.currentThreadId = 'thread-2';
-    sharedMocks.conversations = [
-      { threadId: 'thread-1', title: 'Some other chat' },
-      { threadId: 'thread-2', title: 'Review PR #222 — Review Agent' },
-    ];
-    setQuery('threadId=thread-2&focus=1');
-
-    const wrapper = mountLayout();
+    mountLayout();
     await flushPromises();
 
-    expect(wrapper.get('.chat-header h1').text()).toBe('Review PR #222 — Review Agent');
+    expect(sharedMocks.subAgentThreadGetter).not.toBeNull();
+    expect(sharedMocks.subAgentThreadGetter!()).toBeNull();
   });
 
-  it('falls back to the app name in focus mode when the conversation has no title', async () => {
+  it('passes the thread id to the sub-agent panel once the conversation has a sidebar entry', async () => {
     sharedMocks.currentThreadId = 'thread-1';
-    sharedMocks.conversations = [{ threadId: 'thread-1', title: '   ' }];
-    setQuery('threadId=thread-1&focus=1');
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
 
-    const wrapper = mountLayout();
+    mountLayout();
     await flushPromises();
 
-    expect(wrapper.get('.chat-header h1').text()).toBe('LmStreaming Chat');
-  });
-
-  it('keeps the static app name without ?focus=1 (the sidebar already names the conversation)', async () => {
-    sharedMocks.currentThreadId = 'thread-2';
-    sharedMocks.conversations = [{ threadId: 'thread-2', title: 'Review PR #222 — Review Agent' }];
-    setQuery('threadId=thread-2');
-
-    const wrapper = mountLayout();
-    await flushPromises();
-
-    expect(wrapper.get('.chat-header h1').text()).toBe('LmStreaming Chat');
+    expect(sharedMocks.subAgentThreadGetter).not.toBeNull();
+    expect(sharedMocks.subAgentThreadGetter!()).toBe('thread-1');
   });
 });

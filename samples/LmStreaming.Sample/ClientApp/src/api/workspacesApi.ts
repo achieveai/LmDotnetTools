@@ -1,9 +1,14 @@
-import type { Workspace, WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
+import type {
+  Workspace,
+  WorkspaceCreate,
+  WorkspaceListResponse,
+  WorkspaceUpdate,
+} from '@/types/workspace';
 
 /**
  * Fetches all workspaces from the backend.
  */
-export async function listWorkspaces(): Promise<Workspace[]> {
+export async function listWorkspaces(): Promise<WorkspaceListResponse> {
   const response = await fetch('/api/workspaces');
   if (!response.ok) {
     throw new Error(`Failed to fetch workspaces: ${response.statusText}`);

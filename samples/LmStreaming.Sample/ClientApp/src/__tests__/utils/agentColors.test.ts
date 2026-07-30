@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { AGENT_HUES, MAIN_TAB_COLOR, hueForIndex, resolveAgentIdFromCall } from '@/utils/agentColors';
+import {
+  AGENT_HUES,
+  MAIN_TAB_COLOR,
+  hueForIndex,
+  resolveAgentIdFromCall,
+  resolveAgentRoutingFromCall,
+} from '@/utils/agentColors';
 
 describe('agentColors palette', () => {
   it('exposes a non-empty palette of distinct hues', () => {
@@ -19,6 +25,42 @@ describe('agentColors palette', () => {
     // Wrap: index N returns hue 0 again.
     expect(hueForIndex(AGENT_HUES.length)).toBe(AGENT_HUES[0]);
     expect(hueForIndex(AGENT_HUES.length + 2)).toBe(AGENT_HUES[2]);
+  });
+});
+
+describe('resolveAgentRoutingFromCall (exact child only)', () => {
+  const children = [
+    {
+      agentId: 'child-1',
+      name: 'parallel:1:parallel:task1',
+      template: 'code-reviewer:architecture-review',
+      task: 'review',
+      status: 'completed' as const,
+      threadId: 'subagent-child-1',
+      effectiveModelId: 'claude-opus-5',
+      effectiveModelIntelligence: 5,
+      modelSelectionSource: 'template-tier',
+    },
+  ];
+
+  it('correlates a synchronous workflow Agent call by exact unit name', () => {
+    expect(
+      resolveAgentRoutingFromCall(
+        { name: 'parallel:1:parallel:task1', subagent_type: 'code-reviewer:architecture-review' },
+        'MIR-tier5',
+        children
+      )
+    ).toEqual(children[0]);
+  });
+
+  it('never guesses routing from subagent_type alone', () => {
+    expect(
+      resolveAgentRoutingFromCall(
+        { subagent_type: 'code-reviewer:architecture-review' },
+        'MIR-tier5',
+        children
+      )
+    ).toBeNull();
   });
 });
 

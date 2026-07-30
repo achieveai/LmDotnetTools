@@ -117,8 +117,13 @@ public class SubAgentToolProvider : IFunctionProvider
                 + "message. Use background mode for long-running work you want to run "
                 + "while you keep working, or to fan out several sub-agents at once.\n\n"
                 + "Each sub-agent starts fresh and does NOT see your conversation history, "
-                + "so make the prompt self-contained. Use SendMessage to continue an "
-                + "existing sub-agent with a follow-up.\n\n"
+                + "so make the prompt self-contained.\n\n"
+                + "PREFER CONTINUING AN EXISTING SUB-AGENT: before spawning a NEW sub-agent, "
+                + "check whether one you already spawned is still live and already has the "
+                + "context for this work — if so, continue it with SendMessage instead of "
+                + "spawning a fresh agent for the same or a follow-up task. Only spawn a new "
+                + "agent when no suitable live agent exists, or when you deliberately want "
+                + "independent/parallel work.\n\n"
                 + BuildTemplateCatalog(templates),
             Parameters =
             [
@@ -152,18 +157,31 @@ public class SubAgentToolProvider : IFunctionProvider
                 {
                     Name = "name",
                     Description =
-                        "Optional handle to address this sub-agent later via "
-                        + "SendMessage instead of using its generated id.",
+                        "Recommended: a short, human-readable, unique handle for this "
+                        + "sub-agent (e.g. 'auth-reviewer', 'db-migrator') so it is easy to "
+                        + "identify in progress/telemetry and to address later via SendMessage. "
+                        + "Optional — if omitted, a readable name is auto-derived from the "
+                        + "subagent_type.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
                 new FunctionParameterContract
                 {
                     Name = "model",
-                    Description =
-                        "Optional model id override for this sub-agent "
-                        + "(defaults to the template's configured model).",
+                    Description = BuildModelOverrideDescription(_manager.AvailableModelIds),
                     ParameterType = new JsonSchemaObject { Type = new("string") },
+                    IsRequired = false,
+                },
+                new FunctionParameterContract
+                {
+                    Name = "modelIntelligence",
+                    Description =
+                        "Optional model-intelligence tier (integer; ascending capability, 0 = cheapest) "
+                        + "used to size this sub-agent's model when no explicit 'model' is given. The host "
+                        + "resolves it to a concrete model, climbing to the nearest higher configured tier "
+                        + "when the requested one is unmapped; omit it to keep the sub-agent's default "
+                        + "(parent-inherited) model. An explicit 'model' always wins over this.",
+                    ParameterType = new JsonSchemaObject { Type = new("integer") },
                     IsRequired = false,
                 },
                 new FunctionParameterContract
@@ -208,7 +226,9 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             Name = "SendMessage",
             Description =
-                "Continue an existing sub-agent with a follow-up message. Address it "
+                "Continue an existing sub-agent with a follow-up message — PREFER THIS over "
+                + "spawning a new Agent when you are iterating on, correcting, or extending "
+                + "work a still-live sub-agent already has the context for. Address it "
                 + "by the id returned from Agent, or by the name you gave it when "
                 + "spawning. By default BLOCKS until the continued run finishes and "
                 + "returns its final answer; set run_in_background: true to return "
@@ -282,6 +302,36 @@ public class SubAgentToolProvider : IFunctionProvider
     }
 
     /// <summary>
+    /// Builds the <c>model</c> parameter description for the Agent tool. When the host surfaced the set of
+    /// valid model ids (<see cref="SubAgentManager.AvailableModelIds"/>) the description lists them and
+    /// spells out that this field is neither a <c>subagent_type</c> nor a capability tier — the two fields
+    /// LLMs most often confuse it with — so the parent stops inventing ids or cross-filling from another
+    /// argument. With no id list it keeps the generic wording (previous behavior). Pairs with the runtime
+    /// <see cref="SubAgentOptions.ModelOverrideValidator"/>, which drops any id not in this set.
+    /// </summary>
+    private static string BuildModelOverrideDescription(IReadOnlyCollection<string>? availableModelIds)
+    {
+        // Usually OMIT this — a sub-agent inherits the right model from its template/the parent
+        // automatically, which is almost always correct. Only set it to deliberately run this ONE
+        // sub-agent on a different model.
+        const string lead =
+            "Optional model id override for this sub-agent. Usually OMIT this — the sub-agent inherits "
+            + "the correct model automatically; set it only to deliberately run this one sub-agent on a "
+            + "different model. This is a MODEL ID, not a subagent_type (that is the separate "
+            + "'subagent_type' argument) and not a capability tier (use 'modelIntelligence' for that).";
+
+        if (availableModelIds is { Count: > 0 })
+        {
+            return lead
+                + " If set, it MUST be exactly one of: "
+                + string.Join(", ", availableModelIds)
+                + ". Any other value is ignored and the sub-agent keeps its inherited model.";
+        }
+
+        return lead + " Defaults to the template's configured model.";
+    }
+
+    /// <summary>
     /// Builds the per-template catalog embedded in the Agent tool description so the
     /// parent LLM can pick the right sub-agent type.
     /// </summary>
@@ -333,6 +383,13 @@ public class SubAgentToolProvider : IFunctionProvider
 
         var name = GetOptionalString(root, "name");
         var model = GetOptionalString(root, "model");
+        var modelIntelligence = GetOptionalInt(root, "modelIntelligence");
+        if (_manager.SpawnModelSelectionResolver?.Invoke(name) is { } authoritativeSelection)
+        {
+            model = authoritativeSelection.Model;
+            modelIntelligence = authoritativeSelection.ModelIntelligence;
+        }
+
         var runInBackground = GetOptionalBool(root, "run_in_background") ?? false;
 
         // 'description' is intentionally accepted but not read here: it is a short
@@ -340,6 +397,16 @@ public class SubAgentToolProvider : IFunctionProvider
         // It has no server-side effect, so it is not threaded into SpawnAsync.
         var addTools = ParseCommaSeparated(GetOptionalString(root, "add_tools"));
         var removeTools = ParseCommaSeparated(GetOptionalString(root, "remove_tools"));
+
+        // Self-correcting spawn-name gate (host-supplied, workflow-agnostic here). When the host correlates
+        // spawn results by an EXACT name (a workflow controller), a name that matches no ready unit would run
+        // and then be silently discarded — the caller must fix the NAME, not the spawn. Surface the correction
+        // as a recoverable tool error (mirroring unknown_subagent_type) so the caller re-issues the exact name
+        // instead of looping on a discarded duplicate. No gate (ordinary hosts) = pass through unchanged.
+        if (_manager.SpawnNameGate?.Invoke(name) is { } rejection)
+        {
+            return ToolHandlerResult.FromError(rejection, "spawn_name_unmatched");
+        }
 
         try
         {
@@ -352,11 +419,24 @@ public class SubAgentToolProvider : IFunctionProvider
                 addTools,
                 removeTools,
                 cancellationToken,
+                modelIntelligence,
                 // The only place the spawning call's identity is in scope. Without it a
                 // subscriber sees a sub-agent appear with a parent run but no reason.
                 context.ToolCallId);
 
             return ToolHandlerResult.FromText(result);
+        }
+        catch (SubAgentQueueFullException ex)
+        {
+            return ToolHandlerResult.FromError(ex.Message, "queue_full");
+        }
+        catch (ArgumentException ex)
+        {
+            // An unknown or ambiguous subagent_type is a MODEL mistake (a bare/mis-prefixed name, or
+            // one that matches several agents), not a host fault. Return the actionable message as a
+            // recoverable tool result — listing the valid/suggested names — so the caller re-issues
+            // with an exact name instead of silently collapsing to general-purpose.
+            return ToolHandlerResult.FromError(ex.Message, "unknown_subagent_type");
         }
         catch (SubAgentExecutionException ex)
         {
@@ -442,6 +522,22 @@ public class SubAgentToolProvider : IFunctionProvider
             JsonValueKind.False => false,
             // Some models emit booleans as strings ("true"/"false").
             JsonValueKind.String when bool.TryParse(prop.GetString(), out var parsed) => parsed,
+            _ => null,
+        };
+    }
+
+    private static int? GetOptionalInt(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var prop))
+        {
+            return null;
+        }
+
+        return prop.ValueKind switch
+        {
+            JsonValueKind.Number when prop.TryGetInt32(out var number) => number,
+            // Some models emit integers as strings ("2").
+            JsonValueKind.String when int.TryParse(prop.GetString(), out var parsed) => parsed,
             _ => null,
         };
     }

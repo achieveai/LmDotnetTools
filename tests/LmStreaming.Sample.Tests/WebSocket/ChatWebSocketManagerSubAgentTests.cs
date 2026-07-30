@@ -187,6 +187,51 @@ public sealed class ChatWebSocketManagerSubAgentTests
         socket.CloseAsyncCalled.Should().BeTrue("the socket must be closed after the structured error");
     }
 
+    [Fact]
+    public async Task HandleSubAgentConnectionAsync_ReplaysPersistedHistory_WhenNoLiveStreamButHistoryExists()
+    {
+        // A COMPLETED sub-agent whose parent loop was evicted from the pool (app restart / conversation
+        // aged out) resolves NO live stream, but its transcript persists under "subagent-{agentId}" and
+        // the client renders that history from REST. Instead of the scary "unavailable" error, the handler
+        // must settle the client with the done sentinel and hold the read-only socket OPEN so the persisted
+        // transcript replays. (Approach C: the socket carries NO content — the transcript comes from REST —
+        // so there is no merge-key/duplicate-pill risk.)
+        const string agentId = "completed-child";
+        var threadId = $"subagent-{agentId}";
+        var store = new InMemoryConversationStore();
+        await store.AppendMessagesAsync(threadId,
+        [
+            MessagePersistenceConverter.ToPersistedMessage(
+              new TextMessage { Role = Role.Assistant, Text = "persisted-answer" }, threadId, runId: "run-1"),
+        ]);
+
+        // A parent loop IS registered (so the first resolution branch runs), but agentId was never spawned,
+        // so no live stream resolves and the handler falls through to the persisted-history branch.
+        var provider = new ScriptedSubAgentProvider((messages, ct) => EmptyStream());
+        await using var loop = CreateParentLoop(() => provider);
+        await using var pool = CreatePoolReturning(loop);
+        RegisterParent(pool);
+
+        var manager = CreateManager(pool, store: store);
+        var socket = new FakeWebSocket();
+        using var testCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var handlerTask = manager.HandleSubAgentConnectionAsync(socket, ParentThreadId, agentId, testCts.Token);
+
+        // The handler settles the client with the done sentinel and does NOT surface an unavailable error.
+        await socket.WaitUntilAsync(() => socket.SentContains("\"$type\":\"done\""), testCts.Token);
+        socket.SentContains("subagent_unavailable").Should()
+          .BeFalse("a persisted transcript must replay read-only, not surface an error");
+        handlerTask.IsCompleted.Should()
+          .BeFalse("the read-only replay socket stays open until the client disconnects");
+        socket.CloseAsyncCalled.Should()
+          .BeFalse("the server must not close a read-only replay socket");
+
+        // Client disconnect (here: shutdown) tears the read-only socket down cleanly.
+        await testCts.CancelAsync();
+        await handlerTask;
+    }
+
     // ----- shared bounded receive pump (PR #209 findings #4/#5/#9/#10) -----
 
     [Fact]
@@ -541,11 +586,15 @@ public sealed class ChatWebSocketManagerSubAgentTests
     // ----- helpers -----
 
     private static ChatWebSocketManager CreateManager(
-      MultiTurnAgentPool pool, ILogger<ChatWebSocketManager>? logger = null) =>
+      MultiTurnAgentPool pool,
+      ILogger<ChatWebSocketManager>? logger = null,
+      IConversationStore? store = null) =>
       new(
         pool,
         new WebSocketConnectionRegistry(),
+        new LmStreaming.Sample.Services.WorkflowRunRegistry(),
         new PendingAuthCoordinator(Mock.Of<IAuthEventNotifier>(), new AuthOptions(), NullLogger<PendingAuthCoordinator>.Instance),
+        store ?? new InMemoryConversationStore(),
         logger ?? NullLogger<ChatWebSocketManager>.Instance);
 
     /// <summary>

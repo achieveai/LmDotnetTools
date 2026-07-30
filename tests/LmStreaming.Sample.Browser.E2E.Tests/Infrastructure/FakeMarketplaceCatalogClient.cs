@@ -46,6 +46,12 @@ public sealed class FakeMarketplaceCatalogClient : IMarketplaceCatalogClient
                 )
             ]));
 
+    /// <summary>Returns an alias-only catalog for scenarios that validate workspace selections.</summary>
+    public static FakeMarketplaceCatalogClient WithAliases(params string[] aliases) =>
+        new(new MarketplaceCatalog(
+            Selected: aliases,
+            Marketplaces: [.. aliases.Select(alias => new CatalogMarketplace(alias, null, []))]));
+
     /// <summary>Simulates the gateway being unreachable, driving the UI's offline state.</summary>
     public static FakeMarketplaceCatalogClient Offline() => new(catalog: null);
 

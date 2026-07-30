@@ -140,29 +140,296 @@ public class SubAgentManagerTests : IAsyncLifetime
             .WithMessage("*Unknown template*non-existent-template*");
     }
 
-    [Fact]
-    public async Task SpawnAsync_EnforcesConcurrencyLimit()
+    // --- subagent_type resolution (plugin-prefix tolerance) -------------------------------------
+    // Authored workflows and controller LLMs routinely reference an agent by a bare or mis-prefixed
+    // name (e.g. 'logging-review' or 'code-reviewer:logging-review' when the registered key is
+    // 'debugging:logging-review'). TryResolveTemplateName recovers the intended template so the run
+    // does not silently collapse to general-purpose. These tests pin every resolution branch.
+
+    [Theory]
+    [InlineData("debugging:logging-review")] // exact
+    [InlineData("Debugging:Logging-Review")] // case-insensitive exact
+    [InlineData("logging-review")]           // bare skill segment
+    [InlineData("code-reviewer:logging-review")] // wrong plugin prefix, right segment
+    public void TryResolveTemplateName_ResolvesToQualifiedKey(string requested)
     {
-        // Arrange: sub-agent that never completes (blocks indefinitely)
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["debugging:logging-review"] = MakeTemplate(),
+            ["general-purpose"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            requested, templates, out var resolved, out var suggestions);
+
+        ok.Should().BeTrue();
+        resolved.Should().Be("debugging:logging-review");
+        suggestions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryResolveTemplateName_ExactMatchWinsOverSegment()
+    {
+        // A key that IS an exact (ordinal) match must never be re-routed by segment logic,
+        // even when another key shares its trailing skill segment.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["review"] = MakeTemplate(),
+            ["code-reviewer:review"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            "review", templates, out var resolved, out var suggestions);
+
+        ok.Should().BeTrue();
+        resolved.Should().Be("review");
+        suggestions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryResolveTemplateName_AmbiguousSegment_ReturnsSuggestions()
+    {
+        // Two agents share the 'logging-review' segment under different plugins: the request is
+        // genuinely ambiguous, so it must NOT auto-resolve; both candidates come back as suggestions.
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["debugging:logging-review"] = MakeTemplate(),
+            ["code-reviewer:logging-review"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            "logging-review", templates, out var resolved, out var suggestions);
+
+        ok.Should().BeFalse();
+        resolved.Should().BeEmpty();
+        suggestions.Should().BeEquivalentTo(
+            ["debugging:logging-review", "code-reviewer:logging-review"]);
+    }
+
+    [Fact]
+    public void TryResolveTemplateName_Unknown_ReturnsFalseWithNoSuggestions()
+    {
+        var templates = new Dictionary<string, SubAgentTemplate>
+        {
+            ["debugging:logging-review"] = MakeTemplate(),
+        };
+
+        var ok = SubAgentManager.TryResolveTemplateName(
+            "totally-unrelated", templates, out var resolved, out var suggestions);
+
+        ok.Should().BeFalse();
+        resolved.Should().BeEmpty();
+        suggestions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SpawnAsync_ResolvesBareName_AndRuns()
+    {
+        // End-to-end: a bare 'test-agent'-segment name registered under a plugin prefix must spawn.
+        SetupSubAgentResponse([
+            new TextMessage { Text = "resolved result", Role = Role.Assistant },
+        ]);
+        _manager = CreateManager(qualifiedTemplateKey: "debugging:test-agent");
+
+        var result = await _manager.SpawnAsync("test-agent", "Do some work");
+
+        result.Should().Be("resolved result");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_AmbiguousName_ThrowsWithSuggestions()
+    {
+        // When the requested segment matches several registered agents, SpawnAsync throws an
+        // actionable message listing the candidates so the controller can re-issue an exact name.
+        _manager = CreateManagerWithTemplates(
+            "debugging:logging-review", "code-reviewer:logging-review");
+
+        var act = () => _manager.SpawnAsync("logging-review", "task");
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*Ambiguous subagent_type*logging-review*"
+                + "code-reviewer:logging-review*debugging:logging-review*");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_PoolFull_QueuesSpawnInsteadOfThrowing()
+    {
+        // Defer-queue cap behaviour: when the pool is saturated, a further spawn is ACCEPTED and
+        // enqueued (status="queued") rather than rejected with "Max concurrent sub-agents reached".
+        // The queued spawn still gets a stable agent_id handle immediately.
         var blockingTcs = new TaskCompletionSource<bool>();
         SetupBlockingSubAgent(blockingTcs);
 
         _manager = CreateManager(maxConcurrent: 1);
 
-        // Act: first (background) spawn acquires the only concurrency slot
-        await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        // First background spawn takes the only permit and blocks (stays Running).
+        var firstJson = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        using (var firstDoc = JsonDocument.Parse(firstJson))
+        {
+            firstDoc.RootElement.GetProperty("status").GetString().Should().Be("spawned");
+        }
 
-        // Second spawn should fail because concurrency limit is 1 and the first agent
-        // is still running (semaphore wait times out after 5s).
-        var act = () => _manager.SpawnAsync(
+        // Second background spawn finds the pool full -> queued (no throw).
+        var secondJson = await _manager.SpawnAsync(
             "test-agent", "second task", runInBackground: true);
 
-        // Assert
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*Max concurrent sub-agents*");
+        using var secondDoc = JsonDocument.Parse(secondJson);
+        secondDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
+        secondDoc.RootElement.GetProperty("agent_id").GetString().Should().NotBeNullOrEmpty();
+        secondDoc.RootElement.GetProperty("template").GetString().Should().Be("test-agent");
 
         // Cleanup: unblock so dispose doesn't hang
         blockingTcs.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_QueuedHandleIsImmediatelyObservable()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager(maxConcurrent: 1);
+
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        var queuedJson = await _manager.SpawnAsync(
+            "test-agent", "second", name: "queued-worker", runInBackground: true);
+        using var queuedDoc = JsonDocument.Parse(queuedJson);
+        var queuedId = queuedDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        _manager.TryPeek(queuedId, out var peek).Should().BeTrue();
+        JsonDocument.Parse(peek).RootElement.GetProperty("status").GetString().Should().Be("queued");
+        _manager.KnownAgentIds().Should().Contain(queuedId);
+        var observed = _manager.CheckAgents([queuedId, "queued-worker"]);
+        observed.Entries.Should().OnlyContain(x => x.Status == "queued" && x.AgentId == queuedId);
+        _manager.ListAgents().Should().Contain(x => x.AgentId == queuedId && x.Status == SubAgentStatus.Queued);
+
+        release.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_CanceledForegroundQueueEntryNeverStarts()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager(maxConcurrent: 1);
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        using var cts = new CancellationTokenSource();
+
+        var queued = _manager.SpawnAsync("test-agent", "must-not-run", ct: cts.Token);
+        cts.Cancel();
+        var act = async () => await queued;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        release.SetResult(true);
+        await Task.Delay(150);
+
+        _subAgentMock.Verify(
+            a => a.GenerateReplyStreamingAsync(
+                It.Is<IEnumerable<IMessage>>(messages =>
+                    messages.OfType<TextMessage>().Any(m => m.Text == "must-not-run")),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_RejectsWhenBoundedQueueIsFull()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        var options = CreateOptions(maxConcurrent: 1) with { MaxQueuedSubAgents = 1 };
+        _manager = new SubAgentManager(
+            _parentMock.Object,
+            [],
+            new Dictionary<string, ToolHandler>(),
+            options,
+            new MutableSubAgentTemplateSource(options.Templates));
+
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        _ = await _manager.SpawnAsync("test-agent", "queued", runInBackground: true);
+        var act = () => _manager.SpawnAsync("test-agent", "overflow", runInBackground: true);
+
+        await act.Should().ThrowAsync<SubAgentQueueFullException>();
+        release.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_QueuedTargetReturnsActionableError()
+    {
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+        _manager = CreateManager(maxConcurrent: 1);
+        _ = await _manager.SpawnAsync("test-agent", "first", runInBackground: true);
+        var queuedJson = await _manager.SpawnAsync(
+            "test-agent", "queued", name: "queued-worker", runInBackground: true);
+        using var queuedDoc = JsonDocument.Parse(queuedJson);
+        var queuedId = queuedDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        var byId = () => _manager.SendMessageAsync(queuedId, "follow up");
+        var byName = () => _manager.SendMessageAsync("queued-worker", "follow up");
+
+        await byId.Should().ThrowAsync<InvalidOperationException>().WithMessage("*queued*CheckAgent*");
+        await byName.Should().ThrowAsync<InvalidOperationException>().WithMessage("*queued*CheckAgent*");
+        release.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_RejectsAfterDisposalBegins()
+    {
+        _manager = CreateManager();
+        await _manager.DisposeAsync();
+
+        var act = () => _manager.SpawnAsync("test-agent", "late", runInBackground: true);
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public async Task SpawnAsync_QueuedSpawn_StartsAndCompletesOncePermitFrees()
+    {
+        // RED->GREEN for defer-queue end-to-end: with a pool of 1, a second background spawn is
+        // queued while the first holds the only permit. Once the first finishes and frees its slot,
+        // the background pump starts the queued spawn and it runs to completion. Before the fix the
+        // second spawn threw "Max concurrent reached" and never ran.
+        var release = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(release);
+
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var firstJson = await _manager.SpawnAsync("test-agent", "first task", runInBackground: true);
+        using var firstDoc = JsonDocument.Parse(firstJson);
+        var firstId = firstDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        var secondJson = await _manager.SpawnAsync(
+            "test-agent", "second task", runInBackground: true);
+        using var secondDoc = JsonDocument.Parse(secondJson);
+        secondDoc.RootElement.GetProperty("status").GetString().Should().Be("queued");
+        var secondId = secondDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Release the first agent so its permit frees and the pump can start the queued one.
+        release.SetResult(true);
+
+        // Both agents must reach 'completed' — the queued one only starts after a permit frees.
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    return _manager!.Peek(firstId).Contains("\"completed\"")
+                        && _manager!.Peek(secondId).Contains("\"completed\"");
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(15));
+
+        using var firstPeek = JsonDocument.Parse(_manager.Peek(firstId));
+        firstPeek.RootElement.GetProperty("status").GetString()
+            .Should().Be("completed", "the first agent finishes once released");
+
+        using var secondPeek = JsonDocument.Parse(_manager.Peek(secondId));
+        secondPeek.RootElement.GetProperty("status").GetString()
+            .Should().Be("completed", "the queued agent runs after the first frees the permit");
     }
 
     [Fact]
@@ -396,6 +663,65 @@ public class SubAgentManagerTests : IAsyncLifetime
         var root = resumeDoc.RootElement;
         root.GetProperty("name").GetString().Should().Be("researcher");
         root.GetProperty("status").GetString().Should().Be("message_sent");
+
+        // Cleanup
+        blockingTcs.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_WithoutName_DerivesReadableNameFromSubagentType_AndIsAddressableBySendMessage()
+    {
+        // Arrange: blocking agent stays Running so it can receive a follow-up message
+        var blockingTcs = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(blockingTcs);
+
+        _manager = CreateManager();
+
+        // Act: spawn WITHOUT a caller-supplied name. Every agent must still surface a
+        // human-readable handle (derived from the subagent_type) rather than only an opaque id.
+        var spawnJson = await _manager.SpawnAsync(
+            "test-agent", "initial task", runInBackground: true);
+
+        // Assert: a readable name was derived from the template and is not just the raw id.
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var spawnRoot = spawnDoc.RootElement;
+        var derivedName = spawnRoot.GetProperty("name").GetString();
+        var agentId = spawnRoot.GetProperty("agent_id").GetString();
+
+        derivedName.Should().NotBeNullOrWhiteSpace();
+        derivedName.Should().StartWith("test-agent-");
+        derivedName.Should().NotBe(agentId);
+
+        // And the derived name is a first-class handle: SendMessage can address the agent by it.
+        var resumeJson = await _manager.SendMessageAsync(
+            derivedName!, "follow-up message", runInBackground: true);
+
+        using var resumeDoc = JsonDocument.Parse(resumeJson);
+        var resumeRoot = resumeDoc.RootElement;
+        resumeRoot.GetProperty("name").GetString().Should().Be(derivedName);
+        resumeRoot.GetProperty("status").GetString().Should().Be("message_sent");
+
+        // Cleanup
+        blockingTcs.SetResult(true);
+    }
+
+    [Fact]
+    public async Task SpawnAsync_WithExplicitName_KeepsItVerbatim_NoDerivedFallback()
+    {
+        // Arrange
+        var blockingTcs = new TaskCompletionSource<bool>();
+        SetupBlockingSubAgent(blockingTcs);
+
+        _manager = CreateManager();
+
+        // Act: an explicitly supplied name must be kept exactly - the readable-name fallback
+        // only fills in when the caller omits a name; it never rewrites a caller's choice.
+        var spawnJson = await _manager.SpawnAsync(
+            "test-agent", "initial task", name: "custom-name", runInBackground: true);
+
+        // Assert
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        spawnDoc.RootElement.GetProperty("name").GetString().Should().Be("custom-name");
 
         // Cleanup
         blockingTcs.SetResult(true);
@@ -864,11 +1190,13 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Creates a SubAgentManager with the test's mock sub-agent and parent.
+    /// Creates a SubAgentManager with the test's mock sub-agent and parent. When
+    /// <paramref name="qualifiedTemplateKey"/> is supplied, the single template is registered under
+    /// that key instead of "test-agent" (used to exercise plugin-prefix resolution).
     /// </summary>
-    private SubAgentManager CreateManager(int maxConcurrent = 5)
+    private SubAgentManager CreateManager(int maxConcurrent = 5, string? qualifiedTemplateKey = null)
     {
-        var options = CreateOptions(maxConcurrent);
+        var options = CreateOptions(maxConcurrent, qualifiedTemplateKey);
         return new SubAgentManager(
             parentAgent: _parentMock.Object,
             parentContracts: [],
@@ -878,22 +1206,43 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Creates SubAgentOptions with a single "test-agent" template
-    /// backed by the mock sub-agent.
+    /// Creates a SubAgentManager whose source registers a template under each of the given keys
+    /// (all backed by the mock sub-agent). Used to build ambiguous-segment resolution scenarios.
     /// </summary>
-    private SubAgentOptions CreateOptions(int maxConcurrent = 5)
+    private SubAgentManager CreateManagerWithTemplates(params string[] templateKeys)
     {
-        var template = new SubAgentTemplate
+        var templates = templateKeys.ToDictionary(key => key, _ => MakeTemplate());
+        var options = new SubAgentOptions
         {
-            SystemPrompt = "You are a test agent.",
-            AgentFactory = () => _subAgentMock.Object,
+            Templates = templates,
+            MaxConcurrentSubAgents = 5,
         };
+        return new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates));
+    }
 
+    /// <summary>A minimal template backed by the shared mock sub-agent.</summary>
+    private SubAgentTemplate MakeTemplate() => new()
+    {
+        SystemPrompt = "You are a test agent.",
+        AgentFactory = () => _subAgentMock.Object,
+    };
+
+    /// <summary>
+    /// Creates SubAgentOptions with a single template backed by the mock sub-agent, keyed by
+    /// <paramref name="qualifiedTemplateKey"/> when given (defaults to "test-agent").
+    /// </summary>
+    private SubAgentOptions CreateOptions(int maxConcurrent = 5, string? qualifiedTemplateKey = null)
+    {
         return new SubAgentOptions
         {
             Templates = new Dictionary<string, SubAgentTemplate>
             {
-                ["test-agent"] = template,
+                [qualifiedTemplateKey ?? "test-agent"] = MakeTemplate(),
             },
             MaxConcurrentSubAgents = maxConcurrent,
         };

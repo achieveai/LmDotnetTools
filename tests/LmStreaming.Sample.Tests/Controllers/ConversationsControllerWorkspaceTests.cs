@@ -74,6 +74,7 @@ public class ConversationsControllerWorkspaceTests
             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             new ConversationStatusResolver(new InMemoryConversationStore(), new InMemoryConversationStore()),
             TimeProvider.System,
+            new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance);
     }
 

@@ -17,7 +17,7 @@ public static class NotifyKinds
     /// <summary>A context file discovered by the sandbox was injected into the conversation.</summary>
     public const string ContextDiscovery = "context-discovery";
 
-    /// <summary>An async workflow launched via <c>StartWorkflow</c> reached a terminal state.</summary>
+    /// <summary>An async workflow launched via <c>StartWorkflowAgent</c> reached a terminal state.</summary>
     public const string WorkflowCompletion = "workflow-completion";
 }
 

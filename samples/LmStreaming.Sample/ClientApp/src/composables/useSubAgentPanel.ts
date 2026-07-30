@@ -422,16 +422,6 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     }
   }
 
-  /** Rehydrate a loaded history page into the focused view (index + tool results + display items). */
-  function renderPersistedTranscript(persisted: PersistedMessage[]): void {
-    for (const pm of persisted) {
-      rehydratePersisted(pm);
-    }
-    // Attach any persisted tool results to their tool calls.
-    attachPersistedToolResults();
-    rebuildFocusedDisplayItems();
-  }
-
   /**
    * Focus a sub-agent: tear down any prior focus, open the live stream (buffering), load the child's
    * persisted transcript, then drain the buffered live messages on top. Opening the socket BEFORE the
@@ -498,6 +488,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     // socket" (skip a redundant close) from "superseded before we owned it" (we must close it).
     let provisionalOwned = false;
     let openedConnection: WebSocketConnection | null = null;
+    // Set when THIS focus receives the done sentinel BEFORE adoption. A completed child (live shared
+    // provider still up, OR the server's read-only persisted-replay path) emits `done` during history
+    // buffering; without this guard the post-buffer adoption below would (re)start the spinner with no
+    // later frame to stop it. Adoption consults this so a finished child settles instead of spinning.
+    let doneSeenDuringFocus = false;
 
     try {
       const connection = await connectSubAgent(parent, agentId, {
@@ -530,7 +525,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           }
         },
         onDone: () => {
-          if (focusSeq === token) isFocusedStreaming.value = false;
+          if (focusSeq !== token) return;
+          // Record that this focus's stream already finished, so adoption (below) does not restart the
+          // spinner for an already-complete child (shared-provider live-completed, or persisted replay).
+          doneSeenDuringFocus = true;
+          isFocusedStreaming.value = false;
         },
         onError: (err: string, code?: string) => {
           if (focusSeq !== token) return;
@@ -608,20 +607,38 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         log.debug('focusChild superseded during history load; teardown owns the socket', { agentId });
         return;
       }
-      // The socket may have closed terminally DURING the history-load await. Do NOT adopt the dead
-      // connection nor drain the buffer onto it — the onClose handler already stopped the spinner and
-      // (when budget remained) started the one-shot auto-resume, so bail without double-resuming. But
-      // RENDER the history we just loaded first: focusing a child whose parent is no longer live (a
-      // deep-link to a FINISHED conversation) always ends here, and returning empty-handed would show
-      // an empty transcript for a child whose whole transcript is sitting in `persisted`.
+      // The socket may have closed terminally DURING the history-load await. Do NOT adopt
+      // the dead connection nor drain the buffer onto it — the onClose handler already stopped the
+      // spinner and (when budget remained) started the one-shot auto-resume, so just bail without
+      // double-resuming.
       if (socketClosedDuringFocus || connection.socket.readyState !== WebSocket.OPEN) {
-        log.debug('focusChild: socket closed during history load; rendering persisted transcript only', {
-          agentId,
-        });
-        renderPersistedTranscript(persisted);
+        // Exception: a COMPLETED read-only child (e.g. a workflow delegate whose controller loop was
+        // released, so the live stream reports subagent_unavailable) has no socket to adopt, but its
+        // transcript still lives in the store. Render that persisted history read-only instead of
+        // leaving the tab blank + a scary "unavailable" banner. Scoped to the terminal-error case
+        // (terminalErrorSeen ⇒ no auto-resume is pending to render it later) with actual history.
+        if (terminalErrorSeen && persisted.length > 0) {
+          for (const pm of persisted) {
+            rehydratePersisted(pm);
+          }
+          attachPersistedToolResults();
+          rebuildFocusedDisplayItems();
+          error.value = null;
+          log.debug('focusChild: rendered completed child from persisted history (no live socket)', {
+            agentId,
+            count: persisted.length,
+          });
+          return;
+        }
+        log.debug('focusChild: socket closed during history load; not adopting dead connection', { agentId });
         return;
       }
-      renderPersistedTranscript(persisted);
+      for (const pm of persisted) {
+        rehydratePersisted(pm);
+      }
+      // Attach any persisted tool results to their tool calls.
+      attachPersistedToolResults();
+      rebuildFocusedDisplayItems();
 
       // If the live buffer overflowed while history was loading, the buffered-merge was
       // abandoned to a FRESH bounded buffer. Reconcile by reloading history (the shared merge key
@@ -640,15 +657,14 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           return;
         }
         if (socketClosedDuringFocus || connection.socket.readyState !== WebSocket.OPEN) {
-          // Same as above: the live half is over, but the reload is a strictly newer snapshot than what
-          // is on screen, so render it rather than discarding it with the dead connection.
-          log.debug('focusChild: socket closed during reconcile reload; rendering persisted transcript only', {
-            agentId,
-          });
-          renderPersistedTranscript(reloaded);
+          log.debug('focusChild: socket closed during reconcile reload; not adopting dead connection', { agentId });
           return;
         }
-        renderPersistedTranscript(reloaded);
+        for (const pm of reloaded) {
+          rehydratePersisted(pm);
+        }
+        attachPersistedToolResults();
+        rebuildFocusedDisplayItems();
       }
       if (liveBufferOverflowed) {
         // Fallback: the fresh buffer kept overflowing past the reconcile budget. Do NOT silently drop
@@ -672,9 +688,11 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       rebuildFocusedDisplayItems();
 
       // Adopt the connection now that history + gap messages are in place (already provisionally
-      // owned since connect; reaffirm and start the spinner).
+      // owned since connect; reaffirm). Start the spinner only if the stream hasn't already finished —
+      // a completed child (shared-provider live-completed, or the server's read-only persisted replay)
+      // delivers `done` during buffering, so restarting the spinner here would leave it stuck.
       focusedConnection = connection;
-      isFocusedStreaming.value = true;
+      isFocusedStreaming.value = !doneSeenDuringFocus;
     } catch (e) {
       // A superseding focus/unfocus/parent-switch already owns the visible state — don't clobber it.
       if (focusSeq !== token) {

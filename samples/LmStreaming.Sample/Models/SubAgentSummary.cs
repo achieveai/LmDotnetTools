@@ -11,6 +11,12 @@ public sealed record SubAgentSummary
     /// <summary>Stable id assigned to the sub-agent at spawn time.</summary>
     public required string AgentId { get; init; }
 
+    /// <summary>
+    ///     What kind of child this row represents: <c>subagent</c> (an Agent-tool spawn, the default) or
+    ///     <c>workflow</c> (a StartWorkflowAgent run whose isolated controller loop is surfaced as a tab).
+    /// </summary>
+    public string Kind { get; init; } = "subagent";
+
     /// <summary>Caller-supplied display name, or null when the spawn provided none.</summary>
     public string? Name { get; init; }
 
@@ -29,45 +35,27 @@ public sealed record SubAgentSummary
     /// <summary>UTC timestamp of the sub-agent's last observed activity, or null if none yet.</summary>
     public DateTimeOffset? LastActivityUtc { get; init; }
 
-    /// <summary>
-    /// Thread id of the conversation that spawned this sub-agent, or null when the node has no
-    /// persisted parent link. Populated by the no-filter provenance projection
-    /// (<c>SubAgentProvenance.TryProject(ThreadMetadata)</c>) for any persisted node — this includes
-    /// a persisted-only child on the flat (non-recursive) listing, not just recursive nodes. It reads
-    /// null only when a LIVE <c>SubAgentManager</c> snapshot for the same agent id wins the flat
-    /// listing's merge, since that live projection does not carry a parent id. Required (never null)
-    /// on every node of the recursive contract (<c>GET .../subagents?recursive=true</c>).
-    /// </summary>
+    /// <summary>Persisted parent thread id; required on recursive-tree nodes.</summary>
     public string? ParentThreadId { get; init; }
 
-    /// <summary>
-    /// Distance from the requested root in the recursive descendant graph — the root's direct
-    /// children are depth 1. Additive: null outside the recursive contract.
-    /// </summary>
+    /// <summary>Distance from the requested root in the recursive descendant graph.</summary>
     public int? Depth { get; init; }
 
-    /// <summary>
-    /// UTC instant the sub-agent reached a terminal status, or null while running, unknown, or when
-    /// a live <c>SubAgentManager</c> snapshot for the same agent id wins the flat listing's merge
-    /// (that live projection does not carry it). Populated identically for a persisted-only child of
-    /// the flat (non-recursive) listing and for every node of the recursive contract, via the same
-    /// no-filter provenance projection <see cref="ParentThreadId"/> uses — it is the same stamped
-    /// value <see cref="LastActivityUtc"/> already falls back to.
-    /// </summary>
+    /// <summary>UTC instant the sub-agent reached a terminal status.</summary>
     public DateTimeOffset? TerminalAtUtc { get; init; }
 
-    /// <summary>
-    /// Machine-readable failure reason, when known. Additive and reserved for future use — no
-    /// current write path stamps a failure code, so this is always null today.
-    /// </summary>
+    /// <summary>Machine-readable failure reason, when known.</summary>
     public string? FailureCode { get; init; }
+
+    /// <summary>The concrete model used to build the child provider after all routing precedence.</summary>
+    public string? EffectiveModelId { get; init; }
+
+    /// <summary>The intelligence tier that selected the effective model, when selection was tier-based.</summary>
+    public int? EffectiveModelIntelligence { get; init; }
+
+    /// <summary>Stable source label such as parent, spawn-model, spawn-tier, template-model, or template-tier.</summary>
+    public string? ModelSelectionSource { get; init; }
 }
 
-/// <summary>
-/// Versioned envelope for the recursive descendant graph
-/// (<c>GET /api/conversations/{threadId}/subagents?recursive=true</c>). <see cref="SchemaVersion"/>
-/// lets a consumer (e.g. a daemon-side completion barrier) fail closed on an old/incompatible
-/// response rather than silently misreading a flat array as a tree. The plain, non-recursive
-/// endpoint is unaffected — it keeps returning a bare <c>SubAgentSummary[]</c>.
-/// </summary>
+/// <summary>Versioned recursive descendant graph response.</summary>
 public sealed record SubAgentTreeResponse(int SchemaVersion, IReadOnlyList<SubAgentSummary> Nodes);

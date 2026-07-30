@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
@@ -96,6 +97,54 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             "the relayed prompt is user EUII and must never be logged");
     }
 
+    [Fact]
+    public async Task Spawn_LogsFinalEffectiveRoutingAsStructuredProperties()
+    {
+        var options = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    Name = "worker",
+                    SystemPrompt = "You are a worker.",
+                    AgentFactory = () => throw new NotSupportedException("Bypassed by TestAgentFactoryOverride."),
+                    DefaultOptions = new GenerateReplyOptions { ModelId = "tier-five-model" },
+                    IsModelTierResolved = true,
+                    ModelIntelligence = 5,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+
+        var manager = new SubAgentManager(
+            parentAgent: _parentMock.Object,
+            parentContracts: [],
+            parentHandlers: new Dictionary<string, ToolHandler>(),
+            options: options,
+            source: new MutableSubAgentTemplateSource(options.Templates),
+            logger: _logger);
+        _manager = manager;
+        manager.TestAgentFactoryOverride = (agentId, _) => new ObservableFakeAgent
+        {
+            ThreadId = $"subagent-{agentId}",
+            RunMessages = [new TextMessage { Text = "ack", Role = Role.Assistant }],
+        };
+
+        _ = await manager.SpawnAsync(
+            "worker", SecretTask, name: "workflow:1:task", runInBackground: true);
+
+        var routing = _logger.StructuredSnapshot()
+            .Single(entry => entry.TryGetValue("RoutingSelectionSource", out var source)
+                && string.Equals(source?.ToString(), "template-tier", StringComparison.Ordinal));
+        routing["TemplateName"].Should().Be("worker");
+        routing["SpawnName"].Should().Be("workflow:1:task");
+        routing["RequestedModelIntelligence"].Should().BeNull();
+        routing["TemplateModelIntelligence"].Should().Be(5);
+        routing["EffectiveModelId"].Should().Be("tier-five-model");
+        routing["EffectiveModelIntelligence"].Should().Be(5);
+    }
+
     private static string ParseAgentId(string spawnJson)
     {
         using var doc = JsonDocument.Parse(spawnJson);
@@ -107,11 +156,21 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
         private readonly List<string> _lines = [];
         private readonly Lock _lock = new();
 
+        private readonly List<IReadOnlyDictionary<string, object?>> _structured = [];
+
         public IReadOnlyList<string> Snapshot()
         {
             lock (_lock)
             {
                 return [.. _lines];
+            }
+        }
+
+        public IReadOnlyList<IReadOnlyDictionary<string, object?>> StructuredSnapshot()
+        {
+            lock (_lock)
+            {
+                return [.. _structured];
             }
         }
 
@@ -127,9 +186,13 @@ public class SubAgentManagerEuiiLoggingTests : IAsyncLifetime
             Func<TState, Exception?, string> formatter)
         {
             var line = formatter(state, exception);
+            var properties = state is IEnumerable<KeyValuePair<string, object?>> values
+                ? values.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+                : [];
             lock (_lock)
             {
                 _lines.Add(line);
+                _structured.Add(properties);
             }
         }
 

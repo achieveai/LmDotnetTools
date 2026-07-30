@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   closeWebSocketConnection,
   normalizeKeys,
+  createWebSocketConnection,
   openWebSocketConnection,
   type WebSocketConnection,
 } from '@/api/wsClient';
@@ -125,12 +126,14 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
     onMessage?: (m: unknown) => void;
     onDone?: () => void;
     onError?: (error: string, code?: string) => void;
+    onSandboxSessionRefresh?: (deferred: boolean) => void;
   }): Promise<{ socket: MockWebSocket; connection: WebSocketConnection }> {
     vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
     const promise = openWebSocketConnection('ws://x/ws', 'thread-42', 'conn-7', {
       onMessage: callbacks.onMessage ?? (() => {}),
       onDone: callbacks.onDone ?? (() => {}),
       onError: (callbacks.onError ?? (() => {})) as (error: string) => void,
+      onSandboxSessionRefresh: callbacks.onSandboxSessionRefresh,
     });
     const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
     socket.readyState = MockWebSocket.OPEN;
@@ -189,5 +192,45 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
     socket.onmessage?.({ data: JSON.stringify({ $type: 'error', message: 'Unstructured failure' }) });
 
     expect(onError).toHaveBeenCalledWith('Unstructured failure', undefined);
+  });
+
+  it('forwards sandbox refresh through the chat connection wrapper', async () => {
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    const onSandboxSessionRefresh = vi.fn();
+    const promise = createWebSocketConnection({
+      threadId: 'thread-wrapper',
+      onMessage: () => {},
+      onDone: () => {},
+      onError: () => {},
+      onSandboxSessionRefresh,
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    await promise;
+
+    socket.onmessage?.({ data: JSON.stringify({ $type: 'sandbox_session_refresh' }) });
+
+    expect(onSandboxSessionRefresh).toHaveBeenCalledWith(false);
+  });
+
+  it('surfaces sandbox session refresh as a non-error reconnect signal', async () => {
+    const onError = vi.fn();
+    const onSandboxSessionRefresh = vi.fn();
+    const { socket } = await open({ onError, onSandboxSessionRefresh });
+
+    socket.onmessage?.({ data: JSON.stringify({ $type: 'sandbox_session_refresh' }) });
+
+    expect(onSandboxSessionRefresh).toHaveBeenCalledWith(false);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('marks a sandbox refresh as deferred while the current run finishes', async () => {
+    const onSandboxSessionRefresh = vi.fn();
+    const { socket } = await open({ onSandboxSessionRefresh });
+
+    socket.onmessage?.({ data: JSON.stringify({ $type: 'sandbox_session_refresh_deferred' }) });
+
+    expect(onSandboxSessionRefresh).toHaveBeenCalledWith(true);
   });
 });

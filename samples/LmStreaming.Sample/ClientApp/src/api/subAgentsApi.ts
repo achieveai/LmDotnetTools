@@ -1,25 +1,23 @@
 /**
- * Status of a sub-agent, mirroring the backend `SubAgentSummary.status` values. `unknown` is the
- * marker for a child rebuilt from the conversation store whose lifecycle status was never stamped
- * (e.g. metadata written before status stamping existed, or a parent no longer in the agent pool
- * that never observed a live snapshot) — see `SubAgentProvenance.UnknownStatus` on the backend.
+ * Status of a sub-agent, mirroring the backend `SubAgentSummary.status` values.
  */
-export type SubAgentStatus = 'running' | 'completed' | 'error' | 'stopped' | 'unknown';
+export type SubAgentStatus = 'running' | 'completed' | 'error' | 'stopped';
+
+/**
+ * What kind of run a `/subagents` entry represents. A plain `'subagent'` is a spawned Agent; a
+ * `'workflow'` is a StartWorkflowAgent run whose isolated controller loop is exposed as a tab
+ * alongside sub-agents. Missing/undefined is treated as `'subagent'` (backward compatible with a
+ * server that predates the field).
+ */
+export type SubAgentKind = 'subagent' | 'workflow';
 
 /**
  * A conversation's sub-agent as summarized by
  * `GET /api/conversations/{parentThreadId}/subagents`. `threadId` is the child's own conversation
- * thread (`subagent-{agentId}`) — pass it to `loadConversationMessages` to load the child's
- * persisted transcript.
- *
- * `parentThreadId` and `terminalAtUtc` come from the backend's persisted-metadata projection, so
- * they can already be present on the flat (non-recursive) listing for a child that is
- * persisted-only (not currently live) — they read `undefined` only when a live snapshot for that
- * same agent id wins the flat listing's merge. `depth` and `failureCode` are genuinely
- * recursive-only: `depth` is never set outside the recursive descendant graph
- * (`?recursive=true`, see `SubAgentTreeResponse` on the backend), and `failureCode` is reserved
- * for future use and always absent today on any listing. All four are required (present, though
- * possibly `null`) on every node of the recursive contract.
+ * thread (`subagent-{agentId}`, or `workflow-{agentId}` for a workflow run) — pass it to
+ * `loadConversationMessages` to load the child's persisted transcript. Workflow runs arrive in the
+ * SAME flat list with `kind: 'workflow'`. Persisted parent/depth/terminal fields are additive and
+ * required by the separate versioned recursive-tree contract used by the review daemon.
  */
 export interface SubAgentSummary {
   agentId: string;
@@ -29,9 +27,21 @@ export interface SubAgentSummary {
   status: SubAgentStatus;
   threadId: string;
   lastActivityUtc?: string | null;
+  /** `'workflow'` for a workflow run, else `'subagent'`. Absent = `'subagent'`. */
+  kind?: SubAgentKind;
+  /** Concrete model selected after applying spawn, template, and parent precedence. */
+  effectiveModelId?: string | null;
+  /** Tier that selected the effective model; absent for non-tier selection. */
+  effectiveModelIntelligence?: number | null;
+  /** Stable winning input: parent, spawn-model, spawn-tier, template-model, or template-tier. */
+  modelSelectionSource?: string | null;
+  /** Persisted parent thread id; required for recursive graph nodes. */
   parentThreadId?: string | null;
+  /** Distance from the recursive request root. */
   depth?: number | null;
+  /** Terminal transition timestamp, when known. */
   terminalAtUtc?: string | null;
+  /** Safe machine-readable failure code, when known. */
   failureCode?: string | null;
 }
 

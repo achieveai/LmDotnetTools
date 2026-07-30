@@ -62,7 +62,8 @@ public sealed class WorkspaceMarketplaceSelectionTests
                 "test-anthropic",
                 responder.HandlerFor("test-anthropic"),
                 sandboxGatewayHandler: gateway,
-                sandboxOptions: sandboxOptions);
+                sandboxOptions: sandboxOptions,
+                catalogClient: FakeMarketplaceCatalogClient.WithAliases("ClaudePlugins", "superpowers"));
             var page = session.Page;
 
             // Create a workspace that enables ONLY a specific subset of marketplaces. Same-origin POST,
@@ -89,6 +90,7 @@ public sealed class WorkspaceMarketplaceSelectionTests
             // Reload so the selector lists the freshly-created workspace, then pick it.
             await page.ReloadAsync();
             await page.Textarea().WaitForAsync();
+            await Assertions.Expect(page.GetByTestId("workspace-selector-button")).ToBeEnabledAsync();
 
             await page.GetByTestId("workspace-selector-button").ClickAsync();
             await page.GetByTestId($"workspace-option-{workspaceId}").ClickAsync();

@@ -95,11 +95,11 @@ public sealed class MarketplaceSubAgentLoader
     }
 
     /// <summary>
-    /// Flattens every plugin agent in <paramref name="catalog"/> into templates keyed by its spawnable
-    /// <c>subagent_type</c>. Marketplaces that failed to load (non-null
-    /// <see cref="CatalogMarketplace.Error"/>) contribute nothing. Agents with a blank name are
-    /// skipped; duplicate keys keep the FIRST occurrence so the surface is stable. Internal-static
-    /// so unit tests can pin the mapping without a gateway.
+    /// Flattens every plugin agent in <paramref name="catalog"/> into templates keyed by
+    /// <c>plugin:name</c> (the qualified spawnable <c>subagent_type</c>). This matches the gateway's
+    /// full-discovery qualified name so a richer inline-markdown template, merged first, wins over the
+    /// preview fallback. Marketplaces that failed to load contribute nothing; blank agent names are skipped;
+    /// duplicate qualified keys keep the first occurrence. Internal-static so tests can pin the mapping.
     /// </summary>
     internal static IReadOnlyDictionary<string, SubAgentTemplate> MapCatalog(
         MarketplaceCatalog catalog,
@@ -122,7 +122,13 @@ public sealed class MarketplaceSubAgentLoader
                         continue;
                     }
 
-                    var key = BuildKey(agent, plugin);
+                    var bareName = agent.Name.Trim();
+                    var pluginName = string.IsNullOrWhiteSpace(plugin.Name)
+                        ? agent.Plugin?.Trim()
+                        : plugin.Name.Trim();
+                    var key = string.IsNullOrWhiteSpace(pluginName)
+                        ? bareName
+                        : $"{pluginName}:{bareName}";
                     if (!result.TryAdd(key, MapToTemplate(agent, agentFactory)))
                     {
                         logger?.LogInformation(
@@ -134,38 +140,6 @@ public sealed class MarketplaceSubAgentLoader
         }
 
         return result;
-    }
-
-    /// <summary>
-    /// The catalog key for one agent — <c>{plugin}:{name}</c>, falling back to the bare name only when
-    /// neither the agent nor its enclosing <see cref="CatalogPlugin"/> names a contributing plugin.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This MUST match how <see cref="WorkspaceSubAgentLoader"/> keys the same agent (by the gateway's
-    /// <c>QualifiedName</c>, which is exactly <c>{plugin}:{name}</c>), because
-    /// <see cref="MergeFillGaps"/> can only suppress a duplicate it can SEE — and a dictionary only
-    /// sees collisions on equal keys. Keying marketplace entries bare while discovery keyed them
-    /// qualified meant every marketplace agent that was ALSO discovered landed twice in the merged
-    /// catalog: once as the real template carrying the agent's markdown body, once as a
-    /// description-only stub. Both halves are offered to the model as spawnable <c>subagent_type</c>
-    /// values with nothing in the surface to tell them apart — and live it picked the stub every time,
-    /// so a PR review ran ten sub-agents on a generic persona instead of the reviewer instructions.
-    /// Qualifying here collapses each pair back to the one real template.
-    /// </para>
-    /// <para>
-    /// <see cref="CatalogAgent.Plugin"/> and <paramref name="containingPlugin"/> name the same plugin
-    /// in every catalog the gateway actually returns; the agent's own field is preferred because it is
-    /// the one the gateway also derives <c>QualifiedName</c> from, and the enclosing plugin is the
-    /// fallback so a catalog that omits the per-agent field still produces a matching key instead of
-    /// silently reintroducing the duplicate.
-    /// </para>
-    /// </remarks>
-    private static string BuildKey(CatalogAgent agent, CatalogPlugin containingPlugin)
-    {
-        var name = agent.Name.Trim();
-        var plugin = !string.IsNullOrWhiteSpace(agent.Plugin) ? agent.Plugin : containingPlugin.Name;
-        return string.IsNullOrWhiteSpace(plugin) ? name : $"{plugin.Trim()}:{name}";
     }
 
     /// <summary>

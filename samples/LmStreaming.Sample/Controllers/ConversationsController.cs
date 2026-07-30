@@ -166,6 +166,7 @@ public class ConversationsController(
     ProviderRegistry providerRegistry,
     ConversationStatusResolver statusResolver,
     TimeProvider timeProvider,
+    WorkflowRunRegistry workflowRunRegistry,
     ILogger<ConversationsController> logger) : ControllerBase
 {
     /// <summary>
@@ -272,7 +273,10 @@ public class ConversationsController(
             // Sub-agent conversations use the reserved "subagent-{agentId}" thread-id convention and are
             // surfaced only through the sub-agent panel (GET .../subagents + /ws/subagent). They must not
             // leak into the primary conversation sidebar (nor be auto-selected on load).
-            .Where(t => !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal))
+            .Where(t =>
+                !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal)
+                && !t.ThreadId.StartsWith("workflow-", StringComparison.Ordinal)
+            )
             .Select(t => new ConversationSummary
             {
                 ThreadId = t.ThreadId,
@@ -407,54 +411,89 @@ public class ConversationsController(
             return await BuildDescendantTreeAsync(threadId, ct);
         }
 
-        SubAgentSummary[] live = agentPool.TryGet(threadId, out var agent)
-            && agent is MultiTurnAgentLoop { SubAgentManager: not null } loop
-                ? [.. loop.SubAgentManager.ListAgents()
-                    .Select(s => new SubAgentSummary
-                    {
-                        AgentId = s.AgentId,
-                        Name = s.Name,
-                        Template = s.TemplateName,
-                        Task = s.Task,
-                        Status = s.Status.ToString().ToLowerInvariant(),
-                        ThreadId = s.ThreadId,
-                        LastActivityUtc = s.LastActivityUtc,
-                    })]
-                : [];
+        agentPool.TryGet(threadId, out var agent);
+        var isLive = agent is not null;
+        var summaries = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
 
-        var persisted = (await ScanAllPersistedSubAgentNodesAsync(threadId, ct))
-            .Where(n => string.Equals(n.ParentThreadId, threadId, StringComparison.Ordinal))
-            .ToList();
-
-        if (live.Length == 0 && persisted.Count == 0)
+        foreach (var child in (await ScanAllPersistedSubAgentNodesAsync(threadId, ct))
+            .Where(n => string.Equals(n.ParentThreadId, threadId, StringComparison.Ordinal)))
         {
-            // Nothing to list. Distinguish "this conversation has no sub-agents" from "this
-            // conversation does not exist" — the client shows the panel for the former and an
-            // unknown-thread error for the latter.
-            return await IsKnownThreadAsync(threadId, agent, ct)
-                ? Ok(Array.Empty<SubAgentSummary>())
-                : NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+            summaries[(child.Kind, child.AgentId)] = child;
         }
 
-        var merged = new Dictionary<string, SubAgentSummary>(StringComparer.Ordinal);
-        foreach (var child in persisted)
+        if (agent is MultiTurnAgentLoop { SubAgentManager: { } subAgentManager })
         {
-            merged[child.AgentId] = child;
+            foreach (var snapshot in subAgentManager.ListAgents())
+            {
+                summaries[("subagent", snapshot.AgentId)] = new SubAgentSummary
+                {
+                    AgentId = snapshot.AgentId,
+                    Kind = "subagent",
+                    Name = snapshot.Name,
+                    Template = snapshot.TemplateName,
+                    Task = snapshot.Task,
+                    Status = snapshot.Status.ToString().ToLowerInvariant(),
+                    ThreadId = snapshot.ThreadId,
+                    LastActivityUtc = snapshot.LastActivityUtc,
+                    TerminalAtUtc = snapshot.TerminalAtUtc,
+                    EffectiveModelId = snapshot.EffectiveModelId,
+                    EffectiveModelIntelligence = snapshot.EffectiveModelIntelligence,
+                    ModelSelectionSource = snapshot.ModelSelectionSource,
+                };
+            }
         }
 
-        foreach (var child in live)
+        var workflowTabs = new List<SubAgentSummary>();
+        if (isLive && workflowRunRegistry.TryGet(threadId, out var workflowManager) && workflowManager is not null)
         {
-            merged[child.AgentId] = child;
+            workflowTabs.AddRange(workflowManager.ListRuns().Select(r => new SubAgentSummary
+            {
+                AgentId = r.WorkflowId,
+                Kind = "workflow",
+                Name = r.Objective,
+                Template = "workflow",
+                Task = r.Objective,
+                Status = r.Status,
+                ThreadId = r.ThreadId ?? $"workflow-{r.WorkflowId}",
+                LastActivityUtc = r.LastActivityUtc ?? r.StartedUtc,
+            }));
+
+            foreach (var run in workflowManager.ListRuns())
+            {
+                workflowTabs.AddRange(workflowManager.ListRunDelegates(run.WorkflowId).Select(s => new SubAgentSummary
+                {
+                    AgentId = s.AgentId,
+                    Kind = "subagent",
+                    Name = s.Name,
+                    Template = s.TemplateName,
+                    Task = s.Task,
+                    Status = s.Status.ToString().ToLowerInvariant(),
+                    ThreadId = s.ThreadId,
+                    LastActivityUtc = s.LastActivityUtc,
+                    TerminalAtUtc = s.TerminalAtUtc,
+                    EffectiveModelId = s.EffectiveModelId,
+                    EffectiveModelIntelligence = s.EffectiveModelIntelligence,
+                    ModelSelectionSource = s.ModelSelectionSource,
+                }));
+            }
+
+            workflowRunRegistry.PersistTabs(threadId, workflowTabs);
         }
 
-        // Deterministic order: newest activity first, ties broken by thread id so the panel does not
-        // reshuffle between polls (persisted children can share a metadata timestamp).
-        var summaries = merged.Values
+        foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId).Concat(workflowTabs))
+        {
+            summaries[(tab.Kind, tab.AgentId)] = tab;
+        }
+
+        if (summaries.Count == 0 && !await IsKnownThreadAsync(threadId, agent, ct))
+        {
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+        }
+
+        return Ok(summaries.Values
             .OrderByDescending(s => s.LastActivityUtc ?? DateTimeOffset.MinValue)
             .ThenBy(s => s.ThreadId, StringComparer.Ordinal)
-            .ToArray();
-
-        return Ok(summaries);
+            .ToArray());
     }
 
     /// <summary>
@@ -491,7 +530,7 @@ public class ConversationsController(
 
         while (scanned < SubAgentScanMaxThreads)
         {
-            var page = await store.ListThreadsAsync(SubAgentScanPageSize, scanned, ct);
+            var page = await store.ListThreadsAsync(SubAgentScanPageSize, scanned, ct) ?? [];
             if (page.Count == 0)
             {
                 return found;
@@ -590,23 +629,11 @@ public class ConversationsController(
         return Ok(new SubAgentTreeResponse(SchemaVersion: 1, Nodes: ordered));
     }
 
-    /// <summary>
-    /// Reports the message-level contracts this host can keep, without touching any conversation. Exists so
-    /// a caller can fail BEFORE its first send rather than after: an old host silently ignores unknown
-    /// request properties, so a caller that only checks response acknowledgements finds out it had no
-    /// guarantee once the turn is already queued — and for a resumed conversation, checking by sending is
-    /// not an option at all.
-    /// </summary>
     [HttpGet("capabilities")]
     public IActionResult GetCapabilities() =>
         Ok(new ConversationCapabilitiesResponse
         {
             SchemaVersion = 1,
-            // Answered from the same durable fact SendMessage admits against, so the two can never disagree
-            // about whether a key will actually be honored. Deliberately NOT keyed off IRunLedgerStore: a
-            // run ledger only records which inputs are outstanding, and the drain deletes those. Only a
-            // store that opts into IInputAcceptanceStore claims the atomic, drain-surviving admission this
-            // capability actually promises.
             MessageIdempotency = store is IInputAcceptanceStore,
             SpawnSuppression = true,
         });

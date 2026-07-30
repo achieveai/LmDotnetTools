@@ -173,6 +173,7 @@ public sealed class ContextDiscoveryEndToEndTests
                   "kind": "context_file",
                   "path": "CLAUDE.md",
                   "content": "hello world",
+                  "qualified_name": "code-reviewer:architecture-review",
                   "truncated": true
                 }
               ]
@@ -188,6 +189,7 @@ public sealed class ContextDiscoveryEndToEndTests
         item.Kind.Should().Be("context_file");
         item.Path.Should().Be("CLAUDE.md");
         item.Content.Should().Be("hello world");
+        item.QualifiedName.Should().Be("code-reviewer:architecture-review");
         item.Truncated.Should().BeTrue();
     }
 

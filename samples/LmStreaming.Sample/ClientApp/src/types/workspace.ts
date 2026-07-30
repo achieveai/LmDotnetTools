@@ -11,6 +11,20 @@ export interface Workspace {
   isSystemDefined: boolean;
   createdAt: number;
   updatedAt: number;
+  compatibility: 'compatible' | 'incompatible' | 'unknown';
+  unsupportedMarketplaces: string[];
+}
+
+export interface WorkspaceGateway {
+  canonicalBaseUrl: string;
+  appId: string;
+  available: boolean;
+  error: string | null;
+}
+
+export interface WorkspaceListResponse {
+  gateway: WorkspaceGateway;
+  workspaces: Workspace[];
 }
 
 /**

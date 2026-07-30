@@ -4,8 +4,12 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmLifecycle;
+using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using LmMultiTurn.Tests.Lifecycle;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -482,6 +486,312 @@ public class MultiTurnAgentLoopTests
         receivedMessages.OfType<RunCompletedMessage>().Should().NotBeEmpty();
 
         // Cleanup
+        await cts.CancelAsync();
+    }
+
+    // Wrap-up on turn-cap hit: when a run exhausts its turn budget while the model is still
+    // calling tools, the loop must run one final synthesizing turn so the run ends on an assistant
+    // status message instead of a bare tool result left mid-stream. Here the wrap-up turn's model
+    // call DOES produce text, so that text becomes the final message.
+    [Fact]
+    public async Task ExecuteRunAsync_CapHit_RunsWrapUpTurn_WithModelSummary()
+    {
+        // Arrange: a tool call the loop will execute, and a wrap-up summary the model returns once
+        // it is told not to call more tools (the turn AFTER the cap is hit).
+        var toolCallMessage = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\": \"Seattle\"}",
+            ToolCallId = "call_loop",
+            Role = Role.Assistant,
+        };
+        var wrapUpSummary = new TextMessage
+        {
+            Text = "I gathered the weather but ran out of turns; here is the final status.",
+            Role = Role.Assistant,
+        };
+
+        // Every normal turn returns a tool call (so the run never completes naturally and burns the
+        // whole budget). The wrap-up turn is the extra call AFTER the cap; return the summary there.
+        var callCount = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((msgs, _, _) =>
+            {
+                callCount++;
+                // The wrap-up turn is identifiable by its injected instruction (a trailing user
+                // message telling the model not to call more tools).
+                var isWrapUp = msgs.OfType<TextMessage>().Any(m =>
+                    m.Role == Role.User && m.Text.Contains("maximum number of tool-use turns"));
+                return Task.FromResult(
+                    isWrapUp
+                        ? ToAsyncEnumerable([wrapUpSummary])
+                        : ToAsyncEnumerable([toolCallMessage]));
+            });
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "get_weather",
+                Description = "Get weather for a location",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        Description = "The location to get weather for",
+                        ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                        IsRequired = true,
+                    },
+                ],
+            },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(
+                ToolHandlerResult.FromText("{\"temperature\": \"72F\"}")));
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            maxTurnsPerRun: 2,
+            logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+
+        // Act
+        var messages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
+        {
+            messages.Add(msg);
+        }
+
+        // Assert: the run ends on the model's wrap-up text (not a bare tool result), and completes.
+        messages.OfType<TextMessage>().Should().Contain(m => m.Text == wrapUpSummary.Text);
+        messages.OfType<RunCompletedMessage>().Should().NotBeEmpty();
+
+        // The last content message before completion is assistant text, not a tool result.
+        var lastContent = messages.LastOrDefault(m => m is TextMessage or ToolCallResultMessage);
+        lastContent.Should().BeOfType<TextMessage>();
+
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_CapHit_ReportsWrapUpAsLifecycleTurn()
+    {
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\":\"Seattle\"}",
+            ToolCallId = "call_lifecycle",
+            Role = Role.Assistant,
+        };
+        var callCount = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((messages, _, _) =>
+            {
+                callCount++;
+                var wrapUp = messages.OfType<TextMessage>().Any(m =>
+                    m.Role == Role.User && m.Text.Contains("maximum number of tool-use turns"));
+                List<IMessage> reply = wrapUp
+                    ? [new TextMessage { Text = "final", Role = Role.Assistant }]
+                    : [toolCall];
+                return Task.FromResult(ToAsyncEnumerable(reply));
+            });
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "get_weather",
+                Description = "weather",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        ParameterType = JsonSchemaObject.String(),
+                        IsRequired = true,
+                    },
+                ],
+            },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+        var publisher = new RecordingLifecyclePublisher();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "wrap-lifecycle-thread",
+            maxTurnsPerRun: 1,
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher });
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        await foreach (var _ in loop.ExecuteRunAsync(
+            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)) { }
+
+        publisher.EventTypes.Count(t => t == LifecycleEventTypes.TurnCompleted).Should().Be(2);
+        var wrapUpTurn = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)[1];
+        wrapUpTurn.MessageCount.Should().Be(1);
+        wrapUpTurn.ToolCallCount.Should().Be(0);
+        publisher.Payloads<RunCompletedPayload>(LifecycleEventTypes.RunCompleted)
+            .Should().ContainSingle().Which.TurnCount.Should().Be(2);
+        callCount.Should().Be(2);
+        await cts.CancelAsync();
+    }
+
+    [Fact]
+    public async Task ExecuteRunAsync_CapHit_WrapUpProviderFailureReportsErrorTurn()
+    {
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\":\"Seattle\"}",
+            ToolCallId = "call_error",
+            Role = Role.Assistant,
+        };
+        var callCount = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                if (Interlocked.Increment(ref callCount) == 2)
+                {
+                    throw new InvalidOperationException("wrap-up failed");
+                }
+
+                return Task.FromResult(ToAsyncEnumerable([toolCall]));
+            });
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "get_weather",
+                Description = "weather",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        ParameterType = JsonSchemaObject.String(),
+                        IsRequired = true,
+                    },
+                ],
+            },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+        var publisher = new RecordingLifecyclePublisher();
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "wrap-error-thread",
+            maxTurnsPerRun: 1,
+            lifecycleServices: new MultiTurnLifecycleServices { Publisher = publisher });
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        await foreach (var _ in loop.ExecuteRunAsync(
+            new UserInput([new TextMessage { Text = "go", Role = Role.User }]), cts.Token)) { }
+
+        var wrapUpTurn = publisher.Payloads<TurnCompletedPayload>(LifecycleEventTypes.TurnCompleted)[1];
+        wrapUpTurn.Outcome.Should().Be(LifecycleTurnOutcomes.Error);
+        wrapUpTurn.MessageCount.Should().Be(1, "the deterministic fallback is still observed");
+        await cts.CancelAsync();
+    }
+
+    // Wrap-up on turn-cap hit, fallback path: if the model keeps emitting tool calls even in the
+    // wrap-up turn (ignoring the instruction), the loop must NOT execute them and must still close
+    // the run on a deterministic assistant status message so it never dead-ends on a tool result.
+    [Fact]
+    public async Task ExecuteRunAsync_CapHit_WrapUpModelStillCallsTools_PublishesFallbackStatus()
+    {
+        // Arrange: EVERY turn (including the wrap-up turn) returns only a tool call.
+        var toolCallMessage = new ToolCallMessage
+        {
+            FunctionName = "get_weather",
+            FunctionArgs = "{\"location\": \"Seattle\"}",
+            ToolCallId = "call_loop",
+            Role = Role.Assistant,
+        };
+
+        var toolExecutions = 0;
+        _mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable([toolCallMessage])));
+
+        var registry = new FunctionRegistry();
+        registry.AddFunction(
+            new FunctionContract
+            {
+                Name = "get_weather",
+                Description = "Get weather for a location",
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        Description = "The location to get weather for",
+                        ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                        IsRequired = true,
+                    },
+                ],
+            },
+            (_, _, _) =>
+            {
+                Interlocked.Increment(ref toolExecutions);
+                return Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("{\"temperature\": \"72F\"}"));
+            });
+
+        await using var loop = new MultiTurnAgentLoop(
+            _mockAgent.Object,
+            registry,
+            "test-thread",
+            maxTurnsPerRun: 2,
+            logger: _loggerMock.Object);
+
+        using var cts = new CancellationTokenSource();
+        var runTask = loop.RunAsync(cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "What's the weather in Seattle?", Role = Role.User }]);
+
+        // Act
+        var messages = new List<IMessage>();
+        await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
+        {
+            messages.Add(msg);
+        }
+
+        // Assert: a deterministic assistant status message closes the run.
+        var finalText = messages.OfType<TextMessage>()
+            .LastOrDefault(m => m.Role == Role.Assistant);
+        finalText.Should().NotBeNull();
+        finalText!.Text.Should().Contain("maximum number of tool-use turns");
+        messages.OfType<RunCompletedMessage>().Should().NotBeEmpty();
+
+        // The last content message is the fallback assistant status, not a tool result.
+        var lastContent = messages.LastOrDefault(m => m is TextMessage or ToolCallResultMessage);
+        lastContent.Should().BeOfType<TextMessage>();
+
+        // The wrap-up turn's tool call must NOT have been executed: exactly the budgeted turns ran
+        // a tool (maxTurnsPerRun = 2), and the wrap-up turn added none.
+        toolExecutions.Should().Be(2);
+
         await cts.CancelAsync();
     }
 

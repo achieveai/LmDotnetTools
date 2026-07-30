@@ -1,5 +1,10 @@
 import { ref, computed } from 'vue';
-import type { Workspace, WorkspaceCreate, WorkspaceUpdate } from '@/types/workspace';
+import type {
+  Workspace,
+  WorkspaceCreate,
+  WorkspaceGateway,
+  WorkspaceUpdate,
+} from '@/types/workspace';
 import {
   listWorkspaces,
   createWorkspace as apiCreateWorkspace,
@@ -19,6 +24,7 @@ const DEFAULT_WORKSPACE_ID = 'default';
  */
 export function useWorkspaces() {
   const workspaces = ref<Workspace[]>([]);
+  const gateway = ref<WorkspaceGateway | null>(null);
   const selectedWorkspaceId = ref<string | null>(DEFAULT_WORKSPACE_ID);
   const isLoading = ref(false);
   const error = ref<string | null>(null);
@@ -38,19 +44,28 @@ export function useWorkspaces() {
     isLoading.value = true;
     error.value = null;
     try {
-      workspaces.value = await listWorkspaces();
+      const response = await listWorkspaces();
+      gateway.value = response.gateway;
+      workspaces.value = response.workspaces;
 
       const hasSelection =
         selectedWorkspaceId.value !== null &&
-        workspaces.value.some((w) => w.id === selectedWorkspaceId.value);
+        workspaces.value.some(
+          (w) => w.id === selectedWorkspaceId.value && w.compatibility === 'compatible'
+        );
       if (!hasSelection) {
         const initial =
-          workspaces.value.find((w) => w.id === DEFAULT_WORKSPACE_ID)?.id
-          ?? workspaces.value[0]?.id
+          workspaces.value.find(
+            (w) => w.id === DEFAULT_WORKSPACE_ID && w.compatibility === 'compatible'
+          )?.id
+          ?? workspaces.value.find((w) => w.compatibility === 'compatible')?.id
           ?? null;
         selectedWorkspaceId.value = initial;
       }
     } catch (e) {
+      workspaces.value = [];
+      gateway.value = null;
+      selectedWorkspaceId.value = null;
       error.value = e instanceof Error ? e.message : 'Failed to load workspaces';
       console.error('Failed to load workspaces:', e);
     } finally {
@@ -63,7 +78,10 @@ export function useWorkspaces() {
    * can defensively pass user input without leaving the dropdown stale.
    */
   function selectWorkspace(id: string): void {
-    if (!workspaces.value.some((w) => w.id === id)) {
+    if (
+      !gateway.value?.available
+      || !workspaces.value.some((w) => w.id === id && w.compatibility === 'compatible')
+    ) {
       return;
     }
     selectedWorkspaceId.value = id;
@@ -111,6 +129,7 @@ export function useWorkspaces() {
 
   return {
     workspaces,
+    gateway,
     selectedWorkspaceId,
     selectedWorkspace,
     isLoading,

@@ -1,51 +1,108 @@
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
+using LmStreaming.Sample.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace LmStreaming.Sample.Controllers;
 
-/// <summary>
-/// Workspace CRUD. Guarded by <see cref="InboundS2SAuthAttribute"/> for the same reason
-/// <c>ConversationsController</c> is: this is part of the <b>credential-passthrough surface</b>. The
-/// daemon's S2S client calls <c>GET</c>/<c>POST api/workspaces</c> with the caller-credential marker
-/// (<c>X-Sbx-App-Id</c>) so the workspace it creates belongs to the app whose identity it forwards.
-/// Without the guard those routes accepted a forged <c>X-Sbx-App-Id</c> and a missing or wrong
-/// <c>X-S2S-Auth</c> and still returned <c>201 Created</c> — while the identical credentials were
-/// correctly rejected with <c>401</c> one controller over. A workspace is a directory the gateway
-/// mounts into an agent container, so minting one under another app's identity is not a bookkeeping
-/// nuisance.
-/// <para>
-/// The guard is marker-gated, so this does NOT lock the interactive API: the SPA calls these routes
-/// with plain <c>fetch</c> and no S2S markers, and still passes through untouched. Only requests that
-/// claim to be a service must prove it.
-/// </para>
-/// </summary>
 [ApiController]
 [Route("api/workspaces")]
 [InboundS2SAuth]
-public sealed class WorkspacesController(IWorkspaceStore store) : ControllerBase
+public sealed class WorkspacesController(
+    IWorkspaceStore store,
+    WorkspaceCatalogCompatibilityService compatibility,
+    GatewayWorkspaceCatalogIdentity identity) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct = default)
     {
-        var workspaces = await store.GetAllAsync(ct);
-        return Ok(workspaces);
+        try
+        {
+            var workspaces = await store.GetAllAsync(ct);
+            var views = new List<WorkspaceView>(workspaces.Count);
+            WorkspaceCompatibilityResult? gatewayProbe = null;
+            foreach (var workspace in workspaces)
+            {
+                var result = await compatibility.EvaluateAsync(workspace, ct);
+                gatewayProbe ??= result;
+                views.Add(workspace.ToView(result));
+            }
+
+            var available = gatewayProbe?.Compatibility is not WorkspaceCompatibility.Unknown;
+            return Ok(
+                new WorkspaceListResponse(
+                    new WorkspaceGatewayView(
+                        identity.CanonicalBaseUrl,
+                        identity.AppId,
+                        available,
+                        available ? null : gatewayProbe?.Error
+                    ),
+                    views
+                )
+            );
+        }
+        catch (WorkspaceCatalogCorruptException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = ex.Message, code = "workspace_catalog_unavailable" }
+            );
+        }
     }
 
     [HttpGet("{id}")]
     public async Task<IActionResult> Get(string id, CancellationToken ct = default)
     {
-        var workspace = await store.GetAsync(id, ct);
-        return workspace != null ? Ok(workspace) : NotFound();
+        try
+        {
+            var workspace = await store.GetAsync(id, ct);
+            return workspace is null
+                ? NotFound()
+                : Ok(workspace.ToView(await compatibility.EvaluateAsync(workspace, ct)));
+        }
+        catch (WorkspaceCatalogCorruptException ex)
+        {
+            return CatalogUnavailable(ex);
+        }
     }
 
     [HttpPost]
-    public async Task<IActionResult> Create([FromBody] WorkspaceCreate createData, CancellationToken ct = default)
+    public async Task<IActionResult> Create(
+        [FromBody] WorkspaceCreate createData,
+        CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(createData);
         try
         {
+            await compatibility.ValidateForMutationAsync(createData.Marketplaces ?? [], ct);
             var workspace = await store.CreateAsync(createData, ct);
-            return Created($"/api/workspaces/{workspace.Id}", workspace);
+            return Created(
+                $"/api/workspaces/{workspace.Id}",
+                workspace.ToView(await compatibility.EvaluateAsync(workspace, ct))
+            );
+        }
+        catch (UnsupportedWorkspaceMarketplacesException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "unsupported_marketplaces",
+                    unsupportedMarketplaces = ex.UnsupportedMarketplaces,
+                    availableMarketplaces = ex.AvailableMarketplaces,
+                }
+            );
+        }
+        catch (WorkspaceGatewayCatalogUnavailableException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = ex.Message, code = "gateway_catalog_unavailable" }
+            );
+        }
+        catch (WorkspaceCatalogCorruptException ex)
+        {
+            return CatalogUnavailable(ex);
         }
         catch (InvalidOperationException ex)
         {
@@ -57,13 +114,33 @@ public sealed class WorkspacesController(IWorkspaceStore store) : ControllerBase
     public async Task<IActionResult> Update(
         string id,
         [FromBody] WorkspaceUpdate updateData,
-        CancellationToken ct = default
-    )
+        CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(updateData);
         try
         {
+            await compatibility.ValidateForMutationAsync(updateData.Marketplaces, ct);
             var workspace = await store.UpdateAsync(id, updateData, ct);
-            return Ok(workspace);
+            return Ok(workspace.ToView(await compatibility.EvaluateAsync(workspace, ct)));
+        }
+        catch (UnsupportedWorkspaceMarketplacesException ex)
+        {
+            return BadRequest(
+                new
+                {
+                    error = ex.Message,
+                    code = "unsupported_marketplaces",
+                    unsupportedMarketplaces = ex.UnsupportedMarketplaces,
+                    availableMarketplaces = ex.AvailableMarketplaces,
+                }
+            );
+        }
+        catch (WorkspaceGatewayCatalogUnavailableException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = ex.Message, code = "gateway_catalog_unavailable" }
+            );
         }
         catch (KeyNotFoundException)
         {
@@ -74,4 +151,10 @@ public sealed class WorkspacesController(IWorkspaceStore store) : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
     }
+
+    private ObjectResult CatalogUnavailable(WorkspaceCatalogCorruptException ex) =>
+        StatusCode(
+            StatusCodes.Status503ServiceUnavailable,
+            new { error = ex.Message, code = "workspace_catalog_unavailable" }
+        );
 }

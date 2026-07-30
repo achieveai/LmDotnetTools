@@ -18,6 +18,7 @@ internal sealed class CharacteristicsAgentFactory
     private readonly Func<CopilotModelInfo, IStreamingAgent> _modelAgentFactory;
     private readonly ILogger<CharacteristicsAgentFactory> _logger;
     private readonly CopilotModelInfo? _parentCopilotModel;
+    private readonly ImmutableDictionary<string, object?> _parentReasoningExtraProperties;
     private readonly ConcurrentDictionary<string, byte> _warnedFallbacks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _loggedEffortDiagnostics = new(
         StringComparer.OrdinalIgnoreCase
@@ -28,7 +29,8 @@ internal sealed class CharacteristicsAgentFactory
         IStreamingAgent parentAgent,
         Func<CopilotModelInfo, IStreamingAgent> modelAgentFactory,
         ILogger<CharacteristicsAgentFactory> logger,
-        CopilotModelInfo? parentCopilotModel = null
+        CopilotModelInfo? parentCopilotModel = null,
+        ImmutableDictionary<string, object?>? parentReasoningExtraProperties = null
     )
     {
         ArgumentNullException.ThrowIfNull(catalog);
@@ -41,6 +43,8 @@ internal sealed class CharacteristicsAgentFactory
         _modelAgentFactory = modelAgentFactory;
         _logger = logger;
         _parentCopilotModel = parentCopilotModel;
+        _parentReasoningExtraProperties =
+            parentReasoningExtraProperties ?? ImmutableDictionary<string, object?>.Empty;
     }
 
     /// <summary>
@@ -55,6 +59,15 @@ internal sealed class CharacteristicsAgentFactory
             var extraProperties = _parentCopilotModel is null
                 ? ImmutableDictionary<string, object?>.Empty
                 : ShapeReasoning(_parentCopilotModel, characteristics.Effort);
+            // Copilot shaping is empty for a classic Copilot Anthropic parent (advertises no efforts) and for a
+            // non-Copilot parent (_parentCopilotModel is null). In both cases the sub-agent reuses the parent
+            // model/transport, so it should inherit the parent's OWN reasoning metadata (e.g. a classic
+            // Thinking budget) rather than think with no nudge at all.
+            if (extraProperties.IsEmpty)
+            {
+                extraProperties = _parentReasoningExtraProperties;
+            }
+
             return new SubAgentProviderAgent(_parentAgent, extraProperties);
         }
 

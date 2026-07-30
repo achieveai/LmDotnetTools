@@ -300,6 +300,42 @@ describe('useSubAgentPanel — focus & transcript', () => {
     captured[0].callbacks.onDone();
     expect(panel.isFocusedStreaming.value).toBe(false);
   });
+
+  it('settles the spinner (not stuck) when the stream reports done BEFORE adoption — completed replay', async () => {
+    // A COMPLETED child settles via a done sentinel that arrives DURING focus, before the post-history
+    // adoption step: the server's read-only persisted-replay path emits `done` immediately (no live
+    // frames), and a shared-provider live-completed child behaves the same. The transcript renders from
+    // REST history, and the focused spinner must SETTLE — the adoption step must not re-raise it and
+    // leave it stuck (there is no later frame to lower it again).
+    convMocks.loadConversationMessages.mockResolvedValue([
+      {
+        id: 'p-asst', threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 0,
+        timestamp: 1000, messageType: 'text', role: 'assistant',
+        messageJson: JSON.stringify({ $type: MessageType.Text, role: 'assistant', text: 'persisted-answer' }),
+      },
+    ]);
+    // The server delivers `done` immediately on connect (completed child: history is via REST, not the socket).
+    wsSubMocks.connectSubAgent.mockImplementation(async (parentThreadId: string, agentId: string, callbacks: any) => {
+      const connection = {
+        socket: { readyState: WebSocket.OPEN },
+        connectionId: `sa-${captured.length + 1}`,
+        threadId: `subagent-${agentId}`,
+        isConnected: true,
+      };
+      captured.push({ parentThreadId, agentId, callbacks, connection });
+      callbacks.onDone();
+      return connection;
+    });
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    expect(panel.focusedAgentId.value).toBe('a1');
+    // Transcript renders from persisted REST history…
+    expect(assistantText(panel.focusedDisplayItems.value)).toContain('persisted-answer');
+    // …and the spinner is settled, not stuck on after adoption.
+    expect(panel.isFocusedStreaming.value).toBe(false);
+  });
 });
 
 describe('useSubAgentPanel — send & unfocus', () => {

@@ -233,6 +233,7 @@ public class ConversationsRestContractTests
             providerRegistry ?? new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
             TimeProvider.System,
+            new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance);
     }
 
