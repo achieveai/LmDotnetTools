@@ -53,4 +53,36 @@ internal static class RunLifecycleGuards
 
         return -1;
     }
+
+    /// <summary>
+    /// Decides what <see cref="IRunLifecycleStore.AttachDeferredChildRunAsync"/> should do with the
+    /// record it found, so the stores cannot disagree about which child run stands.
+    /// </summary>
+    /// <param name="existing">The committed deferral.</param>
+    /// <param name="childRunId">The child run the caller proposes.</param>
+    /// <returns>
+    /// The child run id the record names once the caller is done — null when the call cannot carry
+    /// one — and whether reaching that state requires a write.
+    /// </returns>
+    public static (string? Standing, bool NeedsWrite) ClassifyChildRunAttach(
+        DeferredToolCallRecord existing,
+        string childRunId)
+    {
+        // An unresolved call has no continuation to name yet: naming one now would let a crash
+        // recovery start a child for a result that never arrived.
+        if (!existing.IsResolved)
+        {
+            return (null, false);
+        }
+
+        if (existing.ChildRunId == null)
+        {
+            return (childRunId, true);
+        }
+
+        // Already named, and the committed name stands whether it is this caller's or another's.
+        // Reporting it back is what lets the caller adopt a continuation a dead process committed
+        // to instead of starting a second one for the same result.
+        return (existing.ChildRunId, false);
+    }
 }

@@ -64,6 +64,12 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     private Task? _runTask;
     private CancellationTokenSource? _internalCts;
 
+    // Cancelled once, at disposal. Distinct from _internalCts, which is recreated by every
+    // RunAsync and cancelled by every StopAsync: work that belongs to the agent rather than to one
+    // incarnation of its loop — an internal enqueue that must not be abandoned because whichever
+    // caller happened to trigger it cancelled its own token — hangs off this instead.
+    private readonly CancellationTokenSource _lifetimeCts = new();
+
     // Set once history has been (attempted to be) recovered from the store, so RunAsync's
     // startup recovery and any explicit RecoverAsync call never double-restore (RestoreHistory
     // appends). Guards the "recover persisted history on (re)create" path used by the agent pool.
@@ -104,6 +110,20 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// The maximum turns per run.
     /// </summary>
     protected int MaxTurnsPerRun { get; }
+
+    /// <summary>
+    /// Cancelled when the agent is disposed, and at no other time.
+    /// </summary>
+    /// <remarks>
+    /// For internal work whose lifetime is the agent's, not one caller's and not one run's: an
+    /// enqueue the loop owes itself must not be abandoned because the arbitrary thread that
+    /// triggered it — a webhook handler, a UI callback — cancelled the token it happened to pass
+    /// in. Stays valid after disposal has cancelled it: an already-cancelled token is exactly what
+    /// such work should see — which is also why it is captured at construction rather than read
+    /// from the source on demand: a disposed source refuses to hand out its token, while the token
+    /// itself keeps working and correctly reports cancellation.
+    /// </remarks>
+    protected CancellationToken LifetimeToken { get; }
 
     /// <summary>
     /// The default options for generating replies.
@@ -258,6 +278,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     {
         ArgumentNullException.ThrowIfNull(threadId);
 
+        LifetimeToken = _lifetimeCts.Token;
         ThreadId = threadId;
         SystemPrompt = systemPrompt;
         MaxTurnsPerRun = maxTurnsPerRun;
@@ -1450,6 +1471,10 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         _isDisposed = true;
 
+        // Before StopAsync, so an internal enqueue still parked on a full channel is released
+        // rather than holding the loop's shutdown open behind it.
+        await _lifetimeCts.CancelAsync();
+
         await StopAsync();
 
         // Normally a no-op: StopAsync has already closed whatever was in flight. It matters for the
@@ -1462,6 +1487,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         await FlushUsageAsync();
 
         _internalCts?.Dispose();
+        _lifetimeCts.Dispose();
 
         await OnDisposeAsync();
 

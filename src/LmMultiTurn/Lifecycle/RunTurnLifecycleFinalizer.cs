@@ -112,6 +112,24 @@ public sealed class RunTurnLifecycleFinalizer
     public bool PublishesEvents { get; }
 
     /// <summary>
+    /// Whether a run this process started is durably recorded as having started.
+    /// </summary>
+    /// <param name="runId">The run to ask about.</param>
+    /// <returns>
+    /// <see langword="true"/> when the start reached the store, or when there is no store to reach —
+    /// with no store there is no recovery either, so nothing downstream can double-run the work.
+    /// <see langword="false"/> when a store is configured and the start did not land in it.
+    /// </returns>
+    /// <remarks>
+    /// The run row is what recovery reads as "this one has begun". A caller whose correctness rests
+    /// on that marker — a delayed-result child run, which is re-queued after a restart precisely
+    /// because no row names it — must not do irreversible work while the marker is missing, or the
+    /// next process will do that work all over again.
+    /// </remarks>
+    public bool IsRunStartDurable(string runId) =>
+        _store == null || (_inFlight.TryGetValue(runId, out var progress) && progress.Durable);
+
+    /// <summary>
     /// Records that a run started and emits <see cref="LifecycleEventTypes.RunStarted"/>.
     /// </summary>
     /// <param name="runId">The run that started.</param>
@@ -552,6 +570,78 @@ public sealed class RunTurnLifecycleFinalizer
             childRunId,
             _services.TimeProvider.GetUtcNow(),
             ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Durably names the child run that will carry an already-resolved call's result, unless one is
+    /// already named.
+    /// </summary>
+    /// <param name="toolCallId">The resolved call.</param>
+    /// <param name="childRunId">The child run the caller proposes.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// The child run id the durable record names once this returns — the caller's, or the one a
+    /// previous process already committed to, which the caller must adopt rather than start a second
+    /// continuation for the same result. <see langword="null"/> means the record refused the id
+    /// because the call is unknown or still unresolved, which no retry will change. Without a store
+    /// the caller's own id is returned: there is nothing durable to disagree with.
+    /// </returns>
+    /// <remarks>
+    /// A store failure throws rather than returning <see langword="null"/>, exactly as
+    /// <see cref="TryResolveDeferredToolCallAsync"/> does, because what the caller must do about it
+    /// depends on where it is: before the resolution touches history the whole resolution can still
+    /// be refused and retried, whereas afterwards it can only be reported. Collapsing "the store is
+    /// down" into "the record says no" would take that choice away from both.
+    /// </remarks>
+    public async Task<string?> AttachDeferredChildRunAsync(
+        string toolCallId,
+        string childRunId,
+        CancellationToken ct = default)
+    {
+        if (_store == null)
+        {
+            return childRunId;
+        }
+
+        return await _store.AttachDeferredChildRunAsync(
+            _threadId,
+            toolCallId,
+            childRunId,
+            _services.TimeProvider.GetUtcNow(),
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Lists the thread's durable run lifecycle records, or an empty list when no store is
+    /// configured or the store cannot be read.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// Read-only and best-effort: recovery uses it to find continuations a dead process owed, and a
+    /// store that cannot answer must degrade to the pre-existing "recover from history alone"
+    /// behaviour rather than fail the recovery.
+    /// </remarks>
+    public async Task<IReadOnlyList<RunLifecycleState>> ListRunLifecycleAsync(
+        CancellationToken ct = default)
+    {
+        if (_store == null)
+        {
+            return [];
+        }
+
+        try
+        {
+            return await _store.ListRunLifecycleAsync(_threadId, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not read run lifecycle records for thread {ThreadId}; recovering from "
+                    + "persisted history alone",
+                _threadId);
+            return [];
+        }
     }
 
     /// <summary>

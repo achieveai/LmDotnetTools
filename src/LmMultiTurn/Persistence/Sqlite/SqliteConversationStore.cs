@@ -845,6 +845,89 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
+    public async Task<string?> AttachDeferredChildRunAsync(
+        string threadId,
+        string toolCallId,
+        string childRunId,
+        DateTimeOffset attachedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(toolCallId);
+        ArgumentException.ThrowIfNullOrEmpty(childRunId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        using var transaction = connection.BeginTransaction();
+        try
+        {
+            using var updateCommand = connection.CreateCommand();
+            updateCommand.Transaction = transaction;
+
+            // The two guards are the whole contract: `resolved_at IS NOT NULL` refuses to name a
+            // continuation for a result that has not arrived, and `child_run_id IS NULL` refuses to
+            // displace one that is already named. A no-op update falls through to the read below,
+            // which reports whichever name stands.
+            updateCommand.CommandText = """
+                UPDATE run_deferred_calls
+                SET child_run_id = $child_run_id
+                WHERE thread_id = $thread_id
+                  AND tool_call_id = $tool_call_id
+                  AND resolved_at IS NOT NULL
+                  AND child_run_id IS NULL;
+                """;
+            _ = updateCommand.Parameters.AddWithValue("$child_run_id", childRunId);
+            _ = updateCommand.Parameters.AddWithValue("$thread_id", threadId);
+            _ = updateCommand.Parameters.AddWithValue("$tool_call_id", toolCallId);
+
+            string? standing;
+            if (await updateCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1)
+            {
+                var owningRunId = await ReadScalarStringAsync(
+                    connection,
+                    transaction,
+                    """
+                    SELECT run_id FROM run_deferred_calls
+                    WHERE thread_id = $thread_id AND tool_call_id = $tool_call_id;
+                    """,
+                    [("$thread_id", threadId), ("$tool_call_id", toolCallId)],
+                    ct).ConfigureAwait(false);
+                if (owningRunId != null)
+                {
+                    await TouchRunAsync(connection, transaction, owningRunId, attachedAt, ct)
+                        .ConfigureAwait(false);
+                }
+
+                standing = childRunId;
+            }
+            else
+            {
+                var committed = await LoadDeferredCallAsync(
+                    connection,
+                    transaction,
+                    threadId,
+                    toolCallId,
+                    ct).ConfigureAwait(false);
+
+                standing = committed == null
+                    ? null
+                    : RunLifecycleGuards.ClassifyChildRunAttach(committed, childRunId).Standing;
+            }
+
+            transaction.Commit();
+            return standing;
+        }
+        catch
+        {
+            RollbackQuietly(transaction);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
         if (_disposed)

@@ -327,12 +327,13 @@ internal sealed class DelayedResultCoordinator
     /// </para>
     /// <para>
     /// A child run id minted here rather than at claim time is one the durable resolution record
-    /// does not name — that write had already gone out saying the result was folded into a live run.
-    /// This closes the live-process race, but it does not add a crash-recovery guarantee to that
-    /// narrow window: recovery currently rebuilds only still-deferred results, so a process failure
-    /// after the resolved result was persisted but before this cause was consumed can still strand the
-    /// continuation. That limitation already exists for an ordinarily parked resolution whose cause
-    /// has not run yet; the late-mint path neither widens nor conceals it.
+    /// does not name — that write had already gone out saying the result was folded into a live
+    /// run. Callers close that gap ahead of time with <see cref="MintChildRunIfParked"/>, which
+    /// catches every park that happened before the result reached history; what is left for here is
+    /// only a run that parked during the history write itself. The caller attaches that id to the
+    /// committed record too (see <c>IRunLifecycleStore.AttachDeferredChildRunAsync</c>), so a
+    /// process that dies before the cause runs leaves behind a record naming a child run that never
+    /// started — which is exactly what <see cref="RecoverCauses"/> looks for on restart.
     /// </para>
     /// </remarks>
     public DelayedCause? CompleteResolve(ResolvingDeferral pending, ToolCallResultMessage resolved)
@@ -374,6 +375,35 @@ internal sealed class DelayedResultCoordinator
         }
     }
 
+    /// <summary>
+    /// Mints the child run id a claim turns out to need, when the requesting run parked after the
+    /// claim was taken.
+    /// </summary>
+    /// <param name="pending">The claim from <see cref="TryBeginResolve"/>.</param>
+    /// <returns>
+    /// The claim to carry forward: the same one when nothing has changed, or a new one naming the
+    /// child run this resolution now has to start.
+    /// </returns>
+    /// <remarks>
+    /// Exists so the caller can name that run <em>durably</em> at a moment when refusing the whole
+    /// resolution is still free — before the result reaches history. <see cref="CompleteResolve"/>
+    /// can mint the same id later, but by then the resolution has happened and a store that will not
+    /// record the id can only be complained about. Reading <see cref="DeferredEntry.Parked"/> here
+    /// costs nothing when it is still false: the claim comes back unchanged and the caller writes
+    /// nothing.
+    /// </remarks>
+    public ResolvingDeferral MintChildRunIfParked(ResolvingDeferral pending)
+    {
+        ArgumentNullException.ThrowIfNull(pending);
+
+        lock (_lock)
+        {
+            return pending.ChildRunId == null && pending.Entry.Parked
+                ? pending with { ChildRunId = Guid.NewGuid().ToString("N") }
+                : pending;
+        }
+    }
+
     /// <summary>Takes the next committed cause, oldest first.</summary>
     public bool TryDequeueCause(out DelayedCause? cause)
     {
@@ -389,7 +419,91 @@ internal sealed class DelayedResultCoordinator
             return true;
         }
     }
+
+    /// <summary>
+    /// Re-queues continuations a previous process committed but never ran, in the order recovery
+    /// found them.
+    /// </summary>
+    /// <param name="owed">
+    /// The continuations to recover, oldest first — each one a resolution whose durable record
+    /// names a child run that was never started.
+    /// </param>
+    /// <returns>The causes actually queued, in queue order. Empty when there was nothing to do.</returns>
+    /// <remarks>
+    /// <para>
+    /// Ownership is decided here, under the same lock, exactly as it is for a live resolution:
+    /// <em>at most one</em> of the recovered causes performs a provider continuation, and only when
+    /// no deferral is still outstanding. Every recovered result is already in history, so had two of
+    /// them been given ownership the conversation would have been sent to the provider twice; and
+    /// had one been given ownership while another call is still deferred, the request would have
+    /// carried an unresolved placeholder.
+    /// </para>
+    /// <para>
+    /// A tool call that is still deferred here, or one already queued, is skipped: the ordinary
+    /// paths own those, and recovering them too would carry the same result twice.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<DelayedCause> RecoverCauses(IReadOnlyList<RecoveredContinuation> owed)
+    {
+        ArgumentNullException.ThrowIfNull(owed);
+
+        lock (_lock)
+        {
+            List<DelayedCause> recovered = [];
+            foreach (var item in owed)
+            {
+                if (_entries.ContainsKey(item.ToolCallId)
+                    || _causes.Any(c => string.Equals(c.ToolCallId, item.ToolCallId, StringComparison.Ordinal))
+                    || recovered.Any(c => string.Equals(c.ToolCallId, item.ToolCallId, StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                recovered.Add(new DelayedCause(
+                    ToolCallId: item.ToolCallId,
+                    ToolName: item.ToolName,
+                    RequestingRunId: item.RequestingRunId,
+                    RequestingGenerationId: item.RequestingGenerationId,
+                    ChildRunId: item.ChildRunId,
+                    Ordinal: ++_ordinal,
+                    IsContinuationOwner: false,
+                    Result: item.Result));
+            }
+
+            if (recovered.Count > 0 && _entries.Count == 0)
+            {
+                recovered[^1] = recovered[^1] with { IsContinuationOwner = true };
+            }
+
+            foreach (var cause in recovered)
+            {
+                _causes.Enqueue(cause);
+            }
+
+            return recovered;
+        }
+    }
 }
+
+/// <summary>
+/// A continuation a previous process committed durably but never ran.
+/// </summary>
+/// <param name="ToolCallId">The call that resolved.</param>
+/// <param name="ToolName">The tool that had deferred.</param>
+/// <param name="RequestingRunId">The run that asked for it.</param>
+/// <param name="RequestingGenerationId">The turn that asked for it.</param>
+/// <param name="ChildRunId">
+/// The child run the durable record names. Reused rather than re-minted, so a second restart
+/// recognises the run as started and cannot begin it twice.
+/// </param>
+/// <param name="Result">The resolved result as it stands in restored history.</param>
+internal sealed record RecoveredContinuation(
+    string ToolCallId,
+    string ToolName,
+    string? RequestingRunId,
+    string? RequestingGenerationId,
+    string ChildRunId,
+    ToolCallResultMessage Result);
 
 /// <summary>
 /// One tool call awaiting external resolution. Public surface is <see cref="DeferredToolCallInfo"/>.

@@ -545,6 +545,14 @@ public class RunLifecycleEmissionTests
             DateTimeOffset resolvedAt,
             CancellationToken ct = default) =>
             throw new InvalidOperationException("the lifecycle store is unavailable");
+
+        public Task<string?> AttachDeferredChildRunAsync(
+            string threadId,
+            string toolCallId,
+            string childRunId,
+            DateTimeOffset attachedAt,
+            CancellationToken ct = default) =>
+            throw new InvalidOperationException("the lifecycle store is unavailable");
     }
 
     #endregion

@@ -105,6 +105,61 @@ public class DelayedResultChildRunTests
     }
 
     [Fact]
+    public async Task WhenTheCallerWithdrawsMidWrite_TheResolutionIsCancelled_NotBlamedOnTheStore()
+    {
+        var store = new FailableLifecycleStore(new InMemoryConversationStore());
+        await using var harness = await Harness.StartAsync(_mockAgent, "tc_1", lifecycleStore: store);
+        using var caller = new CancellationTokenSource();
+
+        // The caller goes away while its own write is in flight: the request it arrived on completes,
+        // its token is cancelled, and the store observes that token and stops.
+        store.BeforeResolve = ct =>
+        {
+            caller.Cancel();
+            throw new OperationCanceledException(ct);
+        };
+
+        var outcome = await harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer", ct: caller.Token);
+
+        outcome
+            .Should()
+            .Be(
+                ResolveToolCallOutcome.Cancelled,
+                "the delivery was withdrawn by the caller, and saying anything else would suggest the "
+                    + "store is unhealthy when it is not");
+        var pending = await harness.Loop.GetDeferredToolCallsAsync();
+        pending.Should().ContainSingle(p => p.ToolCallId == "tc_1");
+    }
+
+    [Fact]
+    public async Task WhenTheStoreCancelsItself_TheResolutionIsAStoreFailure_AndTheRetryLands()
+    {
+        var store = new FailableLifecycleStore(new InMemoryConversationStore());
+        await using var harness = await Harness.StartAsync(_mockAgent, "tc_1", lifecycleStore: store);
+        var failed = false;
+
+        // The caller is not cancelling anything. The store times out internally — a connection
+        // deadline, a linked token of its own — and that surfaces as the same exception type.
+        store.BeforeResolve = _ =>
+            failed ? Task.CompletedTask : throw new OperationCanceledException();
+        var refused = await harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer");
+
+        refused
+            .Should()
+            .Be(
+                ResolveToolCallOutcome.StoreFailed,
+                "a cancellation the caller did not ask for is the store failing, and calling it "
+                    + "Cancelled would invite the caller to drop a result the store would take");
+        var pending = await harness.Loop.GetDeferredToolCallsAsync();
+        pending.Should().ContainSingle(p => p.ToolCallId == "tc_1", "the state left behind is retry-safe");
+
+        failed = true;
+        var retried = await harness.Loop.TryResolveToolCallAsync("tc_1", "the-answer");
+
+        retried.Should().Be(ResolveToolCallOutcome.Resolved);
+    }
+
+    [Fact]
     public async Task ConcurrentDeliveriesOfOneResult_CommitExactlyOnce()
     {
         await using var harness = await Harness.StartAsync(_mockAgent, "tc_1");
@@ -627,13 +682,20 @@ public class DelayedResultChildRunTests
     }
 
     /// <summary>
-    /// A lifecycle store that can be told to refuse resolutions, so the loop's behaviour on a store
-    /// failure is exercised rather than assumed.
+    /// A lifecycle store that can be told to refuse resolutions, or to do something of the test's
+    /// choosing part-way through one, so the loop's behaviour on a store failure is exercised rather
+    /// than assumed.
     /// </summary>
     private sealed class FailableLifecycleStore(InMemoryConversationStore inner) : IRunLifecycleStore
     {
         /// <summary>When set, <see cref="TryResolveDeferredToolCallAsync"/> throws instead of committing.</summary>
         public bool FailResolutions { get; set; }
+
+        /// <summary>
+        /// Runs inside <see cref="TryResolveDeferredToolCallAsync"/> before it commits anything, so a
+        /// test can decide what the store appears to do — including throwing.
+        /// </summary>
+        public Func<CancellationToken, Task>? BeforeResolve { get; set; }
 
         public Task RecordRunStartedAsync(RunLifecycleState state, CancellationToken ct = default) =>
             inner.RecordRunStartedAsync(state, ct);
@@ -662,17 +724,32 @@ public class DelayedResultChildRunTests
             DeferredToolCallRecord record,
             CancellationToken ct = default) => inner.RecordDeferredToolCallAsync(runId, record, ct);
 
-        public Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
+        public async Task<DeferredResolutionOutcome> TryResolveDeferredToolCallAsync(
             string threadId,
             string toolCallId,
             string resolutionFingerprint,
             string? childRunId,
             DateTimeOffset resolvedAt,
-            CancellationToken ct = default) =>
-            FailResolutions
+            CancellationToken ct = default)
+        {
+            if (BeforeResolve != null)
+            {
+                await BeforeResolve(ct);
+            }
+
+            return FailResolutions
                 ? throw new InvalidOperationException("the store is unavailable")
-                : inner.TryResolveDeferredToolCallAsync(
+                : await inner.TryResolveDeferredToolCallAsync(
                     threadId, toolCallId, resolutionFingerprint, childRunId, resolvedAt, ct);
+        }
+
+        public Task<string?> AttachDeferredChildRunAsync(
+            string threadId,
+            string toolCallId,
+            string childRunId,
+            DateTimeOffset attachedAt,
+            CancellationToken ct = default) =>
+            inner.AttachDeferredChildRunAsync(threadId, toolCallId, childRunId, attachedAt, ct);
     }
 
     #endregion

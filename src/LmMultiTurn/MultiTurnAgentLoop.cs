@@ -349,10 +349,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     realInputs = [.. batch.Where(b => b.Resume == null)];
                     if (realInputs.Count < batch.Count)
                     {
-                        lock (_wakeLock)
-                        {
-                            _wakeScheduled = false;
-                        }
+                        ResetWakeScheduled();
                     }
 
                     if (realInputs.Count == 0)
@@ -536,6 +533,34 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             causeKind: LifecycleRunCauseKinds.ToolResult,
             causeToolCallId: cause.ToolCallId);
 
+        // The run row is the only thing that tells the next process this continuation has begun —
+        // recovery re-queues exactly those resolutions whose named child run has no row. Talking to
+        // the provider without it would mean this process carries the result and the next one
+        // carries it again. So the marker comes first, and when it is missing nothing irreversible
+        // happens here: the durable state is left precisely as recovery wants to find it (the
+        // resolution names this child, no row names it), and the continuation is picked up by the
+        // process that comes after rather than run twice.
+        if (!Lifecycle.IsRunStartDurable(assignment.RunId))
+        {
+            Logger.LogError(
+                "Child run {RunId} for the delayed result of tool call {ToolCallId} ({ToolName}) could "
+                    + "not be durably recorded as started; it is abandoned here rather than run "
+                    + "un-recorded, and stays recoverable on restart",
+                assignment.RunId,
+                cause.ToolCallId,
+                cause.ToolName);
+
+            await CompleteRunAsync(
+                assignment.RunId,
+                assignment.GenerationId,
+                pendingMessageCount: 0,
+                isError: true,
+                errorMessage: "the child run carrying this delayed tool result could not be durably "
+                    + "recorded as started; it was not run, and remains recoverable",
+                ct: ct);
+            return;
+        }
+
         await PublishToAllAsync(new RunAssignmentMessage
         {
             Assignment = assignment,
@@ -589,6 +614,20 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             if (TryDrainInputs(out var newInputs) && newInputs.Count > 0)
             {
                 var realNewInputs = newInputs.Where(b => b.Resume == null).ToList();
+                if (realNewInputs.Count < newInputs.Count)
+                {
+                    // A wake-up drained here is consumed exactly as the run loop's own drain
+                    // consumes one, and the flag has to come back for the same reason: a cause
+                    // committed later, with the loop idle, schedules nothing while it is still set —
+                    // and since a cause is never written to the channel itself, nothing would ever
+                    // stir the loop to drain it. This is reachable whenever a wake-up is still in
+                    // the channel while a run is going, which is exactly what restart recovery
+                    // leaves behind: it queues the causes and schedules the wake-up before the loop
+                    // starts, and the loop takes the cause from the coordinator — never from the
+                    // channel — so the sentinel is still sitting there when the child run polls.
+                    ResetWakeScheduled();
+                }
+
                 if (realNewInputs.Count > 0)
                 {
                     var injectionAssignment = new RunAssignment(
@@ -1323,13 +1362,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 pending.ChildRunId,
                 ct);
         }
-        catch (OperationCanceledException ex)
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
             _delayed.AbortResolve(pending);
             return (ResolveToolCallOutcome.Cancelled, ex);
         }
         catch (Exception ex)
         {
+            // Anything else, including an OperationCanceledException the store raised for its own
+            // reasons — a connection timeout, an internal linked token. That is a store failure, not
+            // the caller withdrawing the delivery, and telling the caller "cancelled" would invite it
+            // to drop a result the store is perfectly willing to take on the next attempt. Either way
+            // the claim is already back, so the state is retry-safe.
             _delayed.AbortResolve(pending);
             Logger.LogWarning(
                 ex,
@@ -1356,6 +1400,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             Logger.LogDebug(
                 "Durable store had no deferral record for tool call {ToolCallId}; resolving from in-process state",
                 toolCallId);
+        }
+        else
+        {
+            // The requesting run can have parked while that write was in flight, and a run that has
+            // parked can no longer absorb the result — a child run has to carry it, and the record
+            // that just went out names no child run at all. Settle it here, where failing is still
+            // free: history has not been touched and the claim is still live, so refusing the whole
+            // resolution leaves the caller free to deliver it again. Afterwards neither is true.
+            var (attached, refusal, attachFailure) = await AttachChildRunBeforeHistoryAsync(
+                pending, toolCallId, durable, ct);
+            if (refusal != null)
+            {
+                return (refusal.Value, attachFailure);
+            }
+
+            pending = attached;
         }
 
         // A reservation says the call was outstanding when it was taken; history is what actually
@@ -1444,10 +1504,195 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         if (cause != null)
         {
-            ScheduleLoopWake(ct);
+            if (pending.ChildRunId == null)
+            {
+                // Minted later still: the run parked during the history write, after the attempt
+                // above had already found it live. Nothing can be refused now — the result is in
+                // history and the reservation is retired — so this attaches what it can and says so
+                // plainly when it cannot.
+                await ReportLateChildRunAsync(toolCallId, cause.ChildRunId);
+            }
+
+            ScheduleLoopWake();
         }
 
         return (ResolveToolCallOutcome.Resolved, null);
+    }
+
+    /// <summary>
+    /// Durably settles which child run carries this resolution, while refusing the resolution is
+    /// still a clean thing to do.
+    /// </summary>
+    /// <param name="pending">The claim, as it stands after the durable resolution write.</param>
+    /// <param name="toolCallId">The call being resolved.</param>
+    /// <param name="durable">What that write did.</param>
+    /// <param name="ct">The delivering caller's token.</param>
+    /// <returns>
+    /// The claim to carry forward, and — when the resolution must not proceed — the outcome to
+    /// report and the exception the throwing surface should raise. The outcome is null on the path
+    /// that continues.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Two situations need a write here, and they are the two where the resolution write did not
+    /// name the child run itself: the requesting run parked <em>during</em> that write, so the id
+    /// did not exist yet when it went out; or the write found the resolution already committed by an
+    /// earlier attempt (<see cref="DeferredResolutionOutcome.Duplicate"/>), which by definition
+    /// left the child run named however that attempt left it. The second is why the store reports
+    /// the standing id back: an attempt that died before its child ran already named it, and this
+    /// delivery must run <em>that</em> run rather than mint a second one for the same result.
+    /// </para>
+    /// <para>
+    /// A store failure is reported as <see cref="ResolveToolCallOutcome.StoreFailed"/> for the same
+    /// reason the resolution write itself is: the claim goes back, history is untouched, and the
+    /// caller may deliver the result again. That is the whole value of doing it here. What is
+    /// <em>not</em> treated as a failure is either way of learning that no child run can be named —
+    /// a record that holds no resolved entry, or a store old enough not to implement naming at all.
+    /// Neither changes on a retry, and the resolution write has already committed, so refusing would
+    /// refuse every redelivery forever. Both proceed: the continuation runs, unrecoverable across a
+    /// restart but not lost now.
+    /// </para>
+    /// </remarks>
+    private async Task<(ResolvingDeferral Pending, ResolveToolCallOutcome? Outcome, Exception? Failure)>
+        AttachChildRunBeforeHistoryAsync(
+            ResolvingDeferral pending,
+            string toolCallId,
+            DeferredResolutionOutcome durable,
+            CancellationToken ct)
+    {
+        var parked = _delayed.MintChildRunIfParked(pending);
+        if (parked.ChildRunId == null)
+        {
+            // The requesting run is still going, so this result folds into it and there is no child
+            // run to name.
+            return (pending, null, null);
+        }
+
+        if (durable == DeferredResolutionOutcome.Resolved && parked.ChildRunId == pending.ChildRunId)
+        {
+            // This resolution's own write committed the record and carried the id with it.
+            return (pending, null, null);
+        }
+
+        try
+        {
+            var standing = await Lifecycle.AttachDeferredChildRunAsync(toolCallId, parked.ChildRunId, ct);
+            if (standing != null)
+            {
+                return (parked with { ChildRunId = standing }, null, null);
+            }
+        }
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+        {
+            _delayed.AbortResolve(pending);
+            return (pending, ResolveToolCallOutcome.Cancelled, ex);
+        }
+        catch (NotSupportedException ex)
+        {
+            // A store that predates the member, which is not a failure and not retryable: the
+            // resolution write above has already committed, so every redelivery would find it
+            // Duplicate, arrive back here, and be refused again — stranding a durably resolved call
+            // with history never told about it. Treated as the record refusing to carry a child run,
+            // because that is exactly what it is.
+            Logger.LogWarning(
+                ex,
+                "The lifecycle store cannot name child runs, so the continuation of tool call "
+                    + "{ToolCallId} runs in this process but could not be recovered after a restart",
+                toolCallId);
+            return (parked, null, null);
+        }
+        catch (Exception ex)
+        {
+            _delayed.AbortResolve(pending);
+            Logger.LogWarning(
+                ex,
+                "Could not durably name the child run for the resolution of tool call {ToolCallId}; "
+                    + "the call stays deferred and the result can be delivered again",
+                toolCallId);
+            return (pending, ResolveToolCallOutcome.StoreFailed, ex);
+        }
+
+        Logger.LogWarning(
+            "Durable record holds no resolved entry for tool call {ToolCallId}, so child run "
+                + "{ChildRunId} could not be named; the continuation runs in this process but could "
+                + "not be recovered after a restart",
+            toolCallId,
+            parked.ChildRunId);
+        return (parked, null, null);
+    }
+
+    /// <summary>
+    /// Names a child run that was minted after the resolution had already been applied, where the
+    /// only thing left to do about a failure is to be explicit about it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="CancellationToken.None"/> deliberately: the resolution has happened, and the token
+    /// of whichever caller delivered it must not be able to cancel the record of what that delivery
+    /// caused. The two ways this can come to nothing are not the same thing and are not reported as
+    /// though they were. No record naming the call at all is ordinary — the same
+    /// <see cref="DeferredResolutionOutcome.NotFound"/> case the resolution write itself treats as
+    /// normal, reached by a host that injected deferred history the store never saw — and only costs
+    /// this continuation its recoverability. A record that names some <em>other</em> child run is a
+    /// genuine contradiction: <see cref="AttachChildRunBeforeHistoryAsync"/> has already adopted any
+    /// committed name, so nothing should be able to disagree by the time this runs.
+    /// </remarks>
+    private async Task ReportLateChildRunAsync(string toolCallId, string childRunId)
+    {
+        string? standing;
+        try
+        {
+            standing = await Lifecycle.AttachDeferredChildRunAsync(
+                toolCallId, childRunId, CancellationToken.None);
+        }
+        catch (NotSupportedException ex)
+        {
+            // A store that predates the member. Nothing is wrong with it and nothing is wrong here;
+            // this thread simply cannot recover delayed continuations across a restart.
+            Logger.LogWarning(
+                ex,
+                "The lifecycle store cannot name child runs, so the continuation of tool call "
+                    + "{ToolCallId} runs in this process but could not be recovered after a restart",
+                toolCallId);
+            return;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(
+                ex,
+                "Could not durably attach child run {ChildRunId} to the resolution of tool call "
+                    + "{ToolCallId}; it still runs in this process, but a crash before it does would "
+                    + "leave the result resolved with nothing recorded to carry it",
+                childRunId,
+                toolCallId);
+            return;
+        }
+
+        if (standing == childRunId)
+        {
+            return;
+        }
+
+        if (standing == null)
+        {
+            // No record holds this call — the store has no resolved entry to attach anything to.
+            // Expected wherever the deferral itself was never recorded, so it is reported as the
+            // lost recoverability it is rather than as a disagreement about the child run.
+            Logger.LogWarning(
+                "Durable record holds no resolved entry for tool call {ToolCallId}, so child run "
+                    + "{ChildRunId} could not be named; the result is carried in this process but the "
+                    + "continuation would not survive a restart",
+                toolCallId,
+                childRunId);
+            return;
+        }
+
+        Logger.LogError(
+            "Durable record for tool call {ToolCallId} names {Standing} rather than the child run "
+                + "{ChildRunId} this process is about to run; the result is carried here but the "
+                + "record cannot be relied on to recover it",
+            toolCallId,
+            standing,
+            childRunId);
     }
 
     /// <summary>
@@ -1658,6 +1903,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 restoredCount);
         }
 
+        // Re-queue continuations a previous process committed durably but never ran. Runs after the
+        // still-deferred set is rebuilt, because whether a recovered result may continue the
+        // conversation depends on nothing else being outstanding.
+        await RecoverOwedContinuationsAsync(messages, ct);
+
         // Reconcile restored block waits so no parked Wait is left hanging: a restorable source
         // (e.g. timer) re-arms for its remaining delay; a non-restorable one resolves as
         // trigger_lost_on_restart. Runs after the deferred set is rebuilt so it sees every entry.
@@ -1708,6 +1958,101 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         }
     }
 
+    /// <summary>
+    /// Re-queues the child runs that a previous process committed to but never ran, so a delayed
+    /// result that resolved before a crash still reaches the model.
+    /// </summary>
+    /// <param name="messages">Restored history.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <remarks>
+    /// <para>
+    /// The durable record is what makes this possible and what keeps it exact. A resolution that
+    /// needs a child run records that run's id at the moment it resolves — at claim time when the
+    /// requesting run had already parked, or immediately after commit when it parked mid-resolution
+    /// (see <see cref="ResolveClaimedAsync"/>). So a record that <em>names</em> a child run for
+    /// which no run was ever started is precisely a continuation this thread is owed, and reusing
+    /// that same id means a second crash cannot start it twice: the run row is what marks it begun.
+    /// </para>
+    /// <para>
+    /// A resolution recorded with no child run at all is deliberately <b>not</b> recovered. That
+    /// record says the result was folded into a run that was still going, and the continuation was
+    /// that run's own next turn — so recovering it here would be indistinguishable from resuming any
+    /// interrupted run, which is not this mechanism's job and would take a turn nobody asked for.
+    /// </para>
+    /// </remarks>
+    private async Task RecoverOwedContinuationsAsync(
+        IReadOnlyList<IMessage> messages,
+        CancellationToken ct)
+    {
+        var runs = await Lifecycle.ListRunLifecycleAsync(ct);
+        if (runs.Count == 0)
+        {
+            return;
+        }
+
+        // A child run that has a lifecycle row was started, whatever became of it afterwards.
+        // Recovering it again would carry the same result to the provider twice.
+        var startedRunIds = new HashSet<string>(runs.Select(r => r.RunId), StringComparer.Ordinal);
+
+        var resolvedResults = new Dictionary<string, ToolCallResultMessage>(StringComparer.Ordinal);
+        foreach (var msg in messages)
+        {
+            if (msg is ToolCallResultMessage tcr && !tcr.IsDeferred && !string.IsNullOrEmpty(tcr.ToolCallId))
+            {
+                resolvedResults[tcr.ToolCallId] = tcr;
+            }
+        }
+
+        List<RecoveredContinuation> owed = [];
+        foreach (var (run, call) in runs
+            .SelectMany(r => r.DeferredToolCalls.Select(d => (Run: r, Call: d)))
+            .Where(x => x.Call.IsResolved && x.Call.ChildRunId != null)
+            .Where(x => !startedRunIds.Contains(x.Call.ChildRunId!))
+            .OrderBy(x => x.Call.ResolvedAt)
+            .ThenBy(x => x.Call.Ordinal))
+        {
+            // History has the last word, as everywhere else in this file: without the resolved
+            // result in it there is nothing for a child run to carry, and a placeholder still marked
+            // deferred belongs to the ordinary resolve path, not to recovery.
+            if (!resolvedResults.TryGetValue(call.ToolCallId, out var result))
+            {
+                Logger.LogWarning(
+                    "Delayed result for tool call {ToolCallId} was recorded as resolved with child run "
+                        + "{ChildRunId}, but restored history holds no resolved result for it; skipping",
+                    call.ToolCallId,
+                    call.ChildRunId);
+                continue;
+            }
+
+            owed.Add(new RecoveredContinuation(
+                ToolCallId: call.ToolCallId,
+                ToolName: call.ToolName,
+                RequestingRunId: run.RunId,
+                RequestingGenerationId: call.GenerationId ?? run.GenerationId,
+                ChildRunId: call.ChildRunId!,
+                Result: result));
+        }
+
+        if (owed.Count == 0)
+        {
+            return;
+        }
+
+        var recovered = _delayed.RecoverCauses(owed);
+        if (recovered.Count == 0)
+        {
+            return;
+        }
+
+        Logger.LogInformation(
+            "Recovered {Count} delayed tool result continuation(s) that a previous process committed but "
+                + "never ran: {ToolCallIds}",
+            recovered.Count,
+            string.Join(", ", recovered.Select(c => c.ToolCallId)));
+
+        ScheduleLoopWake();
+    }
+
     /// <inheritdoc />
     /// <remarks>
     /// Runs on every recovery — even threads with zero persisted messages — because
@@ -1739,11 +2084,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// One wake-up is enough for any number of causes: the loop drains one cause per iteration and
     /// loops straight back to the drain, so it keeps going until the coordinator is empty without
     /// needing to be woken again. <see cref="_wakeScheduled"/> is what makes "one" the actual
-    /// count — it is cleared by the loop when it consumes the wake-up, and restored here if the
-    /// write fails so a wake-up is never silently lost.
+    /// count — it is cleared by the loop when it consumes the wake-up, and restored here whenever
+    /// the write does not land so a wake-up is never silently lost.
+    /// </para>
+    /// <para>
+    /// The write is bound to <see cref="MultiTurnAgentBase.LifetimeToken"/>, never to the token of
+    /// the caller that delivered the result. A resolution arrives on an arbitrary thread whose token
+    /// may be cancelled the instant the call returns — a request completing, a webhook handler
+    /// timing out — and by then the cause is already committed. Cancelling the wake-up there would
+    /// leave the continuation queued and the loop asleep with nothing scheduled to stir it.
     /// </para>
     /// </remarks>
-    private void ScheduleLoopWake(CancellationToken ct)
+    private void ScheduleLoopWake()
     {
         lock (_wakeLock)
         {
@@ -1755,10 +2107,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             _wakeScheduled = true;
         }
 
-        _ = WriteLoopWakeAsync(ct);
+        _ = WriteLoopWakeAsync();
     }
 
-    private async Task WriteLoopWakeAsync(CancellationToken ct)
+    private async Task WriteLoopWakeAsync()
     {
         // The sentinel's payload is inert: Resume marks it as a wake-up and Messages is empty, so
         // the loop recognises it and contributes nothing to history.
@@ -1770,18 +2122,21 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
         try
         {
-            await EnqueueRawAsync(wake, ct);
+            await EnqueueRawAsync(wake, LifetimeToken);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            // Expected on shutdown.
+            // Disposal. Nothing is going to run these causes now, but the flag has to come back
+            // regardless: leaving it set would make a wake-up scheduled by a later resolution
+            // return early and never write anything at all.
+            ResetWakeScheduled();
+            Logger.LogDebug(
+                "Loop wake-up for {Count} pending delayed tool result(s) was abandoned at shutdown",
+                _delayed.PendingCauseCount);
         }
         catch (Exception ex)
         {
-            lock (_wakeLock)
-            {
-                _wakeScheduled = false;
-            }
+            ResetWakeScheduled();
 
             // Not fatal: the loop drains causes at the top of every iteration, so these still run
             // as soon as anything else stirs it. Only an otherwise-idle loop stays asleep, until
@@ -1790,6 +2145,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 ex,
                 "Failed to wake the loop for {Count} pending delayed tool result(s); they will run when the loop next stirs",
                 _delayed.PendingCauseCount);
+        }
+    }
+
+    private void ResetWakeScheduled()
+    {
+        lock (_wakeLock)
+        {
+            _wakeScheduled = false;
         }
     }
 

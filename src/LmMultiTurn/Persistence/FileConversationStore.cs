@@ -733,6 +733,61 @@ public sealed class FileConversationStore : IConversationStore, IRunLedgerStore,
         }
     }
 
+    /// <inheritdoc />
+    public async Task<string?> AttachDeferredChildRunAsync(
+        string threadId,
+        string toolCallId,
+        string childRunId,
+        DateTimeOffset attachedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(toolCallId);
+        ArgumentException.ThrowIfNullOrEmpty(childRunId);
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var file = Path.Combine(GetThreadDirectory(threadId), RunLifecycleFileName);
+            var runs = await LoadJsonFileAsync<List<RunLifecycleState>>(file, ct) ?? [];
+
+            for (var runIdx = 0; runIdx < runs.Count; runIdx++)
+            {
+                var callIdx = RunLifecycleGuards.IndexOfDeferral(runs[runIdx], toolCallId);
+                if (callIdx < 0)
+                {
+                    continue;
+                }
+
+                var existing = runs[runIdx].DeferredToolCalls[callIdx];
+                var (standing, needsWrite) =
+                    RunLifecycleGuards.ClassifyChildRunAttach(existing, childRunId);
+                if (!needsWrite)
+                {
+                    return standing;
+                }
+
+                var updated = runs[runIdx].DeferredToolCalls.ToArray();
+                updated[callIdx] = existing with { ChildRunId = childRunId };
+
+                runs[runIdx] = runs[runIdx] with
+                {
+                    DeferredToolCalls = updated,
+                    UpdatedAt = attachedAt,
+                };
+
+                await WriteJsonFileAsync(file, runs, ct);
+                return childRunId;
+            }
+
+            return null;
+        }
+        finally
+        {
+            _ = _lock.Release();
+        }
+    }
+
     private async Task<List<RunLifecycleState>> LoadThreadLifecycleAsync(
         string threadId,
         CancellationToken ct)

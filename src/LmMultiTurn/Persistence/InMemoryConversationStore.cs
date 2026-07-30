@@ -455,6 +455,50 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
         }
     }
 
+    /// <inheritdoc />
+    public Task<string?> AttachDeferredChildRunAsync(
+        string threadId,
+        string toolCallId,
+        string childRunId,
+        DateTimeOffset attachedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(childRunId);
+
+        lock (_lifecycleLock)
+        {
+            foreach (var state in _runLifecycle.Values.Where(s => s.ThreadId == threadId))
+            {
+                var index = RunLifecycleGuards.IndexOfDeferral(state, toolCallId);
+                if (index < 0)
+                {
+                    continue;
+                }
+
+                var existing = state.DeferredToolCalls[index];
+                var (standing, needsWrite) =
+                    RunLifecycleGuards.ClassifyChildRunAttach(existing, childRunId);
+                if (!needsWrite)
+                {
+                    return Task.FromResult(standing);
+                }
+
+                var updated = state.DeferredToolCalls.ToArray();
+                updated[index] = existing with { ChildRunId = childRunId };
+
+                _runLifecycle[state.RunId] = state with
+                {
+                    DeferredToolCalls = updated,
+                    UpdatedAt = attachedAt,
+                };
+
+                return Task.FromResult<string?>(childRunId);
+            }
+
+            return Task.FromResult<string?>(null);
+        }
+    }
+
     /// <summary>
     /// Gets the count of messages for a thread. Useful for testing.
     /// </summary>

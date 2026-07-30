@@ -377,6 +377,153 @@ public abstract class RunLifecycleStoreTestsBase : IAsyncLifetime
 
     #endregion
 
+    #region Naming a late child run
+
+    [Fact]
+    public async Task AttachDeferredChildRun_NamesAChildTheResolutionLeftUnnamed()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+        _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
+        _ = await Store.TryResolveDeferredToolCallAsync(
+            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+
+        var standing = await Store.AttachDeferredChildRunAsync(
+            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(31));
+
+        standing.Should().Be("child-run-1");
+        var loaded = await Store.LoadRunLifecycleAsync("run-1");
+        var deferral = loaded!.DeferredToolCalls.Single();
+        deferral.ChildRunId.Should().Be("child-run-1");
+        deferral
+            .ResolutionFingerprint.Should()
+            .Be("fingerprint-1", "naming the continuation must not disturb the resolution itself");
+        deferral.ResolvedAt.Should().Be(Origin.AddSeconds(30));
+    }
+
+    [Fact]
+    public async Task AttachDeferredChildRun_SameChildTwice_IsIdempotent()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+        _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
+        _ = await Store.TryResolveDeferredToolCallAsync(
+            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+        _ = await Store.AttachDeferredChildRunAsync(
+            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(31));
+
+        var again = await Store.AttachDeferredChildRunAsync(
+            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(32));
+
+        again.Should()
+            .Be(
+                "child-run-1",
+                "a caller retrying its own attach after a lost acknowledgement must be handed back "
+                    + "the same continuation it already owns");
+        var loaded = await Store.LoadRunLifecycleAsync("run-1");
+        loaded!.DeferredToolCalls.Single().ChildRunId.Should().Be("child-run-1");
+    }
+
+    [Fact]
+    public async Task AttachDeferredChildRun_DifferentChild_ReportsTheCommittedOne()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+        _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
+        _ = await Store.TryResolveDeferredToolCallAsync(
+            "thread-1", "call-a", "fingerprint-1", "child-run-1", Origin.AddSeconds(30));
+
+        var standing = await Store.AttachDeferredChildRunAsync(
+            "thread-1", "call-a", "child-run-2", Origin.AddSeconds(31));
+
+        standing
+            .Should()
+            .Be(
+                "child-run-1",
+                "the committed name stands, and the late caller has to adopt it rather than start a "
+                    + "second continuation for the same result");
+        var loaded = await Store.LoadRunLifecycleAsync("run-1");
+        loaded!.DeferredToolCalls.Single().ChildRunId.Should().Be("child-run-1");
+    }
+
+    [Fact]
+    public async Task AttachDeferredChildRun_UnresolvedCall_NamesNothing()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+        _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
+
+        var standing = await Store.AttachDeferredChildRunAsync(
+            "thread-1", "call-a", "child-run-1", Origin.AddSeconds(31));
+
+        standing
+            .Should()
+            .BeNull(
+                "a call with no result yet has no continuation to carry one, and naming one would let "
+                    + "recovery start a child run for a result that never arrived");
+        var loaded = await Store.LoadRunLifecycleAsync("run-1");
+        loaded!.DeferredToolCalls.Single().ChildRunId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AttachDeferredChildRun_UnknownCall_NamesNothing()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+
+        var standing = await Store.AttachDeferredChildRunAsync(
+            "thread-1", "call-never-deferred", "child-run-1", Origin);
+
+        standing.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AttachDeferredChildRun_WrongThread_NamesNothing()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+        _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
+        _ = await Store.TryResolveDeferredToolCallAsync(
+            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+
+        var standing = await Store.AttachDeferredChildRunAsync(
+            "thread-2", "call-a", "child-run-1", Origin.AddSeconds(31));
+
+        standing.Should().BeNull();
+        var loaded = await Store.LoadRunLifecycleAsync("run-1");
+        loaded!.DeferredToolCalls.Single().ChildRunId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AttachDeferredChildRun_ConcurrentCallers_AllAgreeOnOneChild()
+    {
+        await Store.RecordRunStartedAsync(NewRun("thread-1", "run-1"));
+        _ = await Store.RecordDeferredToolCallAsync("run-1", NewDeferral("call-a"));
+        _ = await Store.TryResolveDeferredToolCallAsync(
+            "thread-1", "call-a", "fingerprint-1", childRunId: null, Origin.AddSeconds(30));
+
+        var attempts = Enumerable
+            .Range(0, 4)
+            .Select(i =>
+                Task.Run(() =>
+                    Store.AttachDeferredChildRunAsync(
+                        "thread-1",
+                        "call-a",
+                        $"child-{i}",
+                        Origin.AddSeconds(31 + i)
+                    )
+                )
+            );
+
+        var results = await Task.WhenAll(attempts);
+
+        var loaded = await Store.LoadRunLifecycleAsync("run-1");
+        var committed = loaded!.DeferredToolCalls.Single().ChildRunId;
+        committed.Should().NotBeNull();
+        results
+            .Should()
+            .AllBe(
+                committed,
+                "every racing caller has to come away naming the one continuation that won"
+            );
+    }
+
+    #endregion
+
     private static RunLifecycleState NewRun(
         string threadId,
         string runId,

@@ -146,4 +146,53 @@ public interface IRunLifecycleStore
         string? childRunId,
         DateTimeOffset resolvedAt,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Atomically names the child run of an already-resolved call, unless one is already named.
+    /// </summary>
+    /// <param name="threadId">The thread the call belongs to.</param>
+    /// <param name="toolCallId">The resolved call.</param>
+    /// <param name="childRunId">The child run the caller proposes to carry the result.</param>
+    /// <param name="attachedAt">When the attachment was made.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// The child run id the record names after the call: <paramref name="childRunId"/> when this
+    /// attempt wrote it, or the one already committed when there was one. <see langword="null"/>
+    /// when there is no such call or it is still unresolved. Nothing is ever overwritten.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// This exists for one narrow, real sequence: a resolution is recorded while its requesting run
+    /// is still going — so the record correctly names no child run — and that run then ends waiting
+    /// on the very call being resolved, which turns the resolution into one that must start a child
+    /// run after all. Without a second write the continuation exists only in memory, and a process
+    /// that dies between the resolution landing and the child running leaves the result durably
+    /// resolved with nothing to carry it.
+    /// </para>
+    /// <para>
+    /// <b>Put-if-absent, and it reports the winner.</b> Returning the standing id rather than a bare
+    /// rejection is what makes a redelivered resolution safe: a process that recorded the resolution
+    /// and died before the child ran already named that child, and the process that picks the result
+    /// up adopts that same name instead of minting a second one. Two processes therefore cannot end
+    /// up carrying one result under two run ids, and the loser learns which run it must run.
+    /// </para>
+    /// <para>
+    /// <b>Optional, so that stores written before it existed still compile and run.</b> The default
+    /// throws <see cref="NotSupportedException"/> rather than returning "no id", because the two
+    /// mean different things: "no id" is a claim about what the record holds, and a store that never
+    /// implemented this has not looked. Callers keep them apart — both let the continuation run
+    /// in-process without recoverability, but only one of them says the deployment is what needs
+    /// fixing. Implement it to let delayed-result continuations survive a restart.
+    /// </para>
+    /// </remarks>
+    Task<string?> AttachDeferredChildRunAsync(
+        string threadId,
+        string toolCallId,
+        string childRunId,
+        DateTimeOffset attachedAt,
+        CancellationToken ct = default) =>
+        throw new NotSupportedException(
+            $"{GetType().Name} does not implement AttachDeferredChildRunAsync, so a delayed tool "
+                + "result that resolves as its requesting run parks cannot be given a durable child "
+                + "run. Implement it to support recoverable delayed-result continuations.");
 }
