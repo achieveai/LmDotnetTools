@@ -34,7 +34,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// - MessageUpdateJoinerMiddleware (joins update messages into full messages for history)
 /// - ToolCallInjectionMiddleware (injects function contracts for tool calling)
 /// </remarks>
-public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink
+public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink, ISpawnSuppressingAgent
 {
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
@@ -357,6 +357,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 {
                     _runActive = true;
                 }
+
+                // ISpawnSuppressingAgent: an input may forbid THIS run from starting new sub-agents. The
+                // scope is opened here, after the batch is known and before any turn builds contracts, and
+                // disposed at the end of this iteration — so the guarantee covers every turn of the run
+                // (including replayed spawn calls, which the handler refuses) and is released for the next
+                // one. A loop with no sub-agent tools has no spawn surface to open a scope on and none to
+                // advertise either, so the guarantee already holds.
+                using var spawnSuppression = realInputs.Exists(i => i.Input.SuppressSubAgentSpawning)
+                    ? SubAgentTools?.SuppressSpawning()
+                    : null;
 
                 try
                 {

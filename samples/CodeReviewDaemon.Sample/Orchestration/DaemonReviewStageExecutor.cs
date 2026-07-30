@@ -1916,8 +1916,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             reviewWorkspace: prepared);
         // Resolve the loop's sub-agent surface (unwrapping decorators): the completion source the barrier polls
         // and the spawn-suppression scope the synthesis turn runs in. A loop that declares the surface with null
-        // members provably has no spawn surface (S2S, diff-only); a loop that declares nothing is UNKNOWN, so if
-        // this run was configured to spawn we refuse rather than silently skip BOTH the barrier and suppression.
+        // members provably has no such surface (diff-only; S2S declares a null completion source because its
+        // children live on the host, but a REAL suppression scope); a loop that declares nothing is UNKNOWN, so
+        // if this run was configured to spawn we refuse rather than silently skip BOTH barrier and suppression.
         var surface = ReviewLoopSubAgentSurface.Resolve(loop);
         if (surface is null && toolContext?.SubAgentOptions is not null)
         {

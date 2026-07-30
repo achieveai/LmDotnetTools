@@ -46,17 +46,31 @@ internal static class ReviewLoopSubAgentSurface
     /// Returns <paramref name="agent"/>'s sub-agent surface, or <c>null</c> when the agent neither declares
     /// one nor is (or wraps) a live <see cref="MultiTurnAgentLoop"/>. <c>null</c> means UNKNOWN — the caller
     /// must decide whether the run was allowed to spawn, not assume it was not.
+    /// <para>
+    /// A decorator that BOTH declares the interface and wraps another loop is merged member-wise rather than
+    /// short-circuited: its own non-null members win (it is entitled to override), but a member it leaves
+    /// null falls through to what it wraps. Preferring the outer surface wholesale would let a decorator with
+    /// two null members MASK a live loop underneath — silently skipping the barrier and the suppression while
+    /// still looking like a declared, and therefore trusted, surface.
+    /// </para>
     /// </summary>
     public static IReviewLoopSubAgentSurface? Resolve(IMultiTurnAgent agent)
     {
         ArgumentNullException.ThrowIfNull(agent);
 
-        return agent switch
+        var declared = agent switch
         {
-            IReviewLoopSubAgentSurface declared => declared,
+            IReviewLoopSubAgentSurface surface => surface,
             MultiTurnAgentLoop loop => new LiveLoopSurface(loop),
-            IReviewLoopWrapper wrapper => Resolve(wrapper.Inner),
             _ => null,
+        };
+        var wrapped = agent is IReviewLoopWrapper wrapper ? Resolve(wrapper.Inner) : null;
+
+        return (declared, wrapped) switch
+        {
+            (null, _) => wrapped,
+            (_, null) => declared,
+            _ => new MergedSurface(declared, wrapped),
         };
     }
 
@@ -74,5 +88,16 @@ internal static class ReviewLoopSubAgentSurface
 
         public Func<IDisposable>? SuppressSpawning =>
             loop.SubAgentTools is { } tools ? tools.SuppressSpawning : null;
+    }
+
+    /// <summary>A decorator's own surface laid over the surface of what it wraps, member by member.</summary>
+    private sealed class MergedSurface(
+        IReviewLoopSubAgentSurface outer,
+        IReviewLoopSubAgentSurface inner) : IReviewLoopSubAgentSurface
+    {
+        public IReviewSubAgentCompletionSource? CompletionSource =>
+            outer.CompletionSource ?? inner.CompletionSource;
+
+        public Func<IDisposable>? SuppressSpawning => outer.SuppressSpawning ?? inner.SuppressSpawning;
     }
 }

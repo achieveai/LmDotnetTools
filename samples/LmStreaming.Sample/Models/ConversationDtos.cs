@@ -149,6 +149,20 @@ public record ProvisionConversationResponse
 public record SendMessageRequest
 {
     public required string Text { get; init; }
+
+    /// <summary>
+    /// When true, the run this message drives must not be able to start NEW sub-agents (reading from and
+    /// following up with already-running ones stays available). Used by a caller that has just waited on a
+    /// sub-agent completion barrier and is now asking for the synthesis turn: a fresh fan-out there would
+    /// reopen the barrier it just waited on.
+    /// <para>
+    /// The host REFUSES the send (400 <c>spawn_suppression_unsupported</c>) when the thread's agent cannot
+    /// enforce this, and echoes <see cref="SendMessageResponse.SpawningSuppressed"/> when it can — so a
+    /// caller talking to a host that predates this field sees no acknowledgement and can fail closed
+    /// instead of assuming a guarantee it never got.
+    /// </para>
+    /// </summary>
+    public bool SuppressSubAgentSpawning { get; init; }
 }
 
 /// <summary>
@@ -159,6 +173,14 @@ public record SendMessageResponse
 {
     public required string InputId { get; init; }
     public required bool Queued { get; init; }
+
+    /// <summary>
+    /// Acknowledgement that <see cref="SendMessageRequest.SuppressSubAgentSpawning"/> was accepted AND is
+    /// enforced for the run this input drives. Absent/false means no such guarantee was made — which is
+    /// exactly what a host predating the field returns, so a caller that requires it can detect the
+    /// unsupported host rather than silently proceeding without suppression.
+    /// </summary>
+    public bool SpawningSuppressed { get; init; }
 }
 
 /// <summary>

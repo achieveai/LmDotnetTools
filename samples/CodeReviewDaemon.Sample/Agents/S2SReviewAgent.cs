@@ -30,8 +30,16 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <see cref="RunAsync"/>, <see cref="StopAsync"/>, <see cref="IsRunning"/>) are implemented minimally: the
 /// daemon only ever drives this agent collect-only through <see cref="ExecuteRunAsync"/>.
 /// </para>
+/// <para>
+/// It declares <see cref="IReviewLoopSubAgentSurface"/> so the synthesis turn's no-new-children guarantee is
+/// REAL over S2S too: <see cref="SuppressSpawning"/> opens a scope that makes the next
+/// <see cref="ExecuteRunAsync"/> ask the host to run that turn with sub-agent spawning suppressed, and the
+/// host refuses the send outright if it cannot honour it. Its <see cref="CompletionSource"/> is null on
+/// purpose — the children live in the HOST's process, so the barrier reads them through the injected
+/// out-of-process source over the recursive sub-agent endpoint.
+/// </para>
 /// </summary>
-internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLoop
+internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLoop, IReviewLoopSubAgentSurface
 {
     /// <summary>Terminal run statuses that end the poll loop (matches <c>ConversationRunStatus</c> names).</summary>
     private static readonly HashSet<string> TerminalStatuses = new(StringComparer.OrdinalIgnoreCase)
@@ -58,6 +66,7 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLo
     private string? _threadId;
     private string? _currentRunId;
     private DateTimeOffset? _deadlineUtc;
+    private int _spawnSuppressionDepth;
 
     /// <summary>
     /// Builds the adapter. <paramref name="existingThreadId"/> seeds an ALREADY-PROVISIONED hosted
@@ -124,6 +133,26 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLo
     /// <inheritdoc />
     public void UseDeadline(DateTimeOffset deadlineUtc) => _deadlineUtc = deadlineUtc;
 
+    /// <summary>
+    /// Always <c>null</c>: this agent's children run in the REVIEW HOST's process, so there is no in-process
+    /// manager to read them from. The barrier uses the executor's injected out-of-process source instead.
+    /// </summary>
+    public IReviewSubAgentCompletionSource? CompletionSource => null;
+
+    /// <inheritdoc />
+    public Func<IDisposable>? SuppressSpawning => OpenSpawnSuppression;
+
+    /// <summary>
+    /// Opens a scope in which every <see cref="ExecuteRunAsync"/> asks the host to run its turn with NEW
+    /// sub-agent spawning suppressed. Reference-counted so nesting is safe, and released on dispose so the
+    /// thread is back to normal for any later turn.
+    /// </summary>
+    private IDisposable OpenSpawnSuppression()
+    {
+        _ = Interlocked.Increment(ref _spawnSuppressionDepth);
+        return new SpawnSuppressionScope(this);
+    }
+
     public async IAsyncEnumerable<IMessage> ExecuteRunAsync(
         UserInput userInput,
         [EnumeratorCancellation] CancellationToken ct = default)
@@ -136,12 +165,21 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLo
             throw new InvalidOperationException("S2SReviewAgent.ExecuteRunAsync received no user text to send.");
         }
 
+        // Either channel can demand it: the executor's synthesis scope (SuppressSpawning) or an input that
+        // carries the SDK's per-turn flag. The host acknowledges or refuses — it is never a hint.
+        var suppressSpawning =
+            Volatile.Read(ref _spawnSuppressionDepth) > 0 || userInput.SuppressSubAgentSpawning;
+
         var threadId = await EnsureProvisionedAsync(ct).ConfigureAwait(false);
-        var inputId = await _client.SendMessageAsync(threadId, input, ct).ConfigureAwait(false);
+        var inputId = await _client
+            .SendMessageAsync(threadId, input, suppressSpawning, ct)
+            .ConfigureAwait(false);
         _logger.LogInformation(
-            "S2S review message queued on thread {ThreadId} (inputId {InputId}); polling to terminal.",
+            "S2S review message queued on thread {ThreadId} (inputId {InputId}, spawning suppressed "
+                + "{SuppressSpawning}); polling to terminal.",
             threadId,
-            inputId);
+            inputId,
+            suppressSpawning);
 
         var status = await PollToTerminalAsync(threadId, inputId, ct).ConfigureAwait(false);
         _currentRunId = status.RunId;
@@ -402,4 +440,18 @@ internal sealed class S2SReviewAgent : IMultiTurnAgent, IDeadlineBoundedReviewLo
     public Task StopAsync(TimeSpan? timeout = null) => Task.CompletedTask;
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    /// <summary>Decrements the suppression count once, however many times it is disposed.</summary>
+    private sealed class SpawnSuppressionScope(S2SReviewAgent agent) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _ = Interlocked.Decrement(ref agent._spawnSuppressionDepth);
+            }
+        }
+    }
 }

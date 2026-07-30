@@ -5,7 +5,9 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
@@ -666,10 +668,39 @@ public class ConversationsController(
         var inputId = Guid.NewGuid().ToString();
         var userMessage = new TextMessage { Role = Role.User, Text = request.Text };
 
+        // Per-turn spawn suppression is a GUARANTEE, so it fails closed: only an agent that declares
+        // ISpawnSuppressingAgent actually enforces UserInput.SuppressSubAgentSpawning on the run that
+        // consumes the input. Sending the flag through the message-list overload of any other agent would
+        // drop it silently and let the turn fan out anyway, so the request is refused instead.
+        if (request.SuppressSubAgentSpawning && agent is not ISpawnSuppressingAgent)
+        {
+            logger.LogWarning(
+                "SendMessage for thread {ThreadId} rejected: agent {AgentType} cannot enforce per-turn sub-agent spawn suppression",
+                threadId,
+                agent.GetType().Name);
+            return BadRequest(new
+            {
+                error = "spawn_suppression_unsupported",
+                code = "spawn_suppression_unsupported",
+                detail =
+                    "This conversation's agent cannot suppress sub-agent spawning for a single turn, so the "
+                    + "requested guarantee cannot be made.",
+                threadId,
+            });
+        }
+
         // A null return means the input channel is full — TrySendAsync guarantees no accepted-input
         // record survives in that case. A thrown exception (durable-store write failure) is left to
         // propagate to a 500, per the REST contract (no inputId returned either way).
-        var receipt = await agent.TrySendAsync([userMessage], inputId: inputId, parentRunId: null, ct);
+        var receipt = agent is ISpawnSuppressingAgent suppressing
+            ? await suppressing.TrySendAsync(
+                new UserInput(
+                    [userMessage],
+                    inputId,
+                    ParentRunId: null,
+                    SuppressSubAgentSpawning: request.SuppressSubAgentSpawning),
+                ct)
+            : await agent.TrySendAsync([userMessage], inputId: inputId, parentRunId: null, ct);
         if (receipt == null)
         {
             logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
@@ -678,7 +709,12 @@ public class ConversationsController(
                 new { error = "queue_full", code = "queue_full", threadId });
         }
 
-        return Accepted(new SendMessageResponse { InputId = inputId, Queued = true });
+        return Accepted(new SendMessageResponse
+        {
+            InputId = inputId,
+            Queued = true,
+            SpawningSuppressed = request.SuppressSubAgentSpawning,
+        });
     }
 
     /// <summary>

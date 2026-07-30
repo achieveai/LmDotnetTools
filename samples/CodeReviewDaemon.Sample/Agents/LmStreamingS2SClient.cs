@@ -152,14 +152,37 @@ internal sealed class LmStreamingS2SClient
         return true;
     }
 
-    /// <summary>Queues a user message onto the thread and returns the input id to poll status by.</summary>
-    public async Task<string> SendMessageAsync(string threadId, string text, CancellationToken ct)
+    /// <summary>
+    /// Queues a user message onto the thread and returns the input id to poll status by.
+    /// <para>
+    /// <paramref name="suppressSubAgentSpawning"/> asks the host to run THIS turn with no ability to start
+    /// new sub-agents (the synthesis turn, after the completion barrier). It is a hard guarantee, not a
+    /// hint: when requested, the host must acknowledge it with <c>spawningSuppressed: true</c>, and this
+    /// method throws when it does not. That is what makes the call version-safe — a host predating the
+    /// field happily ignores the unknown request property and returns a normal 202, so without the
+    /// acknowledgement check the daemon would believe it had a guarantee it never got.
+    /// </para>
+    /// </summary>
+    public async Task<string> SendMessageAsync(
+        string threadId,
+        string text,
+        bool suppressSubAgentSpawning,
+        CancellationToken ct)
     {
         var body = await SendReadAsync(
             HttpMethod.Post,
             $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
-            new { Text = text },
+            new { Text = text, SuppressSubAgentSpawning = suppressSubAgentSpawning },
             ct);
+
+        if (suppressSubAgentSpawning && !ReadBoolProperty(body, "spawningSuppressed"))
+        {
+            throw new InvalidOperationException(
+                "The review host did not acknowledge the requested sub-agent spawn suppression "
+                    + "('spawningSuppressed' was absent or false), so this turn cannot be guaranteed free of "
+                    + $"new sub-agents. Upgrade the LmStreaming review host at {_baseUrl}. Body: {body}");
+        }
+
         return ReadStringProperty(body, "inputId");
     }
 
@@ -323,6 +346,13 @@ internal sealed class LmStreamingS2SClient
 
         throw new InvalidOperationException(
             $"Server response did not contain a '{propertyName}' string. Body: {body}");
+    }
+
+    private static bool ReadBoolProperty(string body, string propertyName)
+    {
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.TryGetProperty(propertyName, out var value)
+            && value.ValueKind == JsonValueKind.True;
     }
 
     private static T Deserialize<T>(string body)

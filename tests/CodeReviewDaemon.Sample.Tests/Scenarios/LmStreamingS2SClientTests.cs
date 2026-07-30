@@ -122,13 +122,69 @@ public sealed class LmStreamingS2SClientTests
         using var http = NewHttp(handler);
         var client = new LmStreamingS2SClient(http, "s", "id", "key");
 
-        var inputId = await client.SendMessageAsync("thread-1", "review this PR", CancellationToken.None);
+        var inputId = await client.SendMessageAsync(
+            "thread-1", "review this PR", suppressSubAgentSpawning: false, CancellationToken.None);
         inputId.Should().Be("input-1");
 
         var status = await client.GetStatusByInputIdAsync("thread-1", "input-1", CancellationToken.None);
         status.Status.Should().Be("Completed");
         status.RunId.Should().Be("run-9");
         status.ResponseText.Should().Be("LGTM, ship it.");
+    }
+
+    /// <summary>
+    /// The suppression request must reach the host on the wire — a caller that only asserted on the response
+    /// would pass against a client that never sent it.
+    /// </summary>
+    [Fact]
+    public async Task SendMessageAsync_puts_the_suppression_flag_on_the_wire_and_accepts_the_hosts_acknowledgement()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\",\"spawningSuppressed\":true}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var inputId = await client.SendMessageAsync(
+            "thread-1", "synthesize", suppressSubAgentSpawning: true, CancellationToken.None);
+
+        inputId.Should().Be("input-1");
+        handler.Requests.Single().Body.Should().Contain("\"suppressSubAgentSpawning\":true");
+    }
+
+    /// <summary>
+    /// Version safety: a host that predates the field ignores the unknown request property and returns a
+    /// perfectly normal 202. Without the acknowledgement check the daemon would run its synthesis turn
+    /// believing in a guarantee that was never made, so a missing echo has to fail the send.
+    /// </summary>
+    [Fact]
+    public async Task SendMessageAsync_fails_closed_when_the_host_does_not_acknowledge_the_suppression()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var act = () => client.SendMessageAsync(
+            "thread-1", "synthesize", suppressSubAgentSpawning: true, CancellationToken.None);
+
+        _ = await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*spawningSuppressed*");
+    }
+
+    /// <summary>An ordinary send asks for nothing, so an un-acknowledging host is fine.</summary>
+    [Fact]
+    public async Task SendMessageAsync_does_not_require_an_acknowledgement_when_suppression_was_not_requested()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\"}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var inputId = await client.SendMessageAsync(
+            "thread-1", "review this PR", suppressSubAgentSpawning: false, CancellationToken.None);
+
+        inputId.Should().Be("input-1");
+        handler.Requests.Single().Body.Should().Contain("\"suppressSubAgentSpawning\":false");
     }
 
     [Fact]

@@ -13,7 +13,7 @@ namespace LmMultiTurn.Tests;
 /// <summary>
 /// Validates that <see cref="ClaudeAgentLoop"/> emits <c>WasForked = true</c> /
 /// <c>ForkedToRunId = run.RunId</c> on <see cref="RunCompletedMessage"/> whenever
-/// a caller threads an explicit <c>parentRunId</c> via <see cref="MultiTurnAgentBase.SendAsync"/>.
+/// a caller threads an explicit <c>parentRunId</c> via <see cref="MultiTurnAgentBase.SendAsync(System.Collections.Generic.List{AchieveAi.LmDotnetTools.LmCore.Messages.IMessage},string,string,System.Threading.CancellationToken)"/>.
 /// </summary>
 public class ClaudeAgentLoopForkSemanticsTests
 {

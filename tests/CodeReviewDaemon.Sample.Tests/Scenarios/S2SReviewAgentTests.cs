@@ -103,6 +103,62 @@ public sealed class S2SReviewAgentTests
         provision.Body.Should().Contain("\"systemPromptAppendix\":\"REVIEW METHODOLOGY\"");
     }
 
+    /// <summary>
+    /// The synthesis turn's "no new children" guarantee has to be REAL over S2S, where the children live in
+    /// the host's process: the executor opens the agent's <c>SuppressSpawning</c> scope and every send inside
+    /// it must ask the host to run that turn with spawning suppressed. The provisional turn (outside the
+    /// scope) must not, or it could never fan out in the first place — and the scope is released afterwards.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_asks_the_host_to_suppress_spawning_only_inside_the_suppression_scope()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(HttpMethod.Post, "/messages", "{\"inputId\":\"input-1\",\"spawningSuppressed\":true}")
+            .OnJson(HttpMethod.Get, "/status", "{\"status\":\"Completed\",\"runId\":\"run-1\",\"response\":{\"text\":\"ok\"}}")
+            .OnJson(HttpMethod.Post, "api/conversations", "{\"threadId\":\"thread-sup\"}");
+        using var http = NewHttp(handler);
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+
+        // The executor resolves the scope off the loop's declared surface; null here would mean the synthesis
+        // turn only CLAIMED it could not spawn. The interface-typed local is the compile-time half of the
+        // proof — the agent has to declare the surface for the executor to find it at all.
+        IReviewLoopSubAgentSurface surface = agent;
+        var suppress = surface.SuppressSpawning;
+        suppress.Should().NotBeNull("an S2S review loop must expose a real per-turn suppression scope");
+
+        _ = await DriveAsync(agent, "provisional review");
+        using (suppress!())
+        {
+            _ = await DriveAsync(agent, "synthesize the final review");
+        }
+
+        _ = await DriveAsync(agent, "a later turn");
+
+        var sends = handler.Requests
+            .Where(r => r.Method == HttpMethod.Post
+                && r.Uri.ToString().Contains("/messages", StringComparison.Ordinal))
+            .Select(r => r.Body)
+            .ToList();
+        sends.Should().HaveCount(3);
+        sends[0].Should().Contain("\"suppressSubAgentSpawning\":false", "the provisional turn must be free to fan out");
+        sends[1].Should().Contain("\"suppressSubAgentSpawning\":true", "the synthesis turn must not start new children");
+        sends[2].Should().Contain("\"suppressSubAgentSpawning\":false", "the scope is released when it is disposed");
+    }
+
+    /// <summary>
+    /// Its children run in the HOST's process, so there is no in-process manager to read them from — the
+    /// barrier must fall through to the executor's injected out-of-process source.
+    /// </summary>
+    [Fact]
+    public void The_agent_exposes_no_in_process_completion_source()
+    {
+        using var http = NewHttp(new FakeHttpMessageHandler());
+        var agent = NewAgent(new LmStreamingS2SClient(http, "s", "id", "key"), title: null);
+
+        IReviewLoopSubAgentSurface surface = agent;
+        surface.CompletionSource.Should().BeNull();
+    }
+
     [Fact]
     public async Task ExecuteRunAsync_throws_when_the_hosted_run_ends_errored_even_with_partial_text()
     {

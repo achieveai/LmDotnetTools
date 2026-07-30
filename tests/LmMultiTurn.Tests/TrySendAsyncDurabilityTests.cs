@@ -8,7 +8,7 @@ using Xunit;
 namespace LmMultiTurn.Tests;
 
 /// <summary>
-/// Durability tests for <see cref="MultiTurnAgentBase.TrySendAsync"/> — the non-blocking send
+/// Durability tests for <see cref="MultiTurnAgentBase.TrySendAsync(System.Collections.Generic.List{AchieveAi.LmDotnetTools.LmCore.Messages.IMessage},string,string,System.Threading.CancellationToken)"/> — the non-blocking send
 /// variant that must (a) durably record an accepted input BEFORE touching the channel, (b) return
 /// null and roll back that record when the channel is full, and (c) propagate a store failure
 /// WITHOUT ever writing to the channel.

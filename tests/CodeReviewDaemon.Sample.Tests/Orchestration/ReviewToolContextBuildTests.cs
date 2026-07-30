@@ -2,8 +2,6 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmMultiTurn;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -477,43 +475,4 @@ public sealed class ReviewToolContextBuildTests
 
         public void Dispose() => Closed++;
     }
-
-    /// <summary>Forwards every <see cref="IMultiTurnAgent"/> member to an inner loop, modelling the live
-    /// path's decorator (<c>ToolScopedReviewLoop</c>) without its MCP-client ownership.</summary>
-    private abstract class DelegatingLoop(IMultiTurnAgent inner) : IMultiTurnAgent
-    {
-        protected IMultiTurnAgent Wrapped => inner;
-
-        public string? CurrentRunId => inner.CurrentRunId;
-        public string ThreadId => inner.ThreadId;
-        public bool IsRunning => inner.IsRunning;
-
-        public ValueTask<SendReceipt> SendAsync(
-            List<IMessage> messages, string? inputId = null, string? parentRunId = null, CancellationToken ct = default)
-            => inner.SendAsync(messages, inputId, parentRunId, ct);
-
-        public ValueTask<SendReceipt?> TrySendAsync(
-            List<IMessage> messages, string? inputId = null, string? parentRunId = null, CancellationToken ct = default)
-            => inner.TrySendAsync(messages, inputId, parentRunId, ct);
-
-        public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default)
-            => inner.ExecuteRunAsync(userInput, ct);
-
-        public IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default) => inner.SubscribeAsync(ct);
-
-        public Task RunAsync(CancellationToken ct = default) => inner.RunAsync(ct);
-
-        public Task StopAsync(TimeSpan? timeout = null) => inner.StopAsync(timeout);
-
-        public ValueTask DisposeAsync() => inner.DisposeAsync();
-    }
-
-    /// <summary>A decorator that DECLARES what it wraps, so the surface resolves through it.</summary>
-    private sealed class WrappingLoop(IMultiTurnAgent inner) : DelegatingLoop(inner), IReviewLoopWrapper
-    {
-        public IMultiTurnAgent Inner => Wrapped;
-    }
-
-    /// <summary>A decorator that declares NOTHING — the executor cannot tell whether it can spawn.</summary>
-    private sealed class OpaqueLoop(IMultiTurnAgent inner) : DelegatingLoop(inner);
 }

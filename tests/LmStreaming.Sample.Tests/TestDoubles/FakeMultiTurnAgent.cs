@@ -1,6 +1,13 @@
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+
 namespace LmStreaming.Sample.Tests.TestDoubles;
 
-internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
+/// <summary>
+/// A minimal <see cref="IMultiTurnAgent"/> stand-in. It deliberately does NOT declare
+/// <c>ISpawnSuppressingAgent</c>, so it also serves as the "host cannot enforce per-turn spawn suppression"
+/// fixture — see <see cref="SpawnSuppressingFakeAgent"/> for the capable counterpart.
+/// </summary>
+internal class FakeMultiTurnAgent : IMultiTurnAgent
 {
     public FakeMultiTurnAgent(string threadId)
     {
@@ -95,5 +102,24 @@ internal sealed class FakeMultiTurnAgent : IMultiTurnAgent
         }
 
         return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
+/// A fake that CAN enforce per-turn sub-agent spawn suppression. Declaring
+/// <see cref="ISpawnSuppressingAgent"/> is the capability signal the controller gates on, and
+/// <see cref="LastInput"/> records the <see cref="UserInput"/> it received so a test can prove the flag
+/// actually reached the agent rather than merely being echoed back.
+/// </summary>
+internal sealed class SpawnSuppressingFakeAgent(string threadId)
+    : FakeMultiTurnAgent(threadId), ISpawnSuppressingAgent
+{
+    /// <summary>The last input handed to the capability-aware send path (null until one arrives).</summary>
+    public UserInput? LastInput { get; private set; }
+
+    public async ValueTask<SendReceipt?> TrySendAsync(UserInput input, CancellationToken ct = default)
+    {
+        LastInput = input;
+        return await TrySendAsync(input.Messages, input.InputId, input.ParentRunId, ct);
     }
 }

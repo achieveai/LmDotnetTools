@@ -740,6 +740,102 @@ public class ConversationsControllerTests
         payload.Should().Contain("openai");
     }
 
+    /// <summary>
+    /// Fail CLOSED: a caller asking for a guarantee the thread's agent cannot make must be refused, not
+    /// quietly served an unsuppressed turn. This is also what keeps the wire contract version-safe in the
+    /// other direction — the caller can tell "refused" from "accepted".
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ReturnsBadRequest_WhenSuppressionRequestedButAgentCannotEnforceIt()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreatePool();
+        var threadId = "thread-send-suppress-unsupported";
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "synthesize", SuppressSubAgentSpawning = true },
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
+        JsonSerializer.Serialize(badRequest.Value).Should().Contain("spawn_suppression_unsupported");
+    }
+
+    /// <summary>
+    /// A capable agent gets the flag on the actual input (not just a friendly echo), and the response
+    /// acknowledges the guarantee so the caller can verify it was made.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_ForwardsSuppression_AndAcknowledgesIt_WhenAgentCanEnforceIt()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-suppress-ok";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "synthesize", SuppressSubAgentSpawning = true },
+            CancellationToken.None);
+
+        var accepted = Assert.IsType<AcceptedResult>(result);
+        var response = Assert.IsType<SendMessageResponse>(accepted.Value);
+        response.SpawningSuppressed.Should().BeTrue("the host must acknowledge the guarantee it made");
+        agent.LastInput.Should().NotBeNull();
+        agent.LastInput!.SuppressSubAgentSpawning.Should().BeTrue(
+            "the flag has to reach the run, not just the response");
+        agent.LastInput.InputId.Should().Be(response.InputId);
+    }
+
+    /// <summary>An ordinary send is unaffected: no suppression asked for, none claimed.</summary>
+    [Fact]
+    public async Task SendMessage_DoesNotClaimSuppression_WhenNotRequested()
+    {
+        var store = new InMemoryConversationStore();
+        await using var pool = CreateSuppressionCapablePool();
+        var threadId = "thread-send-suppress-off";
+        var currentMode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var agent = (SpawnSuppressingFakeAgent)pool.GetOrCreateAgent(threadId, currentMode);
+        await SeedDefaultModeThreadAsync(store, threadId);
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.SendMessage(
+            threadId,
+            new SendMessageRequest { Text = "review" },
+            CancellationToken.None);
+
+        var accepted = Assert.IsType<AcceptedResult>(result);
+        Assert.IsType<SendMessageResponse>(accepted.Value).SpawningSuppressed.Should().BeFalse();
+        agent.LastInput!.SuppressSubAgentSpawning.Should().BeFalse();
+    }
+
+    private static MultiTurnAgentPool CreateSuppressionCapablePool()
+    {
+        return new MultiTurnAgentPool(
+            (threadId, _, _) =>
+                new MultiTurnAgentPool.AgentCreationResult(new SpawnSuppressingFakeAgent(threadId)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+    }
+
+    private static Task SeedDefaultModeThreadAsync(InMemoryConversationStore store, string threadId) =>
+        store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LastUpdated = 1,
+                Properties = ImmutableDictionary<string, object>.Empty
+                    .SetItem(MultiTurnAgentPool.ModePropertyKey, SystemChatModes.DefaultModeId),
+            });
+
     [Fact]
     public async Task GetStatus_ReturnsBadRequest_WhenNeitherIdProvided()
     {
