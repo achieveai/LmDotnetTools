@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using FluentAssertions;
@@ -113,10 +112,10 @@ public class NotifyEnvelopeDeliveryTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runsCompleted = SubscribeForRunCompletions(loop, cts.Token, expectedCount: fireCount + 1);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: fireCount + 1);
 
         await loop.SendAsync([new TextMessage { Text = "arm the notify wait", Role = Role.User }]);
-        await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
 
         // Notify mode returns an immediate "armed" ack (no deferral); the arming run completes
         // normally and the wait stays armed, so its sink is registered under the tool-call id.
@@ -126,7 +125,7 @@ public class NotifyEnvelopeDeliveryTests
         {
             var sink = manual.Sinks["tc_notify"];
             await sink.FireAsync(new TriggerFireEvent($"fire-{i + 1}"), cts.Token);
-            await runsCompleted[i + 1].Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await runsCompleted.WaitAsync(i + 1);
         }
 
         await cts.CancelAsync();
@@ -149,35 +148,6 @@ public class NotifyEnvelopeDeliveryTests
         }
 
         return history;
-    }
-
-    private static List<TaskCompletionSource<bool>> SubscribeForRunCompletions(
-        MultiTurnAgentLoop loop, CancellationToken ct, int expectedCount)
-    {
-        var sources = Enumerable.Range(0, expectedCount)
-            .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
-            .ToList();
-        var completed = 0;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await foreach (var msg in loop.SubscribeAsync(ct))
-                {
-                    if (msg is RunCompletedMessage)
-                    {
-                        var idx = completed;
-                        completed++;
-                        if (idx < sources.Count)
-                        {
-                            sources[idx].TrySetResult(true);
-                        }
-                    }
-                }
-            }
-            catch (OperationCanceledException) { }
-        }, ct);
-        return sources;
     }
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(

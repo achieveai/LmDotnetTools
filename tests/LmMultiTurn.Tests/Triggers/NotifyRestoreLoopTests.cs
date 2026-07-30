@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using FluentAssertions;
@@ -121,25 +120,10 @@ public class NotifyRestoreLoopTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await foreach (var msg in loop.SubscribeAsync(cts.Token))
-                {
-                    if (msg is RunCompletedMessage)
-                    {
-                        runCompleted.TrySetResult(true);
-                        break;
-                    }
-                }
-            }
-            catch (OperationCanceledException) { }
-        }, cts.Token);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
 
         await manual.Sinks[waitId].FireAsync(new TriggerFireEvent("fire-after-restore"), cts.Token);
-        await runCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
 
         await cts.CancelAsync();
 

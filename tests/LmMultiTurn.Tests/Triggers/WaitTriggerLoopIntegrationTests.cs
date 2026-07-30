@@ -71,17 +71,17 @@ public class WaitTriggerLoopIntegrationTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var (firstDone, secondDone) = SubscribeForTwoRuns(loop, cts.Token);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 2);
 
         await loop.SendAsync([new TextMessage { Text = "sleep then continue", Role = Role.User }]);
-        await firstDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
 
         // Parked: exactly one LLM call so far, and the Wait is registered as deferred.
         callCount.Should().Be(1);
         (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(p => p.ToolCallId == "tc_wait");
 
         // The timer fires (~150ms) and auto-resumes the run.
-        await secondDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(1);
         callCount.Should().Be(2);
 
         var resolved = ExtractResults(secondCallMessages!).Single(m => m.ToolCallId == "tc_wait");
@@ -143,17 +143,17 @@ public class WaitTriggerLoopIntegrationTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var (firstDone, secondDone) = SubscribeForTwoRuns(loop, cts.Token);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 2);
 
         await loop.SendAsync([new TextMessage { Text = "wait for host", Role = Role.User }]);
-        await firstDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
 
         (await loop.GetDeferredToolCallsAsync()).Should().ContainSingle(p => p.ToolCallId == "tc_host");
 
         // Host fires the external event; the parked run resumes.
         await manual.FireAsync("host-payload");
 
-        await secondDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(1);
         var resolved = ExtractResults(secondCallMessages!).Single(m => m.ToolCallId == "tc_host");
         ReadStatus(resolved.Result).Should().Be("fired");
         resolved.Result.Should().Contain("host-payload");
@@ -292,37 +292,6 @@ public class WaitTriggerLoopIntegrationTests
         "trigger-thread",
         logger: _loggerMock.Object,
         triggerOptions: options);
-
-    private static (TaskCompletionSource<bool> First, TaskCompletionSource<bool> Second) SubscribeForTwoRuns(
-        MultiTurnAgentLoop loop, CancellationToken ct)
-    {
-        var first = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var second = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var completed = 0;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await foreach (var msg in loop.SubscribeAsync(ct))
-                {
-                    if (msg is RunCompletedMessage)
-                    {
-                        completed++;
-                        if (completed == 1)
-                        {
-                            first.TrySetResult(true);
-                        }
-                        else if (completed == 2)
-                        {
-                            second.TrySetResult(true);
-                        }
-                    }
-                }
-            }
-            catch (OperationCanceledException) { }
-        }, ct);
-        return (first, second);
-    }
 
     private static string ReadStatus(string payloadJson)
     {

@@ -138,43 +138,33 @@ public class DeferredToolExecutionTests
         var runTask = loop.RunAsync(cts.Token);
 
         // Subscribe so we can wait for run completions.
-        var subscriberMessages = new List<IMessage>();
-        var subscribeTcs = new TaskCompletionSource<bool>();
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var runCompleteCount = 0;
-        _ = Task.Run(async () =>
-        {
-            try
+        var drain = LoopSubscription.StartDraining(
+            loop,
+            msg =>
             {
-                subscribeTcs.SetResult(true);
-                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                if (msg is RunCompletedMessage)
                 {
-                    subscriberMessages.Add(msg);
-                    if (msg is RunCompletedMessage)
+                    runCompleteCount++;
+                    if (runCompleteCount == 1)
                     {
-                        runCompleteCount++;
-                        if (runCompleteCount == 1)
-                        {
-                            firstRunCompleted.TrySetResult(true);
-                        }
-                        else if (runCompleteCount == 2)
-                        {
-                            secondRunCompleted.TrySetResult(true);
-                        }
+                        firstRunCompleted.TrySetResult(true);
+                    }
+                    else if (runCompleteCount == 2)
+                    {
+                        secondRunCompleted.TrySetResult(true);
                     }
                 }
-            }
-            catch (OperationCanceledException) { }
-        }, cts.Token);
-
-        await subscribeTcs.Task;
+            },
+            cts.Token);
 
         // Send the first user input — kicks off run 1.
         await loop.SendAsync([new TextMessage { Text = "Start the long op", Role = Role.User }]);
 
         // Wait for run 1 to finish (handler deferred, run ends).
-        await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await drain.WaitAsync(firstRunCompleted.Task, TimeSpan.FromSeconds(5));
 
         // Verify the deferred call is registered.
         var pendingBefore = await loop.GetDeferredToolCallsAsync();
@@ -184,7 +174,7 @@ public class DeferredToolExecutionTests
         await loop.ResolveToolCallAsync("tc_long", "{\"status\":\"done\"}");
 
         // Wait for run 2 to complete (auto-resume).
-        await secondRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await drain.WaitAsync(secondRunCompleted.Task, TimeSpan.FromSeconds(5));
 
         // Mock LLM should have been called twice — initial + auto-resumed.
         callCount.Should().Be(2);
@@ -255,41 +245,34 @@ public class DeferredToolExecutionTests
         using var cts = new CancellationTokenSource();
         var runTask = loop.RunAsync(cts.Token);
 
-        var subscribed = new TaskCompletionSource<bool>();
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = Task.Run(async () =>
-        {
-            try
+        var drain = LoopSubscription.StartDraining(
+            loop,
+            msg =>
             {
-                subscribed.TrySetResult(true);
-                await foreach (var msg in loop.SubscribeAsync(cts.Token))
+                if (msg is RunCompletedMessage)
                 {
-                    if (msg is RunCompletedMessage)
+                    completedRuns++;
+                    if (completedRuns == 1)
                     {
-                        completedRuns++;
-                        if (completedRuns == 1)
-                        {
-                            firstRunCompleted.TrySetResult(true);
-                        }
-                        else if (completedRuns == 2)
-                        {
-                            secondRunCompleted.TrySetResult(true);
-                        }
+                        firstRunCompleted.TrySetResult(true);
+                    }
+                    else if (completedRuns == 2)
+                    {
+                        secondRunCompleted.TrySetResult(true);
                     }
                 }
-            }
-            catch (OperationCanceledException) { }
-        }, cts.Token);
+            },
+            cts.Token);
 
-        await subscribed.Task;
         await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
-        await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await drain.WaitAsync(firstRunCompleted.Task, TimeSpan.FromSeconds(5));
 
         // Resolve once — triggers auto-resume.
         await loop.ResolveToolCallAsync("tc_idem", "FINAL");
-        await secondRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await drain.WaitAsync(secondRunCompleted.Task, TimeSpan.FromSeconds(5));
 
         // Resolve again with the SAME content. Should be a no-op (no exception, no third run).
         await loop.ResolveToolCallAsync("tc_idem", "FINAL");
@@ -358,9 +341,9 @@ public class DeferredToolExecutionTests
 
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = Task.Run(async () =>
-        {
-            await foreach (var msg in loop.SubscribeAsync(cts.Token))
+        var drain = LoopSubscription.StartDraining(
+            loop,
+            msg =>
             {
                 if (msg is RunCompletedMessage)
                 {
@@ -370,11 +353,11 @@ public class DeferredToolExecutionTests
                         firstRunCompleted.TrySetResult(true);
                     }
                 }
-            }
-        }, cts.Token);
+            },
+            cts.Token);
 
         await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
-        await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await drain.WaitAsync(firstRunCompleted.Task, TimeSpan.FromSeconds(5));
 
         // First resolution succeeds.
         await loop.ResolveToolCallAsync("tc_conflict", "ANSWER_A");
@@ -551,9 +534,9 @@ public class DeferredToolExecutionTests
         var firstRunCompleted = new TaskCompletionSource<bool>();
         var secondRunCompleted = new TaskCompletionSource<bool>();
         var completedRuns = 0;
-        _ = Task.Run(async () =>
-        {
-            await foreach (var msg in loop.SubscribeAsync(cts.Token))
+        var drain = LoopSubscription.StartDraining(
+            loop,
+            msg =>
             {
                 if (msg is RunCompletedMessage)
                 {
@@ -567,11 +550,11 @@ public class DeferredToolExecutionTests
                         secondRunCompleted.TrySetResult(true);
                     }
                 }
-            }
-        }, cts.Token);
+            },
+            cts.Token);
 
         await loop.SendAsync([new TextMessage { Text = "Go", Role = Role.User }]);
-        await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await drain.WaitAsync(firstRunCompleted.Task, TimeSpan.FromSeconds(5));
 
         // Both deferrals registered.
         var pending = await loop.GetDeferredToolCallsAsync();
@@ -590,7 +573,7 @@ public class DeferredToolExecutionTests
         // Resolve B. Now auto-resume must fire and the second LLM call must see BOTH
         // resolved values.
         await loop.ResolveToolCallAsync("tc_b", "result-b");
-        await secondRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await drain.WaitAsync(secondRunCompleted.Task, TimeSpan.FromSeconds(5));
         callCount.Should().Be(2);
 
         secondCallMessages.Should().NotBeNull();

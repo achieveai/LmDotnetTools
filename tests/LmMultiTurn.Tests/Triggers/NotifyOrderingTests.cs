@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using FluentAssertions;
@@ -96,10 +95,10 @@ public class NotifyOrderingTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runsCompleted = SubscribeForRunCompletions(loop, cts.Token, expectedCount: 3);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 3);
 
         await loop.SendAsync([new TextMessage { Text = "arm the notify wait", Role = Role.User }]);
-        await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
         manual.Sinks.Should().ContainKey("tc_notify");
 
         await loop.SendAsync([new TextMessage { Text = "start generating", Role = Role.User }]);
@@ -110,10 +109,10 @@ public class NotifyOrderingTests
 
         // Let the gated generation finish; run 2 completes with no tool calls.
         releaseGeneration.SetResult(true);
-        await runsCompleted[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(1);
 
         // The queued fire drives its own run once run 2 has fully completed.
-        await runsCompleted[2].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(2);
 
         await cts.CancelAsync();
 
@@ -205,10 +204,10 @@ public class NotifyOrderingTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runsCompleted = SubscribeForRunCompletions(loop, cts.Token, expectedCount: 2);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 2);
 
         await loop.SendAsync([new TextMessage { Text = "arm the notify wait", Role = Role.User }]);
-        await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
         manual.Sinks.Should().ContainKey("tc_notify");
 
         await loop.SendAsync([new TextMessage { Text = "run the slow tool", Role = Role.User }]);
@@ -220,7 +219,7 @@ public class NotifyOrderingTests
         // Let the tool finish. Run 2 folds the already-queued fire into a second turn of the
         // SAME run rather than ending — it must still land after the tool's own result.
         releaseTool.SetResult(true);
-        await runsCompleted[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(1);
 
         await cts.CancelAsync();
 
@@ -286,17 +285,17 @@ public class NotifyOrderingTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runsCompleted = SubscribeForRunCompletions(loop, cts.Token, expectedCount: 2);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 2);
 
         await loop.SendAsync([new TextMessage { Text = "arm both waits", Role = Role.User }]);
-        await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
 
         var before = (await loop.GetDeferredToolCallsAsync()).Should()
             .ContainSingle(p => p.ToolCallId == "tc_block").Subject;
         manual.Sinks.Should().ContainKey("tc_notify");
 
         await manual.Sinks["tc_notify"].FireAsync(new TriggerFireEvent("fire-1"), cts.Token);
-        await runsCompleted[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(1);
 
         await cts.CancelAsync();
 
@@ -364,10 +363,10 @@ public class NotifyOrderingTests
         using var cts = new CancellationTokenSource();
         _ = loop.RunAsync(cts.Token);
 
-        var runsCompleted = SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
+        var runsCompleted = LoopSubscription.SubscribeForRunCompletions(loop, cts.Token, expectedCount: 1);
 
         await loop.SendAsync([new TextMessage { Text = "arm the notify wait", Role = Role.User }]);
-        await runsCompleted[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await runsCompleted.WaitAsync(0);
         manual.Sinks.Should().ContainKey("tc_notify");
 
         var sink = manual.Sinks["tc_notify"];
@@ -415,35 +414,6 @@ public class NotifyOrderingTests
             },
         ],
     };
-
-    private static List<TaskCompletionSource<bool>> SubscribeForRunCompletions(
-        MultiTurnAgentLoop loop, CancellationToken ct, int expectedCount)
-    {
-        var sources = Enumerable.Range(0, expectedCount)
-            .Select(_ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously))
-            .ToList();
-        var completed = 0;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await foreach (var msg in loop.SubscribeAsync(ct))
-                {
-                    if (msg is RunCompletedMessage)
-                    {
-                        var idx = completed;
-                        completed++;
-                        if (idx < sources.Count)
-                        {
-                            sources[idx].TrySetResult(true);
-                        }
-                    }
-                }
-            }
-            catch (OperationCanceledException) { }
-        }, ct);
-        return sources;
-    }
 
     private static async Task<IReadOnlyList<IMessage>> WaitForHistoryAsync(
         InMemoryConversationStore store,

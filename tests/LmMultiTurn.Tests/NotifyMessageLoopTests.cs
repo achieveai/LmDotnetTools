@@ -165,30 +165,25 @@ public class NotifyMessageLoopTests
     {
         private readonly List<IMessage> _messages = [];
         private readonly object _gate = new();
+        private readonly Drain _drain;
         private volatile int _completions;
 
-        public MessageCollector(MultiTurnAgentLoop loop, CancellationToken ct)
-        {
-            _ = Task.Run(async () =>
-            {
-                try
+        public MessageCollector(MultiTurnAgentLoop loop, CancellationToken ct) =>
+            _drain = LoopSubscription.StartDraining(
+                loop,
+                msg =>
                 {
-                    await foreach (var msg in loop.SubscribeAsync(ct))
+                    lock (_gate)
                     {
-                        lock (_gate)
-                        {
-                            _messages.Add(msg);
-                        }
-
-                        if (msg is RunCompletedMessage)
-                        {
-                            _completions++;
-                        }
+                        _messages.Add(msg);
                     }
-                }
-                catch (OperationCanceledException) { }
-            }, ct);
-        }
+
+                    if (msg is RunCompletedMessage)
+                    {
+                        _completions++;
+                    }
+                },
+                ct);
 
         public List<IMessage> Snapshot()
         {
@@ -200,18 +195,22 @@ public class NotifyMessageLoopTests
 
         public async Task WaitForCompletionsAsync(int count)
         {
-            var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
-            while (DateTimeOffset.UtcNow < deadline)
+            try
             {
-                if (_completions >= count)
-                {
-                    return;
-                }
+                await _drain.WaitAsync(PollForCompletionsAsync(count), TimeSpan.FromSeconds(5));
+            }
+            catch (TimeoutException)
+            {
+                throw new TimeoutException($"Expected {count} run completion(s); saw {_completions}.");
+            }
+        }
 
+        private async Task PollForCompletionsAsync(int count)
+        {
+            while (_completions < count)
+            {
                 await Task.Delay(25);
             }
-
-            throw new TimeoutException($"Expected {count} run completion(s); saw {_completions}.");
         }
     }
 
