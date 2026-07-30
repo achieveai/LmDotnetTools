@@ -111,6 +111,27 @@ public sealed class LmStreamingS2SClientTests
     }
 
     [Fact]
+    public async Task ListWorkspacesAsync_reads_the_gateway_catalog_envelope()
+    {
+        var handler = new FakeHttpMessageHandler()
+            .OnJson(
+                HttpMethod.Get,
+                "api/workspaces",
+                "{\"gateway\":{\"canonicalBaseUrl\":\"http://gateway\",\"appId\":\"review\","
+                    + "\"available\":true,\"error\":null},\"workspaces\":[{\"id\":\"ws-1\","
+                    + "\"name\":\"Review\",\"directoryRelPath\":\"review-slot-0\","
+                    + "\"marketplaces\":[\"gb-plugins\"],\"isSystemDefined\":false,"
+                    + "\"createdAt\":1,\"updatedAt\":1,\"compatibility\":\"compatible\","
+                    + "\"unsupportedMarketplaces\":[]}]}");
+        using var http = NewHttp(handler);
+        var client = new LmStreamingS2SClient(http, "s", "id", "key");
+
+        var listed = await client.ListWorkspacesAsync(CancellationToken.None);
+
+        listed.Should().ContainSingle().Which.DirectoryRelPath.Should().Be("review-slot-0");
+    }
+
+    [Fact]
     public async Task SendMessageAsync_then_GetStatusByInputIdAsync_round_trip_the_run_status()
     {
         var handler = new FakeHttpMessageHandler()

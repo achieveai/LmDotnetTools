@@ -51,7 +51,15 @@ internal sealed class LmStreamingS2SClient
     public async Task<IReadOnlyList<S2SWorkspace>> ListWorkspacesAsync(CancellationToken ct)
     {
         var body = await SendReadAsync(HttpMethod.Get, "api/workspaces", body: null, ct);
-        return Deserialize<List<S2SWorkspace>>(body);
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement.ValueKind switch
+        {
+            // Backward compatibility with hosts predating the gateway-catalog envelope.
+            JsonValueKind.Array => Deserialize<List<S2SWorkspace>>(body),
+            JsonValueKind.Object when document.RootElement.TryGetProperty("workspaces", out var workspaces)
+                => workspaces.Deserialize<List<S2SWorkspace>>(JsonOptions) ?? [],
+            _ => throw new JsonException("The workspace response was neither an array nor a catalog envelope."),
+        };
     }
 
     /// <summary>
