@@ -567,6 +567,7 @@ try
     // replace this via ConfigureTestServices to inject scripted SSE responders and
     // sub-agent templates without touching any real-provider code path.
     builder.Services.TryAddSingleton<ITestAgentBuilder, DefaultTestAgentBuilder>();
+    builder.Services.TryAddSingleton(TimeProvider.System);
 
     // Provider id → IStreamingAgent. Receives the per-conversation provider id resolved
     // by the pool (request → persisted → default), so this factory does not know about
@@ -1638,7 +1639,16 @@ subAgentFactory,
                     // template-specified store still wins.
                     if (subAgentOptions is not null)
                     {
-                        subAgentOptions = ApplyDefaultSubAgentStore(subAgentOptions, conversationStore);
+                        subAgentOptions = ApplyDefaultSubAgentStore(
+                            subAgentOptions,
+                            conversationStore,
+                            parentThreadId: threadId,
+                            describeChild: childThreadId => agent?.SubAgentManager
+                                ?.ListAgents()
+                                .FirstOrDefault(s => string.Equals(
+                                    s.ThreadId,
+                                    childThreadId,
+                                    StringComparison.Ordinal)));
                     }
 
                     agent = new MultiTurnAgentLoop(
@@ -2641,7 +2651,9 @@ public partial class Program
     /// </summary>
     public static SubAgentOptions ApplyDefaultSubAgentStore(
         SubAgentOptions options,
-        IConversationStore store)
+        IConversationStore store,
+        string? parentThreadId = null,
+        Func<string, SubAgentSnapshot?>? describeChild = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(store);
@@ -2654,8 +2666,15 @@ public partial class Program
             ? options
             : options with
             {
-                DefaultConversationStoreFactory = _ =>
-                    new NonOwningConversationStore(store),
+                DefaultConversationStoreFactory = childThreadId =>
+                    new NonOwningConversationStore(
+                        store,
+                        provenanceThreadId: parentThreadId is null ? null : childThreadId,
+                        provenance: parentThreadId is null
+                            ? null
+                            : () => SubAgentProvenance.Build(
+                                parentThreadId,
+                                describeChild?.Invoke(childThreadId))),
             };
     }
 

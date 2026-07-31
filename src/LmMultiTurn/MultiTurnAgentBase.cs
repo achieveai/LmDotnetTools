@@ -269,7 +269,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     /// <param name="maxReplayBufferBytes">Max estimated bytes buffered for mid-run reconnect replay (default: 8 MiB).</param>
     /// <param name="persistRunLedger">
     /// When true, durably tracks run status and pre-run input acceptance via <paramref name="store"/>
-    /// (which must then also implement <see cref="IRunLedgerStore"/>) — enables <see cref="TrySendAsync"/>
+    /// (which must then also implement <see cref="IRunLedgerStore"/>) — enables
+    /// <see cref="TrySendAsync(UserInput, CancellationToken)"/>
     /// and restart reconciliation. Default false preserves existing in-memory-only behavior.
     /// </param>
     /// <param name="lifecycleServices">
@@ -940,10 +941,22 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     protected ChannelReader<QueuedInput> InputReader => _inputChannel.Reader;
 
     /// <summary>
+    /// Number of queued input batches that have arrived but not yet been assigned to a run. This is
+    /// what <see cref="RunCompletedMessage.PendingMessageCount"/> reports, and consumers act on it:
+    /// <c>SubAgentManager</c> treats a completion with pending input as NON-terminal and therefore
+    /// does NOT dispose the sub-agent's owned provider agent, because the loop is about to start a
+    /// follow-on run through that same provider. Reporting 0 while input is queued disposes the
+    /// provider out from under the next run (its first request throws
+    /// <see cref="ObjectDisposedException"/> on the underlying <c>HttpClient</c>).
+    /// </summary>
+    protected int PendingInputCount => _inputChannel.Reader.CanCount ? _inputChannel.Reader.Count : 0;
+
+    /// <summary>
     /// Posts a pre-built <see cref="QueuedInput"/> directly to the input channel, preserving
     /// any non-default fields (including <see cref="QueuedInput.Resume"/>). Used by
     /// <c>MultiTurnAgentLoop</c> to enqueue internal resume sentinels for deferred-tool
-    /// auto-resume; not for general user input — use <see cref="SendAsync"/> for that.
+    /// auto-resume; not for general user input — use <see cref="SendAsync(UserInput, CancellationToken)"/>
+    /// for that.
     /// </summary>
     protected ValueTask EnqueueRawAsync(QueuedInput queuedInput, CancellationToken ct = default)
     {
@@ -1007,13 +1020,25 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
+        CancellationToken ct = default) =>
+        SendAsync(new UserInput(messages, inputId, parentRunId), ct);
+
+    /// <summary>
+    /// <see cref="SendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
+    /// <see cref="UserInput"/>, so per-input flags (notably
+    /// <see cref="UserInput.SuppressSubAgentSpawning"/>) reach the run instead of being rebuilt away.
+    /// </summary>
+    public virtual ValueTask<SendReceipt> SendAsync(
+        UserInput input,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+        var inputId = input.InputId;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         var queuedAt = DateTimeOffset.UtcNow;
-        var input = new UserInput(messages, inputId, parentRunId);
+        var suppressed = WillSuppressSpawning(input);
         var queued = new QueuedInput(input, receiptId, queuedAt);
 
         // Fire-and-forget write to channel (non-blocking if not full)
@@ -1027,24 +1052,61 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             async Task<SendReceipt> WriteWithBackpressureAsync()
             {
                 await _inputChannel.Writer.WriteAsync(queued, ct);
-                return new SendReceipt(receiptId, inputId, queuedAt);
+                return new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed);
             }
         }
 
         Logger.LogDebug("Message queued. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
-        return ValueTask.FromResult(new SendReceipt(receiptId, inputId, queuedAt));
+        return ValueTask.FromResult(
+            new SendReceipt(receiptId, inputId, queuedAt, SpawningSuppressed: suppressed));
     }
 
     /// <inheritdoc />
-    public virtual async ValueTask<SendReceipt?> TrySendAsync(
+    public virtual ValueTask<SendReceipt?> TrySendAsync(
         List<IMessage> messages,
         string? inputId = null,
         string? parentRunId = null,
+        CancellationToken ct = default) =>
+        TrySendAsync(new UserInput(messages, inputId, parentRunId), ct);
+
+    /// <summary>
+    /// Whether THIS agent will actually ENFORCE <see cref="UserInput.SuppressSubAgentSpawning"/> on the run
+    /// that consumes an accepted input. It gates <see cref="SendReceipt.SpawningSuppressed"/>, which a host
+    /// relays to a caller as a guarantee — so the base reports <c>false</c>: it has no spawn machinery to
+    /// police, and an agent that merely accepts the flag must never let a receipt claim the guarantee.
+    /// <para>
+    /// Public because a host must be able to check it BEFORE enqueuing: declaring
+    /// <see cref="SubAgents.ISpawnSuppressingAgent"/> only proves the type accepts a
+    /// <see cref="UserInput"/>, and rejecting after the message is already queued would leave an
+    /// unsuppressed input in the channel.
+    /// </para>
+    /// </summary>
+    public virtual bool EnforcesSpawnSuppression => false;
+
+    /// <summary>
+    /// The value a receipt reports for <paramref name="input"/>. It states ENFORCEMENT, never the request: a
+    /// caller reading it needs to know whether the run that consumes this input will genuinely be unable to
+    /// spawn, and echoing the flag back would let an agent that ignores it advertise a guarantee nothing is
+    /// keeping. Shared by both send paths so the two cannot drift apart.
+    /// </summary>
+    private bool WillSuppressSpawning(UserInput input) =>
+        input.SuppressSubAgentSpawning && EnforcesSpawnSuppression;
+
+    /// <summary>
+    /// <see cref="TrySendAsync(List{IMessage}, string?, string?, CancellationToken)"/> over a full
+    /// <see cref="UserInput"/>. This is the single enqueue path, so per-input flags — notably
+    /// <see cref="UserInput.SuppressSubAgentSpawning"/> — survive as far as the run that consumes them
+    /// instead of being rebuilt away from a message list.
+    /// </summary>
+    public virtual async ValueTask<SendReceipt?> TrySendAsync(
+        UserInput input,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(input);
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+        var inputId = input.InputId;
         var receiptId = inputId ?? Guid.NewGuid().ToString("N");
         var queuedAt = DateTimeOffset.UtcNow;
 
@@ -1057,7 +1119,6 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
             await RunLedgerStore.RecordAcceptedInputAsync(ThreadId, receiptId, queuedAt, ct);
         }
 
-        var input = new UserInput(messages, inputId, parentRunId);
         var queued = new QueuedInput(input, receiptId, queuedAt);
 
         if (!_inputChannel.Writer.TryWrite(queued))
@@ -1076,7 +1137,11 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
 
         Logger.LogDebug("Message queued via TrySendAsync. ReceiptId: {ReceiptId}, InputId: {InputId}", receiptId, inputId);
 
-        return new SendReceipt(receiptId, inputId, queuedAt);
+        return new SendReceipt(
+            receiptId,
+            inputId,
+            queuedAt,
+            SpawningSuppressed: WillSuppressSpawning(input));
     }
 
     /// <inheritdoc />
@@ -1104,7 +1169,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
         try
         {
             // Send the input and get receipt (non-blocking)
-            var receipt = await SendAsync(userInput.Messages, userInput.InputId, userInput.ParentRunId, ct);
+            var receipt = await SendAsync(userInput, ct);
             var receiptId = receipt.ReceiptId;
 
             Logger.LogDebug("ExecuteRun queued. ReceiptId: {ReceiptId}", receiptId);
@@ -2046,7 +2111,8 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     ///   process just started, so nothing can still be running it.
     /// - An accepted-input record (<see cref="IRunLedgerStore.ListAcceptedInputIdsAsync"/>) whose
     ///   inputId is not covered by any ledger entry's <see cref="RunLedgerEntry.InputIds"/>: the
-    ///   input was durably accepted (see <see cref="TrySendAsync"/>) but the process crashed
+    ///   input was durably accepted (see <see cref="TrySendAsync(UserInput, CancellationToken)"/>) but the
+    ///   process crashed
     ///   before a run was ever assigned to it. A synthetic orphan ledger row is created so
     ///   resolving by that inputId needs no restart-specific branch of its own.
     /// Reconciliation failures are logged and swallowed — a transient store fault here must not

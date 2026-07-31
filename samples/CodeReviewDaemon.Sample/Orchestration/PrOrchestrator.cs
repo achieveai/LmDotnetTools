@@ -1,3 +1,5 @@
+using System.Text.Json;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 
@@ -91,11 +93,12 @@ internal sealed class PrOrchestrator
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _store.UpdateReviewRunState(run.Id, run.Stage, WorkflowStatus.RetryPending, run.PrLifecycleState);
-                    // The RetryGovernor bounds ONLY the ContextReady hot-loop (the stuck-slot case it exists for).
-                    // A failure at a later stage (Reviewed/Judged/Posted) is a different, usually self-healing
-                    // problem — e.g. a Posted-stage lock the next lease's clean-on-entry clears — so it must NOT
-                    // consume the context-retry budget or park otherwise-recoverable work.
-                    if (stage == ReviewStage.ContextReady)
+                    // The RetryGovernor bounds the ContextReady hot-loop (the stuck-slot case it exists for) and
+                    // exactly one Reviewed failure: a review whose sub-agent completion barrier ran out the
+                    // stage's shared deadline. Every OTHER failure at a later stage (Reviewed/Judged/Posted) is a
+                    // different, usually self-healing problem — e.g. a Posted-stage lock the next lease's
+                    // clean-on-entry clears — so it must NOT consume the budget or park recoverable work.
+                    if (IsGovernedFailure(stage, ex))
                     {
                         _retryGovernor?.RecordFailure(run.Id, ex.Message);
                     }
@@ -105,9 +108,12 @@ internal sealed class PrOrchestrator
                     throw;
                 }
 
-                // ContextReady cleared its stuck cause → forget any accumulated retry state so a later re-review
-                // (or a resume past ContextReady) starts fresh; later stages are outside the governor's scope.
-                if (stage == ReviewStage.ContextReady)
+                // A governed stage that cleared its cause → forget any accumulated retry state so a later
+                // re-review (or a resume past that stage) starts fresh. Reviewed is included for the same reason
+                // it is governed at all: without it, a run that survived the barrier this round would still be
+                // refused by a governor holding its earlier barrier failures, and could never finish the stages
+                // AFTER Reviewed. Stages outside the governor's scope neither record nor clear.
+                if (IsGovernedStage(stage))
                 {
                     _retryGovernor?.RecordSuccess(run.Id);
                 }
@@ -119,7 +125,7 @@ internal sealed class PrOrchestrator
 
             _progress?.Finished(
                 run,
-                $"complete ({(string.Equals(run.Mode, "post", StringComparison.Ordinal) ? "posted" : "collect-only")})",
+                $"complete ({ClassifyDeliveryOutcome(run)})",
                 System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
             return run;
         }
@@ -132,6 +138,76 @@ internal sealed class PrOrchestrator
             await _executor.ReleaseReviewLeaseAsync(run.Id, CancellationToken.None);
         }
     }
+
+    /// <summary>
+    /// Whether a stage's outcomes are accounted by the <see cref="RetryGovernor"/> at all. Deliberately tiny:
+    /// the governor exists to park work that CANNOT self-heal by being retried on the poll interval, and
+    /// widening it turns ordinary transients into abandoned reviews.
+    /// </summary>
+    internal string ClassifyDeliveryOutcome(ReviewRun run)
+    {
+        if (!string.Equals(run.Mode, "post", StringComparison.Ordinal))
+        {
+            return "collect-only";
+        }
+
+        if (_store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind) is { } artifact)
+        {
+            try
+            {
+                var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact.Payload);
+                if (payload?.ReviewText.TrimStart().StartsWith(
+                        "No new findings",
+                        StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    return "no new findings — nothing posted";
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Run {RunId}: could not classify delivery from review artifact {ArtifactId}.", run.Id, artifact.Id);
+            }
+        }
+
+        var delivery = _store.GetOutboxForRun(run.Id)
+            .LastOrDefault(entry => string.Equals(
+                entry.Operation,
+                ReviewPoster.PostReviewCommentOperation,
+                StringComparison.Ordinal));
+
+        return delivery?.Status switch
+        {
+            OutboxStatus.Posted when !string.IsNullOrWhiteSpace(delivery.ProviderResponseId) => "posted",
+            OutboxStatus.Collected => "collect-only",
+            _ => "completed without provider-visible post evidence",
+        };
+    }
+
+    private static bool IsGovernedStage(ReviewStage stage) =>
+        stage is ReviewStage.ContextReady or ReviewStage.Reviewed;
+
+    /// <summary>
+    /// Whether <paramref name="ex"/> is a failure the governor should charge against the run's budget. Any
+    /// ContextReady failure qualifies (the stuck-slot hot-loop). At Reviewed only three do:
+    /// <see cref="ReviewBarrierDeadlineException"/> — the sub-agent completion barrier spent the review's whole
+    /// absolute deadline waiting on a tree that never settled, so the next round would wait exactly as long on
+    /// exactly the same tree; <see cref="ReviewCheckpointCorruptException"/>, where the stage cannot read
+    /// the checkpoint that says whether a hosted tree is already running, and re-reading it will keep failing;
+    /// and <see cref="ReviewHostContractException"/>, where the review host cannot keep a message contract the
+    /// turn depends on — an incompatibility that reproduces identically on every attempt, and whose attempts
+    /// are not free (each one can leave another turn running on the host). All three are stuck reviews, not
+    /// transients: they have to park eventually. A provider blip, a host 5xx or a blank synthesis stays
+    /// outside the budget and keeps retrying.
+    /// </summary>
+    private static bool IsGovernedFailure(ReviewStage stage, Exception ex) => stage switch
+    {
+        ReviewStage.ContextReady => true,
+        ReviewStage.Reviewed => ex
+            is ReviewBarrierDeadlineException
+                or ReviewCheckpointCorruptException
+                or ReviewHostContractException,
+        _ => false,
+    };
 
     /// <summary>Human-readable reason a PR was picked this cycle: a brand-new run is "new PR" (no prior
     /// review of this PR) or "new commit {sha}" (its head advanced past the last reviewed commit); an

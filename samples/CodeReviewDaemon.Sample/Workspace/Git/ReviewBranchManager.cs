@@ -157,11 +157,59 @@ internal sealed class ReviewBranchManager
             await RunGitAsync(["add", "-A"], repoRoot, cancellationToken).ConfigureAwait(false);
         }
 
-        await RunGitAsync(
+        // A re-review that reaches the same conclusion writes byte-identical notes, so nothing is staged and
+        // `git commit` exits 1 with "nothing to commit" on STDOUT. The notes are already durably on the branch,
+        // so that is a NO-OP, not a retention failure — treating it as fatal tore down the whole Posted stage
+        // and pushed its retry onto a different (host) checkout. Tolerate the failure here, then PROVE it was an
+        // empty index with a deterministic command rather than matching on git's prose: `diff --cached --quiet`
+        // exits 0 if and only if the index matches HEAD. Any other commit failure still aborts retention.
+        var commit = await RunGitAsync(
                 ["commit", "-m", BuildCommitMessage(request)],
                 repoRoot,
-                cancellationToken)
+                cancellationToken,
+                allowFailure: true)
             .ConfigureAwait(false);
+        if (!commit.Succeeded)
+        {
+            var staged = await RunGitAsync(
+                    ["diff", "--cached", "--quiet"],
+                    repoRoot,
+                    cancellationToken,
+                    allowFailure: true)
+                .ConfigureAwait(false);
+            if (!staged.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"git commit failed (exit {commit.ExitCode}): {commit.Stderr}");
+            }
+
+            // A clean index proves nothing CHANGED — not that the notes are actually retained. An empty index
+            // also describes the case where the write never landed where we staged (wrong root, a path the
+            // agent never produced), and accepting that as a no-op would report retention for notes that exist
+            // nowhere. Require the notes to be present in the commit we are keeping: `cat-file -e HEAD:<path>`
+            // exits 0 iff the blob/tree resolves. If it doesn't, the empty index is a real failure — surface the
+            // original commit error.
+            foreach (var path in NotesPathsToVerify(request, stagePaths))
+            {
+                var atHead = await RunGitAsync(
+                        ["cat-file", "-e", $"HEAD:{path.Replace('\\', '/')}"],
+                        repoRoot,
+                        cancellationToken,
+                        allowFailure: true)
+                    .ConfigureAwait(false);
+                if (!atHead.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"git commit failed (exit {commit.ExitCode}): {commit.Stderr}"
+                            + $" (nothing staged and '{path}' is missing from '{reviewBranch}')");
+                }
+            }
+
+            _logger.LogInformation(
+                "ReviewBot notes on '{ReviewBranch}' are unchanged (nothing staged); keeping the branch at its "
+                    + "current head instead of failing the commit.",
+                reviewBranch);
+        }
 
         // 4. Push the review branch (never the default) with bounded rebase-retry, and KEEP the branch —
         // no fast-forward of the default and no delete happen here.
@@ -460,6 +508,16 @@ internal sealed class ReviewBranchManager
 
     private static string BuildCommitMessage(ReviewBotPublishRequest request) =>
         $"Review {request.TargetRepo.RepoName}#{request.PrNumber}";
+
+    /// <summary>
+    /// The paths whose presence at HEAD makes an empty-index commit a genuine no-op. Mirrors what was staged:
+    /// the commit gate's scoped paths when it supplied them, otherwise the artifacts this request wrote.
+    /// </summary>
+    private static IEnumerable<string> NotesPathsToVerify(
+        ReviewBotPublishRequest request,
+        IReadOnlyList<string>? stagePaths
+    ) =>
+        stagePaths is { Count: > 0 } ? stagePaths : request.Files.Select(file => file.RelativePath);
 
     /// <summary>Slugs the target repo name into a single ref-safe path segment (lowercased, separators to '-').
     /// Public so the orphan-branch reconciler can match a <c>review/{repo}-{pr}</c> branch back to a configured

@@ -302,6 +302,33 @@ function getDeepLinkThreadIdFromPageQuery(): string | null {
   return value && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Reads the ?focus=1 query param (same URLSearchParams convention as the deep-link threadId and
+ * ?record=). When set, the layout renders a read-focused single-conversation view — no left
+ * sidebar and no header workspace/provider/mode pickers or action buttons — so a deep-link posted
+ * on a PR opens straight into the review conversation + its sub-agent tabs, stripped of app chrome.
+ * The value is fixed for the page load (query strings don't change without a navigation), so a
+ * one-shot read is sufficient.
+ */
+const focusMode = computed(() => {
+  const value = new URLSearchParams(window.location.search).get('focus');
+  return value === '1' || value === 'true';
+});
+
+/**
+ * The header line. Normally the static app name; in focus mode the deep-linked conversation's OWN
+ * title, because focus mode hides the sidebar — the title bar is then the only thing telling a
+ * reader which conversation they landed on (e.g. "Review PR #222 — Review Agent" for a link posted
+ * on a PR). Falls back to the app name while the conversation list is still loading or when the
+ * conversation carries no title.
+ */
+const headerTitle = computed(() => {
+  const appName = 'LmStreaming Chat';
+  if (!focusMode.value) return appName;
+  const conversation = conversations.value.find((c) => c.threadId === currentThreadId.value);
+  return conversation?.title?.trim() || appName;
+});
+
 // Load conversations and modes on mount
 onMounted(async () => {
   // Load modes, tools, and providers in parallel with conversations
@@ -558,6 +585,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="chat-layout" data-testid="chat-layout">
     <ConversationSidebar
+      v-if="!focusMode"
       :conversations="conversations"
       :current-thread-id="currentThreadId"
       :is-loading="conversationsLoading"
@@ -571,7 +599,7 @@ onBeforeUnmount(() => {
     <main class="chat-main">
       <div v-if="notFoundThreadId" class="chat-view not-found-view" data-testid="conversation-not-found">
         <button
-          v-if="sidebarCollapsed"
+          v-if="sidebarCollapsed && !focusMode"
           class="menu-btn not-found-menu-btn"
           @click="handleToggleCollapse"
           title="Open sidebar"
@@ -587,15 +615,15 @@ onBeforeUnmount(() => {
       <div v-else class="chat-view">
         <header class="chat-header">
           <button
-            v-if="sidebarCollapsed"
+            v-if="sidebarCollapsed && !focusMode"
             class="menu-btn"
             @click="handleToggleCollapse"
             title="Open sidebar"
           >
             =
           </button>
-          <h1>LmStreaming Chat</h1>
-          <div class="header-actions">
+          <h1>{{ headerTitle }}</h1>
+          <div v-if="!focusMode" class="header-actions">
             <WorkspaceSelector
               ref="workspaceSelectorRef"
               :workspaces="workspaces"

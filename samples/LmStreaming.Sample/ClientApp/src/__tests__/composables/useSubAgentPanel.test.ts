@@ -1187,3 +1187,116 @@ describe('useSubAgentPanel — ordered polling (#148)', () => {
     expect(panel.children.value.map((c) => c.agentId)).toEqual(['ok']);
   });
 });
+
+// The deep-link a Revobot review posts on a PR points at a FINISHED conversation: its parent loop is
+// long gone from the agent pool, so every child's live stream reports subagent_unavailable and closes.
+// The transcript a human judge reads is entirely persisted — losing it with the dead socket makes the
+// link useless. These pin that a dead live half never discards the loaded history.
+describe('useSubAgentPanel — focusing a child of a FINISHED conversation (deep-link)', () => {
+  function persistedText(id: string, role: 'user' | 'assistant', text: string, idx: number) {
+    return {
+      id, threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: idx,
+      timestamp: 1000 + idx, messageType: 'text', role,
+      messageJson: JSON.stringify({ $type: MessageType.Text, role, text }),
+    };
+  }
+  const history = [persistedText('p-user', 'user', 'go', 0), persistedText('p-asst', 'assistant', 'done!', 1)];
+
+  it('renders the persisted transcript when the live stream dies during the history load', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'unknown' })]);
+    let resolveHistory: (() => void) | undefined;
+    convMocks.loadConversationMessages.mockImplementation(
+      () => new Promise((r) => { resolveHistory = () => r(history); })
+    );
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(captured).toHaveLength(1);
+
+    // The parent is gone: the relay reports the child unavailable and closes. Terminal, so no resume.
+    captured[0].callbacks.onError('Sub-agent is not available.', 'subagent_unavailable');
+    captured[0].connection.socket.readyState = WebSocket.CLOSED;
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+
+    resolveHistory!();
+    await p;
+
+    // The dead socket is not adopted — but the transcript IS rendered underneath the error banner.
+    expect(captured, 'terminal error must not auto-resume').toHaveLength(1);
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    expect(panel.error.value).toContain('not available');
+    const items = panel.focusedDisplayItems.value;
+    expect(items.find((i) => i.type === 'user-message')).toBeTruthy();
+    expect(assistantText(items)).toContain('done!');
+  });
+
+  it('renders the persisted transcript when the resume socket closes with the budget spent', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'unknown' })]);
+    let resolveResumeHistory: (() => void) | undefined;
+    let historyCall = 0;
+    convMocks.loadConversationMessages.mockImplementation(() => {
+      historyCall += 1;
+      if (historyCall === 1) return Promise.resolve([]);
+      return new Promise((r) => { resolveResumeHistory = () => r(history); });
+    });
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+    await panel.focusChild('a1');
+
+    // First clean close spends the one-shot resume; the resume parks on its history load.
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(captured).toHaveLength(2);
+
+    // The resume socket dies too — budget spent, so this focus is where the transcript must land.
+    captured[1].connection.socket.readyState = WebSocket.CLOSED;
+    captured[1].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+    resolveResumeHistory!();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+
+    expect(captured, 'no third resume after the budget is spent').toHaveLength(2);
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    expect(assistantText(panel.focusedDisplayItems.value)).toContain('done!');
+  });
+
+  it('renders the reconcile reload when the socket dies during overflow reconciliation', async () => {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary('a1', { status: 'unknown' })]);
+    let resolveFirst: (() => void) | undefined;
+    let resolveReconcile: (() => void) | undefined;
+    let historyCall = 0;
+    convMocks.loadConversationMessages.mockImplementation(() => {
+      historyCall += 1;
+      if (historyCall === 1) return new Promise((r) => { resolveFirst = () => r([]); });
+      return new Promise((r) => { resolveReconcile = () => r(history); });
+    });
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await panel.refreshChildren();
+
+    const p = panel.focusChild('a1');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    const cb = captured[0].callbacks;
+    cb.onMessage(runAssignment());
+    // Overflow while history loads so the focus enters the reconcile-reload loop.
+    for (let i = 0; i < LIVE_BUFFER_MAX + 5; i++) cb.onMessage(textUpdate(`chunk-${i}`));
+
+    resolveFirst!();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(convMocks.loadConversationMessages).toHaveBeenCalledTimes(2);
+
+    // The socket dies while the reconcile reload is in flight; that reload is a strictly newer
+    // snapshot than what is on screen, so it must still be rendered.
+    captured[0].connection.socket.readyState = WebSocket.CLOSED;
+    cb.onClose!({ wasClean: false, code: 1006, reason: 'parent gone' });
+    resolveReconcile!();
+    await p;
+
+    expect(panel.isFocusedStreaming.value).toBe(false);
+    expect(assistantText(panel.focusedDisplayItems.value)).toContain('done!');
+  });
+});
+

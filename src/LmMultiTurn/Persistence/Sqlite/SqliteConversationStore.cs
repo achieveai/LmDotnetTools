@@ -5,12 +5,11 @@ using Microsoft.Data.Sqlite;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
 
 /// <summary>
-/// SQLite implementation of <see cref="IConversationStore"/>, <see cref="IRunLedgerStore"/> and
-/// <see cref="IRunLifecycleStore"/>.
+/// SQLite implementation of conversation, run-ledger, lifecycle, and durable input-admission persistence.
 /// Uses a factory pattern for connection pooling and lazy schema initialization.
 /// </summary>
 public sealed class SqliteConversationStore
-    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IAsyncDisposable
+    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IInputAcceptanceStore, IAsyncDisposable
 {
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly bool _ownsFactory;
@@ -463,6 +462,39 @@ public sealed class SqliteConversationStore
     }
 
     /// <inheritdoc />
+    public async Task<bool> TryReserveAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(threadId);
+        ArgumentNullException.ThrowIfNull(inputId);
+
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct)
+            .ConfigureAwait(false);
+
+        // DO NOTHING (rather than the upsert above) is what makes this a reservation: the PRIMARY KEY on
+        // (thread_id, input_id) decides the winner inside SQLite, and the affected-row count reports the
+        // decision back. No read-then-write, so no window for a second caller to slip through.
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO accepted_inputs (thread_id, input_id, accepted_at)
+            VALUES ($thread_id, $input_id, $accepted_at)
+            ON CONFLICT(thread_id, input_id) DO NOTHING;
+            """;
+
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$input_id", inputId);
+        _ = command.Parameters.AddWithValue("$accepted_at", acceptedAt.ToUnixTimeMilliseconds());
+
+        var rows = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        return rows == 1;
+    }
+
+    /// <inheritdoc />
     public async Task RemoveAcceptedInputAsync(
         string threadId,
         string inputId,
@@ -513,6 +545,130 @@ public sealed class SqliteConversationStore
         }
 
         return inputIds;
+    }
+
+    /// <inheritdoc />
+    public async Task<InputAcceptance?> TryReserveAcceptanceAsync(
+        InputAcceptance acceptance,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(acceptance);
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+
+        while (true)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO input_acceptances (
+                    thread_id, input_id, accepted_at, state, spawning_suppressed, idempotency_honored, reservation_id)
+                VALUES ($thread_id, $input_id, $accepted_at, $state, $suppressed, $honored, $reservation_id)
+                ON CONFLICT(thread_id, input_id) DO NOTHING;
+                """;
+            BindAcceptance(command, acceptance);
+            if (await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1)
+            {
+                return null;
+            }
+
+            var existing = await ReadAcceptanceAsync(connection, acceptance.ThreadId, acceptance.InputId, ct)
+                .ConfigureAwait(false);
+            if (existing != null)
+            {
+                return existing;
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<InputAcceptance?> GetAcceptanceAsync(
+        string threadId,
+        string inputId,
+        CancellationToken ct = default)
+    {
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        return await ReadAcceptanceAsync(connection, threadId, inputId, ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> TryRecordOutcomeAsync(
+        InputAcceptance acceptance,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(acceptance);
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE input_acceptances
+            SET accepted_at = $accepted_at, state = $state, spawning_suppressed = $suppressed,
+                idempotency_honored = $honored
+            WHERE thread_id = $thread_id AND input_id = $input_id AND reservation_id = $reservation_id;
+            """;
+        BindAcceptance(command, acceptance);
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> TryReleaseAcceptanceAsync(
+        string threadId,
+        string inputId,
+        Guid reservationId,
+        CancellationToken ct = default)
+    {
+        await EnsureSchemaAsync(ct).ConfigureAwait(false);
+        await using var connection = await _connectionFactory.GetConnectionAsync(ct).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            DELETE FROM input_acceptances
+            WHERE thread_id = $thread_id AND input_id = $input_id AND reservation_id = $reservation_id;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$input_id", inputId);
+        _ = command.Parameters.AddWithValue("$reservation_id", reservationId.ToString("N"));
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+    }
+
+    private static void BindAcceptance(SqliteCommand command, InputAcceptance acceptance)
+    {
+        _ = command.Parameters.AddWithValue("$thread_id", acceptance.ThreadId);
+        _ = command.Parameters.AddWithValue("$input_id", acceptance.InputId);
+        _ = command.Parameters.AddWithValue("$accepted_at", acceptance.AcceptedAt.ToUnixTimeMilliseconds());
+        _ = command.Parameters.AddWithValue("$state", acceptance.State.ToString());
+        _ = command.Parameters.AddWithValue("$suppressed", acceptance.SpawningSuppressed ? 1 : 0);
+        _ = command.Parameters.AddWithValue("$honored", acceptance.IdempotencyHonored ? 1 : 0);
+        _ = command.Parameters.AddWithValue("$reservation_id", acceptance.ReservationId.ToString("N"));
+    }
+
+    private static async Task<InputAcceptance?> ReadAcceptanceAsync(
+        SqliteConnection connection,
+        string threadId,
+        string inputId,
+        CancellationToken ct)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT accepted_at, state, spawning_suppressed, idempotency_honored, reservation_id
+            FROM input_acceptances
+            WHERE thread_id = $thread_id AND input_id = $input_id;
+            """;
+        _ = command.Parameters.AddWithValue("$thread_id", threadId);
+        _ = command.Parameters.AddWithValue("$input_id", inputId);
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return new InputAcceptance(
+            threadId,
+            inputId,
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0)),
+            Enum.Parse<InputAcceptanceState>(reader.GetString(1)),
+            reader.GetInt64(2) != 0,
+            reader.GetInt64(3) != 0,
+            Guid.Parse(reader.GetString(4)));
     }
 
     /// <inheritdoc />

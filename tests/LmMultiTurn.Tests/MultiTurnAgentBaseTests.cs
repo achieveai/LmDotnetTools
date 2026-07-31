@@ -117,6 +117,44 @@ public class MultiTurnAgentBaseTests
         agent.IsRunning.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Task 5 (fix round 3) — <see cref="SendReceipt.SpawningSuppressed"/> is an ENFORCEMENT statement, not an
+    /// echo. An agent that does not override <c>EnforcesSpawnSuppression</c> has no spawn machinery to police,
+    /// so accepting a flagged input must leave the receipt false: a host relays that field to its caller as a
+    /// guarantee, and echoing the request would manufacture one nothing is keeping.
+    /// </summary>
+    [Fact]
+    public async Task TrySendAsync_DoesNotClaimSpawnSuppression_WhenTheAgentCannotEnforceIt()
+    {
+        await using var agent = new TestMultiTurnAgent("thread-enforcement");
+
+        var receipt = await agent.TrySendAsync(new UserInput(
+            [new TextMessage { Text = "synthesize", Role = Role.User }],
+            SuppressSubAgentSpawning: true));
+
+        receipt.Should().NotBeNull();
+        receipt!.SpawningSuppressed.Should().BeFalse(
+            "this agent accepts the flag but has nothing that will act on it");
+    }
+
+    /// <summary>
+    /// Task 5 (fix round 4) — the same invariant on the blocking send. Both overloads hand back a
+    /// <see cref="SendReceipt"/> a host relays as a guarantee, so a caller must not be able to get an honest
+    /// answer from one path and a silently-unstamped one from the other by picking a different method.
+    /// </summary>
+    [Fact]
+    public async Task SendAsync_MakesTheSameSpawnSuppressionStatementAsTrySendAsync()
+    {
+        await using var agent = new TestMultiTurnAgent("thread-enforcement-send");
+
+        var receipt = await agent.SendAsync(new UserInput(
+            [new TextMessage { Text = "synthesize", Role = Role.User }],
+            SuppressSubAgentSpawning: true));
+
+        receipt.SpawningSuppressed.Should().BeFalse(
+            "SendAsync must state enforcement exactly as TrySendAsync does");
+    }
+
     [Fact]
     public async Task SendAsync_WhenNotRunning_QueuesMessage()
     {

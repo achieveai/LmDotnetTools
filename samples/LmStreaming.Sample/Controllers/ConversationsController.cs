@@ -5,7 +5,9 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using AchieveAi.LmDotnetTools.LmAgentInfra;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Agents;
@@ -163,6 +165,7 @@ public class ConversationsController(
     IWorkspaceStore workspaceStore,
     ProviderRegistry providerRegistry,
     ConversationStatusResolver statusResolver,
+    TimeProvider timeProvider,
     WorkflowRunRegistry workflowRunRegistry,
     ILogger<ConversationsController> logger) : ControllerBase
 {
@@ -230,6 +233,12 @@ public class ConversationsController(
                 propertiesBuilder[MultiTurnAgentPool.ProviderPropertyKey] = request.ProviderId;
                 propertiesBuilder[MultiTurnAgentPool.WorkspacePropertyKey] = request.WorkspaceId;
                 propertiesBuilder[MultiTurnAgentPool.ModePropertyKey] = request.ModeId;
+
+                if (!string.IsNullOrWhiteSpace(request.SystemPromptAppendix))
+                {
+                    propertiesBuilder[SystemPromptAugmenter.AppendixPropertyKey] =
+                        request.SystemPromptAppendix;
+                }
 
                 if (!string.IsNullOrWhiteSpace(request.AuthWebhookUrl))
                 {
@@ -369,124 +378,265 @@ public class ConversationsController(
     /// <summary>
     /// Read-only presentation listing of the sub-agents a conversation's parent agent has spawned.
     /// The Vue client polls this to render a conversation's children; it never spawns, sends to,
-    /// stops, or otherwise mutates a sub-agent (WI #194). Returns 404 for an unknown thread, an
-    /// empty array for a conversation whose agent has no sub-agent support, otherwise the
-    /// <c>SubAgentManager.ListAgents()</c> snapshot projected to <see cref="SubAgentSummary"/>.
+    /// stops, or otherwise mutates a sub-agent (WI #194).
+    /// <para>
+    /// The roster is the UNION of the live <c>SubAgentManager.ListAgents()</c> snapshot and the
+    /// children reconstructed from persisted metadata (<see cref="SubAgentProvenance"/>), keyed by
+    /// agent id with the live entry winning — it carries real lifecycle status and the manager is the
+    /// authority while it exists. The persisted half is what makes a shared link to a FINISHED
+    /// conversation work: the manager's parent→child mapping is in-memory only, so once the run ends
+    /// and the parent leaves the agent pool (or the host restarts) the children's transcripts are
+    /// still on disk but nothing else says whose children they are. It also covers a parent the pool
+    /// re-created on demand, whose fresh manager has an empty registry.
+    /// </para>
+    /// Returns 404 only when the thread is unknown everywhere — not in the pool, no persisted
+    /// metadata, and no persisted children.
+    /// <para>
+    /// <paramref name="recursive"/> switches to an entirely different, VERSIONED contract
+    /// (<see cref="SubAgentTreeResponse"/>): the full persisted descendant graph reachable from
+    /// <paramref name="threadId"/> (children, grandchildren, ...), not just direct children, and not
+    /// unioned with live state (no nested live Agent delegation exists to union with — see
+    /// <see cref="BuildDescendantTreeAsync"/>). The plain array shape above is unchanged when this
+    /// is omitted/false, so existing callers of the flat endpoint are unaffected.
+    /// </para>
     /// </summary>
     [HttpGet("{threadId}/subagents")]
-    public async Task<IActionResult> ListSubAgents(string threadId, CancellationToken ct = default)
+    public async Task<IActionResult> ListSubAgents(
+        string threadId,
+        bool recursive = false,
+        CancellationToken ct = default)
     {
-        var summaries = new List<SubAgentSummary>();
-        var isLive = agentPool.TryGet(threadId, out var agent) && agent is not null;
-
-        // Agent-tool sub-agents (the historical /subagents contents) — LIVE-ONLY: they live on the main
-        // conversation loop's SubAgentManager, so they're gone after a restart until the loop is rehydrated.
-        if (isLive && agent is MultiTurnAgentLoop loop && loop.SubAgentManager is { } subAgentManager)
+        if (recursive)
         {
-            summaries.AddRange(
-                subAgentManager.ListAgents()
-                    .Select(s => new SubAgentSummary
-                    {
-                        AgentId = s.AgentId,
-                        Kind = "subagent",
-                        Name = s.Name,
-                        Template = s.TemplateName,
-                        Task = s.Task,
-                        Status = s.Status.ToString().ToLowerInvariant(),
-                        ThreadId = s.ThreadId,
-                        LastActivityUtc = s.LastActivityUtc,
-                        EffectiveModelId = s.EffectiveModelId,
-                        EffectiveModelIntelligence = s.EffectiveModelIntelligence,
-                        ModelSelectionSource = s.ModelSelectionSource,
-                    })
-            );
+            return await BuildDescendantTreeAsync(threadId, ct);
         }
 
-        // StartWorkflowAgent runs + their delegates. The live snapshot (when the WorkflowManager is present)
-        // is write-through-persisted to a small on-disk index, and the response is the union of live ∪
-        // persisted (live wins) — so completed workflow/delegate tabs SURVIVE A SERVER RESTART that evicts
-        // the in-memory manager. Delegate transcripts already persist as subagent-{id} threads, so a
-        // persisted tab replays read-only.
+        agentPool.TryGet(threadId, out var agent);
+        var isLive = agent is not null;
+        var summaries = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
+
+        foreach (var child in (await ScanAllPersistedSubAgentNodesAsync(threadId, ct))
+            .Where(n => string.Equals(n.ParentThreadId, threadId, StringComparison.Ordinal)))
+        {
+            summaries[(child.Kind, child.AgentId)] = child;
+        }
+
+        if (agent is MultiTurnAgentLoop { SubAgentManager: { } subAgentManager })
+        {
+            foreach (var snapshot in subAgentManager.ListAgents())
+            {
+                summaries[("subagent", snapshot.AgentId)] = new SubAgentSummary
+                {
+                    AgentId = snapshot.AgentId,
+                    Kind = "subagent",
+                    Name = snapshot.Name,
+                    Template = snapshot.TemplateName,
+                    Task = snapshot.Task,
+                    Status = snapshot.Status.ToString().ToLowerInvariant(),
+                    ThreadId = snapshot.ThreadId,
+                    LastActivityUtc = snapshot.LastActivityUtc,
+                    TerminalAtUtc = snapshot.TerminalAtUtc,
+                    EffectiveModelId = snapshot.EffectiveModelId,
+                    EffectiveModelIntelligence = snapshot.EffectiveModelIntelligence,
+                    ModelSelectionSource = snapshot.ModelSelectionSource,
+                };
+            }
+        }
+
         var workflowTabs = new List<SubAgentSummary>();
         if (isLive && workflowRunRegistry.TryGet(threadId, out var workflowManager) && workflowManager is not null)
         {
-            workflowTabs.AddRange(
-                workflowManager.ListRuns()
-                    .Select(r => new SubAgentSummary
-                    {
-                        AgentId = r.WorkflowId,
-                        Kind = "workflow",
-                        Name = r.Objective,
-                        Template = "workflow",
-                        Task = r.Objective,
-                        Status = r.Status,
-                        // The controller thread is conversation-scoped (workflow-{id}-{conversationId}); use the
-                        // run's real ThreadId so the ⚙ tab opens the ACTUAL persisted thread, not a stale
-                        // reconstruction. Fall back to the legacy shape only for a run with no scoped id.
-                        ThreadId = r.ThreadId ?? $"workflow-{r.WorkflowId}",
-                        LastActivityUtc = r.LastActivityUtc ?? r.StartedUtc,
-                    })
-            );
+            workflowTabs.AddRange(workflowManager.ListRuns().Select(r => new SubAgentSummary
+            {
+                AgentId = r.WorkflowId,
+                Kind = "workflow",
+                Name = r.Objective,
+                Template = "workflow",
+                Task = r.Objective,
+                Status = r.Status,
+                ThreadId = r.ThreadId ?? $"workflow-{r.WorkflowId}",
+                LastActivityUtc = r.LastActivityUtc ?? r.StartedUtc,
+            }));
 
             foreach (var run in workflowManager.ListRuns())
             {
-                workflowTabs.AddRange(
-                    workflowManager.ListRunDelegates(run.WorkflowId)
-                        .Select(s => new SubAgentSummary
-                        {
-                            AgentId = s.AgentId,
-                            Kind = "subagent",
-                            Name = s.Name,
-                            Template = s.TemplateName,
-                            Task = s.Task,
-                            Status = s.Status.ToString().ToLowerInvariant(),
-                            ThreadId = s.ThreadId,
-                            LastActivityUtc = s.LastActivityUtc,
-                            EffectiveModelId = s.EffectiveModelId,
-                            EffectiveModelIntelligence = s.EffectiveModelIntelligence,
-                            ModelSelectionSource = s.ModelSelectionSource,
-                        })
-                );
+                workflowTabs.AddRange(workflowManager.ListRunDelegates(run.WorkflowId).Select(s => new SubAgentSummary
+                {
+                    AgentId = s.AgentId,
+                    Kind = "subagent",
+                    Name = s.Name,
+                    Template = s.TemplateName,
+                    Task = s.Task,
+                    Status = s.Status.ToString().ToLowerInvariant(),
+                    ThreadId = s.ThreadId,
+                    LastActivityUtc = s.LastActivityUtc,
+                    TerminalAtUtc = s.TerminalAtUtc,
+                    EffectiveModelId = s.EffectiveModelId,
+                    EffectiveModelIntelligence = s.EffectiveModelIntelligence,
+                    ModelSelectionSource = s.ModelSelectionSource,
+                }));
             }
 
-            // Write-through: fold this live snapshot into the durable index (upsert, never deletes).
             workflowRunRegistry.PersistTabs(threadId, workflowTabs);
         }
 
-        // Merge live workflow tabs with the persisted index (live wins on Kind+AgentId), so a restart that
-        // evicted the in-memory runs still surfaces them from disk.
-        var mergedWorkflow = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
-        foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId))
+        foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId).Concat(workflowTabs))
         {
-            mergedWorkflow[(tab.Kind, tab.AgentId)] = tab;
+            summaries[(tab.Kind, tab.AgentId)] = tab;
         }
 
-        foreach (var tab in workflowTabs)
+        if (summaries.Count == 0 && !await IsKnownThreadAsync(threadId, agent, ct))
         {
-            mergedWorkflow[(tab.Kind, tab.AgentId)] = tab;
+            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
         }
 
-        summaries.AddRange(mergedWorkflow.Values);
+        return Ok(summaries.Values
+            .OrderByDescending(s => s.LastActivityUtc ?? DateTimeOffset.MinValue)
+            .ThenBy(s => s.ThreadId, StringComparer.Ordinal)
+            .ToArray());
+    }
 
-        // A live conversation, or one with persisted workflow tabs, always answers 200. Otherwise the
-        // conversation is idle (evicted from the pool, or reopened but not yet messaged this session)
-        // and has no children to project — but it may still be a KNOWN thread on disk. Distinguish
-        // "known but idle with no sub-agents" (→ empty 200, the common case: a plain chat you reopened)
-        // from a genuinely unknown thread (→ 404) by consulting the store. Without this, every idle
-        // conversation with no sub-agents gets a spurious 404 and the client's sub-agent panel logs
-        // "Failed to list sub-agents" on every 3s poll. The store is only touched on this cold path,
-        // so the live hot path is unchanged.
-        if (!isLive && mergedWorkflow.Count == 0)
+    /// <summary>
+    /// True when <paramref name="threadId"/> is known either as a live pooled agent
+    /// (<paramref name="agent"/>, already resolved by the caller via <c>agentPool.TryGet</c>) or as
+    /// persisted metadata. Shared by the flat and recursive branches of <see cref="ListSubAgents"/>
+    /// so both answer the same "does this conversation exist at all" question the same way.
+    /// </summary>
+    private async Task<bool> IsKnownThreadAsync(string threadId, IMultiTurnAgent? agent, CancellationToken ct) =>
+        agent is not null || await store.LoadMetadataAsync(threadId, ct) is not null;
+
+    /// <summary>
+    /// Page size and total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
+    /// no property index, so rebuilding the roster means scanning thread metadata; the cap bounds the
+    /// work on a long-lived store and truncation is logged rather than silently swallowed.
+    /// </summary>
+    private const int SubAgentScanPageSize = 200;
+    private const int SubAgentScanMaxThreads = 2000;
+
+    /// <summary>
+    /// The single bounded store scan both the flat and recursive listings are built from — every
+    /// stamped sub-agent thread, projected via the no-filter
+    /// <see cref="SubAgentProvenance.TryProject(ThreadMetadata)"/> overload, regardless of who its
+    /// parent is. Callers filter or index the result in memory; nothing here queries the store again
+    /// per node, satisfying the "one bounded scan per request" requirement even for the recursive,
+    /// arbitrary-depth graph.
+    /// </summary>
+    private async Task<IReadOnlyList<SubAgentSummary>> ScanAllPersistedSubAgentNodesAsync(
+        string requestingThreadId,
+        CancellationToken ct)
+    {
+        var found = new List<SubAgentSummary>();
+        var scanned = 0;
+
+        while (scanned < SubAgentScanMaxThreads)
         {
-            var metadata = await store.LoadMetadataAsync(threadId, ct);
-            if (metadata is null)
+            var page = await store.ListThreadsAsync(SubAgentScanPageSize, scanned, ct) ?? [];
+            if (page.Count == 0)
             {
-                return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+                return found;
+            }
+
+            scanned += page.Count;
+            foreach (var metadata in page)
+            {
+                var node = SubAgentProvenance.TryProject(metadata);
+                if (node is not null)
+                {
+                    found.Add(node);
+                }
+            }
+
+            if (page.Count < SubAgentScanPageSize)
+            {
+                return found;
             }
         }
 
-        return Ok(summaries.ToArray());
+        logger.LogWarning(
+            "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
+                + "children persisted beyond that point are not listed.",
+            requestingThreadId,
+            SubAgentScanMaxThreads);
+        return found;
     }
+
+    /// <summary>
+    /// Builds the versioned recursive descendant graph (schema v1) for <paramref name="rootThreadId"/>:
+    /// one bounded store scan (<see cref="ScanAllPersistedSubAgentNodesAsync"/>), one in-memory
+    /// parent→children index built from it, then a visited-set BFS from the root. Deliberately
+    /// persisted-only — no live <c>SubAgentManager</c> union — because no current spawn path creates
+    /// a depth-&gt;1 tree anyway (nested live Agent delegation stays disabled); this reader exists to
+    /// answer "what does the persisted graph say", which is exactly what a restarted host or a
+    /// finished run still has. The root itself is never emitted as a node, only its descendants.
+    /// </summary>
+    private async Task<IActionResult> BuildDescendantTreeAsync(string rootThreadId, CancellationToken ct)
+    {
+        var allNodes = await ScanAllPersistedSubAgentNodesAsync(rootThreadId, ct);
+        var childrenByParent = allNodes
+            .GroupBy(n => n.ParentThreadId!, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+        var discovered = new List<SubAgentSummary>();
+        var visited = new HashSet<string>(StringComparer.Ordinal) { rootThreadId };
+        var queue = new Queue<(string ThreadId, int Depth)>();
+        queue.Enqueue((rootThreadId, 0));
+
+        while (queue.Count > 0)
+        {
+            var (parentId, depth) = queue.Dequeue();
+            if (!childrenByParent.TryGetValue(parentId, out var children))
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                if (!visited.Add(child.ThreadId))
+                {
+                    // Cycle cut (or a diamond re-reachable via a second path) — the visited set has
+                    // already placed this thread at an earlier, shallower position. Log opaque ids
+                    // only: never Name/Template/Task, which may carry caller-supplied free text.
+                    logger.LogWarning(
+                        "Sub-agent recursive scan for {RootThreadId} cut a repeat visit at thread "
+                            + "{ThreadId} (parent {ParentThreadId})",
+                        rootThreadId,
+                        child.ThreadId,
+                        parentId);
+                    continue;
+                }
+
+                var childDepth = depth + 1;
+                discovered.Add(child with { Depth = childDepth });
+                queue.Enqueue((child.ThreadId, childDepth));
+            }
+        }
+
+        if (discovered.Count == 0)
+        {
+            agentPool.TryGet(rootThreadId, out var agent);
+            if (!await IsKnownThreadAsync(rootThreadId, agent, ct))
+            {
+                return NotFound(new { error = $"Conversation '{rootThreadId}' not found.", code = "unknown_thread" });
+            }
+        }
+
+        var ordered = discovered
+            .OrderBy(n => n.Depth)
+            .ThenBy(n => n.ParentThreadId, StringComparer.Ordinal)
+            .ThenBy(n => n.ThreadId, StringComparer.Ordinal)
+            .ToList();
+
+        return Ok(new SubAgentTreeResponse(SchemaVersion: 1, Nodes: ordered));
+    }
+
+    [HttpGet("capabilities")]
+    public IActionResult GetCapabilities() =>
+        Ok(new ConversationCapabilitiesResponse
+        {
+            SchemaVersion = 1,
+            MessageIdempotency = store is IInputAcceptanceStore,
+            SpawnSuppression = true,
+        });
 
     /// <summary>
     /// Queues a message onto a previously-provisioned thread. Non-blocking: returns as soon as the
@@ -500,6 +650,23 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // A key that cannot be turned into a durable, unambiguous id is refused rather than read as
+        // "absent": absent means "no protection asked for", but a caller that SENT a key is asking for a
+        // guarantee, and treating its unusable key as absent would hand it an acknowledged-but-unprotected
+        // send — the one outcome the acknowledgement exists to rule out.
+        if (request.IdempotencyKey is not null && !IsUsableIdempotencyKey(request.IdempotencyKey))
+        {
+            return BadRequest(new
+            {
+                error = "invalid_idempotency_key",
+                code = "invalid_idempotency_key",
+                detail =
+                    "IdempotencyKey, when supplied, must be a non-blank identifier of at most "
+                    + $"{MaxIdempotencyKeyLength} characters and must not contain control characters.",
+                threadId,
+            });
+        }
 
         var metadata = await store.LoadMetadataAsync(threadId, ct);
         if (metadata == null)
@@ -529,25 +696,12 @@ public class ConversationsController(
         IMultiTurnAgent agent;
         try
         {
-            _ = agentPool.GetOrCreateAgent(
+            agent = agentPool.GetOrCreateAgent(
                 threadId,
                 mode,
                 requestedProviderId: null,
                 requestResponseDumpFileName: null,
                 callerCredential: callerCredential);
-            var refresh = await agentPool.EnsureCurrentAgentAsync(threadId, callerCredential, ct);
-            if (refresh.Status == MultiTurnAgentPool.AgentRefreshStatus.RefreshDeferred)
-            {
-                return Conflict(new
-                {
-                    error = "sandbox_session_refresh_deferred",
-                    code = "sandbox_session_refresh_deferred",
-                    detail = "The sandbox session changed while a response was active. Retry after the current response completes.",
-                    threadId,
-                });
-            }
-
-            agent = refresh.Agent;
         }
         catch (ProviderUnavailableException ex)
         {
@@ -577,23 +731,391 @@ public class ConversationsController(
                 new { error = "caller_credential_conflict", code = "caller_credential_conflict", detail = ex.Message, threadId });
         }
 
-        var inputId = Guid.NewGuid().ToString();
         var userMessage = new TextMessage { Role = Role.User, Text = request.Text };
+
+        // Per-turn spawn suppression is a GUARANTEE, so it fails closed BEFORE anything is queued: the agent
+        // must both declare ISpawnSuppressingAgent and report that it enforces the flag. Declaring the
+        // interface alone only proves the input can carry the flag — an implementation can satisfy the
+        // signature and ignore it, and by the time an unconfirmed receipt said so the message would already
+        // be in the run's channel with nothing suppressed.
+        if (request.SuppressSubAgentSpawning && agent is not ISpawnSuppressingAgent { EnforcesSpawnSuppression: true })
+        {
+            logger.LogWarning(
+                "SendMessage for thread {ThreadId} rejected: agent {AgentType} cannot enforce per-turn sub-agent spawn suppression",
+                threadId,
+                agent.GetType().Name);
+            return BadRequest(new
+            {
+                error = "spawn_suppression_unsupported",
+                code = "spawn_suppression_unsupported",
+                detail =
+                    "This conversation's agent cannot suppress sub-agent spawning for a single turn, so the "
+                    + "requested guarantee cannot be made.",
+                threadId,
+            });
+        }
+
+        // An idempotent send is identified by the caller's key TOGETHER WITH the options that change what the
+        // turn does, and the resulting id is ADMITTED durably before anything is queued — so a repeat can be
+        // answered from the record of what this host actually granted. That is the recovery a caller needs
+        // when it never saw the first response (socket reset, or a process that died between acceptance and
+        // the answer): it gets the input the host already took, instead of queueing a second minutes-long,
+        // sub-agent-fanning turn onto the same conversation.
+        var acceptances = store as IInputAcceptanceStore;
+        if (request.IdempotencyKey is not null && acceptances is null)
+        {
+            // Refused BEFORE the enqueue, because the alternative is queueing the turn and then telling the
+            // caller its key was not honored — by which point the duplicate this endpoint exists to prevent
+            // has already been created. Without an admission store there is nowhere to record the grant, so
+            // the guarantee cannot be made at all.
+            logger.LogWarning(
+                "SendMessage for thread {ThreadId} rejected: store {StoreType} cannot durably admit an "
+                    + "input id, so an idempotency key cannot be honored",
+                threadId,
+                store.GetType().Name);
+            return BadRequest(new
+            {
+                error = "idempotency_unsupported",
+                code = "idempotency_unsupported",
+                detail =
+                    "This host cannot durably record accepted inputs, so it cannot promise that a repeated "
+                    + "IdempotencyKey will not queue a second turn.",
+                threadId,
+            });
+        }
+
+        var idempotent = request.IdempotencyKey is not null;
+
+        // The admission describes what this send is asking to be granted. Every response below — fresh,
+        // reconciled, or downgraded — is a projection of one of these, so the answer a caller gets first and
+        // the answer it gets on a retry are shaped by the same fact and cannot drift apart.
+        var admission = new InputAcceptance(
+            threadId,
+            idempotent
+                ? DeriveIdempotentInputId(request.IdempotencyKey!, request.SuppressSubAgentSpawning)
+                : ServerMintedInputIdPrefix + Guid.NewGuid().ToString("N"),
+            timeProvider.GetUtcNow(),
+            InputAcceptanceState.Pending,
+            SpawningSuppressed: request.SuppressSubAgentSpawning,
+            IdempotencyHonored: idempotent,
+            ReservationId: Guid.NewGuid());
+
+        if (idempotent
+            && await TryReconcileAdmissionAsync(acceptances!, admission, ct) is { } reconciled)
+        {
+            return reconciled;
+        }
 
         // A null return means the input channel is full — TrySendAsync guarantees no accepted-input
         // record survives in that case. A thrown exception (durable-store write failure) is left to
-        // propagate to a 500, per the REST contract (no inputId returned either way).
-        var receipt = await agent.TrySendAsync([userMessage], inputId: inputId, parentRunId: null, ct);
+        // propagate to a 500, per the REST contract (no inputId returned either way). Either way the
+        // admission taken above has to go back, or the id stays claimed by work that never ran and every
+        // later retry of it reconciles to a turn that does not exist.
+        SendReceipt? receipt;
+        try
+        {
+            receipt = agent is ISpawnSuppressingAgent suppressing
+                ? await suppressing.TrySendAsync(
+                    new UserInput(
+                        [userMessage],
+                        admission.InputId,
+                        ParentRunId: null,
+                        SuppressSubAgentSpawning: request.SuppressSubAgentSpawning),
+                    ct)
+                : await agent.TrySendAsync([userMessage], inputId: admission.InputId, parentRunId: null, ct);
+        }
+        catch when (idempotent)
+        {
+            await ReleaseAdmissionAsync(acceptances!, admission);
+            throw;
+        }
+
         if (receipt == null)
         {
             logger.LogWarning("SendMessage for thread {ThreadId} rejected: input queue full", threadId);
+            if (idempotent)
+            {
+                await ReleaseAdmissionAsync(acceptances!, admission);
+            }
+
             return StatusCode(
                 StatusCodes.Status503ServiceUnavailable,
                 new { error = "queue_full", code = "queue_full", threadId });
         }
 
-        return Accepted(new SendMessageResponse { InputId = inputId, Queued = true });
+        // The capability check got the request this far; the RECEIPT is what says this particular input will
+        // actually be enforced. An agent that claims the capability but does not stamp the receipt cannot
+        // make this host advertise a guarantee — and the negative is RECORDED, not just returned, so a retry
+        // that arrives after the turn has been drained still reads "not suppressed" instead of being told by
+        // a rebuilt-from-the-request answer that the guarantee held.
+        var guaranteeKept = !request.SuppressSubAgentSpawning || receipt.SpawningSuppressed;
+        if (!guaranteeKept)
+        {
+            logger.LogWarning(
+                "SendMessage for thread {ThreadId}: agent {AgentType} accepted the input but did not confirm "
+                    + "sub-agent spawn suppression; the response will not claim the guarantee",
+                threadId,
+                agent.GetType().Name);
+        }
+
+        var granted = admission with
+        {
+            State = guaranteeKept ? InputAcceptanceState.Enforced : InputAcceptanceState.Unenforced,
+            SpawningSuppressed = receipt.SpawningSuppressed,
+        };
+
+        if (idempotent && !await acceptances!.TryRecordOutcomeAsync(granted, ct))
+        {
+            logger.LogError(
+                "Could not record the outcome of input {InputId} on thread {ThreadId}; the turn is queued but "
+                    + "a repeat of this idempotency key may not reconcile to it",
+                granted.InputId,
+                threadId);
+        }
+
+        return AcceptedAdmission(granted, queued: true);
     }
+
+    /// <summary>
+    /// Takes the admission for this send, and returns the response to send INSTEAD of queueing when it turns
+    /// out the input was already taken.
+    /// <para>
+    /// Two distinct "already taken" cases, in the order they can be decided. The reservation settles the
+    /// normal one entirely in the store, with no read-then-write window: N simultaneous sends of one key all
+    /// attempt it and exactly one is told it won, while every loser is handed the winner's RECORD — which
+    /// outlives the drain, so this stays exact long after the turn has started or finished.
+    /// </para>
+    /// <para>
+    /// Winning still isn't proof the input is new: an input admitted by an EARLIER build of this host (or one
+    /// whose record was released after its turn was already queued) has no record to lose against. So the
+    /// winner confirms against the thread's live accepted/run state before enqueueing, and if the id is
+    /// already in flight there it gives the admission back rather than starting a second turn. That answer
+    /// claims no suppression: there is no record to back a guarantee with, and inventing one from the request
+    /// is exactly the re-derivation this endpoint must not do.
+    /// </para>
+    /// <para>
+    /// Losing is not proof either — only <see cref="InputAcceptanceState.Enforced"/> and
+    /// <see cref="InputAcceptanceState.Unenforced"/> are OUTCOMES. A record left
+    /// <see cref="InputAcceptanceState.Pending"/> is an undertaking still in progress, and it is exactly what
+    /// a host that died between admitting an input and queueing it leaves behind. Answering a retry from one
+    /// of those returns "accepted, not queued" for a turn that does not exist and never will — and since the
+    /// id is derived from the caller's key, the SAME answer comes back for every later retry, wedging that
+    /// key for the whole of the caller's deadline. So a Pending record is resolved rather than reported:
+    /// against the thread's live state first, then, only once the input is provably not live and the record
+    /// is too old to belong to a send still on its way to the queue, by re-taking it.
+    /// </para>
+    /// </summary>
+    /// <returns>The reconciled response, or null when this caller may enqueue.</returns>
+    private async Task<IActionResult?> TryReconcileAdmissionAsync(
+        IInputAcceptanceStore acceptances,
+        InputAcceptance admission,
+        CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            if (await acceptances.TryReserveAcceptanceAsync(admission, ct) is not { } granted)
+            {
+                return await ConfirmAdmissionAgainstLiveStateAsync(acceptances, admission, ct);
+            }
+
+            if (granted.State is not InputAcceptanceState.Pending)
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} reconciled to already-admitted input {InputId} "
+                        + "({State}); nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId,
+                    granted.State);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            // Live work beats an unsettled record every time: the admitting host got as far as queueing, it
+            // just never got to write the outcome. Re-taking the id here would start the turn a second time.
+            if (await statusResolver.ResolveByInputIdAsync(admission.ThreadId, admission.InputId, ct) is not null)
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} whose "
+                        + "admission is still unsettled; nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            // Every healthy send looks abandoned for the instant between taking its admission and queueing
+            // its input. Only a record that has outlived that handoff may be re-taken.
+            if (timeProvider.GetUtcNow() - granted.AcceptedAt < UnsettledAdmissionGrace)
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} reconciled to just-admitted input {InputId} that has "
+                        + "not reached the queue yet; nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            // Retract it under the ABANDONED reservation's own token. That is a compare-and-set on the
+            // record, so of several retries deciding this at once exactly one can succeed — the rest find
+            // the id already gone or already re-taken and reconcile to whatever now holds it, which is how
+            // recovery avoids becoming the duplicate it exists to prevent.
+            if (attempt > UnsettledAdmissionRecoveryAttempts
+                || !await acceptances.TryReleaseAcceptanceAsync(
+                    admission.ThreadId,
+                    admission.InputId,
+                    granted.ReservationId,
+                    ct))
+            {
+                logger.LogInformation(
+                    "SendMessage for thread {ThreadId} left the unsettled admission for input {InputId} to "
+                        + "the caller that is already recovering it; nothing was queued",
+                    admission.ThreadId,
+                    admission.InputId);
+
+                return AcceptedAdmission(granted, queued: false);
+            }
+
+            logger.LogWarning(
+                "Input {InputId} on thread {ThreadId} was admitted at {AcceptedAt} and never queued or "
+                    + "settled, so this send re-took it rather than leaving the key wedged",
+                admission.InputId,
+                admission.ThreadId,
+                granted.AcceptedAt);
+        }
+    }
+
+    /// <summary>
+    /// The check a caller that WON the reservation still owes: an input admitted by an earlier build of this
+    /// host is in flight with no record to lose against, so the thread's live state is what settles it.
+    /// </summary>
+    /// <returns>The reconciled response, or null when this caller may enqueue.</returns>
+    private async Task<IActionResult?> ConfirmAdmissionAgainstLiveStateAsync(
+        IInputAcceptanceStore acceptances,
+        InputAcceptance admission,
+        CancellationToken ct)
+    {
+        if (await statusResolver.ResolveByInputIdAsync(admission.ThreadId, admission.InputId, ct) is null)
+        {
+            return null;
+        }
+
+        await ReleaseAdmissionAsync(acceptances, admission);
+        logger.LogInformation(
+            "SendMessage for thread {ThreadId} reconciled to in-flight input {InputId} that carries no "
+                + "admission record; nothing was queued and no suppression is claimed",
+            admission.ThreadId,
+            admission.InputId);
+
+        return AcceptedAdmission(
+            admission with { State = InputAcceptanceState.Unenforced, SpawningSuppressed = false },
+            queued: false);
+    }
+
+    /// <summary>
+    /// How long an admission may sit unsettled before a retry may conclude its owner is never coming back.
+    /// It only has to cover the gap between taking the admission and the input reaching the queue — an
+    /// in-process channel write, plus whatever a loaded host adds — so it is generous against that and still
+    /// far shorter than any caller's deadline, which is the point: a wedged key must recover on its own long
+    /// before the work it names is given up on.
+    /// </summary>
+    private static readonly TimeSpan UnsettledAdmissionGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How many times one send will re-take an abandoned admission before answering from whatever holds the
+    /// id. Each pass costs another caller its own attempt, so this bounds a pathological ping-pong; failing
+    /// to recover leaves the key as it was, which is a delay rather than a duplicate.
+    /// </summary>
+    private const int UnsettledAdmissionRecoveryAttempts = 3;
+
+    /// <summary>
+    /// The one place a <see cref="SendMessageResponse"/> is shaped, so a fresh send and a repeat of the same
+    /// key can only ever answer with the same projection of the same record.
+    /// </summary>
+    private IActionResult AcceptedAdmission(InputAcceptance acceptance, bool queued) =>
+        Accepted(new SendMessageResponse
+        {
+            InputId = acceptance.InputId,
+            Queued = queued,
+
+            // Only an ENFORCED record proves the guarantee: it is the state an agent's receipt put the
+            // record into. Pending carries what a host undertook when it admitted the input, and relaying
+            // that would confirm a guarantee out of the request that asked for it; Unenforced is a refusal
+            // and already carries false.
+            SpawningSuppressed =
+                acceptance.State is InputAcceptanceState.Enforced && acceptance.SpawningSuppressed,
+            IdempotencyKeyHonored = acceptance.IdempotencyHonored,
+        });
+
+    /// <summary>
+    /// Gives back an admission whose send did not survive to become queued work. Best-effort and never
+    /// cancellable: the request's token is typically already cancelled on this path, and an admission left
+    /// behind is worse than the extra work — it would make every later retry of that key reconcile to a turn
+    /// that never ran. The reservation token means this can only ever retract THIS request's admission.
+    /// </summary>
+    private async Task ReleaseAdmissionAsync(IInputAcceptanceStore acceptances, InputAcceptance admission)
+    {
+        try
+        {
+            if (!await acceptances.TryReleaseAcceptanceAsync(
+                    admission.ThreadId,
+                    admission.InputId,
+                    admission.ReservationId,
+                    CancellationToken.None))
+            {
+                logger.LogWarning(
+                    "Admission for input {InputId} on thread {ThreadId} was not retracted because it is no "
+                        + "longer this request's to retract",
+                    admission.InputId,
+                    admission.ThreadId);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Could not retract the admission for input {InputId} on thread {ThreadId}; a repeat of this "
+                    + "idempotency key will reconcile to a turn that was never queued",
+                admission.InputId,
+                admission.ThreadId);
+        }
+    }
+
+    /// <summary>Longest caller-supplied idempotency key this host will turn into a durable input id.</summary>
+    private const int MaxIdempotencyKeyLength = 200;
+
+    /// <summary>
+    /// Namespace for an id this HOST minted because no key was supplied. Distinct from
+    /// <see cref="IdempotentInputIdPrefix"/> so a server-minted id can never be produced by any caller key.
+    /// </summary>
+    private const string ServerMintedInputIdPrefix = "srv:";
+
+    /// <summary>Namespace for an id derived from a caller's idempotency key.</summary>
+    private const string IdempotentInputIdPrefix = "idem:";
+
+    /// <summary>
+    /// A key must be storable and unambiguous as part of an input id. Control characters are rejected
+    /// because they survive JSON but not logs, ids and file/db round-trips intact; the length cap bounds
+    /// what a caller can push into every accepted-input record and run row.
+    /// </summary>
+    private static bool IsUsableIdempotencyKey(string idempotencyKey) =>
+        !string.IsNullOrWhiteSpace(idempotencyKey)
+        && idempotencyKey.Length <= MaxIdempotencyKeyLength
+        && !idempotencyKey.Any(char.IsControl);
+
+    /// <summary>
+    /// Derives the durable input id an idempotent send is recorded under. The options that change what the
+    /// turn DOES are folded in, so a repeat carrying different options is a different operation instead of
+    /// silently resolving to the earlier, differently-behaving input.
+    /// <para>
+    /// The mapping is injective by construction: both variable parts sit at FIXED positions — a one-character
+    /// suppression flag immediately after the namespace, then the key as the entire remainder. A suffix
+    /// instead of a prefix would not be, because a key may itself end in whatever marker was chosen, letting
+    /// two different (key, flag) pairs derive the same id and dedupe against each other.
+    /// </para>
+    /// </summary>
+    private static string DeriveIdempotentInputId(string idempotencyKey, bool suppressSubAgentSpawning) =>
+        $"{IdempotentInputIdPrefix}{(suppressSubAgentSpawning ? '1' : '0')}:{idempotencyKey}";
 
     /// <summary>
     /// Polls a run's resolved status by exactly one of <paramref name="runId"/> or

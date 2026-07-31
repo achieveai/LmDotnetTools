@@ -79,12 +79,21 @@ internal sealed class CodeReviewDaemonOptions
     public string? LogFilePath { get; init; }
 
     /// <summary>
-    /// When true, a review whose sandbox session has NO <c>code-reviewer</c> sub-agent support (nothing
-    /// discovered → <c>SubAgentOptions</c> would be null) is ABORTED rather than degraded to a skill-only
-    /// review, and the daemon stops (<see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.StopApplication"/>)
-    /// — Revobot's reviews are only trustworthy WITH the code-reviewer skill + sub-agents, so a workspace
-    /// that can't provide them is a fatal misconfiguration to surface, not to review through. Default false
-    /// (degrade-not-fail, unchanged).
+    /// When true, a review that cannot be backed by Revobot's <c>code-reviewer</c> skill + sub-agents is
+    /// ABORTED rather than degraded, and the daemon stops
+    /// (<see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.StopApplication"/>) — Revobot's reviews
+    /// are only trustworthy WITH them, so a setup that can't provide them is a fatal misconfiguration to
+    /// surface, not to review through. Where the prerequisite is checked depends on who owns the session:
+    /// <list type="bullet">
+    ///   <item><b>In-process</b> — the daemon's own sandbox session discovered no <c>code-reviewer</c>
+    ///   sub-agents (<c>SubAgentOptions</c> would be null).</item>
+    ///   <item><b>S2S</b> (<see cref="UseS2SReviewAgent"/>) — the daemon provisions no session at all, so the
+    ///   gateway's marketplace catalog is read directly over <see cref="SubAgentMarketplaces"/> and must
+    ///   surface both the <c>code-reviewer:pr-review</c> skill and ≥1 <c>code-reviewer:*</c> agent. A catalog
+    ///   that cannot be READ is a different finding (gateway down, not skills absent): it warns and re-probes
+    ///   on the next run.</item>
+    /// </list>
+    /// Default false (degrade-not-fail, unchanged).
     /// </summary>
     public bool RequireSkillSupport { get; init; }
 
@@ -365,6 +374,90 @@ internal sealed class CodeReviewDaemonOptions
     /// behalf. Default <c>Revobot</c>; an operator may personalize it, e.g. <c>GB's Revobot</c>.
     /// </summary>
     public string BotName { get; init; } = "Revobot";
+
+    /// <summary>
+    /// When <c>true</c>, the daemon drives each review through a running <b>LmStreaming.Sample</b> server
+    /// over the S2S REST API instead of the in-process <c>LiveReviewAgentLoopFactory</c>. This makes the
+    /// review a real LmStreaming-hosted conversation (parent loop + <c>code-reviewer:*</c> sub-agent tree)
+    /// that a human can open and judge via the deep-link appended to the posted comment. Default <c>false</c>
+    /// (in-process review, unchanged) — opt-in because it requires a reachable LmStreaming review host and a
+    /// shared sandbox gateway. Requires <see cref="LmStreamingBaseUrl"/> and <see cref="LmStreamingProviderId"/>.
+    /// </summary>
+    public bool UseS2SReviewAgent { get; init; }
+
+    /// <summary>
+    /// Base URL of the running LmStreaming.Sample <b>review host</b> that S2S reviews are provisioned against
+    /// and that the deep-link points at (e.g. <c>http://localhost:5051</c> — a separate instance from any
+    /// production LmStreaming). The deep-link is <c>{LmStreamingBaseUrl}/?threadId={threadId}&amp;focus=1</c>.
+    /// Required when <see cref="UseS2SReviewAgent"/> is on; ignored otherwise.
+    /// </summary>
+    public string? LmStreamingBaseUrl { get; init; }
+
+    /// <summary>
+    /// Secret sent as the <c>X-S2S-Auth</c> header on every S2S request; must equal the review host's
+    /// <c>Auth:S2SInboundSecret</c> (env <c>LMSTREAMING_S2S_INBOUND_SECRET</c>). Read from configuration/env
+    /// and <b>never logged or echoed</b> (AUTH_ENFORCE invariant). When unset the header is omitted — only
+    /// valid against a review host that leaves the inbound S2S guard unarmed (local-use only).
+    /// </summary>
+    public string? LmStreamingS2SSecret { get; init; }
+
+    /// <summary>
+    /// The LmStreaming provider id to provision the review conversation with. Provision carries <b>no model
+    /// field</b> — the model is whatever this provider resolves server-side — so this must name a provider on
+    /// the review host that yields the intended review model (an OpenAI/Anthropic/Copilot middleware provider,
+    /// since <see cref="LmStreamingModeId"/>'s workspace-agent mode rejects CLI-only/mock providers). Required
+    /// when <see cref="UseS2SReviewAgent"/> is on.
+    /// </summary>
+    public string LmStreamingProviderId { get; init; } = "";
+
+    /// <summary>
+    /// The LmStreaming conversation mode the review is provisioned in. Defaults to <c>workspace-agent</c>,
+    /// which binds a sandbox session and surfaces the <c>code-reviewer:*</c> sub-agent tree from the
+    /// workspace's marketplaces — the whole point of the deep-link. A non-workspace mode would open a real
+    /// conversation but an empty/generic sub-agent panel, so this should stay <c>workspace-agent</c> for the
+    /// faithful-link review.
+    /// </summary>
+    public string LmStreamingModeId { get; init; } = "workspace-agent";
+
+    /// <summary>
+    /// The code-reviewer marketplace alias attached to the provisioned LmStreaming workspace so the gateway
+    /// discovers the <c>code-reviewer:*</c> sub-agents (typically the same alias the daemon's
+    /// <see cref="Marketplaces"/> list uses, e.g. <c>gb-plugins</c>). Without it the provisioned workspace's
+    /// sub-agent panel is generic — a failed faithful-link review. Applies only on the S2S path.
+    /// </summary>
+    public string? LmStreamingReviewMarketplace { get; init; }
+
+    /// <summary>
+    /// How long, in hours, a posted review deep-link stays live: the hosted conversation is discarded from the
+    /// review host once it has existed this long, after which <c>?threadId=</c> stops resolving. Default 24.
+    /// <para>
+    /// This is a <b>ceiling</b>, not a teardown hook — a conversation is never discarded because its review
+    /// finished, its slot was returned or its PR closed, only because it aged out. Reviews are minutes long and
+    /// the link exists to be opened afterwards, so anything that tied the two together would delete the feature.
+    /// </para>
+    /// <para>
+    /// Set to <c>0</c> (or negative) to keep every conversation forever — the pre-retention behaviour, in which
+    /// each review, judge and A/B arm leaves a permanent conversation on the host. Applies only on the S2S path.
+    /// </para>
+    /// </summary>
+    public double DeepLinkRetentionHours { get; init; } = 24;
+
+    /// <summary>
+    /// The single absolute budget, in minutes, a review stage gets to wait for its recursive sub-agent tree
+    /// to settle before giving up. Default 30. Read once by the caller that computes the absolute deadline
+    /// passed into <c>ReviewSubAgentCompletionBarrier.WaitAsync</c> — the barrier itself never reads this
+    /// option and never fabricates or resets a budget of its own; a resumed wait only ever gets whatever
+    /// time remains of this original window.
+    /// </summary>
+    public int ReviewStageDeadlineMinutes { get; init; } = 30;
+
+    /// <summary>
+    /// How long, in seconds, two observations of the review sub-agent tree must be identical (same node
+    /// ids, parent relationships, and statuses) before <c>ReviewSubAgentCompletionBarrier</c> treats the
+    /// tree as settled. Default 2. Guards against synthesizing/posting against a roster that is still
+    /// mid-transition (e.g. a child that finished and a grandchild about to be spawned in response).
+    /// </summary>
+    public int ReviewSubAgentBarrierQuietSeconds { get; init; } = 2;
 
     /// <summary>The resolved cross-repo store URL: <see cref="CrossRepoStoreUrl"/> when set, else
     /// <see cref="ReviewBotRepoUrl"/> (the review store and the ReviewBot retention repo are one repo).</summary>

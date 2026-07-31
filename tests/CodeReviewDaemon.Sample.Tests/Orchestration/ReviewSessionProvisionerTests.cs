@@ -78,6 +78,40 @@ public class ReviewSessionProvisionerTests
     }
 
     [Fact]
+    public async Task GetOrCreateRequiredForSlotAsync_MountsTheExactSlot()
+    {
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+        var slot = new ReviewSlot(
+            0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
+
+        var session = await provisioner.GetOrCreateRequiredForSlotAsync(Run(), slot, default);
+
+        session.SessionId.Should().Be("session-review-run-7");
+        fake.LastRef!.DirectoryRelPath.Should().Be("review-pool/slot-0");
+    }
+
+    [Theory]
+    [InlineData(null, "/ws/review-pool/slot-0")]
+    [InlineData("/ws", "/other/slot-0")]
+    public async Task GetOrCreateRequiredForSlotAsync_RejectsAnUnrepresentableSlot(
+        string? workspaceBase,
+        string slotPath)
+    {
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: workspaceBase);
+        var slot = new ReviewSlot(0, slotPath, $"{slotPath}/store", $"{slotPath}/scratch");
+
+        Func<Task> act = () => provisioner.GetOrCreateRequiredForSlotAsync(Run(), slot, default);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*pooled slot*workspace base*");
+        fake.CreateCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task GetOrCreateForSlotAsync_FallsBackToPerRunMount_WhenNoWorkspaceBaseConfigured()
     {
         var fake = new FakeSessionSource();

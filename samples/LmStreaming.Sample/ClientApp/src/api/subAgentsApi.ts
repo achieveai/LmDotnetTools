@@ -16,9 +16,8 @@ export type SubAgentKind = 'subagent' | 'workflow';
  * `GET /api/conversations/{parentThreadId}/subagents`. `threadId` is the child's own conversation
  * thread (`subagent-{agentId}`, or `workflow-{agentId}` for a workflow run) — pass it to
  * `loadConversationMessages` to load the child's persisted transcript. Workflow runs arrive in the
- * SAME list with `kind: 'workflow'` and `agentId` = the workflowId; the sub-agent WebSocket for that
- * agentId is routed server-side to the workflow's controller loop, so the client streams it with no
- * special transport.
+ * SAME flat list with `kind: 'workflow'`. Persisted parent/depth/terminal fields are additive and
+ * required by the separate versioned recursive-tree contract used by the review daemon.
  */
 export interface SubAgentSummary {
   agentId: string;
@@ -36,6 +35,14 @@ export interface SubAgentSummary {
   effectiveModelIntelligence?: number | null;
   /** Stable winning input: parent, spawn-model, spawn-tier, template-model, or template-tier. */
   modelSelectionSource?: string | null;
+  /** Persisted parent thread id; required for recursive graph nodes. */
+  parentThreadId?: string | null;
+  /** Distance from the recursive request root. */
+  depth?: number | null;
+  /** Terminal transition timestamp, when known. */
+  terminalAtUtc?: string | null;
+  /** Safe machine-readable failure code, when known. */
+  failureCode?: string | null;
 }
 
 /**

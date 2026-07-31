@@ -42,6 +42,8 @@ internal sealed class GitRunner
 
     private readonly ISandboxCommandRunner _runner;
 
+    internal ISandboxCommandRunner CommandRunner => _runner;
+
     public GitRunner(ISandboxCommandRunner runner)
     {
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));

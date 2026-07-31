@@ -140,6 +140,39 @@ public sealed class ReviewPosterTests : LoggingTestBase
         entry.ProviderResponseId.Should().Be("resp-already-there");
     }
 
+    [Fact]
+    public async Task PostReviewAsync_posts_a_previously_collected_row_once_live_posting_is_authorized()
+    {
+        // A Posted-stage failure (or a run whose first attempt ran before posting was authorized) can leave a
+        // Collected row behind. Collected is only terminal for an unauthorized collect-only replay: once a
+        // later attempt IS authorized to post live, the row must reopen and actually reach the provider,
+        // otherwise the run completes claiming delivery it never made.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        var publisher = new FakeReviewCommentPublisher();
+        var poster = Poster(publisher, store);
+
+        var collected = await poster.PostReviewAsync(
+            Request(runId, livePostingAuthorized: false),
+            CancellationToken.None);
+        collected.Kind.Should().Be(PostOutcomeKind.CollectedOnly);
+
+        var posted = await poster.PostReviewAsync(Request(runId, livePostingAuthorized: true), CancellationToken.None);
+
+        posted.Kind.Should().Be(PostOutcomeKind.Posted);
+        posted.OutboxId.Should().Be(collected.OutboxId, "the same idempotency key collapses to one outbox row");
+        publisher.PostCount.Should().Be(1);
+        var entry = store.GetOutbox(posted.OutboxId)!;
+        entry.Status.Should().Be(OutboxStatus.Posted);
+        entry.ProviderResponseId.Should().Be(posted.ProviderResponseId).And.NotBeNull();
+
+        // ...and posting stays exactly-once afterwards.
+        var replay = await poster.PostReviewAsync(Request(runId, livePostingAuthorized: true), CancellationToken.None);
+        replay.Kind.Should().Be(PostOutcomeKind.ReplayNoOp);
+        publisher.PostCount.Should().Be(1);
+    }
+
     private ReviewPoster Poster(FakeReviewCommentPublisher publisher, ReviewStore store) =>
         new(publisher, store, LoggerFactory.CreateLogger<ReviewPoster>());
 

@@ -51,6 +51,48 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     public const int ReviewArtifactSchemaVersion = 1;
 
     /// <summary>
+    /// Artifact kind for the PROVISIONAL review turn — the checkpoint that lets a Reviewed stage interrupted
+    /// by a daemon restart resume mid-lifecycle instead of re-reviewing the PR from scratch. It records the
+    /// hosted conversation the review is running on, the identity of the lifecycle that conversation belongs
+    /// to, and the stage's original absolute budget.
+    /// <para>
+    /// It is appended TWICE per lifecycle, and the first append is the important one: at the moment the hosted
+    /// conversation is minted, before the provisional turn has been sent and therefore before any sub-agent
+    /// tree exists. That row carries NO review text — it is a lifecycle checkpoint and nothing else — and it
+    /// is what makes the minutes-long provisional turn recoverable. The second append adds the provisional
+    /// answer once the turn returns.
+    /// </para>
+    /// <para>
+    /// It is a CHECKPOINT, never an answer. Even the completed one is written before the sub-agent completion
+    /// barrier, so it can cite children that had not finished writing and has never been through the synthesis
+    /// turn that de-duplicates and grades them. Nothing promotes it: the judge and the posting arm both read
+    /// <see cref="ReviewArtifactKind"/> exactly, so a run that dies after this point has no review at all —
+    /// which is the intended outcome.
+    /// </para>
+    /// </summary>
+    public const string ProvisionalReviewArtifactKind = "review-provisional";
+
+    /// <summary>
+    /// Artifact kind for an S2S synthesis turn the review host has ACCEPTED but not yet answered. Recorded
+    /// the instant the host takes the input and before the poll begins, so a restart during the (minutes-long)
+    /// synthesis rejoins that exact input rather than queueing a second one on the same conversation.
+    /// S2S-only: an in-process turn dies with its loop, leaving nothing to rejoin.
+    /// </summary>
+    public const string SynthesisRequestArtifactKind = "review-synthesis-request";
+
+    /// <summary><see cref="ReviewLifecycleIdentity.Modality"/> for a review hosted on LmStreaming (S2S).</summary>
+    public const string S2SModality = "s2s";
+
+    /// <summary><see cref="ReviewLifecycleIdentity.Modality"/> for a review run on an in-process loop.</summary>
+    public const string InProcessModality = "in-process";
+
+    /// <summary>Turn discriminator in a send's idempotency key (see <see cref="TurnIdempotencyKey"/>).</summary>
+    public const string ProvisionalTurn = "provisional";
+
+    /// <summary>Turn discriminator in a send's idempotency key (see <see cref="TurnIdempotencyKey"/>).</summary>
+    public const string SynthesisTurn = "synthesis";
+
+    /// <summary>
     /// Outbox operation discriminator for the durable ReviewBot retention push (plan §2). The row records
     /// the <c>reviewbot_push</c> outcome: terminal <see cref="OutboxStatus.Posted"/> (with the pushed SHA)
     /// on success, left non-terminal <see cref="OutboxStatus.Pending"/> on <c>GitSyncFailed</c> so the
@@ -74,6 +116,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// under <c>{StoreRoot}/repos/&lt;Repo&gt;</c> beside the shared <c>Contracts/</c> layer). Only used on
     /// the tool-assisted store path; the single-repo path clones straight into <see cref="TargetRoot"/>.</summary>
     private const string StoreRoot = "/workspace/store";
+
+    /// <summary>Where the hosted (S2S) review sees its checkout: LmStreaming's gateway mounts a workspace's
+    /// directory at the container workspace root, so the leaf the preparer cloned into is <c>/workspace</c>
+    /// from inside the review conversation — NOT <see cref="TargetRoot"/>, which is the daemon's own per-run
+    /// clone path.</summary>
+    private const string S2SCheckoutRoot = "/workspace";
 
     /// <summary>The container mount point the leased pool slot is exposed at (design §4.1): the slot's
     /// <c>store/</c> child is <see cref="StoreRoot"/> and its <c>scratch/</c> child is a sibling outside the
@@ -135,9 +183,50 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private readonly ConcurrentDictionary<long, LeasedReview> _leasedReviews = new();
 
+    /// <summary>
+    /// The S2S review-workspace preparer, non-null ONLY when <see cref="CodeReviewDaemonOptions.UseS2SReviewAgent"/>
+    /// is on (registered in Program.cs and auto-injected via <c>ActivatorUtilities.CreateInstance</c>). On the
+    /// in-process path it stays null and every code path below skips preparation, so nothing changes. When set,
+    /// the executor clones the PR checkout to the shared gateway host and mints the LmStreaming workspace the S2S
+    /// factory provisions against (design §4 — the workspace is what surfaces the <c>code-reviewer:*</c> tree).
+    /// </summary>
+    private readonly S2SReviewWorkspacePreparer? _preparer;
+
+    /// <summary>
+    /// Per-run prepared LmStreaming workspace (run id → leaf + workspaceId + host checkout dir), populated by
+    /// <see cref="EnsurePreparedAsync"/> only on the S2S path. Held in memory (like
+    /// <see cref="_leasedReviews"/>) so the several <c>_loopFactory.Create</c> sites of one run share ONE clone
+    /// + workspace instead of re-preparing per call; the preparer is itself idempotent (clone-probe skips, and
+    /// the workspace lookup reuses), so a resume after a restart re-prepares cheaply against the same leaf.
+    /// </summary>
+    private readonly ConcurrentDictionary<long, PreparedReviewWorkspace> _preparedWorkspaces = new();
+
     /// <summary>Host lifetime, used to stop the daemon when a session lacks code-reviewer skill/agent
     /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
     private readonly Microsoft.Extensions.Hosting.IHostApplicationLifetime? _appLifetime;
+
+    /// <summary>
+    /// Session-free gateway catalog probe, non-null ONLY on the S2S path (registered in Program.cs). It is the
+    /// S2S counterpart of the in-process <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> fail-fast:
+    /// there is no daemon-side session to inspect on S2S, so the prerequisite check reads the gateway's
+    /// marketplace catalog directly.
+    /// </summary>
+    private readonly IGatewaySkillProbe? _skillProbe;
+
+    /// <summary>
+    /// Set once the gateway catalog has been confirmed to carry Revobot's review prerequisites. The catalog is
+    /// process-lifetime configuration of the gateway, so one confirmation is enough; the unsupported verdict is
+    /// never cached because it stops the daemon, and an unreadable catalog stays uncached so the next run retries.
+    /// </summary>
+    private volatile bool _gatewaySkillsVerified;
+
+    /// <summary>
+    /// The sub-agent completion source the review barrier polls when the review loop is NOT an in-process
+    /// one that carries its own <c>SubAgentManager</c> — i.e. the S2S path, where the children live on the
+    /// LmStreaming host (registered in Program.cs and auto-injected via <c>ActivatorUtilities.CreateInstance</c>).
+    /// Null on the in-process path, where the live loop supplies the source directly.
+    /// </summary>
+    private readonly IReviewSubAgentCompletionSource? _completionSource;
 
     public DaemonReviewStageExecutor(
         ReviewStore store,
@@ -155,7 +244,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
         Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
-        string? gatewayBaseUrl = null)
+        string? gatewayBaseUrl = null,
+        S2SReviewWorkspacePreparer? preparer = null,
+        IGatewaySkillProbe? skillProbe = null,
+        IReviewSubAgentCompletionSource? completionSource = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -174,6 +266,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _slotWorkspace = slotWorkspace;
         _appLifetime = appLifetime;
         _gatewayBaseUrl = gatewayBaseUrl;
+        _preparer = preparer;
+        _skillProbe = skillProbe;
+        _completionSource = completionSource;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -181,12 +276,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             CanWrite: false);
     }
 
-    /// <summary>Thrown by <see cref="BuildToolContextAsync"/> when a session lacks code-reviewer skill/agent
-    /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set — aborts the review
-    /// (rather than degrading) and is deliberately let through the degrade-catch.</summary>
-    private sealed class SkillSupportUnavailableException(string sessionId)
-        : InvalidOperationException(
-            $"Sandbox session '{sessionId}' has no code-reviewer skill/agent support; review aborted (RequireSkillSupport).");
+    /// <summary>Thrown by <see cref="BuildToolContextAsync"/> when Revobot's code-reviewer skill/agent
+    /// prerequisites are absent and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set — aborts the
+    /// review (rather than degrading) and is deliberately let through the degrade-catch. The two factories name
+    /// the two places the prerequisites can be missing: the daemon's own sandbox session (in-process path) and
+    /// the gateway's marketplace catalog (S2S path, where the daemon provisions no session of its own).</summary>
+    private sealed class SkillSupportUnavailableException : InvalidOperationException
+    {
+        private SkillSupportUnavailableException(string message)
+            : base(message) { }
+
+        public static SkillSupportUnavailableException ForSession(string sessionId) =>
+            new($"Sandbox session '{sessionId}' has no code-reviewer skill/agent support; review aborted (RequireSkillSupport).");
+
+        public static SkillSupportUnavailableException ForGateway(string marketplaces, string detail) =>
+            new($"Gateway marketplaces [{marketplaces}] do not supply Revobot's required review skills/agents "
+                + $"({detail}); review aborted (RequireSkillSupport).");
+    }
 
     /// <summary>
     /// Resolves the runner/filesystem pair this run's checkout git and the review agent's MCP tools
@@ -218,6 +324,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private async Task<ReviewToolContext?> BuildToolContextAsync(ReviewRun run, CancellationToken cancellationToken)
     {
+        // On the S2S path the review runs inside a conversation the REVIEW HOST owns: its tools, MCP
+        // transport and code-reviewer:* sub-agent catalog come from the gateway session that host provisions
+        // against the mounted workspace. A daemon-side session here would mount the same slot a second time
+        // and risks the boot-session collision noted below, so there is nothing for this method to build —
+        // but the prerequisites still have to hold, so the RequireSkillSupport fail-fast runs first, against
+        // the gateway's own catalog. This branch is deliberately ABOVE the EnableToolAssistedReview guard: on
+        // S2S that flag governs daemon-side provisioning the path does not use, and it must not be able to
+        // switch the prerequisite check off.
+        if (_options.UseS2SReviewAgent)
+        {
+            await EnsureGatewaySkillSupportAsync(run, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+
         if (!_options.EnableToolAssistedReview || _provisioner is null)
         {
             return null;
@@ -229,7 +349,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // /workspace/store is real); every other tool-assisted run keeps the per-run mount. The lease
             // was recorded by TryPooledFetchContextAsync in the ContextReady stage.
             var session = _leasedReviews.TryGetValue(run.Id, out var lease)
-                ? await _provisioner.GetOrCreateForSlotAsync(run, lease.Slot, cancellationToken).ConfigureAwait(false)
+                ? lease.Session
+                    ?? await _provisioner.GetOrCreateForSlotAsync(run, lease.Slot, cancellationToken).ConfigureAwait(false)
                 : await _provisioner.GetOrCreateAsync(run, cancellationToken).ConfigureAwait(false);
             if (session is null)
             {
@@ -257,7 +378,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         + "daemon (RequireSkillSupport=true).",
                     run.Id, session.SessionId);
                 _appLifetime?.StopApplication();
-                throw new SkillSupportUnavailableException(session.SessionId);
+                throw SkillSupportUnavailableException.ForSession(session.SessionId);
             }
 
             return new ReviewToolContext(
@@ -279,6 +400,64 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ex, "Run {RunId}: tool-assisted review unavailable; degrading to diff-only.", run.Id);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Pre-flight for the S2S path (<see cref="CodeReviewDaemonOptions.RequireSkillSupport"/>): assert the
+    /// gateway actually publishes Revobot's review prerequisites — the <c>code-reviewer:pr-review</c> skill that
+    /// <c>daemon-prompts.yaml</c> makes mandatory ("that skill IS how you review") plus at least one
+    /// <c>code-reviewer:*</c> sub-agent — before a hosted review is allowed to run.
+    /// <para>
+    /// This is the S2S counterpart of the in-session fail-fast in <see cref="BuildToolContextAsync"/>. Without
+    /// it the failure is silent in exactly the way that matters: <c>MarketplaceSubAgentLoader</c> swallows an
+    /// unavailable catalog and the hosted agent simply reviews with no skill and no reviewers, producing a
+    /// plausible-looking but shallow review that still gets posted to the PR.
+    /// </para>
+    /// <para>
+    /// A probe that <b>throws</b> is not the same finding: it means the catalog could not be read, not that the
+    /// skills are absent, and a genuinely unreachable gateway fails this run loudly when the review host
+    /// provisions its session. That case warns and leaves the verdict uncached so the next run re-probes,
+    /// rather than stopping the daemon on a transport blip.
+    /// </para>
+    /// </summary>
+    private async Task EnsureGatewaySkillSupportAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        if (_skillProbe is null || !_options.RequireSkillSupport || _gatewaySkillsVerified)
+        {
+            return;
+        }
+
+        var marketplaces = _options.SubAgentMarketplaces;
+        var marketplaceList = marketplaces.Count > 0 ? string.Join(",", marketplaces) : "(gateway default)";
+
+        GatewaySkillSupport support;
+        try
+        {
+            support = await _skillProbe.ProbeAsync(marketplaces, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Run {RunId}: could not read the gateway marketplace catalog for [{Marketplaces}]; skill support "
+                    + "is unverified for this run and will be re-probed on the next one.",
+                run.Id, marketplaceList);
+            return;
+        }
+
+        if (!support.IsSupported)
+        {
+            _logger.LogCritical(
+                "Run {RunId}: the gateway does not provide the code-reviewer skills/agents Revobot reviews with "
+                    + "({Support}). Revobot will not review without proper skills/agents. Aborting this review "
+                    + "and stopping the daemon (RequireSkillSupport=true) so the marketplace/plugin setup is "
+                    + "fixed instead of the daemon silently posting shallow reviews.",
+                run.Id, support.Describe());
+            _appLifetime?.StopApplication();
+            throw SkillSupportUnavailableException.ForGateway(marketplaceList, support.Describe());
+        }
+
+        _gatewaySkillsVerified = true;
     }
 
     /// <summary>
@@ -372,7 +551,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // finally without running the Posted-stage cleanup — can't leave session-side work racing the next
             // lease's clean-on-entry on the same store (review #180). Best-effort + idempotent: a no-op when no
             // session was provisioned, and harmless if the Posted stage already destroyed it.
-            if (_options.EnableToolAssistedReview && _provisioner is not null)
+            // (Skipped on S2S: BuildToolContextAsync returns before provisioning anything, so the daemon owns
+            // no session — the container belongs to the review host. DestroyAsync is a documented no-op there,
+            // but state the invariant at the call site rather than leaving it to be inferred.)
+            if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
             {
                 await _provisioner.DestroyAsync(runId, CancellationToken.None).ConfigureAwait(false);
             }
@@ -389,11 +571,51 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Pooled scoped-writable path (Layer 1): lease a warm slot, prepare it host-side (branch reuse
         // carries prior notes), diff the prepared submodule host-side, and persist the context. When the
         // reviewed repo is not a submodule of the store — or the pooled path isn't wired — this returns
-        // false and the existing per-run/diff-only checkout below runs unchanged (degrade intact, §7).
+        // false and one of the degrades below runs unchanged (degrade intact, §7).
+        //
+        // This is tried FIRST, including on the S2S path: the pooled slot is the RICHER workspace (the
+        // cross-repo store, the Knowledge Base, and the PR's own accumulated notes dir), and on S2S the leased
+        // slot is what gets mounted into the hosted conversation. The prepared-checkout branch below is a bare
+        // per-PR clone — the correct degrade for a repo that is not a submodule of the store, but strictly
+        // less than the slot, so it must not pre-empt it.
         if (UsePooledReview
             && await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false))
         {
             return;
+        }
+
+        // Fail CLOSED when a pool is configured but declined the run. The only decline is "the reviewed repo is
+        // not a submodule of the review store", and the S2S degrade below (now removed — see the next guard)
+        // used to answer it by minting a PERMANENT per-PR host clone + gateway workspace that nothing in this
+        // system ever deletes — pooled slots are recycled, these are not, so every PR of an un-onboarded repo
+        // silently leaked another copy. Onboarding the repo into the store is the fix, so say that instead of
+        // quietly degrading.
+        if (UsePooledReview && _preparer is not null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: pooled review is configured but the reviewed repo '{repo.NormalizedKey}' is not a "
+                + $"submodule of the review store '{_options.ResolvedStoreUrl}'. Onboard the repo into that store "
+                + "(add it under repos/ and push) — the daemon will not fall back to an unmanaged per-PR "
+                + "workspace, which is never cleaned up.");
+        }
+
+        // Fail CLOSED when S2S is enabled but no recyclable pooled workspace is configured at all (UsePooledReview
+        // is false here — not merely declined; see the pooled-decline guard above). S2SReviewWorkspacePreparer is
+        // wired unconditionally whenever UseS2SReviewAgent is on (Program.cs), independent of the SEPARATE
+        // EnableToolAssistedReview + EnableReviewerWrites + review-store gate that wires the pool. Without the
+        // pool, the only alternative left was the S2S "degrade": S2SReviewWorkspacePreparer.PrepareAsync mints a
+        // PERMANENT per-PR host clone plus a LmStreaming workspace REST record that nothing in this system ever
+        // reclaims — pooled slots are recycled, these are not, so every S2S review of every PR would leak another
+        // copy. Reject the run instead of calling PrepareAsync, so no host clone or workspace REST request is
+        // ever made for this misconfiguration.
+        if (_preparer is not null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: S2S review is enabled but no recyclable pooled workspace is configured. Set "
+                + "EnableToolAssistedReview and EnableReviewerWrites, and onboard a review store/pool "
+                + "(CrossRepoStoreUrl plus the Layer-1 slot pool) so the daemon can lease a warm, recyclable slot "
+                + "— it will not fall back to an unmanaged per-PR host clone and LmStreaming workspace, which is "
+                + "never cleaned up.");
         }
 
         var (runner, fileSystem) = await ResolveSandboxAsync(run, cancellationToken).ConfigureAwait(false);
@@ -441,6 +663,54 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             layout.TargetDir, layout.StoreRoot ?? "(single-repo)");
     }
 
+    /// <summary>
+    /// The S2S ContextReady phase: ensure this run's LmStreaming workspace (which host-clones the PR checkout
+    /// under the shared gateway base), then take the bounded diff + file manifest from that same clone with the
+    /// preparer's host git. The persisted <c>TargetDir</c> is the <b>container</b> root the hosted agent sees —
+    /// a gateway-mounted workspace lands at <see cref="S2SCheckoutRoot"/> — not this host path, so the prompt's
+    /// <c>checkout_root</c> names a directory that exists for the agent reading it.
+    /// </summary>
+    private async Task FetchContextFromPreparedCheckoutAsync(
+        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
+    {
+        var prepared = await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Run {run.Id}: the S2S review workspace was not prepared (no preparer wired).");
+
+        var git = _preparer!.HostGit;
+        var diff = await git
+            .RunAsync(
+                ["-C", prepared.HostDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
+                prepared.HostDir,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!diff.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Fetching the diff for run {run.Id} from the prepared S2S checkout failed "
+                + $"(exit {diff.ExitCode}): {diff.Stderr}");
+        }
+
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var fileManifest = await BuildFileManifestAsync(git, prepared.HostDir, cancellationToken).ConfigureAwait(false);
+
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ContextArtifactSchemaVersion,
+            ArtifactKind = ContextArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, S2SCheckoutRoot, null)),
+        });
+
+        _logger.LogInformation(
+            "Run {RunId}: persisted {Kind} ({Length} char diff, {Files} manifest files) from the prepared S2S "
+                + "checkout {HostDir} (the hosted agent reads it at {ContainerRoot}).",
+            run.Id, ContextArtifactKind, boundedDiff.Length, ManifestFileCount(fileManifest),
+            prepared.HostDir, S2SCheckoutRoot);
+    }
+
     /// <summary>Whether the pooled scoped-writable review path is wired and enabled: tool-assisted +
     /// reviewer-writes on, a pool wired (Program.cs), and a resolved store to clone into the slots. When
     /// off, <see cref="FetchContextAsync"/> uses the existing per-run/diff-only checkout unchanged.</summary>
@@ -464,14 +734,38 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
     {
         var storeUrl = _options.ResolvedStoreUrl!;
-        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
-        var hostFileSystem = _slotWorkspace.HostFileSystem;
-
-        var slot = await _slotWorkspace.Pool.LeaseAsync(cancellationToken).ConfigureAwait(false);
+        var slot = await _slotWorkspace!.Pool.LeaseAsync(cancellationToken).ConfigureAwait(false);
         var handedOff = false;
+        ReviewRunSession? session = null;
         try
         {
-            var submoduleRelPath = await ResolveStoreSubmodulePathAsync(hostFileSystem, slot.StorePath, repo, provider)
+            // S2S conversations are hosted by LmStreaming, so the daemon does not own their session. Preserve
+            // that path until its separate hosted-session design changes. The in-process path must provision
+            // FIRST and perform every setup/read/diff operation through this exact SDK-backed session.
+            if (_options.UseS2SReviewAgent)
+            {
+                var handled = await TryHostPreparedPooledContextAsync(
+                        run, repo, provider, slot, storeUrl, cancellationToken)
+                    .ConfigureAwait(false);
+                handedOff = handled;
+                return handled;
+            }
+
+            if (_provisioner is null)
+            {
+                throw new InvalidOperationException(
+                    $"Run {run.Id}: pooled SDK preparation requires a review session provisioner.");
+            }
+
+            session = await _provisioner
+                .GetOrCreateRequiredForSlotAsync(run, slot, cancellationToken)
+                .ConfigureAwait(false);
+            var preparer = _slotWorkspace.CreateSessionPreparer(session, provider);
+            var sdkGit = new GitRunner(session.CommandRunner);
+            await preparer.EnsureStoreAsync(StoreRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+
+            var submoduleRelPath = await ResolveStoreSubmodulePathAsync(
+                    session.FileSystem, StoreRoot, repo, provider)
                 .ConfigureAwait(false);
             if (submoduleRelPath is null)
             {
@@ -481,20 +775,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 return false;
             }
 
-            var branch = BuildNotesBranchName(hostGit, hostFileSystem, repo, run);
+            var branch = BuildNotesBranchName(
+                new GitRunner(_slotWorkspace.HostRunner), _slotWorkspace.HostFileSystem, repo, run);
             var notesRelPath = BuildNotesRelPath(repo, run.PrId);
+            var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
             var policy = DaemonOperationPolicy.BuildForRun(
                 repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
                 allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
-
             var prepared = await PrepareWithRecoveryAsync(
-                slot, run, storeUrl, submoduleRelPath, branch, notesRelPath, policy, cancellationToken)
+                    preparer, run, StoreRoot, scratchDirSandbox, storeUrl, submoduleRelPath, branch,
+                    notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
 
-            // Diff + manifest run HOST-side against the prepared submodule working tree (privileged daemon
-            // git), never in the sandbox the agent shares.
-            var diff = await hostGit
-                .RunAsync(["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"], prepared.TargetDir, cancellationToken)
+            var diff = await sdkGit
+                .RunAsync(["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
+                    prepared.TargetDir, cancellationToken)
                 .ConfigureAwait(false);
             if (!diff.Succeeded)
             {
@@ -503,13 +798,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             }
 
             var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
-            var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken).ConfigureAwait(false);
-
-            // Container paths the agent's MCP tools address (the slot is mounted at /workspace) — these, not
-            // the host paths the daemon git used, are what the review input + tool context reference.
-            var targetDirSandbox = PosixJoin(StoreRoot, submoduleRelPath);
+            var fileManifest = await BuildFileManifestAsync(sdkGit, prepared.TargetDir, cancellationToken)
+                .ConfigureAwait(false);
             var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
-            var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
 
             _ = _store.AddArtifact(new ReviewArtifact
             {
@@ -518,39 +809,104 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 ArtifactKind = ContextArtifactKind,
                 Provider = provider,
                 Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                    run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, targetDirSandbox, StoreRoot)),
+                    run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
+                    prepared.TargetDir, StoreRoot)),
             });
 
-            // Record the lease so the review + commit-notes stages can find it, guarding against silently
-            // overwriting a lease already held for this run id. ContextReady runs once per run, so an
-            // existing entry means a prior slot was never returned; overwriting it would orphan that slot.
-            // Fail the stage instead (handedOff stays false, so this slot is returned by the finally below)
-            // and let the orchestrator's terminal finally return the stale one — the stage then retries clean.
             if (!_leasedReviews.TryAdd(
                 run.Id,
-                new LeasedReview(slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox)))
+                new LeasedReview(
+                    slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox, session)))
             {
                 throw new InvalidOperationException(
                     $"Run {run.Id} already holds a pooled review lease; refusing to overwrite it (would leak a slot).");
             }
 
             handedOff = true;
-
             _logger.LogInformation(
-                "Run {RunId}: pooled slot {Index} prepared on branch '{Branch}' ({Length} char diff, {Files} "
-                    + "manifest files) from {TargetDir}.",
-                run.Id, slot.Index, branch, boundedDiff.Length, ManifestFileCount(fileManifest), prepared.TargetDir);
+                "Run {RunId}: pooled slot {Index} prepared through sandbox session {SessionId} on branch "
+                    + "'{Branch}' ({Length} char diff, {Files} manifest files) from {TargetDir}.",
+                run.Id, slot.Index, session.SessionId, branch, boundedDiff.Length,
+                ManifestFileCount(fileManifest), prepared.TargetDir);
             return true;
         }
         finally
         {
-            // Return the slot on decline (not-a-submodule) or failure (exception). On success the lease owns
-            // it until PostAsync returns it, so it is NOT returned here (handedOff).
             if (!handedOff)
             {
+                if (session is not null && _provisioner is not null)
+                {
+                    await _provisioner.DestroyAsync(run, CancellationToken.None).ConfigureAwait(false);
+                }
+
                 await _slotWorkspace.Pool.ReturnAsync(slot, CancellationToken.None).ConfigureAwait(false);
             }
         }
+    }
+
+    private async Task<bool> TryHostPreparedPooledContextAsync(
+        ReviewRun run,
+        RepoIdentity repo,
+        string provider,
+        ReviewSlot slot,
+        string storeUrl,
+        CancellationToken cancellationToken)
+    {
+        var hostGit = new GitRunner(_slotWorkspace!.HostRunner);
+        var hostFileSystem = _slotWorkspace.HostFileSystem;
+        await _slotWorkspace.HostPreparer.EnsureStoreAsync(slot.StorePath, storeUrl, cancellationToken)
+            .ConfigureAwait(false);
+        var submoduleRelPath = await ResolveStoreSubmodulePathAsync(
+                hostFileSystem, slot.StorePath, repo, provider)
+            .ConfigureAwait(false);
+        if (submoduleRelPath is null)
+        {
+            return false;
+        }
+
+        var branch = BuildNotesBranchName(hostGit, hostFileSystem, repo, run);
+        var notesRelPath = BuildNotesRelPath(repo, run.PrId);
+        var policy = DaemonOperationPolicy.BuildForRun(
+            repo, _options.ReviewBotRepoUrl, allowWriteOperations: false,
+            allowedSubmodules: BuildStoreSubmoduleAllowList(run, repo));
+        var prepared = await PrepareWithRecoveryAsync(
+                _slotWorkspace.HostPreparer, run, slot.StorePath, slot.ScratchPath, storeUrl,
+                submoduleRelPath, branch, notesRelPath, policy, cancellationToken)
+            .ConfigureAwait(false);
+        var diff = await hostGit.RunAsync(
+                ["-C", prepared.TargetDir, "diff", $"{run.BaseSha}...{run.HeadSha}"],
+                prepared.TargetDir, cancellationToken)
+            .ConfigureAwait(false);
+        if (!diff.Succeeded)
+        {
+            throw new InvalidOperationException(
+                $"Fetching the diff for run {run.Id} failed (exit {diff.ExitCode}): {diff.Stderr}");
+        }
+
+        var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
+        var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken)
+            .ConfigureAwait(false);
+        var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
+        var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ContextArtifactSchemaVersion,
+            ArtifactKind = ContextArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
+                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot)),
+        });
+        if (!_leasedReviews.TryAdd(
+            run.Id,
+            new LeasedReview(slot, prepared, notesRelPath, branch, notesDirSandbox, scratchDirSandbox, null)))
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id} already holds a pooled review lease; refusing to overwrite it.");
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -561,26 +917,34 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// retried ONCE. A second failure surfaces so the stage retries and the retry governor bounds it.
     /// </summary>
     private async Task<PreparedCheckout> PrepareWithRecoveryAsync(
-        ReviewSlot slot, ReviewRun run, string storeUrl, string submoduleRelPath, string branch,
-        string notesRelPath, OperationPolicy policy, CancellationToken cancellationToken)
+        IReviewSlotPreparer preparer,
+        ReviewRun run,
+        string storeRoot,
+        string scratchRoot,
+        string storeUrl,
+        string submoduleRelPath,
+        string branch,
+        string notesRelPath,
+        OperationPolicy policy,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return await _slotWorkspace!.Preparer.PrepareAsync(
-                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
-                    cancellationToken)
+            return await preparer.PrepareAsync(
+                    run, storeRoot, scratchRoot, storeUrl, submoduleRelPath, branch,
+                    ReviewBotDefaultBranch, notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SlotNeedsRecloneException or SlotCorruptException)
         {
             _logger.LogWarning(
                 ex,
-                "Run {RunId}: pooled slot {Index} store is corrupt; re-cloning and retrying prepare once.",
-                run.Id, slot.Index);
-            await _slotWorkspace!.Pool.RecloneStoreAsync(slot, cancellationToken).ConfigureAwait(false);
-            return await _slotWorkspace.Preparer.PrepareAsync(
-                    slot, run, storeUrl, submoduleRelPath, branch, ReviewBotDefaultBranch, notesRelPath, policy,
-                    cancellationToken)
+                "Run {RunId}: pooled store {StoreRoot} is corrupt; re-cloning and retrying prepare once.",
+                run.Id, storeRoot);
+            await preparer.RecloneStoreAsync(storeRoot, storeUrl, cancellationToken).ConfigureAwait(false);
+            return await preparer.PrepareAsync(
+                    run, storeRoot, scratchRoot, storeUrl, submoduleRelPath, branch,
+                    ReviewBotDefaultBranch, notesRelPath, policy, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -657,7 +1021,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string NotesRelPath,
         string Branch,
         string NotesDirSandbox,
-        string ScratchDirSandbox);
+        string ScratchDirSandbox,
+        ReviewRunSession? Session);
 
     /// <summary>
     /// Resolves the run's checkout. When a cross-repo store is configured (<see
@@ -972,6 +1337,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         }
 
+        // S2S path: now that resume-safety has restored the lease, adopt that slot as the LmStreaming
+        // workspace. Preparing before the re-lease would cache a bare per-PR clone whose mounted layout does
+        // not contain the pooled store, notes or Knowledge Base paths used by the persisted context.
+        await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
         reviewInput = await PrependPriorKnowledgeAsync(reviewInput, run.Id, context.StoreRoot, cancellationToken)
@@ -994,10 +1364,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>
     /// Builds the review prompt's templated workspace-layout variables (design: prompt migration). The
-    /// <c>notes_dir</c>/<c>has_notes</c> pair is derived from <paramref name="toolContext"/> — the SAME
-    /// <see cref="ReviewToolContext.NotesDir"/> that scopes the agent's Write/Edit/Bash tools
-    /// (<see cref="ResolvePooledWriteScope"/>) — never a parallel recomputation, so the prompt can never
-    /// tell the agent to write somewhere its tools don't actually allow.
+    /// <c>notes_dir</c>/<c>has_notes</c> pair comes from <paramref name="notesDir"/>, which every caller takes
+    /// from <see cref="ResolvePooledWriteScope"/> — the SAME single source that scopes the in-process agent's
+    /// Write/Edit/Bash tools — never a parallel recomputation, so the prompt can never tell the agent to write
+    /// somewhere its tools don't actually allow.
+    /// <para>
+    /// Taking the value from the write scope rather than the tool context is what keeps the notes/PR-memory
+    /// behaviour alive on the S2S path, where the daemon builds no tool context at all (the hosted conversation
+    /// owns the tools) but the pooled lease — and therefore the notes dir — is exactly the same.
+    /// </para>
     /// <para>
     /// The re-review variables (<paramref name="prevHeadSha"/>, <paramref name="reviewRound"/>,
     /// <paramref name="priorNotesFiles"/>) are looked up/listed by the caller (<see cref="RunPrimaryReviewAsync"/>
@@ -1012,13 +1387,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         bool shouldPost,
         string? checkoutRoot,
         string? storeRoot,
-        ReviewToolContext? toolContext,
+        string? notesDir,
         string headSha,
         string? prevHeadSha,
         int reviewRound,
         IReadOnlyList<string> priorNotesFiles)
     {
-        var notesDir = toolContext?.NotesDir;
         var isRereview = !string.IsNullOrWhiteSpace(prevHeadSha);
         return new Dictionary<string, object>
         {
@@ -1075,22 +1449,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return (summary.PrevHeadSha, reviewRound, []);
         }
 
-        // A pooled review lists its prior notes HOST-side from the leased slot's store checkout — the same
-        // host filesystem CommitPooledNotesAsync writes them through — NOT the boot-lifetime _fileSystem
-        // sandbox session (mirrors PrependPriorKnowledgeAsync). That boot session is one the gateway never
-        // registered for this run, so it 404s ("Session not found"); worse, its FIRST use binds a boot gateway
-        // session under the daemon's shared app id that then COLLIDES with the per-run review MCP session — the
-        // per-run /mcp connect 404s and the whole review fails (observed live: list-prior-notes was the first
-        // boot-adapter touch of a pooled review, so it triggered the bind that broke every review). Reading
-        // host-side keeps the boot adapter untouched on the pooled path. The returned paths stay CONTAINER-
-        // rooted (notesDir) so the review agent Reads them through its own sandbox tools; a non-pooled/legacy
-        // run (no lease) keeps the original _fileSystem path.
+        // In-process pooled reviews reuse the exact session that prepared the checkout, so prior-note reads
+        // remain inside the SDK boundary. S2S still has no daemon-owned session and therefore uses the host
+        // filesystem until the hosted-session path gets its own ownership design.
         ISandboxFileSystem fileSystem;
         string listDir;
         if (_slotWorkspace is not null && _leasedReviews.TryGetValue(run.Id, out var lease))
         {
-            fileSystem = _slotWorkspace.HostFileSystem;
-            listDir = lease.Prepared.NotesDir;
+            fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
+            listDir = lease.Session is null ? lease.Prepared.NotesDir : notesDir;
         }
         else
         {
@@ -1148,7 +1515,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? root;
         if (_slotWorkspace is not null && _leasedReviews.TryGetValue(runId, out var lease))
         {
-            fileSystem = _slotWorkspace.HostFileSystem;
+            fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
             root = lease.Prepared.StoreRoot;
         }
         else
@@ -1217,7 +1584,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return reviewInput;
         }
 
-        var fileSystem = _slotWorkspace.HostFileSystem;
+        var fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
         var targetDir = lease.Prepared.TargetDir;
 
         List<string> blocks = [];
@@ -1468,10 +1835,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             run.Id, reviewInput.Length, reviewInput.Length / 4, toolContext is not null, run.ModelId ?? "(default)");
 
         ReviewAgentResult result;
+        // ONE absolute budget for the whole stage, resumed from the checkpoint of an interrupted lifecycle or
+        // started fresh. It is computed once HERE rather than per attempt: the escalation ladder below can run
+        // up to three attempts, and each attempt is itself two turns plus a completion barrier. A per-attempt
+        // window — or a window recomputed on restart — would silently multiply the stage's worst case.
+        // The checkpoint is matched against the identity of the attempt that is about to run — the BASE rung,
+        // the only one a resume can pick up (see LoadOrStartCheckpoint) — so a persisted lifecycle is resumed
+        // only when this process would reconstruct the very same review.
+        var checkpoint = LoadOrStartCheckpoint(
+            run,
+            BuildLifecycleIdentity(run, ThreadId(run, run.VariantId), run.ModelId, toolContext is not null));
         try
         {
             result = await RunReviewAttemptAsync(
-                    run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId), cancellationToken)
+                    run, reviewInput, checkoutRoot, storeRoot, toolContext, ThreadId(run, run.VariantId),
+                    checkpoint, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (IsContextExhaustionFailure(ex))
@@ -1484,6 +1862,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // KEEPING the tool context so the review stays grounded; (2) if the bigger model still exhausts
             // while tool-assisted, shed the sub-agents (diff-only) on it; (3) diff-only on the base model when
             // nothing bigger is configured. A diff-only attempt that still fails is surfaced (RetryPending).
+            // Every retry drops the resume handles — a fresh thread has no conversation to rejoin and no
+            // accepted input to poll — while KEEPING the absolute deadline, so escalating never buys more time.
+            var retry = checkpoint.Restarted();
             var escalation = _options.OverflowEscalationModelId;
             var canEscalate = !string.IsNullOrWhiteSpace(escalation)
                 && !string.Equals(escalation, run.ModelId, StringComparison.OrdinalIgnoreCase);
@@ -1497,7 +1878,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 {
                     result = await RunReviewAttemptAsync(
                             run, reviewInput, checkoutRoot, storeRoot, toolContext,
-                            ThreadId(run, run.VariantId + "-esc"), cancellationToken, modelOverride: escalation)
+                            ThreadId(run, run.VariantId + "-esc"), retry, cancellationToken,
+                            modelOverride: escalation)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex2) when (toolContext is not null && IsContextExhaustionFailure(ex2))
@@ -1507,7 +1889,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                         run.Id, escalation);
                     result = await RunReviewAttemptAsync(
                             run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
-                            ThreadId(run, run.VariantId + "-esc-ctxretry"), cancellationToken, modelOverride: escalation)
+                            ThreadId(run, run.VariantId + "-esc-ctxretry"), retry, cancellationToken,
+                            modelOverride: escalation)
                         .ConfigureAwait(false);
                 }
             }
@@ -1518,7 +1901,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                     run.Id, ex.GetType().Name);
                 result = await RunReviewAttemptAsync(
                         run, reviewInput, checkoutRoot, storeRoot, toolContext: null,
-                        ThreadId(run, run.VariantId + "-ctxretry"), cancellationToken)
+                        ThreadId(run, run.VariantId + "-ctxretry"), retry, cancellationToken)
                     .ConfigureAwait(false);
             }
             else
@@ -1534,17 +1917,25 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactKind = ReviewArtifactKind,
             Provider = provider,
             Payload = JsonSerializer.Serialize(
-                new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId)),
+                new ReviewArtifactPayload(result.ReviewText, result.RunId, run.VariantId, result.ThreadId)),
         });
     }
 
     /// <summary>
     /// Runs one primary-review attempt with the given <paramref name="toolContext"/> (non-null = tool-assisted
     /// with sub-agents; null = diff-only) on its own conversation <paramref name="threadId"/>, returning the
-    /// collected review. Split out of <see cref="RunPrimaryReviewAsync"/> so an attempt that overflows the
+    /// AUTHORITATIVE review. Split out of <see cref="RunPrimaryReviewAsync"/> so an attempt that overflows the
     /// model context window can be retried — diff-only and/or on a bigger-window <paramref name="modelOverride"/>
     /// (e.g. gpt-5.6-terra) — on a fresh thread without re-running context assembly. <paramref name="modelOverride"/>
     /// is <c>null</c> to use the run's configured model.
+    /// <para>
+    /// An attempt is THREE steps on ONE loop: a collect-only provisional turn, the sub-agent completion barrier,
+    /// then the synthesis turn whose answer is what this returns. All three live inside the single
+    /// <c>await using</c> scope below because disposing the loop disposes its <c>SubAgentManager</c> — the very
+    /// thing the barrier polls and the synthesis turn reads delivered results from. <paramref name="checkpoint"/>
+    /// carries the ONE absolute budget all three share, plus the handles that let a lifecycle interrupted by a
+    /// daemon restart pick up where it stopped instead of re-reviewing the PR.
+    /// </para>
     /// </summary>
     private async Task<ReviewAgentResult> RunReviewAttemptAsync(
         ReviewRun run,
@@ -1553,36 +1944,434 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? storeRoot,
         ReviewToolContext? toolContext,
         string threadId,
+        ReviewCheckpoint checkpoint,
         CancellationToken cancellationToken,
         string? modelOverride = null)
     {
+        // The notes dir comes from the pooled write scope, NOT from the tool context. The two are the same
+        // value in-process (the tool context is built from this very scope), but on S2S there is no tool
+        // context — the hosted conversation owns the tools — while the lease, and therefore the notes dir the
+        // slot mounts at /workspace/store/PRs/..., is unchanged. Sourcing it here is what keeps per-PR notes,
+        // re-review memory and the "ONLY writable location" directive alive on both paths.
+        var notesDir = ResolvePooledWriteScope(run).NotesDir;
         var (prevHeadSha, reviewRound, priorNotesFiles) = await ComputeRereviewContextAsync(
-            run, toolContext?.NotesDir, cancellationToken).ConfigureAwait(false);
+            run, notesDir, cancellationToken).ConfigureAwait(false);
         var (repo, provider) = ResolveRepo(run);
         // Posting is AGENT-owned and INLINE: the review agent posts its findings as line-anchored comments
         // (and replies to open threads) via the provider REST API / the code-reviewer:post-pr-review skill over
         // the sandbox's egress proxy, which injects the bot's auth on api.github.com / dev.azure.com writes
-        // (github-auth/ado-auth rules, Methods:[] = all methods). should_post drives the prompt's posting step.
-        // Because the agent reliably WRITES the review but frequently SKIPS posting it (observed live: run 81
-        // emitted its review + notes at 17/150 turns and never posted), when posting is authorized we ALSO drive
-        // one post-enforcement turn AFTER the review (ReviewAgent) that makes it actually post. The host-side
-        // single-summary publisher stays an off-by-default fallback (EnableHostSummaryFallback).
-        var shouldPost = _options.EnableCommentPosting;
+        // (github-auth/ado-auth rules, Methods:[] = all methods).
+        // The posting intent flows to the SYNTHESIS turn ONLY. The provisional turn is collect-only by
+        // construction (CreateReviewProfile forces should_post=false), because its answer is written while
+        // children are still running: posting there would publish a half-review the authoritative turn cannot
+        // retract, and it is also what made the agent skip the real posting step (observed live: run 81 emitted
+        // its review + notes at 17/150 turns and never posted). Synthesis is both the only complete answer and
+        // the only delivery point.
+        // The host-side single-summary publisher stays an off-by-default fallback (EnableHostSummaryFallback).
+        // On the S2S path the review runs on the LmStreaming host, whose agent is domain-agnostic and CANNOT post
+        // to a GitHub/ADO PR — so agent-inline posting is forced off; PostAsync posts host-side for both
+        // providers instead (with the deep-link appended).
+        var shouldPost = _options.EnableCommentPosting && !_options.UseS2SReviewAgent;
         var variables = BuildPromptVariables(
             _options.BotName, repo, run.PrId, shouldPost, checkoutRoot, storeRoot,
-            toolContext, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
+            notesDir, run.HeadSha, prevHeadSha, reviewRound, priorNotesFiles);
         var profile = DaemonAgentFactory.CreateReviewProfile(variables);
         // A tool-assisted review must actually CALL Read/Grep/Glob/Skill to ground its findings in the
         // checkout. At the diff-only "low" effort the model shortcuts to a diff-only answer (and even
         // fabricates a "no files found / couldn't read the repo" caveat) rather than doing the multi-step
         // tool calls, so the tool-assisted path uses the higher ToolAssistedReasoningEffort.
         var effort = toolContext is not null ? _options.ToolAssistedReasoningEffort : null;
+        // On the S2S path pass the LmStreaming workspace this run prepared (cached at ReviewAsync entry) so the
+        // hosted conversation binds to the PR checkout + code-reviewer marketplace. Null on the in-process path,
+        // where the live/fake factory ignores it. The escalation-ladder retries share the same workspace (a fresh
+        // THREAD reloads no history but reviews the same code) — only the daemon-internal threadId differs.
+        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
-            profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext);
-        var agent = new ReviewAgent(loop, _loggerFactory.CreateLogger<ReviewAgent>());
-        // Only when authorized to post: the follow-up turn that forces the agent to actually deliver its review.
-        var postEnforcement = shouldPost ? DaemonAgentFactory.CreatePostEnforcementPrompt(variables) : null;
-        return await agent.ReviewAsync(reviewInput, postEnforcement, cancellationToken).ConfigureAwait(false);
+            profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
+            reviewWorkspace: prepared, resumeHostedThreadId: checkpoint.HostedThreadId);
+        // Resolve the loop's sub-agent surface (unwrapping decorators): the completion source the barrier polls
+        // and the spawn-suppression scope the synthesis turn runs in. A loop that declares the surface with null
+        // members provably has no such surface (diff-only; S2S declares a null completion source because its
+        // children live on the host, but a REAL suppression scope); a loop that declares nothing is UNKNOWN, so
+        // if this run was configured to spawn we refuse rather than silently skip BOTH barrier and suppression.
+        var surface = ReviewLoopSubAgentSurface.Resolve(loop);
+
+        // "Can this run spawn?" is answered differently per path: in-process it is written into the tool
+        // context, while on S2S the sub-agent options live on the HOST, so the local tool context says nothing
+        // and gating on it alone would let an S2S loop with no surface through unchecked. Where spawning is
+        // possible, a usable suppression scope is REQUIRED — a declared surface with a null SuppressSpawning
+        // is just as unable to keep the synthesis turn from fanning out as no surface at all.
+        var runCanSpawn = toolContext?.SubAgentOptions is not null || _options.UseS2SReviewAgent;
+        if (runCanSpawn && surface?.SuppressSpawning is null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the review loop ({loop.GetType().Name}) can spawn sub-agents but exposes no "
+                    + "IReviewLoopSubAgentSurface spawn-suppression scope, so the synthesis turn cannot be kept "
+                    + "from fanning out. Implement IReviewLoopSubAgentSurface with a non-null SuppressSpawning "
+                    + "(or IReviewLoopWrapper to forward to a loop that does) on it.");
+        }
+
+        var completionSource = surface?.CompletionSource;
+        var agent = new ReviewAgent(
+            loop, _loggerFactory.CreateLogger<ReviewAgent>(), surface?.SuppressSpawning);
+
+        // Resumability is a property of WHERE the turn runs, resolved THROUGH any decorators: an S2S turn is
+        // durable on a host that outlives this process, so a restart can rejoin it. Requiring it on the S2S
+        // path turns a wrapper that hides the capability — or a factory wired to the wrong loop — into a loud
+        // failure instead of a review that silently mints a second conversation on every restart. The
+        // in-process path stays deliberately non-resumable: its turn dies with the loop that started it.
+        var resumable = ReviewLoopSubAgentSurface.ResolveCapability<IResumableReviewTurn>(loop);
+        if (_options.UseS2SReviewAgent && resumable is null)
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the S2S review loop ({loop.GetType().Name}) exposes no IResumableReviewTurn, so "
+                    + "its hosted conversation and accepted turns could not be checkpointed and a restart would "
+                    + "start a second review on a second conversation. Implement IResumableReviewTurn (or "
+                    + "IReviewLoopWrapper to resolve to a loop that does) on it.");
+        }
+
+        var identity = BuildLifecycleIdentity(
+            run, threadId, modelOverride ?? run.ModelId, toolContext is not null);
+
+        // Checkpoint the conversation the INSTANT it is minted — before the provisional turn is sent, and so
+        // before any sub-agent tree exists. Everything after this line is recoverable; a mint that went
+        // unrecorded is not, because the daemon would have no way to find the tree it started.
+        resumable?.ObserveConversationMint(
+            minted => RecordLifecycleCheckpoint(run, provider, minted, checkpoint, identity, provisional: null));
+
+        // 1. Provisional: the agent reviews and fans out. Its answer is written while children are still
+        //    running, so it is persisted only as a CHECKPOINT — under a kind nothing downstream reads. A
+        //    lifecycle resumed AFTER this turn completed skips straight to the barrier; one interrupted DURING
+        //    it re-drives the turn on the conversation it already minted, where the idempotency key makes the
+        //    send resolve to the in-flight turn instead of fanning out a second sub-agent tree.
+        var conversationThreadId = checkpoint.HostedThreadId;
+        if (!checkpoint.ProvisionalComplete)
+        {
+            resumable?.ArmTurnCheckpoint(
+                TurnIdempotencyKey(threadId, ProvisionalTurn), acceptedInputId: null, onInputAccepted: null);
+            var provisional = await agent
+                .CollectProvisionalAsync(reviewInput, checkpoint.DeadlineUtc, cancellationToken)
+                .ConfigureAwait(false);
+            conversationThreadId = provisional.ThreadId ?? threadId;
+            RecordLifecycleCheckpoint(run, provider, conversationThreadId, checkpoint, identity, provisional);
+        }
+
+        // 2. Barrier: block until every descendant has settled (or the shared deadline expires). A resumed
+        //    lifecycle re-queries it from scratch and must re-prove stability, which is why no snapshot is
+        //    checkpointed: one taken before an outage says nothing about what the children did during it.
+        var inventory = await AwaitSubAgentSettlementAsync(
+                run, completionSource, conversationThreadId!, checkpoint.DeadlineUtc, cancellationToken)
+            .ConfigureAwait(false);
+        // 3. Synthesis: same agent, same thread, children's results now all delivered. THIS is the review, and
+        //    the only turn carrying the posting contract. Arm it first: a restart mid-synthesis then rejoins
+        //    the accepted input rather than queueing a second synthesis on the same conversation, and a send
+        //    whose response was lost before the id could be recorded resolves to the same input by key.
+        resumable?.ArmTurnCheckpoint(
+            TurnIdempotencyKey(threadId, SynthesisTurn),
+            checkpoint.SynthesisInputId,
+            inputId => RecordSynthesisRequest(run, provider, inputId, conversationThreadId!));
+        var synthesisPrompt = DaemonAgentFactory.CreateSynthesisPrompt(variables, inventory);
+        return await agent
+            .SynthesizeFinalAsync(synthesisPrompt, shouldPost, checkpoint.DeadlineUtc, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The idempotency key a turn is SENT under: a pure function of state that survives a restart, so every
+    /// attempt at the same turn of the same lifecycle derives the identical key without having to have
+    /// persisted it first. That is what closes the window a persisted "I am about to send" row cannot — the
+    /// daemon can die between the host accepting a send and the response arriving, and the recovery is simply
+    /// to send again under the same key and let the host hand back the input it already accepted.
+    /// <para>
+    /// Keys only have to be unique within a hosted conversation (the host reconciles them per thread), and
+    /// <paramref name="localThreadId"/> already encodes the run, the A/B variant and the escalation rung. A
+    /// lifecycle that starts over mints a NEW conversation, whose ledger is empty, so reusing the key there
+    /// cannot resolve to the abandoned lifecycle's turn.
+    /// </para>
+    /// </summary>
+    public static string TurnIdempotencyKey(string localThreadId, string turn) => $"{localThreadId}:{turn}";
+
+    /// <summary>
+    /// The identity a persisted checkpoint must still match for this process to resume it: WHERE the review
+    /// runs (<paramref name="localThreadId"/> encodes the variant and escalation rung; the workspace is the
+    /// checkout the hosted conversation is bound to), WHAT runs it (modality, model, tool-assisted) and WHICH
+    /// context generation it was built from.
+    /// <para>
+    /// Every field is a real failure mode, not defensive noise. The pooled workspace id is re-derived from
+    /// whichever slot this process leased, so after a restart the same run can be re-leased a slot holding a
+    /// DIFFERENT PR — resuming the old conversation would then synthesize a review of the wrong tree. The
+    /// modality flips with configuration, and an in-process checkpoint's thread id is a daemon-local
+    /// <c>review-run-*</c> string that no host would recognise. The context generation changes whenever the
+    /// ContextReady stage is re-entered, which is the documented rollback path: the diff the checkpointed
+    /// conversation reviewed is no longer the diff this run is about.
+    /// </para>
+    /// </summary>
+    private ReviewLifecycleIdentity BuildLifecycleIdentity(
+        ReviewRun run, string localThreadId, string? modelId, bool toolAssisted)
+    {
+        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        return new ReviewLifecycleIdentity(
+            _options.UseS2SReviewAgent ? S2SModality : InProcessModality,
+            localThreadId,
+            prepared?.WorkspaceId,
+            modelId,
+            toolAssisted,
+            _store.TryGetLatestArtifact(run.Id, ContextArtifactKind)?.Id ?? 0);
+    }
+
+    /// <summary>
+    /// Appends the lifecycle checkpoint for this attempt: at mint time with no <paramref name="provisional"/>
+    /// answer yet (a pure lifecycle row), then again once the provisional turn returns. Append-only, so the
+    /// mint row survives as the record of when the conversation came into existence and the latest row is
+    /// always the fullest.
+    /// </summary>
+    private void RecordLifecycleCheckpoint(
+        ReviewRun run,
+        string provider,
+        string conversationThreadId,
+        ReviewCheckpoint checkpoint,
+        ReviewLifecycleIdentity identity,
+        ReviewAgentResult? provisional)
+    {
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ReviewArtifactSchemaVersion,
+            ArtifactKind = ProvisionalReviewArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(new ReviewArtifactPayload(
+                provisional?.ReviewText ?? string.Empty,
+                provisional?.RunId,
+                run.VariantId,
+                conversationThreadId,
+                checkpoint.StartedAtUtc,
+                checkpoint.DeadlineUtc,
+                identity,
+                provisional is not null)),
+        });
+    }
+
+    /// <summary>
+    /// Resumes the durable checkpoint of a Reviewed lifecycle a daemon restart interrupted, or starts a fresh
+    /// one. The returned budget is the review's ONE absolute deadline; the handles are non-null only when this
+    /// stage is genuinely picking up where a previous process stopped.
+    /// <para>
+    /// A checkpoint is resumed ONLY when this process would reconstruct the very same review — same modality,
+    /// conversation, hosted workspace, model, tool mode and context generation (see
+    /// <see cref="ReviewLifecycleIdentity"/>). Anything else is discarded and the lifecycle starts over.
+    /// Starting over costs one duplicate review; resuming a mismatched one is unbounded, because a hosted
+    /// conversation is bound to a checkout this process may no longer hold — the synthesis would then review
+    /// whatever PR now sits in it and post those findings to THIS PR, with nothing anywhere reporting an error.
+    /// </para>
+    /// <para>
+    /// Only the S2S path is resumable, and that is a property of where the turn RUNS, not a policy choice: its
+    /// turns run on a hosted conversation that outlives the daemon process, so a restart can rejoin them. An
+    /// in-process turn died with the loop that produced it — there is no conversation to re-enter and no
+    /// accepted input to poll — so its attempt safely restarts collect-only rather than fabricating
+    /// resumability. Either way the provisional itself is never promoted: only a synthesis turn writes
+    /// <see cref="ReviewArtifactKind"/>.
+    /// </para>
+    /// </summary>
+    /// <exception cref="ReviewCheckpointCorruptException">
+    /// A checkpoint artifact exists but cannot be read (see <see cref="ReadCheckpointPayload{T}"/>).
+    /// </exception>
+    private ReviewCheckpoint LoadOrStartCheckpoint(ReviewRun run, ReviewLifecycleIdentity identity)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var budget = TimeSpan.FromMinutes(_options.ReviewStageDeadlineMinutes);
+        var fresh = new ReviewCheckpoint(now, now + budget, null, null, ProvisionalComplete: false);
+        if (!_options.UseS2SReviewAgent)
+        {
+            return fresh;
+        }
+
+        // The start/deadline guard rejects a checkpoint written before those fields existed — an artifact that
+        // cannot say what budget it belongs to cannot be resumed onto one.
+        var provisional = ReadCheckpointPayload<ReviewArtifactPayload>(run, ProvisionalReviewArtifactKind);
+        if (provisional?.ThreadId is not { Length: > 0 } hostedThreadId
+            || provisional.ReviewedStartedAtUtc is not { } startedAtUtc
+            || provisional.ReviewedDeadlineUtc is not { } deadlineUtc)
+        {
+            return fresh;
+        }
+
+        // Value equality over the whole identity, so a field added later is enforced by construction rather
+        // than by remembering to extend a hand-written comparison. A row predating the field (Lifecycle null)
+        // is unverifiable and therefore not resumable — which also subsumes the old variant guard, since the
+        // identity's thread id already encodes both the A/B variant and the escalation rung.
+        if (provisional.Lifecycle != identity)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: discarding the review checkpoint on thread {ThreadId} — it belongs to a different "
+                    + "review lifecycle (checkpoint {Persisted}, this process {Current}); starting a fresh one.",
+                run.Id, hostedThreadId, provisional.Lifecycle, identity);
+            return fresh;
+        }
+
+        // A SPENT budget is not resumable. Every turn refuses to start once the deadline has passed, so
+        // rejoining one could only fail the same way every round, forever. Starting over instead is both the
+        // only way the run can still produce a review and the self-healing path for a checkpoint the host no
+        // longer recognises: it survives at most one budget.
+        if (deadlineUtc <= now)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: discarding the review checkpoint on thread {ThreadId} — its budget expired at "
+                    + "{DeadlineUtc}; starting a fresh review lifecycle.",
+                run.Id, hostedThreadId, deadlineUtc);
+            return fresh;
+        }
+
+        // Clamp to BOTH ceilings. The persisted deadline is one: a restart continues a budget, it never
+        // extends one. A full budget from now is the other: a checkpoint written by a process configured with
+        // a longer window (or by a clock that had run ahead) must not hold this stage open for longer than the
+        // configuration in force allows.
+        var resumedDeadline = deadlineUtc < now + budget ? deadlineUtc : now + budget;
+
+        // A synthesis request is only honoured on the conversation it was accepted on; one from an earlier
+        // lifecycle (a different thread) is stale and rejoining it would poll an input that answers a review
+        // this one never asked for.
+        var synthesis = ReadCheckpointPayload<SynthesisRequestPayload>(run, SynthesisRequestArtifactKind);
+        var synthesisInputId = synthesis is not null
+            && string.Equals(synthesis.ParentThreadId, hostedThreadId, StringComparison.Ordinal)
+                ? synthesis.InputId
+                : null;
+
+        _logger.LogInformation(
+            "Run {RunId}: resuming the review on hosted thread {ThreadId} with {Remaining:0} min of its "
+                + "original budget left (provisional {Provisional}, synthesis input {InputId}).",
+            run.Id, hostedThreadId, (resumedDeadline - now).TotalMinutes,
+            provisional.ProvisionalComplete ? "done" : "not finished",
+            synthesisInputId ?? "(not yet queued)");
+        return new ReviewCheckpoint(
+            startedAtUtc, resumedDeadline, hostedThreadId, synthesisInputId, provisional.ProvisionalComplete);
+    }
+
+    /// <summary>
+    /// Reads a checkpoint artifact, turning an unreadable payload into a <see cref="ReviewCheckpointCorruptException"/>.
+    /// <para>
+    /// Deliberately NOT swallowed into "start fresh". The row's very existence proves a lifecycle was started,
+    /// and an unreadable one is indistinguishable from one whose sub-agent tree is still running on a host:
+    /// ignoring it would fan out a second tree on top of the first, every round, for as long as the row stays
+    /// unreadable. Surfacing it instead lets the retry governor charge the failure, so the run parks after a
+    /// bounded number of attempts (see <c>PrOrchestrator.IsGovernedFailure</c>) with the artifact intact for
+    /// diagnosis, rather than retrying — or duplicating — forever.
+    /// </para>
+    /// <para>
+    /// Only faults of the PAYLOAD earn that verdict. Reading a checkpoint also goes through the store, which
+    /// raises <see cref="InvalidOperationException"/> for ordinary transient trouble — a connection closed
+    /// under a shutdown, a command issued against one already gone — and none of that is evidence about the
+    /// artifact. Charging it as corruption would spend the run's retry budget on a condition that clears by
+    /// itself and park a perfectly readable checkpoint, so those are left to propagate as themselves.
+    /// </para>
+    /// </summary>
+    private T? ReadCheckpointPayload<T>(ReviewRun run, string kind)
+        where T : class
+    {
+        try
+        {
+            return TryReadArtifactPayload<T>(run.Id, kind);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        {
+            _logger.LogError(
+                ex, "Run {RunId}: the '{Kind}' review checkpoint could not be read; the run will be retried a "
+                    + "bounded number of times and then parked.", run.Id, kind);
+            throw new ReviewCheckpointCorruptException(
+                $"Run {run.Id}: the '{kind}' review checkpoint artifact could not be read.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Checkpoints a synthesis turn the review host has accepted, so a restart during the poll rejoins that
+    /// exact input. Invoked from the loop between the send and the first poll, which is the only moment the
+    /// id exists and the wait it protects has not started yet.
+    /// </summary>
+    private void RecordSynthesisRequest(ReviewRun run, string provider, string inputId, string parentThreadId)
+    {
+        _ = _store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = ReviewArtifactSchemaVersion,
+            ArtifactKind = SynthesisRequestArtifactKind,
+            Provider = provider,
+            Payload = JsonSerializer.Serialize(new SynthesisRequestPayload(
+                inputId, run.Id.ToString(CultureInfo.InvariantCulture), parentThreadId)),
+        });
+    }
+
+    /// <summary>
+    /// Blocks until this review's sub-agent tree has settled, then renders the safe roster the synthesis prompt
+    /// quotes. <paramref name="loopCompletionSource"/> is the LIVE loop's own source when it has one (in-process
+    /// — the manager is passed straight through, no registry or handle lookup), otherwise the injected
+    /// <see cref="_completionSource"/> is used (S2S, where the children live on the host). With neither, spawning
+    /// was never possible for this attempt, so there is nothing to wait for and the roster is empty.
+    /// <para>
+    /// The lifecycle/head check runs UNCONDITIONALLY first — including on that no-source path. Even a review with
+    /// no children took time to produce, and synthesizing (and therefore posting) against a PR that has since
+    /// moved head or closed is exactly what the check exists to prevent; only the WAITING is conditional. On the
+    /// source-present path the barrier re-runs it immediately before it opens, since minutes can pass in between.
+    /// A barrier timeout propagates — never treated as "probably done".
+    /// </para>
+    /// </summary>
+    private async Task<string> AwaitSubAgentSettlementAsync(
+        ReviewRun run,
+        IReviewSubAgentCompletionSource? loopCompletionSource,
+        string parentThreadId,
+        DateTimeOffset deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        await ValidateReviewStillCurrentAsync(run, cancellationToken).ConfigureAwait(false);
+
+        var source = loopCompletionSource ?? _completionSource;
+        if (source is null)
+        {
+            return ReviewSubAgentTreeSnapshot.NoSubAgents;
+        }
+
+        var barrier = new ReviewSubAgentCompletionBarrier(
+            source,
+            TimeSpan.FromSeconds(_options.ReviewSubAgentBarrierQuietSeconds),
+            _loggerFactory.CreateLogger<ReviewSubAgentCompletionBarrier>());
+        var settled = await barrier
+            .WaitAsync(
+                run, parentThreadId, deadlineUtc,
+                ct => ValidateReviewStillCurrentAsync(run, ct), cancellationToken)
+            .ConfigureAwait(false);
+        _logger.LogInformation(
+            "Run {RunId}: sub-agent barrier opened on thread {ThreadId} with {Count} settled child(ren).",
+            run.Id, parentThreadId, settled.Nodes.Count);
+        return settled.ToSafeInventory();
+    }
+
+    /// <summary>
+    /// The lifecycle/head check that guards synthesis: re-read the run and refuse to synthesize (and therefore
+    /// to post) against a PR that has since moved to a new head or left the Open state. Run once when the
+    /// provisional turn returns and, on the barrier path, again immediately before the barrier opens — sub-agents
+    /// can take minutes, so the two observations are genuinely different. Throwing here fails the stage into
+    /// RetryPending, which is correct — the next round reviews the CURRENT head.
+    /// </summary>
+    private Task ValidateReviewStillCurrentAsync(ReviewRun run, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var current = _store.GetReviewRun(run.Id)
+            ?? throw new InvalidOperationException(
+                $"Review run {run.Id} no longer exists; abandoning its review before synthesis.");
+
+        if (!string.Equals(current.HeadSha, run.HeadSha, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"PR {run.PrId} moved from {run.HeadSha} to {current.HeadSha} while this review was running; "
+                    + "abandoning it so the next round reviews the current head.");
+        }
+
+        if (current.PrLifecycleState != PrLifecycleState.Open)
+        {
+            throw new InvalidOperationException(
+                $"PR {run.PrId} became {current.PrLifecycleState} while this review was running; abandoning "
+                    + "it rather than synthesizing against a closed PR.");
+        }
+
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -1637,8 +2426,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             _options.BotName, repo, run.PrId, false, checkoutRoot, storeRoot,
             null, run.HeadSha, prevHeadSha, reviewRound, []);
         var profile = DaemonAgentFactory.CreateVariantProfile(_comparisonVariant, variables);
+        // Same prepared S2S workspace as the primary arm (cached at ReviewAsync entry); null in-process. The
+        // comparison arm stays diff-only in its prompt, but on S2S it still provisions against the PR workspace
+        // (the factory requires one) — a distinct conversation the deep-link machinery does not link.
+        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
-            profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId), _options.VariantReasoningEffort);
+            profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId),
+            _options.VariantReasoningEffort, reviewWorkspace: prepared);
         var reviewer = new VariantReviewer(loop, _store, _loggerFactory.CreateLogger<VariantReviewer>());
         _ = await reviewer.ReviewAsync(run.Id, provider, _comparisonVariant, reviewInput, cancellationToken)
             .ConfigureAwait(false);
@@ -1651,11 +2445,17 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return;
         }
 
-        var (_, provider) = ResolveRepo(run);
+        var (repo, provider) = ResolveRepo(run);
         var reviewText = ReadReviewText(run.Id);
 
         var profile = DaemonAgentFactory.CreateJudgeProfile();
-        await using var loop = _loopFactory.Create(profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId));
+        // The Judge is its own stage, so the per-run workspace cache may be empty on a resume — ensure it (S2S
+        // path only; no-op in-process). The judge grades the persisted review text and needs no repo tools, but
+        // the S2S factory still requires a workspaceId to provision the hosted conversation.
+        var judgeWorkspace = await EnsurePreparedAsync(run, repo, provider, cancellationToken)
+            .ConfigureAwait(false);
+        await using var loop = _loopFactory.Create(
+            profile, run.ModelId, ThreadId(run, DaemonAgentFactory.JudgeProfileId), reviewWorkspace: judgeWorkspace);
         var judge = new JudgeAgent(loop, _store, _loggerFactory.CreateLogger<JudgeAgent>());
 
         var judgingInput = $"Grade this code review:\n\n{reviewText}";
@@ -1680,7 +2480,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // provider — it reads the persisted review only to gate RETENTION (commit/push the notes) and to free
         // the pooled slot + sandbox session. An empty review retains nothing; the run row still prevents
         // re-review, and the slot/session are still freed below, so nothing is leaked or looped.
-        var reviewText = ReadReviewText(run.Id);
+        var reviewArtifact = ReadReviewArtifact(run.Id);
+        var reviewText = reviewArtifact.ReviewText;
         var hasContent = !string.IsNullOrWhiteSpace(reviewText);
         if (!hasContent)
         {
@@ -1690,14 +2491,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id);
         }
 
-        // Host-side single-summary posting is an OFF-by-default fallback now (EnableHostSummaryFallback): the
-        // review agent posts inline itself over the egress proxy (see should_post), which is what we want. This
-        // path stays only as a safety net (e.g. a run that produced review text but couldn't post inline) and
-        // posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
-        // runs BEFORE DestroyAsync but the publisher uses its own DI HttpClient/token, not the sandbox session.
-        if (hasContent && !IsNoNewFindingsSentinel(reviewText) && _options.EnableHostSummaryFallback)
+        // Resume safety, mirroring ReviewAsync: the orchestrator's terminal `finally` releases the pooled lease
+        // on EVERY terminal outcome, so a Posted stage that failed once (retention, a stale index.lock, a
+        // publisher blip) is ALWAYS retried with no recorded lease. Without re-leasing, that retry silently fell
+        // through to the host ReviewBot checkout below — a different tree, without this PR's notes branch — and
+        // looked like a success. Re-lease first so the retry retains into the same pooled store the review ran in.
+        if (hasContent && UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
         {
-            await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
+            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Host-side single-summary posting. Two ways it fires:
+        //   • S2S path (UseS2SReviewAgent) — MANDATORY: the LmStreaming-hosted agent is domain-agnostic and
+        //     CANNOT post to a GitHub/ADO PR (agent-inline posting was forced off in RunReviewAttemptAsync), so
+        //     this host-side post is the ONLY delivery path, for BOTH providers, and it carries the deep-link.
+        //   • In-process path — an OFF-by-default fallback (EnableHostSummaryFallback) for a run that produced
+        //     review text but couldn't post inline.
+        // Posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
+        // runs BEFORE DestroyAsync but the publisher uses its own DI HttpClient/token, not the sandbox session.
+        var postHostSide = _options.UseS2SReviewAgent || _options.EnableHostSummaryFallback;
+        PostOutcome? postOutcome = null;
+        if (hasContent && !IsNoNewFindingsSentinel(reviewText) && postHostSide)
+        {
+            var deepLink = BuildDeepLink(reviewArtifact.ThreadId);
+            postOutcome = await PostReviewCommentHostSideAsync(
+                    run, repo, provider, reviewText, deepLink, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Terminal-stage session teardown (design §7), done BEFORE the slot is stripped/returned below: the
@@ -1706,36 +2525,46 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // out in review #180 — and the mechanism behind the Posted-stage index.lock we observed). Destroying
         // the session first terminates those child processes and unmounts, so the slot is quiescent before we
         // touch it. Best-effort; the diff-only path never provisioned a session, so there is nothing to consult.
-        if (_options.EnableToolAssistedReview && _provisioner is not null)
+        // Excluded on S2S for the same reason as ReleaseReviewLeaseAsync: BuildToolContextAsync returns
+        // before provisioning there, so the daemon owns no session to destroy — the container belongs to the
+        // review host and must OUTLIVE the run, because the posted comment's ?threadId= deep-link is the whole
+        // point of that path. DestroyAsync is a documented no-op with no session, so this guard states the
+        // invariant at the call site rather than leaving it to be inferred two files away.
+        if (_options.EnableToolAssistedReview && _provisioner is not null && !_options.UseS2SReviewAgent)
         {
             await _provisioner.DestroyAsync(run, cancellationToken).ConfigureAwait(false);
         }
 
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
         // pooled slot commits its notes onto the slot's store checkout scoped to ONLY the PR notes dir, then
-        // returns the slot; every other run uses the host ReviewBot retention checkout. The slot is ALWAYS
-        // returned (finally) and the session is torn down just ABOVE, so an empty review still frees its
-        // resources; the atomic TryRemove guards against a double-return.
-        if (_slotWorkspace is not null && _leasedReviews.TryRemove(run.Id, out var lease))
+        // returns the slot; every other run uses the host ReviewBot retention checkout. The session is torn down
+        // just ABOVE, so an empty review still frees its resources.
+        //
+        // The lease is read with TryGetValue and only REMOVED once retention has actually completed (or had
+        // nothing to do). Removing it up front made any retention failure permanent for the run: the retry came
+        // back lease-less and fell into the `else` branch below — the host ReviewBot checkout — which "succeeded"
+        // against a tree that has neither this PR's notes branch nor its prior notes. Strip + return still run
+        // exactly once, on the attempt that retained, and the removal happens before the return so a concurrent
+        // ReleaseReviewLeaseAsync can never double-return the slot.
+        if (_slotWorkspace is not null && _leasedReviews.TryGetValue(run.Id, out var lease))
         {
-            try
+            if (hasContent)
             {
-                if (hasContent)
-                {
-                    await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken).ConfigureAwait(false);
-                }
+                await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken)
+                    .ConfigureAwait(false);
             }
-            finally
+
+            if (_leasedReviews.TryRemove(run.Id, out _))
             {
-                // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
-                // slot's store to a pristine state so the next lease starts clean with nothing left around.
-                // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
-                // block the slot's return (which would leak pool capacity). Committed notes survive the strip
-                // (reset --hard keeps HEAD; clean removes only untracked byproduct).
                 try
                 {
+                    // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
+                    // slot's store to a pristine state so the next lease starts clean with nothing left around.
+                    // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
+                    // block the slot's return (which would leak pool capacity). Committed notes survive the strip
+                    // (reset --hard keeps HEAD; clean removes only untracked byproduct).
                     await SlotHygiene.StripAsync(
-                            new GitRunner(_slotWorkspace.HostRunner), lease.Prepared.StoreRoot, CancellationToken.None)
+                            new GitRunner(_slotWorkspace.HostRunner), HostStoreRoot(lease), CancellationToken.None)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -1754,24 +2583,68 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
+
+        // Delivery truthfulness (last, so the notes are already retained and the slot already freed): a run
+        // DISCOVERED in post mode is supposed to put this review on the PR. Completing the terminal stage
+        // records the run as done forever, so it may only do so on durable evidence that a provider comment
+        // exists — a fresh post, an adopted one, or a replay whose outbox row is Posted WITH a response id.
+        // A CollectedOnly or evidence-free ReplayNoOp leaves the stage retryable instead of quietly reporting a
+        // delivery that never happened. The no-new-findings sentinel is exempt by construction: it never posts,
+        // so it never reaches here — an intentional no-comment stays a success and is reported as such.
+        //
+        // Both conditions are required, and the second is the escape hatch. `run.Mode` is frozen at discovery,
+        // so a run discovered while posting was enabled keeps Mode="post" forever; if an operator then turns
+        // posting OFF, every attempt is authorized only to collect and can NEVER produce delivery evidence.
+        // Posted is not a governed stage, so gating on Mode alone would spin that run in an unbounded retry
+        // hot-loop over a config change it cannot influence. When the current configuration did not authorize a
+        // live post, collecting IS the truthful outcome — the run completes and reports what it actually did.
+        if (postOutcome is { } outcome
+            && string.Equals(run.Mode, "post", StringComparison.Ordinal)
+            && _options.EnableCommentPosting
+            && !IsDeliveryProven(outcome))
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the {provider} review post did not reach the PR (outbox {outcome.OutboxId} outcome "
+                    + $"{outcome.Kind}); leaving the Posted stage retryable rather than completing undelivered.");
+        }
     }
 
     /// <summary>
-    /// Posts the persisted review to an ADO pull request host-side (GitHub posting is agent-owned via the
-    /// code-reviewer:post-pr-review skill, which is GitHub-only). Builds the head_sha-scoped idempotency key and
-    /// delegates to <see cref="ReviewPoster"/>, whose 3-tier check (outbox replay → provider backstop scan →
-    /// post) guarantees exactly-once across re-polls and restarts. The body is prefixed with the configured bot
-    /// name. Requires an ADO <see cref="IReviewCommentPublisher"/> to be registered (Program.cs, gated on
-    /// <c>EnableAdoProvider</c>); throws if none matches so a misconfiguration is loud, not a silent no-post.
+    /// Whether <paramref name="outcome"/> proves a provider-visible review comment exists. A replay only counts
+    /// when the persisted outbox row is terminal <see cref="OutboxStatus.Posted"/> AND carries the provider's
+    /// response id — the row alone is ambiguous, which is exactly how a run that posted nothing looked delivered.
     /// </summary>
-    private async Task PostReviewCommentHostSideAsync(
-        ReviewRun run, RepoIdentity repo, string provider, string reviewText, CancellationToken cancellationToken)
+    private bool IsDeliveryProven(PostOutcome outcome) => outcome.Kind switch
+    {
+        PostOutcomeKind.Posted or PostOutcomeKind.AlreadyPostedBackstop => true,
+        PostOutcomeKind.ReplayNoOp => !string.IsNullOrWhiteSpace(outcome.ProviderResponseId)
+            && _store.GetOutbox(outcome.OutboxId)?.Status == OutboxStatus.Posted,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Posts the persisted review to the PR host-side via the provider's registered
+    /// <see cref="IReviewCommentPublisher"/> (GitHub and ADO both post here — the code-reviewer:post-pr-review
+    /// skill path was abandoned). Builds the head_sha-scoped idempotency key and delegates to
+    /// <see cref="ReviewPoster"/>, whose 3-tier check (outbox replay → provider backstop scan → post) guarantees
+    /// exactly-once across re-polls and restarts. The body is prefixed with the configured bot name; when
+    /// <paramref name="deepLink"/> is set (the S2S path) a single "Full review conversation" line is appended so
+    /// the reader can open the hosted conversation + its sub-agent tree. Requires a publisher for
+    /// <paramref name="provider"/> to be registered; throws if none matches so a misconfiguration is loud, not a
+    /// silent no-post. Returns the <see cref="PostOutcome"/> so the caller can hold the terminal stage open when
+    /// a post-mode review demonstrably never reached the PR.
+    /// </summary>
+    private async Task<PostOutcome> PostReviewCommentHostSideAsync(
+        ReviewRun run, RepoIdentity repo, string provider, string reviewText, string? deepLink,
+        CancellationToken cancellationToken)
     {
         var publisher = _publishers.FirstOrDefault(p => string.Equals(p.Provider, provider, StringComparison.Ordinal))
             ?? throw new InvalidOperationException(
                 $"No review-comment publisher registered for provider '{provider}'; cannot post the review for run {run.Id}.");
         var poster = new ReviewPoster(publisher, _store, _loggerFactory.CreateLogger<ReviewPoster>());
-        var postedBody = $"[{_options.BotName}]\n\n{reviewText}";
+        var postedBody = string.IsNullOrWhiteSpace(deepLink)
+            ? $"[{_options.BotName}]\n\n{reviewText}"
+            : $"[{_options.BotName}]\n\n{reviewText}\n\n🔎 Full review conversation: {deepLink}";
         var key = new IdempotencyKeyComponents(
             Provider: provider,
             OrgOrOwner: repo.OrgOrOwner,
@@ -1788,8 +2661,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             LivePostingAuthorized: _options.EnableCommentPosting);
         var outcome = await poster.PostReviewAsync(request, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation(
-            "Run {RunId}: ADO review post outcome {Outcome} (response {ResponseId}).",
-            run.Id, outcome.Kind, outcome.ProviderResponseId ?? "-");
+            "Run {RunId}: host-side {Provider} review post outcome {Outcome} (response {ResponseId}, deepLink={HasDeepLink}).",
+            run.Id, provider, outcome.Kind, outcome.ProviderResponseId ?? "-", !string.IsNullOrWhiteSpace(deepLink));
+        return outcome;
     }
 
     /// <summary>
@@ -1815,7 +2689,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var request = BuildNotesRequest(repo, run, reqFiles);
 
         var result = await manager
-            .CommitNotesAsync(lease.Prepared.StoreRoot, request, cancellationToken, stagePaths: [lease.NotesRelPath])
+            .CommitNotesAsync(HostStoreRoot(lease), request, cancellationToken, stagePaths: [lease.NotesRelPath])
             .ConfigureAwait(false);
 
         var outbox = _store.EnqueueOutbox(new OutboxEntry
@@ -1842,6 +2716,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id, result.ReviewBranch);
         }
     }
+
+    /// <summary>
+    /// Maps the SDK/container store root back to the leased host path only after the session is destroyed,
+    /// at the host commit gate. S2S's host-prepared checkout already carries its host store path.
+    /// </summary>
+    private static string HostStoreRoot(LeasedReview lease) =>
+        lease.Session is null ? lease.Prepared.StoreRoot : lease.Slot.StorePath;
 
     /// <summary>
     /// Commits the primary review's notes onto its (persistent) review branch for the primary review
@@ -1995,15 +2876,30 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private string ReadReviewText(long reviewRunId) =>
         ReadArtifactPayload<ReviewArtifactPayload>(reviewRunId, ReviewArtifactKind).ReviewText;
 
-    private T ReadArtifactPayload<T>(long reviewRunId, string kind)
+    private ReviewArtifactPayload ReadReviewArtifact(long reviewRunId) =>
+        ReadArtifactPayload<ReviewArtifactPayload>(reviewRunId, ReviewArtifactKind);
+
+    /// <summary>
+    /// The latest artifact of <paramref name="kind"/> for a run, deserialized, or <c>null</c> when the run has
+    /// none. A row that IS present but does not deserialize throws — that is corruption, not absence, and
+    /// silently treating it as "no checkpoint" would restart a lifecycle that is still running.
+    /// </summary>
+    private T? TryReadArtifactPayload<T>(long reviewRunId, string kind)
+        where T : class
     {
-        var artifact = _store.GetArtifacts(reviewRunId)
-            .LastOrDefault(a => string.Equals(a.ArtifactKind, kind, StringComparison.Ordinal))
-            ?? throw new InvalidOperationException($"No '{kind}' artifact for run {reviewRunId}.");
+        if (_store.TryGetLatestArtifact(reviewRunId, kind) is not { } artifact)
+        {
+            return null;
+        }
 
         return JsonSerializer.Deserialize<T>(artifact.Payload, PayloadOptions)
-            ?? throw new InvalidOperationException($"The '{kind}' artifact for run {reviewRunId} did not deserialize.");
+            ?? throw new JsonException($"The '{kind}' artifact for run {reviewRunId} did not deserialize.");
     }
+
+    private T ReadArtifactPayload<T>(long reviewRunId, string kind)
+        where T : class =>
+        TryReadArtifactPayload<T>(reviewRunId, kind)
+            ?? throw new InvalidOperationException($"No '{kind}' artifact for run {reviewRunId}.");
 
     private static string BuildReviewInput(
         ReviewRun run, RepoIdentity repo, string diff, string? fileManifest)
@@ -2020,7 +2916,66 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return input + "\n\nTracked files in the reviewed repository (Read any of these by exact path):\n" + fileManifest;
     }
 
-    private static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";
+    /// <summary>The daemon-local conversation id of one review attempt. Encodes the run, the A/B variant and
+    /// (via the variant suffix) the escalation rung, which is what makes it usable as the lifecycle identity's
+    /// discriminator and as the stable prefix of a turn's idempotency key.</summary>
+    public static string ThreadId(ReviewRun run, string variant) => $"review-run-{run.Id}-{variant}";
+
+    /// <summary>
+    /// On the S2S path (<see cref="_preparer"/> non-null) ensures this run's LmStreaming review workspace exists
+    /// and caches it in <see cref="_preparedWorkspaces"/> so every <c>_loopFactory.Create</c> site of the run —
+    /// review, judge, variant arm, escalation retry — shares one preparation, and therefore one container.
+    /// Returns the prepared workspace (leaf + workspace id + host dir + PR id), or <c>null</c> on the in-process
+    /// path (no preparer wired), where callers pass no workspace and the live/fake factory ignores it.
+    /// <para>
+    /// Two sources, in preference order. When the context stage leased a pooled slot, that slot IS the
+    /// workspace (<c>AdoptSlotAsync</c>): it is already prepared — store, Knowledge Base, PR notes branch, PR
+    /// head checked out — so this only names it to LmStreaming, runs no git, and the hosted agent's
+    /// <c>/workspace/store/...</c> paths line up with what the pooled stage recorded. Absent a lease the
+    /// preparer host-clones a bare per-PR checkout, the degrade for a repo that is not a store submodule; the
+    /// context stage then takes its bounded diff from that same clone.
+    /// </para>
+    /// </summary>
+    private async Task<PreparedReviewWorkspace?> EnsurePreparedAsync(
+        ReviewRun run, RepoIdentity repo, string provider, CancellationToken cancellationToken)
+    {
+        if (_preparer is null)
+        {
+            return null;
+        }
+
+        if (_preparedWorkspaces.TryGetValue(run.Id, out var cached))
+        {
+            return cached;
+        }
+
+        var prepared = _leasedReviews.TryGetValue(run.Id, out var lease)
+            ? await _preparer.AdoptSlotAsync(lease.Slot, run, cancellationToken).ConfigureAwait(false)
+            : await _preparer.PrepareAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        _preparedWorkspaces[run.Id] = prepared;
+        return prepared;
+    }
+
+    /// <summary>
+    /// The deep-link back to the LmStreaming review conversation for the given minted <paramref name="threadId"/>,
+    /// or <c>null</c> when there is nothing to link (in-process path, or <see cref="CodeReviewDaemonOptions.LmStreamingBaseUrl"/>
+    /// unset). Format <c>{baseUrl}/?threadId={threadId}&amp;focus=1</c> — the <c>?threadId=</c> write side is
+    /// proven in ConversationDaemon.Sample; <c>&amp;focus=1</c> selects LmStreaming's focused single-conversation
+    /// view. Only built on the S2S path, where <paramref name="threadId"/> is the id LmStreaming minted at
+    /// provision (the in-process <c>review-run-*</c> id would not resolve to a hosted conversation).
+    /// </summary>
+    private string? BuildDeepLink(string? threadId)
+    {
+        if (!_options.UseS2SReviewAgent
+            || string.IsNullOrWhiteSpace(threadId)
+            || string.IsNullOrWhiteSpace(_options.LmStreamingBaseUrl))
+        {
+            return null;
+        }
+
+        var baseUrl = _options.LmStreamingBaseUrl.TrimEnd('/');
+        return $"{baseUrl}/?threadId={threadId}&focus=1";
+    }
 }
 
 /// <summary>The persisted PR diff/context (kind <c>review-context</c>). <see cref="FileManifest"/> is the
@@ -2037,8 +2992,100 @@ internal sealed record ContextArtifactPayload(
     string? CheckoutRoot = null,
     string? StoreRoot = null);
 
-/// <summary>The persisted primary review output (kind <c>review</c>).</summary>
-internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, string VariantId);
+/// <summary>The persisted primary review output (kind <c>review</c>). <see cref="ThreadId"/> is the conversation
+/// thread the review ran on — on the S2S path the LmStreaming-minted id the Posted stage turns into the posted
+/// deep-link; on the in-process path the daemon's own <c>review-run-*</c> id (never linked). Null on older
+/// artifacts written before the field existed.
+/// <para>
+/// The same shape is reused for the <c>review-provisional</c> checkpoint, where the trailing fields carry the
+/// Reviewed stage's ORIGINAL start and absolute deadline (so a resumed lifecycle continues on the budget it was
+/// granted instead of buying itself a fresh one on every restart), the identity a resume must still match, and
+/// whether the provisional turn actually finished. They are appended and nullable/defaulted, so old rows still
+/// deserialize here and an older reader still sees the shape it expects — the authoritative <c>review</c>
+/// artifact leaves them all at their defaults.
+/// </para>
+/// <para>
+/// <see cref="ProvisionalComplete"/> is what makes an EMPTY <see cref="ReviewText"/> unambiguous. The mint-time
+/// checkpoint has no review text yet because no turn has run; a provisional turn that legitimately answered
+/// with nothing looks identical on the text alone. The flag says which, so an empty payload is never mistaken
+/// for a completed provisional (nor a completed one re-driven as if it had never happened).
+/// </para></summary>
+internal sealed record ReviewArtifactPayload(
+    string ReviewText,
+    string? RunId,
+    string VariantId,
+    string? ThreadId = null,
+    DateTimeOffset? ReviewedStartedAtUtc = null,
+    DateTimeOffset? ReviewedDeadlineUtc = null,
+    ReviewLifecycleIdentity? Lifecycle = null,
+    bool ProvisionalComplete = false);
+
+/// <summary>
+/// Everything about a Reviewed lifecycle that must still hold for a checkpoint of it to be resumable: WHERE it
+/// runs (<see cref="Modality"/>, <see cref="LocalThreadId"/>, <see cref="WorkspaceId"/>), WHAT runs it
+/// (<see cref="ModelId"/>, <see cref="ToolAssisted"/>) and WHICH context it was built from
+/// (<see cref="ContextGeneration"/>). Compared by value, so adding a field automatically tightens the check.
+/// <para>
+/// <see cref="WorkspaceId"/> is the load-bearing one. The hosted workspace of a pooled review is named after
+/// the SLOT this process leased, and slots are re-assigned from an in-memory pool that resets on restart — so
+/// the same run can come back holding a slot whose checkout is a different PR entirely. Resuming the old
+/// conversation there would synthesize a review of that other PR and post it here, silently.
+/// <see cref="ContextGeneration"/> is the id of the latest <c>review-context</c> artifact, which changes every
+/// time the ContextReady stage is re-entered: the documented rollback path, after which the checkpointed
+/// conversation is reviewing a diff this run is no longer about.
+/// </para>
+/// </summary>
+internal sealed record ReviewLifecycleIdentity(
+    string Modality,
+    string LocalThreadId,
+    string? WorkspaceId,
+    string? ModelId,
+    bool ToolAssisted,
+    long ContextGeneration);
+
+/// <summary>
+/// An S2S synthesis turn the review host accepted but has not answered yet (kind
+/// <c>review-synthesis-request</c>). <see cref="InputId"/> is the host-minted id a resumed review polls
+/// instead of re-sending the turn, <see cref="ParentThreadId"/> is the hosted conversation it was accepted on
+/// (a request from any OTHER conversation is stale and must not be rejoined), and <see cref="ReviewRunId"/> is
+/// the daemon review run it belongs to — carried in the payload so a checkpoint is self-describing in logs and
+/// exports, where the row's foreign key is not in view. Named for the daemon run to keep it distinct from the
+/// PROVIDER run id that <see cref="ReviewArtifactPayload.RunId"/> carries.
+/// </summary>
+internal sealed record SynthesisRequestPayload(string InputId, string ReviewRunId, string ParentThreadId);
+
+/// <summary>
+/// The resumable state of ONE Reviewed lifecycle: the single absolute budget its provisional turn, completion
+/// barrier and synthesis turn all share, plus the handles that let a restart pick the lifecycle up mid-flight.
+/// <see cref="HostedThreadId"/> non-null means the conversation has been minted;
+/// <see cref="ProvisionalComplete"/> additionally means its provisional turn finished (so this attempt starts
+/// at the barrier rather than re-driving that turn); <see cref="SynthesisInputId"/> non-null means the host
+/// already accepted the synthesis turn (so it is polled, never re-sent). All unset is a lifecycle starting
+/// from the beginning.
+/// </summary>
+internal sealed record ReviewCheckpoint(
+    DateTimeOffset StartedAtUtc,
+    DateTimeOffset DeadlineUtc,
+    string? HostedThreadId,
+    string? SynthesisInputId,
+    bool ProvisionalComplete)
+{
+    /// <summary>
+    /// The same budget with the resume handles dropped — for an escalation retry, which reviews the same PR on
+    /// a deliberately FRESH conversation (no history to rejoin, no provisional to skip, no accepted input to
+    /// poll) and must not be granted a new window for doing so.
+    /// </summary>
+    public ReviewCheckpoint Restarted() =>
+        this with { HostedThreadId = null, SynthesisInputId = null, ProvisionalComplete = false };
+}
+
+/// <summary>
+/// A review checkpoint artifact exists but could not be read. Charged against the run's retry budget so a run
+/// whose checkpoint is unreadable parks instead of re-fanning a sub-agent tree on every poll (see
+/// <c>DaemonReviewStageExecutor.ReadCheckpointPayload</c>).
+/// </summary>
+internal sealed class ReviewCheckpointCorruptException(string message, Exception innerException)
+    : InvalidOperationException(message, innerException);
 
 /// <summary>
 /// The host-side pooled-review dependencies (Layer 1), non-null in <see cref="DaemonReviewStageExecutor"/>
@@ -2049,7 +3096,8 @@ internal sealed record ReviewArtifactPayload(string ReviewText, string? RunId, s
 /// </summary>
 internal sealed record ReviewSlotWorkspace(
     IReviewSlotPool Pool,
-    IReviewSlotPreparer Preparer,
+    IReviewSlotPreparer HostPreparer,
+    Func<ReviewRunSession, string, IReviewSlotPreparer> CreateSessionPreparer,
     ISandboxCommandRunner HostRunner,
     ISandboxFileSystem HostFileSystem);
 

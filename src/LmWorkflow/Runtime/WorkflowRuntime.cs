@@ -85,6 +85,12 @@ public sealed class WorkflowRuntime
     private bool _orderedObserverAttached;
     private bool _observationBarrierDisabled;
 
+    // A watermark orders already-published messages; this second barrier waits for observed in-flight
+    // units to actually settle before a terminal node composes its result.
+    private const int TransitionBarrierTimeoutMs = 2000;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TransitionBarrier> _transitionBarriers =
+        new(StringComparer.Ordinal);
+
     private readonly Dictionary<string, int> _visits = new(StringComparer.Ordinal);
 
     // O(1) node-id -> node lookup rebuilt whenever Definition changes; it replaces a linear node-list scan
@@ -322,6 +328,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>
@@ -739,6 +746,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>
@@ -761,6 +769,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>
@@ -799,6 +808,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>
@@ -957,6 +967,84 @@ public sealed class WorkflowRuntime
             toolCallId,
             ObservationBarrierTimeout.TotalSeconds
         );
+    }
+
+    /// <summary>
+    /// Waits for every unit that the ordered observer has seen leave the active node to settle. The
+    /// observation watermark runs first, so a remaining pending unit means it was never spawned while an
+    /// in-flight unit still owes a result. A bounded failure rejects incomplete terminal composition.
+    /// </summary>
+    internal async Task WaitForNodeSettlementAsync(CancellationToken cancellationToken)
+    {
+        var barrier = new TransitionBarrier();
+        _transitionBarriers[Guid.NewGuid().ToString("N")] = barrier;
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TransitionBarrierTimeoutMs);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                timeout.Token,
+                cancellationToken);
+
+            while (true)
+            {
+                var pulse = barrier.Pulse;
+                lock (_lock)
+                {
+                    if (IsNodeSettledNoLock())
+                    {
+                        return;
+                    }
+                }
+
+                try
+                {
+                    await pulse.WaitAsync(linked.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    throw new TimeoutException(
+                        $"Workflow units for node '{CurrentNodeId}' did not settle within "
+                            + $"{TransitionBarrierTimeoutMs}ms.");
+                }
+            }
+        }
+        finally
+        {
+            foreach (var item in _transitionBarriers.Where(item => ReferenceEquals(item.Value, barrier)))
+            {
+                _ = _transitionBarriers.TryRemove(item.Key, out _);
+            }
+        }
+    }
+
+    private bool IsNodeSettledNoLock()
+    {
+        if (CurrentNodeId is not { } nodeId)
+        {
+            return true;
+        }
+
+        var statuses = _coordinator.Statuses;
+        foreach (var unit in _coordinator.ActiveUnits(nodeId))
+        {
+            if (statuses.TryGetValue(unit.Name, out var status)
+                && status is WorkflowTaskStatus.InFlight)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void PulseTransitionBarriers()
+    {
+        foreach (var barrier in _transitionBarriers.Values)
+        {
+            barrier.Signal();
+        }
     }
 
     /// <summary>
@@ -1212,6 +1300,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>Writes <paramref name="value"/> into the state channel at <paramref name="path"/> using the given mode.</summary>
@@ -1231,6 +1320,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>Sets a scoped note (<c>notes[scope][key] = value</c>).</summary>
@@ -1254,6 +1344,7 @@ public sealed class WorkflowRuntime
         }
 
         Persist(snapshot);
+        PulseTransitionBarriers();
     }
 
     /// <summary>
@@ -1608,4 +1699,20 @@ public sealed class WorkflowRuntime
             ),
         };
 
+    private sealed class TransitionBarrier
+    {
+        private TaskCompletionSource _pulse = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Pulse => Volatile.Read(ref _pulse).Task;
+
+        public void Signal()
+        {
+            var current = Volatile.Read(ref _pulse);
+            _ = Interlocked.CompareExchange(
+                ref _pulse,
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+                current);
+            _ = current.TrySetResult();
+        }
+    }
 }

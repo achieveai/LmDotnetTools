@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using Moq;
@@ -216,16 +217,234 @@ public class SubAgentManagerListAgentsTests : IAsyncLifetime
             $"resolved=#{afterRestart!.GetHashCode()}");
     }
 
+    [Fact]
+    public async Task ListAgents_TerminalAtUtc_IsNullWhileRunning_AndSetOnceTerminal()
+    {
+        // Task 1 (daemon-recursive-review-completion-barrier): the manager must record WHEN a
+        // sub-agent reached its terminal transition, not just THAT it did, so the timestamp can be
+        // stamped durably and never drifts on a later idempotent refresh.
+        var finisherProvider = new Mock<IStreamingAgent>();
+        SetupStreamingResponse(finisherProvider, (_, _) => ToAsyncEnumerable(
+            new TextMessage { Text = "done", Role = Role.Assistant }));
+
+        var runnerProvider = new Mock<IStreamingAgent>();
+        SetupStreamingResponse(runnerProvider, (_, ct) => BlockingStream(ct));
+
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
+        {
+            ["finisher"] = TemplateFor(finisherProvider.Object),
+            ["runner"] = TemplateFor(runnerProvider.Object),
+        });
+
+        var finisherJson = await manager.SpawnAsync(
+            "finisher", "finish the report", name: "fin", runInBackground: true);
+        var finisherId = ParseAgentId(finisherJson);
+        _ = await manager.ObserveCompletionAsync(finisherId, CancellationToken.None);
+
+        var runnerJson = await manager.SpawnAsync(
+            "runner", "keep running", name: "run", runInBackground: true);
+        var runnerId = ParseAgentId(runnerJson);
+
+        var snapshots = manager.ListAgents();
+
+        var finisher = snapshots.Single(s => s.AgentId == finisherId);
+        finisher.TerminalAtUtc.Should().NotBeNull(
+            "the finisher reached a terminal completion, so its terminal timestamp must be recorded");
+
+        var runner = snapshots.Single(s => s.AgentId == runnerId);
+        runner.TerminalAtUtc.Should().BeNull(
+            "a still-running sub-agent has not reached a terminal transition yet");
+    }
+
+    [Fact]
+    public async Task HandleRunCompletion_PushesTerminalStateToTheChildsStore_WithoutAnyFurtherChildWrite()
+    {
+        // Task 1 (daemon-recursive-review-completion-barrier), reviewed decision: exact
+        // status/timestamp must be persisted CAUSALLY from the manager's terminal-transition path,
+        // even if the child never performs another metadata write. A background sub-agent's own
+        // post-run save (MultiTurnAgentBase.UpdateMetadataAsync) only ever calls
+        // IConversationStore.SaveMetadataAsync — never UpdateMetadataAsync — so asserting that the
+        // ATOMIC UpdateMetadataAsync member was invoked for the child's thread proves the manager
+        // itself pushed the terminal transition through the child's own store, independent of
+        // whatever the child's existing post-run behavior already does.
+        var provider = new Mock<IStreamingAgent>();
+        SetupStreamingResponse(provider, (_, _) => ToAsyncEnumerable(
+            new TextMessage { Text = "done", Role = Role.Assistant }));
+
+        var storeMock = new Mock<IConversationStore>();
+        storeMock
+            .Setup(s => s.SaveMetadataAsync(
+                It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        storeMock
+            .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ThreadMetadata?)null);
+        storeMock
+            .Setup(s => s.UpdateMetadataAsync(
+                It.IsAny<string>(),
+                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = TemplateFor(provider.Object),
+            },
+            storeFactory: _ => storeMock.Object);
+
+        var spawnJson = await manager.SpawnAsync(
+            "worker", "do work", name: "alpha", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        _ = await manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        storeMock.Verify(
+            s => s.UpdateMetadataAsync(
+                $"subagent-{agentId}",
+                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                It.IsAny<CancellationToken>()),
+            Times.AtLeastOnce,
+            "the manager must actively push the terminal transition through the child's own " +
+            "store, not rely solely on the child's next metadata write");
+    }
+
+    [Fact]
+    public async Task MonitorFault_PushesTerminalStateToTheChildsStore_WithoutAnyFurtherChildWrite()
+    {
+        // Task 1 review, Finding 1: a monitor exception (here, SubscribeAsync failing outright —
+        // the same F5 scenario covered by
+        // SubAgentManagerGateReleaseRegressionTests.MonitorSubAgentAsync_SubscribeThrowsNonCancellationException_FaultsCompletionLatch)
+        // must ALSO push the terminal transition through the child's own store, exactly like a
+        // graceful terminal completion (HandleRunCompletionAsync) already does. Without this, a
+        // monitor-faulted child that never performs a metadata write of its own leaves its
+        // persisted metadata claiming "running" forever, indistinguishable from a genuinely
+        // still-active agent.
+        var storeMock = new Mock<IConversationStore>();
+        storeMock
+            .Setup(s => s.SaveMetadataAsync(
+                It.IsAny<string>(), It.IsAny<ThreadMetadata>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        storeMock
+            .Setup(s => s.LoadMetadataAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ThreadMetadata?)null);
+        storeMock
+            .Setup(s => s.UpdateMetadataAsync(
+                It.IsAny<string>(),
+                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var manager = CreateManager(
+            new Dictionary<string, SubAgentTemplate>
+            {
+                ["broken"] = DummyTemplate("broken"),
+            });
+
+        var thrown = new InvalidOperationException("subscribe blew up");
+        // TestAgentFactoryOverride's fake loop always gets a null Store by default (it bypasses the
+        // real CreateSubAgentAsync store-creation path entirely); TestConversationStoreOverride is the
+        // companion hook that supplies a controllable one so this test can verify the causal push.
+        manager.TestConversationStoreOverride = (_, _) => storeMock.Object;
+        manager.TestAgentFactoryOverride = (agentId, _) => new FakeMultiTurnAgent
+        {
+            // Mirrors the real subagent-{agentId} thread-id convention (PersistTerminalStateAsync
+            // reads it straight off state.Agent.ThreadId); the fake's default "fake-thread" would
+            // otherwise mismatch the id the manager registers this state under.
+            ThreadId = $"subagent-{agentId}",
+            SubscribeImpl = (_, _) => FakeMultiTurnAgent.ThrowingStream(thrown),
+        };
+
+        var spawnJson = await manager.SpawnAsync("broken", "task", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        var act = () => manager.ObserveCompletionAsync(agentId, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("subscribe blew up");
+
+        storeMock.Verify(
+            s => s.UpdateMetadataAsync(
+                $"subagent-{agentId}",
+                It.IsAny<Func<ThreadMetadata?, ThreadMetadata>>(),
+                It.IsAny<CancellationToken>()),
+            Times.AtLeastOnce,
+            "a monitor-fault terminal transition must also push causally through the child's own " +
+            "store, exactly like a graceful terminal completion, even though the child itself " +
+            "will never write metadata again");
+    }
+
+    [Fact]
+    public async Task ListAgents_TerminalAtUtc_IsClearedAfterRestartToRunning()
+    {
+        // Task 1 review, Finding 2: SubAgentState.TryArmRunning must clear the in-memory terminal
+        // timestamp when a restarted child returns to Running — otherwise a restarted agent's
+        // snapshot keeps reporting the PRIOR run's terminal instant, violating "Running has no
+        // terminal timestamp" (SubAgentSnapshot.TerminalAtUtc's contract).
+        var manager = CreateManager(new Dictionary<string, SubAgentTemplate>
+        {
+            ["restartable"] = DummyTemplate("restartable"),
+        });
+
+        // A completed run's owned-provider agent is not recreated on restart (only disposed/faulted
+        // ones are), so the SAME instance's SubscribeAsync is invoked again for the restarted
+        // monitor — keyed by its own per-instance call count (epoch 1 completes; epoch 2 just waits),
+        // mirroring SubAgentManagerGateReleaseRegressionTests' established fake-agent pattern.
+        var fake = new FakeMultiTurnAgent
+        {
+            SubscribeImpl = (callIndex, ct) => callIndex == 1
+                ? FakeMultiTurnAgent.CompleteOnceThenWaitForeverStream("run-1", ct)
+                : FakeMultiTurnAgent.WaitForeverStream(ct),
+        };
+        manager.TestAgentFactoryOverride = (_, _) => fake;
+
+        var spawnJson = await manager.SpawnAsync("restartable", "task", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+
+        await WaitForConditionAsync(
+            () => manager.ListAgents().Single(s => s.AgentId == agentId).TerminalAtUtc is not null,
+            TimeSpan.FromSeconds(10));
+
+        // Act: restart the completed agent.
+        _ = await manager.SendMessageAsync(agentId, "continue", runInBackground: true);
+
+        await WaitForConditionAsync(
+            () => manager.ListAgents().Single(s => s.AgentId == agentId).Status
+                == SubAgentStatus.Running,
+            TimeSpan.FromSeconds(10));
+
+        var afterRestart = manager.ListAgents().Single(s => s.AgentId == agentId);
+        afterRestart.TerminalAtUtc.Should().BeNull(
+            "a restarted, currently-running child must not still report a stale terminal " +
+            "instant from its prior run");
+    }
+
+    [Theory]
+    [InlineData(SubAgentStatus.Completed, true)]
+    [InlineData(SubAgentStatus.Error, true)]
+    [InlineData(SubAgentStatus.Stopped, true)]
+    [InlineData(SubAgentStatus.Running, false)]
+    public void IsTerminal_ClassifiesEveryStatus_CompletedErrorStoppedTerminal_RunningNot(
+        SubAgentStatus status,
+        bool expectedTerminal)
+    {
+        // Task 4 (daemon-recursive-review-completion-barrier): a single canonical classification of
+        // which SubAgentStatus values are terminal, so callers reading ListAgents() snapshots (e.g. the
+        // in-process review completion source) don't each re-derive the 3-of-4-case terminal set.
+        SubAgentManager.IsTerminal(status).Should().Be(expectedTerminal);
+    }
+
     #region Helpers
 
     private SubAgentManager CreateManager(
         IReadOnlyDictionary<string, SubAgentTemplate> templates,
-        int maxConcurrent = 5)
+        int maxConcurrent = 5,
+        Func<string, IConversationStore>? storeFactory = null)
     {
         var options = new SubAgentOptions
         {
             Templates = templates,
             MaxConcurrentSubAgents = maxConcurrent,
+            DefaultConversationStoreFactory = storeFactory,
         };
 
         var manager = new SubAgentManager(

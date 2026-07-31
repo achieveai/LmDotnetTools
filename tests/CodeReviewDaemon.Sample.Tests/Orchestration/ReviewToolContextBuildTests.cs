@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
@@ -118,6 +119,81 @@ public sealed class ReviewToolContextBuildTests
         toolContext.SubAgentOptions.Templates.Should().NotContainKey("other-plugin:thing");
     }
 
+    /// <summary>
+    /// Task 5 (fix round 1) — the live tool-assisted path hands the executor a DECORATED loop
+    /// (<c>ToolScopedReviewLoop</c>), not the loop itself. Resolving the sub-agent surface must see past the
+    /// decorator, so the barrier polls the loop's OWN completion source and the synthesis turn runs with
+    /// spawning suppressed. Before the capability seam this went through a concrete type switch, so any
+    /// wrapper it did not know about silently skipped BOTH.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_SpawnCapableLoopBehindADecorator_StillWaitsOnItsBarrierAndSuppressesSpawning()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory();
+        var completionSource = new RecordingCompletionSource(SettledChild);
+        var suppression = new SpawnSuppressionRecorder();
+        factory.DecorateCreatedAgent = agent =>
+        {
+            agent.CompletionSource = completionSource;
+            agent.SuppressSpawning = suppression.Open;
+            return new WrappingLoop(agent);
+        };
+        var executor = BuildExecutor(
+            store,
+            factory,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = true, ReviewSubAgentBarrierQuietSeconds = 1 },
+            new FakeReviewSessionProvisioner("session-abc"),
+            DiscoveryWithCodeReviewerSubAgent);
+        var run = SeedRunWithContext(store);
+
+        await executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The barrier polled the WRAPPED loop's source: at least the candidate plus its confirmation.
+        completionSource.Calls.Should().BeGreaterThanOrEqualTo(2);
+
+        // ...and the settled roster reached the synthesis turn, which is the second turn of the same agent.
+        var agent = factory.CreatedAgents.Should().ContainSingle().Subject;
+        agent.ReceivedInputs.Should().HaveCount(2);
+        agent.ReceivedInputs[1].Messages.OfType<TextMessage>().Single().Text.Should()
+            .Contain("- arch (code-reviewer:architecture-review): Completed");
+
+        // ...which ran inside exactly one spawn-suppression scope, opened and closed.
+        suppression.Opened.Should().Be(1);
+        suppression.Closed.Should().Be(1);
+    }
+
+    /// <summary>
+    /// Task 5 (fix round 1) — a run configured to spawn sub-agents on a loop whose spawn surface cannot be
+    /// resolved must FAIL, not quietly review without the barrier: skipping it would synthesize while
+    /// children are still writing and let the synthesis turn fan out again.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_SpawnCapableRunOnAnUnknownLoop_FailsFastInsteadOfSkippingTheBarrier()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory { DecorateCreatedAgent = agent => new OpaqueLoop(agent) };
+        var executor = BuildExecutor(
+            store,
+            factory,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = true },
+            new FakeReviewSessionProvisioner("session-abc"),
+            DiscoveryWithCodeReviewerSubAgent);
+        var run = SeedRunWithContext(store);
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*IReviewLoopSubAgentSurface*");
+
+        // Not even the provisional turn ran: the refusal happens before the conversation starts.
+        factory.CreatedAgents.Should().ContainSingle().Which.ReceivedInputs.Should().BeEmpty();
+        store.GetArtifacts(run.Id).Should()
+            .NotContain(a => a.ArtifactKind == DaemonReviewStageExecutor.ReviewArtifactKind);
+    }
+
     [Fact]
     public async Task Reviewed_NoSubAgentsDiscovered_LeavesSubAgentOptionsNullButToolContextStillPopulated()
     {
@@ -197,6 +273,80 @@ public sealed class ReviewToolContextBuildTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         factory.ToolContexts.Should().BeEmpty("cancellation propagated before any review loop was built");
+    }
+
+    /// <summary>
+    /// Task 5 (fix round 3) — declaring the surface is not the guarantee; having a SCOPE is. A loop that
+    /// declares <c>IReviewLoopSubAgentSurface</c> but leaves <c>SuppressSpawning</c> null is exactly as unable
+    /// to keep the synthesis turn from fanning out as one that declares nothing, so it must fail the same way
+    /// instead of passing the old "did it declare anything?" check.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_SpawnCapableLoopWithNoSuppressionScope_FailsFast()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory
+        {
+            DecorateCreatedAgent = agent =>
+            {
+                agent.SuppressSpawning = null;
+                return agent;
+            },
+        };
+        var executor = BuildExecutor(
+            store,
+            factory,
+            new CodeReviewDaemonOptions { EnableToolAssistedReview = true },
+            new FakeReviewSessionProvisioner("session-abc"),
+            DiscoveryWithCodeReviewerSubAgent);
+        var run = SeedRunWithContext(store);
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*IReviewLoopSubAgentSurface*");
+        factory.CreatedAgents.Should().ContainSingle().Which.ReceivedInputs.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Task 5 (fix round 3) — on the S2S path the sub-agent options live on the REVIEW HOST, so the daemon's
+    /// own tool context says nothing about whether the run can spawn. Gating the fail-fast on that context
+    /// alone let an S2S loop with no suppression scope through unchecked, which is the one path where the
+    /// synthesis turn's children are hardest to see.
+    /// </summary>
+    [Fact]
+    public async Task Reviewed_S2SRunWithNoSuppressionScope_FailsFastEvenWithoutALocalToolContext()
+    {
+        using var db = new TempSqliteDatabase();
+        var store = new ReviewStore(db.ConnectionString);
+        var factory = new FakeReviewAgentLoopFactory
+        {
+            DecorateCreatedAgent = agent =>
+            {
+                agent.SuppressSpawning = null;
+                return agent;
+            },
+        };
+        var executor = BuildExecutor(
+            store,
+            factory,
+            new CodeReviewDaemonOptions
+            {
+                UseS2SReviewAgent = true,
+                LmStreamingBaseUrl = "http://localhost:5051",
+            },
+            new FakeReviewSessionProvisioner("session-abc"));
+        var run = SeedRunWithContext(store);
+
+        var act = () => executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*IReviewLoopSubAgentSurface*");
+
+        // The local tool context really was null — the refusal came from the S2S path, not from a
+        // discovered sub-agent roster.
+        factory.ToolContexts.Should().ContainSingle().Which.Should().BeNull();
     }
 
     private static DaemonReviewStageExecutor BuildExecutor(
@@ -343,5 +493,60 @@ public sealed class ReviewToolContextBuildTests
     {
         public Task<IReadOnlyList<SandboxSessionRegistry.DiscoveredItem>> ListDiscoveredAsync(
             string sessionId, CancellationToken ct) => throw new OperationCanceledException("discovery cancelled");
+    }
+
+    /// <summary>Discovery yielding ONE code-reviewer sub-agent, so the built tool context carries
+    /// <c>SubAgentOptions</c> — i.e. the run is spawn-capable, which is what makes the completion barrier (and
+    /// the fail-fast when the loop's spawn surface is unknown) apply.</summary>
+    private static readonly FakeDiscoveredItemsSource DiscoveryWithCodeReviewerSubAgent = new(
+    [
+        new SandboxSessionRegistry.DiscoveredItem(
+            "subagent", "architecture-review", "arch", "/marketplaces/gb-plugins/agents/a.md",
+            Content: SubAgentBody, QualifiedName: "code-reviewer:architecture-review"),
+    ]);
+
+    /// <summary>A roster of one already-terminal child: all-terminal on the first poll, so the barrier only
+    /// pays the (test-shortened) quiet period before confirming it.</summary>
+    private static readonly ReviewSubAgentTreeSnapshot SettledChild = new(
+    [
+        new ReviewSubAgentNode
+        {
+            AgentId = "sub-1",
+            ThreadId = "thread-sub-1",
+            ParentThreadId = "fake-thread",
+            Depth = 1,
+            Status = ReviewSubAgentStatus.Completed,
+            Name = "arch",
+            Template = "code-reviewer:architecture-review",
+        },
+    ]);
+
+    /// <summary>Counts how often the barrier polled, proving WHICH source it resolved off the loop.</summary>
+    private sealed class RecordingCompletionSource(ReviewSubAgentTreeSnapshot snapshot)
+        : IReviewSubAgentCompletionSource
+    {
+        public int Calls { get; private set; }
+
+        public Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(
+            ReviewRun run, string parentThreadId, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(snapshot);
+        }
+    }
+
+    /// <summary>Records the synthesis turn's spawn-suppression scope being opened and closed.</summary>
+    private sealed class SpawnSuppressionRecorder : IDisposable
+    {
+        public int Opened { get; private set; }
+        public int Closed { get; private set; }
+
+        public IDisposable Open()
+        {
+            Opened++;
+            return this;
+        }
+
+        public void Dispose() => Closed++;
     }
 }

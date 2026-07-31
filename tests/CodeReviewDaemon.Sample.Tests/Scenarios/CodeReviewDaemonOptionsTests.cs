@@ -78,4 +78,25 @@ public sealed class CodeReviewDaemonOptionsTests
         // so the configured entry is asserted via Contain rather than exact equality.
         options.WritableToolAllowList.Should().Contain("PrNotes");
     }
+
+    [Fact]
+    public void Review_sub_agent_barrier_options_default_and_bind_from_the_CodeReviewDaemon_section()
+    {
+        new CodeReviewDaemonOptions().ReviewStageDeadlineMinutes.Should().Be(30);
+        new CodeReviewDaemonOptions().ReviewSubAgentBarrierQuietSeconds.Should().Be(2);
+
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CodeReviewDaemon:ReviewStageDeadlineMinutes"] = "45",
+                ["CodeReviewDaemon:ReviewSubAgentBarrierQuietSeconds"] = "5",
+            })
+            .Build();
+
+        var options = config.GetSection(CodeReviewDaemonOptions.SectionName).Get<CodeReviewDaemonOptions>();
+
+        options.Should().NotBeNull();
+        options!.ReviewStageDeadlineMinutes.Should().Be(45);
+        options.ReviewSubAgentBarrierQuietSeconds.Should().Be(5);
+    }
 }

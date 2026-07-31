@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
@@ -46,7 +47,7 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn;
 /// - MessageUpdateJoinerMiddleware (joins update messages into full messages for history)
 /// - ToolCallInjectionMiddleware (injects function contracts for tool calling)
 /// </remarks>
-public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink
+public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSink, ISpawnSuppressingAgent
 {
     private readonly IStreamingAgent _agent;
     private readonly IDictionary<string, ToolHandler> _toolHandlers;
@@ -65,11 +66,17 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// sub-agent completions; the manager itself is still owned and disposed by the loop.</summary>
     public SubAgentManager? SubAgentManager { get; }
 
+    /// <summary>The sub-agent tool provider registered on this loop, or null when no sub-agent options
+    /// were supplied. Exposed so a host can suppress new child creation for one run while retaining
+    /// messaging and result access to children that already exist.</summary>
+    public SubAgentToolProvider? SubAgentTools { get; }
+
+    /// <inheritdoc />
+    public override bool EnforcesSpawnSuppression => true;
+
     /// <summary>
     ///     This loop's own usage sink (its <c>UsageLedger</c>), or null when usage accounting is disabled.
-    ///     Exposed so a host can fold an out-of-band descendant loop's usage (e.g. an isolated
-    ///     StartWorkflowAgent controller) into THIS conversation's total by handing this sink to that
-    ///     descendant's <c>externalUsageSink</c>.
+    ///     Exposed so a host can fold an out-of-band descendant loop's usage into this conversation's total.
     /// </summary>
     public IUsageSink? UsageSink => UsageLedger;
 
@@ -106,6 +113,13 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // drain the coordinator, which is where the actual work is.
     private readonly object _wakeLock = new();
     private bool _wakeScheduled;
+
+    // The requesting run whose delayed continuation must retain a prior no-spawn guarantee.
+    // The coordinator owns delayed-result state; this lock owns only the suppression marker.
+    private readonly object _spawnSuppressionLock = new();
+    private string? _spawnSuppressedRunId;
+
+    private const string SpawnSuppressedRunIdProperty = "spawn_suppressed_run_id";
 
     /// <summary>
     /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management.
@@ -305,11 +319,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // for delegates through subAgentLifecycleServices.
                 lifecycleServices: subAgentLifecycleServices ?? LifecycleServices);
 
-            var toolProvider = new SubAgentToolProvider(
+            SubAgentTools = new SubAgentToolProvider(
                 SubAgentManager,
                 source);
 
-            _ = functionRegistry.AddProvider(toolProvider);
+            _ = functionRegistry.AddProvider(SubAgentTools);
         }
 
         // When trigger options are supplied, stand up the Wait/trigger runtime and register the
@@ -477,9 +491,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // at-continuation delivery. A regular user input while deferred deliberately keeps the
                 // existing fail-fast guard (the caller must resolve the deferral first), so this is
                 // restricted to batches that are entirely notifications.
-                if (!_delayed.IsEmpty && AllMessagesAreNotifications(realInputs))
+                if (!_delayed.IsEmpty
+                    && AllMessagesAreNotifications(realInputs)
+                    && await TryAppendParkedInputsAsync(realInputs, ct))
                 {
-                    await AppendParkedInputsAsync(realInputs, ct);
                     continue;
                 }
 
@@ -492,6 +507,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     ThreadId = ThreadId,
                 }, ct);
 
+                using var spawnSuppression = new RunSpawnSuppression(this);
+                _ = spawnSuppression.LatchIfRequested(realInputs);
+                if (spawnSuppression.IsLatched)
+                {
+                    Logger.LogInformation(
+                        "Run {RunId} starts with sub-agent spawning suppressed", assignment.RunId);
+                }
+
                 foreach (var input in realInputs)
                 {
                     foreach (var msg in input.Input.Messages)
@@ -501,7 +524,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                     }
                 }
 
-                await ExecuteAssignedRunAsync(assignment, isExplicitFork, ct);
+                await ExecuteAssignedRunAsync(assignment, isExplicitFork, spawnSuppression, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -530,12 +553,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     private async Task ExecuteAssignedRunAsync(
         RunAssignment assignment,
         bool isExplicitFork,
+        RunSpawnSuppression spawnSuppression,
         CancellationToken ct)
     {
         try
         {
             // Execute turns - poll for new input between turns
-            await ExecuteRunTurnsAsync(assignment.RunId, assignment.GenerationId, ct);
+            await ExecuteRunTurnsAsync(
+                assignment.RunId, assignment.GenerationId, spawnSuppression, ct);
 
             // Complete run - simple loop has no pending messages
             await CompleteRunAsync(
@@ -543,7 +568,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
-                pendingMessageCount: 0,
+                pendingMessageCount: PendingInputCount,
                 ct: ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -592,6 +617,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 assignment.GenerationId,
                 wasForked: isExplicitFork,
                 forkedToRunId: isExplicitFork ? assignment.RunId : null,
+                pendingMessageCount: PendingInputCount,
                 isError: true,
                 errorMessage: errorMessage,
                 ct: ct);
@@ -693,7 +719,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             cause.ToolName,
             cause.Ordinal);
 
-        await ExecuteAssignedRunAsync(assignment, isExplicitFork: false, ct);
+        using var spawnSuppression = new RunSpawnSuppression(this);
+        _ = spawnSuppression.LatchIfContinuing(cause.RequestingRunId);
+        await ExecuteAssignedRunAsync(
+            assignment, isExplicitFork: false, spawnSuppression, ct);
     }
 
     /// <summary>
@@ -701,7 +730,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// Ends the run early if any tool call deferrals from the current generation remain
     /// unresolved at the end of a turn — see <see cref="ResolveToolCallAsync"/>.
     /// </summary>
-    private async Task ExecuteRunTurnsAsync(string runId, string generationId, CancellationToken ct)
+    private async Task ExecuteRunTurnsAsync(
+        string runId,
+        string generationId,
+        RunSpawnSuppression spawnSuppression,
+        CancellationToken ct)
     {
         var turnCount = 0;
 
@@ -736,6 +769,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
                 if (realNewInputs.Count > 0)
                 {
+                    if (spawnSuppression.LatchIfRequested(realNewInputs))
+                    {
+                        Logger.LogInformation(
+                            "Input injected into run {RunId} requested sub-agent spawn suppression; "
+                                + "suppressed for the remainder of the run",
+                            runId);
+                    }
+
                     var injectionAssignment = new RunAssignment(
                         RunId: runId,
                         GenerationId: generationId,
@@ -805,6 +846,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             // which is what makes a resolution landing at this exact moment safe either way.
             if (_delayed.TryPark(runId, turnGenerationId, out var unresolvedCount))
             {
+                var suppressedRunId = spawnSuppression.IsLatched ? runId : null;
+                lock (_spawnSuppressionLock)
+                {
+                    _spawnSuppressedRunId = suppressedRunId;
+                }
+
+                // A delayed continuation may run after a host restart. Persist before acknowledging the
+                // pause so a no-spawn guarantee already returned to the caller cannot silently disappear.
+                await PersistSuppressedRunMarkerAsync(suppressedRunId, ct);
+
                 Logger.LogInformation(
                     "Run {RunId} pausing on {Count} deferred tool call(s); awaiting external resolution",
                     runId,
@@ -1019,9 +1070,24 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     /// live — without starting a model turn. The delayed-result child run delivers them to the model once
     /// the deferral resolves. See the call site in <see cref="RunLoopAsync"/> for why a turn cannot run here.
     /// </summary>
-    private async Task AppendParkedInputsAsync(List<QueuedInput> realInputs, CancellationToken ct)
+    private async Task<bool> TryAppendParkedInputsAsync(List<QueuedInput> realInputs, CancellationToken ct)
     {
         var parkRunId = _delayed.LastParkedRunId;
+        var requestsSuppression = realInputs.Any(i => i.Input.SuppressSubAgentSpawning);
+        if (requestsSuppression)
+        {
+            if (parkRunId == null)
+            {
+                return false;
+            }
+
+            lock (_spawnSuppressionLock)
+            {
+                _spawnSuppressedRunId = parkRunId;
+            }
+
+            await PersistSuppressedRunMarkerAsync(parkRunId, ct);
+        }
 
         var count = 0;
         foreach (var input in realInputs)
@@ -1037,6 +1103,55 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         Logger.LogInformation(
             "Parked on unresolved deferral(s); folded {Count} input message(s) into history for delivery on resume.",
             count);
+
+        return true;
+    }
+
+    private Task PersistSuppressedRunMarkerAsync(string? suppressedRunId, CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return store.UpdateMetadataAsync(
+            ThreadId,
+            existing =>
+            {
+                var properties = existing?.Properties?.ToBuilder()
+                    ?? ImmutableDictionary.CreateBuilder<string, object>();
+
+                if (suppressedRunId == null)
+                {
+                    _ = properties.Remove(SpawnSuppressedRunIdProperty);
+                }
+                else
+                {
+                    properties[SpawnSuppressedRunIdProperty] = suppressedRunId;
+                }
+
+                return (existing ?? new ThreadMetadata { ThreadId = ThreadId, LastUpdated = 0 }) with
+                {
+                    LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Properties = properties.ToImmutable(),
+                };
+            },
+            ct);
+    }
+
+    private async Task<string?> LoadSuppressedRunMarkerAsync(CancellationToken ct)
+    {
+        var store = Store;
+        if (store == null)
+        {
+            return null;
+        }
+
+        var metadata = await store.LoadMetadataAsync(ThreadId, ct);
+        return metadata?.Properties?.TryGetValue(SpawnSuppressedRunIdProperty, out var marker) == true
+            ? marker?.ToString()
+            : null;
     }
 
     private async Task<bool> ExecuteTurnAsync(
@@ -2187,8 +2302,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 sourceCall?.FunctionName ?? tcr.ToolName ?? string.Empty,
                 sourceCall?.FunctionArgs ?? "{}",
                 tcr.DeferredAt ?? 0,
-                tcr.RunId,
-                tcr.GenerationId);
+                tcr.RunId ?? sourceCall?.RunId,
+                tcr.GenerationId ?? sourceCall?.GenerationId);
 
             // Restored entries are parked on arrival. The run that requested them belonged to a
             // process that no longer exists, so its result cannot be folded back into it — it can
@@ -2200,8 +2315,14 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
             // Remember the last-loaded deferring run so inputs arriving while the conversation is
             // still parked are attributed to it.
-            mostRecentDeferringRun = tcr.RunId ?? mostRecentDeferringRun;
-            mostRecentDeferringGen = tcr.GenerationId ?? mostRecentDeferringGen;
+            mostRecentDeferringRun = entry.RunId ?? mostRecentDeferringRun;
+            mostRecentDeferringGen = entry.GenerationId ?? mostRecentDeferringGen;
+        }
+
+        var suppressedRunId = await LoadSuppressedRunMarkerAsync(ct);
+        lock (_spawnSuppressionLock)
+        {
+            _spawnSuppressedRunId = suppressedRunId;
         }
 
         if (restoredCount > 0)
@@ -2212,8 +2333,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             }
 
             Logger.LogInformation(
-                "Restored {Count} deferred tool call(s) from persisted history",
-                restoredCount);
+                "Restored {Count} deferred tool call(s) from persisted history (suppressed run: {SuppressedRunId})",
+                restoredCount,
+                suppressedRunId ?? "(none)");
         }
 
         // Re-queue continuations a previous process committed durably but never ran. Runs after the
@@ -2535,5 +2657,52 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             QueuedAt: DateTimeOffset.UtcNow,
             Resume: null,
             Trigger: new TriggerEnvelope(isError));
+    }
+
+    private bool ContinuesSuppressedRun(string requestingRunId)
+    {
+        lock (_spawnSuppressionLock)
+        {
+            return _spawnSuppressedRunId is not null
+                && string.Equals(_spawnSuppressedRunId, requestingRunId, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed class RunSpawnSuppression(MultiTurnAgentLoop owner) : IDisposable
+    {
+        private IDisposable? _scope;
+        private bool _disposed;
+
+        internal bool IsLatched { get; private set; }
+
+        internal bool LatchIfContinuing(string? requestingRunId) =>
+            Latch(requestingRunId is not null && owner.ContinuesSuppressedRun(requestingRunId));
+
+        internal bool LatchIfRequested(IReadOnlyList<QueuedInput> inputs) =>
+            Latch(inputs.Any(i => i.Input.SuppressSubAgentSpawning));
+
+        private bool Latch(bool requested)
+        {
+            if (!requested || IsLatched || _disposed)
+            {
+                return false;
+            }
+
+            IsLatched = true;
+            _scope = owner.SubAgentTools?.SuppressSpawning();
+            return true;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _scope?.Dispose();
+            _scope = null;
+        }
     }
 }

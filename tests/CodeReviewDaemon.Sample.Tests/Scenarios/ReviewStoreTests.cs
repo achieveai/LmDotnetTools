@@ -449,6 +449,44 @@ public sealed class ReviewStoreTests
         artifacts[0].ArtifactSchemaVersion.Should().Be(1);
     }
 
+    [Fact]
+    public void TryGetLatestArtifact_returns_the_newest_of_a_kind_without_collapsing_the_history()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        // Two checkpoints of the SAME kind, as a retried review lifecycle writes them, plus an unrelated kind
+        // in between — a lookup that read the last row overall, or the first of the kind, would pick wrong.
+        _ = store.AddArtifact(SampleArtifact(runId, "review-provisional", "{\"n\":1}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "context", "{\"n\":0}"));
+        _ = store.AddArtifact(SampleArtifact(runId, "review-provisional", "{\"n\":2}"));
+
+        store.TryGetLatestArtifact(runId, "review-provisional")!.Payload.Should().Be("{\"n\":2}");
+        store.GetArtifacts(runId)
+            .Should().HaveCount(3, "the lookup reads the newest row, it never replaces or prunes the append-only history");
+    }
+
+    [Fact]
+    public void TryGetLatestArtifact_returns_null_when_the_run_has_no_artifact_of_that_kind()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var runId = SeedRun(store);
+        _ = store.AddArtifact(SampleArtifact(runId, "context", "{}"));
+
+        // A missing checkpoint is the ordinary "fresh review" case, not an error: it must read as absent.
+        store.TryGetLatestArtifact(runId, "review-provisional").Should().BeNull();
+    }
+
+    private static ReviewArtifact SampleArtifact(long runId, string kind, string payload) => new()
+    {
+        ReviewRunId = runId,
+        ArtifactSchemaVersion = 1,
+        ArtifactKind = kind,
+        Provider = "github",
+        Payload = payload,
+    };
+
     // ── §7 GetRepo rehydration ──────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -483,6 +521,63 @@ public sealed class ReviewStoreTests
         using var store = new ReviewStore(db.ConnectionString);
 
         store.GetRepo(9999).Should().BeNull();
+    }
+
+    // ── concurrency ───────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Concurrent_readers_and_writers_neither_throw_nor_lose_rows()
+    {
+        // The store wraps ONE SqliteConnection, which is not thread-safe; every operation now runs under
+        // the store's gate, held across command-plus-reader.
+        //
+        // Read this as a SMOKE test, not a race detector. The unguarded failure is real but rare: probed
+        // at 24 threads × 400 iterations it threw ArgumentOutOfRangeException from Microsoft.Data.Sqlite's
+        // internal per-connection command list exactly ONCE in 9,600 operations (with the gate: zero).
+        // Reproducing that here would mean a ~5-minute probabilistic test — flaky by construction — so
+        // this pins the cheap, deterministic half instead: concurrent readers and writers complete and
+        // every row lands. The rare-throw evidence lives in the ReviewStore <remarks>. The poller is still
+        // serial; this pins that the STORE is no longer the reason it has to be.
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+
+        var runId = SeedRun(store);
+        const int Workers = 8;
+        const int PerWorker = 25;
+
+        // An async gate rather than a Barrier: workers are released simultaneously without first parking
+        // eight thread-pool threads, so the contention is real even on a small pool.
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var work = Enumerable.Range(0, Workers)
+            .Select(worker => Task.Run(async () =>
+            {
+                await start.Task;
+                for (var i = 0; i < PerWorker; i++)
+                {
+                    _ = store.AddArtifact(new ReviewArtifact
+                    {
+                        ReviewRunId = runId,
+                        ArtifactSchemaVersion = 1,
+                        ArtifactKind = "review",
+                        Provider = "github",
+                        Payload = $"{{\"worker\":{worker},\"i\":{i}}}",
+                    });
+
+                    // Readers that STREAM while the other workers write — the case a per-command lock
+                    // would still get wrong.
+                    _ = store.GetArtifacts(runId);
+                    _ = store.GetReviewRun(runId);
+                    _ = await store.ListReviewedPrsAsync(CancellationToken.None);
+                }
+            }))
+            .ToList();
+
+        start.SetResult();
+        var drain = async () => await Task.WhenAll(work);
+
+        _ = await drain.Should().NotThrowAsync("every operation serializes on the store's gate");
+        store.GetArtifacts(runId).Should().HaveCount(
+            Workers * PerWorker, "no write was lost, duplicated, or rolled back by a racing command");
     }
 
     // ── shared fixtures ───────────────────────────────────────────────────────────────────────────

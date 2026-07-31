@@ -61,31 +61,44 @@ public sealed class ConversationStatusResolver(IConversationStore conversationSt
     }
 
     /// <summary>
-    /// Resolves status by input id. Three outcomes: (1) a ledger row already folds this input id in
-    /// — resolve its status normally; (2) no ledger row yet, but the input id was durably accepted
-    /// onto this thread — resolves <see cref="ConversationRunStatus.NotStarted"/> (queued, not yet
-    /// drained into a run); (3) the input id is neither accepted nor in any ledger row — returns null,
-    /// which callers map to a 404 distinct from an unknown threadId.
+    /// Resolves status by input id. Three outcomes: (1) a ledger row folds this input id in — resolve its
+    /// status normally; (2) no ledger row, but the input id was durably accepted onto this thread — resolves
+    /// <see cref="ConversationRunStatus.NotStarted"/> (queued, not yet drained into a run); (3) neither —
+    /// returns null, which callers map to a 404 distinct from an unknown threadId.
+    /// <para>
+    /// Both halves of that are load-bearing, and they pull in opposite directions. The acceptance snapshot is
+    /// taken FIRST because the agent loop drains an input by writing its run row and only THEN deleting the
+    /// acceptance: reading the ledger first could miss the not-yet-written row and then miss the
+    /// already-deleted acceptance, reporting live work as UNKNOWN — which a caller answers by re-sending, so
+    /// that ordering is what would put a duplicate turn on the conversation. Taking the snapshot first closes
+    /// that window, because at least one of the two reads must land on the side of the drain that still knows
+    /// about the input.
+    /// </para>
+    /// <para>
+    /// The LEDGER still decides whenever it has an answer, and the acceptance is only a fallback. An
+    /// acceptance record is not always transient: restart reconciliation synthesizes an
+    /// <see cref="RunStatus.Interrupted"/> row for an orphaned accepted input and deliberately leaves the
+    /// acceptance in place, so a resolver that returned on the snapshot alone would report a turn that can
+    /// never run as NotStarted forever, and its caller would poll for a status that never arrives.
+    /// </para>
     /// </summary>
     public async Task<ConversationStatusResult?> ResolveByInputIdAsync(
         string threadId,
         string inputId,
         CancellationToken ct = default)
     {
+        var acceptedInputIds = await runLedgerStore.ListAcceptedInputIdsAsync(threadId, ct);
+        var wasAccepted = acceptedInputIds.Contains(inputId);
+
         var entries = await runLedgerStore.ListRunLedgerAsync(threadId, ct);
-        var match = entries.FirstOrDefault(e => e.InputIds.Contains(inputId));
-        if (match != null)
+        if (entries.FirstOrDefault(e => e.InputIds.Contains(inputId)) is { } match)
         {
             return await BuildResultAsync(match, ct);
         }
 
-        var acceptedInputIds = await runLedgerStore.ListAcceptedInputIdsAsync(threadId, ct);
-        if (acceptedInputIds.Contains(inputId))
-        {
-            return new ConversationStatusResult(threadId, null, ConversationRunStatus.NotStarted, null);
-        }
-
-        return null;
+        return wasAccepted
+            ? new ConversationStatusResult(threadId, null, ConversationRunStatus.NotStarted, null)
+            : null;
     }
 
     private async Task<ConversationStatusResult> BuildResultAsync(RunLedgerEntry entry, CancellationToken ct)

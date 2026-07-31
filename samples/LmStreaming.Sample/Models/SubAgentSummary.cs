@@ -35,6 +35,18 @@ public sealed record SubAgentSummary
     /// <summary>UTC timestamp of the sub-agent's last observed activity, or null if none yet.</summary>
     public DateTimeOffset? LastActivityUtc { get; init; }
 
+    /// <summary>Persisted parent thread id; required on recursive-tree nodes.</summary>
+    public string? ParentThreadId { get; init; }
+
+    /// <summary>Distance from the requested root in the recursive descendant graph.</summary>
+    public int? Depth { get; init; }
+
+    /// <summary>UTC instant the sub-agent reached a terminal status.</summary>
+    public DateTimeOffset? TerminalAtUtc { get; init; }
+
+    /// <summary>Machine-readable failure reason, when known.</summary>
+    public string? FailureCode { get; init; }
+
     /// <summary>The concrete model used to build the child provider after all routing precedence.</summary>
     public string? EffectiveModelId { get; init; }
 
@@ -44,3 +56,6 @@ public sealed record SubAgentSummary
     /// <summary>Stable source label such as parent, spawn-model, spawn-tier, template-model, or template-tier.</summary>
     public string? ModelSelectionSource { get; init; }
 }
+
+/// <summary>Versioned recursive descendant graph response.</summary>
+public sealed record SubAgentTreeResponse(int SchemaVersion, IReadOnlyList<SubAgentSummary> Nodes);

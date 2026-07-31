@@ -436,10 +436,13 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Overrides the <see cref="UserInput"/> overload rather than the message-list one because that is the
+    /// single enqueue core every send path funnels through — the list overload delegates to it, so this
+    /// restart guard still covers list-based callers.
+    /// </remarks>
     public override async ValueTask<SendReceipt> SendAsync(
-        List<IMessage> messages,
-        string? inputId = null,
-        string? parentRunId = null,
+        UserInput input,
         CancellationToken ct = default)
     {
         await _restartLock.WaitAsync(ct);
@@ -461,7 +464,7 @@ public sealed class ClaudeAgentLoop : MultiTurnAgentBase
                 _ = RunAsync(ct);
             }
 
-            return await base.SendAsync(messages, inputId, parentRunId, ct);
+            return await base.SendAsync(input, ct);
         }
         finally
         {

@@ -9,10 +9,36 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// Wraps a <see cref="MultiTurnAgentLoop"/> so the MCP clients opened for its sandbox tools are disposed
 /// together with the loop. The loop does not own external clients, so without this each tool-assisted run
 /// would leak one MCP connection.
+/// <para>
+/// It is a TRANSPARENT decorator: everything the review lifecycle needs from the loop underneath — the
+/// sub-agent surface and the resumable-turn checkpointing (both via <see cref="IReviewLoopWrapper"/>, which
+/// <see cref="ReviewLoopSubAgentSurface"/> resolves through) and the shared absolute deadline (via
+/// <see cref="IDeadlineBoundedReviewLoop"/>) — stays reachable, so wrapping a loop can never silently drop a
+/// capability the executor depends on. Capabilities the executor PROBES for are deliberately not re-declared
+/// here: declaring one this wrapper cannot actually supply would answer "yes" on behalf of an inner loop that
+/// has no such ability.
+/// </para>
 /// </summary>
 internal sealed class ToolScopedReviewLoop(IMultiTurnAgent inner, IReadOnlyList<McpClient> ownedClients)
-    : IMultiTurnAgent
+    : IMultiTurnAgent, IReviewLoopWrapper, IDeadlineBoundedReviewLoop
 {
+    /// <summary>
+    /// The wrapped loop. Exposed so the executor — which holds only the <see cref="IMultiTurnAgent"/> this
+    /// factory returned — can still reach the live <see cref="MultiTurnAgentLoop"/> underneath for the two
+    /// things only it can supply: the <c>SubAgentManager</c> the completion barrier polls, and the spawn
+    /// suppression scope the synthesis turn runs in. Both must come from the SAME instance the review is
+    /// running on, which is exactly what this pass-through preserves.
+    /// </summary>
+    public IMultiTurnAgent Inner => inner;
+
+    /// <summary>
+    /// Forwards the review attempt's ONE absolute budget to a deadline-bounded inner loop. A no-op when the
+    /// inner loop finishes when the provider finishes (the in-process path), but wiring it unconditionally is
+    /// what stops a future wrapping of a deadline-bounded loop from silently restarting the budget per turn.
+    /// </summary>
+    public void UseDeadline(DateTimeOffset deadlineUtc) =>
+        (inner as IDeadlineBoundedReviewLoop)?.UseDeadline(deadlineUtc);
+
     public string? CurrentRunId => inner.CurrentRunId;
     public string ThreadId => inner.ThreadId;
     public bool IsRunning => inner.IsRunning;

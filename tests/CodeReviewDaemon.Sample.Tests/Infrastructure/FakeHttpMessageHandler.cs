@@ -69,6 +69,18 @@ internal sealed class FakeHttpMessageHandler : HttpMessageHandler
             });
     }
 
+    /// <summary>
+    /// Answers the review host's capability preflight (<c>GET api/conversations/capabilities</c>) the way a
+    /// CURRENT host does. Every S2S scenario needs it, because the review agent verifies the message contract
+    /// before its first send; a test of an OLD host simply omits this and lets the default unrouted answer
+    /// stand, which is exactly what such a host returns.
+    /// </summary>
+    public FakeHttpMessageHandler OnCurrentReviewHostCapabilities() =>
+        OnJson(
+            HttpMethod.Get,
+            "conversations/capabilities",
+            "{\"schemaVersion\":1,\"messageIdempotency\":true,\"spawnSuppression\":true}");
+
     /// <summary>Number of requests observed whose URL contains <paramref name="urlContains"/>.</summary>
     public int CountRequests(string urlContains) =>
         Requests.Count(r => r.Uri.ToString().Contains(urlContains, StringComparison.Ordinal));

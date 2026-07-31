@@ -121,6 +121,17 @@ public record ProvisionConversationRequest
     /// forwarder can apply a first-wins tie-break among a session's attached threads.
     /// </summary>
     public string? AuthWebhookUrl { get; init; }
+
+    /// <summary>
+    /// Optional extra system instructions for THIS conversation, appended to the mode's system prompt
+    /// (after the workspace-path suffix and any discovered CLAUDE.md/AGENTS.md block) every time the
+    /// thread's agent is built. Provision carries no model or tool overrides, so this is the only way a
+    /// headless caller can give the hosted agent its actual task: a caller that drives a specialized run
+    /// (e.g. the code-review daemon's review methodology + output contract) would otherwise send only its
+    /// user turn and get a generic workspace agent that never follows the caller's protocol. Additive, not
+    /// a replacement — the mode stays in charge of the workspace, tools and sub-agent catalog.
+    /// </summary>
+    public string? SystemPromptAppendix { get; init; }
 }
 
 /// <summary>
@@ -133,11 +144,70 @@ public record ProvisionConversationResponse
 }
 
 /// <summary>
+/// What this host can promise about MESSAGES, independent of any one conversation. Read before the first
+/// send (<c>GET api/conversations/capabilities</c>) by a caller that must not discover an incompatibility
+/// from a response acknowledgement — by then the turn it asked about is already queued and running.
+/// <para>
+/// A host predating this endpoint answers 404, which is itself the answer: neither contract is available.
+/// </para>
+/// </summary>
+public record ConversationCapabilitiesResponse
+{
+    /// <summary>Schema version of this document, so a later shape change stays detectable.</summary>
+    public required int SchemaVersion { get; init; }
+
+    /// <summary>
+    /// True when <see cref="SendMessageRequest.IdempotencyKey"/> is durably honored — i.e. this host has a
+    /// store that can reserve an accepted input id, which is what makes a repeated key reconcile instead of
+    /// queueing a second turn. Derived from that store, not hard-coded, so it cannot advertise a promise the
+    /// deployment cannot keep.
+    /// </summary>
+    public required bool MessageIdempotency { get; init; }
+
+    /// <summary>
+    /// True when <see cref="SendMessageRequest.SuppressSubAgentSpawning"/> is understood: the host either
+    /// enforces it for the turn or refuses the send outright, and never silently ignores it. Whether the
+    /// specific conversation's agent can enforce it is still decided per send.
+    /// </summary>
+    public required bool SpawnSuppression { get; init; }
+}
+
+/// <summary>
 /// Request to enqueue a message onto a previously-provisioned conversation thread.
 /// </summary>
 public record SendMessageRequest
 {
     public required string Text { get; init; }
+
+    /// <summary>
+    /// When true, the run this message drives must not be able to start NEW sub-agents (reading from and
+    /// following up with already-running ones stays available). Used by a caller that has just waited on a
+    /// sub-agent completion barrier and is now asking for the synthesis turn: a fresh fan-out there would
+    /// reopen the barrier it just waited on.
+    /// <para>
+    /// The host REFUSES the send (400 <c>spawn_suppression_unsupported</c>) when the thread's agent cannot
+    /// enforce this, and echoes <see cref="SendMessageResponse.SpawningSuppressed"/> when it can — so a
+    /// caller talking to a host that predates this field sees no acknowledgement and can fail closed
+    /// instead of assuming a guarantee it never got.
+    /// </para>
+    /// </summary>
+    public bool SuppressSubAgentSpawning { get; init; }
+
+    /// <summary>
+    /// Makes this send safe to REPEAT. When supplied, the host records the input under an id derived from
+    /// this key (plus the options that change what the turn does) and reconciles a repeat against its
+    /// durable accepted-input ledger, so a caller whose response was lost — a socket reset, or a process
+    /// that died between the host accepting and the answer arriving — recovers the SAME input instead of
+    /// queueing a second (minutes-long, sub-agent-fanning) turn.
+    /// <para>
+    /// The key must identify one turn including its options; it is scoped to the thread, so callers only
+    /// need it to be unique within a conversation. A blank key is refused (400
+    /// <c>invalid_idempotency_key</c>) rather than treated as absent, and a honoured key is acknowledged
+    /// via <see cref="SendMessageResponse.IdempotencyKeyHonored"/> so a caller talking to a host that
+    /// predates this field can fail closed instead of retrying into a duplicate review.
+    /// </para>
+    /// </summary>
+    public string? IdempotencyKey { get; init; }
 }
 
 /// <summary>
@@ -148,6 +218,22 @@ public record SendMessageResponse
 {
     public required string InputId { get; init; }
     public required bool Queued { get; init; }
+
+    /// <summary>
+    /// Acknowledgement that <see cref="SendMessageRequest.SuppressSubAgentSpawning"/> was accepted AND is
+    /// enforced for the run this input drives. Absent/false means no such guarantee was made — which is
+    /// exactly what a host predating the field returns, so a caller that requires it can detect the
+    /// unsupported host rather than silently proceeding without suppression.
+    /// </summary>
+    public bool SpawningSuppressed { get; init; }
+
+    /// <summary>
+    /// Acknowledgement that <see cref="SendMessageRequest.IdempotencyKey"/> was supplied AND applied — i.e.
+    /// repeating the identical send returns this same <see cref="InputId"/> rather than queueing another
+    /// turn. Absent/false is exactly what a host predating the field returns, so a caller that depends on
+    /// safe retries can fail closed instead of retrying into a duplicate review.
+    /// </summary>
+    public bool IdempotencyKeyHonored { get; init; }
 }
 
 /// <summary>

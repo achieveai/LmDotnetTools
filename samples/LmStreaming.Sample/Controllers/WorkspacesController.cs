@@ -7,6 +7,7 @@ namespace LmStreaming.Sample.Controllers;
 
 [ApiController]
 [Route("api/workspaces")]
+[InboundS2SAuth]
 public sealed class WorkspacesController(
     IWorkspaceStore store,
     WorkspaceCatalogCompatibilityService compatibility,

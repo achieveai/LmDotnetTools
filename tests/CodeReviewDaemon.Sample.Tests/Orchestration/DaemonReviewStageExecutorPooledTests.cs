@@ -1,11 +1,15 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
 using CodeReviewDaemon.Sample.Workspace;
+using CodeReviewDaemon.Sample.Workspace.Git;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -26,6 +30,15 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private const string NotesRelPath = "PRs/lmdotnettools-118";
     private const string SubmoduleRelPath = "repos/LmDotnetTools";
 
+    /// <summary>The S2S review host this fixture's deep-links point at (never production's 5050).</summary>
+    private const string LmStreamingBaseUrl = "http://localhost:5051";
+
+    /// <summary>The deep-link the Posted stage must append on the S2S path. The hosted loop reports
+    /// <c>hosted-{threadId}</c> — standing in for the id LmStreaming MINTS at provision, which is deliberately
+    /// NOT the daemon's own <c>review-run-{id}-primary</c> thread id.</summary>
+    private static string S2SDeepLink(ReviewRun run) =>
+        $"{LmStreamingBaseUrl}/?threadId=hosted-{DaemonReviewStageExecutor.ThreadId(run, run.VariantId)}&focus=1";
+
     [Fact]
     public async Task ContextReady_leases_a_slot_prepares_it_and_diffs_the_prepared_target()
     {
@@ -42,9 +55,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Preparer.LastNotesRelPath.Should().Be(NotesRelPath);
         fixture.Preparer.LastDefaultBranch.Should().Be("main");
 
-        // The diff is taken HOST-side against the prepared submodule working tree, not the boot sandbox.
-        fixture.HostRunner.Commands.Select(Join)
-            .Should().Contain(a => a.Contains("/slot-0/store/repos/LmDotnetTools") && a.Contains("diff"));
+        // The diff is taken through the run-bound SDK session, never the host or boot runner.
+        fixture.Provisioner.SdkRunner.Commands.Select(Join)
+            .Should().Contain(a => a.Contains("/workspace/store/repos/LmDotnetTools") && a.Contains("diff"));
+        fixture.HostRunner.Commands.Should().BeEmpty("host git is reserved for the post-review commit gate");
         fixture.BootRunner.Commands.Should().BeEmpty("the pooled path never touches the boot-lifetime runner");
 
         // The artifact records the CONTAINER paths the agent's tools address (slot mounted at /workspace).
@@ -87,7 +101,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
-        fixture.Pool.RecloneCount.Should().Be(1, "a corrupt store is re-cloned before the retry");
+        fixture.Preparer.RecloneCount.Should().Be(1, "the session-bound preparer re-clones before retry");
         fixture.Preparer.PrepareCount.Should().Be(2, "prepare is retried exactly once after the re-clone");
         fixture.Store.GetArtifacts(run.Id)
             .Should().ContainSingle(a => a.ArtifactKind == DaemonReviewStageExecutor.ContextArtifactKind,
@@ -107,7 +121,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
 
         await act.Should().ThrowAsync<SlotCorruptException>();
-        fixture.Pool.RecloneCount.Should().Be(1, "re-clone is attempted once");
+        fixture.Preparer.RecloneCount.Should().Be(1, "the session-bound preparer attempts one re-clone");
         fixture.Preparer.PrepareCount.Should().Be(2, "prepare is attempted once, then once more after the re-clone");
         fixture.Pool.ReturnCount.Should().Be(1, "the failed lease is returned so it cannot leak pool capacity");
     }
@@ -148,7 +162,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("## Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
         text.Should().Contain("KB-ENTRY-XYZ", "the seeded ToC entry is surfaced to the pooled reviewer");
     }
@@ -176,7 +190,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Repository guidance", "the reviewed repo's own guidance is prepended as a labelled block");
         text.Should().Contain("REPO-GUIDANCE-MARKER", "the reviewed repo's CLAUDE.md is surfaced to the reviewer");
         text.Should().Contain("AGENTS-MARKER", "the reviewed repo's AGENTS.md is surfaced to the reviewer");
@@ -194,7 +208,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Repository guidance", "an absent CLAUDE.md/AGENTS.md must not add an empty block");
     }
 
@@ -218,7 +232,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().Contain("Already posted on this PR", "existing comments are prepended as a labelled dedup block");
         text.Should().Contain("from ALL authors", "the reviewer must consider comments from other bots and humans too");
         text.Should().Contain("Comments during past reviews", "the block is split into past vs new");
@@ -260,7 +274,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var pastIdx = text.IndexOf("Comments during past reviews", StringComparison.Ordinal);
         var newIdx = text.IndexOf("New comments since your last review", StringComparison.Ordinal);
         var pastFindingIdx = text.IndexOf("PAST-BOT-FINDING", StringComparison.Ordinal);
@@ -295,7 +309,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         var rootIdx = text.IndexOf("ROOT-null-deref-finding", StringComparison.Ordinal);
         var replyIdx = text.IndexOf("REPLY-fixed-in-abc123", StringComparison.Ordinal);
         rootIdx.Should().BeGreaterThan(0, "the root finding must be rendered");
@@ -315,7 +329,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
-        var text = reviewAgent.ReceivedInputs.Single().Messages.OfType<TextMessage>().Single().Text;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
         text.Should().NotContain("Already posted on this PR");
     }
 
@@ -473,6 +487,25 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task S2S_review_releases_before_preparing_the_workspace_after_a_restart()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var run = fixture.SeedRun();
+
+        // Process A persists ContextReady with slot 0, then disappears with all process-local lease/workspace caches.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        fixture.Pool.LeaseCount.Should().Be(2);
+        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be(
+            "ws-review-slot-1",
+            "the hosted workspace must be prepared from the newly leased slot, not a cached bare PR clone");
+        fixture.S2SGit.Commands.Should().BeEmpty("slot adoption must not run the fallback clone preparer");
+    }
+
+    [Fact]
     public async Task Reviewed_re_leases_a_slot_when_resuming_after_a_restart_dropped_the_in_memory_lease()
     {
         using var fixture = Fixture.Create();
@@ -496,7 +529,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // review-run-{id} mount, which does not exist under the gateway's read-only workspace base and 400s
         // (the silent degrade-to-diff-only these resumed runs were stuck in).
         fixture.Pool.LeaseCount.Should().Be(2, "the resumed review re-leases a slot because the prior lease was lost on restart");
-        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(1, "the resumed review mounts over the re-leased slot");
+        fixture.Provisioner.GetOrCreateForSlotCalls.Should().Be(2,
+            "the original context and resumed context each mount their own leased slot once");
         fixture.Provisioner.GetOrCreateCalls.Should().Be(0, "the resumed review must never fall back to the broken per-run mount");
     }
 
@@ -560,6 +594,24 @@ public sealed class DaemonReviewStageExecutorPooledTests
         // the pool — otherwise a lingering sub-agent git op could race the next lease's clean-on-entry on the
         // same store (the concurrency window flagged in review #180).
         fixture.CleanupOrder.Should().ContainInOrder("destroy", "return");
+    }
+
+    [Fact]
+    public async Task S2S_returns_the_slot_without_destroying_a_session_the_daemon_does_not_own()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // The inverse of the two cases above, and the reason both teardown sites are guarded on S2S. There,
+        // BuildToolContextAsync returns BEFORE provisioning, so the daemon owns no session to destroy — while
+        // the container that does exist belongs to the review host and must OUTLIVE the run: the posted
+        // comment's ?threadId= deep-link is the entire reason this path exists, and tearing the conversation
+        // down at teardown would 404 that link the moment the review finished.
+        fixture.CleanupOrder.Should().NotContain("destroy");
+        fixture.CleanupOrder.Should().ContainSingle().Which.Should().Be(
+            "return", "the slot still goes back to the pool — only the session teardown is skipped");
     }
 
     [Fact]
@@ -642,6 +694,68 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Posted_keeps_the_pooled_lease_when_the_commit_gate_fails_so_the_retry_uses_the_same_pool_path()
+    {
+        using var fixture = Fixture.Create();
+        // The commit gate fails once (a stale index.lock the next attempt's clean-on-entry clears) and then
+        // succeeds on the retry.
+        fixture.HostRunner.OnArgvContainsSequence(
+            $"add -- {NotesRelPath}",
+            new SandboxCommandResult(1, string.Empty, "fatal: Unable to create index.lock: File exists"),
+            new SandboxCommandResult(0, string.Empty, string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        // Consuming the lease BEFORE the commit succeeded is what silently moved the retry off the pool and
+        // onto the host ReviewBot checkout — so a failed retention must leave the lease exactly as it was.
+        fixture.Pool.ReturnCount.Should().Be(0, "the slot is only stripped and returned once its notes are retained");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
+        commands.Count(a => a.Contains($"add -- {NotesRelPath}")).Should().Be(2, "the retry re-runs the commit gate");
+        commands.Should().OnlyContain(
+            a => !a.Contains($"add -- {NotesRelPath}") || a.Contains("/pool/slot-0/store"),
+            "both attempts stage the notes inside the SAME leased slot");
+        fixture.Pool.LeaseCount.Should().Be(1, "the retry reuses the retained lease rather than leasing a second slot");
+        fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned exactly once, on the successful retry");
+    }
+
+    [Fact]
+    public async Task Posted_re_leases_a_slot_when_a_retry_resumes_after_the_lease_was_released()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        // The orchestrator's terminal finally releases the pooled lease on EVERY terminal outcome (including
+        // the failure→RetryPending rethrow), so a Posted-stage retry on a later poll — or after a restart —
+        // always arrives with no recorded lease. Seed the gitmodules for the slot it will lease next.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-1/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        // The retry must retain the notes through the POOL — the store checkout that carries the notes branch
+        // and the PR's prior notes — never silently degrade to the host ReviewBot checkout.
+        fixture.Pool.LeaseCount.Should().Be(2, "the resumed Posted stage re-leases a slot because the prior lease was released");
+        var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
+        commands.Should().Contain(a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"));
+        fixture.Pool.ReturnCount.Should().Be(1, "the re-leased slot is stripped and returned on the terminal stage");
+    }
+
+    [Fact]
     public async Task Posted_strips_the_slot_store_to_pristine_after_committing_the_notes()
     {
         using var fixture = Fixture.Create();
@@ -657,11 +771,271 @@ public sealed class DaemonReviewStageExecutorPooledTests
         fixture.Pool.ReturnCount.Should().Be(1, "the slot is still returned after the strip");
     }
 
+    [Fact]
+    public async Task S2S_review_has_no_daemon_tool_context_yet_still_scopes_the_prompt_to_the_pooled_notes_dir()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The pooled path is tried FIRST on S2S too: the slot carries the store, the Knowledge Base and the
+        // PR's own notes dir, so it is the richer workspace to mount into the hosted conversation.
+        fixture.Pool.LeaseCount.Should().Be(1);
+        fixture.Factory.ToolContexts.Should().ContainSingle().Which.Should().BeNull(
+            "the hosted conversation owns its tools, so the daemon builds no tool context on S2S");
+
+        // The regression guard: notes_dir/has_notes/has_store come from the pooled WRITE SCOPE, not from the
+        // tool context. Sourcing them from the (null) tool context would render them empty HERE and silently
+        // strip per-PR notes, re-review memory and the "only writable location" directive from the hosted
+        // review — the review would still run and still look fine, which is why it needs pinning.
+        var profile = fixture.Factory.CreatedProfiles.Should().ContainSingle().Subject;
+        profile.SystemPrompt.Should().Contain($"/workspace/store/{NotesRelPath}");
+        profile.SystemPrompt.Should().Contain("cross-repo store at /workspace/store");
+        profile.SystemPrompt.Should().Contain($"/workspace/store/{SubmoduleRelPath}");
+        profile.SystemPrompt.Should().MatchRegex("(?i)only writable location");
+    }
+
+    [Fact]
+    public async Task S2S_binds_the_hosted_conversation_to_the_leased_slots_own_workspace()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        // The central design move: the leased slot IS the workspace LmStreaming mounts at /workspace, so every
+        // container path the pooled stage computed (/workspace/store/...) is correct verbatim inside the hosted
+        // conversation. Preparing a separate per-PR clone instead would mount a tree with no store at all.
+        fixture.Factory.WorkspaceIds.Should().ContainSingle().Which.Should().Be("ws-review-slot-0");
+        var created = fixture.S2SHandler.Requests
+            .Should().ContainSingle(r => r.Method == HttpMethod.Post).Subject;
+        created.Body.Should().Contain(
+            "\"directoryRelPath\":\"review-slot-0\"", "the workspace names the slot ROOT leaf, not a child of it");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "adoption is pure naming — re-running git here would fight the pool's preparer for the same tree");
+    }
+
+    [Fact]
+    public async Task S2S_fails_closed_when_the_pooled_store_does_not_carry_the_reviewed_repo()
+    {
+        using var fixture = Fixture.CreateS2S();
+        // The store declares a DIFFERENT submodule, so the pooled attempt DECLINES. On S2S the degrade below it
+        // host-clones a permanent per-PR checkout under the shared gateway base and mints a workspace pointing
+        // at it — neither of which anything ever reclaims, so every un-onboarded repo leaks a full clone plus a
+        // workspace record. A configured pool that declines must fail closed instead, with an actionable error.
+        fixture.HostFileSystem.Files.Clear();
+        fixture.HostFileSystem.Seed(
+            "/pool/review-slot-0/store/.gitmodules",
+            "[submodule \"other\"]\n\tpath = repos/other\n\turl = https://github.com/achieveai/other.git\n");
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
+        thrown.Message.Should().Contain("achieveai/lmdotnettools", "the error names the repo that must be onboarded");
+        thrown.Message.Should().Contain(StoreUrl, "the error names the review store to onboard it into");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "no unmanaged per-PR clone may be created for a pooled-but-declined review");
+        fixture.S2SHandler.Requests.Should().BeEmpty(
+            "no permanent per-PR LmStreaming workspace may be minted for a pooled-but-declined review");
+        fixture.Pool.ReturnCount.Should().Be(1, "the declined lease is still returned normally, before the failure");
+        fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("the stage failed, so it persisted no partial context");
+    }
+
+    /// <summary>
+    /// PR #230 follow-up: an operator can turn on <c>UseS2SReviewAgent</c> (which unconditionally wires
+    /// <see cref="S2SReviewWorkspacePreparer"/> in Program.cs) without ever satisfying the pool-onboarding
+    /// conditions (<c>EnableToolAssistedReview</c> + <c>EnableReviewerWrites</c> + a resolved review store) —
+    /// so <see cref="DaemonReviewStageExecutor"/>'s <c>UsePooledReview</c> is <c>false</c> while the preparer is
+    /// still non-null. Before this fix that combination fell through to the S2S "degrade" path and called
+    /// <c>S2SReviewWorkspacePreparer.PrepareAsync</c> — a bare per-PR HOST CLONE plus a PERMANENT LmStreaming
+    /// workspace REST record that nothing in this system ever cleans up. That is strictly worse than the
+    /// pooled-but-declined case above (which at least fails closed): here there was no pool to decline, so the
+    /// unmanaged clone+workspace was minted on every single S2S review of every PR. The fix rejects the review
+    /// instead, before any preparer call, REST request, or host git — the same "fail closed rather than leak an
+    /// unmanaged workspace" posture as the pooled-decline case, just for the "no pool configured at all" cause.
+    /// </summary>
+    [Fact]
+    public async Task S2S_rejects_the_review_when_no_pooled_workspace_is_configured()
+    {
+        using var fixture = Fixture.CreateS2SWithoutPool();
+        var run = fixture.SeedRun();
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var thrown = (await act.Should().ThrowAsync<InvalidOperationException>()).Which;
+        thrown.Message.Should().Contain("EnableToolAssistedReview", "the error names the flag that must be turned on");
+        thrown.Message.Should().Contain("EnableReviewerWrites", "the error names the other flag that must be turned on");
+        thrown.Message.Should().MatchRegex(
+            "(?i)review store|pool", "the error points at onboarding a review store/pool, not just the flags");
+        fixture.S2SGit.Commands.Should().BeEmpty(
+            "no unmanaged per-PR host clone may be created when no recyclable pooled workspace is configured");
+        fixture.S2SHandler.Requests.Should().BeEmpty(
+            "no permanent per-PR LmStreaming workspace may be minted when no recyclable pooled workspace is configured");
+        fixture.Pool.LeaseCount.Should().Be(0, "no pool is configured at all, so nothing is ever leased");
+        fixture.Store.GetArtifacts(run.Id).Should().BeEmpty("the stage failed, so it persisted no partial context");
+    }
+
+    [Fact]
+    public async Task S2S_posts_host_side_with_the_deep_link_once_and_still_commits_only_the_notes_dir()
+    {
+        using var fixture = Fixture.CreateS2S();
+        var run = fixture.SeedRun();
+
+        await RunAllStagesAsync(fixture, run);
+
+        // Agent-inline posting is forced OFF on S2S (the hosted agent is domain-agnostic and cannot reach a
+        // GitHub/ADO PR) even though posting is authorized — so the synthesis turn, the one turn that would
+        // otherwise carry the posting instructions, carries none…
+        var inputs = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject.ReceivedInputs;
+        inputs.Should().HaveCount(2, "one hosted conversation still drives the provisional turn then synthesis");
+        inputs[1].Messages.OfType<TextMessage>().Single().Text.Should().NotContain(
+            "api.github.com", "S2S must never ask the hosted agent to post to the PR itself");
+
+        // …and the host-side publisher is the ONLY delivery path, carrying the deep-link back to the hosted
+        // conversation (the whole point of the S2S path: a human can open the review and its sub-agent tree).
+        fixture.Publisher.PostCount.Should().Be(1);
+        var body = fixture.Publisher.PostedBodies.Should().ContainSingle().Subject;
+        body.Split(S2SDeepLink(run), StringSplitOptions.None).Length.Should().Be(
+            2, "the deep link is appended exactly once — a duplicated link means the body was assembled twice");
+        body.Should().NotContain(
+            $"threadId=review-run-{run.Id}",
+            "the link carries the id LmStreaming minted, not the daemon's own thread id (which resolves to nothing)");
+
+        // The commit gate is unchanged by S2S: still ONLY the PR notes dir, never `add -A`.
+        var commands = fixture.HostRunner.Commands.Select(Join).ToList();
+        commands.Should().Contain(a => a.Contains($"add -- {NotesRelPath}"));
+        commands.Should().NotContain(a => a.Contains("add -A"));
+        fixture.HostFileSystem.Writes.Should().Contain(
+            p => p.Contains($"/{NotesRelPath}/") && p.EndsWith("review.md"));
+        fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned on the terminal stage on S2S too");
+    }
+
+    /// <summary>
+    /// G15 — the isolation gate. This is the whole point of mounting a leased SLOT as the LmStreaming
+    /// workspace leaf: two reviews that overlap in time must get two slots, two single-segment leaves, two
+    /// LmStreaming workspaces (⇒ two gateway containers, since sessions are cached by workspace+app) and two
+    /// notes dirs — and neither one's commit/strip may reach into the other's tree.
+    /// <para>
+    /// The poller is deliberately still serial, so nothing in production drives this today. The test is what
+    /// makes flipping it to parallel a change in the POLLER ALONE: if the executor ever grew per-daemon shared
+    /// review state, this fails instead of two live reviews silently corrupting each other's checkout.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task S2S_two_overlapping_reviews_get_isolated_slots_workspaces_and_notes_dirs()
+    {
+        using var fixture = Fixture.CreateS2S(slots: 2);
+        var first = fixture.SeedRun("118");
+        var second = fixture.SeedRun("222");
+
+        // Hold BOTH preparations open until each has claimed its slot, so the overlap is deterministic: with a
+        // plain WhenAll the first review could finish its context stage before the second even starts, and the
+        // test would "pass" while proving nothing about two live leases.
+        var bothArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrived = 0;
+        fixture.Preparer.Rendezvous = () =>
+        {
+            if (Interlocked.Increment(ref arrived) == 2)
+            {
+                bothArrived.TrySetResult();
+            }
+
+            // A 30s ceiling so a regression that stops the second review from ever leasing fails loudly here
+            // instead of hanging the suite.
+            return bothArrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        };
+
+        await Task.WhenAll(
+            Task.Run(() => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, first, CancellationToken.None)),
+            Task.Run(() => fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, second, CancellationToken.None)));
+
+        // Both leases were held AT THE SAME TIME (the rendezvous could not have completed otherwise), and the
+        // pool handed out two different slots rather than recycling one.
+        fixture.Pool.LeaseCount.Should().Be(2);
+        fixture.Pool.ReturnCount.Should().Be(0, "both slots are still held — neither review has reached a terminal stage");
+        // Typed locals rather than inline collection expressions: BeEquivalentTo's element type is a generic
+        // parameter, which a target-typeless `[...]` cannot infer.
+        string[] expectedSlots = ["/pool/review-slot-0", "/pool/review-slot-1"];
+        fixture.Pool.Leased.Select(s => s.HostPath).Should().BeEquivalentTo(expectedSlots);
+
+        // Two prepared checkouts in two different stores, and two different notes dirs.
+        fixture.Preparer.Prepared.Select(p => p.StoreRoot).Should().OnlyHaveUniqueItems();
+        string[] expectedNotesDirs =
+        [
+            $"/pool/review-slot-{SlotOf(fixture, "118")}/store/PRs/lmdotnettools-118",
+            $"/pool/review-slot-{SlotOf(fixture, "222")}/store/PRs/lmdotnettools-222",
+        ];
+        fixture.Preparer.Prepared.Select(p => p.NotesDir).Should().BeEquivalentTo(expectedNotesDirs);
+
+        // The rest runs sequentially — a serial poller is decision 2, and the review/judge/post stages share
+        // fakes (agent factory, publisher) whose call ORDER these assertions read.
+        fixture.Preparer.Rendezvous = null;
+        await RunRemainingStagesAsync(fixture, first);
+        await RunRemainingStagesAsync(fixture, second);
+
+        // Two distinct LmStreaming workspaces, each named after its own slot leaf. Same workspace id for both
+        // would mean ONE gateway container serving both reviews — the exact collision this design prevents.
+        string[] expectedWorkspaceIds = ["ws-review-slot-0", "ws-review-slot-1"];
+        fixture.Factory.WorkspaceIds.Distinct().Should().BeEquivalentTo(expectedWorkspaceIds);
+
+        // The commit gate and the strip stay inside their own slot: every git command that names a PR's notes
+        // dir must carry that PR's slot path, and no command may name one PR's notes under the other's slot.
+        // Read BOTH fields: the notes-branch commands (checkout/add/commit/push) are scoped by
+        // SandboxCommand.WorkingDirectory — only the target-dir reads and the strip pass `-C <path>` in argv —
+        // so an argv-only projection would silently see no slot at all on exactly the commands under test.
+        var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
+        foreach (var prId in new[] { "118", "222" })
+        {
+            var own = $"/pool/review-slot-{SlotOf(fixture, prId)}";
+            var other = $"/pool/review-slot-{SlotOf(fixture, prId == "118" ? "222" : "118")}";
+            commands.Should().Contain(
+                a => a.Contains($"add -- PRs/lmdotnettools-{prId}") && a.Contains(own),
+                $"PR {prId}'s notes are staged in its own slot");
+            commands.Should().NotContain(
+                a => a.Contains($"lmdotnettools-{prId}") && a.Contains(other),
+                $"nothing touching PR {prId} may reach into the other review's slot");
+        }
+
+        // Each slot was stripped on its own terminal stage, so neither review left byproduct in the other.
+        foreach (var slot in new[] { "/pool/review-slot-0/store", "/pool/review-slot-1/store" })
+        {
+            commands.Should().Contain(a => a.Contains($"-C {slot} reset --hard"));
+            commands.Should().Contain(a => a.Contains($"-C {slot} clean -ffdx"));
+        }
+
+        fixture.Pool.ReturnCount.Should().Be(2, "both slots are returned once their reviews reach Posted");
+    }
+
+    /// <summary>The slot index the pool leased for <paramref name="prId"/> — the assignment is whichever lease
+    /// won the race, so the isolation assertions resolve it instead of assuming an order.</summary>
+    private static int SlotOf(Fixture fixture, string prId)
+    {
+        var notesSuffix = $"/PRs/lmdotnettools-{prId}";
+        var prepared = fixture.Preparer.Prepared.Single(p => p.NotesDir.EndsWith(notesSuffix, StringComparison.Ordinal));
+        return fixture.Pool.Leased.Single(s => prepared.StoreRoot == s.StorePath).Index;
+    }
+
     private static string Join(SandboxCommand command) => string.Join(' ', command.Argv);
+
+    /// <summary>
+    /// Argv prefixed with the directory the command runs in. A sandbox git command carries its repo either
+    /// as <c>-C &lt;path&gt;</c> in argv or as <see cref="SandboxCommand.WorkingDirectory"/>; assertions about
+    /// WHERE a command ran must therefore see both.
+    /// </summary>
+    private static string Describe(SandboxCommand command) => $"{command.WorkingDirectory} {Join(command)}";
 
     private static async Task RunAllStagesAsync(Fixture fixture, ReviewRun run)
     {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await RunRemainingStagesAsync(fixture, run);
+    }
+
+    private static async Task RunRemainingStagesAsync(Fixture fixture, ReviewRun run)
+    {
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
         await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
@@ -671,9 +1045,18 @@ public sealed class DaemonReviewStageExecutorPooledTests
     {
         private readonly TempSqliteDatabase _db;
         private readonly CodeReviewDaemonOptions _options;
-        private readonly ReviewSlotWorkspace _slotWorkspace;
+        private readonly ReviewSlotWorkspace? _slotWorkspace;
+        private readonly HttpClient? _s2sHttp;
+        private readonly S2SReviewWorkspacePreparer? _s2sPreparer;
 
-        private Fixture()
+        /// <param name="s2s">Whether the review runs over the LmStreaming S2S API (wires the preparer) or
+        /// in-process.</param>
+        /// <param name="slots">How many slot leaves the fake pool is primed with.</param>
+        /// <param name="wirePool">Mirrors Program.cs's SEPARATE pool-onboarding gate (EnableToolAssistedReview +
+        /// EnableReviewerWrites + a resolved review store): when false, no <see cref="ReviewSlotWorkspace"/> is
+        /// built at all, so <c>UsePooledReview</c> is false even though the S2S preparer (below) is still wired —
+        /// exactly the "UseS2SReviewAgent on, pool never onboarded" operator misconfiguration PR #230 closes.</param>
+        private Fixture(bool s2s, int slots, bool wirePool = true)
         {
             _db = new TempSqliteDatabase();
             Store = new ReviewStore(_db.ConnectionString);
@@ -682,11 +1065,21 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
             HostRunner = new FakeSandboxCommandRunner()
                 .OnArgvContains("diff", new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
-            HostFileSystem = new FakeSandboxFileSystem().Seed(
-                "/pool/slot-0/store/.gitmodules",
-                "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
-            Pool = new FakeReviewSlotPool("/pool");
+            // On S2S the slot dir doubles as the LmStreaming workspace leaf, so the pool is configured with the
+            // single-segment "review-slot-" prefix Program.cs forces there (a "review-pool/slot-0" style name
+            // would be FLATTENED by the workspace-directory sanitizer into a different, empty directory).
+            var slotPrefix = s2s ? "review-slot-" : "slot-";
+            HostFileSystem = new FakeSandboxFileSystem();
+            for (var i = 0; i < slots; i++)
+            {
+                _ = HostFileSystem.Seed(
+                    $"/pool/{slotPrefix}{i}/store/.gitmodules",
+                    "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            }
+
+            Pool = new FakeReviewSlotPool("/pool", slotPrefix);
             Preparer = new FakeReviewSlotPreparer();
+
 
             // Shared cleanup-order log so a test can assert the session is destroyed before the slot is returned.
             Pool.Order = CleanupOrder;
@@ -694,11 +1087,76 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
             _options = new CodeReviewDaemonOptions
             {
-                EnableToolAssistedReview = true,
-                EnableReviewerWrites = true,
-                CrossRepoStoreUrl = StoreUrl,
+                EnableToolAssistedReview = wirePool,
+                EnableReviewerWrites = wirePool,
+                CrossRepoStoreUrl = wirePool ? StoreUrl : null,
+                UseS2SReviewAgent = s2s,
+                LmStreamingBaseUrl = s2s ? LmStreamingBaseUrl : null,
+                // Host-side posting is the ONLY delivery path on S2S, so the S2S fixture authorizes it — that is
+                // what makes the posted body (and its deep-link) observable on the fake publisher.
+                EnableCommentPosting = s2s,
             };
-            _slotWorkspace = new ReviewSlotWorkspace(Pool, Preparer, HostRunner, HostFileSystem);
+            // Only the HOSTED path's turns are durable, and the executor now refuses an S2S review whose loop
+            // cannot checkpoint them — so the double has to be resumable on exactly the path production is.
+            Factory.Resumable = s2s;
+            _slotWorkspace = wirePool
+                ? new ReviewSlotWorkspace(
+                    Pool,
+                    Preparer,
+                    (session, _) =>
+                    {
+                        // The production factory builds a preparer over the run session. The fake preparer records
+                        // orchestration inputs; keep its SDK filesystem in sync with fixture-host seeds used by
+                        // prior-notes/KB/root-guidance tests.
+                        foreach (var (path, content) in HostFileSystem.Files)
+                        {
+                            var sessionPath = path.Replace(
+                                $"/pool/{(s2s ? "review-slot-" : "slot-")}0/store",
+                                "/workspace/store",
+                                StringComparison.Ordinal);
+                            session.FileSystem.WriteFileAsync(sessionPath, content, CancellationToken.None)
+                                .GetAwaiter().GetResult();
+                        }
+
+                        return Preparer;
+                    },
+                    HostRunner,
+                    HostFileSystem)
+                : null;
+
+            if (s2s)
+            {
+                // The REAL preparer over a scripted LmStreaming: the executor must ADOPT the leased slot (naming
+                // it as the workspace, running no git) rather than host-cloning a bare per-PR checkout. The POST
+                // ECHOES the leaf back as the workspace id ("ws-{leaf}") so a fixture with several slots hands
+                // out a DISTINCT workspace per leaf — which is exactly what the isolation gate asserts.
+                S2SHandler = new FakeHttpMessageHandler()
+                    .OnJson(HttpMethod.Get, "api/workspaces", "[]")
+                    .On(
+                        req => req.Method == HttpMethod.Post
+                            && req.RequestUri is not null
+                            && req.RequestUri.ToString().Contains("api/workspaces", StringComparison.Ordinal),
+                        req =>
+                        {
+                            var leaf = ReadDirectoryRelPath(req);
+                            return new HttpResponseMessage(HttpStatusCode.OK)
+                            {
+                                Content = new StringContent(
+                                    $"{{\"id\":\"ws-{leaf}\",\"name\":\"Review {leaf}\",\"directoryRelPath\":\"{leaf}\","
+                                        + "\"marketplaces\":[\"code-reviewer\"]}",
+                                    Encoding.UTF8,
+                                    "application/json"),
+                            };
+                        });
+
+                _s2sHttp = new HttpClient(S2SHandler) { BaseAddress = new Uri(LmStreamingBaseUrl + "/") };
+                _s2sPreparer = new S2SReviewWorkspacePreparer(
+                    new LmStreamingS2SClient(_s2sHttp, "secret", "app-id", "app-key"),
+                    new GitRunner(S2SGit),
+                    "/pool",
+                    reviewMarketplace: "code-reviewer",
+                    NullLogger<S2SReviewWorkspacePreparer>.Instance);
+            }
 
             Executor = BuildExecutor();
         }
@@ -718,7 +1176,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
                 [Publisher],
                 NullLoggerFactory.Instance,
                 provisioner: Provisioner,
-                slotWorkspace: _slotWorkspace);
+                slotWorkspace: _slotWorkspace,
+                preparer: _s2sPreparer);
 
         public ReviewStore Store { get; }
         public FakeReviewAgentLoopFactory Factory { get; } = new();
@@ -733,9 +1192,44 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public FakeReviewSlotPreparer Preparer { get; }
         public DaemonReviewStageExecutor Executor { get; }
 
-        public static Fixture Create() => new();
+        /// <summary>The scripted LmStreaming S2S endpoint (S2S fixture only) — lets a test assert the workspace
+        /// the daemon named to the review host.</summary>
+        public FakeHttpMessageHandler S2SHandler { get; } = new();
 
-        public ReviewRun SeedRun()
+        /// <summary>The git the S2S preparer runs through (S2S fixture only). Adoption must leave it EMPTY.</summary>
+        public FakeSandboxCommandRunner S2SGit { get; } = new();
+
+        public static Fixture Create() => new(s2s: false, slots: 1);
+
+        /// <summary>The S2S variant: the review runs in an LmStreaming-hosted conversation mounted over the
+        /// leased slot, the daemon builds no tool context, and the Posted stage delivers the review host-side
+        /// with the deep-link back to that conversation. <paramref name="slots"/> is how many slot leaves the
+        /// fake pool is primed with — &gt;1 lets a test hold two leases at once.</summary>
+        public static Fixture CreateS2S(int slots = 1) => new(s2s: true, slots);
+
+        /// <summary>The "explicit non-pooled S2S" variant (PR #230): <c>UseS2SReviewAgent</c> is on — so the
+        /// S2S preparer is wired, mirroring Program.cs's unconditional registration — but none of the pool's
+        /// own onboarding conditions are, so no <see cref="ReviewSlotWorkspace"/> exists and <c>UsePooledReview</c>
+        /// is false. This is the misconfiguration that used to fall through to an unmanaged, never-cleaned-up
+        /// per-PR host clone + LmStreaming workspace.</summary>
+        public static Fixture CreateS2SWithoutPool() => new(s2s: true, slots: 1, wirePool: false);
+
+        /// <summary>Reads <c>directoryRelPath</c> out of a create-workspace request body so the scripted
+        /// endpoint can echo the leaf back as the workspace id.</summary>
+        private static string ReadDirectoryRelPath(HttpRequestMessage request)
+        {
+            var body = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+            using var json = JsonDocument.Parse(body ?? "{}");
+            return json.RootElement.TryGetProperty("directoryRelPath", out var leaf)
+                ? leaf.GetString() ?? "unknown"
+                : "unknown";
+        }
+
+        /// <summary>
+        /// Seeds (or resumes) a review run for <paramref name="prId"/>. Distinct PR ids give distinct runs —
+        /// which is how the isolation gate drives two reviews at once.
+        /// </summary>
+        public ReviewRun SeedRun(string prId = "118")
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -747,7 +1241,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
             return Store.CreateOrGetReviewRun(new ReviewRun
             {
                 RepoId = repoId,
-                PrId = "118",
+                PrId = prId,
                 HeadSha = "head-sha",
                 BaseSha = "base-sha",
                 TriggerWatermark = "wm-1",
@@ -762,6 +1256,7 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public void Dispose()
         {
+            _s2sHttp?.Dispose();
             Store.Dispose();
             _db.Dispose();
         }
@@ -772,14 +1267,28 @@ public sealed class DaemonReviewStageExecutorPooledTests
     private sealed class FakeReviewSlotPool : IReviewSlotPool
     {
         private readonly string _root;
+        private readonly string _dirPrefix;
+        private readonly Lock _gate = new();
         private int _next;
 
-        public FakeReviewSlotPool(string root) => _root = root;
+        /// <summary>
+        /// <paramref name="dirPrefix"/> mirrors the real pool's slot-directory prefix: <c>slot-</c> in-process,
+        /// <c>review-slot-</c> on S2S (where the slot dir doubles as the LmStreaming workspace leaf).
+        /// </summary>
+        public FakeReviewSlotPool(string root, string dirPrefix = "slot-")
+        {
+            _root = root;
+            _dirPrefix = dirPrefix;
+        }
 
         public int LeaseCount { get; private set; }
         public int ReturnCount { get; private set; }
         public int RecloneCount { get; private set; }
         public List<ReviewSlot> Returned { get; } = [];
+
+        /// <summary>Every slot handed out, in lease order — lets a test assert two concurrent reviews were
+        /// never given the same slot.</summary>
+        public List<ReviewSlot> Leased { get; } = [];
 
         /// <summary>Shared cleanup-order log (with <see cref="RecordingProvisioner"/>) to assert the session is
         /// destroyed before the slot is returned.</summary>
@@ -787,23 +1296,38 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         public Task<ReviewSlot> LeaseAsync(CancellationToken cancellationToken)
         {
-            LeaseCount++;
-            var index = _next++;
-            var host = $"{_root}/slot-{index}";
-            return Task.FromResult(new ReviewSlot(index, host, $"{host}/store", $"{host}/scratch"));
+            // Gated because the isolation gate leases from two reviews at once: an unsynchronized index would
+            // hand the SAME slot to both and manufacture the very collision the test exists to rule out.
+            lock (_gate)
+            {
+                LeaseCount++;
+                var index = _next++;
+                var host = $"{_root}/{_dirPrefix}{index}";
+                var slot = new ReviewSlot(index, host, $"{host}/store", $"{host}/scratch");
+                Leased.Add(slot);
+                return Task.FromResult(slot);
+            }
         }
 
         public Task ReturnAsync(ReviewSlot slot, CancellationToken cancellationToken)
         {
-            ReturnCount++;
-            Returned.Add(slot);
-            Order?.Add("return");
+            lock (_gate)
+            {
+                ReturnCount++;
+                Returned.Add(slot);
+                Order?.Add("return");
+            }
+
             return Task.CompletedTask;
         }
 
         public Task RecloneStoreAsync(ReviewSlot slot, CancellationToken cancellationToken)
         {
-            RecloneCount++;
+            lock (_gate)
+            {
+                RecloneCount++;
+            }
+
             return Task.CompletedTask;
         }
     }
@@ -812,7 +1336,10 @@ public sealed class DaemonReviewStageExecutorPooledTests
     /// forward-slash join of the slot store + the supplied relative paths (mirrors the real preparer).</summary>
     private sealed class FakeReviewSlotPreparer : IReviewSlotPreparer
     {
+        private readonly Lock _gate = new();
+
         public int PrepareCount { get; private set; }
+        public int RecloneCount { get; private set; }
         public string? LastSubmoduleRelPath { get; private set; }
         public string? LastBranch { get; private set; }
         public string? LastNotesRelPath { get; private set; }
@@ -820,6 +1347,45 @@ public sealed class DaemonReviewStageExecutorPooledTests
 
         /// <summary>Exceptions to throw on the first N prepare calls (then succeed) — drives the re-clone ladder.</summary>
         public Queue<Exception> ThrowThenSucceed { get; } = new();
+
+        /// <summary>Every checkout handed back, in prepare order — the isolation gate asserts two concurrent
+        /// reviews were prepared into two different slot stores and two different notes dirs.</summary>
+        public List<PreparedCheckout> Prepared { get; } = [];
+
+        public Task EnsureStoreAsync(
+            string storeRoot,
+            string storeUrl,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task RecloneStoreAsync(
+            string storeRoot,
+            string storeUrl,
+            CancellationToken cancellationToken)
+        {
+            RecloneCount++;
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Optional rendezvous awaited AFTER the checkout is recorded but BEFORE prepare returns. The isolation
+        /// gate uses it to hold both preparations open at once, so "two leases held simultaneously" is a
+        /// property of the test rather than a scheduling accident that could pass on a lucky interleaving.
+        /// </summary>
+        public Func<Task>? Rendezvous { get; set; }
+
+        public Task<PreparedCheckout> PrepareAsync(
+            ReviewRun run,
+            string storeRoot,
+            string scratchRoot,
+            string storeUrl,
+            string submoduleRelPath,
+            string branch,
+            string defaultBranch,
+            string notesRelPath,
+            OperationPolicy policy,
+            CancellationToken cancellationToken) =>
+            PrepareCoreAsync(
+                run, storeRoot, submoduleRelPath, branch, defaultBranch, notesRelPath, cancellationToken);
 
         public Task<PreparedCheckout> PrepareAsync(
             ReviewSlot slot,
@@ -830,21 +1396,43 @@ public sealed class DaemonReviewStageExecutorPooledTests
             string defaultBranch,
             string notesRelPath,
             OperationPolicy policy,
+            CancellationToken cancellationToken) =>
+            PrepareCoreAsync(
+                run, slot.StorePath, submoduleRelPath, branch, defaultBranch, notesRelPath, cancellationToken);
+
+        private async Task<PreparedCheckout> PrepareCoreAsync(
+            ReviewRun run,
+            string storeRoot,
+            string submoduleRelPath,
+            string branch,
+            string defaultBranch,
+            string notesRelPath,
             CancellationToken cancellationToken)
         {
-            PrepareCount++;
-            if (ThrowThenSucceed.Count > 0)
+            PreparedCheckout checkout;
+            lock (_gate)
             {
-                throw ThrowThenSucceed.Dequeue();
+                PrepareCount++;
+                if (ThrowThenSucceed.Count > 0)
+                {
+                    throw ThrowThenSucceed.Dequeue();
+                }
+
+                LastSubmoduleRelPath = submoduleRelPath;
+                LastBranch = branch;
+                LastNotesRelPath = notesRelPath;
+                LastDefaultBranch = defaultBranch;
+                checkout = new PreparedCheckout(
+                    storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch);
+                Prepared.Add(checkout);
             }
 
-            LastSubmoduleRelPath = submoduleRelPath;
-            LastBranch = branch;
-            LastNotesRelPath = notesRelPath;
-            LastDefaultBranch = defaultBranch;
-            var storeRoot = slot.StorePath;
-            return Task.FromResult(new PreparedCheckout(
-                storeRoot, $"{storeRoot}/{submoduleRelPath}", $"{storeRoot}/{notesRelPath}", branch));
+            if (Rendezvous is { } rendezvous)
+            {
+                await rendezvous().ConfigureAwait(false);
+            }
+
+            return checkout;
         }
     }
 
@@ -856,6 +1444,8 @@ public sealed class DaemonReviewStageExecutorPooledTests
         public int GetOrCreateForSlotCalls { get; private set; }
         public int GetOrCreateCalls { get; private set; }
         public ReviewSlot? LastSlot { get; private set; }
+        public FakeSandboxCommandRunner SdkRunner { get; } = new();
+        public FakeSandboxFileSystem SdkFileSystem { get; } = new();
 
         /// <summary>Shared cleanup-order log (with <see cref="FakeReviewSlotPool"/>).</summary>
         public List<string>? Order { get; set; }
@@ -872,10 +1462,29 @@ public sealed class DaemonReviewStageExecutorPooledTests
         {
             GetOrCreateForSlotCalls++;
             LastSlot = slot;
-            // Mirror the real provisioner: same per-run session id/key, but the mount HostPath is the slot.
-            return Task.FromResult<ReviewRunSession?>(new ReviewRunSession(
-                $"session-{run.Id}", slot.HostPath,
-                new FakeSandboxCommandRunner(), new FakeSandboxFileSystem()));
+            return Task.FromResult<ReviewRunSession?>(Session(run, slot));
+        }
+
+        public Task<ReviewRunSession> GetOrCreateRequiredForSlotAsync(
+            ReviewRun run,
+            ReviewSlot slot,
+            CancellationToken ct)
+        {
+            GetOrCreateForSlotCalls++;
+            LastSlot = slot;
+            return Task.FromResult(Session(run, slot));
+        }
+
+        private ReviewRunSession Session(ReviewRun run, ReviewSlot slot)
+        {
+            SdkFileSystem.Seed(
+                "/workspace/store/.gitmodules",
+                "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n"
+                    + "\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+            SdkRunner.OnArgvContains(
+                "diff base-sha...head-sha",
+                new SandboxCommandResult(0, "diff --git a/Foo.cs b/Foo.cs\n+ x", string.Empty));
+            return new ReviewRunSession($"session-{run.Id}", slot.HostPath, SdkRunner, SdkFileSystem);
         }
 
         public Task DestroyAsync(ReviewRun run, CancellationToken ct)

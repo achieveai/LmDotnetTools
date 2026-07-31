@@ -6,13 +6,15 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 /// In-memory implementation of IConversationStore for testing and development.
 /// Thread-safe using ConcurrentDictionary.
 /// </summary>
-public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerStore, IRunLifecycleStore
+public sealed class InMemoryConversationStore
+    : IConversationStore, IRunLedgerStore, IRunLifecycleStore, IInputAcceptanceStore
 {
     private readonly ConcurrentDictionary<string, List<PersistedMessage>> _messages = new();
     private readonly ConcurrentDictionary<string, ThreadMetadata> _metadata = new();
     private readonly ConcurrentDictionary<string, RunLedgerEntry> _runLedger = new();
     private readonly ConcurrentDictionary<(string ThreadId, string InputId), AcceptedInputEntry> _acceptedInputs = new();
     private readonly Dictionary<string, RunLifecycleState> _runLifecycle = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<(string ThreadId, string InputId), InputAcceptance> _acceptances = new();
     private readonly object _messagesLock = new();
     private readonly object _metadataLock = new();
 
@@ -159,6 +161,11 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
             _ = _acceptedInputs.TryRemove(key, out _);
         }
 
+        foreach (var key in _acceptances.Keys.Where(k => k.ThreadId == threadId).ToList())
+        {
+            _ = _acceptances.TryRemove(key, out _);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -243,6 +250,22 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
     {
         _acceptedInputs[(threadId, inputId)] = new AcceptedInputEntry(threadId, inputId, acceptedAt);
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<bool> TryReserveAcceptedInputAsync(
+        string threadId,
+        string inputId,
+        DateTimeOffset acceptedAt,
+        CancellationToken ct = default)
+    {
+        // TryAdd is the whole reservation: ConcurrentDictionary resolves the race internally, so exactly
+        // one of N concurrent callers for the same key is told it won.
+        var won = _acceptedInputs.TryAdd(
+            (threadId, inputId),
+            new AcceptedInputEntry(threadId, inputId, acceptedAt));
+
+        return Task.FromResult(won);
     }
 
     /// <inheritdoc />
@@ -499,6 +522,66 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
         }
     }
 
+    /// <inheritdoc />
+    public Task<InputAcceptance?> TryReserveAcceptanceAsync(
+        InputAcceptance acceptance,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(acceptance);
+        var key = (acceptance.ThreadId, acceptance.InputId);
+        while (!_acceptances.TryAdd(key, acceptance))
+        {
+            if (_acceptances.TryGetValue(key, out var existing))
+            {
+                return Task.FromResult<InputAcceptance?>(existing);
+            }
+        }
+
+        return Task.FromResult<InputAcceptance?>(null);
+    }
+
+    /// <inheritdoc />
+    public Task<InputAcceptance?> GetAcceptanceAsync(
+        string threadId,
+        string inputId,
+        CancellationToken ct = default)
+    {
+        _ = _acceptances.TryGetValue((threadId, inputId), out var acceptance);
+        return Task.FromResult(acceptance);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> TryRecordOutcomeAsync(InputAcceptance acceptance, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(acceptance);
+        var key = (acceptance.ThreadId, acceptance.InputId);
+        if (!_acceptances.TryGetValue(key, out var existing)
+            || existing.ReservationId != acceptance.ReservationId)
+        {
+            return Task.FromResult(false);
+        }
+
+        return Task.FromResult(_acceptances.TryUpdate(key, acceptance, existing));
+    }
+
+    /// <inheritdoc />
+    public Task<bool> TryReleaseAcceptanceAsync(
+        string threadId,
+        string inputId,
+        Guid reservationId,
+        CancellationToken ct = default)
+    {
+        var key = (threadId, inputId);
+        if (!_acceptances.TryGetValue(key, out var existing) || existing.ReservationId != reservationId)
+        {
+            return Task.FromResult(false);
+        }
+
+        var removed = ((ICollection<KeyValuePair<(string, string), InputAcceptance>>)_acceptances)
+            .Remove(new KeyValuePair<(string, string), InputAcceptance>(key, existing));
+        return Task.FromResult(removed);
+    }
+
     /// <summary>
     /// Gets the count of messages for a thread. Useful for testing.
     /// </summary>
@@ -531,5 +614,6 @@ public sealed class InMemoryConversationStore : IConversationStore, IRunLedgerSt
         _metadata.Clear();
         _runLedger.Clear();
         _acceptedInputs.Clear();
+        _acceptances.Clear();
     }
 }

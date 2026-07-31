@@ -41,6 +41,12 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// inspect the <see cref="FakeMultiTurnAgent.ReceivedInputs"/> the executor sent each one.</summary>
     public List<FakeMultiTurnAgent> CreatedAgents { get; } = [];
 
+    /// <summary>When set, every scripted agent is passed through this hook before being returned, so a test
+    /// can configure its sub-agent surface and/or WRAP it in a decorator — which is what the live
+    /// tool-assisted path does (<c>ToolScopedReviewLoop</c>). <see cref="CreatedAgents"/> still records the
+    /// scripted agent underneath, not the decorator.</summary>
+    public Func<FakeMultiTurnAgent, IMultiTurnAgent>? DecorateCreatedAgent { get; set; }
+
     /// <summary>When set, a tool-assisted <see cref="Create"/> (non-null <c>toolContext</c>) returns an agent
     /// that THROWS this exception instead of scripted text — models the model API rejecting the accumulated
     /// tool-assisted context (e.g. a context-window 400) so the executor's diff-only degrade is exercised.
@@ -55,12 +61,34 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
     /// <summary>Model ids passed to <see cref="Create"/>, in call order (null = the run's configured model).</summary>
     public List<string?> ModelIds { get; } = [];
 
+    /// <summary>Workspace ids passed to <see cref="Create"/>, in call order (null = in-process path, no S2S workspace).</summary>
+    public List<string?> WorkspaceIds { get; } = [];
+
+    /// <summary>Hosted thread ids passed to <see cref="Create"/>, in call order (null = provision a fresh
+    /// hosted conversation rather than resume a persisted one).</summary>
+    public List<string?> ResumeHostedThreadIds { get; } = [];
+
+    /// <summary>
+    /// When true, every created loop is wrapped in a <see cref="ResumableFakeLoop"/> — the hosted (S2S) path,
+    /// whose turns are durable on a process-outliving host. Left false the double is deliberately NON-resumable,
+    /// which is exactly what an in-process loop is; the executor must then neither arm nor checkpoint a turn.
+    /// The fixture sets it from <c>UseS2SReviewAgent</c> so the two paths differ here as they do in production.
+    /// </summary>
+    public bool Resumable { get; set; }
+
+    /// <summary>The resumable decorators returned by <see cref="Create"/>, in call order — empty unless
+    /// <see cref="Resumable"/>. This is where the turn-checkpointing assertions live, because this is the
+    /// object that implements the capability.</summary>
+    public List<ResumableFakeLoop> ResumableLoops { get; } = [];
+
     public IMultiTurnAgent Create(
         AgentProfile profile,
         string? modelId,
         string threadId,
         string? reasoningEffort = null,
-        ReviewToolContext? toolContext = null)
+        ReviewToolContext? toolContext = null,
+        PreparedReviewWorkspace? reviewWorkspace = null,
+        string? resumeHostedThreadId = null)
     {
         CreatedProfileIds.Add(profile.Id);
         CreatedProfiles.Add(profile);
@@ -68,19 +96,36 @@ internal sealed class FakeReviewAgentLoopFactory : IReviewAgentLoopFactory
         ReasoningEfforts.Add(reasoningEffort);
         ToolContexts.Add(toolContext);
         ModelIds.Add(modelId);
+        WorkspaceIds.Add(reviewWorkspace?.WorkspaceId);
+        ResumeHostedThreadIds.Add(resumeHostedThreadId);
 
         if (toolContext is not null && ThrowWhenToolAssisted is not null
             && (ThrowOnlyForModel is null || string.Equals(modelId, ThrowOnlyForModel, StringComparison.Ordinal)))
         {
             var throwing = FakeMultiTurnAgent.Throwing($"run-{profile.Id}-overflow", ThrowWhenToolAssisted);
             CreatedAgents.Add(throwing);
-            return throwing;
+            return Decorate(throwing, threadId, resumeHostedThreadId);
         }
 
         var text = TextByProfileId.TryGetValue(profile.Id, out var scripted) ? scripted : DefaultText;
         var runId = $"run-{profile.Id}";
         var agent = new FakeMultiTurnAgent(runId, new TextMessage { Text = text, Role = Role.Assistant, RunId = runId });
         CreatedAgents.Add(agent);
-        return agent;
+        return Decorate(agent, threadId, resumeHostedThreadId);
+    }
+
+    /// <summary>The minted conversation id is derived from the daemon-local thread id, so it is deterministic
+    /// (a test can predict it) yet distinct per A/B arm and escalation rung, exactly as a real host's would be.</summary>
+    private IMultiTurnAgent Decorate(FakeMultiTurnAgent agent, string threadId, string? resumeHostedThreadId)
+    {
+        var decorated = DecorateCreatedAgent?.Invoke(agent) ?? agent;
+        if (!Resumable)
+        {
+            return decorated;
+        }
+
+        var loop = new ResumableFakeLoop(decorated, resumeHostedThreadId, $"hosted-{threadId}");
+        ResumableLoops.Add(loop);
+        return loop;
     }
 }

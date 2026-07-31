@@ -110,6 +110,94 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task CommitNotes_treats_unchanged_notes_as_a_successful_no_op_instead_of_failing_the_stage()
+    {
+        // A re-review that reaches the same conclusion writes byte-identical notes, so nothing is staged and
+        // `git commit` exits 1 with "nothing to commit" on STDOUT. The notes are already durably on the branch,
+        // so that is a no-op, NOT a retention failure — treating it as fatal is what tore down the Posted stage
+        // and pushed the retry onto the host checkout.
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"rev-parse --verify {ReviewBranch}",
+            new SandboxCommandResult(0, ReviewBranch, string.Empty));
+        runner.OnArgvContains(
+            "commit -m",
+            new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty));
+        // The index genuinely matches HEAD — `diff --cached --quiet` exits 0 — and the notes it should
+        // contain resolve at HEAD, so the branch really is carrying this review's artifacts.
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
+        runner.OnArgvContains("cat-file -e HEAD:", new SandboxCommandResult(0, string.Empty, string.Empty));
+        runner.OnArgvContains($"rev-parse {ReviewBranch}", new SandboxCommandResult(0, "deadbeef\n", string.Empty));
+        var fs = new FakeSandboxFileSystem();
+
+        var result = await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
+
+        result.Outcome.Should().Be(ReviewBotPublishOutcome.Pushed);
+        result.PushedSha.Should().Be("deadbeef", "the notes still live at the branch head");
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains("cat-file -e HEAD:PRs/widgets-42/review.md"));
+        commands.Should().Contain(a => a.Contains($"push origin {ReviewBranch}"));
+    }
+
+    [Fact]
+    public async Task CommitNotes_still_fails_when_the_empty_index_is_missing_the_notes_at_head()
+    {
+        // The dangerous half of the no-op tolerance: an empty index proves nothing CHANGED, not that the notes
+        // are RETAINED. If the write never landed where we staged, the index is just as clean — and accepting
+        // that as a no-op would report successful retention for notes that exist nowhere. HEAD must actually
+        // carry them.
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"rev-parse --verify {ReviewBranch}",
+            new SandboxCommandResult(0, ReviewBranch, string.Empty));
+        runner.OnArgvContains(
+            "commit -m",
+            new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty));
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
+        // The review notes are NOT on the branch: `cat-file -e HEAD:PRs/widgets-42/review.md` cannot resolve.
+        runner.OnArgvContains(
+            "cat-file -e HEAD:PRs/widgets-42/review.md",
+            new SandboxCommandResult(1, string.Empty, "fatal: path does not exist in 'HEAD'"));
+        var fs = new FakeSandboxFileSystem();
+
+        var act = async () =>
+            await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*PRs/widgets-42/review.md*", "the failure has to name the notes that are missing");
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(a => a.Contains($"push origin {ReviewBranch}"), "unretained notes must not be pushed");
+    }
+
+    [Fact]
+    public async Task CommitNotes_still_fails_when_the_commit_fails_for_a_reason_other_than_an_empty_index()
+    {
+        // The tolerance above must be proven by the index state, not by trusting any failed commit: a real
+        // commit failure with staged changes still aborts retention loudly.
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"rev-parse --verify {ReviewBranch}",
+            new SandboxCommandResult(0, ReviewBranch, string.Empty));
+        runner.OnArgvContains(
+            "commit -m",
+            new SandboxCommandResult(1, string.Empty, "fatal: cannot lock ref HEAD"));
+        // Changes ARE staged — `diff --cached --quiet` exits 1.
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(1, string.Empty, string.Empty));
+        var fs = new FakeSandboxFileSystem();
+
+        var act = async () =>
+            await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*cannot lock ref HEAD*");
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(a => a.Contains($"push origin {ReviewBranch}"), "a failed commit must not be pushed");
+    }
+
+    [Fact]
     public async Task CommitNotes_rebases_and_retries_the_branch_push_when_it_is_rejected_then_succeeds()
     {
         var runner = new FakeSandboxCommandRunner();

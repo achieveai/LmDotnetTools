@@ -38,4 +38,37 @@ public class SystemPromptAugmenterTests
 
         result.Should().Be("The current date is 2026-06-23 (UTC).");
     }
+
+    [Fact]
+    public void AppendCallerInstructions_AppendsAfterTheExistingPrompt()
+    {
+        // The caller's instructions go LAST, not first: the mode prompt, the workspace-path suffix and any
+        // discovered CLAUDE.md block are all still in force, and recency gives the caller's task the strongest
+        // pull. A headless caller that replaced the prompt would lose the workspace wiring it depends on.
+        var result = SystemPromptAugmenter.AppendCallerInstructions(
+            "You are a workspace agent.\n\nYour workspace directory is: /workspace",
+            "Review the PR and dispatch the code-reviewer:* sub-agents.");
+
+        result.Should().StartWith("You are a workspace agent.");
+        result.Should().EndWith("\n\nReview the PR and dispatch the code-reviewer:* sub-agents.");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AppendCallerInstructions_ReturnsThePromptUnchanged_WhenThereIsNothingToAppend(string? appendix)
+    {
+        var result = SystemPromptAugmenter.AppendCallerInstructions("You are a workspace agent.", appendix);
+
+        result.Should().Be("You are a workspace agent.");
+    }
+
+    [Fact]
+    public void AppendCallerInstructions_ReturnsTheAppendixAlone_WhenThereIsNoPrompt()
+    {
+        var result = SystemPromptAugmenter.AppendCallerInstructions(null, "Review the PR.");
+
+        result.Should().Be("Review the PR.");
+    }
 }

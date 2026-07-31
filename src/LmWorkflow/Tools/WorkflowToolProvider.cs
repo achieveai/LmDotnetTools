@@ -437,6 +437,7 @@ public sealed class WorkflowToolProvider : IFunctionProvider
         // tool-call id — published to subscribers before the loop invoked us — proves the observer has drained
         // everything published earlier, including every prior tool result. No-ops when nothing observes.
         await _runtime.WaitForObservationAsync(context.ToolCallId, cancellationToken).ConfigureAwait(false);
+        await _runtime.WaitForNodeSettlementAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {

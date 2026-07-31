@@ -298,6 +298,19 @@ internal class SubAgentState
     public SubAgentStatus Status { get => _status; set => _status = value; }
 
     /// <summary>
+    /// UTC instant the sub-agent reached its terminal status, captured once at the transition
+    /// (<see cref="BeginTerminalDisposalAsync"/> / <see cref="MarkRunFaulted"/>) rather than
+    /// recomputed later, so a caller that durably stamps it never sees the value drift forward on a
+    /// subsequent idempotent refresh. Null while <see cref="Status"/> is <see cref="SubAgentStatus.Running"/>.
+    /// Guarded by <see cref="_lifecycleLock"/> (a struct, so plain reads/writes are not atomic).
+    /// </summary>
+    private DateTimeOffset? _terminalAtUtc;
+    public DateTimeOffset? TerminalAtUtc
+    {
+        get { lock (_lifecycleLock) { return _terminalAtUtc; } }
+    }
+
+    /// <summary>
     /// Decides — atomically against a concurrent terminal completion and other concurrent
     /// continuations — how <c>SubAgentManager.SendMessageAsync</c> must continue this sub-agent, and
     /// records the continuation's relay preference.
@@ -463,6 +476,7 @@ internal class SubAgentState
             // resurrect this now-disposing run back to Running with an about-to-be-disposed provider.
             _terminalGeneration = _runGeneration;
             _status = isError ? SubAgentStatus.Error : SubAgentStatus.Completed;
+            _terminalAtUtc = DateTimeOffset.UtcNow;
         }
     }
 
@@ -538,8 +552,9 @@ internal class SubAgentState
     /// <summary>
     /// Publishes <see cref="SubAgentStatus.Running"/> for <paramref name="generation"/> UNLESS that run
     /// has already reached a terminal completion (its owned provider may already be disposed) — so a fast
-    /// restarted run that completed before this publish executed is never resurrected to Running. Returns
-    /// true if Running was published.
+    /// restarted run that completed before this publish executed is never resurrected to Running. Also
+    /// clears any terminal instant left by a PRIOR generation's terminal transition, so a restarted run
+    /// never reports a stale terminal timestamp while Running. Returns true if Running was published.
     /// </summary>
     public bool TryArmRunning(long generation)
     {
@@ -551,6 +566,7 @@ internal class SubAgentState
             }
 
             _status = SubAgentStatus.Running;
+            _terminalAtUtc = null;
             return true;
         }
     }
@@ -560,16 +576,23 @@ internal class SubAgentState
     /// SAME generation-aware transition as a graceful terminal completion, so a racing restart's
     /// <see cref="TryArmRunning"/> cannot resurrect a monitor-faulted run back to Running. Applied only
     /// while that generation is still the current run (a newer restart supersedes an older run's fault).
+    /// Returns true if the fault was actually recorded for this generation — callers use this to decide
+    /// whether a durable causal persistence push is warranted (a superseded generation's fault must not
+    /// race a newer restart's own Running publish).
     /// </summary>
-    public void MarkRunFaulted(long generation)
+    public bool MarkRunFaulted(long generation)
     {
         lock (_lifecycleLock)
         {
-            if (_runGeneration == generation)
+            if (_runGeneration != generation)
             {
-                _terminalGeneration = generation;
-                _status = SubAgentStatus.Error;
+                return false;
             }
+
+            _terminalGeneration = generation;
+            _status = SubAgentStatus.Error;
+            _terminalAtUtc = DateTimeOffset.UtcNow;
+            return true;
         }
     }
 

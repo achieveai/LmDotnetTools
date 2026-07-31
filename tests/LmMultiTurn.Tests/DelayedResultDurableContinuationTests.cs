@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -9,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
 using LmMultiTurn.Tests.Lifecycle;
 using Microsoft.Extensions.Logging;
@@ -170,6 +172,61 @@ public class DelayedResultDurableContinuationTests
     #endregion
 
     #region Surviving a restart
+
+    [Fact]
+    public async Task ARecoveredOwedContinuation_RetainsItsPersistedSpawnSuppression()
+    {
+        var store = new InMemoryConversationStore();
+        var threadId = $"thread-{Guid.NewGuid():N}";
+        _ = await CommitAContinuationThatNeverRanAsync(store, threadId);
+        var requestingRunId = (await store.ListRunLifecycleAsync(threadId))
+            .Single(r => r.DeferredToolCalls.Any(d => d.ToolCallId == "tc_1"))
+            .RunId;
+        await store.UpdateMetadataAsync(
+            threadId,
+            existing => (existing ?? new ThreadMetadata { ThreadId = threadId, LastUpdated = 0 }) with
+            {
+                Properties = (existing?.Properties ?? ImmutableDictionary<string, object>.Empty)
+                    .SetItem("spawn_suppressed_run_id", requestingRunId),
+            });
+
+        var advertised = new List<IReadOnlyList<string>>();
+        var provider = new Mock<IStreamingAgent>();
+        _ = provider.Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(),
+                It.IsAny<GenerateReplyOptions>(),
+                It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, options, _) =>
+            {
+                advertised.Add(options.Functions?.Select(f => f.Name).ToList() ?? []);
+                return Task.FromResult(Provider.ToAsyncEnumerable(
+                    [new TextMessage { Text = "done", Role = Role.Assistant }]));
+            });
+
+        await using var resumed = new MultiTurnAgentLoop(
+            provider.Object,
+            DeferringRegistry(["tc_1"]),
+            threadId,
+            store: store,
+            subAgentOptions: new SubAgentOptions
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>(),
+            },
+            lifecycleServices: new MultiTurnLifecycleServices
+            {
+                Publisher = NullLifecyclePublisher.Instance,
+                LifecycleStore = store,
+            });
+        (await resumed.RecoverAsync()).Should().BeTrue();
+        using var cts = new CancellationTokenSource(Patience);
+        await using var watcher = new MessageWatcher(resumed);
+        _ = resumed.RunAsync(cts.Token);
+        await watcher.WaitForCompletionsAsync(1);
+
+        advertised.Should().ContainSingle().Which.Should().NotContain(
+            "Agent", "the recovered child continues the run whose persisted receipt promised no spawning");
+        await cts.CancelAsync();
+    }
 
     [Fact]
     public async Task AContinuationCommittedButNeverRun_ResumesExactlyOnceAfterARestart()
@@ -1029,7 +1086,7 @@ public class DelayedResultDurableContinuationTests
             }
         }
 
-        private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
+        internal static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
             IEnumerable<IMessage> messages,
             [EnumeratorCancellation] CancellationToken ct = default
         )

@@ -113,18 +113,31 @@ public static class SqliteSchemaInitializer
         ON run_deferred_calls (run_id, ordinal);
         """;
 
+    private const string CreateInputAcceptancesTableSql = """
+        CREATE TABLE IF NOT EXISTS input_acceptances (
+            thread_id TEXT NOT NULL,
+            input_id TEXT NOT NULL,
+            accepted_at INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            spawning_suppressed INTEGER NOT NULL,
+            idempotency_honored INTEGER NOT NULL,
+            reservation_id TEXT NOT NULL,
+            PRIMARY KEY (thread_id, input_id)
+        );
+        """;
+
     private const string CreateNotifyWaitsTableSql = """
         CREATE TABLE IF NOT EXISTS notify_waits (
-            wait_id       TEXT NOT NULL,
-            thread_id     TEXT NOT NULL,
-            kind          TEXT NOT NULL,
-            args          TEXT NOT NULL,
-            label         TEXT NULL,
-            max_fires     INTEGER NULL,
-            fires_so_far  INTEGER NOT NULL DEFAULT 0,
-            timeout_at    INTEGER NOT NULL,
-            armed_at      INTEGER NOT NULL,
-            status        TEXT NOT NULL,
+            wait_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            args TEXT NOT NULL,
+            label TEXT NULL,
+            max_fires INTEGER NULL,
+            fires_so_far INTEGER NOT NULL DEFAULT 0,
+            timeout_at INTEGER NOT NULL,
+            armed_at INTEGER NOT NULL,
+            status TEXT NOT NULL,
             PRIMARY KEY (thread_id, wait_id)
         );
         """;
@@ -145,6 +158,7 @@ public static class SqliteSchemaInitializer
         CreateRunLedgerTableSql,
         CreateRunLedgerIndexSql,
         CreateAcceptedInputsTableSql,
+        CreateInputAcceptancesTableSql,
         CreateRunLifecycleTableSql,
         CreateRunLifecycleIndexSql,
         CreateRunDeferredCallsTableSql,

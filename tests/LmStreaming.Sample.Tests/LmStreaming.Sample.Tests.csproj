@@ -27,6 +27,9 @@
     <!-- In-process TestServer for the over-HTTP context-discovery webhook test (exercises the real
          ASP.NET routing, snake_case [FromBody] binding, and Authorization header handling). -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.0" />
+    <!-- FakeTimeProvider: the admission-recovery window is a duration, and a test that waited it out
+         would be a slow test that still proved nothing about the boundary. -->
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="9.0.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\samples\LmStreaming.Sample\LmStreaming.Sample.csproj" />

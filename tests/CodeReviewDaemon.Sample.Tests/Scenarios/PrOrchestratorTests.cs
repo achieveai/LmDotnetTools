@@ -104,6 +104,49 @@ public sealed class PrOrchestratorTests : LoggingTestBase
     }
 
     [Fact]
+    public void Delivery_outcome_reports_no_findings_without_claiming_a_post()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = SeedRun(store) with { Mode = "post" };
+        store.AddArtifact(new ReviewArtifact
+        {
+            ReviewRunId = run.Id,
+            ArtifactSchemaVersion = 1,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Provider = "github",
+            Payload = "{\"ReviewText\":\"No new findings since the last review.\",\"RunId\":\"r\",\"VariantId\":\"primary\"}",
+        });
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+
+        orchestrator.ClassifyDeliveryOutcome(run).Should().Be("no new findings — nothing posted");
+    }
+
+    [Fact]
+    public void Delivery_outcome_requires_terminal_comment_outbox_evidence_to_claim_posted()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var run = SeedRun(store) with { Mode = "post" };
+        var orchestrator = new PrOrchestrator(store, new RecordingStageExecutor(), LoggerFactory.CreateLogger<PrOrchestrator>());
+
+        orchestrator.ClassifyDeliveryOutcome(run).Should().Be("completed without provider-visible post evidence");
+
+        var entry = store.EnqueueOutbox(new OutboxEntry
+        {
+            IdempotencyKey = "delivery-proof",
+            Provider = "github",
+            ReviewRunId = run.Id,
+            Operation = ReviewPoster.PostReviewCommentOperation,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Status = OutboxStatus.Pending,
+        });
+        _ = store.TryTransitionOutbox(entry.Id, OutboxStatus.Pending, OutboxStatus.Posted, "comment-42");
+
+        orchestrator.ClassifyDeliveryOutcome(run).Should().Be("posted");
+    }
+
+    [Fact]
     public async Task A_failure_marks_retry_pending_and_rethrows()
     {
         using var db = new TempSqliteDatabase();
