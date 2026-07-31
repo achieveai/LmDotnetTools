@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
@@ -124,7 +125,7 @@ internal sealed class PrOrchestrator
 
             _progress?.Finished(
                 run,
-                $"complete ({(string.Equals(run.Mode, "post", StringComparison.Ordinal) ? "posted" : "collect-only")})",
+                $"complete ({ClassifyDeliveryOutcome(run)})",
                 System.Diagnostics.Stopwatch.GetElapsedTime(startedAt));
             return run;
         }
@@ -143,6 +144,45 @@ internal sealed class PrOrchestrator
     /// the governor exists to park work that CANNOT self-heal by being retried on the poll interval, and
     /// widening it turns ordinary transients into abandoned reviews.
     /// </summary>
+    internal string ClassifyDeliveryOutcome(ReviewRun run)
+    {
+        if (!string.Equals(run.Mode, "post", StringComparison.Ordinal))
+        {
+            return "collect-only";
+        }
+
+        if (_store.TryGetLatestArtifact(run.Id, DaemonReviewStageExecutor.ReviewArtifactKind) is { } artifact)
+        {
+            try
+            {
+                var payload = JsonSerializer.Deserialize<ReviewArtifactPayload>(artifact.Payload);
+                if (payload?.ReviewText.TrimStart().StartsWith(
+                        "No new findings",
+                        StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    return "no new findings — nothing posted";
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Run {RunId}: could not classify delivery from review artifact {ArtifactId}.", run.Id, artifact.Id);
+            }
+        }
+
+        var delivery = _store.GetOutboxForRun(run.Id)
+            .LastOrDefault(entry => string.Equals(
+                entry.Operation,
+                ReviewPoster.PostReviewCommentOperation,
+                StringComparison.Ordinal));
+
+        return delivery?.Status switch
+        {
+            OutboxStatus.Posted when !string.IsNullOrWhiteSpace(delivery.ProviderResponseId) => "posted",
+            OutboxStatus.Collected => "collect-only",
+            _ => "completed without provider-visible post evidence",
+        };
+    }
+
     private static bool IsGovernedStage(ReviewStage stage) =>
         stage is ReviewStage.ContextReady or ReviewStage.Reviewed;
 
