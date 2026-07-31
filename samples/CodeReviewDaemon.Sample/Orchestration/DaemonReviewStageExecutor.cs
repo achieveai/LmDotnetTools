@@ -2591,8 +2591,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // A CollectedOnly or evidence-free ReplayNoOp leaves the stage retryable instead of quietly reporting a
         // delivery that never happened. The no-new-findings sentinel is exempt by construction: it never posts,
         // so it never reaches here — an intentional no-comment stays a success and is reported as such.
+        //
+        // Both conditions are required, and the second is the escape hatch. `run.Mode` is frozen at discovery,
+        // so a run discovered while posting was enabled keeps Mode="post" forever; if an operator then turns
+        // posting OFF, every attempt is authorized only to collect and can NEVER produce delivery evidence.
+        // Posted is not a governed stage, so gating on Mode alone would spin that run in an unbounded retry
+        // hot-loop over a config change it cannot influence. When the current configuration did not authorize a
+        // live post, collecting IS the truthful outcome — the run completes and reports what it actually did.
         if (postOutcome is { } outcome
             && string.Equals(run.Mode, "post", StringComparison.Ordinal)
+            && _options.EnableCommentPosting
             && !IsDeliveryProven(outcome))
         {
             throw new InvalidOperationException(

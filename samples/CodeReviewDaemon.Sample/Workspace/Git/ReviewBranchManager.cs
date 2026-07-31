@@ -183,6 +183,28 @@ internal sealed class ReviewBranchManager
                     $"git commit failed (exit {commit.ExitCode}): {commit.Stderr}");
             }
 
+            // A clean index proves nothing CHANGED — not that the notes are actually retained. An empty index
+            // also describes the case where the write never landed where we staged (wrong root, a path the
+            // agent never produced), and accepting that as a no-op would report retention for notes that exist
+            // nowhere. Require the notes to be present in the commit we are keeping: `cat-file -e HEAD:<path>`
+            // exits 0 iff the blob/tree resolves. If it doesn't, the empty index is a real failure — surface the
+            // original commit error.
+            foreach (var path in NotesPathsToVerify(request, stagePaths))
+            {
+                var atHead = await RunGitAsync(
+                        ["cat-file", "-e", $"HEAD:{path.Replace('\\', '/')}"],
+                        repoRoot,
+                        cancellationToken,
+                        allowFailure: true)
+                    .ConfigureAwait(false);
+                if (!atHead.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"git commit failed (exit {commit.ExitCode}): {commit.Stderr}"
+                            + $" (nothing staged and '{path}' is missing from '{reviewBranch}')");
+                }
+            }
+
             _logger.LogInformation(
                 "ReviewBot notes on '{ReviewBranch}' are unchanged (nothing staged); keeping the branch at its "
                     + "current head instead of failing the commit.",
@@ -486,6 +508,16 @@ internal sealed class ReviewBranchManager
 
     private static string BuildCommitMessage(ReviewBotPublishRequest request) =>
         $"Review {request.TargetRepo.RepoName}#{request.PrNumber}";
+
+    /// <summary>
+    /// The paths whose presence at HEAD makes an empty-index commit a genuine no-op. Mirrors what was staged:
+    /// the commit gate's scoped paths when it supplied them, otherwise the artifacts this request wrote.
+    /// </summary>
+    private static IEnumerable<string> NotesPathsToVerify(
+        ReviewBotPublishRequest request,
+        IReadOnlyList<string>? stagePaths
+    ) =>
+        stagePaths is { Count: > 0 } ? stagePaths : request.Files.Select(file => file.RelativePath);
 
     /// <summary>Slugs the target repo name into a single ref-safe path segment (lowercased, separators to '-').
     /// Public so the orphan-branch reconciler can match a <c>review/{repo}-{pr}</c> branch back to a configured

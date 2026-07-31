@@ -123,8 +123,10 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         runner.OnArgvContains(
             "commit -m",
             new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty));
-        // The index genuinely matches HEAD — `diff --cached --quiet` exits 0.
+        // The index genuinely matches HEAD — `diff --cached --quiet` exits 0 — and the notes it should
+        // contain resolve at HEAD, so the branch really is carrying this review's artifacts.
         runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
+        runner.OnArgvContains("cat-file -e HEAD:", new SandboxCommandResult(0, string.Empty, string.Empty));
         runner.OnArgvContains($"rev-parse {ReviewBranch}", new SandboxCommandResult(0, "deadbeef\n", string.Empty));
         var fs = new FakeSandboxFileSystem();
 
@@ -134,7 +136,39 @@ public sealed class ReviewBranchManagerTests : LoggingTestBase
         result.PushedSha.Should().Be("deadbeef", "the notes still live at the branch head");
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains("cat-file -e HEAD:PRs/widgets-42/review.md"));
         commands.Should().Contain(a => a.Contains($"push origin {ReviewBranch}"));
+    }
+
+    [Fact]
+    public async Task CommitNotes_still_fails_when_the_empty_index_is_missing_the_notes_at_head()
+    {
+        // The dangerous half of the no-op tolerance: an empty index proves nothing CHANGED, not that the notes
+        // are RETAINED. If the write never landed where we staged, the index is just as clean — and accepting
+        // that as a no-op would report successful retention for notes that exist nowhere. HEAD must actually
+        // carry them.
+        var runner = new FakeSandboxCommandRunner();
+        runner.OnArgvContains(
+            $"rev-parse --verify {ReviewBranch}",
+            new SandboxCommandResult(0, ReviewBranch, string.Empty));
+        runner.OnArgvContains(
+            "commit -m",
+            new SandboxCommandResult(1, "nothing to commit, working tree clean\n", string.Empty));
+        runner.OnArgvContains("diff --cached --quiet", new SandboxCommandResult(0, string.Empty, string.Empty));
+        // The review notes are NOT on the branch: `cat-file -e HEAD:PRs/widgets-42/review.md` cannot resolve.
+        runner.OnArgvContains(
+            "cat-file -e HEAD:PRs/widgets-42/review.md",
+            new SandboxCommandResult(1, string.Empty, "fatal: path does not exist in 'HEAD'"));
+        var fs = new FakeSandboxFileSystem();
+
+        var act = async () =>
+            await CreateManager(runner, fs).CommitNotesAsync(RepoRoot, Request, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*PRs/widgets-42/review.md*", "the failure has to name the notes that are missing");
+        runner.Commands.Select(c => string.Join(' ', c.Argv))
+            .Should()
+            .NotContain(a => a.Contains($"push origin {ReviewBranch}"), "unretained notes must not be pushed");
     }
 
     [Fact]

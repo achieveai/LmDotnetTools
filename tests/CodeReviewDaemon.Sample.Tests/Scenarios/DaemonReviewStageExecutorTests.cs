@@ -1354,11 +1354,48 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     [Theory]
     [InlineData("github")]
     [InlineData("azure-devops")]
-    public async Task Posted_stays_retryable_when_a_post_mode_review_reaches_no_provider_comment(string provider)
+    public async Task Posted_stays_retryable_when_an_authorized_post_replays_a_row_that_proves_no_comment(string provider)
     {
-        // The run was DISCOVERED in post mode (EnableCommentPosting was on), so this review is supposed to
-        // land on the PR. The host-side poster only collects it — no provider comment exists — so the stage
-        // must fail and leave the run retryable rather than completing and reporting a delivery it never made.
+        // The run was DISCOVERED in post mode and posting IS authorized, so this review is supposed to land on
+        // the PR. Its outbox row already claims Posted but carries no provider response id — nothing about it
+        // proves a comment exists, and the poster reads it as a terminal replay and touches no provider. That
+        // ambiguity is exactly what let run 27 complete undelivered, so the stage must stay retryable.
+        var options = new CodeReviewDaemonOptions
+        {
+            EnableCommentPosting = true,
+            EnableHostSummaryFallback = true,
+        };
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, options)
+            : Fixture.GitHub(LoggerFactory, options);
+        var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+        SeedEvidenceFreePostedOutbox(fixture, run, provider);
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*post*", "the failure has to name the undelivered post so the operator can act");
+        publisher.PostCount.Should().Be(0, "the poster treated the seeded row as a terminal replay");
+        // One row, the seeded one — a second row would mean the key drifted and this test proved nothing.
+        fixture.Store.GetOutboxForRun(run.Id)
+            .Should().ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation);
+    }
+
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_completes_a_post_mode_run_as_collect_only_when_posting_is_switched_off(string provider)
+    {
+        // `run.Mode` is frozen at discovery, so a run discovered while posting was enabled stays "post" even
+        // after an operator turns posting off. Every attempt is then authorized only to COLLECT and can never
+        // produce delivery evidence — and Posted is not a governed stage, so failing here would spin the run in
+        // an unbounded retry hot-loop over a config change it cannot influence. Collecting is the truthful
+        // outcome for an unauthorized attempt, so the stage completes and records exactly that.
         var options = new CodeReviewDaemonOptions
         {
             EnableCommentPosting = false,
@@ -1370,19 +1407,18 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
         var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
 
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
-        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+        await RunAllStagesAsync(fixture, run);
 
-        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+        publisher.PostCount.Should().Be(0, "no live posting was authorized");
+        var delivery = fixture.Store.GetOutboxForRun(run.Id)
+            .Should().ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation).Subject;
+        delivery.Status.Should().Be(
+            OutboxStatus.Collected,
+            "the run is recorded as having deliberately collected rather than posted");
 
-        (await act.Should().ThrowAsync<InvalidOperationException>())
-            .WithMessage("*post*", "the failure has to name the undelivered post so the operator can act");
+        // No hot-loop: re-running the terminal stage is still not a failure.
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
         publisher.PostCount.Should().Be(0);
-        // The notes retention still ran to completion before the stage reported the undelivered post, so the
-        // review is not lost — only the delivery is outstanding.
-        fixture.Store.GetOutboxForRun(run.Id)
-            .Should().Contain(o => o.Operation == ReviewPoster.PostReviewCommentOperation);
     }
 
     [Theory]
@@ -1439,6 +1475,38 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             .Should().NotContain(
                 o => o.Operation == ReviewPoster.PostReviewCommentOperation,
                 "no delivery was attempted, so there is no comment outbox row to misread as evidence");
+    }
+
+    /// <summary>
+    /// Seeds the review-comment outbox row the executor would find on replay, already terminal
+    /// <see cref="OutboxStatus.Posted"/> but WITHOUT a provider response id — a row that claims closure and
+    /// proves nothing. The key must match what <c>PostReviewCommentHostSideAsync</c> builds for this run, or
+    /// the poster enqueues a second row and posts normally (which the caller asserts against).
+    /// </summary>
+    private static void SeedEvidenceFreePostedOutbox(Fixture fixture, ReviewRun run, string provider)
+    {
+        // The executor keys off the PUBLISHER provider ("ado"), not the repo provider ("azure-devops").
+        var postProvider = provider == "azure-devops" ? "ado" : provider;
+        var key = IdempotencyKey.Build(new IdempotencyKeyComponents(
+            Provider: postProvider,
+            OrgOrOwner: "achieveai",
+            Project: provider == "azure-devops" ? "Platform" : null,
+            RepoStableId: "repo-stable-1",
+            PrId: run.PrId,
+            Operation: ReviewPoster.PostReviewCommentOperation,
+            ArtifactKind: DaemonReviewStageExecutor.ReviewArtifactKind,
+            ArtifactSubject: "summary",
+            HeadSha: run.HeadSha,
+            VariantId: run.VariantId));
+        _ = fixture.Store.EnqueueOutbox(new OutboxEntry
+        {
+            IdempotencyKey = key,
+            Provider = postProvider,
+            ReviewRunId = run.Id,
+            Operation = ReviewPoster.PostReviewCommentOperation,
+            ArtifactKind = DaemonReviewStageExecutor.ReviewArtifactKind,
+            Status = OutboxStatus.Posted,
+        });
     }
 
     /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>
