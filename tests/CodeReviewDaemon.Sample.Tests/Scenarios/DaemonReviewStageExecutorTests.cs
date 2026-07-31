@@ -1345,6 +1345,102 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         body.Split(expectedLink).Length.Should().Be(2, "the deep-link must be appended exactly once");
     }
 
+    // ── Delivery truthfulness: a post-mode run may not COMPLETE without provider-visible evidence ────
+    // Run 27's shape: the Posted stage failed once on retention, the retry re-ran the stage, produced no
+    // provider comment at all, and the run still went Completed. The stage must instead stay retryable
+    // whenever the review was supposed to reach the PR and demonstrably did not — while the deliberate
+    // "no new findings" no-post stays a success (forcing a comment there is the re-review noise bug).
+
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_stays_retryable_when_a_post_mode_review_reaches_no_provider_comment(string provider)
+    {
+        // The run was DISCOVERED in post mode (EnableCommentPosting was on), so this review is supposed to
+        // land on the PR. The host-side poster only collects it — no provider comment exists — so the stage
+        // must fail and leave the run retryable rather than completing and reporting a delivery it never made.
+        var options = new CodeReviewDaemonOptions
+        {
+            EnableCommentPosting = false,
+            EnableHostSummaryFallback = true,
+        };
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, options)
+            : Fixture.GitHub(LoggerFactory, options);
+        var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*post*", "the failure has to name the undelivered post so the operator can act");
+        publisher.PostCount.Should().Be(0);
+        // The notes retention still ran to completion before the stage reported the undelivered post, so the
+        // review is not lost — only the delivery is outstanding.
+        fixture.Store.GetOutboxForRun(run.Id)
+            .Should().Contain(o => o.Operation == ReviewPoster.PostReviewCommentOperation);
+    }
+
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_completes_a_post_mode_review_that_actually_reached_the_pr(string provider)
+    {
+        // The positive half of the guard: a post-mode review whose comment DID land completes normally, with
+        // durable Posted+provider-response evidence in the outbox for the delivery classifier to read.
+        var options = new CodeReviewDaemonOptions
+        {
+            EnableCommentPosting = true,
+            EnableHostSummaryFallback = true,
+        };
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, options)
+            : Fixture.GitHub(LoggerFactory, options);
+        var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+
+        await RunAllStagesAsync(fixture, run);
+
+        publisher.PostCount.Should().Be(1);
+        var delivery = fixture.Store.GetOutboxForRun(run.Id)
+            .Should().ContainSingle(o => o.Operation == ReviewPoster.PostReviewCommentOperation).Subject;
+        delivery.Status.Should().Be(OutboxStatus.Posted);
+        delivery.ProviderResponseId.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Theory]
+    [InlineData("github")]
+    [InlineData("azure-devops")]
+    public async Task Posted_completes_a_post_mode_no_new_findings_review_without_posting_anything(string provider)
+    {
+        // The sentinel is a DELIBERATE no-comment, so it must stay a success in post mode too — the delivery
+        // guard above may never be widened into "always force a comment", which is exactly the re-review noise
+        // the sentinel exists to stop.
+        var options = new CodeReviewDaemonOptions
+        {
+            EnableCommentPosting = true,
+            EnableHostSummaryFallback = true,
+        };
+        using var fixture = provider == "azure-devops"
+            ? Fixture.Ado(LoggerFactory, options)
+            : Fixture.GitHub(LoggerFactory, options);
+        var publisher = provider == "azure-devops" ? fixture.AdoPublisher! : fixture.GitHubPublisher;
+        fixture.Factory.TextByProfileId[DaemonAgentFactory.ReviewProfileId] = "No new findings since the last review.";
+        var run = fixture.SeedRun(watermark: "2026-06-29T12:34:56Z", mode: "post");
+
+        await RunAllStagesAsync(fixture, run);
+
+        publisher.PostCount.Should().Be(0, "the sentinel is an intentional no-post, not a failed delivery");
+        fixture.Store.GetOutboxForRun(run.Id)
+            .Should().NotContain(
+                o => o.Operation == ReviewPoster.PostReviewCommentOperation,
+                "no delivery was attempted, so there is no comment outbox row to misread as evidence");
+    }
+
     /// <summary>Seeds a well-formed (already-seeded) ReviewBot skeleton into the checkout.</summary>
     private static void SeedReviewBotSkeleton(Fixture fixture)
     {
@@ -1530,7 +1626,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             IReviewCommentPublisher[]? publishersOverride = null) =>
             new(loggerFactory, "azure-devops", options, diffResult: null, publishersOverride, completionSource: null);
 
-        public ReviewRun SeedRun(string watermark = "wm-1")
+        public ReviewRun SeedRun(string watermark = "wm-1", string mode = "collect-only")
         {
             var repoId = Store.EnsureRepo(new RepoIdentity
             {
@@ -1549,7 +1645,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 TriggerWatermark = watermark,
                 ReviewKind = "full",
                 VariantId = "primary",
-                Mode = "collect-only",
+                Mode = mode,
                 Stage = ReviewStage.Discovered,
                 WorkflowStatus = WorkflowStatus.Running,
                 PrLifecycleState = PrLifecycleState.Open,

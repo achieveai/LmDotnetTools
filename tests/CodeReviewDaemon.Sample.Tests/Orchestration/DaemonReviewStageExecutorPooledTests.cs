@@ -694,6 +694,68 @@ public sealed class DaemonReviewStageExecutorPooledTests
     }
 
     [Fact]
+    public async Task Posted_keeps_the_pooled_lease_when_the_commit_gate_fails_so_the_retry_uses_the_same_pool_path()
+    {
+        using var fixture = Fixture.Create();
+        // The commit gate fails once (a stale index.lock the next attempt's clean-on-entry clears) and then
+        // succeeds on the retry.
+        fixture.HostRunner.OnArgvContainsSequence(
+            $"add -- {NotesRelPath}",
+            new SandboxCommandResult(1, string.Empty, "fatal: Unable to create index.lock: File exists"),
+            new SandboxCommandResult(0, string.Empty, string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        var act = () => fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        // Consuming the lease BEFORE the commit succeeded is what silently moved the retry off the pool and
+        // onto the host ReviewBot checkout — so a failed retention must leave the lease exactly as it was.
+        fixture.Pool.ReturnCount.Should().Be(0, "the slot is only stripped and returned once its notes are retained");
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
+        commands.Count(a => a.Contains($"add -- {NotesRelPath}")).Should().Be(2, "the retry re-runs the commit gate");
+        commands.Should().OnlyContain(
+            a => !a.Contains($"add -- {NotesRelPath}") || a.Contains("/pool/slot-0/store"),
+            "both attempts stage the notes inside the SAME leased slot");
+        fixture.Pool.LeaseCount.Should().Be(1, "the retry reuses the retained lease rather than leasing a second slot");
+        fixture.Pool.ReturnCount.Should().Be(1, "the slot is returned exactly once, on the successful retry");
+    }
+
+    [Fact]
+    public async Task Posted_re_leases_a_slot_when_a_retry_resumes_after_the_lease_was_released()
+    {
+        using var fixture = Fixture.Create();
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Judged, run, CancellationToken.None);
+
+        // The orchestrator's terminal finally releases the pooled lease on EVERY terminal outcome (including
+        // the failure→RetryPending rethrow), so a Posted-stage retry on a later poll — or after a restart —
+        // always arrives with no recorded lease. Seed the gitmodules for the slot it will lease next.
+        fixture.HostFileSystem.Seed(
+            "/pool/slot-1/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        var resumed = fixture.BuildExecutor();
+
+        await resumed.ExecuteStageAsync(ReviewStage.Posted, run, CancellationToken.None);
+
+        // The retry must retain the notes through the POOL — the store checkout that carries the notes branch
+        // and the PR's prior notes — never silently degrade to the host ReviewBot checkout.
+        fixture.Pool.LeaseCount.Should().Be(2, "the resumed Posted stage re-leases a slot because the prior lease was released");
+        var commands = fixture.HostRunner.Commands.Select(Describe).ToList();
+        commands.Should().Contain(a => a.Contains($"add -- {NotesRelPath}") && a.Contains("/pool/slot-1/store"));
+        fixture.Pool.ReturnCount.Should().Be(1, "the re-leased slot is stripped and returned on the terminal stage");
+    }
+
+    [Fact]
     public async Task Posted_strips_the_slot_store_to_pristine_after_committing_the_notes()
     {
         using var fixture = Fixture.Create();

@@ -2491,6 +2491,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 run.Id);
         }
 
+        // Resume safety, mirroring ReviewAsync: the orchestrator's terminal `finally` releases the pooled lease
+        // on EVERY terminal outcome, so a Posted stage that failed once (retention, a stale index.lock, a
+        // publisher blip) is ALWAYS retried with no recorded lease. Without re-leasing, that retry silently fell
+        // through to the host ReviewBot checkout below — a different tree, without this PR's notes branch — and
+        // looked like a success. Re-lease first so the retry retains into the same pooled store the review ran in.
+        if (hasContent && UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
+        {
+            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        }
+
         // Host-side single-summary posting. Two ways it fires:
         //   • S2S path (UseS2SReviewAgent) — MANDATORY: the LmStreaming-hosted agent is domain-agnostic and
         //     CANNOT post to a GitHub/ADO PR (agent-inline posting was forced off in RunReviewAttemptAsync), so
@@ -2500,10 +2510,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Posts one PR-level summary comment via ReviewPoster (exactly-once via the outbox + backstop scan). It
         // runs BEFORE DestroyAsync but the publisher uses its own DI HttpClient/token, not the sandbox session.
         var postHostSide = _options.UseS2SReviewAgent || _options.EnableHostSummaryFallback;
+        PostOutcome? postOutcome = null;
         if (hasContent && !IsNoNewFindingsSentinel(reviewText) && postHostSide)
         {
             var deepLink = BuildDeepLink(reviewArtifact.ThreadId);
-            await PostReviewCommentHostSideAsync(run, repo, provider, reviewText, deepLink, cancellationToken)
+            postOutcome = await PostReviewCommentHostSideAsync(
+                    run, repo, provider, reviewText, deepLink, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -2525,27 +2537,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         // Retention (design §4.4, the commit gate) — only when there is content to retain. A run that leased a
         // pooled slot commits its notes onto the slot's store checkout scoped to ONLY the PR notes dir, then
-        // returns the slot; every other run uses the host ReviewBot retention checkout. The slot is ALWAYS
-        // returned (finally) and the session is torn down just ABOVE, so an empty review still frees its
-        // resources; the atomic TryRemove guards against a double-return.
-        if (_slotWorkspace is not null && _leasedReviews.TryRemove(run.Id, out var lease))
+        // returns the slot; every other run uses the host ReviewBot retention checkout. The session is torn down
+        // just ABOVE, so an empty review still frees its resources.
+        //
+        // The lease is read with TryGetValue and only REMOVED once retention has actually completed (or had
+        // nothing to do). Removing it up front made any retention failure permanent for the run: the retry came
+        // back lease-less and fell into the `else` branch below — the host ReviewBot checkout — which "succeeded"
+        // against a tree that has neither this PR's notes branch nor its prior notes. Strip + return still run
+        // exactly once, on the attempt that retained, and the removal happens before the return so a concurrent
+        // ReleaseReviewLeaseAsync can never double-return the slot.
+        if (_slotWorkspace is not null && _leasedReviews.TryGetValue(run.Id, out var lease))
         {
-            try
+            if (hasContent)
             {
-                if (hasContent)
-                {
-                    await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken).ConfigureAwait(false);
-                }
+                await CommitPooledNotesAsync(run, repo, provider, reviewText, lease, cancellationToken)
+                    .ConfigureAwait(false);
             }
-            finally
+
+            if (_leasedReviews.TryRemove(run.Id, out _))
             {
-                // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
-                // slot's store to a pristine state so the next lease starts clean with nothing left around.
-                // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
-                // block the slot's return (which would leak pool capacity). Committed notes survive the strip
-                // (reset --hard keeps HEAD; clean removes only untracked byproduct).
                 try
                 {
+                    // Commit-then-strip (design §4.3): the notes are committed + pushed above; now return the
+                    // slot's store to a pristine state so the next lease starts clean with nothing left around.
+                    // Best-effort — clean-on-entry is the durability guarantee, so a strip failure here must never
+                    // block the slot's return (which would leak pool capacity). Committed notes survive the strip
+                    // (reset --hard keeps HEAD; clean removes only untracked byproduct).
                     await SlotHygiene.StripAsync(
                             new GitRunner(_slotWorkspace.HostRunner), HostStoreRoot(lease), CancellationToken.None)
                         .ConfigureAwait(false);
@@ -2566,7 +2583,36 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // the only path that writes to the ReviewBot remote; the collect-only B variant never reaches it.
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
+
+        // Delivery truthfulness (last, so the notes are already retained and the slot already freed): a run
+        // DISCOVERED in post mode is supposed to put this review on the PR. Completing the terminal stage
+        // records the run as done forever, so it may only do so on durable evidence that a provider comment
+        // exists — a fresh post, an adopted one, or a replay whose outbox row is Posted WITH a response id.
+        // A CollectedOnly or evidence-free ReplayNoOp leaves the stage retryable instead of quietly reporting a
+        // delivery that never happened. The no-new-findings sentinel is exempt by construction: it never posts,
+        // so it never reaches here — an intentional no-comment stays a success and is reported as such.
+        if (postOutcome is { } outcome
+            && string.Equals(run.Mode, "post", StringComparison.Ordinal)
+            && !IsDeliveryProven(outcome))
+        {
+            throw new InvalidOperationException(
+                $"Run {run.Id}: the {provider} review post did not reach the PR (outbox {outcome.OutboxId} outcome "
+                    + $"{outcome.Kind}); leaving the Posted stage retryable rather than completing undelivered.");
+        }
     }
+
+    /// <summary>
+    /// Whether <paramref name="outcome"/> proves a provider-visible review comment exists. A replay only counts
+    /// when the persisted outbox row is terminal <see cref="OutboxStatus.Posted"/> AND carries the provider's
+    /// response id — the row alone is ambiguous, which is exactly how a run that posted nothing looked delivered.
+    /// </summary>
+    private bool IsDeliveryProven(PostOutcome outcome) => outcome.Kind switch
+    {
+        PostOutcomeKind.Posted or PostOutcomeKind.AlreadyPostedBackstop => true,
+        PostOutcomeKind.ReplayNoOp => !string.IsNullOrWhiteSpace(outcome.ProviderResponseId)
+            && _store.GetOutbox(outcome.OutboxId)?.Status == OutboxStatus.Posted,
+        _ => false,
+    };
 
     /// <summary>
     /// Posts the persisted review to the PR host-side via the provider's registered
@@ -2577,9 +2623,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <paramref name="deepLink"/> is set (the S2S path) a single "Full review conversation" line is appended so
     /// the reader can open the hosted conversation + its sub-agent tree. Requires a publisher for
     /// <paramref name="provider"/> to be registered; throws if none matches so a misconfiguration is loud, not a
-    /// silent no-post.
+    /// silent no-post. Returns the <see cref="PostOutcome"/> so the caller can hold the terminal stage open when
+    /// a post-mode review demonstrably never reached the PR.
     /// </summary>
-    private async Task PostReviewCommentHostSideAsync(
+    private async Task<PostOutcome> PostReviewCommentHostSideAsync(
         ReviewRun run, RepoIdentity repo, string provider, string reviewText, string? deepLink,
         CancellationToken cancellationToken)
     {
@@ -2608,6 +2655,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _logger.LogInformation(
             "Run {RunId}: host-side {Provider} review post outcome {Outcome} (response {ResponseId}, deepLink={HasDeepLink}).",
             run.Id, provider, outcome.Kind, outcome.ProviderResponseId ?? "-", !string.IsNullOrWhiteSpace(deepLink));
+        return outcome;
     }
 
     /// <summary>

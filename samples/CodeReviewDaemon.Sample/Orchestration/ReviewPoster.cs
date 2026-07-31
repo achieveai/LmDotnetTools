@@ -52,8 +52,14 @@ internal sealed class ReviewPoster
             Status = OutboxStatus.Pending,
         });
 
-        // Terminal replay — the side effect (or the deliberate decision not to act) already happened.
-        if (entry.Status is OutboxStatus.Posted or OutboxStatus.Collected)
+        // Terminal replay — the side effect (or the deliberate decision not to act) already happened. Posted is
+        // terminal unconditionally (the comment exists). Collected is terminal only for another UNAUTHORIZED
+        // replay: it records "we chose not to act", and that choice is the caller's to revise. Once a later
+        // attempt IS authorized to post live, treating the Collected row as terminal would silently swallow the
+        // delivery forever — the run would complete having posted nothing while its outbox claimed closure.
+        var terminal = entry.Status is OutboxStatus.Posted
+            || (entry.Status is OutboxStatus.Collected && !request.LivePostingAuthorized);
+        if (terminal)
         {
             _logger.LogInformation(
                 "Outbox {OutboxId} for key {Key} is already {Status}; replay no-op.",
@@ -93,10 +99,11 @@ internal sealed class ReviewPoster
             return new PostOutcome(PostOutcomeKind.AlreadyPostedBackstop, entry.Id, existing.ProviderResponseId);
         }
 
-        // Hold the lease. Idempotent: a crashed prior attempt may already sit in Sending.
-        if (entry.Status == OutboxStatus.Pending)
+        // Hold the lease. Idempotent: a crashed prior attempt may already sit in Sending, and an authorized
+        // retry of a previously collect-only run reopens its Collected row from here.
+        if (entry.Status is OutboxStatus.Pending or OutboxStatus.Collected)
         {
-            _ = _store.TryTransitionOutbox(entry.Id, OutboxStatus.Pending, OutboxStatus.Sending);
+            _ = _store.TryTransitionOutbox(entry.Id, entry.Status, OutboxStatus.Sending);
         }
 
         var posted = await _publisher

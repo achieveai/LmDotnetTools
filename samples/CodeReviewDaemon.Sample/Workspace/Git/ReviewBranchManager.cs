@@ -157,11 +157,37 @@ internal sealed class ReviewBranchManager
             await RunGitAsync(["add", "-A"], repoRoot, cancellationToken).ConfigureAwait(false);
         }
 
-        await RunGitAsync(
+        // A re-review that reaches the same conclusion writes byte-identical notes, so nothing is staged and
+        // `git commit` exits 1 with "nothing to commit" on STDOUT. The notes are already durably on the branch,
+        // so that is a NO-OP, not a retention failure — treating it as fatal tore down the whole Posted stage
+        // and pushed its retry onto a different (host) checkout. Tolerate the failure here, then PROVE it was an
+        // empty index with a deterministic command rather than matching on git's prose: `diff --cached --quiet`
+        // exits 0 if and only if the index matches HEAD. Any other commit failure still aborts retention.
+        var commit = await RunGitAsync(
                 ["commit", "-m", BuildCommitMessage(request)],
                 repoRoot,
-                cancellationToken)
+                cancellationToken,
+                allowFailure: true)
             .ConfigureAwait(false);
+        if (!commit.Succeeded)
+        {
+            var staged = await RunGitAsync(
+                    ["diff", "--cached", "--quiet"],
+                    repoRoot,
+                    cancellationToken,
+                    allowFailure: true)
+                .ConfigureAwait(false);
+            if (!staged.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    $"git commit failed (exit {commit.ExitCode}): {commit.Stderr}");
+            }
+
+            _logger.LogInformation(
+                "ReviewBot notes on '{ReviewBranch}' are unchanged (nothing staged); keeping the branch at its "
+                    + "current head instead of failing the commit.",
+                reviewBranch);
+        }
 
         // 4. Push the review branch (never the default) with bounded rebase-retry, and KEEP the branch —
         // no fast-forward of the default and no delete happen here.
