@@ -45,8 +45,8 @@ export function useWorkspaces() {
     error.value = null;
     try {
       const response = await listWorkspaces();
-      gateway.value = response.gateway;
-      workspaces.value = response.workspaces;
+      gateway.value = response.gateway ?? null;
+      workspaces.value = Array.isArray(response.workspaces) ? response.workspaces : [];
 
       const hasSelection =
         selectedWorkspaceId.value !== null &&
