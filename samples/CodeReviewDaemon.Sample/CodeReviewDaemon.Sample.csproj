@@ -3,8 +3,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- Console-launchable daemon: the in-process MultiTurnAgentLoop harness polls PR providers and
-         drives the sandbox; ASP.NET Core hosts ONLY the sandbox auth webhook (one route). -->
+    <!-- Console-launchable daemon: drives reviews over the S2S REST API against a running LmStreaming.Sample
+         review host; ASP.NET Core hosts ONLY the sandbox auth webhook (one route). -->
     <OutputType>Exe</OutputType>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
@@ -30,18 +30,9 @@
          LmStreaming.Sample); LmCore + LmMultiTurn flow transitively. -->
     <ProjectReference Include="..\..\src\LmAgentInfra\AchieveAi.LmDotnetTools.LmAgentInfra.csproj" />
     <ProjectReference Include="..\LmSampleShared\LmSampleShared.csproj" />
-    <!-- The live review agent loop (LiveReviewAgentLoopFactory) drives an Anthropic Messages
-         MultiTurnAgentLoop routed through the GitHub Copilot backend (Copilot-hosted Claude, e.g.
-         claude-sonnet-5). AnthropicProvider supplies AnthropicAgent/AnthropicClient; GithubCopilotProvider
-         supplies CopilotAnthropicAgentFactory + the CLI-credential token transport. OpenAIProvider is kept
-         for the OpenClient wiring pattern parity. Dead-by-default (no targets ⇒ never invoked), but the
-         types must compile. -->
-    <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
-    <ProjectReference Include="..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
+    <!-- CopilotModelCatalogLogger uses the Copilot credential + catalog parsing types for diagnostic model
+         discovery at daemon startup. No MultiTurnAgent dependency — only auth + model wrappers. -->
     <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
-    <!-- LiveReviewAgentLoopFactory's tool-assisted path registers the gateway MCP client's tools onto a
-         FunctionRegistry via FunctionRegistryExtensions.AddMcpClientsAsync (mirrors LmStreaming.Sample). -->
-    <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- The route-exposure test (AC#4) boots this host via WebApplicationFactory<Program> and

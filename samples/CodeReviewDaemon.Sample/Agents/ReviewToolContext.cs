@@ -1,6 +1,5 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -14,12 +13,15 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// <see cref="ScopedToolFilter"/> (read-only tools + scoped <c>Write</c>/<c>Edit</c>/<c>Bash</c>);
 /// otherwise it stays on the read-only <see cref="ReadOnlyToolFilter"/> path exactly as before.
 /// </para>
+/// <para>
+/// Sub-agent orchestration (templates, discovery, model selection) is ALWAYS handled by the LmStreaming
+/// review host on the S2S path — the daemon never builds SubAgentOptions locally.
+/// </para>
 /// </summary>
 internal sealed record ReviewToolContext(
     string GatewayBaseUrl,
     string SessionId,
     IReadOnlyList<string> ReadOnlyToolAllowList,
-    SubAgentOptions? SubAgentOptions,
     SandboxCredential Credential,
     bool EnableReviewerWrites = false,
     IReadOnlyList<string>? WritableToolAllowList = null,

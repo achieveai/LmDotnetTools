@@ -1,8 +1,6 @@
 using AchieveAi.LmDotnetTools.LmAgentInfra.Auth;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Controllers;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Auth;
@@ -77,8 +75,8 @@ if (!string.IsNullOrWhiteSpace(daemonOptions.LogFilePath))
 // The daemon authenticates to the sandbox gateway under its OWN app identity — distinct from
 // LmStreaming.Sample's default ("lmstreaming-sample") — so the shared SandboxSessionRegistry's
 // default credential (derived from sandboxGatewayOptions.AppId/AppKey below), the typed SandboxClient
-// the daemon's SandboxSessionAdapter binds per session, and LiveReviewAgentLoopFactory's retained
-// direct /mcp tool-discovery transport all stamp the SAME
+// the daemon's SandboxSessionAdapter binds per session, and the S2S client's X-Sbx-App-Id/X-Sbx-App-Key
+// headers all stamp the SAME
 // X-Sbx-App-Id/X-Sbx-App-Key headers. A present-but-invalid key fails fast at boot (redacted); an
 // absent key is the keyless AUTH_ENFORCE=off dev path, logged once as a warning after the host is
 // built (never blocking startup, and never logging the key itself).
@@ -266,141 +264,108 @@ builder.Services.AddSingleton<IReviewSessionProvisioner>(sp => new ReviewSession
 
 // Sub-agent discovery (Task 12): the executor asks for `code-reviewer:*` sub-agents through the same
 // narrow-adapter pattern as ISandboxSessionSource above, so it never depends on the registry's full
-// surface directly. DiscoveredSubAgentTemplateBuilder is pure (no gateway calls), so it is registered
-// as-is.
+// surface directly.
 builder.Services.AddSingleton<IDiscoveredItemsSource>(sp =>
     new RegistryDiscoverySource(sp.GetRequiredService<SandboxSessionRegistry>()));
-builder.Services.AddSingleton<DiscoveredSubAgentTemplateBuilder>();
 
-// Optional conversation persistence: when ConversationStorePath is set, every review agent's
-// MultiTurnAgentLoop (primary + sub-agents) persists its full message history — Skill loads, sub-agent Task
-// dispatches, tool results — to <path>/<threadId>/messages.json for after-the-fact audit (DuckDB-queryable).
-// Unset ⇒ conversations are streamed and discarded, exactly as before.
+// Optional conversation persistence: when ConversationStorePath is set, the S2S review host persists its
+// full message history. The daemon retains the path for log auditing references.
 IConversationStore? conversationStore = string.IsNullOrWhiteSpace(daemonOptions.ConversationStorePath)
     ? null
     : new FileConversationStore(daemonOptions.ConversationStorePath);
 
-// The live agent loop (OpenAI-compatible MultiTurnAgentLoop). Dead-by-default + lazy per run. Registered
-// by its concrete type too (rather than only the IReviewAgentLoopFactory interface) so the executor can
-// also resolve its SharedAgentFactory (Task 12) — the same Copilot-backed agent every review loop and any
-// discovered sub-agent are driven by — without standing up a second provider agent.
-builder.Services.AddSingleton<LiveReviewAgentLoopFactory>(sp => new LiveReviewAgentLoopFactory(
-    sp.GetRequiredService<ILoggerFactory>(),
-    daemonOptions,
-    conversationStore,
-    sp.GetService<MultiTurnLifecycleServices>()));
-
-if (daemonOptions.UseS2SReviewAgent)
+// The daemon drives all reviews over the S2S REST API against a running LmStreaming.Sample review host.
+// UseS2SReviewAgent must be on — the in-process path has been removed.
+if (!daemonOptions.UseS2SReviewAgent)
 {
-    // S2S path (opt-in): each review runs as a real conversation on an already-running LmStreaming.Sample
-    // review host over REST, so the deep-link the executor posts opens the parent loop + its
-    // code-reviewer:* sub-agent tree. The in-process LiveReviewAgentLoopFactory stays registered as its
-    // concrete type above (dead-by-default, no work at construction) purely so the SharedAgentFactory below
-    // still resolves; the IReviewAgentLoopFactory the stage executor drives is the S2S one. Fully reversible:
-    // flip UseS2SReviewAgent off and the daemon reverts to the in-process review byte-for-byte.
-    if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
-    {
-        throw new InvalidOperationException(
-            "UseS2SReviewAgent is on but LmStreamingBaseUrl is not configured; set it to the LmStreaming review "
-            + "host base URL (e.g. http://localhost:5051).");
-    }
-    if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
-    {
-        throw new InvalidOperationException(
-            "UseS2SReviewAgent is on but no workspace base path is configured "
-            + "(SandboxGateway:WorkspaceBasePath / CRD_WORKSPACE_BASE_PATH); the S2S review preparer clones the "
-            + "PR checkout under it, and the review host must mount the same base.");
-    }
+    throw new InvalidOperationException(
+        "UseS2SReviewAgent must be true; the in-process review path (LiveReviewAgentLoopFactory) has been removed. "
+        + "Set CodeReviewDaemon:UseS2SReviewAgent=true and configure LmStreamingBaseUrl.");
+}
 
-    // Normalize to a host-root base with a trailing slash so the client's relative paths ("api/workspaces",
-    // "api/conversations") resolve correctly against HttpClient.BaseAddress.
-    var lmStreamingBaseUri = new Uri(
-        daemonOptions.LmStreamingBaseUrl.TrimEnd('/') + "/",
-        UriKind.Absolute);
+if (string.IsNullOrWhiteSpace(daemonOptions.LmStreamingBaseUrl))
+{
+    throw new InvalidOperationException(
+        "UseS2SReviewAgent is on but LmStreamingBaseUrl is not configured; set it to the LmStreaming review "
+        + "host base URL (e.g. http://localhost:5051).");
+}
+if (string.IsNullOrWhiteSpace(effectiveWorkspaceBase))
+{
+    throw new InvalidOperationException(
+        "UseS2SReviewAgent is on but no workspace base path is configured "
+        + "(SandboxGateway:WorkspaceBasePath / CRD_WORKSPACE_BASE_PATH); the S2S review preparer clones the "
+        + "PR checkout under it, and the review host must mount the same base.");
+}
 
-    // Outbound S2S client over the review host. The raw HttpClient is intentionally long-lived (mirrors the
-    // gateway HttpClients above); it forwards the daemon's own gateway identity (X-Sbx-App-*) so the sandbox
-    // the review provisions is attributed to codereview-daemon, and the X-S2S-Auth secret (never logged).
-    builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
-        new HttpClient { BaseAddress = lmStreamingBaseUri },
-        daemonOptions.LmStreamingS2SSecret,
-        daemonAppId,
-        daemonKeyMissing ? null : daemonAppKey));
+// Normalize to a host-root base with a trailing slash so the client's relative paths ("api/workspaces",
+// "api/conversations") resolve correctly against HttpClient.BaseAddress.
+var lmStreamingBaseUri = new Uri(
+    daemonOptions.LmStreamingBaseUrl.TrimEnd('/') + "/",
+    UriKind.Absolute);
 
-    // Completion-source seam for the recursive review completion barrier (S2S mode): reads the review
-    // host's versioned recursive sub-agent tree over the same S2S client. IMPORTANT — the review host
-    // (LmStreaming.Sample) must be deployed with the recursive `?recursive=true` endpoint BEFORE the daemon
-    // barrier is enabled; an old host silently ignores the unknown query parameter and returns the flat,
-    // unversioned response, which this source's client fails closed on rather than treating as empty-success.
-    // The in-process mode's equivalent source is NOT registered here — it is constructed directly from the
-    // live SubAgentManager in the executor's own call stack (no DI, no loop-lookup registry), since a fresh
-    // live manager exists per review attempt.
-    builder.Services.AddSingleton<IReviewSubAgentCompletionSource>(sp =>
-        new S2SReviewSubAgentCompletionSource(sp.GetRequiredService<LmStreamingS2SClient>()));
+// Outbound S2S client over the review host. The raw HttpClient is intentionally long-lived (mirrors the
+// gateway HttpClients above); it forwards the daemon's own gateway identity (X-Sbx-App-*) so the sandbox
+// the review provisions is attributed to codereview-daemon, and the X-S2S-Auth secret (never logged).
+builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
+    new HttpClient { BaseAddress = lmStreamingBaseUri },
+    daemonOptions.LmStreamingS2SSecret,
+    daemonAppId,
+    daemonKeyMissing ? null : daemonAppKey));
 
-    // Host-side workspace preparer: clones the PR checkout under the shared WORKSPACE_BASE_PATH and ensures
-    // the LmStreaming workspace points at that leaf. Uses the SAME host-backed GitRunner the pooled path uses
-    // (privileged, credentialed, never the sandbox runner). Registered only on the S2S path so the executor
-    // resolves it optionally (null ⇒ in-process path, no preparation).
-    builder.Services.AddSingleton(sp => new S2SReviewWorkspacePreparer(
+// Completion-source seam for the recursive review completion barrier: reads the review host's versioned
+// recursive sub-agent tree over the same S2S client. IMPORTANT — the review host (LmStreaming.Sample) must
+// be deployed with the recursive `?recursive=true` endpoint BEFORE the daemon barrier is enabled.
+builder.Services.AddSingleton<IReviewSubAgentCompletionSource>(sp =>
+    new S2SReviewSubAgentCompletionSource(sp.GetRequiredService<LmStreamingS2SClient>()));
+
+// Host-side workspace preparer: clones the PR checkout under the shared WORKSPACE_BASE_PATH and ensures
+// the LmStreaming workspace points at that leaf. Uses the SAME host-backed GitRunner the pooled path uses
+// (privileged, credentialed, never the sandbox runner).
+builder.Services.AddSingleton(sp => new S2SReviewWorkspacePreparer(
+    sp.GetRequiredService<LmStreamingS2SClient>(),
+    new GitRunner(new HostGitCommandRunner(
+        BuildHostGitCredentialsSource(sp),
+        sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
+        hostGitAdoOrgs)),
+    effectiveWorkspaceBase!,
+    daemonOptions.LmStreamingReviewMarketplace,
+    sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()));
+
+// Gateway prerequisite probe (RequireSkillSupport). The review runs in a conversation the review host
+// provisions, so the equivalent check reads the gateway's marketplace catalog directly.
+builder.Services.AddSingleton<IGatewaySkillProbe>(sp => new GatewaySkillProbe(
+    gatewayBaseUrl,
+    daemonCredential,
+    sp.GetRequiredService<ILogger<GatewaySkillProbe>>()));
+
+// Deep-link retention ceiling. Every posted comment carries ?threadId=, so the hosted conversation must
+// OUTLIVE its review — but not forever. When a window is configured, each minted conversation is recorded
+// in the ledger and discarded once it has aged past it.
+var deepLinkRetention = daemonOptions.DeepLinkRetentionHours > 0
+    ? TimeSpan.FromHours(daemonOptions.DeepLinkRetentionHours)
+    : (TimeSpan?)null;
+
+if (deepLinkRetention is { } retentionWindow)
+{
+    builder.Services.AddSingleton(sp => new DeepLinkRetentionSweeper(
+        sp.GetRequiredService<ReviewStore>(),
         sp.GetRequiredService<LmStreamingS2SClient>(),
-        new GitRunner(new HostGitCommandRunner(
-            BuildHostGitCredentialsSource(sp),
-            sp.GetRequiredService<ILogger<HostGitCommandRunner>>(),
-            hostGitAdoOrgs)),
-        effectiveWorkspaceBase!,
-        daemonOptions.LmStreamingReviewMarketplace,
-        sp.GetRequiredService<ILogger<S2SReviewWorkspacePreparer>>()));
-
-    // Gateway prerequisite probe (RequireSkillSupport on S2S). The in-process fail-fast inspects the daemon's
-    // OWN sandbox session, which does not exist here — the review runs in a conversation the review host
-    // provisions — so the equivalent check reads the gateway's marketplace catalog directly. Registered only
-    // on the S2S path; elsewhere the executor's optional parameter stays null and nothing changes.
-    builder.Services.AddSingleton<IGatewaySkillProbe>(sp => new GatewaySkillProbe(
-        gatewayBaseUrl,
-        daemonCredential,
-        sp.GetRequiredService<ILogger<GatewaySkillProbe>>()));
-
-    // Deep-link retention ceiling. Every posted comment carries ?threadId=, so the hosted conversation must
-    // OUTLIVE its review — but not forever. When a window is configured, each minted conversation is recorded
-    // in the ledger and discarded once it has aged past it. The recorder and the sweeper are registered
-    // together on purpose: a ledger row IS the claim "this should eventually be discarded", so with retention
-    // off (Hours <= 0) nothing is recorded and nothing is ever deleted — the pre-retention behaviour.
-    var deepLinkRetention = daemonOptions.DeepLinkRetentionHours > 0
-        ? TimeSpan.FromHours(daemonOptions.DeepLinkRetentionHours)
-        : (TimeSpan?)null;
-
-    if (deepLinkRetention is { } retentionWindow)
-    {
-        builder.Services.AddSingleton(sp => new DeepLinkRetentionSweeper(
-            sp.GetRequiredService<ReviewStore>(),
-            sp.GetRequiredService<LmStreamingS2SClient>(),
-            retentionWindow,
-            sp.GetRequiredService<ILogger<DeepLinkRetentionSweeper>>()));
-    }
-
-    builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
-    {
-        // Resolved once here rather than per mint: the recorder runs inside the agent's provision path, and
-        // resolving from the container there would outlive the scope it was captured from.
-        var store = sp.GetRequiredService<ReviewStore>();
-        return new S2SReviewAgentLoopFactory(
-            sp.GetRequiredService<LmStreamingS2SClient>(),
-            daemonOptions,
-            sp.GetRequiredService<ILoggerFactory>(),
-            onConversationMinted: deepLinkRetention is null
-                ? null
-                : (threadId, title) => store.RecordDeepLinkConversation(threadId, title));
-    });
+        retentionWindow,
+        sp.GetRequiredService<ILogger<DeepLinkRetentionSweeper>>()));
 }
-else
+
+builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
 {
-    builder.Services.AddSingleton<IReviewAgentLoopFactory>(sp =>
-        sp.GetRequiredService<LiveReviewAgentLoopFactory>());
-}
+    var store = sp.GetRequiredService<ReviewStore>();
+    return new S2SReviewAgentLoopFactory(
+        sp.GetRequiredService<LmStreamingS2SClient>(),
+        daemonOptions,
+        sp.GetRequiredService<ILoggerFactory>(),
+        onConversationMinted: deepLinkRetention is null
+            ? null
+            : (threadId, title) => store.RecordDeepLinkConversation(threadId, title));
+});
 
-builder.Services.AddSingleton<Func<IStreamingAgent>>(sp =>
-    sp.GetRequiredService<LiveReviewAgentLoopFactory>().SharedAgentFactory);
 
 // PR read providers + comment publishers. GitHub is always registered; ADO is opt-in (mirrors the
 // OAuth provider registration above). Each resolves the matching concrete OAuth provider for its token.
