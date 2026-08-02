@@ -157,7 +157,26 @@ public record SubAgentOptions
     /// discovered template. Null (default), or a null resolver result, preserves ordinary Agent behavior.
     /// </summary>
     public Func<string?, SubAgentSpawnModelSelection?>? SpawnModelSelectionResolver { get; init; }
+
+    /// <summary>
+    /// Optional host authority for a named spawn's collaboration <c>role</c> and <c>description</c>. When
+    /// this resolver returns metadata, admission uses it in place of the caller/LLM supplied values, so a
+    /// host that already knows what it delegated — a workflow controller spawning an authored task —
+    /// publishes directory metadata derived from its own trusted definition rather than from whatever the
+    /// tool-calling model typed. A <see cref="SubAgentTemplate"/> whose role is
+    /// <see cref="SubAgentRoleMode.Fixed"/> still wins over both: that template already owns a trusted role.
+    /// Null (default), or a null resolver result, preserves ordinary Agent behavior.
+    /// </summary>
+    public Func<string?, SubAgentSpawnMetadata?>? SpawnMetadataResolver { get; init; }
 }
 
 /// <summary>An authoritative per-spawn model override/tier pair supplied by a host.</summary>
 public sealed record SubAgentSpawnModelSelection(string? Model, int? ModelIntelligence);
+
+/// <summary>
+/// Authoritative per-spawn collaboration metadata supplied by a host that owns the delegation's meaning.
+/// Both values are subject to the ordinary length validation in
+/// <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration.AgentCollaborationContext"/>; a host is expected to bound them itself so a long
+/// authored label is shortened rather than failing the spawn.
+/// </summary>
+public sealed record SubAgentSpawnMetadata(string Role, string Description);

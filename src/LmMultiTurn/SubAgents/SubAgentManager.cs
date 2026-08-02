@@ -197,9 +197,15 @@ public sealed class SubAgentManager : IAsyncDisposable
                     + "This agent cannot spawn sub-agents; do the work itself or report back.");
         }
 
-        // A role-fixed template owns its own label so a spawning LLM cannot relabel it into something
-        // the directory would then advertise inaccurately to every other agent.
-        var effectiveRole = template.RoleMode == SubAgentRoleMode.Fixed ? template.Role : role;
+        // Precedence, strongest first. (1) A role-fixed template owns its own label so a spawning LLM
+        // cannot relabel it into something the directory would then advertise inaccurately to every other
+        // agent. (2) A host that authored the delegation — a workflow controller spawning a defined task —
+        // supplies trusted metadata, so the directory describes what was actually delegated rather than
+        // what the tool-calling model chose to type. (3) Otherwise the caller-supplied values stand.
+        var trusted = _options.SpawnMetadataResolver?.Invoke(effectiveName);
+        var effectiveRole = template.RoleMode == SubAgentRoleMode.Fixed
+            ? template.Role
+            : trusted?.Role ?? role;
         if (string.IsNullOrWhiteSpace(effectiveRole))
         {
             throw new SubAgentCollaborationException(
@@ -209,7 +215,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     : "The 'role' parameter is required while collaboration is enabled.");
         }
 
-        if (string.IsNullOrWhiteSpace(description))
+        var effectiveDescription = trusted?.Description ?? description;
+        if (string.IsNullOrWhiteSpace(effectiveDescription))
         {
             throw new SubAgentCollaborationException(
                 SubAgentCollaborationFailureCodes.InvalidDescription,
@@ -231,7 +238,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 agentId,
                 childKind,
                 effectiveRole,
-                description);
+                effectiveDescription);
         }
         catch (ArgumentException ex)
         {

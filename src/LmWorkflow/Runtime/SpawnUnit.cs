@@ -28,4 +28,18 @@ public sealed record SpawnUnit
 
     /// <summary>The task's output schema fragment the spawned result is validated against, if any.</summary>
     public JsonNode? OutputSchema { get; init; }
+
+    /// <summary>
+    ///     The delegate's trusted collaboration role, derived from the authored task's label (see
+    ///     <see cref="Collaboration.WorkflowCollaboration.DeriveDelegateRole"/>). Deliberately NOT part of the
+    ///     controller-facing projection: it describes the delegation to other agents, and re-deriving it from
+    ///     the controller's own tool arguments would let the model relabel what the workflow author defined.
+    /// </summary>
+    public string? Role { get; init; }
+
+    /// <summary>
+    ///     The delegate's trusted collaboration description, derived from the owning node's title and the
+    ///     task's label (see <see cref="Collaboration.WorkflowCollaboration.DeriveDelegateDescription"/>).
+    /// </summary>
+    public string? Description { get; init; }
 }

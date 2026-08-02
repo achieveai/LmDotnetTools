@@ -718,18 +718,36 @@ public sealed class WorkflowRuntime
     /// </summary>
     internal SubAgentSpawnModelSelection? ResolveSpawnModelSelection(string? name)
     {
+        var unit = ResolveSpawnUnit(name);
+        return unit is null ? null : new SubAgentSpawnModelSelection(Model: null, unit.ModelIntelligence);
+    }
+
+    /// <summary>
+    ///     Returns the workflow unit's authoritative collaboration role/description for an exact spawn name,
+    ///     so a delegate is published under the identity the workflow author defined rather than under
+    ///     whatever the controller LLM typed into the Agent call. Null return means the name is not a
+    ///     workflow unit, which leaves ordinary caller-supplied metadata in force.
+    /// </summary>
+    internal SubAgentSpawnMetadata? ResolveSpawnMetadata(string? name)
+    {
+        var unit = ResolveSpawnUnit(name);
+        return unit is null || unit.Role is null || unit.Description is null
+            ? null
+            : new SubAgentSpawnMetadata(unit.Role, unit.Description);
+    }
+
+    /// <summary>
+    ///     Resolves an exact spawn name to its composed unit. Composition is refreshed first because the
+    ///     controller can call Agent before anything else re-composed the active node's units.
+    /// </summary>
+    private SpawnUnit? ResolveSpawnUnit(string? name)
+    {
         lock (_lock)
         {
             _ = _coordinator.Compose();
-            if (string.IsNullOrWhiteSpace(name) || CurrentNodeId is null)
-            {
-                return null;
-            }
-
-            var unit = _coordinator.FindComposedUnit(name);
-            return unit is null
+            return string.IsNullOrWhiteSpace(name) || CurrentNodeId is null
                 ? null
-                : new SubAgentSpawnModelSelection(Model: null, unit.ModelIntelligence);
+                : _coordinator.FindComposedUnit(name);
         }
     }
 

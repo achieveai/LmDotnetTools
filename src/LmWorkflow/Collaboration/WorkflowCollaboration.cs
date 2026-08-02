@@ -178,18 +178,50 @@ public static class WorkflowCollaboration
     {
         var objective = definition?.Objective;
         return string.IsNullOrWhiteSpace(objective)
-            ? Truncate($"Workflow controller for '{workflowId}'.")
-            : Truncate(objective.Trim());
+            ? Truncate(
+                $"Workflow controller for '{workflowId}'.",
+                AgentCollaborationContext.MaxDescriptionLength
+            )
+            : Truncate(objective.Trim(), AgentCollaborationContext.MaxDescriptionLength);
     }
 
-    /// <summary>Shortens to <see cref="AgentCollaborationContext.MaxDescriptionLength"/> whole scalars.</summary>
-    private static string Truncate(string value)
+    /// <summary>
+    ///     Derives a workflow delegate's trusted role from the authored task's own label, falling back to its
+    ///     id when the author supplied none. Both come from the workflow definition, so a controller model
+    ///     cannot relabel a delegate the directory then advertises to every other agent — the same guarantee a
+    ///     role-fixed template gives an ordinary sub-agent.
+    /// </summary>
+    internal static string DeriveDelegateRole(WorkflowTask task)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        var label = string.IsNullOrWhiteSpace(task.Label) ? task.Id : task.Label.Trim();
+        return Truncate(label, AgentCollaborationContext.MaxRoleLength);
+    }
+
+    /// <summary>
+    ///     Derives a workflow delegate's trusted description from the owning node's title and the task's own
+    ///     label — the two labels the workflow author already writes — rather than introducing a parallel
+    ///     description field for the controller to fill in.
+    /// </summary>
+    internal static string DeriveDelegateDescription(ProceduralNode node, WorkflowTask task)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(task);
+        var label = string.IsNullOrWhiteSpace(task.Label) ? task.Id : task.Label.Trim();
+        return Truncate(
+            $"Workflow task '{label}' for node '{node.Title}'.",
+            AgentCollaborationContext.MaxDescriptionLength
+        );
+    }
+
+    /// <summary>Shortens <paramref name="value"/> to <paramref name="maxScalars"/> whole Unicode scalars.</summary>
+    private static string Truncate(string value, int maxScalars)
     {
         var builder = new StringBuilder();
         var scalars = 0;
         foreach (var rune in value.EnumerateRunes())
         {
-            if (++scalars > AgentCollaborationContext.MaxDescriptionLength)
+            if (++scalars > maxScalars)
             {
                 break;
             }
@@ -238,6 +270,11 @@ internal sealed class WorkflowControllerRegistration
     ///     hierarchy stays inspectable after the run, unbinds the disposed loop, and returns the capacity
     ///     permit. Safe to call from more than one teardown path.
     /// </summary>
+    /// <remarks>
+    ///     Retention and capacity are independent: the retained entry is an inspectable record, not a live
+    ///     routing target, and it costs the collaboration nothing. Callers must therefore invoke this as soon
+    ///     as the loop is gone rather than behind any remaining teardown I/O.
+    /// </remarks>
     internal void Finish(bool succeeded)
     {
         if (Interlocked.Exchange(ref _finished, 1) != 0)

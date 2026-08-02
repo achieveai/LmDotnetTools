@@ -318,10 +318,14 @@ public static class WorkflowSession
         // leaving the unit pending and provoking a re-spawn loop. This rejects it up front at the Agent-tool
         // boundary with an actionable correction (the ready unit name(s)) so the controller re-issues the exact
         // name. Runtime backstop to the ControllerSystemPrompt guidance; covers StartAsync AND ResumeAsync.
+        // The metadata resolver rides the same exact-name correlation: a delegate's collaboration role and
+        // description come from the authored task/node labels, so the controller cannot relabel what the
+        // directory advertises to the rest of the collaboration.
         subAgentOptions = subAgentOptions with
         {
             SpawnNameGate = runtime.DescribeSpawnNameRejection,
             SpawnModelSelectionResolver = runtime.ResolveSpawnModelSelection,
+            SpawnMetadataResolver = runtime.ResolveSpawnMetadata,
         };
 
         return new MultiTurnAgentLoop(
@@ -638,13 +642,21 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
             // The pump fault is surfaced via Completion (SignalFailure); disposal must not throw.
         }
 
+        // Settle the collaboration node once the loop it points at is gone: record the terminal status, retain
+        // the entry so the finished hierarchy stays inspectable, and return the capacity permit exactly once. A
+        // run that never reached a terminal node settles as an error, which is what it was.
+        //
+        // Ordered BEFORE the snapshot drain deliberately. Retention and the permit are independent: a retained
+        // entry is an inspectable record, not a live routing target, and holding the permit across a store
+        // flush of unbounded duration would let one slow teardown freeze collaboration capacity for its whole
+        // hierarchy. The drain cannot change IsComplete, so settling here reports exactly what settling after
+        // it would have. This mirrors the sub-agent rule that the lease is returned when the agent stops
+        // existing, ahead of a potentially slow dispose — and differs from an ordinary sub-agent's COMPLETION
+        // only because a finished controller is not restartable by a later message: it really is gone.
+        _collaboration?.Finish(Runtime.IsComplete);
+
         // Flush any pending best-effort snapshot saves (serialized in capture order; faults are swallowed and
         // logged) before the handle goes away.
         await Runtime.DrainPersistAsync().ConfigureAwait(false);
-
-        // Settle the collaboration node last, once the loop it points at is gone: record the terminal status,
-        // retain the entry so the finished hierarchy stays inspectable, and return the capacity permit exactly
-        // once. A run that never reached a terminal node settles as an error, which is what it was.
-        _collaboration?.Finish(Runtime.IsComplete);
     }
 }

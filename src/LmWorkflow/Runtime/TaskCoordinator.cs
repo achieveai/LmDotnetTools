@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
+using AchieveAi.LmDotnetTools.LmWorkflow.Collaboration;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 
@@ -461,6 +462,11 @@ internal sealed class TaskCoordinator
             ModelIntelligence = task.ModelIntelligence,
             Prompt = ComposePrompt(task, _buildContext(item, index, count)),
             OutputSchema = task.OutputSchema?.DeepClone(),
+            // Captured here because this is the only place both the owning node and the authored task are
+            // in scope; admission later reads them back by unit name so a delegate's published identity
+            // comes from the definition rather than from the controller's tool arguments.
+            Role = WorkflowCollaboration.DeriveDelegateRole(task),
+            Description = WorkflowCollaboration.DeriveDelegateDescription(node, task),
         };
         _composed[taskRef.Name] = unit;
         units.Add(unit);

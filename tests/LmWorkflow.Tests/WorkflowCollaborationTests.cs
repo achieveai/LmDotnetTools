@@ -109,6 +109,91 @@ public class WorkflowCollaborationTests
     }
 
     [Fact]
+    public async Task ADelegatesPublishedIdentityComesFromTheAuthoredTaskAndNodeNotTheControllersWords()
+    {
+        var caller = Root();
+
+        await using var handle = await WorkflowSession.StartAsync(
+            objective: "Analyze the topic and finish.",
+            inputs: null,
+            definition: null,
+            subAgentOptions: SpawningSubAgentOptions(),
+            controllerAgent: ScriptedController(turn =>
+                    SpawnTurn(turn, LabelledTaskWorkflow, "hijacked-role", "hijacked description")
+                ).Object,
+            threadId: "wf-collab-trusted-thread",
+            instanceId: "wf-collab-trusted",
+            callerCollaboration: caller
+        );
+
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+        handle.Runtime.IsComplete.Should().BeTrue("the delegate must really have been admitted and run");
+
+        var delegateNode = caller.Directory.Snapshot().Single(e => e.Kind == AgentKind.WorkflowDelegate);
+
+        // Trusted sources: the task's authored label and the owning node's authored title.
+        delegateNode.Role.Should().Be("Topic analyst");
+        delegateNode.Description.Should().Be("Workflow task 'Topic analyst' for node 'Analyze'.");
+
+        // The controller supplied both fields and both were conflicting; neither reached the directory.
+        delegateNode.Role.Should().NotBe("hijacked-role");
+        delegateNode.Description.Should().NotContain("hijacked");
+    }
+
+    [Fact]
+    public async Task AnUnlabelledTaskFallsBackToItsAuthoredIdRatherThanTheControllersRole()
+    {
+        // The shared fixture's task carries no label, so the id is the remaining definition-owned label.
+        var caller = Root();
+
+        await using var handle = await WorkflowSession.StartAsync(
+            objective: "Analyze the topic and finish.",
+            inputs: null,
+            definition: null,
+            subAgentOptions: SpawningSubAgentOptions(),
+            controllerAgent: ScriptedController(turn =>
+                    SpawnTurn(turn, Phase3Fixtures.LinearBlockingAgent, "hijacked-role", "hijacked description")
+                ).Object,
+            threadId: "wf-collab-unlabelled-thread",
+            instanceId: "wf-collab-unlabelled",
+            callerCollaboration: caller
+        );
+
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var delegateNode = caller.Directory.Snapshot().Single(e => e.Kind == AgentKind.WorkflowDelegate);
+        delegateNode.Role.Should().Be("task");
+        delegateNode.Description.Should().Be("Workflow task 'task' for node 'Analyze'.");
+    }
+
+    [Fact]
+    public async Task ARoleFixedTemplateStillOutranksTheWorkflowsOwnLabel()
+    {
+        // The pre-existing fixed/customizable rule is unchanged: a template that pins its own role keeps it,
+        // because that role is already trusted. Only the description then comes from the definition.
+        var caller = Root();
+
+        await using var handle = await WorkflowSession.StartAsync(
+            objective: "Analyze the topic and finish.",
+            inputs: null,
+            definition: null,
+            subAgentOptions: SpawningSubAgentOptions(fixedRole: "code-reviewer"),
+            controllerAgent: ScriptedController(turn =>
+                    SpawnTurn(turn, LabelledTaskWorkflow, "hijacked-role", "hijacked description")
+                ).Object,
+            threadId: "wf-collab-fixedrole-thread",
+            instanceId: "wf-collab-fixedrole",
+            callerCollaboration: caller
+        );
+
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var delegateNode = caller.Directory.Snapshot().Single(e => e.Kind == AgentKind.WorkflowDelegate);
+        delegateNode.Role.Should().Be("code-reviewer");
+        delegateNode.Description.Should().Be("Workflow task 'Topic analyst' for node 'Analyze'.");
+    }
+
+    [Fact]
     public async Task ASnapshotWrittenBeforeCollaborationExistedStillResumes()
     {
         // A pre-#244 snapshot has no `collaboration` field at all. It must load unchanged — and the resumed
@@ -257,6 +342,81 @@ public class WorkflowCollaborationTests
         node!.Status.Should().Be(AgentCollaborationStatuses.Completed);
         node.IsLive.Should().BeFalse("a finished controller stays inspectable but is no longer addressable");
         caller.Directory.Capacity.InUse.Should().Be(0, "the permit is returned exactly once, at teardown");
+    }
+
+    [Fact]
+    public async Task ABlockedSnapshotFlushDoesNotHoldTheCollaborationsCapacity()
+    {
+        // Capacity is a lease on EXISTENCE, not on teardown I/O. Retention and the permit are independent:
+        // the finished node stays inspectable either way, but a store that never returns must not be able to
+        // freeze the whole hierarchy's breadth budget behind one disposing run.
+        var caller = Root();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new BlockingWorkflowStore(release.Task);
+
+        var handle = await WorkflowSession.StartAsync(
+            objective: "drive",
+            inputs: null,
+            definition: MinimalDefinition(),
+            subAgentOptions: EmptyControllerOptions(),
+            controllerAgent: ScriptedController(DriveMinimalToTerminal).Object,
+            threadId: "wf-slowflush-thread",
+            store: store,
+            instanceId: "wf-slowflush-1",
+            callerCollaboration: caller
+        );
+
+        await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+        caller.Directory.Capacity.InUse.Should().Be(1, "a live controller holds a permit");
+
+        // The save chain is genuinely stuck before teardown starts, so the drain really will block.
+        await store.FirstSaveEntered.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var disposal = handle.DisposeAsync();
+        await WaitUntil(() => caller.Directory.Capacity.InUse == 0, TimeSpan.FromSeconds(10));
+
+        caller.Directory.Capacity.InUse.Should().Be(0, "the permit must not wait on an unbounded store flush");
+        disposal.IsCompleted.Should().BeFalse("non-vacuity: teardown is still inside the blocked flush");
+
+        release.SetResult();
+        await disposal;
+    }
+
+    /// <summary>Polls <paramref name="condition"/> until it holds or <paramref name="timeout"/> elapses.</summary>
+    private static async Task WaitUntil(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline && !condition())
+        {
+            await Task.Delay(20);
+        }
+    }
+
+    /// <summary>A store whose saves park until released, standing in for a slow or wedged backend.</summary>
+    private sealed class BlockingWorkflowStore(Task release) : IWorkflowStore
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Completes once the first save has parked, so a test can wait for a stuck chain.</summary>
+        public Task FirstSaveEntered => _entered.Task;
+
+        public async Task SaveAsync(
+            string instanceId,
+            WorkflowInstanceSnapshot snapshot,
+            CancellationToken ct = default
+        )
+        {
+            _ = _entered.TrySetResult();
+            await release;
+        }
+
+        public Task<WorkflowInstanceSnapshot?> LoadAsync(string instanceId, CancellationToken ct = default) =>
+            Task.FromResult<WorkflowInstanceSnapshot?>(null);
+
+        public Task DeleteAsync(string instanceId, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<string>> ListAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
     }
 
     [Fact]
@@ -533,7 +693,11 @@ public class WorkflowCollaborationTests
     }
 
     /// <summary>Sub-agent templates whose delegate always answers with a valid <c>{summary}</c> payload.</summary>
-    private static SubAgentOptions SpawningSubAgentOptions()
+    /// <param name="fixedRole">
+    ///     When set, the template pins this role, which must outrank both the workflow's authored label and
+    ///     anything the controller supplies.
+    /// </param>
+    private static SubAgentOptions SpawningSubAgentOptions(string? fixedRole = null)
     {
         var subAgent = new Mock<IStreamingAgent>();
         _ = subAgent
@@ -567,6 +731,10 @@ public class WorkflowCollaborationTests
                     Name = "general-purpose",
                     SystemPrompt = "You are a general-purpose analysis agent.",
                     AgentFactory = () => subAgent.Object,
+                    Role = fixedRole,
+                    RoleMode = fixedRole is null
+                        ? SubAgentRoleMode.Customizable
+                        : SubAgentRoleMode.Fixed,
                 },
             },
         };
@@ -577,11 +745,23 @@ public class WorkflowCollaborationTests
     ///     The spawn carries <c>role</c>/<c>description</c> because collaboration makes both mandatory.
     /// </summary>
     private static IMessage DriveAndSpawnDelegate(int turn) =>
+        SpawnTurn(
+            turn,
+            Phase3Fixtures.LinearBlockingAgent,
+            "analyst",
+            "Analyzes the topic for the workflow's analyze node."
+        );
+
+    /// <summary>
+    ///     The same drive script over an arbitrary definition, with the <c>role</c>/<c>description</c> the
+    ///     controller puts on the Agent call left to the caller so a test can supply conflicting values.
+    /// </summary>
+    private static IMessage SpawnTurn(int turn, string definitionJson, string role, string description) =>
         turn switch
         {
             1 => ToolCall(
                 "SetWorkflow",
-                new JsonObject { ["definition"] = JsonNode.Parse(Phase3Fixtures.LinearBlockingAgent) },
+                new JsonObject { ["definition"] = JsonNode.Parse(definitionJson) },
                 "tc_setwf"
             ),
             2 => ToolCall(
@@ -596,8 +776,8 @@ public class WorkflowCollaborationTests
                     ["subagent_type"] = "general-purpose",
                     ["prompt"] = "Spawn the analysis task.",
                     ["name"] = "analyze:1:task",
-                    ["role"] = "analyst",
-                    ["description"] = "Analyzes the topic for the workflow's analyze node.",
+                    ["role"] = role,
+                    ["description"] = description,
                 },
                 "tc_agent"
             ),
@@ -613,6 +793,16 @@ public class WorkflowCollaborationTests
             ),
             _ => new TextMessage { Text = "Workflow finished.", Role = Role.Assistant },
         };
+
+    /// <summary>
+    ///     The shared linear fixture with an authored <c>label</c> on its one task, so a test can tell the
+    ///     label apart from the task id. Derived from the fixture rather than copied so the two cannot drift.
+    /// </summary>
+    private static readonly string LabelledTaskWorkflow = Phase3Fixtures.LinearBlockingAgent.Replace(
+        "\"id\": \"task\",",
+        "\"id\": \"task\",\n              \"label\": \"Topic analyst\",",
+        StringComparison.Ordinal
+    );
 
     /// <summary>A snapshot exactly as a pre-#244 build wrote it: no <c>collaboration</c> field anywhere.</summary>
     private static string LegacySnapshotJson(string instanceId) =>
