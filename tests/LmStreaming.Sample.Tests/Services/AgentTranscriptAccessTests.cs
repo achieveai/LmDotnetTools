@@ -67,6 +67,49 @@ public sealed class AgentTranscriptAccessTests
     }
 
     [Fact]
+    public async Task ToolAndRoute_ReportTheSameCode_ForAConversationWithNoHierarchy()
+    {
+        // The "there is nothing here to read" outcomes are part of the same contract as the refusals, and
+        // the two surfaces used to answer them differently (the tool said hierarchy_unavailable where the
+        // route said unknown_thread/collaboration_unavailable). One vocabulary, or neither side's answer
+        // can be documented — or trusted — as meaning anything.
+        await using var pool = CreateFakeAgentPool();
+        var registry = new WorkflowRunRegistry();
+        var store = new InMemoryConversationStore();
+
+        var routeResult = await CreateController(pool, registry, store).GetAgentTranscript(RootThread, "a-1");
+        var toolResult = await InvokeToolAsync(
+            pool, registry, store, RootThread, JsonSerializer.Serialize(new { agent_id = "a-1" }));
+
+        JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(routeResult).Value)
+            .Should().Contain(AgentTranscriptReasons.UnknownThread);
+        toolResult.Payload.IsError.Should().BeTrue();
+        toolResult.Payload.ErrorCode.Should().Be(AgentTranscriptReasons.UnknownThread);
+    }
+
+    [Fact]
+    public async Task ToolAndRoute_ReportTheSameCode_WhenTheHostNeverEnabledCollaboration()
+    {
+        await using var loop = CreateLoop(collaboration: null);
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var agentId = await SpawnAsync(loop, "alpha", collaborating: false);
+        var registry = new WorkflowRunRegistry();
+        var store = new InMemoryConversationStore();
+
+        var routeResult = await CreateController(pool, registry, store).GetAgentTranscript(RootThread, agentId);
+        var toolResult = await InvokeToolAsync(
+            pool, registry, store, RootThread, JsonSerializer.Serialize(new { agent_id = agentId }));
+
+        JsonSerializer.Serialize(Assert.IsType<NotFoundObjectResult>(routeResult).Value)
+            .Should().Contain(AgentTranscriptReasons.CollaborationUnavailable);
+        toolResult.Payload.ErrorCode.Should().Be(AgentTranscriptReasons.CollaborationUnavailable);
+        toolResult.Payload.Text.Should().NotContain(
+            agentId, "an unavailable hierarchy says nothing about who was asked for");
+    }
+
+    [Fact]
     public async Task Returns403_ForAnAgentTheHierarchyDoesNotKnow()
     {
         await using var loop = CreateLoop(CreateRootCollaboration());

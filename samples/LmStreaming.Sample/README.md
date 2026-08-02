@@ -127,6 +127,13 @@ Invoke-RestMethod http://127.0.0.1:3000/health                                  
 Workspace egress to `api.github.com` / `dev.azure.com` can be authenticated by injecting
 refreshed OAuth tokens the sandbox never sees. See **[AuthProviderGuide.md](AuthProviderGuide.md)**.
 
+## Agent collaboration (sub-agents, workflows, transcripts)
+
+Opt-in hierarchy-wide collaboration (`AgentCollaboration` section). For the identifier glossary
+(`threadId` vs `agentId` vs `agentNodeId` vs `collaborationId`…), how the sub-agent listing is
+assembled, the denial-code vocabulary, and hierarchy retention, see
+**[AgentCollaborationGuide.md](AgentCollaborationGuide.md)**.
+
 ## Session Recording
 
 In development, open the app with `?record=1` (or `?record=true`) to enable server-side recording for that WebSocket session:

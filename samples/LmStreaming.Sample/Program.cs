@@ -184,9 +184,12 @@ try
 
     // Side-table so the read-only /subagents endpoint + sub-agent WebSocket can surface a conversation's
     // StartWorkflowAgent runs (isolated controller loops, owned by a per-conversation WorkflowManager the
-    // agent loop can't reference) as center-pane tabs.
-    _ = builder.Services.AddSingleton(_ => new WorkflowRunRegistry(
-        Path.Combine(AppContext.BaseDirectory, "workflow-index")));
+    // agent loop can't reference) as center-pane tabs. Its durable index is capped by the configured
+    // retention (AgentCollaboration:MaxPersistedHierarchyEntries) — the index never deletes a row a live
+    // snapshot dropped, so the ceiling is what keeps a long-lived conversation's file from growing forever.
+    _ = builder.Services.AddSingleton(sp => new WorkflowRunRegistry(
+        Path.Combine(AppContext.BaseDirectory, "workflow-index"),
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
 
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry

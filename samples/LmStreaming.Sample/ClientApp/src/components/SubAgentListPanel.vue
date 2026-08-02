@@ -25,6 +25,35 @@ function truncate(text: string, max: number): string {
   if (!text) return '';
   return text.length <= max ? text : text.slice(0, max) + '...';
 }
+
+/**
+ * Hierarchy affordances (#244). All three fields are OPTIONAL: a server with collaboration off, or a
+ * row persisted by a pre-#244 build, omits them, and the row must then render exactly as it always
+ * did — hence `== null` checks rather than falsy ones (`structuralDepth: 0` is the root's real depth).
+ */
+
+/** Indents a row by its structural depth so the tree is visible without a second layout. */
+function indentStyle(child: SubAgentSummary): Record<string, string> {
+  const depth = child.structuralDepth;
+  return depth == null || depth <= 0 ? {} : { paddingLeft: `${14 + depth * 12}px` };
+}
+
+/** Long-form explanation of BOTH depths, shown on hover of the compact badge. */
+function depthTitle(child: SubAgentSummary): string {
+  const parts = [`Structural depth ${child.structuralDepth}`];
+  if (child.delegationDepth != null) {
+    parts.push(`delegation depth ${child.delegationDepth}`);
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * `data-*` attributes must be strings: Vue DROPS an attribute bound to `false`, which would make an
+ * unreadable row indistinguishable from a row that never said. Null/undefined stay dropped on purpose.
+ */
+function attr(value: number | boolean | null | undefined): string | undefined {
+  return value == null ? undefined : String(value);
+}
 </script>
 
 <template>
@@ -48,15 +77,39 @@ function truncate(text: string, max: number): string {
           :class="['subagent-item', { focused: child.agentId === props.activeTabId }]"
           data-testid="subagent-item"
           :data-agent-id="child.agentId"
+          :data-structural-depth="attr(child.structuralDepth)"
+          :data-delegation-depth="attr(child.delegationDepth)"
+          :data-transcript-readable="attr(child.isReadable)"
         >
           <button
             class="subagent-row"
             data-testid="subagent-focus-button"
+            :style="indentStyle(child)"
             @click="emit('select', child.agentId)"
           >
-            <div class="subagent-name">{{ child.name || child.template }}</div>
+            <div class="subagent-name">
+              {{ child.name || child.template }}
+              <span
+                v-if="child.isReadable === false"
+                class="subagent-locked"
+                data-testid="subagent-transcript-locked"
+                title="You cannot read this agent's transcript."
+                aria-label="Transcript not readable"
+                >🔒</span
+              >
+            </div>
             <div class="subagent-task">{{ truncate(child.task, 60) }}</div>
-            <div class="subagent-status">{{ child.status }}</div>
+            <div class="subagent-status">
+              {{ child.status }}
+              <span
+                v-if="child.structuralDepth != null"
+                class="subagent-depth"
+                data-testid="subagent-depth"
+                :title="depthTitle(child)"
+                >· L{{ child.structuralDepth
+                }}<template v-if="child.delegationDepth != null">/D{{ child.delegationDepth }}</template></span
+              >
+            </div>
           </button>
         </li>
       </ul>
@@ -168,5 +221,16 @@ function truncate(text: string, max: number): string {
   font-size: 11px;
   color: #adb5bd;
   text-transform: capitalize;
+}
+
+/* Compact hierarchy badge: L = structural depth, D = delegation depth (#244). */
+.subagent-depth {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+}
+
+.subagent-locked {
+  font-size: 11px;
+  margin-left: 4px;
 }
 </style>

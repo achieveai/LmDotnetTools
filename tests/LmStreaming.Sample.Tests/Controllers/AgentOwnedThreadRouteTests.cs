@@ -145,6 +145,108 @@ public sealed class AgentOwnedThreadRouteTests
         JsonSerializer.Serialize(notFound.Value).Should().Contain("unknown_thread");
     }
 
+    [Fact]
+    public async Task GetStatus_RefusesAnAgentOwnedThread_ForAServiceCaller()
+    {
+        // GET /status is the OTHER way to read an agent's words: its body carries the run's final response
+        // TEXT. A machine caller reading it would get exactly what GetAgentTranscript exists to gate,
+        // without ever being evaluated by the policy.
+        var store = new InMemoryConversationStore();
+        await SeedThreadMetadataAsync(store, SubAgentThread);
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(store, pool);
+        SetRequestHeaders(
+            controller,
+            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" });
+
+        var result = await controller.GetStatus(SubAgentThread, runId: "run-1");
+
+        AssertForbidden(result, ConversationsController.AgentOwnedThreadReadCode);
+    }
+
+    [Fact]
+    public async Task GetStatus_StillServesAnAgentOwnedThread_ToTheConversationsOwnClient()
+    {
+        // No identity presented ⇒ the browser path, unchanged: the request reaches the existing argument
+        // validation instead of being refused. (Neither id supplied is the route's own 400.)
+        var store = new InMemoryConversationStore();
+        await SeedThreadMetadataAsync(store, SubAgentThread);
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(store, pool);
+
+        var result = await controller.GetStatus(SubAgentThread);
+
+        _ = Assert.IsType<BadRequestObjectResult>(result);
+    }
+
+    /// <summary>
+    /// The mutating raw routes. None of them is reachable by id alone for a caller holding an agent or
+    /// service identity: renaming, deleting, or re-provisioning another agent's thread is not something
+    /// the collaboration policy has any way to evaluate, so the answer is simply no.
+    /// </summary>
+    [Theory]
+    [InlineData("metadata")]
+    [InlineData("delete")]
+    [InlineData("mode")]
+    [InlineData("provider")]
+    public async Task Mutation_RefusesAnAgentOwnedThread_ForAServiceCaller(string route)
+    {
+        var store = new InMemoryConversationStore();
+        await SeedThreadMetadataAsync(store, SubAgentThread);
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(store, pool);
+        SetRequestHeaders(
+            controller,
+            new Dictionary<string, string> { [SandboxCredential.AppIdHeader] = "some-caller" });
+
+        var result = route switch
+        {
+            "metadata" => await controller.UpdateMetadata(
+                SubAgentThread, new ConversationMetadataUpdate { Title = "mine now" }),
+            "delete" => await controller.Delete(SubAgentThread),
+            "mode" => await controller.SwitchMode(
+                SubAgentThread, new SwitchModeRequest { ModeId = SystemChatModes.DefaultModeId }),
+            _ => await controller.SwitchProvider(
+                SubAgentThread, new SwitchProviderRequest { ProviderId = "test" }),
+        };
+
+        AssertForbidden(result, ConversationsController.AgentOwnedThreadWriteCode);
+
+        // The refusal is a refusal, not a partial edit: the thread is exactly as it was.
+        (await store.LoadMetadataAsync(SubAgentThread)).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Delete_StillRemovesAnOrdinaryConversation_ForAServiceCaller()
+    {
+        // The guard is scoped to agent-owned threads: a headless client's housekeeping on a root
+        // conversation is untouched, which is the whole reason it keys off the thread id and not the header.
+        var store = new InMemoryConversationStore();
+        await SeedThreadMetadataAsync(store, RootThread);
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(store, pool);
+        SetRequestHeaders(
+            controller,
+            new Dictionary<string, string> { [InboundS2SAuthAttribute.HeaderName] = "secret" });
+
+        _ = Assert.IsType<NoContentResult>(await controller.Delete(RootThread));
+        (await store.LoadMetadataAsync(RootThread)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Delete_StillRemovesAnAgentOwnedThread_ForTheConversationsOwnClient()
+    {
+        // The human's client may still discard a finished sub-agent's thread; nothing about the legacy
+        // browser path is narrowed by the guard.
+        var store = new InMemoryConversationStore();
+        await SeedThreadMetadataAsync(store, SubAgentThread);
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(store, pool);
+
+        _ = Assert.IsType<NoContentResult>(await controller.Delete(SubAgentThread));
+        (await store.LoadMetadataAsync(SubAgentThread)).Should().BeNull();
+    }
+
     private static void AssertForbidden(IActionResult result, string expectedCode)
     {
         var forbidden = Assert.IsType<ObjectResult>(result);

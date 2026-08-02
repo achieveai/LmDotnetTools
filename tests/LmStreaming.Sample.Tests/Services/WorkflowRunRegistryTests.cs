@@ -29,7 +29,7 @@ public sealed class WorkflowRunRegistryTests : IDisposable
         }
     }
 
-    private static SubAgentSummary Tab(string kind, string id, string status) =>
+    private static SubAgentSummary Tab(string kind, string id, string status, int? activityMinute = null) =>
         new()
         {
             AgentId = id,
@@ -39,6 +39,9 @@ public sealed class WorkflowRunRegistryTests : IDisposable
             Task = "task",
             Status = status,
             ThreadId = $"{kind}-{id}",
+            LastActivityUtc = activityMinute is null
+                ? null
+                : new DateTimeOffset(2026, 7, 1, 0, activityMinute.Value, 0, TimeSpan.Zero),
         };
 
     [Fact]
@@ -219,5 +222,41 @@ public sealed class WorkflowRunRegistryTests : IDisposable
         restored.SchemaVersion.Should().Be(0);
         restored.CollaborationId.Should().BeNull();
         restored.IsLive.Should().BeNull("a legacy row never claimed to know, and we must not invent it");
+    }
+
+    /// <summary>
+    /// The index is merge-only, so without a bound a long-lived conversation's hierarchy would grow
+    /// forever on disk and in every listing built from it. Retention is the configured
+    /// <c>AgentCollaboration:MaxPersistedHierarchyEntries</c>, applied per conversation.
+    /// </summary>
+    [Fact]
+    public void PersistTabs_KeepsTheIndexWithinTheConfiguredRetention()
+    {
+        var registry = new WorkflowRunRegistry(_dir, maxPersistedEntriesPerConversation: 3);
+
+        registry.PersistTabs(
+            "t1",
+            [
+                Tab("subagent", "oldest", "completed", activityMinute: 1),
+                Tab("subagent", "middle", "completed", activityMinute: 2),
+                Tab("subagent", "newest", "completed", activityMinute: 3),
+            ]);
+        // A fourth run arrives on a later snapshot, taking the merged set over the cap.
+        registry.PersistTabs("t1", [Tab("subagent", "live", "running", activityMinute: 0)]);
+
+        var retained = registry.GetPersistedTabs("t1").Select(t => t.AgentId).ToList();
+
+        retained.Should().HaveCount(3, "retention is the cap, not a suggestion");
+        retained.Should().BeEquivalentTo(
+            ["live", "newest", "middle"],
+            "the live snapshot is never evicted, and the rest go by most recent activity");
+    }
+
+    [Fact]
+    public void Registry_RejectsARetentionThatCouldNotHoldAnything()
+    {
+        var act = () => new WorkflowRunRegistry(_dir, maxPersistedEntriesPerConversation: 0);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
     }
 }

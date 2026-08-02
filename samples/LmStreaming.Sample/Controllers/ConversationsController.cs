@@ -350,11 +350,9 @@ public class ConversationsController(
         string? viewer = null,
         CancellationToken ct = default)
     {
-        if (SubAgentSummary.IsAgentOwnedThreadId(threadId) && IsMachineCaller(viewer))
+        if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode, viewer) is { } refusal)
         {
-            return StatusCode(
-                StatusCodes.Status403Forbidden,
-                new { error = "forbidden", code = AgentOwnedThreadReadCode });
+            return refusal;
         }
 
         var messages = await store.LoadMessagesAsync(threadId, ct);
@@ -387,6 +385,36 @@ public class ConversationsController(
 
         return Ok(normalized);
     }
+
+    /// <summary>
+    /// Refuses a machine caller that addressed an agent-owned thread on a raw, unchecked route, or null
+    /// when the request may proceed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One rule, applied by every raw route that can read an agent's words or change an agent's thread,
+    /// so the surface cannot be widened one action at a time: a caller that names a
+    /// <paramref name="viewer"/> or presents a service/caller-credential header is not the conversation's
+    /// browser, and an agent-owned thread is some agent's — reachable only through
+    /// <see cref="GetAgentTranscript"/>, which applies the #244 policy. Ordinary root conversations are
+    /// never affected, and a caller presenting no identity keeps the exact legacy behaviour, so the
+    /// interactive client is untouched.
+    /// </para>
+    /// <para>
+    /// The body carries a content-free reason code and nothing else — a refusal must not disclose the
+    /// name, task, or existence of what it refuses.
+    /// </para>
+    /// </remarks>
+    /// <param name="threadId">The thread the request addressed.</param>
+    /// <param name="code">
+    /// <see cref="AgentOwnedThreadReadCode"/> when the route would disclose an agent's content,
+    /// <see cref="AgentOwnedThreadWriteCode"/> when it would change an agent's thread.
+    /// </param>
+    /// <param name="viewer">The agent the caller reads as, when the route accepts one.</param>
+    private ObjectResult? RefuseMachineCaller(string threadId, string code, string? viewer = null) =>
+        SubAgentSummary.IsAgentOwnedThreadId(threadId) && IsMachineCaller(viewer)
+            ? StatusCode(StatusCodes.Status403Forbidden, new { error = "forbidden", code })
+            : null;
 
     /// <summary>
     /// Whether this request identifies its caller as something other than the conversation's own
@@ -483,7 +511,9 @@ public class ConversationsController(
     /// in-agent <c>GetAgentTranscript</c> tool makes — so the HTTP surface cannot be a way around the
     /// policy the tool enforces. A denial returns the content-free
     /// <see cref="TranscriptAccessReasons"/> code and nothing else: the response must not disclose
-    /// whether the agent exists, what it is called, or what it is doing.
+    /// whether the agent exists, what it is called, or what it is doing. The "no hierarchy at all"
+    /// outcomes answer the shared <see cref="AgentTranscriptReasons"/> codes, so the route and the tool
+    /// report one vocabulary.
     /// </remarks>
     [HttpGet("{threadId}/agents/{agentId}/transcript")]
     public async Task<IActionResult> GetAgentTranscript(
@@ -496,9 +526,17 @@ public class ConversationsController(
         return result.Outcome switch
         {
             AgentTranscriptOutcome.UnknownThread =>
-                NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" }),
+                NotFound(new
+                {
+                    error = $"Conversation '{threadId}' not found.",
+                    code = AgentTranscriptReasons.UnknownThread,
+                }),
             AgentTranscriptOutcome.CollaborationUnavailable =>
-                NotFound(new { error = "Agent collaboration is not enabled.", code = "collaboration_unavailable" }),
+                NotFound(new
+                {
+                    error = "Agent collaboration is not enabled.",
+                    code = AgentTranscriptReasons.CollaborationUnavailable,
+                }),
             AgentTranscriptOutcome.Denied =>
                 StatusCode(StatusCodes.Status403Forbidden, new { error = "forbidden", code = result.DenialCode }),
             _ => Ok(result.Messages),
@@ -1145,6 +1183,11 @@ public class ConversationsController(
     /// <paramref name="inputId"/>. See <see cref="ConversationStatusResolver"/> for the 5-state
     /// resolution and the tool-only-run final-response convention.
     /// </summary>
+    /// <remarks>
+    /// The response carries the run's final answer TEXT, so on an agent-owned thread this route can
+    /// disclose exactly what <see cref="GetAgentTranscript"/> is there to gate. It is therefore closed
+    /// to machine callers on those threads (see <see cref="RefuseMachineCaller"/>).
+    /// </remarks>
     [HttpGet("{threadId}/status")]
     public async Task<IActionResult> GetStatus(
         string threadId,
@@ -1152,6 +1195,11 @@ public class ConversationsController(
         string? inputId = null,
         CancellationToken ct = default)
     {
+        if (RefuseMachineCaller(threadId, AgentOwnedThreadReadCode) is { } refusal)
+        {
+            return refusal;
+        }
+
         if (string.IsNullOrEmpty(runId) == string.IsNullOrEmpty(inputId))
         {
             return BadRequest(new { error = "Exactly one of 'runId' or 'inputId' must be provided." });
@@ -1183,6 +1231,10 @@ public class ConversationsController(
         });
     }
 
+    /// <summary>
+    /// Renames/re-previews a conversation. Closed to machine callers on an agent-owned thread: a
+    /// hierarchy row's title is the hierarchy's to state, not another agent's.
+    /// </summary>
     [HttpPut("{threadId}/metadata")]
     public async Task<IActionResult> UpdateMetadata(
         string threadId,
@@ -1190,6 +1242,11 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(update);
+
+        if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
+        {
+            return refusal;
+        }
 
         // Atomic read-modify-write: a title/preview edit races with the pool's binding persistence
         // (provider/workspace/mode written when the agent is created for the first message). Doing a
@@ -1228,11 +1285,21 @@ public class ConversationsController(
         return Ok();
     }
 
+    /// <summary>
+    /// Deletes a conversation and evicts its agent. Closed to machine callers on an agent-owned thread:
+    /// destroying a sibling's transcript — and its live agent with it — is the most damaging thing this
+    /// controller can be asked to do by id alone.
+    /// </summary>
     [HttpDelete("{threadId}")]
     public async Task<IActionResult> Delete(
         string threadId,
         CancellationToken ct = default)
     {
+        if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
+        {
+            return refusal;
+        }
+
         await agentPool.RemoveAgentAsync(threadId);
         await store.DeleteThreadAsync(threadId, ct);
         return NoContent();
@@ -1245,6 +1312,12 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
+        {
+            return refusal;
+        }
+
         var mode = await modeStore.GetModeAsync(request.ModeId, ct);
         if (mode == null)
         {
@@ -1344,6 +1417,11 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (RefuseMachineCaller(threadId, AgentOwnedThreadWriteCode) is { } refusal)
+        {
+            return refusal;
+        }
 
         var runState = agentPool.GetRunStateInfo(threadId);
         if (runState.IsInProgress)

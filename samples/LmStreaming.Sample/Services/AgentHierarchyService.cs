@@ -23,6 +23,26 @@ public enum AgentTranscriptOutcome
     Allowed,
 }
 
+/// <summary>
+///     The content-free reason codes a transcript read answers with when there is no hierarchy to read —
+///     the counterpart of <see cref="TranscriptAccessReasons"/>, which covers refusals.
+/// </summary>
+/// <remarks>
+///     Named once so the HTTP route and the in-agent <c>GetAgentTranscript</c> tool report the same
+///     vocabulary for the same outcome. They previously diverged (the tool said
+///     <c>hierarchy_unavailable</c> where the route said <c>collaboration_unavailable</c>), which makes a
+///     denial impossible to reason about from either side and impossible to document as one contract.
+///     Like every code on this path these carry no name, thread, or task.
+/// </remarks>
+public static class AgentTranscriptReasons
+{
+    /// <summary>The conversation itself is not known to this host.</summary>
+    public const string UnknownThread = "unknown_thread";
+
+    /// <summary>The host never enabled collaboration, so there is no hierarchy to read across.</summary>
+    public const string CollaborationUnavailable = "collaboration_unavailable";
+}
+
 /// <summary>The result of a transcript read, in the vocabulary both the API and the tool map from.</summary>
 public sealed record AgentTranscriptResult
 {

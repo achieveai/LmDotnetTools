@@ -165,10 +165,15 @@ public sealed class AgentTranscriptToolProvider : IFunctionProvider
                 result.DenialCode),
 
             // The hierarchy this tool reads is missing entirely (the conversation is gone, or
-            // collaboration is off), which is a host-state problem rather than a refusal.
+            // collaboration is off), which is a host-state problem rather than a refusal. Reported with
+            // the SAME codes the HTTP route uses, so one denial vocabulary covers both surfaces.
+            AgentTranscriptOutcome.UnknownThread => ToolHandlerResult.FromError(
+                "This conversation's agent hierarchy is not available.",
+                AgentTranscriptReasons.UnknownThread),
+
             _ => ToolHandlerResult.FromError(
                 "This conversation's agent hierarchy is not available.",
-                "hierarchy_unavailable"),
+                AgentTranscriptReasons.CollaborationUnavailable),
         };
     }
 

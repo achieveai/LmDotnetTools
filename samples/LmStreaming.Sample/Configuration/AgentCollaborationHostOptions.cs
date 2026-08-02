@@ -56,6 +56,19 @@ public sealed class AgentCollaborationHostOptions
     public string TranscriptVisibility { get; set; } = nameof(TranscriptVisibilityMode.Ancestors);
 
     /// <summary>
+    /// Ceiling on how many hierarchy rows one conversation's durable tab index retains.
+    /// </summary>
+    /// <remarks>
+    /// This is the SAMPLE's own retention, not the library's: the index deliberately never deletes a row
+    /// the live snapshot dropped (that is what makes a completed run survive a restart), so without a
+    /// ceiling a long-lived conversation's file — rewritten and re-read on every poll — would grow without
+    /// limit. It is bound here rather than in <see cref="AgentCollaborationOptions"/> because the index
+    /// also carries plain workflow tabs in a host that never enabled collaboration.
+    /// </remarks>
+    public int MaxPersistedHierarchyEntries { get; set; } =
+        LmStreaming.Sample.Services.WorkflowRunRegistry.DefaultMaxPersistedEntriesPerConversation;
+
+    /// <summary>
     /// Materialises the validated library options, or null when collaboration is switched off.
     /// </summary>
     /// <remarks>
