@@ -117,6 +117,26 @@ public sealed class AgentCollaborationBundle
         string? inResponseTo = null
     )
     {
+        lock (_deliveryGate)
+        {
+            return TrySendCore(fromAgentId, target, messageType, inResponseTo);
+        }
+    }
+
+    /// <summary>Performs one admission while the caller holds <see cref="_deliveryGate"/>.</summary>
+    private AgentSendResult TrySendCore(
+        string fromAgentId,
+        string target,
+        AgentMessageType messageType,
+        string? inResponseTo
+    )
+    {
+        var sender = Directory.FindById(fromAgentId);
+        if (sender is null || !sender.IsLive)
+        {
+            return new AgentSendResult(null, null, AgentMessageFailureCodes.InvalidSender);
+        }
+
         var resolution = Directory.Resolve(target);
         if (resolution.Entry is not { } entry)
         {
@@ -193,7 +213,7 @@ public sealed class AgentCollaborationBundle
 
         lock (_deliveryGate)
         {
-            var result = TrySend(fromAgentId, target, messageType, inResponseTo);
+            var result = TrySendCore(fromAgentId, target, messageType, inResponseTo);
             if (result is not { MessageId: { } messageId, Target: { } entry })
             {
                 return new AgentDispatch(result, Task.CompletedTask);
@@ -271,8 +291,8 @@ public sealed class AgentCollaborationBundle
     /// lands, then admit its message only after the sweep below has already run — a reply-expecting
     /// message accepted for an agent that has already left, which no later sweep will ever revisit.
     /// Serializing the two makes that ordering impossible: either the whole retirement completes
-    /// before the admission starts (so the sweep catches it), or the admission completes before
-    /// retirement starts (so <see cref="TrySend"/>'s own liveness check refuses it).
+    /// before admission starts (so <see cref="TrySend"/>'s liveness checks refuse it), or admission
+    /// completes before retirement starts (so the sweep catches it).
     /// </remarks>
     public IReadOnlyList<string> RetireAgent(string agentId, string status)
     {

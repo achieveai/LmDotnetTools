@@ -85,6 +85,29 @@ public class AgentCollaborationBundleConcurrencyTests
     [Fact]
     public void TrySendAndDeliver_RacingRetireAgent_NeverLeavesAQuestionOpenPastTheOneTimeSweep()
     {
+        RaceRetirement(
+            retiredAgentId: "agent-a",
+            send: bundle => SendQuestion(bundle, "agent-root", "reviewer"),
+            openMessages: bundle => bundle.Ledger.GetOpenInbound("agent-a")
+        );
+    }
+
+    [Fact]
+    public void TrySendAndDeliver_RacingSenderRetirement_NeverLeavesAQuestionOpenPastTheOneTimeSweep()
+    {
+        RaceRetirement(
+            retiredAgentId: "agent-a",
+            send: bundle => SendQuestion(bundle, "agent-a", "root"),
+            openMessages: bundle => bundle.Ledger.GetOpenOutbound("agent-a")
+        );
+    }
+
+    private static void RaceRetirement(
+        string retiredAgentId,
+        Func<AgentCollaborationBundle, AgentDispatch> send,
+        Func<AgentCollaborationBundle, IReadOnlyList<AgentMessageLedgerEntry>> openMessages
+    )
+    {
         for (var attempt = 0; attempt < Attempts; attempt++)
         {
             var bundle = CreateBundle();
@@ -93,39 +116,22 @@ public class AgentCollaborationBundleConcurrencyTests
 
             var admitted = new ConcurrentBag<string>();
 
-            // Participants 0..SenderThreads-1 hammer admissions; the last participant retires the
-            // target exactly once. Several concurrent senders (rather than just one) raise the odds
-            // that some admission's "read live, then admit" straddles the retirement's sweep.
+            // Participants 0..SenderThreads-1 hammer admissions; the last participant retires one
+            // party exactly once. Several concurrent senders raise the odds that an admission's
+            // liveness check straddles the retirement's one-time sweep in the unfixed implementation.
             Race(
                 SenderThreads + 1,
                 index =>
                 {
                     if (index == SenderThreads)
                     {
-                        _ = bundle.RetireAgent("agent-a", "stopped");
+                        _ = bundle.RetireAgent(retiredAgentId, "stopped");
                         return;
                     }
 
                     for (var i = 0; i < AdmissionAttemptsPerThread; i++)
                     {
-                        var dispatch = bundle.TrySendAndDeliver(
-                            "agent-root",
-                            "reviewer",
-                            AgentMessageType.Question,
-                            null,
-                            (deliveredMessageId, targetAgentId) =>
-                            {
-                                // Mirrors AgentCollaborationMessenger.DeliverAsync's own finally
-                                // block: free the inbox slot without touching the ledger, so the
-                                // loop is never throttled by inbox capacity and every admitted
-                                // entry is left exactly where an unswept admission would leave it
-                                // -- Accepted, nothing else.
-                                _ = deliveredMessageId;
-                                _ = bundle.Directory.GetInbox(targetAgentId)?.TryDequeue(out _);
-                                return Task.CompletedTask;
-                            }
-                        );
-
+                        var dispatch = send(bundle);
                         if (dispatch.Result.Succeeded)
                         {
                             admitted.Add(dispatch.Result.MessageId!);
@@ -134,22 +140,40 @@ public class AgentCollaborationBundleConcurrencyTests
                 }
             );
 
-            // Nothing in this test ever answers, delivers, or fails a message, so the only way any
-            // admitted entry can be closed is the retirement's own sweep. Every admission a sender
-            // saw as accepted must therefore be closed by now -- an open one proves it was admitted
-            // after the one-time sweep had already run, and so will never be closed by anything.
+            // Nothing in this test answers, delivers, or fails a message, so the only way any admitted
+            // entry can close is the retiring agent's sweep. Every accepted id must therefore be closed.
             foreach (var messageId in admitted)
             {
                 bundle
                     .Ledger.Find(messageId)!
                     .IsClosed.Should()
                     .BeTrue(
-                        $"message {messageId} was admitted for 'agent-a' and must not survive "
-                            + "its concurrent retirement unclosed"
+                        $"message {messageId} was admitted while '{retiredAgentId}' retired and must "
+                            + "not survive its one-time sweep unclosed"
                     );
             }
 
-            bundle.Ledger.GetOpenInbound("agent-a").Should().BeEmpty();
+            openMessages(bundle).Should().BeEmpty();
         }
     }
+
+    private static AgentDispatch SendQuestion(
+        AgentCollaborationBundle bundle,
+        string senderAgentId,
+        string target
+    ) =>
+        bundle.TrySendAndDeliver(
+            senderAgentId,
+            target,
+            AgentMessageType.Question,
+            null,
+            (deliveredMessageId, targetAgentId) =>
+            {
+                // Mirrors AgentCollaborationMessenger.DeliverAsync's own finally block: free the inbox
+                // slot without touching the ledger, leaving an unswept admission Accepted and observable.
+                _ = deliveredMessageId;
+                _ = bundle.Directory.GetInbox(targetAgentId)?.TryDequeue(out _);
+                return Task.CompletedTask;
+            }
+        );
 }
