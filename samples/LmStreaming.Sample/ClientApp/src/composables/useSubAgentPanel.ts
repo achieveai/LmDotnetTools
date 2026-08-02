@@ -618,13 +618,12 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
         // transcript still lives in the store. Render that persisted history read-only instead of
         // leaving the tab blank + a scary "unavailable" banner. Scoped to the terminal-error case
         // (terminalErrorSeen ⇒ no auto-resume is pending to render it later) with actual history.
-        if (terminalErrorSeen && persisted.length > 0) {
+        if ((terminalErrorSeen || autoResumeUsed) && persisted.length > 0) {
           for (const pm of persisted) {
             rehydratePersisted(pm);
           }
           attachPersistedToolResults();
           rebuildFocusedDisplayItems();
-          error.value = null;
           log.debug('focusChild: rendered completed child from persisted history (no live socket)', {
             agentId,
             count: persisted.length,
@@ -658,7 +657,15 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           return;
         }
         if (socketClosedDuringFocus || connection.socket.readyState !== WebSocket.OPEN) {
-          log.debug('focusChild: socket closed during reconcile reload; not adopting dead connection', { agentId });
+          // The reconciliation snapshot is newer than the one already rendered and can contain the
+          // terminal content that arrived before the socket died. Render it read-only even though the
+          // dead socket cannot be adopted.
+          for (const pm of reloaded) {
+            rehydratePersisted(pm);
+          }
+          attachPersistedToolResults();
+          rebuildFocusedDisplayItems();
+          log.debug('focusChild: rendered reconcile history after socket closed', { agentId });
           return;
         }
         for (const pm of reloaded) {

@@ -207,6 +207,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         var roleIsFixed = template.RoleMode == SubAgentRoleMode.Fixed;
         if (
             roleIsFixed
+            && trusted is null
             && !string.IsNullOrWhiteSpace(role)
             && !string.Equals(role, template.Role, StringComparison.Ordinal)
         )
