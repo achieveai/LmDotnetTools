@@ -58,41 +58,31 @@ public sealed class AgentCollaborationMessenger
     /// <param name="body">The message text. Never written to the ledger, the inbox, or a log.</param>
     /// <param name="messageType">What kind of message this is.</param>
     /// <param name="inResponseTo">The message being answered, when this is a reply.</param>
-    /// <param name="cancellationToken">Cancels the delivery attempt, not the admission.</param>
     /// <returns>
     /// The admission result and the background delivery. When admission fails, the delivery task is
     /// already completed and nothing was sent.
     /// </returns>
+    /// <remarks>
+    /// Takes no cancellation token by design. Once a message is admitted the collaboration has told the
+    /// sender it accepted responsibility for it, and the sender's own turn ending — which is what its
+    /// tool-call token signals — must not then silently drop a message the receiver has been promised.
+    /// The delivery therefore runs uncancelled and always settles the ledger.
+    /// </remarks>
     public AgentDispatch Send(
         string target,
         string body,
         AgentMessageType messageType,
-        string? inResponseTo = null,
-        CancellationToken cancellationToken = default
+        string? inResponseTo = null
     )
     {
-        var result = _setup.Bundle.TrySend(
+        return _setup.Bundle.TrySendAndDeliver(
             _setup.AgentId,
             target,
             messageType,
-            inResponseTo
-        );
-
-        if (!result.Succeeded || result.Target is null || result.MessageId is null)
-        {
-            return new AgentDispatch(result, Task.CompletedTask);
-        }
-
-        var delivery = DeliverAsync(
-            result.MessageId,
-            result.Target.AgentId,
-            messageType,
-            body,
             inResponseTo,
-            cancellationToken
+            (messageId, targetAgentId) =>
+                DeliverAsync(messageId, targetAgentId, messageType, body, inResponseTo)
         );
-
-        return new AgentDispatch(result, delivery);
     }
 
     private async Task DeliverAsync(
@@ -100,8 +90,7 @@ public sealed class AgentCollaborationMessenger
         string targetAgentId,
         AgentMessageType messageType,
         string body,
-        string? inResponseTo,
-        CancellationToken cancellationToken
+        string? inResponseTo
     )
     {
         // Yield first so the caller's tool result is produced from the admission alone: a delivery that
@@ -127,13 +116,10 @@ public sealed class AgentCollaborationMessenger
                 inResponseTo
             );
 
-            var outcome = await endpoint.DeliverAsync(message, cancellationToken);
+            var outcome = await endpoint.DeliverAsync(message, CancellationToken.None);
             _ = outcome.IsDelivered
                 ? ledger.MarkDelivered(messageId)
-                : ledger.MarkDeliveryFailed(
-                    messageId,
-                    outcome.ReasonCode ?? RefusedReasonCode
-                );
+                : ledger.MarkDeliveryFailed(messageId, outcome.ReasonCode ?? RefusedReasonCode);
         }
         catch (Exception)
         {

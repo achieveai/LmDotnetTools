@@ -7,7 +7,8 @@ namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 /// Delivers a collaboration message into a sub-agent through the manager that owns it.
 /// </summary>
 /// <remarks>
-/// Routed through <see cref="SubAgentManager.SendMessageAsync"/> rather than straight at the child's
+/// Routed through <see cref="SubAgentManager.SendMessageAsync(string, IMessage, bool, CancellationToken)"/>
+/// rather than straight at the child's
 /// loop so delivery obeys the lifecycle rules that already exist: a running child is injected into, a
 /// finished one is restarted, and a child that is neither refuses. Always background — the sender
 /// already returned its admission result and must not be blocked on the target's turn.
@@ -43,12 +44,13 @@ internal sealed class SubAgentWriteEndpoint : IAgentWriteEndpoint
 
         try
         {
-            // The rendered envelope, not the raw body: the child receives the same self-describing
-            // <agent-message> text every other collaboration recipient sees, including the reply
-            // instruction that tells it how to answer a Question.
+            // The typed message, not its rendered text. The child's loop still reads the same
+            // self-describing <agent-message> envelope — that is what AgentMessage projects — but the
+            // structured sender, type, and correlation survive into the child's history, the UI, and
+            // persistence, where a flattened TextMessage would have left an anonymous user turn.
             _ = await _manager.SendMessageAsync(
                 _agentId,
-                message.Text,
+                message,
                 runInBackground: true,
                 cancellationToken
             );

@@ -202,15 +202,27 @@ public sealed class SubAgentManager : IAsyncDisposable
         // agent. (2) A host that authored the delegation — a workflow controller spawning a defined task —
         // supplies trusted metadata, so the directory describes what was actually delegated rather than
         // what the tool-calling model chose to type. (3) Otherwise the caller-supplied values stand.
+        // A conflicting caller role for a fixed template is rejected instead of silently discarded.
         var trusted = _options.SpawnMetadataResolver?.Invoke(effectiveName);
-        var effectiveRole = template.RoleMode == SubAgentRoleMode.Fixed
-            ? template.Role
-            : trusted?.Role ?? role;
+        var roleIsFixed = template.RoleMode == SubAgentRoleMode.Fixed;
+        if (
+            roleIsFixed
+            && !string.IsNullOrWhiteSpace(role)
+            && !string.Equals(role, template.Role, StringComparison.Ordinal)
+        )
+        {
+            throw new SubAgentCollaborationException(
+                SubAgentCollaborationFailureCodes.InvalidRole,
+                $"Template '{templateName}' pins its own role and cannot be relabelled. "
+                    + "Omit the 'role' parameter, or spawn from a template that allows one.");
+        }
+
+        var effectiveRole = roleIsFixed ? template.Role : trusted?.Role ?? role;
         if (string.IsNullOrWhiteSpace(effectiveRole))
         {
             throw new SubAgentCollaborationException(
                 SubAgentCollaborationFailureCodes.InvalidRole,
-                template.RoleMode == SubAgentRoleMode.Fixed
+                roleIsFixed
                     ? $"Template '{templateName}' pins its own role but declares none."
                     : "The 'role' parameter is required while collaboration is enabled.");
         }
@@ -1106,6 +1118,33 @@ public sealed class SubAgentManager : IAsyncDisposable
         bool runInBackground = false,
         CancellationToken ct = default)
     {
+        return await SendMessageAsync(
+            target,
+            new TextMessage { Role = Role.User, Text = prompt },
+            runInBackground,
+            ct
+        );
+    }
+
+    /// <summary>
+    /// Continues a sub-agent with an already-formed message rather than plain text.
+    /// </summary>
+    /// <remarks>
+    /// The collaboration delivery path uses this so an <see cref="AgentMessage"/> reaches the target as
+    /// itself. Flattening it to text would strip the structured sender, type, and correlation that the
+    /// UI and the persisted history read, leaving only the rendered envelope — and a rehydrated
+    /// conversation would then have no way to tell an agent-to-agent message from anything else a user
+    /// might have typed.
+    /// </remarks>
+    internal async Task<string> SendMessageAsync(
+        string target,
+        IMessage message,
+        bool runInBackground,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        var messageLength = (message as ICanGetText)?.GetText()?.Length ?? 0;
         var agentId = ResolveAgentId(target);
         if (_queuedSpawns.TryGetValue(agentId, out _))
         {
@@ -1137,7 +1176,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                 // The caller owns BeginContinuation/EndInjectLease; the helper performs the send under
                 // that already-held lease and reports whether the run's lifecycle cancelled it.
                 bool injectCancelledByLifecycle;
-                List<IMessage> injected = [new TextMessage { Role = Role.User, Text = prompt }];
+                List<IMessage> injected = [message];
                 try
                 {
                     injectCancelledByLifecycle = await InjectIntoRunningLoopAsync(state, injected, ct);
@@ -1156,7 +1195,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
                 _logger.LogInformation(
                     "Sent message to running sub-agent {AgentId} ({MessageLength} chars)",
-                    agentId, prompt?.Length ?? 0);
+                    agentId, messageLength);
 
                 wasRunning = true;
                 break;
@@ -1168,7 +1207,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
                 try
                 {
-                    await RestartRunAsync(state, prompt, ct);
+                    await RestartRunAsync(state, message, ct);
                 }
                 finally
                 {
@@ -1335,7 +1374,7 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// </summary>
     private async Task RestartRunAsync(
         SubAgentState state,
-        string prompt,
+        IMessage message,
         CancellationToken ct)
     {
         if (!await _concurrencyGate.WaitAsync(TimeSpan.FromSeconds(5), ct))
@@ -1507,18 +1546,25 @@ public sealed class SubAgentManager : IAsyncDisposable
             // Re-subscribe BEFORE sending to avoid subscribe-after-send race
             state.MonitorTask = MonitorSubAgentAsync(state, gateGuard, runGeneration, cts.Token);
 
-            _ = await state.Agent.SendAsync(
-                [new TextMessage { Role = Role.User, Text = prompt }], ct: ct);
+            _ = await state.Agent.SendAsync([message], ct: ct);
 
             // Publish Running as the final step of the restart transition, but skip it if the restarted
             // run already completed-and-disposed (a fast run can finish before this line executes):
             // resurrecting a terminal run to Running would let the next continuation inject through a
             // provider that terminal handling has already disposed.
-            _ = state.TryArmRunning(runGeneration);
+            //
+            // The collaboration directory is synced from the same guarded result. A restart that armed
+            // Running while the directory still said "completed" would make the agent look terminal to
+            // every other agent in the hierarchy, and a steer addressed to it would be refused for as
+            // long as the restarted run lasted.
+            if (state.TryArmRunning(runGeneration))
+            {
+                SyncCollaborationStatus(state.AgentId, AgentCollaborationStatuses.Running);
+            }
 
             _logger.LogInformation(
                 "Resumed sub-agent {AgentId} ({MessageLength} chars)",
-                state.AgentId, prompt?.Length ?? 0);
+                state.AgentId, (message as ICanGetText)?.GetText()?.Length ?? 0);
         }
         catch
         {

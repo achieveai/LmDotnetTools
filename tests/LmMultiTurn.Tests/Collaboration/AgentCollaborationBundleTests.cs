@@ -137,8 +137,149 @@ public class AgentCollaborationBundleTests
         var answer = bundle.TrySend("agent-a", "root", AgentMessageType.Response, question);
 
         answer.Succeeded.Should().BeTrue();
+
+        // Admission only claims the question. Closing it here would tell the asker it had been
+        // answered before the answer had reached it, and a delivery that then failed could never be
+        // retried.
+        bundle.Ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Accepted);
+        bundle.Ledger.GetOpenOutbound("agent-root").Should().NotBeEmpty();
+
+        _ = bundle.Ledger.MarkDelivered(answer.MessageId!);
+
         bundle.Ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Answered);
         bundle.Ledger.GetOpenOutbound("agent-root").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TrySend_ToAQueuedTarget_IsRefusedAtAdmissionRatherThanAfterAcceptance()
+    {
+        var bundle = CreateBundle();
+        var root = Populate(bundle);
+        var child = root.CreateChild("agent-a", AgentKind.SubAgent, "reviewer", "reviews things");
+        _ = bundle.Directory.TryRegister(child, "reviewer", AgentCollaborationStatuses.Queued);
+
+        var result = bundle.TrySend("agent-root", "reviewer", AgentMessageType.Question);
+
+        // A queued agent is resolvable and has an inbox, but no turn to inject into. Admitting here
+        // would tell the sender "accepted" and then have the target's owner refuse the hand-off, which
+        // the sender never sees. Refusing now keeps admission and delivery agreeing, and the code is
+        // recoverable: the same message may be sent once the target reports running.
+        result.FailureCode.Should().Be(AgentMessageFailureCodes.TargetNotStarted);
+        result.Target!.AgentId.Should().Be("agent-a");
+        bundle.Ledger.Count.Should().Be(0);
+
+        _ = bundle.Directory.TryUpdateStatus("agent-a", AgentCollaborationStatuses.Running);
+        bundle.TrySend("agent-root", "reviewer", AgentMessageType.Question)
+            .Succeeded.Should()
+            .BeTrue();
+    }
+
+    [Fact]
+    public void TrySend_SteerToAnAgentThatIsNotRunning_IsRefusedWhileAnythingElseIsAdmitted()
+    {
+        var bundle = CreateBundle();
+        var root = Populate(bundle);
+        _ = AddChild(bundle, root, "agent-a", "reviewer");
+        _ = bundle.Directory.TryUpdateStatus("agent-a", AgentCollaborationStatuses.Completed);
+
+        // Only the steer is refused. The agent is still addressable — a question restarts it — so a
+        // blanket refusal would be wrong; what has no meaning is redirecting work that is not running.
+        bundle
+            .TrySend("agent-root", "reviewer", AgentMessageType.Steer)
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.TargetNotActive);
+        bundle
+            .TrySend("agent-root", "reviewer", AgentMessageType.Question)
+            .Succeeded.Should()
+            .BeTrue();
+    }
+
+    [Fact]
+    public async Task TrySendAndDeliver_HandsMessagesToOneTargetOverInAdmissionOrder()
+    {
+        var bundle = CreateBundle();
+        var root = Populate(bundle);
+        _ = AddChild(bundle, root, "agent-a", "reviewer");
+
+        var handedOver = new List<string>();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The first delivery is held open, so the second is admitted while the first is still in
+        // flight. Without a per-target chain the second would overtake it and the target would see a
+        // reply before the message it replies to.
+        var first = bundle.TrySendAndDeliver(
+            "agent-root",
+            "reviewer",
+            AgentMessageType.Question,
+            null,
+            async (messageId, _) =>
+            {
+                await gate.Task;
+                lock (handedOver)
+                {
+                    handedOver.Add(messageId);
+                }
+            }
+        );
+
+        var second = bundle.TrySendAndDeliver(
+            "agent-root",
+            "reviewer",
+            AgentMessageType.Question,
+            null,
+            (messageId, _) =>
+            {
+                lock (handedOver)
+                {
+                    handedOver.Add(messageId);
+                }
+
+                return Task.CompletedTask;
+            }
+        );
+
+        second.Result.Succeeded.Should().BeTrue();
+        handedOver.Should().BeEmpty(because: "the second must not overtake the first");
+
+        gate.SetResult();
+        await second.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+
+        handedOver.Should().Equal(first.Result.MessageId!, second.Result.MessageId!);
+    }
+
+    [Fact]
+    public async Task TrySendAndDeliver_KeepsTheChainRunning_WhenOneDeliveryThrows()
+    {
+        var bundle = CreateBundle();
+        var root = Populate(bundle);
+        _ = AddChild(bundle, root, "agent-a", "reviewer");
+
+        var faulted = bundle.TrySendAndDeliver(
+            "agent-root",
+            "reviewer",
+            AgentMessageType.Question,
+            null,
+            (_, _) => Task.FromException(new InvalidOperationException("boom"))
+        );
+
+        var reached = false;
+        var next = bundle.TrySendAndDeliver(
+            "agent-root",
+            "reviewer",
+            AgentMessageType.Question,
+            null,
+            (_, _) =>
+            {
+                reached = true;
+                return Task.CompletedTask;
+            }
+        );
+
+        // A delivery records its own outcome in the ledger, so letting its fault travel down the chain
+        // would cancel deliveries that have nothing to do with it.
+        await next.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+        reached.Should().BeTrue();
+        faulted.Result.Succeeded.Should().BeTrue();
     }
 
     [Fact]

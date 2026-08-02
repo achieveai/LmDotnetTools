@@ -46,6 +46,15 @@ public sealed class AgentCollaborationBundle
     /// <summary>Reason recorded against messages abandoned because their target left.</summary>
     public const string TargetLeftReasonCode = "target_left";
 
+    // One tail per target, so admissions for the same target hand over in the order they were admitted.
+    // Keyed by canonical agent id, and therefore no larger than the directory itself.
+    private readonly Dictionary<string, Task> _deliveryTails = new(StringComparer.Ordinal);
+
+    // Guards the admission-plus-hand-off pair. Separate from the ledger's own lock because it covers a
+    // strictly wider critical section: the ledger only has to make admission atomic, while ordering also
+    // needs the chain link taken before the next admission can observe it.
+    private readonly object _deliveryGate = new();
+
     /// <summary>Creates a collaboration and validates the settings it will enforce.</summary>
     /// <param name="collaborationId">Identifier of the root thread this collaboration belongs to.</param>
     /// <param name="options">Settings the directory and ledger enforce.</param>
@@ -116,12 +125,106 @@ public sealed class AgentCollaborationBundle
             return new AgentSendResult(null, entry, AgentMessageFailureCodes.UnknownTarget);
         }
 
+        // A queued agent has a directory entry and an inbox but no turn to inject into yet, so its
+        // owner would refuse the hand-off after the sender had already been told "accepted". Refusing
+        // here instead keeps admission and delivery agreeing about what is deliverable, and gives the
+        // sender a recoverable answer it can act on rather than a silent drop it cannot see.
+        if (
+            string.Equals(entry.Status, AgentCollaborationStatuses.Queued, StringComparison.Ordinal)
+        )
+        {
+            return new AgentSendResult(null, entry, AgentMessageFailureCodes.TargetNotStarted);
+        }
+
+        // A steer redirects work that is under way. Sent to an agent that is not running it would
+        // either restart it — the opposite of redirecting — or land with nothing to redirect, so it is
+        // refused synchronously while the sender can still choose a message type that does apply.
+        if (
+            messageType == AgentMessageType.Steer
+            && !string.Equals(
+                entry.Status,
+                AgentCollaborationStatuses.Running,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            return new AgentSendResult(null, entry, AgentMessageFailureCodes.TargetNotActive);
+        }
+
         var admission = Ledger.TryAdmit(
             new AgentMessageAdmissionRequest(fromAgentId, entry.AgentId, messageType, inResponseTo),
             Directory.GetInbox(entry.AgentId)
         );
 
         return new AgentSendResult(admission.MessageId, entry, admission.FailureCode);
+    }
+
+    /// <summary>
+    /// Admits a message and links its delivery onto the target's delivery chain, so deliveries to one
+    /// target run in admission order.
+    /// </summary>
+    /// <param name="fromAgentId">Canonical identifier of the sender.</param>
+    /// <param name="target">Canonical identifier or name of the target.</param>
+    /// <param name="messageType">What kind of message this is.</param>
+    /// <param name="inResponseTo">Identifier of the message this replies to, when it is a reply.</param>
+    /// <param name="deliver">
+    /// Hands the admitted message over. Called with the minted message identifier and the resolved
+    /// target identifier, never under any lock, and expected to report its own outcome to the ledger
+    /// rather than throw.
+    /// </param>
+    /// <remarks>
+    /// Admission and the chain link are taken together under one lock, which is what makes the order
+    /// real: admitting first and linking afterwards would let two senders admit in one order and link in
+    /// the other, and the receiving agent would see a reply before the message it replies to.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="deliver"/> is null.</exception>
+    internal AgentDispatch TrySendAndDeliver(
+        string fromAgentId,
+        string target,
+        AgentMessageType messageType,
+        string? inResponseTo,
+        Func<string, string, Task> deliver
+    )
+    {
+        ArgumentNullException.ThrowIfNull(deliver);
+
+        lock (_deliveryGate)
+        {
+            var result = TrySend(fromAgentId, target, messageType, inResponseTo);
+            if (result is not { MessageId: { } messageId, Target: { } entry })
+            {
+                return new AgentDispatch(result, Task.CompletedTask);
+            }
+
+            var targetAgentId = entry.AgentId;
+
+            // A completed tail is dropped rather than chained, so an idle target starts a fresh chain
+            // instead of accumulating a longer and longer completed prefix to await.
+            var previous =
+                _deliveryTails.TryGetValue(targetAgentId, out var tail) && !tail.IsCompleted
+                    ? tail
+                    : Task.CompletedTask;
+
+            var chained = ChainAsync(previous, () => deliver(messageId, targetAgentId));
+            _deliveryTails[targetAgentId] = chained;
+            return new AgentDispatch(result, chained);
+        }
+    }
+
+    /// <summary>Runs one delivery after the target's previous one, whatever became of that one.</summary>
+    private static async Task ChainAsync(Task previous, Func<Task> deliver)
+    {
+        try
+        {
+            await previous;
+        }
+        catch (Exception)
+        {
+            // The previous delivery already recorded its own outcome in the ledger. Letting its fault
+            // travel down the chain would cancel deliveries that have nothing to do with it.
+        }
+
+        await deliver();
     }
 
     /// <summary>Decides whether one agent may read another agent's transcript.</summary>

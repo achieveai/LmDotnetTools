@@ -14,7 +14,8 @@ namespace LmMultiTurn.Tests.SubAgents;
 
 /// <summary>
 /// EUII / privacy guard for WI #194 (PR #209 review). The interactive focus feature relays a user's
-/// typed prompt through <see cref="SubAgentManager.SendMessageAsync"/>, and a background spawn carries
+/// typed prompt through <see cref="SubAgentManager.SendMessageAsync(string, string, bool, CancellationToken)"/>,
+/// and a background spawn carries
 /// the task text. Neither the spawn task nor the relayed prompt may appear in <b>any</b> log the
 /// manager emits — only content-free metadata (ids, lengths, categories). This captures every log
 /// level (not just the WebSocket-manager logger the transport-level test observes) so a downstream

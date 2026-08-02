@@ -86,15 +86,18 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public void GetFunctions_AtDelegationLimit_HidesDelegationToolsButKeepsMessaging()
+    public void GetFunctions_AtDelegationLimit_HidesOnlySpawningAndKeepsCollaboration()
     {
-        // Depth 0 means "this collaboration exists, but nobody may spawn". An agent that cannot
-        // delegate must still be able to find and message the agents that already exist.
+        // Depth 0 means "this collaboration exists, but nobody may spawn". Only Agent goes: an agent
+        // that cannot delegate must still find, message, observe, and wait on the agents that already
+        // exist, and hiding CheckAgents or WaitForAgents would leave it able to ask a question it
+        // could never notice the answer to.
         var (_, provider) = CreateManager(
             CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 0 }));
 
         provider.GetFunctions().Select(f => f.Contract.Name)
-            .Should().BeEquivalentTo(["GetAgents", "SendMessage"]);
+            .Should().BeEquivalentTo(
+                ["CheckAgents", "WaitForAgents", "GetAgents", "SendMessage"]);
     }
 
     [Fact]
@@ -109,9 +112,82 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         parameters.First(p => p.Name == "description").IsRequired.Should().BeTrue();
     }
 
+    [Fact]
+    public void AgentDescriptor_WarnsThatRoleAndDescriptionAreVisibleToEveryone()
+    {
+        // Both fields are published into a directory every agent can read, so the model has to be told
+        // before it writes them — a warning added afterwards cannot un-share what was already put there.
+        var (_, provider) = CreateManager(CreateRegisteredRoot());
+
+        var parameters = provider.GetFunctions()
+            .First(f => f.Contract.Name == "Agent").Contract.Parameters!;
+
+        foreach (var name in new[] { "role", "description" })
+        {
+            parameters.First(p => p.Name == name).Description
+                .Should().Contain("secrets").And.Contain("customer data");
+        }
+    }
+
+    [Fact]
+    public void SendMessageDescriptor_ConstrainsMsgTypeToTheKindsThatExist()
+    {
+        // An open string invites a kind the handler will only reject after the fact. The enum spends
+        // the model's mistake at schema time, where it costs nothing.
+        var (_, provider) = CreateManager(CreateRegisteredRoot());
+
+        var msgType = provider.GetFunctions()
+            .First(f => f.Contract.Name == "SendMessage").Contract.Parameters!
+            .First(p => p.Name == "msg_type");
+
+        msgType.ParameterType!.Enum.Should().BeEquivalentTo(
+            ["question", "delegate_task", "task_update", "steer", "response"]);
+    }
+
+    [Fact]
+    public void WaitForAgentsDescriptor_SaysBothWhenToWaitAndWhenNotTo()
+    {
+        // Waiting is the one collaboration tool that costs the caller its turn, so the description has
+        // to rule cases out as explicitly as it rules them in.
+        var (_, provider) = CreateManager(CreateRegisteredRoot());
+
+        var description = provider.GetFunctions()
+            .First(f => f.Contract.Name == "WaitForAgents").Contract.Description!;
+
+        description.Should().Contain("WHEN TO USE IT").And.Contain("WHEN NOT TO USE IT");
+    }
+
     #endregion
 
     #region Admission
+
+    [Fact]
+    public async Task Spawn_WithARoleThatContradictsAPinnedTemplate_IsRefused()
+    {
+        // Silently overriding the caller's role would leave the model believing it had labelled the
+        // child one thing while every other agent saw another.
+        var (_, provider) = CreateManager(
+            CreateRegisteredRoot(),
+            template: new SubAgentTemplate
+            {
+                SystemPrompt = "You are a reviewer.",
+                Role = "code reviewer",
+                RoleMode = SubAgentRoleMode.Fixed,
+                AgentFactory = () => _subAgentMock.Object,
+            });
+
+        var payload = await InvokeAsync(provider, "Agent", new
+        {
+            subagent_type = "worker",
+            prompt = "review",
+            role = "release manager",
+            description = "Reviews the auth change.",
+            run_in_background = true,
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(SubAgentCollaborationFailureCodes.InvalidRole);
+    }
 
     [Fact]
     public async Task Spawn_WithoutRole_IsRefusedWithAnActionableCode()
@@ -313,6 +389,29 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         agents.Should().Contain(a => a.GetProperty("name").GetString() == "peer");
     }
 
+    [Fact]
+    public async Task GetAgents_ReportsBothDepthsAndWhetherATranscriptCanBeRead()
+    {
+        // One "depth" cannot mean two things. Structural depth is how deeply nested an agent is;
+        // delegation depth is how much of its spawn budget is spent — and only the second says whether
+        // it may spawn. Transcript readability is published for the same reason: a caller that has to
+        // attempt a read to discover it may not read burns a turn on a refusal it could have foreseen.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root);
+        _ = await SpawnAndResolveIdAsync(provider, "peer");
+
+        var payload = await InvokeAsync(provider, "GetAgents", new { });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        var child = doc.RootElement.GetProperty("agents").EnumerateArray()
+            .Single(a => a.GetProperty("name").GetString() == "peer");
+
+        child.GetProperty("structural_depth").GetInt32().Should().Be(1);
+        child.GetProperty("delegation_depth").GetInt32().Should().Be(1);
+        child.GetProperty("transcript_readable").GetBoolean().Should().BeTrue(
+            because: "a parent may always read a child it spawned");
+    }
+
     #endregion
 
     #region SendMessage
@@ -351,7 +450,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         {
             target = "nobody",
             content = "hello",
-            msg_type = "task_update",
+            msg_type = "question",
         });
 
         payload.IsError.Should().BeTrue();
@@ -373,7 +472,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         {
             target = "helper",
             content = "hello",
-            msg_type = "task_update",
+            msg_type = "question",
         });
 
         payload.IsError.Should().BeTrue();
@@ -391,7 +490,7 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         {
             target = root.AgentId,
             content = "hello",
-            msg_type = "task_update",
+            msg_type = "question",
         });
 
         payload.IsError.Should().BeTrue();
@@ -414,6 +513,118 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be("missing_correlation");
+    }
+
+    [Fact]
+    public async Task SendMessage_TaskUpdateWithoutCorrelation_IsRefusedBeforeAdmission()
+    {
+        // Progress on nothing is not progress. Admitted bare, it would reach the receiver with no way
+        // to tell which delegation it was about.
+        var root = CreateRegisteredRoot();
+        _ = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new
+        {
+            target = "helper",
+            content = "half done",
+            msg_type = "task_update",
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be("missing_correlation");
+    }
+
+    [Fact]
+    public async Task SendMessage_SteerToAnAgentThatIsNotRunning_IsRefusedAtAdmission()
+    {
+        // A steer redirects work in flight. Accepting one for an idle agent would either restart it —
+        // the opposite of redirecting — or be dropped later, after the sender had been told "accepted".
+        var root = CreateRegisteredRoot();
+        var (_, peerSetup) = RegisterPeer(root, "helper");
+        _ = root.Directory.TryUpdateStatus(
+            peerSetup.AgentId, AgentCollaborationStatuses.Completed);
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new
+        {
+            target = "helper",
+            content = "focus on the parser instead",
+            msg_type = "steer",
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.TargetNotActive);
+    }
+
+    [Fact]
+    public async Task SendMessage_WhenTheSendersOwnTurnIsAlreadyCancelled_StillDelivers()
+    {
+        // Once admission returns "accepted" the collaboration has taken responsibility for the message.
+        // The sender's tool-call token signals the end of the sender's turn, and letting that drop an
+        // accepted message would leave the receiver waiting for something nobody is still carrying.
+        var root = CreateRegisteredRoot();
+        var (peerEndpoint, _) = RegisterPeer(root, "helper");
+        var (_, provider) = CreateManager(root);
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var payload = await InvokeAsync(provider, "SendMessage", new
+        {
+            target = "helper",
+            content = "still needs to arrive",
+            msg_type = "question",
+        }, cts.Token);
+
+        payload.IsError.Should().BeFalse(payload.Text);
+        _ = await peerEndpoint.Received.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task SendMessage_ToAFinishedChild_RestartsItAndSaysSoInTheDirectory()
+    {
+        // The directory is what every other agent reads. A child that has been woken but still reports
+        // "completed" is unaddressable to a steer and invisible to anyone deciding whether to wait.
+        var restart = new RestartCapturingTemplate();
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root, template: restart.Template);
+        var childId = await SpawnAndResolveIdAsync(provider);
+        _ = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId });
+
+        root.Directory.FindById(childId)!.Status
+            .Should().Be(AgentCollaborationStatuses.Completed);
+
+        var dispatch = new AgentCollaborationMessenger(root).Send(
+            childId, "One more thing", AgentMessageType.Question);
+        await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+
+        root.Directory.FindById(childId)!.Status.Should().Be(AgentCollaborationStatuses.Running);
+    }
+
+    [Fact]
+    public async Task SendMessage_ToARealSubAgent_ArrivesAsTheTypedAgentMessage()
+    {
+        // Flattening to text would strip the sender, the kind, and the correlation the UI and the
+        // persisted history read back, leaving a rehydrated conversation unable to tell an
+        // agent-to-agent message from anything a user might have typed.
+        var restart = new RestartCapturingTemplate();
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root, template: restart.Template);
+        var childId = await SpawnAndResolveIdAsync(provider);
+        _ = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = childId });
+
+        var dispatch = new AgentCollaborationMessenger(root).Send(
+            childId, "Which branch did you use?", AgentMessageType.Question);
+        dispatch.Result.Succeeded.Should().BeTrue();
+
+        var seen = await restart.Restarted.WaitAsync(TimeSpan.FromSeconds(10));
+        var relayed = seen.OfType<AgentMessage>().Should().ContainSingle().Subject;
+
+        relayed.MessageId.Should().Be(dispatch.Result.MessageId);
+        relayed.AgentMessageType.Should().Be(AgentMessageType.Question);
+        relayed.FromAgentId.Should().Be(root.AgentId);
+        relayed.Role.Should().Be(Role.User);
     }
 
     [Fact]
@@ -455,6 +666,27 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         doc.RootElement.GetProperty("requested").GetInt32().Should().Be(2);
         doc.RootElement.GetProperty("not_found").GetInt32().Should().Be(0);
         doc.RootElement.GetProperty("agents").GetArrayLength().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task CheckAgents_ObservesAnAgentThatIsNotOneOfMyChildren()
+    {
+        // Collaboration made every agent addressable, so observation has to reach as far as addressing
+        // does: being told "not found" about an agent you can message and are waiting on is a dead end.
+        var root = CreateRegisteredRoot();
+        var (_, peerSetup) = RegisterPeer(root, "cousin");
+        var (_, provider) = CreateManager(root);
+
+        var payload = await InvokeAsync(provider, "CheckAgents", new
+        {
+            agent_ids = peerSetup.AgentId,
+        });
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        doc.RootElement.GetProperty("not_found").GetInt32().Should().Be(0);
+        var observed = doc.RootElement.GetProperty("agents").EnumerateArray().Single();
+        observed.GetProperty("name").GetString().Should().Be("cousin");
+        observed.GetProperty("status").GetString().Should().Be(AgentCollaborationStatuses.Running);
     }
 
     [Fact]
@@ -510,6 +742,38 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         doc.RootElement.GetProperty("status").GetString().Should().Be("question_received");
         doc.RootElement.GetProperty("question").GetProperty("from_name").GetString()
             .Should().Be("asker");
+    }
+
+    [Fact]
+    public async Task WaitForAgents_IsNotInterruptedTwiceByTheSameUnansweredQuestion()
+    {
+        // A question stays open until it is answered, so without a one-shot claim every later wait
+        // would rediscover it in the sweep and return at once — an agent that chose not to answer would
+        // spin instead of waiting, and could never wait for its children again.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(root, template: BlockingTemplate());
+        var agentId = await SpawnAndResolveIdAsync(provider);
+        var (_, peerSetup) = RegisterPeer(root, "asker");
+
+        var dispatch = new AgentCollaborationMessenger(peerSetup).Send(
+            root.AgentId, "Which branch?", AgentMessageType.Question);
+        await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var first = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = agentId });
+        using var firstDoc = JsonDocument.Parse(first.Text);
+        firstDoc.RootElement.GetProperty("status").GetString().Should().Be("question_received");
+
+        var second = await InvokeAsync(provider, "WaitForAgents", new
+        {
+            agent_ids = agentId,
+            timeout_seconds = 1,
+        });
+
+        using var secondDoc = JsonDocument.Parse(second.Text);
+        secondDoc.RootElement.GetProperty("status").GetString().Should().Be("timeout");
+
+        // Interrupting is not answering: the question is still owed a reply.
+        root.Bundle.Ledger.GetOpenInbound(root.AgentId).Should().ContainSingle();
     }
 
     [Fact]
@@ -667,11 +931,12 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     private static async Task<ToolHandlerResultPayload> InvokeAsync(
         SubAgentToolProvider provider,
         string toolName,
-        object args)
+        object args,
+        CancellationToken ct = default)
     {
         var handler = provider.GetFunctions().First(f => f.Contract.Name == toolName).Handler;
         var result = await handler(
-            JsonSerializer.Serialize(args), new ToolCallContext(), CancellationToken.None);
+            JsonSerializer.Serialize(args), new ToolCallContext(), ct);
 
         return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
     }
@@ -704,6 +969,62 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     {
         await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         yield break;
+    }
+
+    /// <summary>
+    /// A sub-agent whose first run finishes immediately and whose second run captures what it was
+    /// handed and then blocks.
+    /// </summary>
+    /// <remarks>
+    /// The second run is the restart a collaboration message triggers, and it is the only point at
+    /// which the delivered message can be seen as the child itself sees it. Blocking there keeps the
+    /// child in <c>running</c> for the assertions rather than racing them to completion.
+    /// </remarks>
+    private sealed class RestartCapturingTemplate
+    {
+        private readonly TaskCompletionSource<IReadOnlyList<IMessage>> _restarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _runs;
+
+        public RestartCapturingTemplate()
+        {
+            Template = new SubAgentTemplate
+            {
+                SystemPrompt = "You are a worker.",
+                AgentFactory = () =>
+                {
+                    var mock = new Mock<IStreamingAgent>();
+                    _ = mock
+                        .Setup(a => a.GenerateReplyStreamingAsync(
+                            It.IsAny<IEnumerable<IMessage>>(),
+                            It.IsAny<GenerateReplyOptions>(),
+                            It.IsAny<CancellationToken>()))
+                        .Returns<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
+                            (messages, _, ct) => Task.FromResult(Run(messages, ct)));
+                    return mock.Object;
+                },
+            };
+        }
+
+        /// <summary>What the restarted run was given, once it has begun.</summary>
+        public Task<IReadOnlyList<IMessage>> Restarted => _restarted.Task;
+
+        public SubAgentTemplate Template { get; }
+
+        private IAsyncEnumerable<IMessage> Run(
+            IEnumerable<IMessage> messages,
+            CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _runs) == 1)
+            {
+                return ToAsyncEnumerable(
+                    [new TextMessage { Text = "done", Role = Role.Assistant }]);
+            }
+
+            _ = _restarted.TrySetResult([.. messages]);
+            return BlockingStream(ct);
+        }
     }
 
     /// <summary>A stand-in for another agent's owner, so a delivery can be observed without a loop.</summary>

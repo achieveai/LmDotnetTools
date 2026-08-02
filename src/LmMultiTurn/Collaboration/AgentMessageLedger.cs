@@ -39,6 +39,12 @@ public static class AgentMessageFailureCodes
     /// <summary>The message this one replies to is not in the ledger.</summary>
     public const string UnknownCorrelation = "unknown_correlation";
 
+    /// <summary>
+    /// A message type that only exists as a reply carried no correlation. Recoverable: the sender may
+    /// resend it naming the message it answers, or progresses.
+    /// </summary>
+    public const string MissingCorrelation = "missing_correlation";
+
     /// <summary>The message this one replies to has already been answered, failed, or abandoned.</summary>
     public const string CorrelationClosed = "correlation_closed";
 
@@ -59,6 +65,18 @@ public static class AgentMessageFailureCodes
 
     /// <summary>The sender identity is blank.</summary>
     public const string InvalidSender = "invalid_sender";
+
+    /// <summary>
+    /// The target has been admitted but has not started running yet, so nothing can be handed to it.
+    /// Recoverable: the sender may retry once the target reports <c>running</c>.
+    /// </summary>
+    public const string TargetNotStarted = "target_not_started";
+
+    /// <summary>
+    /// A steer was addressed to an agent that is not currently running, so there is no work in flight
+    /// to redirect. Recoverable only in the sense that a different message type may apply.
+    /// </summary>
+    public const string TargetNotActive = "target_not_active";
 }
 
 /// <summary>One agent's request to send a message to another.</summary>
@@ -143,6 +161,30 @@ public sealed record AgentMessageLedgerEntry
 
     /// <summary>Identifier of the reply that closed this message, when one did.</summary>
     public string? ResponseMessageId { get; init; }
+
+    /// <summary>
+    /// Identifier of an admitted-but-not-yet-delivered reply that has claimed the right to close this
+    /// message. Null when nothing is answering it.
+    /// </summary>
+    /// <remarks>
+    /// A claim, not a closure. Admission proves only that the collaboration took responsibility for the
+    /// reply, and a reply that then fails to be delivered never reaches the asker — closing on admission
+    /// would leave the asker holding an answer that does not exist and no way to admit a second attempt.
+    /// The claim gives idempotency (a concurrent second reply is refused while one is in flight) without
+    /// giving up recoverability (a failed delivery releases it).
+    /// </remarks>
+    public string? PendingResponseMessageId { get; init; }
+
+    /// <summary>
+    /// Whether an agent's wait has already been interrupted by this message.
+    /// </summary>
+    /// <remarks>
+    /// A delivered question stays open until it is answered, so without this flag every subsequent wait
+    /// would rediscover it in the sweep and return immediately — the waiting agent would spin instead of
+    /// waiting. The flag bounds a message to interrupting at most one wait while leaving it open, and so
+    /// still independently answerable.
+    /// </remarks>
+    public bool WaitInterruptClaimed { get; init; }
 
     /// <summary>When the message was admitted.</summary>
     public required DateTimeOffset AdmittedAt { get; init; }
@@ -294,21 +336,16 @@ public sealed class AgentMessageLedger
                 AdmittedAt = now,
             };
 
-            // Only a Response closes what it answers. A TaskUpdate is progress on a delegation that is
-            // still running, so closing on it would strand the delegator waiting for a result it had
-            // already been told would come.
+            // Only a Response settles what it answers, and only once it has actually been delivered. A
+            // TaskUpdate is progress on a delegation that is still running, so settling on it would
+            // strand the delegator waiting for a result it had already been told would come.
             if (
                 request.InResponseTo is { } original
                 && request.MessageType == AgentMessageType.Response
+                && TryGetOpen(original, out var originalEntry)
             )
             {
-                _ = Close(
-                    original,
-                    AgentMessageDeliveryState.Answered,
-                    reasonCode: null,
-                    messageId,
-                    now
-                );
+                _entries[original] = originalEntry with { PendingResponseMessageId = messageId };
             }
 
             notice = new AgentMessageAdmittedNotice(
@@ -328,7 +365,9 @@ public sealed class AgentMessageLedger
     /// </summary>
     /// <remarks>
     /// A message that expected no reply is finished at this point, so it closes here. One that did stays
-    /// open until it is answered or its target leaves.
+    /// open until it is answered or its target leaves. A delivered <see cref="AgentMessageType.Response"/>
+    /// is also the moment the message it answers is finally closed: only now has the answer reached the
+    /// asker.
     /// </remarks>
     /// <returns>False when there is no open entry with that identifier.</returns>
     public bool MarkDelivered(string messageId)
@@ -341,6 +380,8 @@ public sealed class AgentMessageLedger
             }
 
             var now = _timeProvider.GetUtcNow();
+            SettleCorrelation(entry, delivered: true, now);
+
             if (!entry.ExpectsReply)
             {
                 _entries[messageId] = entry with
@@ -365,14 +406,104 @@ public sealed class AgentMessageLedger
     {
         lock (_gate)
         {
+            if (!TryGetOpen(messageId, out var entry))
+            {
+                return false;
+            }
+
+            var now = _timeProvider.GetUtcNow();
+
+            // Release before closing: an answer that never arrived must leave the question it claimed
+            // open, or the responder could never try again and the asker would wait forever.
+            SettleCorrelation(entry, delivered: false, now);
             return Close(
                 messageId,
                 AgentMessageDeliveryState.DeliveryFailed,
                 reasonCode,
                 responseMessageId: null,
-                _timeProvider.GetUtcNow()
+                now
             );
         }
+    }
+
+    /// <summary>
+    /// Claims the right for one waiter to be interrupted by this message, at most once.
+    /// </summary>
+    /// <returns>
+    /// True when this caller took the claim. False when the message is unknown, already closed, or a
+    /// previous waiter took it.
+    /// </returns>
+    public bool TryClaimWaitInterrupt(string messageId)
+    {
+        lock (_gate)
+        {
+            if (!TryGetOpen(messageId, out var entry) || entry.WaitInterruptClaimed)
+            {
+                return false;
+            }
+
+            _entries[messageId] = entry with { WaitInterruptClaimed = true };
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Gives a claim back when the waiter that took it did not end up reporting the message.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a wait that lost its race to a timeout would silently consume the one interrupt a
+    /// message gets, and no later wait would ever be woken by it.
+    /// </remarks>
+    public void ReleaseWaitInterrupt(string messageId)
+    {
+        lock (_gate)
+        {
+            if (TryGetOpen(messageId, out var entry) && entry.WaitInterruptClaimed)
+            {
+                _entries[messageId] = entry with { WaitInterruptClaimed = false };
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolves the claim a reply took on the message it answers: closes that message as answered when
+    /// the reply landed, or releases the claim when it did not. A no-op for anything that claimed
+    /// nothing.
+    /// </summary>
+    /// <remarks>Callers already hold <see cref="_gate"/>.</remarks>
+    private void SettleCorrelation(
+        AgentMessageLedgerEntry reply,
+        bool delivered,
+        DateTimeOffset now
+    )
+    {
+        if (
+            reply.InResponseTo is not { } original
+            || reply.MessageType != AgentMessageType.Response
+            || !TryGetOpen(original, out var originalEntry)
+            || !string.Equals(
+                originalEntry.PendingResponseMessageId,
+                reply.MessageId,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            return;
+        }
+
+        if (delivered)
+        {
+            _ = Close(
+                original,
+                AgentMessageDeliveryState.Answered,
+                reasonCode: null,
+                reply.MessageId,
+                now
+            );
+            return;
+        }
+
+        _entries[original] = originalEntry with { PendingResponseMessageId = null };
     }
 
     /// <summary>
@@ -474,7 +605,14 @@ public sealed class AgentMessageLedger
     {
         if (request.InResponseTo is not { } original)
         {
-            return null;
+            // A Response and a TaskUpdate only exist relative to something. Admitting one with no
+            // correlation would produce a message the receiver cannot place and the ledger cannot
+            // settle, so it is refused here rather than delivered as an orphan.
+            return request.MessageType
+                is AgentMessageType.Response
+                    or AgentMessageType.TaskUpdate
+                ? AgentMessageFailureCodes.MissingCorrelation
+                : null;
         }
 
         if (!_entries.TryGetValue(original, out var entry))
@@ -483,8 +621,10 @@ public sealed class AgentMessageLedger
         }
 
         // Idempotency lives here: a second reply to an already-answered message is refused rather than
-        // silently accepted, so a retry can never produce two answers to one question.
-        if (entry.IsClosed)
+        // silently accepted, so a retry can never produce two answers to one question. A reply that is
+        // admitted but still in flight holds the same ground via its claim, and gives it back if it
+        // fails to be delivered.
+        if (entry.IsClosed || entry.PendingResponseMessageId is not null)
         {
             return AgentMessageFailureCodes.CorrelationClosed;
         }

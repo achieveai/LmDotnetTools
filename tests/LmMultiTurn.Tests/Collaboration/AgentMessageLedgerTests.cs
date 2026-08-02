@@ -79,7 +79,23 @@ public class AgentMessageLedgerTests
     {
         var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
 
-        var result = ledger.TryAdmit(Request(messageType), new AgentInbox(8));
+        // A reply-only kind has nothing to be admitted against on its own. Give each the message it
+        // is actually a reply to, so this stays a test about the kind rather than about correlation.
+        var inResponseTo = messageType switch
+        {
+            AgentMessageType.Response => ledger
+                .TryAdmit(Request(AgentMessageType.Question, Target, Sender), new AgentInbox(8))
+                .MessageId,
+            AgentMessageType.TaskUpdate => ledger
+                .TryAdmit(Request(AgentMessageType.DelegateTask, Target, Sender), new AgentInbox(8))
+                .MessageId,
+            _ => null,
+        };
+
+        var result = ledger.TryAdmit(
+            Request(messageType, inResponseTo: inResponseTo),
+            new AgentInbox(8)
+        );
 
         // Whether a sender is blocked is a property of the kind of message it sent, not something a
         // caller may assert about itself.
@@ -143,7 +159,7 @@ public class AgentMessageLedgerTests
     }
 
     [Fact]
-    public void TryAdmit_ClosesTheQuestionAResponseAnswers()
+    public void MarkDelivered_ClosesTheQuestionAResponseAnswers_OnlyOnceTheAnswerHasLanded()
     {
         var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
         var targetInbox = new AgentInbox(8);
@@ -155,11 +171,80 @@ public class AgentMessageLedgerTests
             senderInbox
         );
 
+        // Admission is a claim, not a closure: the asker has not been told anything yet.
+        var claimed = ledger.Find(question)!;
+        claimed.State.Should().Be(AgentMessageDeliveryState.Accepted);
+        claimed.IsClosed.Should().BeFalse();
+        ledger.GetOpenOutbound(Sender).Should().ContainSingle();
+
+        _ = ledger.MarkDelivered(answer.MessageId!);
+
         var closed = ledger.Find(question)!;
         closed.State.Should().Be(AgentMessageDeliveryState.Answered);
         closed.ResponseMessageId.Should().Be(answer.MessageId);
         closed.IsClosed.Should().BeTrue();
         ledger.GetOpenOutbound(Sender).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void MarkDeliveryFailed_ReleasesTheQuestionAnUndeliveredAnswerClaimed()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        var reply = Request(AgentMessageType.Response, Target, Sender, question);
+        var first = ledger.TryAdmit(reply, new AgentInbox(8)).MessageId!;
+
+        _ = ledger.MarkDeliveryFailed(first, "delivery_error");
+
+        // An answer that never arrived must leave the question answerable. Closing it on admission
+        // would have stranded the asker on a reply it was never given, with no way to admit another.
+        ledger.Find(question)!.IsClosed.Should().BeFalse();
+
+        var second = ledger.TryAdmit(reply, new AgentInbox(8));
+        second.Succeeded.Should().BeTrue();
+
+        _ = ledger.MarkDelivered(second.MessageId!);
+        ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Answered);
+    }
+
+    [Fact]
+    public void TryAdmit_RefusesAReplyOnlyKindThatNamesNothing()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+
+        // Both kinds only mean something relative to another message. Admitted bare they would reach
+        // the receiver as an orphan it cannot place and the ledger could never settle.
+        ledger
+            .TryAdmit(Request(AgentMessageType.Response), new AgentInbox(8))
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.MissingCorrelation);
+        ledger
+            .TryAdmit(Request(AgentMessageType.TaskUpdate), new AgentInbox(8))
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.MissingCorrelation);
+        ledger.Count.Should().Be(0);
+    }
+
+    [Fact]
+    public void TryClaimWaitInterrupt_LetsOneWaiterAtATimeBeWokenByAMessageThatStaysOpen()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        _ = ledger.MarkDelivered(question);
+
+        ledger.TryClaimWaitInterrupt(question).Should().BeTrue();
+
+        // The second wait must not rediscover the same delivered-but-unanswered question, or an agent
+        // that chose not to answer would spin instead of waiting.
+        ledger.TryClaimWaitInterrupt(question).Should().BeFalse();
+
+        // Giving the claim back is what stops a wait that lost its race to a timeout from consuming
+        // the one interrupt the question gets.
+        ledger.ReleaseWaitInterrupt(question);
+        ledger.TryClaimWaitInterrupt(question).Should().BeTrue();
+
+        // Interrupting never settles anything: the question is still owed an answer.
+        ledger.Find(question)!.IsClosed.Should().BeFalse();
     }
 
     [Fact]

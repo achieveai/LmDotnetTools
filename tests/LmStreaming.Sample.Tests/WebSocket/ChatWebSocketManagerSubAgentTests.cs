@@ -16,7 +16,8 @@ namespace LmStreaming.Sample.Tests.WebSocket;
 /// <see cref="ChatWebSocketManager.HandleSubAgentConnectionAsync"/>. The handler is
 /// presentation-only — it streams a FOCUSED child sub-agent's live+replayed output to the client
 /// (reusing the parent's <c>StreamMessagesToClientAsync</c>) and relays inbound text frames to the
-/// child via <see cref="SubAgentManager.SendMessageAsync"/> in background mode. It never touches
+/// child via <see cref="SubAgentManager.SendMessageAsync(string, string, bool, CancellationToken)"/>
+/// in background mode. It never touches
 /// the parent <c>/ws</c> handler or agent execution.
 /// </summary>
 public sealed class ChatWebSocketManagerSubAgentTests

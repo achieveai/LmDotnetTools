@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -81,16 +82,17 @@ public class SubAgentToolProvider : IFunctionProvider
             yield break;
         }
 
-        // Delegation tools are advertised only while there is delegation budget left, so an agent at
-        // the depth limit is never offered a spawn it would be refused. AdmitToCollaboration still
-        // refuses defensively, because a model can call a tool it was told about in an earlier turn.
+        // Only the spawn tool is withdrawn at the delegation limit or while spawning is suppressed:
+        // it is the only one whose whole purpose is to delegate. Observation and messaging are how an
+        // agent that cannot currently delegate still coordinates — withdrawing those would leave it
+        // able to be asked questions it had no tool to answer.
         if (collaboration.CanDelegate && !IsSpawningSuppressed)
         {
             yield return CreateAgentDescriptor(collaborationEnabled: true);
-            yield return CreateCheckAgentsDescriptor();
-            yield return CreateWaitForAgentsDescriptor();
         }
 
+        yield return CreateCheckAgentsDescriptor();
+        yield return CreateWaitForAgentsDescriptor();
         yield return CreateGetAgentsDescriptor();
         yield return CreateSendMessageDescriptor(collaborationEnabled: true);
     }
@@ -181,7 +183,9 @@ public class SubAgentToolProvider : IFunctionProvider
                                 "REQUIRED unless the chosen subagent_type pins its own role. A short "
                                 + "label (a few words) for what this sub-agent is responsible for, "
                                 + "e.g. 'auth migration reviewer'. Published in the shared agent "
-                                + "directory so other agents can find the right counterpart.",
+                                + "directory so other agents can find the right counterpart. Every "
+                                + "agent in the collaboration can read it, so put no secrets, "
+                                + "credentials, private or customer data in it.",
                             ParameterType = new JsonSchemaObject { Type = new("string") },
                             IsRequired = false,
                         },
@@ -193,7 +197,9 @@ public class SubAgentToolProvider : IFunctionProvider
                     Description = collaborationEnabled
                         ? "REQUIRED. One or two sentences on what this sub-agent is doing and when "
                             + "another agent should contact it. Published in the shared agent "
-                            + "directory, so write it for a stranger, not for yourself."
+                            + "directory, so write it for a stranger, not for yourself. Every agent "
+                            + "in the collaboration can read it, so put no secrets, credentials, "
+                            + "private or customer data in it."
                         : "Optional short 3-5 word label for this delegation "
                             + "(used for telemetry/UI).",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
@@ -363,18 +369,27 @@ public class SubAgentToolProvider : IFunctionProvider
                         "What kind of message this is. One of: "
                         + "'question' (you need an answer back), "
                         + "'delegate_task' (you are handing over work and expect a result), "
-                        + "'task_update' (progress, no reply needed), "
-                        + "'steer' (a correction to work already in flight, no reply needed), "
+                        + "'task_update' (progress on a task delegated to you — set in_response_to), "
+                        + "'steer' (a correction to work already in flight, no reply needed; the "
+                        + "recipient must currently be running), "
                         + "'response' (an answer to a message you received — set in_response_to).",
-                    ParameterType = new JsonSchemaObject { Type = new("string") },
+                    // Enumerated in the schema, not only in prose: the vocabulary is closed, and a
+                    // value outside it is refused, so the model should be told the whole set by the
+                    // one part of the contract it cannot skim past.
+                    ParameterType = new JsonSchemaObject
+                    {
+                        Type = new("string"),
+                        Enum = ["question", "delegate_task", "task_update", "steer", "response"],
+                    },
                     IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "in_response_to",
                     Description =
-                        "REQUIRED when msg_type is 'response': the message_id you are answering, "
-                        + "taken from the message you received. Omit otherwise.",
+                        "REQUIRED when msg_type is 'response' or 'task_update': the message_id you "
+                        + "are answering or reporting progress on, taken from the message you "
+                        + "received. Omit otherwise.",
                     ParameterType = new JsonSchemaObject { Type = new("string") },
                     IsRequired = false,
                 },
@@ -424,10 +439,11 @@ public class SubAgentToolProvider : IFunctionProvider
         {
             Name = "CheckAgents",
             Description =
-                "Check the status and recent activity of sub-agents you spawned in the "
-                + "background — several at once. Returns, per agent, its status, recent turns, "
-                + "and final result once it has completed. Returns immediately; use "
-                + "WaitForAgents when you would otherwise poll in a loop.",
+                "Check the status and recent activity of agents — several at once. Covers any agent "
+                + "you can see with GetAgents, not just your own children, so you can tell whether a "
+                + "counterpart is still running before you message or wait on it. Returns, per agent, "
+                + "its status and — for your own sub-agents — recent turns and final result. Returns "
+                + "immediately; use WaitForAgents when you would otherwise poll in a loop.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -459,8 +475,18 @@ public class SubAgentToolProvider : IFunctionProvider
                 "Block until sub-agents YOU spawned finish, instead of polling CheckAgents in a "
                 + "loop. Only your own direct children can be waited on — to coordinate with "
                 + "anyone else, message them and keep working.\n\n"
+                + "WHEN TO USE IT: you have nothing useful to do until a child you spawned in the "
+                + "background reports back. Prefer 'any' mode when you can make progress on the "
+                + "first result, and always pass timeout_seconds so a wedged child cannot stall you "
+                + "indefinitely — on expiry the agents keep running and you can wait again.\n\n"
+                + "WHEN NOT TO USE IT: never wait on your parent, a peer, or anyone you merely sent "
+                + "a message to — that is not what this waits for, and two agents each waiting on "
+                + "the other is a deadlock. Do not wait when you still have work of your own; do it "
+                + "and check afterwards.\n\n"
                 + "The wait ends early if another agent asks YOU a question, so you are never the "
-                + "reason someone else is stuck: answer it with SendMessage, then wait again.",
+                + "reason someone else is stuck: answer it with SendMessage, then wait again. Each "
+                + "question ends at most one wait, so a question you have chosen not to answer will "
+                + "not keep interrupting.",
             Parameters =
             [
                 new FunctionParameterContract
@@ -688,7 +714,7 @@ public class SubAgentToolProvider : IFunctionProvider
 
         if (_manager.Collaboration is { } collaboration)
         {
-            return SendCollaborationMessage(collaboration, root, target, cancellationToken);
+            return SendCollaborationMessage(collaboration, root, target);
         }
 
         var prompt = GetOptionalString(root, "prompt")
@@ -714,13 +740,14 @@ public class SubAgentToolProvider : IFunctionProvider
     /// <remarks>
     /// Deliberately does not await <see cref="AgentDispatch.Delivery"/>. Waiting for the recipient to
     /// accept would re-couple the sender's turn to the recipient's lifecycle — exactly what the
-    /// asynchronous model exists to avoid — and a recipient that is busy is not a send failure.
+    /// asynchronous model exists to avoid — and a recipient that is busy is not a send failure. For the
+    /// same reason it takes no cancellation token: the tool call's token dies with this turn, and an
+    /// admitted message must still be delivered after the sender has moved on.
     /// </remarks>
     private static ToolHandlerResult SendCollaborationMessage(
         AgentCollaborationSetup collaboration,
         JsonElement root,
-        string target,
-        CancellationToken cancellationToken)
+        string target)
     {
         var content = GetOptionalString(root, "content")
             ?? throw new ArgumentException("The 'content' parameter is required.");
@@ -737,15 +764,25 @@ public class SubAgentToolProvider : IFunctionProvider
         }
 
         var inResponseTo = GetOptionalString(root, "in_response_to");
-        if (messageType == AgentMessageType.Response && string.IsNullOrWhiteSpace(inResponseTo))
+
+        // Both reply-shaped types are checked here, not just Response. The ledger refuses either one
+        // without a correlation, but doing it at the tool boundary is what turns that refusal into a
+        // sentence naming the parameter the model left out.
+        if (
+            messageType is AgentMessageType.Response or AgentMessageType.TaskUpdate
+            && string.IsNullOrWhiteSpace(inResponseTo)
+        )
         {
             return ToolHandlerResult.FromError(
-                "A 'response' must set 'in_response_to' to the message_id it answers.",
-                "missing_correlation");
+                messageType == AgentMessageType.Response
+                    ? "A 'response' must set 'in_response_to' to the message_id it answers."
+                    : "A 'task_update' must set 'in_response_to' to the message_id of the task that "
+                        + "was delegated to you.",
+                AgentMessageFailureCodes.MissingCorrelation);
         }
 
         var dispatch = new AgentCollaborationMessenger(collaboration).Send(
-            target, content, messageType, inResponseTo, cancellationToken);
+            target, content, messageType, inResponseTo);
 
         if (!dispatch.Result.Succeeded)
         {
@@ -826,6 +863,14 @@ public class SubAgentToolProvider : IFunctionProvider
                 "That message did not ask for an answer. Send it as a new message instead.",
             AgentMessageFailureCodes.CorrelationNotADelegation =>
                 "Progress updates belong to a delegated task. Answer that message with 'response' instead.",
+            AgentMessageFailureCodes.MissingCorrelation =>
+                "That message type must name the message it follows. Set 'in_response_to', or send it "
+                    + "as a 'question' or 'delegate_task' instead.",
+            AgentMessageFailureCodes.TargetNotStarted =>
+                $"'{target}' has not started yet. Poll it with CheckAgents and retry once it is running.",
+            AgentMessageFailureCodes.TargetNotActive =>
+                $"'{target}' is not running, so there is nothing in flight to steer. Send it a "
+                    + "'question' or 'delegate_task' instead.",
             _ => $"The message to '{target}' was refused ({failureCode ?? "unknown"}).",
         };
     }
@@ -841,9 +886,47 @@ public class SubAgentToolProvider : IFunctionProvider
         var targets = ParseCommaSeparated(GetOptionalString(root, "agent_ids"))
             ?? throw new ArgumentException("The 'agent_ids' parameter is required.");
 
-        var batch = _manager.CheckAgents(targets);
+        var batch = WidenToCollaboration(_manager.CheckAgents(targets));
         return Task.FromResult<ToolHandlerResult>(
             ToolHandlerResult.FromText(SerializeObservationBatch(batch)));
+    }
+
+    /// <summary>
+    /// Fills in the entries the manager could not resolve from the collaboration directory, so
+    /// CheckAgents answers for anything GetAgents can see rather than only for direct children.
+    /// </summary>
+    /// <remarks>
+    /// Status only. Recent turns and the final result stay empty for an agent this one does not own,
+    /// because reading another agent's work is the transcript policy's decision and not something a
+    /// status check may quietly grant. <see cref="HandleWaitForAgentsToolAsync"/> deliberately does not
+    /// go through here: waiting is direct-child only, and widening its probe would let an agent block on
+    /// a peer it cannot influence.
+    /// </remarks>
+    private SubAgentObservationBatch WidenToCollaboration(SubAgentObservationBatch batch)
+    {
+        if (batch.NotFound == 0 || _manager.Collaboration is not { } collaboration)
+        {
+            return batch;
+        }
+
+        return new SubAgentObservationBatch
+        {
+            Entries =
+            [
+                .. batch.Entries.Select(entry =>
+                    entry.IsFound
+                    || collaboration.Directory.Resolve(entry.Target).Entry is not { } found
+                        ? entry
+                        : entry with
+                        {
+                            AgentId = found.AgentId,
+                            Name = found.Name,
+                            Status = found.Status,
+                            TemplateName = found.AgentType,
+                        }
+                ),
+            ],
+        };
     }
 
     private static string SerializeObservationBatch(SubAgentObservationBatch batch)
@@ -911,9 +994,19 @@ public class SubAgentToolProvider : IFunctionProvider
                 agent_type = e.AgentType,
                 parent_agent_id = e.ParentAgentId,
                 depth = e.StructuralDepth,
+                // Both depths, because they answer different questions and diverge: structural depth is
+                // where an agent sits, delegation depth is how much spawning budget reaching it spent,
+                // and a workflow controller hop advances one without the other.
+                structural_depth = e.StructuralDepth,
+                delegation_depth = e.DelegationDepth,
                 status = e.Status,
                 is_live = e.IsLive,
                 is_you = string.Equals(e.AgentId, collaboration.AgentId, StringComparison.Ordinal),
+                // Stated up front so the reader does not have to discover by refusal which transcripts
+                // it may read; the policy is evaluated here rather than assumed from the hierarchy.
+                transcript_readable = collaboration
+                    .Bundle.EvaluateTranscriptAccess(collaboration.AgentId, e.AgentId)
+                    .IsAllowed,
             }),
         });
 
@@ -977,7 +1070,15 @@ public class SubAgentToolProvider : IFunctionProvider
         await linked.CancelAsync();
         cancellationToken.ThrowIfCancellationRequested();
 
-        var asked = winner == question ? await question : null;
+        // Always observed, even when it lost: a question that claimed its one interrupt but is not
+        // being reported has to give the claim back, or no later wait would ever be woken by it.
+        var asked = await question;
+        if (winner != question && asked is not null)
+        {
+            _manager.Collaboration?.Bundle.Ledger.ReleaseWaitInterrupt(asked.MessageId);
+            asked = null;
+        }
+
         var status = asked is not null ? "question_received"
             : winner == completion ? "completed"
             : "timeout";
@@ -1027,13 +1128,22 @@ public class SubAgentToolProvider : IFunctionProvider
     /// waking for them would make every wait unpredictable. Yields null when the race is torn down.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Fires on admission rather than delivery, so a wait can end for a question whose delivery later
     /// fails. That asymmetry is deliberate: ending a wait early costs one turn, whereas missing the
     /// question that the waiter alone can answer is a deadlock.
+    /// </para>
+    /// <para>
+    /// A question is claimed before it is reported, and a claim is granted once. A question stays open
+    /// until it is answered, so without the claim the opening sweep would rediscover the same
+    /// still-unanswered question on every subsequent wait and return instantly — an agent that chose
+    /// not to answer could then never wait again. The claim bounds each question to one interruption
+    /// while leaving it open, and therefore still answerable whenever the agent gets to it.
+    /// </para>
     /// </remarks>
-    private async Task<object?> WatchForQuestionAsync(CancellationToken cancellationToken)
+    private async Task<QuestionInterrupt?> WatchForQuestionAsync(CancellationToken cancellationToken)
     {
-        var signal = new TaskCompletionSource<object?>(
+        var signal = new TaskCompletionSource<QuestionInterrupt?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         using var registration = cancellationToken.Register(() => signal.TrySetResult(null));
@@ -1045,12 +1155,31 @@ public class SubAgentToolProvider : IFunctionProvider
             return await signal.Task;
         }
 
-        object Describe(string messageId, string fromAgentId) => new
+        var ledger = collaboration.Bundle.Ledger;
+
+        QuestionInterrupt Describe(string messageId, string fromAgentId) =>
+            new(
+                messageId,
+                fromAgentId,
+                collaboration.Directory.FindById(fromAgentId)?.Name);
+
+        // Claim first, report second, and give the claim back if the report lost a race — a claim that
+        // was taken but never surfaced would silently spend the one interrupt the question gets.
+        bool TryReport(string messageId, string fromAgentId)
         {
-            message_id = messageId,
-            from_agent_id = fromAgentId,
-            from_name = collaboration.Directory.FindById(fromAgentId)?.Name,
-        };
+            if (!ledger.TryClaimWaitInterrupt(messageId))
+            {
+                return false;
+            }
+
+            if (signal.TrySetResult(Describe(messageId, fromAgentId)))
+            {
+                return true;
+            }
+
+            ledger.ReleaseWaitInterrupt(messageId);
+            return false;
+        }
 
         void OnAdmitted(AgentMessageAdmittedNotice notice)
         {
@@ -1058,11 +1187,10 @@ public class SubAgentToolProvider : IFunctionProvider
                 && string.Equals(
                     notice.ToAgentId, collaboration.AgentId, StringComparison.Ordinal))
             {
-                _ = signal.TrySetResult(Describe(notice.MessageId, notice.FromAgentId));
+                _ = TryReport(notice.MessageId, notice.FromAgentId);
             }
         }
 
-        var ledger = collaboration.Bundle.Ledger;
         ledger.MessageAdmitted += OnAdmitted;
         try
         {
@@ -1070,9 +1198,9 @@ public class SubAgentToolProvider : IFunctionProvider
             // would otherwise stay unnoticed until an unrelated second question arrived.
             foreach (var open in ledger.GetOpenInbound(collaboration.AgentId))
             {
-                if (open.MessageType == AgentMessageType.Question)
+                if (open.MessageType == AgentMessageType.Question
+                    && TryReport(open.MessageId, open.FromAgentId))
                 {
-                    _ = signal.TrySetResult(Describe(open.MessageId, open.FromAgentId));
                     break;
                 }
             }
@@ -1084,6 +1212,17 @@ public class SubAgentToolProvider : IFunctionProvider
             ledger.MessageAdmitted -= OnAdmitted;
         }
     }
+
+    /// <summary>The question that ended a wait, as the waiting agent is told about it.</summary>
+    /// <remarks>
+    /// A declared shape rather than an anonymous one because the wait handler has to read
+    /// <see cref="MessageId"/> back to release a claim it did not end up reporting.
+    /// </remarks>
+    private sealed record QuestionInterrupt(
+        [property: JsonPropertyName("message_id")] string MessageId,
+        [property: JsonPropertyName("from_agent_id")] string FromAgentId,
+        [property: JsonPropertyName("from_name")] string? FromName
+    );
 
     private Task<ToolHandlerResult> HandleCheckAgentToolAsync(
         string argsJson,
