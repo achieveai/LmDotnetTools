@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -385,9 +386,18 @@ public sealed class WorkflowManager : IAsyncDisposable
     ///     Optional model id for the controller loop, folded onto the configured controller defaults
     ///     (<c>ModelId</c> wins; other defaults preserved). Null keeps the configured controller model.
     /// </param>
+    /// <param name="callerCollaboration">
+    ///     The launching agent's own collaboration handle, when the host runs one. Supplying it admits this
+    ///     run's controller as a visible node in the caller's hierarchy (issue #244); omitting it keeps the
+    ///     pre-collaboration behaviour exactly. The manager only forwards it — admission, capacity, and
+    ///     teardown all live in <see cref="WorkflowSession"/>, so there is exactly one place that decides.
+    /// </param>
     /// <exception cref="WorkflowValidationException">The definition is invalid.</exception>
     /// <exception cref="DuplicateWorkflowException"><paramref name="workflowId"/> is already reserved.</exception>
     /// <exception cref="WorkflowCapacityException">No concurrency slot freed up within the wait window.</exception>
+    /// <exception cref="Collaboration.WorkflowCollaborationException">
+    ///     The caller is itself a workflow controller, or the collaboration cannot admit the controller.
+    /// </exception>
     /// <exception cref="ObjectDisposedException">The manager is disposing/disposed.</exception>
     public async Task<WorkflowRunResult> StartAsync(
         string workflowId,
@@ -396,7 +406,8 @@ public sealed class WorkflowManager : IAsyncDisposable
         CancellationToken ct = default,
         string? originatingToolCallId = null,
         string? preferredProvider = null,
-        string? preferredModel = null
+        string? preferredModel = null,
+        AgentCollaborationSetup? callerCollaboration = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
@@ -536,8 +547,8 @@ public sealed class WorkflowManager : IAsyncDisposable
                     controllerDefaultOptions: runControllerDefaultOptions,
                     usageSink: rootUsageSink,
                     ct: CancellationToken.None,
-                    lifecycleServices: _lifecycleServices
-
+                    lifecycleServices: _lifecycleServices,
+                    callerCollaboration: callerCollaboration
                 )
                 .ConfigureAwait(false);
 

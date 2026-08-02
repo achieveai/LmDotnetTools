@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
@@ -117,6 +118,7 @@ public sealed class WorkflowRuntime
     // public method so the run can be resumed (single-root) after a restart. No store attached => no-op.
     private IWorkflowStore? _store;
     private string? _instanceId;
+    private CollaborationNodeRecord? _collaboration;
 
     // Persistence sequencing is delegated to a collaborator that owns its OWN save-chain lock (independent of
     // _lock): the runtime captures the snapshot under _lock, releases it, then enqueues the save. The
@@ -168,6 +170,19 @@ public sealed class WorkflowRuntime
         {
             _store = store;
             _instanceId = instanceId;
+        }
+    }
+
+    /// <summary>
+    ///     Records the controller's collaboration node so it is captured in every subsequent snapshot, and a
+    ///     later resume can reacquire capacity under the SAME identity and the SAME trusted role/description.
+    ///     A <c>null</c> record (collaboration off) clears it, keeping the persisted field absent.
+    /// </summary>
+    internal void AttachCollaboration(CollaborationNodeRecord? record)
+    {
+        lock (_lock)
+        {
+            _collaboration = record;
         }
     }
 
@@ -1544,6 +1559,11 @@ public sealed class WorkflowRuntime
             _outputs = CloneObject(snapshot.Outputs);
             _notes = CloneObject(snapshot.Notes);
 
+            // Carried forward so a run that is resumed but NOT re-admitted (collaboration switched off) does
+            // not silently lose the node it was originally admitted as. A live re-admission overwrites this
+            // via AttachCollaboration immediately after restore.
+            _collaboration = snapshot.Collaboration;
+
             _visits.Clear();
             foreach (var (nodeId, count) in snapshot.Visits)
             {
@@ -1572,6 +1592,7 @@ public sealed class WorkflowRuntime
             Notes = CloneObject(_notes),
             Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
             Tasks = _coordinator.BuildTaskSnapshots(),
+            Collaboration = _collaboration,
         };
 
     /// <summary>Builds a snapshot for persistence, or <c>null</c> when no store is attached. Caller holds the lock.</summary>

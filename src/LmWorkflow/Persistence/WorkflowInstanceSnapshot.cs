@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Runtime;
 
@@ -64,6 +65,19 @@ public sealed record WorkflowInstanceSnapshot
 
     /// <summary>The per-task correlation/status bookkeeping (one entry per surfaced task occurrence).</summary>
     public IReadOnlyList<WorkflowTaskSnapshot> Tasks { get; init; } = [];
+
+    /// <summary>
+    ///     The controller's hierarchy node as it was admitted to the launching caller's collaboration, or
+    ///     <c>null</c> when the run was never part of one.
+    /// </summary>
+    /// <remarks>
+    ///     Deliberately optional and additive: a snapshot written before collaboration existed simply has no
+    ///     such field and still deserializes, which is why <see cref="CurrentSchemaVersion"/> is NOT bumped for
+    ///     it — bumping would make every new snapshot unreadable to an older build for the sake of a field that
+    ///     older build would ignore anyway. On resume the persisted <c>role</c>/<c>description</c> are reused
+    ///     verbatim so trusted metadata stays validated-once, at the original spawn.
+    /// </remarks>
+    public CollaborationNodeRecord? Collaboration { get; init; }
 
     /// <summary>Serializes this snapshot to its canonical JSON form using <see cref="WorkflowJson.Options"/>.</summary>
     public string ToJson() => JsonSerializer.Serialize(this, WorkflowJson.Options);

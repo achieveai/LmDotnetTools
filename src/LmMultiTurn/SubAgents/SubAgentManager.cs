@@ -220,9 +220,16 @@ public sealed class SubAgentManager : IAsyncDisposable
         AgentCollaborationContext childContext;
         try
         {
+            // A spawn made BY a workflow controller is that workflow's delegate, not an ordinary sub-agent:
+            // naming it accurately is what lets a roster tell workflow work apart from free delegation. The
+            // depth arithmetic is unaffected — only the controller hop itself is delegation-free.
+            var childKind = parent.Context.Kind == AgentKind.WorkflowController
+                ? AgentKind.WorkflowDelegate
+                : AgentKind.SubAgent;
+
             childContext = parent.Context.CreateChild(
                 agentId,
-                AgentKind.SubAgent,
+                childKind,
                 effectiveRole,
                 description);
         }
