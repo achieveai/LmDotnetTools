@@ -68,6 +68,12 @@ public sealed class SubAgentManager : IAsyncDisposable
     private readonly IReadOnlyList<FunctionContract> _parentContracts;
     private readonly IDictionary<string, ToolHandler> _parentHandlers;
     private readonly SubAgentOptions _options;
+
+    /// <summary>
+    /// The options handed to each spawned child's own loop: this manager's options minus the spawn
+    /// authority that belongs to THIS level only. Computed once because it is the same for every child.
+    /// </summary>
+    private readonly SubAgentOptions _childOptions;
     private readonly MutableSubAgentTemplateSource _source;
     private readonly ILogger _logger;
     private readonly MultiTurnLifecycleServices _lifecycleServices;
@@ -359,6 +365,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         _parentContracts = parentContracts;
         _parentHandlers = parentHandlers;
         _options = options;
+        _childOptions = options.ForChildLoop();
         _source = source;
         _logger = logger ?? NullLogger.Instance;
         _usageSink = usageSink;
@@ -2512,6 +2519,17 @@ public sealed class SubAgentManager : IAsyncDisposable
             var childCollaboration = GetChildCollaboration(agentId);
             var childParticipatesInCollaboration = childCollaboration is not null;
 
+            // Tools that must be built per agent because they act AS that agent (the #244 transcript read
+            // is the case in hand) cannot be inherited, so the host supplies a factory and the child gets
+            // its OWN instance here — before the loop below snapshots what its own sub-agents inherit, so
+            // the child advertises the tool while the grandchild is handed the same factory rather than
+            // this instance. Only collaborating children have an agent id to be bound to.
+            if (childCollaboration is { } childAgent
+                && _options.ChildToolProviderFactory?.Invoke(childAgent.AgentId) is { } childToolProvider)
+            {
+                _ = registry.AddProvider(childToolProvider);
+            }
+
             return (
                 new MultiTurnAgentLoop(
                     providerAgent,
@@ -2522,7 +2540,9 @@ public sealed class SubAgentManager : IAsyncDisposable
                     maxTurnsPerRun: template.MaxTurnsPerRun,
                     store: store,
                     logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
-                    subAgentOptions: childParticipatesInCollaboration ? _options : null,
+                    // Not _options: a child runs its own delegations, so it must not inherit the spawn
+                    // authority this level's host holds over ITS spawns (see ForChildLoop).
+                    subAgentOptions: childParticipatesInCollaboration ? _childOptions : null,
                     subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
                     lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(
                         _lifecycleServices, lineage),

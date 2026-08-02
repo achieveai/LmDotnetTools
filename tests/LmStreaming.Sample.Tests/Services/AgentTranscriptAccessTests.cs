@@ -349,10 +349,9 @@ public sealed class AgentTranscriptAccessTests
                 Templates = new Dictionary<string, SubAgentTemplate>(),
                 NonInheritedToolNames = ["SomethingTheHostAlreadyExcluded"],
             },
-            new AgentTranscriptToolProvider(
-                new AgentHierarchyService(pool, new WorkflowRunRegistry(), new InMemoryConversationStore()),
-                RootThread,
-                RootThread));
+            new AgentHierarchyService(pool, new WorkflowRunRegistry(), new InMemoryConversationStore()),
+            RootThread,
+            RootThread);
 
         registry.BuildContracts().Select(c => c.Name).Should()
             .Contain(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
@@ -361,6 +360,14 @@ public sealed class AgentTranscriptAccessTests
         options.NonInheritedToolNames.Should().Contain(
             "SomethingTheHostAlreadyExcluded",
             "existing exclusions are unioned, never replaced");
+
+        // Excluding it from inheritance would otherwise leave every deeper agent with no transcript tool
+        // at all, so the same call must also say how a deeper agent gets its OWN instance.
+        options.ChildToolProviderFactory.Should().NotBeNull(
+            "the exclusion is only safe because each participant is handed a fresh, self-bound instance");
+        options.ChildToolProviderFactory!("a-child").Should().BeOfType<AgentTranscriptToolProvider>()
+            .Which.GetFunctions().Select(f => f.Contract.Name).Should()
+            .Equal([AgentTranscriptToolProvider.GetAgentTranscriptToolName]);
     }
 
     [Fact]
@@ -372,14 +379,85 @@ public sealed class AgentTranscriptAccessTests
         var options = global::Program.RegisterAgentTranscriptTool(
             registry,
             subAgentOptions: null,
-            new AgentTranscriptToolProvider(
-                new AgentHierarchyService(pool, new WorkflowRunRegistry(), new InMemoryConversationStore()),
-                RootThread,
-                RootThread));
+            new AgentHierarchyService(pool, new WorkflowRunRegistry(), new InMemoryConversationStore()),
+            RootThread,
+            RootThread);
 
         options.Should().BeNull("a conversation with no sub-agent options has nothing to exclude from");
         registry.BuildContracts().Select(c => c.Name).Should()
             .Contain(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
+    }
+
+    [Fact]
+    public async Task ADeeperAgent_ReadsItsOwnChild_ButStillNotASibling()
+    {
+        // The gap this closes: the tool was registered on the ROOT's registry only, and excluded from
+        // inheritance (rightly — it is bound to one reader). So an agent at depth 1 that spawned children
+        // of its own could not read them, and the Ancestors policy it is entitled to was unreachable for
+        // everyone but the root. Both halves are asserted through the deeper agent's OWN registered
+        // handler, because a test that builds its own provider proves nothing about the wiring.
+        var store = new InMemoryConversationStore();
+
+        // The pool resolves the loop, the loop's options come from the registration, and the registration
+        // needs the pool — so the pool is handed a closure over the loop that is assigned just below.
+        MultiTurnAgentLoop? root = null;
+        await using var pool = new MultiTurnAgentPool(
+            (_, _, _) => new MultiTurnAgentPool.AgentCreationResult(root!),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        var registry = new FunctionRegistry();
+        var options = global::Program.RegisterAgentTranscriptTool(
+            registry,
+            WorkerOptions(),
+            new AgentHierarchyService(pool, new WorkflowRunRegistry(), store),
+            RootThread,
+            RootThread);
+
+        root = new MultiTurnAgentLoop(
+            BlockingProvider(),
+            registry,
+            threadId: RootThread,
+            subAgentOptions: options,
+            collaboration: CreateRootCollaboration(new AgentCollaborationOptions { MaxDelegationDepth = 2 }));
+        await using var rootLifetime = root;
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var alphaId = await SpawnAsync(root, "alpha");
+        var betaId = await SpawnAsync(root, "beta");
+        root.SubAgentManager!.TryGetAgent(alphaId, out var spawned).Should().BeTrue();
+        var alphaLoop = spawned.Should().BeOfType<MultiTurnAgentLoop>().Subject;
+
+        var alphasChildId = await SpawnAsync(alphaLoop, "alpha-child");
+        await store.AppendMessagesAsync(
+            $"subagent-{alphasChildId}",
+            [Persisted("m1", new TextMessage { Text = "the deep finding", Role = Role.Assistant })]);
+
+        alphaLoop.RegisteredToolNames.Should().Contain(
+            AgentTranscriptToolProvider.GetAgentTranscriptToolName,
+            "a participant that can spawn must be able to read what it spawned");
+
+        // The handler map is what the loop actually resolves a tool call against, so invoking through it
+        // exercises the instance the host bound to alpha — not one this test chose.
+        var snapshot = alphaLoop.SubAgentManager!.GetInheritableToolSnapshot();
+        snapshot.Contracts.Select(c => c.Name).Should().NotContain(
+            AgentTranscriptToolProvider.GetAgentTranscriptToolName,
+            "alpha's own instance is still never handed down; its child is given a fresh one instead");
+
+        var handler = snapshot.Handlers[AgentTranscriptToolProvider.GetAgentTranscriptToolName];
+
+        var allowed = Assert.IsType<ToolHandlerResult.Resolved>(await handler(
+            JsonSerializer.Serialize(new { agent_id = alphasChildId }),
+            new ToolCallContext(),
+            CancellationToken.None));
+        allowed.Payload.IsError.Should().BeFalse(allowed.Payload.Text);
+        allowed.Payload.Text.Should().Contain("the deep finding");
+
+        var denied = Assert.IsType<ToolHandlerResult.Resolved>(await handler(
+            JsonSerializer.Serialize(new { agent_id = betaId }),
+            new ToolCallContext(),
+            CancellationToken.None));
+        denied.Payload.IsError.Should().BeTrue("reaching deeper never widens who a reader may look at");
+        denied.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.NotAnAncestor);
     }
 
     /// <summary>Runs the tool exactly as the loop would: one handler, one args string, one reader.</summary>
@@ -422,32 +500,39 @@ public sealed class AgentTranscriptAccessTests
             MessageJson = JsonSerializer.Serialize(message, message.GetType(), MessageJson),
         };
 
-    private static AgentCollaborationSetup CreateRootCollaboration() =>
+    private static AgentCollaborationSetup CreateRootCollaboration(
+        AgentCollaborationOptions? options = null) =>
         AgentCollaborationSetup.CreateRoot(
-            new AgentCollaborationOptions(),
+            options ?? new AgentCollaborationOptions(),
             collaborationId: RootThread,
             agentId: RootThread,
             name: "root");
+
+    /// <summary>
+    /// The one sub-agent template every test here spawns from. Its provider blocks, so a spawned child
+    /// stays Running deterministically instead of racing the assertions to completion.
+    /// </summary>
+    private static SubAgentOptions WorkerOptions() =>
+        new()
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    Name = "worker",
+                    SystemPrompt = "You are a worker.",
+                    AgentFactory = () => BlockingProvider(),
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
 
     private static MultiTurnAgentLoop CreateLoop(AgentCollaborationSetup? collaboration) =>
         new(
             BlockingProvider(),
             new FunctionRegistry(),
             threadId: RootThread,
-            subAgentOptions: new SubAgentOptions
-            {
-                Templates = new Dictionary<string, SubAgentTemplate>
-                {
-                    ["worker"] = new SubAgentTemplate
-                    {
-                        Name = "worker",
-                        SystemPrompt = "You are a worker.",
-                        // Blocking provider keeps each spawned child Running deterministically.
-                        AgentFactory = () => BlockingProvider(),
-                    },
-                },
-                MaxConcurrentSubAgents = 5,
-            },
+            subAgentOptions: WorkerOptions(),
             collaboration: collaboration);
 
     private static async Task<string> SpawnAsync(

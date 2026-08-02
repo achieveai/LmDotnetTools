@@ -1670,19 +1670,20 @@ subAgentFactory,
 
                     // Let THIS conversation's agent read the transcript of an agent it is above (#244) —
                     // the tool counterpart of the /agents/{id}/transcript route, resolving access through
-                    // the same AgentHierarchyService so the two cannot disagree.
+                    // the same AgentHierarchyService so the two cannot disagree. Every spawned agent gets
+                    // its own reader-bound instance too, so an ancestor deeper than the root can exercise
+                    // the same visibility over the children IT spawned.
                     if (rootCollaboration is not null)
                     {
                         subAgentOptions = RegisterAgentTranscriptTool(
                             filteredRegistry,
                             subAgentOptions,
-                            new AgentTranscriptToolProvider(
-                                new AgentHierarchyService(
-                                    sp.GetRequiredService<MultiTurnAgentPool>(),
-                                    sp.GetRequiredService<WorkflowRunRegistry>(),
-                                    conversationStore),
-                                threadId,
-                                rootCollaboration.AgentId));
+                            new AgentHierarchyService(
+                                sp.GetRequiredService<MultiTurnAgentPool>(),
+                                sp.GetRequiredService<WorkflowRunRegistry>(),
+                                conversationStore),
+                            threadId,
+                            rootCollaboration.AgentId);
                     }
 
                     // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
@@ -2736,31 +2737,37 @@ public partial class Program
     }
 
     /// <summary>
-    /// Registers the <c>GetAgentTranscript</c> tool on <paramref name="registry"/> and, in the same
-    /// step, excludes it from sub-agent inheritance (#244).
+    /// Registers the <c>GetAgentTranscript</c> tool for <paramref name="readerAgentId"/> and, in the same
+    /// step, arranges for every agent BELOW it to get its own instance instead of inheriting this one
+    /// (#244).
     /// </summary>
     /// <remarks>
-    /// The two halves are one operation because doing only the first is a privilege escalation:
-    /// <see cref="AgentTranscriptToolProvider"/> is bound to ONE reader, so an inherited copy would
-    /// hand every descendant its parent's reach over the whole hierarchy. Registration happens before
-    /// the loop snapshots the registry, which is exactly why the exclusion has to be explicit — the
-    /// same reason the workflow launch tools list themselves in
-    /// <see cref="SubAgentOptions.NonInheritedToolNames"/>. Existing exclusions are unioned, never
-    /// replaced.
+    /// The parts are one operation because doing only the first is a privilege escalation and doing only
+    /// the second is a dead tool. <see cref="AgentTranscriptToolProvider"/> is bound to ONE reader, so an
+    /// inherited copy would hand every descendant its ancestor's reach over the whole hierarchy — hence
+    /// the exclusion from inheritance. But an excluded tool that is registered only on the root leaves
+    /// every deeper ancestor unable to read the children it is genuinely above, which is the visibility
+    /// the feature exists for. <see cref="SubAgentOptions.ChildToolProviderFactory"/> closes that: each
+    /// spawned participant is handed a provider bound to ITSELF, so reach always matches the reader.
+    /// Existing exclusions are unioned, never replaced.
     /// </remarks>
     /// <param name="registry">The reader's own function registry.</param>
     /// <param name="subAgentOptions">The reader's sub-agent options, or null when it spawns none.</param>
-    /// <param name="provider">The transcript tool provider, already bound to its single reader.</param>
-    /// <returns>The options with the tool excluded from inheritance.</returns>
+    /// <param name="hierarchy">The shared hierarchy/authorization service both surfaces resolve through.</param>
+    /// <param name="threadId">The conversation whose hierarchy these readers belong to.</param>
+    /// <param name="readerAgentId">The collaboration id of the agent owning <paramref name="registry"/>.</param>
+    /// <returns>The options with the tool excluded from inheritance and re-bound per child.</returns>
     internal static SubAgentOptions? RegisterAgentTranscriptTool(
         FunctionRegistry registry,
         SubAgentOptions? subAgentOptions,
-        AgentTranscriptToolProvider provider)
+        AgentHierarchyService hierarchy,
+        string threadId,
+        string readerAgentId)
     {
         ArgumentNullException.ThrowIfNull(registry);
-        ArgumentNullException.ThrowIfNull(provider);
+        ArgumentNullException.ThrowIfNull(hierarchy);
 
-        _ = registry.AddProvider(provider);
+        _ = registry.AddProvider(new AgentTranscriptToolProvider(hierarchy, threadId, readerAgentId));
 
         return subAgentOptions is null
             ? null
@@ -2771,6 +2778,8 @@ public partial class Program
                     .. subAgentOptions.NonInheritedToolNames ?? [],
                     .. AgentTranscriptToolProvider.ToolNames,
                 ],
+                ChildToolProviderFactory = childAgentId =>
+                    new AgentTranscriptToolProvider(hierarchy, threadId, childAgentId),
             };
     }
 

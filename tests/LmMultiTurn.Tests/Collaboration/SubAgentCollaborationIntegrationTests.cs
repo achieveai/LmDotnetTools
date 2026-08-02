@@ -418,6 +418,96 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         grandchild.AncestorAgentIds.Should().ContainInOrder(root.AgentId, childId);
     }
 
+    [Fact]
+    public async Task ADelegate_SpawnsAnOrdinaryChild_WithoutTheSpawnAuthorityHeldOverItsOwnSpawn()
+    {
+        // The three spawn hooks belong to ONE host at ONE level: a workflow controller closes them over
+        // its live runtime so that ITS delegates match authored units and carry authored identity. Handed
+        // down verbatim, they follow the delegate into its own delegations, where nothing is authored —
+        // so an ordinary helper is rejected for not being a workflow unit, has its model choice replaced,
+        // and is published in the directory wearing the controller's authored role. Every other test here
+        // builds the deeper manager by hand, which never sees what the real spawn path passes down.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 2 });
+        var (parentManager, parentProvider) = CreateManager(
+            root,
+            BlockingTemplate(),
+            options => options with
+            {
+                AvailableModelIds = ["catalog-model"],
+                SpawnNameGate = name =>
+                    name == AuthoredUnit ? null : $"'{name}' is not a unit of this workflow.",
+                SpawnModelSelectionResolver = _ => new SubAgentSpawnModelSelection("catalog-model", null),
+                SpawnMetadataResolver = _ => new SubAgentSpawnMetadata(
+                    "authored role", "Authored by the workflow, not by whoever called the tool."),
+            });
+
+        var delegateId = await SpawnAndResolveIdAsync(parentProvider, AuthoredUnit);
+        var delegateLoop = ChildLoop(parentManager, delegateId);
+
+        // A name no workflow unit could match, and metadata only the caller supplied: the two things the
+        // inherited hooks would have overridden.
+        var spawned = await InvokeAsync(delegateLoop.SubAgentTools!, "Agent", NewSpawn("ordinary-helper"));
+        spawned.IsError.Should().BeFalse(spawned.Text);
+
+        var helper = root.Directory.Snapshot()
+            .Should().ContainSingle(e => e.Name == "ordinary-helper").Subject;
+
+        helper.DelegationDepth.Should().Be(2);
+        helper.ParentAgentId.Should().Be(delegateId);
+        helper.Role.Should().Be("worker role", "a delegate's own helper is described by its delegate");
+        helper.Description.Should().Be("Does a unit of work.");
+
+        delegateLoop.SubAgentManager!.SpawnNameGate.Should().BeNull(
+            "the gate names the units of the workflow above, not of the delegate's own work");
+        delegateLoop.SubAgentManager.SpawnModelSelectionResolver.Should().BeNull(
+            "authority over a spawn's model belongs to the host that authored that spawn");
+        delegateLoop.SubAgentManager.AvailableModelIds.Should().Equal(
+            ["catalog-model"], "the catalog is configuration, not authority, so it is inherited");
+    }
+
+    [Fact]
+    public async Task APerAgentTool_IsBuiltFreshForEveryParticipant_AndNeverInheritedFromTheOneAbove()
+    {
+        // A tool that acts AS one agent (the #244 transcript read) cannot be shared or inherited: an
+        // inherited instance hands a descendant its ancestor's reach. Registering it only on the root
+        // instead is the mirror failure — the deeper ancestors, which are exactly who the feature exists
+        // for, then have no way to read the children they spawned. The factory resolves both: one
+        // instance per participant, bound to that participant.
+        var boundTo = new List<string>();
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxDelegationDepth = 2 });
+        var (parentManager, parentProvider) = CreateManager(
+            root,
+            BlockingTemplate(),
+            options => options with
+            {
+                NonInheritedToolNames = [ViewerBoundProvider.ToolName],
+                ChildToolProviderFactory = agentId =>
+                {
+                    boundTo.Add(agentId);
+                    return new ViewerBoundProvider(agentId);
+                },
+            });
+
+        var childId = await SpawnAndResolveIdAsync(parentProvider);
+        var childLoop = ChildLoop(parentManager, childId);
+
+        childLoop.RegisteredToolNames.Should().Contain(
+            ViewerBoundProvider.ToolName, "a spawned participant gets its own instance of the tool");
+        boundTo.Should().Equal([childId], "and that instance is bound to the child, not to its parent");
+
+        childLoop.SubAgentManager!.GetInheritableToolSnapshot().Contracts.Select(c => c.Name)
+            .Should().NotContain(
+                ViewerBoundProvider.ToolName,
+                "the child's own instance must not travel down to ITS children");
+
+        var grandchildId = await SpawnAndResolveIdAsync(childLoop.SubAgentTools!, "grandchild");
+        var grandchildLoop = ChildLoop(childLoop.SubAgentManager, grandchildId);
+
+        boundTo.Should().Equal(
+            [childId, grandchildId], "the factory travels down even though the instances do not");
+        grandchildLoop.RegisteredToolNames.Should().ContainSingle(n => n == ViewerBoundProvider.ToolName);
+    }
+
     #endregion
 
     #region GetAgents
@@ -829,6 +919,67 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task WaitForAgents_GivesBackAQuestionClaimThatLostToACompletion()
+    {
+        // The other half of the one-shot claim, and the half a passing suite hides: the claim is taken
+        // by the sweep BEFORE the race is decided, so a wait that ends for a COMPLETION has already
+        // spent the question's single interrupt without reporting it. Unless the claim is handed back,
+        // that question — still open, still owed an answer — can never wake any later wait, and the
+        // agent it was addressed to goes on waiting for its remaining children with no way to notice
+        // it was asked. Both waits below are decided by what is already complete when the race is
+        // built, so the ordering is structural rather than a timing bet.
+        var root = CreateRegisteredRoot();
+        var (_, provider) = CreateManager(
+            root,
+            configure: options => options with
+            {
+                Templates = new Dictionary<string, SubAgentTemplate>(options.Templates)
+                {
+                    ["blocker"] = BlockingTemplate(),
+                },
+            });
+
+        var finishedId = await SpawnAndResolveIdAsync(provider, "finished");
+        var blockedId = await SpawnAndResolveIdAsync(provider, "still-running", "blocker");
+
+        // Settle the finished child while no question exists, so the wait that loses below is racing an
+        // observation that was already complete before the race began.
+        using (var settled = JsonDocument.Parse(
+            (await InvokeAsync(provider, "WaitForAgents", new { agent_ids = finishedId })).Text))
+        {
+            settled.RootElement.GetProperty("status").GetString().Should().Be("completed");
+        }
+
+        var (_, peerSetup) = RegisterPeer(root, "asker");
+        var dispatch = new AgentCollaborationMessenger(peerSetup).Send(
+            root.AgentId, "Which branch?", AgentMessageType.Question);
+        await dispatch.Delivery.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var lost = await InvokeAsync(provider, "WaitForAgents", new { agent_ids = finishedId });
+        using var lostDoc = JsonDocument.Parse(lost.Text);
+        lostDoc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+        lostDoc.RootElement.GetProperty("question").ValueKind.Should().Be(
+            JsonValueKind.Null, "the completion won, so no question is being reported to the caller");
+
+        // The next wait has nothing to complete, so only the question can end it — which it can only do
+        // if the claim the previous wait took but never used was returned.
+        var interrupted = await InvokeAsync(provider, "WaitForAgents", new
+        {
+            agent_ids = blockedId,
+            timeout_seconds = 5,
+        });
+
+        using var interruptedDoc = JsonDocument.Parse(interrupted.Text);
+        interruptedDoc.RootElement.GetProperty("status").GetString()
+            .Should().Be("question_received");
+        interruptedDoc.RootElement.GetProperty("question").GetProperty("from_name").GetString()
+            .Should().Be("asker");
+
+        root.Bundle.Ledger.GetOpenInbound(root.AgentId).Should().ContainSingle(
+            "being interrupted by a question is still not an answer to it");
+    }
+
+    [Fact]
     public async Task WaitForAgents_IsInterruptedByAQuestionThatArrivesAfterTheWaitBegins()
     {
         // The mirror ordering of the test above. The wait subscribes and sweeps synchronously before
@@ -873,9 +1024,12 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
     #region Helpers
 
-    private static object NewSpawn(string name) => new
+    /// <summary>The one spawn name a workflow-style <c>SpawnNameGate</c> in these tests will allow.</summary>
+    private const string AuthoredUnit = "authored-unit";
+
+    private static object NewSpawn(string name, string subagentType = "worker") => new
     {
-        subagent_type = "worker",
+        subagent_type = subagentType,
         prompt = "work",
         role = "worker role",
         description = "Does a unit of work.",
@@ -922,7 +1076,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
     private (SubAgentManager Manager, SubAgentToolProvider Provider) CreateManager(
         AgentCollaborationSetup? collaboration,
-        SubAgentTemplate? template = null)
+        SubAgentTemplate? template = null,
+        Func<SubAgentOptions, SubAgentOptions>? configure = null)
     {
         var options = new SubAgentOptions
         {
@@ -938,6 +1093,8 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
             },
             MaxConcurrentSubAgents = 5,
         };
+
+        options = configure?.Invoke(options) ?? options;
 
         var source = new MutableSubAgentTemplateSource(options.Templates);
         var manager = new SubAgentManager(
@@ -1019,13 +1176,52 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
     private async Task<string> SpawnAndResolveIdAsync(
         SubAgentToolProvider provider,
-        string name = "child")
+        string name = "child",
+        string subagentType = "worker")
     {
-        var payload = await InvokeAsync(provider, "Agent", NewSpawn(name));
+        var payload = await InvokeAsync(provider, "Agent", NewSpawn(name, subagentType));
         payload.IsError.Should().BeFalse(payload.Text);
 
         using var doc = JsonDocument.Parse(payload.Text);
         return doc.RootElement.GetProperty("agent_id").GetString()!;
+    }
+
+    /// <summary>
+    /// The loop the REAL spawn path built for <paramref name="agentId"/> — the only place the options and
+    /// tools a child actually runs on can be observed.
+    /// </summary>
+    private static MultiTurnAgentLoop ChildLoop(SubAgentManager manager, string agentId)
+    {
+        manager.TryGetAgent(agentId, out var agent).Should().BeTrue();
+        return agent.Should().BeOfType<MultiTurnAgentLoop>().Subject;
+    }
+
+    /// <summary>
+    /// A stand-in for a tool that acts AS one agent (the sample's transcript reader): it carries the id it
+    /// was built for, so a test can tell "each participant got its own" from "one instance was shared".
+    /// </summary>
+    private sealed class ViewerBoundProvider(string viewerAgentId) : IFunctionProvider
+    {
+        public const string ToolName = "ReadAsViewer";
+
+        public string ProviderName => "ViewerBoundTools";
+
+        public int Priority => 100;
+
+        public IEnumerable<FunctionDescriptor> GetFunctions() =>
+        [
+            new FunctionDescriptor
+            {
+                Contract = new FunctionContract
+                {
+                    Name = ToolName,
+                    Description = "Acts as exactly one agent.",
+                },
+                Handler = (_, _, _) =>
+                    Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText(viewerAgentId)),
+                ProviderName = "ViewerBoundTools",
+            },
+        ];
     }
 
     private static async Task<ToolHandlerResultPayload> InvokeAsync(

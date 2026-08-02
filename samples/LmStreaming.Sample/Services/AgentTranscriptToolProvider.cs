@@ -19,7 +19,8 @@ namespace LmStreaming.Sample.Services;
 ///         transcript is authorized for <see cref="AgentTranscriptToolProvider"/>'s own viewer, never for
 ///         an id the model typed. A host must therefore register it on the reader's own registry and keep
 ///         it out of sub-agent inheritance (<c>SubAgentOptions.NonInheritedToolNames</c>) — an inherited
-///         instance would hand every descendant its parent's reach.
+///         instance would hand every descendant its parent's reach. A deeper agent gets its own
+///         self-bound instance instead, via <c>SubAgentOptions.ChildToolProviderFactory</c>.
 ///     </para>
 ///     <para>
 ///         Access itself is not decided here. It comes from <see cref="AgentHierarchyService"/>, the same
