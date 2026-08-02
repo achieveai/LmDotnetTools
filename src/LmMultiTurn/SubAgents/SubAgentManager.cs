@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -2504,6 +2505,17 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             foreach (var contract in _parentContracts)
             {
+                // AskUserQuestion/NotifyClient (#246) are excluded from the ParentTools copy: every
+                // MultiTurnAgentLoop constructor — including the child loop built below — registers
+                // its OWN correctly-scoped instance of each unconditionally. Copying the parent's
+                // entry here too would leave two registrations of the same tool name in the child's
+                // fresh registry, and FunctionRegistry.Build()'s default (throwing) conflict
+                // resolution would crash this sub-agent's construction.
+                if (contract.Name is AskUserQuestionToolProvider.ToolName or NotifyClientToolProvider.ToolName)
+                {
+                    continue;
+                }
+
                 if (enabledSet != null && !enabledSet.Contains(contract.Name))
                 {
                     continue;

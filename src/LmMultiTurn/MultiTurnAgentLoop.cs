@@ -13,6 +13,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -245,6 +246,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 new AgentLoopWriteEndpoint(this));
         }
 
+        // Client-facing tools (#246): registered BEFORE the sub-agent inheritable-tool snapshot.
+        // Each descendant loop constructs its own correctly-scoped providers; SubAgentManager avoids
+        // copying the parent's instances so the child's registrations do not collide.
+        _ = functionRegistry.AddProvider(new AskUserQuestionToolProvider());
+        _ = functionRegistry.AddProvider(new NotifyClientToolProvider(DeliverClientNotificationAsync));
+
         // When sub-agent orchestration is configured, snapshot the current tools
         // and register Agent/CheckAgent tools before building the middleware stack.
         if (subAgentOptions != null)
@@ -408,6 +415,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 name: "MessageJoiner",
                 logger: loggerFactory?.CreateLogger<MessageUpdateJoinerMiddleware>()))
             .WithMiddleware(toolCallMiddleware);
+    }
+
+    /// <summary>
+    /// The <c>NotifyClient</c> tool's narrow persist+publish path (#246). Deliberately bypasses
+    /// <c>SendAsync</c>/the input queue — it must never start or inject a turn — mirroring how
+    /// <see cref="TriggerRuntime"/> is handed <c>resolve</c>/<c>notify</c> delegates closing over
+    /// this loop's own methods rather than calling back through the public run surface.
+    /// </summary>
+    private ValueTask DeliverClientNotificationAsync(NotifyMessage notify, CancellationToken ct)
+    {
+        AddToHistory(notify);
+        return PublishToAllAsync(notify, ct);
     }
 
     /// <inheritdoc />

@@ -19,6 +19,9 @@ public static class NotifyKinds
 
     /// <summary>An async workflow launched via <c>StartWorkflowAgent</c> reached a terminal state.</summary>
     public const string WorkflowCompletion = "workflow-completion";
+
+    /// <summary>The agent pushed an ad-hoc, non-blocking notification to the client via <c>NotifyClient</c>.</summary>
+    public const string ClientNotification = "client-notification";
 }
 
 /// <summary>
