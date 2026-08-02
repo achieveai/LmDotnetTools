@@ -424,6 +424,21 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   }
 
   /**
+   * Render a dead connection's persisted snapshot read-only. Used whenever a focus's socket is
+   * confirmed dead — during the initial history load OR a later overflow-reconcile reload — but the
+   * load still returned a snapshot worth showing instead of leaving the tab blank. Deliberately does
+   * NOT touch {@link error}: a terminal application error (e.g. "not available") that is already
+   * surfaced must stay visible alongside the rendered transcript, not be cleared by it.
+   */
+  function renderDeadConnectionSnapshot(persisted: PersistedMessage[]): void {
+    for (const pm of persisted) {
+      rehydratePersisted(pm);
+    }
+    attachPersistedToolResults();
+    rebuildFocusedDisplayItems();
+  }
+
+  /**
    * Focus a sub-agent: tear down any prior focus, open the live stream (buffering), load the child's
    * persisted transcript, then drain the buffered live messages on top. Opening the socket BEFORE the
    * history fetch closes the snapshot→subscribe gap; history merges with the live stream by the shared
@@ -613,18 +628,15 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       // spinner and (when budget remained) started the one-shot auto-resume, so just bail without
       // double-resuming.
       if (socketClosedDuringFocus || connection.socket.readyState !== WebSocket.OPEN) {
-        // Exception: a COMPLETED read-only child (e.g. a workflow delegate whose controller loop was
-        // released, so the live stream reports subagent_unavailable) has no socket to adopt, but its
-        // transcript still lives in the store. Render that persisted history read-only instead of
-        // leaving the tab blank + a scary "unavailable" banner. Scoped to the terminal-error case
-        // (terminalErrorSeen ⇒ no auto-resume is pending to render it later) with actual history.
-        if ((terminalErrorSeen || autoResumeUsed) && persisted.length > 0) {
-          for (const pm of persisted) {
-            rehydratePersisted(pm);
-          }
-          attachPersistedToolResults();
-          rebuildFocusedDisplayItems();
-          log.debug('focusChild: rendered completed child from persisted history (no live socket)', {
+        // Exception: a dead connection — whether from a terminal application error (e.g. a workflow
+        // delegate whose controller loop was released, so the live stream reports
+        // subagent_unavailable) or a resume whose one-shot auto-resume budget is already spent — still
+        // has no socket to adopt, but its persisted transcript is worth showing instead of leaving the
+        // tab blank. Any terminal error already surfaced (see renderDeadConnectionSnapshot) is left in
+        // place: the transcript renders underneath the error banner, not instead of it.
+        if (persisted.length > 0) {
+          renderDeadConnectionSnapshot(persisted);
+          log.debug('focusChild: rendered persisted snapshot for a dead connection (history load)', {
             agentId,
             count: persisted.length,
           });
@@ -657,15 +669,18 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           return;
         }
         if (socketClosedDuringFocus || connection.socket.readyState !== WebSocket.OPEN) {
-          // The reconciliation snapshot is newer than the one already rendered and can contain the
-          // terminal content that arrived before the socket died. Render it read-only even though the
-          // dead socket cannot be adopted.
-          for (const pm of reloaded) {
-            rehydratePersisted(pm);
+          // The connection died while THIS reload was in flight. It is a strictly newer snapshot than
+          // whatever is on screen (the prior pass's rehydrate), so render it read-only rather than
+          // discarding it — same rationale as the initial-load dead-connection case above.
+          if (reloaded.length > 0) {
+            renderDeadConnectionSnapshot(reloaded);
+            log.debug('focusChild: rendered persisted snapshot for a dead connection (reconcile reload)', {
+              agentId,
+              count: reloaded.length,
+            });
+            return;
           }
-          attachPersistedToolResults();
-          rebuildFocusedDisplayItems();
-          log.debug('focusChild: rendered reconcile history after socket closed', { agentId });
+          log.debug('focusChild: socket closed during reconcile reload; not adopting dead connection', { agentId });
           return;
         }
         for (const pm of reloaded) {
