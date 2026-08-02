@@ -824,6 +824,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 "That message was not addressed to you, so you cannot answer it.",
             AgentMessageFailureCodes.CorrelationDoesNotExpectReply =>
                 "That message did not ask for an answer. Send it as a new message instead.",
+            AgentMessageFailureCodes.CorrelationNotADelegation =>
+                "Progress updates belong to a delegated task. Answer that message with 'response' instead.",
             _ => $"The message to '{target}' was refused ({failureCode ?? "unknown"}).",
         };
     }

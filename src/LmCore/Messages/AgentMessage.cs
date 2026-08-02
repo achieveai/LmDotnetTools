@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -109,16 +110,21 @@ public record AgentMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Body { get; init; }
 
-    private string? _cachedText;
-
     /// <summary>
-    ///     The self-describing envelope the receiving LLM reads. Computed once from the structured
-    ///     fields (all <c>init</c>-only, so the value is immutable) and cached, because an agent message
-    ///     lives in history and is re-mapped by the active provider on every subsequent turn. Never set
-    ///     directly, so it cannot drift from the fields.
+    ///     The self-describing envelope the receiving LLM reads. Recomputed on every access rather than
+    ///     cached in a field. Never set directly, so it cannot drift from the fields.
     /// </summary>
+    /// <remarks>
+    ///     A cached field would be part of this record's value: the synthesized equality and hash cover
+    ///     every instance field, so two structurally identical messages would compare unequal purely
+    ///     because one had had its envelope read, and a message already in a hash set would become
+    ///     unfindable the moment it was rendered. Worse, the copy constructor behind <c>with</c> copies
+    ///     fields verbatim, so a copy would inherit an envelope describing the <em>original's</em>
+    ///     fields — the exact drift the get-only projection exists to prevent. Building the envelope is
+    ///     a short walk over the body, and it is read about once per message per turn.
+    /// </remarks>
     [JsonPropertyName("text")]
-    public string Text => _cachedText ??= BuildEnvelope(this);
+    public string Text => BuildEnvelope(this);
 
     /// <inheritdoc />
     public string? GetText()
@@ -291,31 +297,110 @@ public record AgentMessage : IMessage, ICanGetText
 
     private static string EscapeAttribute(string value)
     {
-        return value
-            .Replace("&", "&amp;")
-            .Replace("<", "&lt;")
-            .Replace(">", "&gt;")
-            .Replace("\"", "&quot;");
+        return Escape(value, forAttribute: true);
     }
 
     /// <summary>
-    ///     Neutralizes the two structural markers a body must never produce: the envelope's closing tag,
-    ///     and the opening of a reply instruction. Everything else is left intact for readability —
-    ///     escaping the whole body would make ordinary code and markup unreadable to the receiver for no
-    ///     security gain, since only these two markers are interpreted.
+    ///     Renders a value safe to place inside the envelope, whether as an attribute value or as the
+    ///     body.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Every angle bracket is escaped, not just the two markers that carry meaning, because the
+    ///         reader is a language model rather than a parser. <c>&lt;/ agent-message &gt;</c>, a
+    ///         marker broken across a newline, and one split by a zero-width space all read as the real
+    ///         thing to it while defeating any match on the literal marker. Escaping the bracket itself
+    ///         retires the whole family at once and needs no list of variants to keep current; the
+    ///         resulting invariant is checkable, since the body then contributes no angle brackets at
+    ///         all.
+    ///     </para>
+    ///     <para>
+    ///         Bracket lookalikes are folded to the same escapes for the same reason, and invisible
+    ///         characters — control codes, zero-width joiners, bidirectional overrides — are dropped
+    ///         rather than escaped: nothing legitimate is lost because they cannot be rendered, and they
+    ///         are precisely the tool for hiding or visually reordering a forged marker.
+    ///     </para>
+    ///     <para>
+    ///         The cost is that markup and generics in a body arrive escaped. That is the correct
+    ///         rendering regardless — an unescaped bracket would leave the envelope ill-formed — and a
+    ///         model reads an entity reference without difficulty.
+    ///     </para>
+    /// </remarks>
+    /// <param name="value">The untrusted or semi-trusted value.</param>
+    /// <param name="forAttribute">
+    ///     True inside an attribute value, where the quote delimiter is escaped as well and line breaks
+    ///     and tabs are folded to spaces, so a value can never appear to end the opening tag and begin
+    ///     content of its own.
+    /// </param>
+    private static string Escape(string value, bool forAttribute)
+    {
+        var sb = new StringBuilder(value.Length);
+        Span<char> utf16 = stackalloc char[2];
+
+        // Enumerating runes rather than chars also neutralizes an unpaired surrogate, which arrives
+        // here as the replacement character instead of as a lone half that could corrupt the envelope.
+        foreach (var rune in value.EnumerateRunes())
+        {
+            if (forAttribute && rune.Value == '"')
+            {
+                _ = sb.Append("&quot;");
+                continue;
+            }
+
+            var structural = MapStructural(rune.Value);
+            if (structural is not null)
+            {
+                _ = sb.Append(structural);
+                continue;
+            }
+
+            if (rune.Value is '\n' or '\r' or '\t')
+            {
+                _ = sb.Append(forAttribute ? ' ' : (char)rune.Value);
+                continue;
+            }
+
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category is UnicodeCategory.Control or UnicodeCategory.Format)
+            {
+                continue;
+            }
+
+            _ = category is UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator
+                ? sb.Append(forAttribute ? ' ' : '\n')
+                : sb.Append(utf16[..rune.EncodeToUtf16(utf16)]);
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    ///     Maps the characters that carry structure in the envelope — and the lookalikes a body could
+    ///     substitute for them — to their escaped forms. Null for everything else.
+    /// </summary>
+    /// <remarks>
+    ///     The lookalike set is deliberately confined to characters that read as a single angle bracket.
+    ///     Guillemets are left alone: they are ordinary punctuation in several languages, and a doubled
+    ///     bracket does not read as the start of a tag.
+    /// </remarks>
+    private static string? MapStructural(int codePoint)
+    {
+        return codePoint switch
+        {
+            '<' or 0x2039 or 0x2329 or 0x276E or 0x2770 or 0x3008 or 0xFE64 or 0xFF1C => "&lt;",
+            '>' or 0x203A or 0x232A or 0x276F or 0x2771 or 0x3009 or 0xFE65 or 0xFF1E => "&gt;",
+            '&' => "&amp;",
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    ///     Renders the model-authored body. Shares <see cref="Escape(string, bool)"/> with the attribute
+    ///     path so the two can never drift into disagreeing about what is dangerous.
     /// </summary>
     private static string SanitizeBody(string body)
     {
-        return body.Replace(
-                $"</{EnvelopeElement}>",
-                $"&lt;/{EnvelopeElement}&gt;",
-                StringComparison.OrdinalIgnoreCase
-            )
-            .Replace(
-                $"<{ReplyInstructionElement}",
-                $"&lt;{ReplyInstructionElement}",
-                StringComparison.OrdinalIgnoreCase
-            );
+        return Escape(body, forAttribute: false);
     }
 }
 

@@ -337,6 +337,17 @@ public static class MessageExtensions
                 GenerationId = genId,
             },
             UsageMessage m => m with { RunId = runId, ThreadId = threadId, GenerationId = genId },
+            // Collaboration messages are injected into a receiver's history rather than produced by a
+            // provider, but they still need run and thread identity: without it the client cannot
+            // group an incoming agent message with the turn it arrived in, and the message renders
+            // detached from the conversation that caused it.
+            AgentMessage m => m with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId,
+                GenerationId = genId,
+            },
             _ => message,
         };
     }

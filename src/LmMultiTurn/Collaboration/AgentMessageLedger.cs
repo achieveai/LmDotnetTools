@@ -48,6 +48,12 @@ public static class AgentMessageFailureCodes
     /// <summary>The original message did not expect a reply.</summary>
     public const string CorrelationDoesNotExpectReply = "correlation_does_not_expect_reply";
 
+    /// <summary>
+    /// A progress update correlated to something that is not an open delegation. Recoverable: the
+    /// sender may resend it as an answer, or against the delegation it is actually progress on.
+    /// </summary>
+    public const string CorrelationNotADelegation = "correlation_not_a_delegation";
+
     /// <summary>A message addressed to its own sender.</summary>
     public const string SelfDelivery = "self_delivery";
 
@@ -493,6 +499,19 @@ public sealed class AgentMessageLedger
         if (!string.Equals(entry.FromAgentId, request.ToAgentId, StringComparison.Ordinal))
         {
             return AgentMessageFailureCodes.CorrelationNotAddressedToSender;
+        }
+
+        // Progress belongs to delegated work and to nothing else. A TaskUpdate correlated to a Question
+        // would leave the asker holding an open question while being told about progress it never asked
+        // for — and, because an update closes nothing, the question could then only ever be closed by
+        // the target leaving. Refused at admission rather than recorded and ignored, so the sender is
+        // told in time to send an answer instead.
+        if (
+            request.MessageType == AgentMessageType.TaskUpdate
+            && entry.MessageType != AgentMessageType.DelegateTask
+        )
+        {
+            return AgentMessageFailureCodes.CorrelationNotADelegation;
         }
 
         return entry.ExpectsReply ? null : AgentMessageFailureCodes.CorrelationDoesNotExpectReply;

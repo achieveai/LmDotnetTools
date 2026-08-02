@@ -202,6 +202,29 @@ public class AgentMessageLedgerTests
     }
 
     [Fact]
+    public void TryAdmit_RefusesProgressReportedAgainstAQuestion()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        var inbox = new AgentInbox(8);
+
+        var update = ledger.TryAdmit(
+            Request(AgentMessageType.TaskUpdate, Target, Sender, question),
+            inbox
+        );
+
+        // A question is answered, not progressed. Admitting an update against one would leave the
+        // asker holding a question that closes nothing could ever close, short of the target leaving.
+        update.Succeeded.Should().BeFalse();
+        update.FailureCode.Should().Be(AgentMessageFailureCodes.CorrelationNotADelegation);
+
+        // Recoverable, and refused before anything was spent: the question is untouched and the
+        // target's inbox slot is still free for the answer that should have been sent instead.
+        ledger.Find(question)!.IsClosed.Should().BeFalse();
+        inbox.Count.Should().Be(0);
+    }
+
+    [Fact]
     public void TryAdmit_RefusesAReplyToAMessageItDoesNotKnow()
     {
         var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
