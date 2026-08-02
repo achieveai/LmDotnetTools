@@ -233,12 +233,21 @@ transport) on:
 - `GET` / `POST` / `DELETE` `/mcp` — the full read/write toolset
 - `GET` / `POST` / `DELETE` `/mcp/readonly` — the read-only toolset
 
-This is a **byte-level reverse proxy**, not an MCP-aware reimplementation: there's no JSON-RPC
-parsing and no proxy-side session bookkeeping. Point any MCP Streamable-HTTP client at
-`http://127.0.0.1:8787/mcp` (or `/mcp/readonly`) exactly as you would point it at
-`https://api.enterprise.githubcopilot.com/mcp` (or `/mcp/readonly`) directly — request/response
-bodies, status codes, and headers are relayed verbatim, including SSE responses (same raw-byte
-streaming as `/v1/messages`).
+This remains a **byte-level reverse proxy** for almost all MCP traffic. When valid Jina web-tool
+configuration is present, it narrowly composes supported single-page JSON `tools/list` responses and
+handles calls for local fallback tools. GitHub remains the MCP session owner; the proxy stores only the
+local routing snapshot required to keep a call consistent with the catalog the client received.
+
+For each exact name, `web_search` and `web_fetch`, GitHub's advertised definition and call path wins.
+When GitHub omits a name, the proxy adds the existing Jina-backed definition only when `JINA_API_KEY`
+is configured. Client restrictions remain authoritative: `X-MCP-Tools` allowlists local tools,
+`X-MCP-Exclude-Tools` excludes them, and lockdown suppresses local injection. There is no mid-call
+failover.
+
+SSE-framed and paginated tool catalogs, JSON-RPC batches, sessionless catalogs, and unrelated methods
+remain raw pass-through and do not gain local fallback tools. `DELETE` and an upstream session `404`
+clear the corresponding local routing snapshot. `/mcp` and `/mcp/readonly` keep independent snapshots.
+Point MCP Streamable-HTTP clients at `http://127.0.0.1:8787/mcp` or `/mcp/readonly` as before.
 
 **Header policy**: every inbound header is forwarded verbatim **except** `Authorization` (the
 proxy attaches its own Copilot bearer token instead, via the same `CopilotHeadersHandler` used for
@@ -275,6 +284,12 @@ host/cross-site guard described in the warning above.
 | `COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS` | `180` | Per-request idle timeout, reset after each streamed upstream read. The total exchange has no deadline, so long generations are not cut off; this only fires when the upstream produces *nothing* for the whole window. |
 | `COPILOT_ANTHROPIC_KEEPALIVE_SECONDS` | `15` | While an SSE upstream is silent, emit a downstream SSE keep-alive this often so the client's own read timeout does not fire mid-generation. Keep-alives don't reset the idle timeout above. Set `0` to disable. |
 | `COPILOT_ANTHROPIC_ENABLE_DEVICE_FLOW` | `false` | When truthy, allow an interactive GitHub device-flow login at startup (composite provider). Off by default — the request path never blocks on device flow. |
+| `JINA_API_KEY` | (none) | Enables Jina-backed `web_search` and `web_fetch` fallback through `/mcp*` when GitHub does not advertise the exact tool name. Without a key, MCP remains byte-transparent. |
+| `WEB_TOOLS_BACKEND` | `jina` | Backend selector for local MCP web tools. Only `jina` is supported. |
+| `WEB_TOOLS_OUTPUT_CAP` | `50000` | Maximum characters returned from a local Jina web-tool call before truncation. |
+| `WEB_TOOLS_TIMEOUT_MS` | `30000` | Total timeout budget for a local Jina web-tool call, including retries. |
+
+The Proxy sample reuses web tooling from the `Misc` project rather than duplicating the Jina client and security logic. That project reference also brings `Microsoft.Data.Sqlite` and its native SQLite assets transitively. The measured framework-dependent publish-size increase for this change was approximately 0.9 MB; no SQLite service is constructed by the Proxy.
 
 ## Logs
 

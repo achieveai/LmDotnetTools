@@ -9,6 +9,8 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Models;
+using AchieveAi.LmDotnetTools.Misc.Configuration;
+using AchieveAi.LmDotnetTools.Misc.Web.Jina;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Primitives;
 using Serilog;
@@ -46,8 +48,9 @@ using ILogger = Microsoft.Extensions.Logging.ILogger;
 // is dropped on both (Copilot 400s the whole request over one unrecognised value).
 // Copilot auth/headers come from the proven GithubCopilotProvider transport, and
 // responses stream back without buffering.
-// It also exposes Copilot's MCP server (Streamable HTTP transport) as a transparent
-// byte-level proxy on /mcp and /mcp/readonly, with Copilot auth attached the same way.
+// It also exposes Copilot's MCP server (Streamable HTTP transport) on /mcp and
+// /mcp/readonly. Most traffic remains byte-transparent; supported JSON tool catalogs may gain
+// keyed Jina fallbacks, whose calls are handled locally against the exact advertised schema.
 //
 // Point Claude Code, Codex CLI or opencode at it via that client's base-URL setting.
 // SECURITY: binds to loopback only and attaches the developer's Copilot credentials
@@ -133,6 +136,18 @@ builder.Services.AddSingleton(sp =>
         innerHandler: sp.GetService<HttpMessageHandler>()
     )
 );
+
+var webToolsOptions = WebToolsOptions.FromEnvironment();
+builder.Services.AddSingleton(webToolsOptions);
+builder.Services.AddSingleton(sp =>
+    new JinaWebProvider(
+        webToolsOptions,
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger<JinaWebProvider>()
+    )
+);
+builder.Services.AddSingleton<McpJinaToolCatalog>();
+builder.Services.AddSingleton<McpToolSnapshotStore>();
+builder.Services.AddSingleton<McpToolComposition>();
 
 var app = builder.Build();
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CopilotAnthropicProxy");
@@ -302,8 +317,14 @@ foreach (var path in new[] { "/v1/responses", "/responses" })
 // /mcp and /mcp/readonly — transparent MCP (Streamable HTTP) proxy. Every HTTP method is routed
 // here (not just GET/POST/DELETE) so an unsupported method gets ProxyMcp's own MCP/JSON-RPC-shaped
 // 405, not the shared Anthropic-shaped fallback 404.
-app.Map("/mcp", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval));
-app.Map("/mcp/readonly", ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval));
+app.Map(
+    "/mcp",
+    ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval, config.MaxBodyBytes)
+);
+app.Map(
+    "/mcp/readonly",
+    ctx => ProxyMcp.ForwardAsync(ctx, config.IdleTimeout, config.KeepAliveInterval, config.MaxBodyBytes)
+);
 
 // Unknown route -> Anthropic-shaped 404.
 app.MapFallback(ctx =>
@@ -1784,6 +1805,40 @@ internal static class ProxyHttp
     ///     <paramref name="maxBytes" />. A declared <c>Content-Length</c> short-circuits the read
     ///     entirely; a chunked reply is measured as it arrives, so nothing over the cap is ever held.
     /// </summary>
+    internal static async Task<byte[]?> ReadCappedBytesAsync(
+        HttpContent content,
+        long maxBytes,
+        CancellationToken token
+    )
+    {
+        if (content.Headers.ContentLength is { } declared && declared > maxBytes)
+        {
+            return null;
+        }
+
+        var stream = await content.ReadAsStreamAsync(token).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        {
+            using var buffer = new MemoryStream();
+            var chunk = new byte[BufferSize];
+            while (true)
+            {
+                var read = await stream.ReadAsync(chunk, token).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return buffer.ToArray();
+                }
+
+                if (buffer.Length + read > maxBytes)
+                {
+                    return null;
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+        }
+    }
+
     private static async Task<string?> ReadCappedStringAsync(
         HttpContent content,
         long maxBytes,
@@ -2450,12 +2505,11 @@ internal static class ProxyHttp
 // =============================================================================
 
 /// <summary>
-///     Transparent reverse proxy for GitHub Copilot's MCP server (Streamable HTTP transport). Forwards
-///     GET/POST/DELETE on <c>/mcp</c> and <c>/mcp/readonly</c> verbatim: no JSON-RPC parsing and no
-///     proxy-side session bookkeeping — the <c>Mcp-Session-Id</c> the upstream server assigns on
-///     <c>initialize</c> is just another response header this proxy copies through, and the caller is
-///     responsible for echoing it back on subsequent requests exactly as it would talk to Copilot
-///     directly.
+///     Reverse proxy for GitHub Copilot's MCP server (Streamable HTTP transport). Most traffic remains
+///     byte-transparent. With valid local web-tool configuration, supported JSON <c>tools/list</c>
+///     responses may gain missing Jina fallbacks and matching <c>tools/call</c> requests execute locally.
+///     GitHub remains the session owner; the proxy keeps only the local routing snapshot and clears it on
+///     DELETE or an upstream session 404.
 /// </summary>
 internal static class ProxyMcp
 {
@@ -2498,7 +2552,12 @@ internal static class ProxyMcp
     private static readonly string[] AllowedMethods = ["GET", "POST", "DELETE"];
 
     /// <summary>Forwards GET/POST/DELETE on the MCP endpoint to Copilot and streams the response back.</summary>
-    public static async Task ForwardAsync(HttpContext ctx, TimeSpan idleTimeout, TimeSpan keepAliveInterval)
+    public static async Task ForwardAsync(
+        HttpContext ctx,
+        TimeSpan idleTimeout,
+        TimeSpan keepAliveInterval,
+        long maxBodyBytes
+    )
     {
         if (!AllowedMethods.Contains(ctx.Request.Method, StringComparer.OrdinalIgnoreCase))
         {
@@ -2517,14 +2576,26 @@ internal static class ProxyMcp
 
         var upstreamPath = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
         using var upstreamRequest = new HttpRequestMessage(new HttpMethod(ctx.Request.Method), upstreamPath);
+        byte[]? inboundBody = null;
+        JsonObject? rpcRequest = null;
+        var composition = services.GetRequiredService<McpToolComposition>();
 
         if (string.Equals(ctx.Request.Method, "POST", StringComparison.OrdinalIgnoreCase))
         {
-            byte[] inboundBody;
             using (var memory = new MemoryStream())
             {
                 await ctx.Request.Body.CopyToAsync(memory, ctx.RequestAborted);
                 inboundBody = memory.ToArray();
+            }
+
+            if (
+                composition.IsEnabled
+                && McpToolComposition.TryParseSingleRequest(inboundBody, out rpcRequest)
+                && rpcRequest is not null
+                && await composition.TryHandleCallAsync(ctx, rpcRequest)
+            )
+            {
+                return;
             }
 
             upstreamRequest.Content = new ByteArrayContent(inboundBody);
@@ -2591,6 +2662,58 @@ internal static class ProxyMcp
 
         using (upstream)
         {
+            var endpoint = ctx.Request.Path.Value ?? string.Empty;
+            var sessionId = ctx.Request.Headers["Mcp-Session-Id"].FirstOrDefault();
+            if (
+                !string.IsNullOrWhiteSpace(sessionId)
+                && (
+                    string.Equals(ctx.Request.Method, "DELETE", StringComparison.OrdinalIgnoreCase)
+                    || upstream.StatusCode == HttpStatusCode.NotFound
+                )
+            )
+            {
+                composition.RemoveSnapshot(endpoint, sessionId);
+            }
+
+            byte[]? composedBody = null;
+            if (rpcRequest is not null && McpToolComposition.IsToolsList(rpcRequest))
+            {
+                try
+                {
+                    composedBody = await composition.ComposeListAsync(
+                        ctx,
+                        rpcRequest,
+                        upstream,
+                        maxBodyBytes,
+                        linked.Token
+                    );
+                }
+                catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (OperationCanceledException) when (idleCts.IsCancellationRequested)
+                {
+                    logger.LogWarning("Upstream MCP tool-list body timed out while being buffered.");
+                    await WriteMcpErrorAsync(
+                        ctx,
+                        StatusCodes.Status504GatewayTimeout,
+                        "Timed out waiting for the upstream Copilot MCP server to respond."
+                    );
+                    return;
+                }
+
+                if (composedBody is { Length: 0 })
+                {
+                    await WriteMcpErrorAsync(
+                        ctx,
+                        StatusCodes.Status502BadGateway,
+                        $"Upstream MCP reply exceeded the {maxBodyBytes}-byte relay cap."
+                    );
+                    return;
+                }
+            }
+
             // Lock status + headers verbatim (minus hop-by-hop/framing) — this is what carries
             // Mcp-Session-Id back to the client on the initialize response.
             ctx.Response.StatusCode = (int)upstream.StatusCode;
@@ -2611,17 +2734,24 @@ internal static class ProxyMcp
 
             ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-            await ProxyHttp.CopyBodyAsync(
-                ctx,
-                upstream,
-                idleTimeout,
-                idleCts,
-                linked,
-                logger,
-                WriteMcpErrorAsync,
-                isSse,
-                keepAliveInterval
-            );
+            if (composedBody is not null)
+            {
+                await ctx.Response.Body.WriteAsync(composedBody, ctx.RequestAborted);
+            }
+            else
+            {
+                await ProxyHttp.CopyBodyAsync(
+                    ctx,
+                    upstream,
+                    idleTimeout,
+                    idleCts,
+                    linked,
+                    logger,
+                    WriteMcpErrorAsync,
+                    isSse,
+                    keepAliveInterval
+                );
+            }
 
             logger.LogInformation(
                 "{Method} {Path} mcp-session={SessionId} upstream={Status} {Elapsed}ms",
