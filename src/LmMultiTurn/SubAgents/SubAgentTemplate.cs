@@ -5,11 +5,39 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 
 /// <summary>
+/// Who decides a spawned sub-agent's collaboration role.
+/// </summary>
+/// <remarks>
+/// Only consulted when collaboration is enabled. A template that exists to do one specific job should
+/// pin its role (<see cref="Fixed"/>) so a parent LLM cannot relabel it into something the directory
+/// then advertises inaccurately; a general-purpose template has no role of its own and must be told
+/// one at spawn time (<see cref="Customizable"/>, the default).
+/// </remarks>
+public enum SubAgentRoleMode
+{
+    /// <summary>The spawning caller supplies the role, and must.</summary>
+    Customizable,
+
+    /// <summary>The template's own <see cref="SubAgentTemplate.Role"/> is used and cannot be overridden.</summary>
+    Fixed,
+}
+
+/// <summary>
 /// Configuration record for named sub-agent templates.
 /// Each template defines how to create and configure a sub-agent instance.
 /// </summary>
 public record SubAgentTemplate
 {
+    /// <summary>
+    /// Collaboration role this template pins, used when <see cref="RoleMode"/> is
+    /// <see cref="SubAgentRoleMode.Fixed"/>. Ignored otherwise, and ignored entirely when
+    /// collaboration is off.
+    /// </summary>
+    public string? Role { get; init; }
+
+    /// <summary>Who decides the spawned sub-agent's role. Defaults to the spawning caller.</summary>
+    public SubAgentRoleMode RoleMode { get; init; } = SubAgentRoleMode.Customizable;
+
     /// <summary>
     /// Optional display name for the template.
     /// The template is identified by its key in the Templates dictionary, not this field.

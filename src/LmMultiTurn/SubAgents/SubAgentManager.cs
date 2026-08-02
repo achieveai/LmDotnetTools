@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
@@ -137,6 +138,160 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// <summary>Test-only barrier immediately before the shutdown-serialized registration commit.</summary>
     internal Func<Task>? TestBeforeAgentRegistrationAsync { get; set; }
 
+    /// <summary>
+    /// The parent agent's handle on the collaboration, or null when collaboration is off. Null is the
+    /// feature gate: every collaboration branch in this manager is skipped and the legacy behaviour —
+    /// per-manager limits only, one ordinary nesting level, no directory — is unchanged.
+    /// </summary>
+    public AgentCollaborationSetup? Collaboration { get; }
+
+    /// <summary>
+    /// Per-agent collaboration bookkeeping, keyed by agent id.
+    /// </summary>
+    /// <remarks>
+    /// Kept beside the spawn rather than threaded through <see cref="StartWithHeldPermitAsync"/>,
+    /// <see cref="QueuedSpawn"/>, and <see cref="SubAgentState"/> because the inline path, the defer
+    /// queue, and the restart path all need the same two values at different times, and every one of
+    /// them already knows the agent id. Empty whenever collaboration is off.
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, SubAgentAdmission> _admissions = new(
+        StringComparer.Ordinal);
+
+    /// <summary>What the collaboration granted a spawn: the child's own handle, and its capacity slot.</summary>
+    private sealed record SubAgentAdmission(AgentCollaborationSetup Child, AgentCapacityLease Lease);
+
+    /// <summary>
+    /// The child's handle on the collaboration, or null when collaboration is off or the id is unknown.
+    /// </summary>
+    internal AgentCollaborationSetup? GetChildCollaboration(string agentId) =>
+        _admissions.TryGetValue(agentId, out var admission) ? admission.Child : null;
+
+    /// <summary>
+    /// Asks the collaboration to admit a spawn, reserving its capacity slot and publishing it in the
+    /// directory so it is addressable from the moment the spawn is accepted.
+    /// </summary>
+    /// <remarks>
+    /// No-op when collaboration is off. Registration happens HERE rather than in the child's own loop
+    /// because the directory takes an agent's endpoint at registration time, and only this manager can
+    /// deliver into a sub-agent whose lifecycle it owns.
+    /// </remarks>
+    /// <exception cref="SubAgentCollaborationException">The collaboration refused the spawn.</exception>
+    private void AdmitToCollaboration(
+        string agentId,
+        string effectiveName,
+        string templateName,
+        SubAgentTemplate template,
+        string? role,
+        string? description)
+    {
+        if (Collaboration is not { } parent)
+        {
+            return;
+        }
+
+        if (!parent.CanDelegate)
+        {
+            throw new SubAgentCollaborationException(
+                SubAgentCollaborationFailureCodes.DepthLimit,
+                $"Maximum delegation depth ({parent.Options.MaxDelegationDepth}) reached. "
+                    + "This agent cannot spawn sub-agents; do the work itself or report back.");
+        }
+
+        // A role-fixed template owns its own label so a spawning LLM cannot relabel it into something
+        // the directory would then advertise inaccurately to every other agent.
+        var effectiveRole = template.RoleMode == SubAgentRoleMode.Fixed ? template.Role : role;
+        if (string.IsNullOrWhiteSpace(effectiveRole))
+        {
+            throw new SubAgentCollaborationException(
+                SubAgentCollaborationFailureCodes.InvalidRole,
+                template.RoleMode == SubAgentRoleMode.Fixed
+                    ? $"Template '{templateName}' pins its own role but declares none."
+                    : "The 'role' parameter is required while collaboration is enabled.");
+        }
+
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            throw new SubAgentCollaborationException(
+                SubAgentCollaborationFailureCodes.InvalidDescription,
+                "The 'description' parameter is required while collaboration is enabled: other agents "
+                    + "use it to decide whether to contact this one.");
+        }
+
+        AgentCollaborationContext childContext;
+        try
+        {
+            childContext = parent.Context.CreateChild(
+                agentId,
+                AgentKind.SubAgent,
+                effectiveRole,
+                description);
+        }
+        catch (ArgumentException ex)
+        {
+            // Length/shape rejection. The exception text describes the BOUND, never the value, so it is
+            // safe to hand back to the caller verbatim.
+            throw new SubAgentCollaborationException(
+                SubAgentCollaborationFailureCodes.InvalidMetadata,
+                ex.Message);
+        }
+
+        var lease = parent.Directory.TryAcquireCapacity(agentId)
+            ?? throw new SubAgentCollaborationException(
+                SubAgentCollaborationFailureCodes.CapacityExhausted,
+                $"This collaboration already holds its maximum of {parent.Options.MaxTotalAgents} "
+                    + "agents. Wait for one to finish before spawning another.");
+
+        var registration = parent.Directory.TryRegister(
+            childContext,
+            effectiveName,
+            AgentCollaborationStatuses.Queued,
+            new SubAgentWriteEndpoint(this, agentId),
+            readEndpoint: null,
+            agentType: templateName);
+
+        if (!registration.Succeeded)
+        {
+            _ = lease.Release();
+            throw new SubAgentCollaborationException(
+                registration.FailureCode ?? SubAgentCollaborationFailureCodes.RegistrationFailed,
+                $"The collaboration refused this sub-agent ({registration.FailureCode}).");
+        }
+
+        _admissions[agentId] = new SubAgentAdmission(parent.ForChild(childContext, effectiveName), lease);
+    }
+
+    /// <summary>
+    /// Publishes a lifecycle transition to the directory so a collaboration-wide listing agrees with
+    /// this manager's own observation surface. No-op when collaboration is off.
+    /// </summary>
+    private void SyncCollaborationStatus(string agentId, string status)
+    {
+        if (Collaboration is { } parent && _admissions.ContainsKey(agentId))
+        {
+            _ = parent.Directory.TryUpdateStatus(agentId, status);
+        }
+    }
+
+    /// <summary>
+    /// Withdraws a sub-agent from the collaboration and returns its capacity slot.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT called when a run merely finishes: a completed background sub-agent stays
+    /// addressable (a later message restarts it), so it is still an admitted member and still occupies
+    /// a slot. Retirement belongs to the points where the agent stops existing — failed spawn rollback
+    /// and manager disposal.
+    /// </remarks>
+    private void RetireFromCollaboration(string agentId, string status)
+    {
+        if (Collaboration is not { } parent || !_admissions.TryRemove(agentId, out var admission))
+        {
+            return;
+        }
+
+        _ = parent.Bundle.RetireAgent(agentId, status);
+        _ = admission.Lease.Release();
+    }
+
     public SubAgentManager(
         IMultiTurnAgent parentAgent,
         IReadOnlyList<FunctionContract> parentContracts,
@@ -148,7 +303,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         int? parentMaxToken = null,
         IUsageSink? usageSink = null,
         Func<Task>? persistUsageAsync = null,
-        MultiTurnLifecycleServices? lifecycleServices = null)
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        AgentCollaborationSetup? collaboration = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -189,6 +345,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         _parentMaxToken = parentMaxToken;
         // The parent's lifecycle wiring, from which each child's bundle is derived at spawn time.
         _lifecycleServices = lifecycleServices ?? MultiTurnLifecycleServices.Disabled;
+        // The parent agent's handle on the collaboration, when the host enabled one. Null keeps every
+        // collaboration branch in this class inert, which is exactly today's behaviour.
+        Collaboration = collaboration;
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
             options.MaxConcurrentSubAgents);
@@ -234,7 +393,9 @@ public sealed class SubAgentManager : IAsyncDisposable
         string[]? removeTools = null,
         CancellationToken ct = default,
         int? modelIntelligence = null,
-        string? spawningToolCallId = null)
+        string? spawningToolCallId = null,
+        string? role = null,
+        string? description = null)
     {
         // Snapshot the live source view so a concurrent TryRegister cannot make the
         // diagnostic Available list inconsistent with the lookup that produced template.
@@ -294,6 +455,12 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         ct.ThrowIfCancellationRequested();
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+
+        // Admission to the collaboration happens BEFORE the concurrency permit and before the defer
+        // queue: capacity and delegation depth are root-wide invariants, so a spawn that the
+        // collaboration will not accept must never occupy a local slot or sit in the queue. No-op when
+        // collaboration is off.
+        AdmitToCollaboration(agentId, effectiveName, templateName, template, role, description);
 
         // Cap behaviour is DEFER-QUEUE, not reject: try to take a concurrency permit without blocking.
         // Wait(0) returns immediately whether or not a permit is free, so the historical hot path (a
@@ -357,18 +524,28 @@ public sealed class SubAgentManager : IAsyncDisposable
             CallerCancellation = runInBackground ? CancellationToken.None : ct,
         };
 
-        lock (_spawnQueue)
+        try
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
-            if (_queuedSpawns.Count >= _options.MaxQueuedSubAgents)
+            lock (_spawnQueue)
             {
-                throw new SubAgentQueueFullException(_options.MaxQueuedSubAgents);
-            }
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+                if (_queuedSpawns.Count >= _options.MaxQueuedSubAgents)
+                {
+                    throw new SubAgentQueueFullException(_options.MaxQueuedSubAgents);
+                }
 
-            _spawnQueue.Enqueue(queued);
-            _queuedSpawns[agentId] = queued;
-            _queuedNamesToIds[effectiveName] = agentId;
-            _ = _queueSignal.Release();
+                _spawnQueue.Enqueue(queued);
+                _queuedSpawns[agentId] = queued;
+                _queuedNamesToIds[effectiveName] = agentId;
+                _ = _queueSignal.Release();
+            }
+        }
+        catch
+        {
+            // The spawn never reached the queue, so nothing downstream will ever retire it. Give the
+            // collaboration its slot back here or the cap leaks one agent per rejected spawn.
+            RetireFromCollaboration(agentId, "error");
+            throw;
         }
 
         _logger.LogInformation(
@@ -500,6 +677,7 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
 
             // Start the agent loop in the background
+            SyncCollaborationStatus(agentId, AgentCollaborationStatuses.Running);
             var cts = state.Cts;
             state.RunTask = agent.RunAsync(cts.Token);
 
@@ -835,6 +1013,7 @@ public sealed class SubAgentManager : IAsyncDisposable
         GateReleaseGuard gateGuard)
     {
         _ = _agents.TryRemove(agentId, out _);
+        RetireFromCollaboration(agentId, "error");
         if (!string.IsNullOrWhiteSpace(name)
             && _namesToIds.TryGetValue(name, out var mappedId)
             && mappedId == agentId)
@@ -1644,6 +1823,38 @@ public sealed class SubAgentManager : IAsyncDisposable
     public IReadOnlyCollection<string> KnownAgentIds() => [.. _agents.Keys, .. _queuedSpawns.Keys];
 
     /// <summary>
+    /// Observes a direct child's completion by id OR name, including one still waiting in the defer
+    /// queue (which <see cref="ObserveCompletionAsync"/> cannot see, because a queued spawn has no
+    /// state yet). Non-destructive in the same way: cancelling the wait leaves the child running.
+    /// </summary>
+    /// <exception cref="ArgumentException">No child of this manager matches <paramref name="target"/>.</exception>
+    public async Task<string> ObserveTargetCompletionAsync(string target, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(target);
+
+        if (!TryResolveAgentId(target, out var agentId))
+        {
+            throw new ArgumentException($"Unknown agent '{target}'.", nameof(target));
+        }
+
+        QueuedSpawn? queued;
+        lock (_spawnQueue)
+        {
+            _ = _queuedSpawns.TryGetValue(agentId, out queued);
+        }
+
+        if (queued is null)
+        {
+            return await ObserveCompletionAsync(agentId, ct);
+        }
+
+        // Still queued: wait for the pump to start it, then for the run it starts. Both waits honour
+        // the caller's token, so abandoning the wait never disturbs the spawn itself.
+        var started = await queued.StateReady.Task.WaitAsync(ct);
+        return await started.Completion.Task.WaitAsync(ct);
+    }
+
+    /// <summary>
     /// Performs a batch observation of sub-agents matching the given targets (agent IDs or names).
     /// Returns one typed entry per input (in order, preserving duplicates and unknowns) with resolved
     /// identity, status, recent turn snapshots, and summary counts.
@@ -1910,6 +2121,13 @@ public sealed class SubAgentManager : IAsyncDisposable
 
         _agents.Clear();
         _namesToIds.Clear();
+
+        // The agents this manager owned no longer exist, so give the collaboration back their slots and
+        // stop advertising them as reachable. Snapshot the keys first: retirement mutates _admissions.
+        foreach (var agentId in _admissions.Keys.ToArray())
+        {
+            RetireFromCollaboration(agentId, AgentCollaborationStatuses.Stopped);
+        }
 
         // Best-effort final dispose of providers whose in-restart retry disposal also failed; their state
         // slots were overwritten by replacements, so this is their last cleanup opportunity.
@@ -2215,6 +2433,14 @@ public sealed class SubAgentManager : IAsyncDisposable
                 inheritedToolNames
             );
 
+            // Recursive delegation is opened ONLY by a collaboration that still has delegation budget
+            // left for this child. Handing the child subAgentOptions gives it its own independent
+            // SubAgentManager (own concurrency pool, own queue) while the shared bundle keeps capacity
+            // and depth root-wide. Without collaboration this stays null — the historical recursion
+            // guard, where exactly one level of ordinary sub-agents exists.
+            var childCollaboration = GetChildCollaboration(agentId);
+            var grandchildrenAllowed = childCollaboration?.CanDelegate == true;
+
             return (
                 new MultiTurnAgentLoop(
                     providerAgent,
@@ -2225,8 +2451,11 @@ public sealed class SubAgentManager : IAsyncDisposable
                     maxTurnsPerRun: template.MaxTurnsPerRun,
                     store: store,
                     logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
+                    subAgentOptions: grandchildrenAllowed ? _options : null,
+                    subAgentTemplateSource: grandchildrenAllowed ? _source : null,
                     lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(
-                        _lifecycleServices, lineage)
+                        _lifecycleServices, lineage),
+                    collaboration: childCollaboration
                 ),
                 store,
                 ownedProviderAgent,
@@ -2595,6 +2824,12 @@ public sealed class SubAgentManager : IAsyncDisposable
         // must still be persisted. See PersistTerminalStateAsync for why this is safe to layer on
         // top of the child's existing (unchanged) post-run metadata save.
         await PersistTerminalStateAsync(state);
+
+        // Publish the terminal status but keep the directory entry live: a completed background
+        // sub-agent is still addressable, and a collaboration message to it restarts it in place.
+        SyncCollaborationStatus(
+            state.AgentId,
+            rcm.IsError ? AgentCollaborationStatuses.Error : AgentCollaborationStatuses.Completed);
 
         // The concurrency slot is released by the monitor (via its GateReleaseGuard), exactly
         // once per gate-acquisition epoch — not here, because a single monitor may handle

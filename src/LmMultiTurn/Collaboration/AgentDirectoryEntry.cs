@@ -5,6 +5,28 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 
 /// <summary>
+/// The lifecycle vocabulary the directory publishes, shared verbatim with the sub-agent observation
+/// surface so the same agent is never described two different ways by two different tools.
+/// </summary>
+public static class AgentCollaborationStatuses
+{
+    /// <summary>Accepted, but not started yet.</summary>
+    public const string Queued = "queued";
+
+    /// <summary>Currently executing.</summary>
+    public const string Running = "running";
+
+    /// <summary>Finished its work successfully.</summary>
+    public const string Completed = "completed";
+
+    /// <summary>Finished by failing.</summary>
+    public const string Error = "error";
+
+    /// <summary>Stopped before finishing.</summary>
+    public const string Stopped = "stopped";
+}
+
+/// <summary>
 /// A read-only snapshot of one agent's directory entry: who it is, where it sits, and whether it is
 /// still live.
 /// </summary>
@@ -67,7 +89,11 @@ public sealed record AgentDirectoryEntry
     public bool IsLive { get; init; } = true;
 
     /// <summary>Whether this agent has reached a terminal status.</summary>
-    public bool IsTerminal => Status is "completed" or "error" or "stopped";
+    public bool IsTerminal =>
+        Status
+            is AgentCollaborationStatuses.Completed
+                or AgentCollaborationStatuses.Error
+                or AgentCollaborationStatuses.Stopped;
 }
 
 /// <summary>
