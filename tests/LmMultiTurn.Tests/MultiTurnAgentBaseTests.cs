@@ -33,6 +33,13 @@ public class MultiTurnAgentBaseTests
         /// <summary>Test-only window into the protected conversation history, used to assert recovery.</summary>
         public IReadOnlyList<IMessage> SnapshotHistoryForTest() => GetHistorySnapshot();
 
+        /// <summary>
+        /// Test-only door onto the protected fan-out, so the publish path can be driven directly
+        /// instead of through a run. Publishing IS the code under test in the subscriber-race test.
+        /// </summary>
+        public ValueTask PublishForTest(IMessage message, CancellationToken ct) =>
+            PublishToAllAsync(message, ct);
+
         public TestMultiTurnAgent(
             string threadId,
             List<IMessage>? messagesToReturn = null,
@@ -437,6 +444,95 @@ public class MultiTurnAgentBaseTests
                     await CompleteRunAsync(assignment.RunId, assignment.GenerationId, false, null, 0, ct: ct);
                 }
             }
+        }
+    }
+
+    [Fact]
+    public async Task PublishToAll_WhileSubscribersLeave_NeverWritesToATornSnapshot()
+    {
+        // The publisher copies its subscriber map before fanning out, and copying a
+        // ConcurrentDictionary is not one atomic step: a List/collection-expression copy reads
+        // ICollection.Count under the dictionary's locks and then calls CopyTo under them AGAIN.
+        // A subscriber that unsubscribes between the two makes CopyTo fill fewer slots than the
+        // length already committed to, so the copy ends in default(KeyValuePair) — a NULL channel
+        // that the fan-out immediately dereferences.
+        //
+        // That is not theoretical: it surfaced as an intermittent NullReferenceException thrown out
+        // of an UNRELATED test's DisposeAsync (a delayed child run publishing while the loop shut
+        // down), i.e. as noise in someone else's failure, which is how a real race hides. Removals
+        // are the common case here, not an exotic one — every client disconnect is one, and so is
+        // the slow-subscriber drop the publisher itself performs.
+        //
+        // There is no seam to force that interleaving, so it is reproduced by volume: subscribers
+        // that keep leaving while a publisher never stops. Nothing sleeps — the work is the wait.
+        const int Drainers = 16;
+        const int Publishes = 20_000;
+
+        await using var agent = new TestMultiTurnAgent("publish-race");
+
+        // A ceiling, not a delay: if the fan-out ever wedges, the test fails instead of hanging.
+        using var life = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        // Long-lived readers, so every snapshot has real entries to copy. They re-subscribe after a
+        // drop because the publisher is entitled to evict a slow one, and an empty map races nothing.
+        using var drainerLife = CancellationTokenSource.CreateLinkedTokenSource(life.Token);
+        var drainers = Enumerable.Range(0, Drainers)
+            .Select(_ => Task.Run(() => DrainUntilCancelledAsync(agent, drainerLife.Token)))
+            .ToArray();
+
+        // The churn: a subscriber joining and leaving continuously, so a removal is always in
+        // flight against the publisher's copy.
+        using var churnLife = CancellationTokenSource.CreateLinkedTokenSource(life.Token);
+        var churn = Task.Run(async () =>
+        {
+            while (!churnLife.IsCancellationRequested)
+            {
+                using var solo = CancellationTokenSource.CreateLinkedTokenSource(churnLife.Token);
+                var reader = Task.Run(() => DrainUntilCancelledAsync(agent, solo.Token));
+
+                await Task.Yield();
+                await solo.CancelAsync();
+                await reader;
+            }
+        });
+
+        var message = new TextMessage { Text = "fan-out", Role = Role.Assistant };
+        var publish = async () =>
+        {
+            for (var i = 0; i < Publishes; i++)
+            {
+                await agent.PublishForTest(message, life.Token);
+            }
+        };
+
+        await publish.Should().NotThrowAsync(
+            "a subscriber leaving mid-copy must never leave a null channel in the publisher's snapshot");
+
+        await churnLife.CancelAsync();
+        await churn;
+        await drainerLife.CancelAsync();
+        await Task.WhenAll(drainers);
+    }
+
+    /// <summary>
+    /// Reads until cancelled, re-subscribing if the publisher drops the subscriber for being slow.
+    /// Consuming is all that matters — the values are the test's noise, the churn is its signal.
+    /// </summary>
+    private static async Task DrainUntilCancelledAsync(
+        TestMultiTurnAgent agent, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await foreach (var _ in agent.SubscribeAsync(ct))
+                {
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Leaving is the point of this helper, not a failure.
         }
     }
 

@@ -308,6 +308,29 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Spawn_ThatFailsAfterAdmission_ReturnsTheRootCapacityItHadTaken()
+    {
+        // Capacity is taken at admission, before the agent is built, so everything that can go wrong
+        // while building it happens holding a permit. A construction failure is the ordinary case: a
+        // bad model identifier or an unreachable provider throws from the factory, and if that path
+        // forgets the permit the collaboration silently shrinks by one agent for the rest of its life.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 1 });
+        var (_, provider) = CreateManager(root, FailingTemplate());
+
+        var spawn = async () => await InvokeAsync(provider, "Agent", NewSpawn("doomed"));
+
+        _ = await spawn.Should().ThrowAsync<InvalidOperationException>();
+        root.Directory.Capacity.InUse.Should()
+            .Be(0, "a spawn that never produced an agent is not occupying a slot");
+        root.Directory.FindById(root.AgentId).Should().NotBeNull();
+
+        // The permit accounting is only worth anything if the next spawn can actually use it, so the
+        // proof is a real admission rather than a counter that happens to read zero.
+        var (_, healthy) = CreateManager(root);
+        (await InvokeAsync(healthy, "Agent", NewSpawn("after-failure"))).IsError.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Spawn_PastTheDelegationLimit_IsRefusedEvenWhenTheToolIsNotAdvertised()
     {
         // Hiding the tool is guidance, not enforcement: a model can call a tool it was told about on
@@ -326,6 +349,35 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
 
         (await act.Should().ThrowAsync<SubAgentCollaborationException>()).Which
             .FailureCode.Should().Be(SubAgentCollaborationFailureCodes.DepthLimit);
+    }
+
+    [Fact]
+    public async Task AChildAtTheDelegationLimit_CanStillMessageItsPeers()
+    {
+        // Delegation and messaging are separate budgets: SubAgentToolProvider withholds only the SPAWN
+        // tools at the depth limit and deliberately still offers GetAgents/SendMessage. That branch was
+        // unreachable, though, because a child with no delegation budget was handed no sub-agent options
+        // at all, and the loop builds its tool provider only when it has them. The result was a leaf
+        // registered in the directory, holding an inbox and a write endpoint, addressable by every other
+        // agent — and unable to say anything back. With the DEFAULT MaxDelegationDepth of 1 that is every
+        // sub-agent there is, so collaboration messaging was effectively dead out of the box.
+        //
+        // Every other test here builds the child's manager by hand, which silently supplies what the real
+        // spawn path did not. This one goes through the manager, which is the only way to see it.
+        var root = CreateRegisteredRoot();
+        var (peer, _) = RegisterPeer(root, "peer");
+        var (manager, provider) = CreateManager(root, MessagingTemplate("peer"));
+
+        var childId = await SpawnAndResolveIdAsync(provider);
+
+        manager.GetChildCollaboration(childId)!.CanDelegate.Should().BeFalse(
+            "the default limit makes the child a leaf — which is the case this test exists for");
+
+        // Delivery is dispatched off the sender's turn, so this waits on the arrival itself rather than
+        // on the child's completion — condition, not clock.
+        var received = await peer.Received.WaitAsync(TimeSpan.FromSeconds(30));
+        received.Body.Should().Be(LeafGreeting);
+        received.FromName.Should().Be("child", "a leaf speaks for itself, not for its parent");
     }
 
     #endregion
@@ -899,6 +951,54 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         _managers.Add(manager);
         return (manager, new SubAgentToolProvider(manager, source));
     }
+
+    /// <summary>A template whose agent cannot be built, standing in for a bad model or a dead provider.</summary>
+    private static SubAgentTemplate FailingTemplate() => new()
+    {
+        SystemPrompt = "You are a worker.",
+        AgentFactory = () => throw new InvalidOperationException("provider unavailable"),
+    };
+
+    private const string LeafGreeting = "Reporting in from the depth limit.";
+
+    /// <summary>
+    /// A worker whose first turn messages <paramref name="target"/> and whose second ends the run. The
+    /// tool call goes through the child's OWN loop, so it can only succeed if that loop was given the
+    /// collaboration tool surface — which is the point of the test that uses this.
+    /// </summary>
+    private static SubAgentTemplate MessagingTemplate(string target) => new()
+    {
+        SystemPrompt = "You are a worker.",
+        AgentFactory = () =>
+        {
+            var turn = 0;
+            var mock = new Mock<IStreamingAgent>();
+            _ = mock
+                .Setup(a => a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns(() => Task.FromResult(ToAsyncEnumerable(
+                    Interlocked.Increment(ref turn) == 1
+                        ? [new ToolCallMessage
+                            {
+                                FunctionName = "SendMessage",
+                                FunctionArgs = JsonSerializer.Serialize(new
+                                {
+                                    target,
+                                    content = LeafGreeting,
+                                    // A question stands on its own. The reply-only types (response,
+                                    // task_update) are refused without an in_response_to, and this
+                                    // template has nothing to correlate to.
+                                    msg_type = "question",
+                                }),
+                                ToolCallId = "tc_1",
+                                Role = Role.Assistant,
+                            }]
+                        : [new TextMessage { Text = "done", Role = Role.Assistant }])));
+            return mock.Object;
+        },
+    };
 
     private SubAgentTemplate BlockingTemplate() => new()
     {

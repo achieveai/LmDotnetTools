@@ -728,8 +728,12 @@ public sealed class SubAgentManager : IAsyncDisposable
             {
                 // Failed before a SubAgentState existed (e.g. CreateSubAgent threw): the
                 // monitor never started, so this guard is the only path that will ever
-                // release the slot.
+                // release the slot. Collaboration admission happened earlier still, so the
+                // root-wide lease has to be handed back here too - nothing downstream knows
+                // about an agent that was never constructed, and a lease left behind would
+                // shrink the whole hierarchy's capacity permanently.
                 gateGuard.ReleaseOnce(_concurrencyGate);
+                RetireFromCollaboration(agentId, AgentCollaborationStatuses.Error);
             }
             else
             {
@@ -2493,13 +2497,19 @@ public sealed class SubAgentManager : IAsyncDisposable
                 inheritedToolNames
             );
 
-            // Recursive delegation is opened ONLY by a collaboration that still has delegation budget
-            // left for this child. Handing the child subAgentOptions gives it its own independent
-            // SubAgentManager (own concurrency pool, own queue) while the shared bundle keeps capacity
-            // and depth root-wide. Without collaboration this stays null — the historical recursion
-            // guard, where exactly one level of ordinary sub-agents exists.
+            // Under collaboration the child ALWAYS gets its own manager, because messaging is not
+            // delegation. SubAgentToolProvider already withholds the spawn tools when the child has no
+            // delegation budget while still offering GetAgents/SendMessage — but that distinction was
+            // unreachable while a depth-limited child was handed no options at all, since the loop only
+            // builds the tool provider when it has them. The effect was a leaf registered in the
+            // directory with an inbox and a write endpoint, addressable by anyone, and unable to answer:
+            // with the default MaxDelegationDepth of 1 that silenced EVERY sub-agent. Handing the child
+            // subAgentOptions gives it an independent SubAgentManager (own concurrency pool, own queue)
+            // while the shared bundle keeps capacity and depth root-wide, and AdmitToCollaboration still
+            // refuses an over-depth spawn defensively. Without collaboration this stays null — the
+            // historical recursion guard, where exactly one level of ordinary sub-agents exists.
             var childCollaboration = GetChildCollaboration(agentId);
-            var grandchildrenAllowed = childCollaboration?.CanDelegate == true;
+            var childParticipatesInCollaboration = childCollaboration is not null;
 
             return (
                 new MultiTurnAgentLoop(
@@ -2511,8 +2521,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     maxTurnsPerRun: template.MaxTurnsPerRun,
                     store: store,
                     logger: _logger is NullLogger ? null : new SubAgentLoopLoggerAdapter(_logger),
-                    subAgentOptions: grandchildrenAllowed ? _options : null,
-                    subAgentTemplateSource: grandchildrenAllowed ? _source : null,
+                    subAgentOptions: childParticipatesInCollaboration ? _options : null,
+                    subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
                     lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(
                         _lifecycleServices, lineage),
                     collaboration: childCollaboration

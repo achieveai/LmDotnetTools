@@ -1348,7 +1348,7 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
     protected ValueTask PublishToAllAsync(IMessage message, CancellationToken ct)
     {
         _ = ct;
-        List<KeyValuePair<string, Channel<IMessage>>> targets;
+        KeyValuePair<string, Channel<IMessage>>[] targets;
         lock (_replayLock)
         {
             // Transient live-only frames (e.g. the conversation usage banner frame) are never buffered: a
@@ -1406,7 +1406,17 @@ public abstract class MultiTurnAgentBase : IMultiTurnAgent
                 }
             }
 
-            targets = [.. _outputSubscribers];
+            // ConcurrentDictionary.ToArray() is the ONLY safe way to copy this map, and the reason is
+            // not style. A collection expression (or List<T>'s IEnumerable constructor) reads
+            // ICollection.Count first and calls CopyTo second, each acquiring the dictionary's internal
+            // locks separately. A subscriber that unsubscribes between the two — an ordinary client
+            // disconnect, and also the slow-subscriber drop below — makes CopyTo write FEWER pairs than
+            // the length already committed to, leaving default(KeyValuePair) at the tail: a null
+            // Channel that the publish loop then dereferences. ToArray() takes every lock once and
+            // sizes the result from what it actually copied, so a torn tail cannot exist.
+#pragma warning disable IDE0305 // "Simplify" here means reintroducing the torn-snapshot race above.
+            targets = _outputSubscribers.ToArray();
+#pragma warning restore IDE0305
         }
 
         foreach (var (subscriberId, channel) in targets)

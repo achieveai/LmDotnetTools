@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -889,6 +891,78 @@ public class MultiTurnAgentPoolTests
         _ = pool.GetOrCreateAgent("thread-ws-default", mode);
 
         workspaceSeen.Should().ContainSingle().Which.Should().Be("default");
+    }
+
+    /// <summary>
+    /// ADR 0009 gives the collaboration bundle a single owner: the first live root builds it and every
+    /// descendant receives that same reference. In the sample the root is built inside the pool's agent
+    /// factory, so "built once" is not an invariant the collaboration code enforces for itself — it is
+    /// entirely inherited from the pool creating at most one agent per thread.
+    /// </summary>
+    /// <remarks>
+    /// A second bundle for the same conversation would not fail loudly. It would come with its own
+    /// directory, its own ledger and its own capacity limiter, so agents on either side would simply
+    /// not be able to see or address each other, and the total-agent cap would silently double. This
+    /// test therefore races the creation path directly rather than trusting that the lock is there:
+    /// the callers rendezvous on a <see cref="Barrier"/> so they arrive together, and the assertion is
+    /// that the factory ran once and every caller left holding the same agent.
+    /// </remarks>
+    [Fact]
+    public async Task GetOrCreateAgent_ConcurrentCallersForOneThread_ShareASingleCollaborationBundle()
+    {
+        const int Callers = 32;
+        const string ThreadId = "thread-collaboration-race";
+        var bundles = new ConcurrentBag<AgentCollaborationSetup>();
+        var factoryInvocations = 0;
+
+        await using var pool = new MultiTurnAgentPool(
+            context =>
+            {
+                _ = Interlocked.Increment(ref factoryInvocations);
+                // Mirrors Program.cs: the root's bundle is constructed inside the factory, keyed by
+                // the conversation, so one factory call means one bundle.
+                bundles.Add(
+                    AgentCollaborationSetup.CreateRoot(
+                        new AgentCollaborationOptions(),
+                        collaborationId: context.ThreadId,
+                        agentId: context.ThreadId,
+                        name: "conversation"
+                    )
+                );
+                return new MultiTurnAgentPool.AgentCreationResult(
+                    new FakeMultiTurnAgent(context.ThreadId)
+                );
+            },
+            providerRegistry: null,
+            conversationStore: null,
+            NullLogger<MultiTurnAgentPool>.Instance
+        );
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        using var barrier = new Barrier(Callers);
+        var agents = await Task.WhenAll(
+            Enumerable
+                .Range(0, Callers)
+                .Select(_ =>
+                    Task.Factory.StartNew(
+                        () =>
+                        {
+                            barrier.SignalAndWait();
+                            return pool.GetOrCreateAgent(ThreadId, mode);
+                        },
+                        CancellationToken.None,
+                        // Dedicated threads: a barrier whose participants queue behind each other on a
+                        // bounded thread pool would deadlock instead of contending.
+                        TaskCreationOptions.LongRunning,
+                        TaskScheduler.Default
+                    )
+                )
+        );
+
+        factoryInvocations.Should().Be(1, "the per-thread creation lock admits exactly one builder");
+        bundles.Should().ContainSingle("a conversation has one collaboration, not one per caller");
+        agents.Distinct().Should().ContainSingle("every caller must receive the same pooled root");
+        pool.ActiveAgentCount.Should().Be(1);
     }
 
     private static async Task<string?> WaitForPersistedWorkspaceAsync(
