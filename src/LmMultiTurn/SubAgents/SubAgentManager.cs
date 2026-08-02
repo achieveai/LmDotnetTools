@@ -785,8 +785,7 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             if (queued.CallerCancellation.IsCancellationRequested)
             {
-                RemoveQueuedSpawn(queued);
-                _ = queued.StateReady.TrySetCanceled(queued.CallerCancellation);
+                CancelQueuedSpawn(queued, queued.CallerCancellation);
                 continue;
             }
 
@@ -801,24 +800,21 @@ public sealed class SubAgentManager : IAsyncDisposable
                 queued.CallerCancellation.IsCancellationRequested && !pumpCt.IsCancellationRequested
             )
             {
-                RemoveQueuedSpawn(queued);
-                _ = queued.StateReady.TrySetCanceled(queued.CallerCancellation);
+                CancelQueuedSpawn(queued, queued.CallerCancellation);
                 continue;
             }
             catch (OperationCanceledException)
             {
                 // Manager disposing before a permit was available: fault the waiter so a foreground
                 // caller unblocks (with cancellation) instead of hanging, then stop pumping.
-                RemoveQueuedSpawn(queued);
-                _ = queued.StateReady.TrySetCanceled(pumpCt);
+                CancelQueuedSpawn(queued, pumpCt);
                 break;
             }
 
             if (queued.CallerCancellation.IsCancellationRequested)
             {
                 _ = _concurrencyGate.Release();
-                RemoveQueuedSpawn(queued);
-                _ = queued.StateReady.TrySetCanceled(queued.CallerCancellation);
+                CancelQueuedSpawn(queued, queued.CallerCancellation);
                 continue;
             }
 
@@ -882,6 +878,28 @@ public sealed class SubAgentManager : IAsyncDisposable
         {
             _ = _queuedNamesToIds.TryRemove(queued.EffectiveName, out _);
         }
+    }
+
+    /// <summary>
+    /// Abandons a queued spawn that never got its held permit: drops the local queue bookkeeping,
+    /// hands back the collaboration admission the queue-time <see cref="AdmitToCollaboration"/> call
+    /// already granted, and unblocks a foreground caller waiting on <see cref="QueuedSpawn.StateReady"/>.
+    /// </summary>
+    /// <remarks>
+    /// Every pre-start cancellation exit in <see cref="RunSpawnPumpAsync"/> must go through here rather
+    /// than calling <see cref="RemoveQueuedSpawn"/> directly: admission reserves a root-wide capacity
+    /// lease and a "queued" directory entry BEFORE the spawn ever reaches this queue, so a cancellation
+    /// that only clears the queue leaves both behind. Left behind, they never come back — the lease
+    /// stays charged against <c>MaxTotalAgents</c> and the directory entry stays "queued" forever — so
+    /// repeated cancelled queued spawns permanently shrink the collaboration's capacity. No-op when
+    /// collaboration is off, or when the admission was already retired (idempotent, like
+    /// <see cref="RetireFromCollaboration"/> itself).
+    /// </remarks>
+    private void CancelQueuedSpawn(QueuedSpawn queued, CancellationToken cancellationToken)
+    {
+        RemoveQueuedSpawn(queued);
+        RetireFromCollaboration(queued.AgentId, AgentCollaborationStatuses.Stopped);
+        _ = queued.StateReady.TrySetCanceled(cancellationToken);
     }
 
     /// <summary>

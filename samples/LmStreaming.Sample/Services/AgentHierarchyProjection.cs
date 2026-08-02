@@ -90,6 +90,40 @@ public static class AgentHierarchyProjection
     }
 
     /// <summary>
+    ///     Stamps each tab's collaboration hierarchy metadata (<see cref="SubAgentSummary.WithCollaboration"/>)
+    ///     from a matching live node, leaving a tab with no matching node untouched.
+    /// </summary>
+    /// <remarks>
+    ///     The structural half of what <see cref="Project"/> does, exposed standalone so a caller can run
+    ///     it BEFORE persistence — before <see cref="Project"/> is called, before any particular reader is
+    ///     even known. A row written to the durable index in its raw, unenriched shape carries no
+    ///     <c>CollaborationId</c>/<c>AgentKind</c>/ancestry, so <see cref="SubAgentSummary.ToNodeRecord"/>
+    ///     returns null for it after the live node that used to back it is gone (a restart, or the owning
+    ///     manager evicted) — which is exactly the case <see cref="Project"/> relies on that fallback for.
+    ///     Deliberately does not touch <see cref="SubAgentSummary.IsCurrent"/> or
+    ///     <see cref="SubAgentSummary.IsReadable"/>: those are viewer-scoped and must always be computed
+    ///     fresh, per request, by <see cref="Project"/> — never baked in for whichever reader happened to
+    ///     trigger a persist.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="tabs"/> or <paramref name="nodes"/> is null.</exception>
+    public static IReadOnlyList<SubAgentSummary> Enrich(
+        IReadOnlyList<SubAgentSummary> tabs,
+        IReadOnlyList<AgentDirectoryEntry> nodes)
+    {
+        ArgumentNullException.ThrowIfNull(tabs);
+        ArgumentNullException.ThrowIfNull(nodes);
+
+        var byAgentId = new Dictionary<string, AgentDirectoryEntry>(StringComparer.Ordinal);
+        foreach (var node in nodes)
+        {
+            byAgentId[node.AgentId] = node;
+        }
+
+        return [.. tabs.Select(tab =>
+            byAgentId.TryGetValue(NodeIdFor(tab), out var node) ? tab.WithCollaboration(node) : tab)];
+    }
+
+    /// <summary>
     ///     Finds the projected row for <paramref name="agentId"/>, accepting either identifier the row
     ///     publishes: its tab id or its collaboration node id (see <see cref="SubAgentSummary.AgentNodeId"/>).
     /// </summary>

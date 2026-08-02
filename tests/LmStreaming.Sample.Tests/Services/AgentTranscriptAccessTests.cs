@@ -460,6 +460,65 @@ public sealed class AgentTranscriptAccessTests
         denied.Payload.ErrorCode.Should().Be(TranscriptAccessReasons.NotAnAncestor);
     }
 
+    [Fact]
+    public async Task ReadTranscript_SucceedsForPersistedCollaboratingChild_AfterRestartWithFreshDirectory()
+    {
+        // BuildAsync -> persist -> restart -> transcript read. Regression for AgentHierarchyProjection.
+        // Enrich() now stamping a row's collaboration hierarchy metadata (AgentNodeId/AgentKind/
+        // ParentAgentId/CollaborationId) BEFORE it is written to the durable index. Without that, a server
+        // restart rebuilds the loop's collaboration directory from scratch (root only, no memory of the
+        // prior child), the retained/persisted child row carries none of that metadata, ToNodeRecord()
+        // returns null for it, and the transcript route fails closed with unknown_target for its own
+        // legitimate root ancestor even though the child's transcript is still on disk.
+        var indexDir = Path.Combine(Path.GetTempPath(), "wf-index-transcript-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new InMemoryConversationStore();
+
+            // --- Before restart: spawn a collaborating child and let BuildAsync write it through. ---
+            var registryBeforeRestart = new WorkflowRunRegistry(indexDir);
+            await using var loopBeforeRestart = CreateLoop(CreateRootCollaboration());
+            await using var poolBeforeRestart = CreatePoolReturning(loopBeforeRestart);
+            _ = poolBeforeRestart.GetOrCreateAgent(
+                RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+            var alphaId = await SpawnAsync(loopBeforeRestart, "alpha");
+            await store.AppendMessagesAsync(
+                $"subagent-{alphaId}",
+                [Persisted("m1", new TextMessage { Text = "alpha's finding", Role = Role.Assistant })]);
+
+            var serviceBeforeRestart = new AgentHierarchyService(poolBeforeRestart, registryBeforeRestart, store);
+            _ = await serviceBeforeRestart.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+            // --- Restart: a brand-new loop with a FRESH collaboration directory (root only, no memory of
+            // alpha), a brand-new WorkflowRunRegistry instance pointed at the SAME on-disk index, and a
+            // pool that never rehydrated the prior loop — exactly what a server restart leaves behind.
+            var registryAfterRestart = new WorkflowRunRegistry(indexDir);
+            await using var loopAfterRestart = CreateLoop(CreateRootCollaboration());
+            await using var poolAfterRestart = CreatePoolReturning(loopAfterRestart);
+            _ = poolAfterRestart.GetOrCreateAgent(
+                RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+            var controller = CreateController(poolAfterRestart, registryAfterRestart, store);
+            var result = await controller.GetAgentTranscript(RootThread, alphaId);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var messages = Assert.IsAssignableFrom<IReadOnlyCollection<PersistedMessage>>(ok.Value).ToList();
+            messages.Select(m => m.Id).Should().Equal(["m1"]);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(indexDir, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort temp cleanup.
+            }
+        }
+    }
+
     /// <summary>Runs the tool exactly as the loop would: one handler, one args string, one reader.</summary>
     private static async Task<ToolHandlerResult.Resolved> InvokeToolAsync(
         MultiTurnAgentPool pool,

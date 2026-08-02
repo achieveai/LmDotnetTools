@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Models;
+using LmStreaming.Sample.Persistence;
 
 namespace LmStreaming.Sample.Services;
 
@@ -144,9 +145,21 @@ public sealed class AgentHierarchyService(
         // Write-through: fold this live snapshot into the durable index (upsert, never deletes). The
         // Agent-tool rows join the index only once collaboration is on — persisting them unconditionally
         // would start surfacing restart-surviving sub-agent tabs in a host that never opted in.
+        //
+        // Stamp collaboration hierarchy metadata onto each row BEFORE it is written — not after, the way
+        // it used to happen (see AgentHierarchyProjection.Project below, which still runs every call for
+        // the viewer-scoped flags). A row persisted in its raw, unenriched shape carries no
+        // AgentNodeId/AgentKind/CollaborationId/ancestry, so SubAgentSummary.ToNodeRecord() returns null
+        // for it once the live node that used to back it is gone (e.g. after a restart the fresh
+        // directory holds only the root), and a transcript read for a retained child then fails closed
+        // with unknown_target even for its legitimate root ancestor. Enrich() only stamps the structural
+        // fields (WithCollaboration), never the viewer-scoped IsCurrent/IsReadable pair, so nothing here
+        // bakes in one reader's answer for every future one.
         var persistable = loop?.Collaboration is null
             ? workflowTabs
-            : new List<SubAgentSummary>([.. workflowTabs, .. summaries]);
+            : AgentHierarchyProjection.Enrich(
+                [.. workflowTabs, .. summaries],
+                loop.Collaboration.Directory.Snapshot());
         if (persistable.Count > 0)
         {
             workflowRunRegistry.PersistTabs(threadId, persistable);
@@ -155,6 +168,18 @@ public sealed class AgentHierarchyService(
         // Merge live tabs with the persisted index (live wins on Kind+AgentId), so a restart that
         // evicted the in-memory runs still surfaces them from disk.
         var merged = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
+
+        // Ordinary Agent-tool children reconstructed from persisted SubAgentProvenance metadata. This is
+        // the ONLY way such a child survives pool eviction/restart for a host that never enabled
+        // collaboration — collaboration-off never persists Agent-tool rows into workflowRunRegistry's tab
+        // index above (see the write-through gate), yet the child's transcript/provenance is still on
+        // disk. Folded in first so a live row (added below) always wins on a match, restoring the
+        // pre-#244 flat-listing contract.
+        foreach (var node in await ScanPersistedSubAgentChildrenAsync(threadId, ct))
+        {
+            merged[(node.Kind, node.AgentId)] = node;
+        }
+
         foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId))
         {
             merged[(tab.Kind, tab.AgentId)] = tab;
@@ -272,4 +297,54 @@ public sealed class AgentHierarchyService(
             EffectiveModelIntelligence = s.EffectiveModelIntelligence,
             ModelSelectionSource = s.ModelSelectionSource,
         };
+
+    /// <summary>
+    ///     Page size and total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
+    ///     no property index, so rebuilding a persisted child roster means scanning thread metadata; the
+    ///     cap bounds the work on a long-lived store rather than scanning it unboundedly per request.
+    /// </summary>
+    private const int SubAgentScanPageSize = 200;
+    private const int SubAgentScanMaxThreads = 2000;
+
+    /// <summary>
+    ///     Bounded, parent-filtered reconstruction of ordinary Agent-tool children from persisted
+    ///     <see cref="SubAgentProvenance"/> metadata — the pre-#244 flat-listing contract this restores
+    ///     (see the call site in <see cref="BuildAsync"/>). Scoped to direct children of
+    ///     <paramref name="threadId"/> only: unlike the recursive descendant reader
+    ///     (<c>ConversationsController.BuildDescendantTreeAsync</c>), the flat listing never needs the
+    ///     whole persisted graph, just this one conversation's own children.
+    /// </summary>
+    private async Task<IReadOnlyList<SubAgentSummary>> ScanPersistedSubAgentChildrenAsync(
+        string threadId,
+        CancellationToken ct)
+    {
+        var found = new List<SubAgentSummary>();
+        var scanned = 0;
+
+        while (scanned < SubAgentScanMaxThreads)
+        {
+            var page = await store.ListThreadsAsync(SubAgentScanPageSize, scanned, ct) ?? [];
+            if (page.Count == 0)
+            {
+                return found;
+            }
+
+            scanned += page.Count;
+            foreach (var metadata in page)
+            {
+                var node = SubAgentProvenance.TryProject(metadata, threadId);
+                if (node is not null)
+                {
+                    found.Add(node);
+                }
+            }
+
+            if (page.Count < SubAgentScanPageSize)
+            {
+                return found;
+            }
+        }
+
+        return found;
+    }
 }

@@ -238,6 +238,55 @@ public sealed class ConversationsControllerSubAgentsTests
         }
     }
 
+    [Fact]
+    public async Task ListSubAgents_ReconstructsOrdinaryChildren_FromPersistedProvenance_AfterPoolEviction()
+    {
+        // Collaboration is OFF (the checked-in default), so an Agent-tool child never enters the
+        // WorkflowRunRegistry tab index (the write-through in AgentHierarchyService.BuildAsync only
+        // persists there once collaboration is enabled). Its only durable trace is the
+        // SubAgentProvenance stamp on its OWN persisted thread metadata — what
+        // Program.ApplyDefaultSubAgentStore/NonOwningConversationStore write in production. This is the
+        // pre-#244 flat-listing contract (ConversationsController.ListSubAgents used to reconstruct it
+        // via a direct bounded scan); #244's replacement dropped it when it started delegating fully to
+        // AgentHierarchyService.BuildAsync.
+        var threadId = "thread-restarted-plain";
+        const string childId = "evicted-child";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            $"subagent-{childId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{childId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    threadId,
+                    new SubAgentSnapshot(
+                        childId,
+                        Name: "alpha",
+                        TemplateName: "worker",
+                        Task: "alpha's task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{childId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+
+        // Pool has NO live loop for this thread (restart evicted it) — TryGet returns false, so
+        // BuildAsync's only route to this child is the persisted-provenance scan.
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, new WorkflowRunRegistry(), store);
+
+        var result = await controller.ListSubAgents(threadId);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value).ToList();
+        var child = summaries.Should().ContainSingle(s => s.AgentId == childId).Which;
+        child.Name.Should().Be("alpha");
+        child.Template.Should().Be("worker");
+        child.Status.Should().Be("completed");
+        child.ThreadId.Should().Be($"subagent-{childId}");
+    }
+
     private static string ParseAgentId(string spawnJson)
     {
         using var doc = JsonDocument.Parse(spawnJson);

@@ -331,6 +331,70 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Spawn_CancelledWhileQueuedBehindASaturatedLocalGate_ReclaimsRootCapacityAndRetiresTheDirectoryEntry()
+    {
+        // Admission (a root-wide capacity lease and a "queued" directory row) happens inside
+        // SpawnAsync BEFORE the per-manager concurrency gate is even consulted, so a spawn that never
+        // gets a LOCAL slot has already taken both root-wide resources. The previous test proves this
+        // is reclaimed when the agent fails to construct; this proves the other pre-start exit — a
+        // foreground caller cancelling while its spawn is queued behind a saturated local gate — gives
+        // both back too. Left unreclaimed, a cancelled-and-retried queued spawn permanently shrinks the
+        // collaboration's capacity by one, even though nothing it ever queued behind actually ran.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 5 });
+        var (manager, _) = CreateManager(
+            root,
+            template: BlockingTemplate(),
+            configure: options => options with { MaxConcurrentSubAgents = 1 });
+
+        // Occupies the only local slot forever (BlockingTemplate never completes), so the gate the
+        // second spawn queues behind can never free up on its own.
+        _ = await manager.SpawnAsync(
+            "worker",
+            "work",
+            name: "first",
+            role: "worker role",
+            description: "Holds the only local slot.",
+            runInBackground: true);
+
+        root.Directory.Capacity.InUse.Should().Be(1);
+
+        // Foreground (no run_in_background), so this call itself awaits the queue rather than
+        // returning a receipt immediately — exactly the caller shape the leaked-admission bug needs.
+        // Everything up to that await, including AdmitToCollaboration, runs synchronously on this
+        // call, so both assertions below observe it without any polling.
+        using var cts = new CancellationTokenSource();
+        var queuedSpawn = manager.SpawnAsync(
+            "worker",
+            "work",
+            name: "second",
+            role: "worker role",
+            description: "Never gets a local slot.",
+            ct: cts.Token);
+
+        root.Directory.Capacity.InUse.Should().Be(
+            2, "the queued spawn already holds a root-wide lease even though it never got a local slot");
+        root.Directory.Resolve("second").Entry!.Status.Should().Be(AgentCollaborationStatuses.Queued);
+
+        cts.Cancel();
+        var act = async () => await queuedSpawn;
+        _ = await act.Should().ThrowAsync<OperationCanceledException>();
+
+        // The pump retires the admission before it unblocks the caller's await (see
+        // SubAgentManager.CancelQueuedSpawn), so both halves are already reclaimed by the time the
+        // cancellation has been observed above — nothing here is racing the pump.
+        root.Directory.Capacity.InUse.Should().Be(
+            1, "the cancelled spawn's root-wide lease must come back, not stay charged forever");
+
+        var entry = root.Directory.Resolve("second").Entry;
+        entry.Should().NotBeNull(
+            because: "the row is retained for correlation, not deleted");
+        entry!.Status.Should().Be(
+            AgentCollaborationStatuses.Stopped,
+            because: "left as \"queued\" it would look like pending work that will eventually run");
+        entry.IsLive.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Spawn_PastTheDelegationLimit_IsRefusedEvenWhenTheToolIsNotAdvertised()
     {
         // Hiding the tool is guidance, not enforcement: a model can call a tool it was told about on
@@ -620,6 +684,33 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
         payload.IsError.Should().BeTrue();
         payload.ErrorCode.Should().Be(AgentMessageFailureCodes.UnknownTarget);
         payload.Text.Should().Contain("finished");
+    }
+
+    [Fact]
+    public async Task SendMessage_FromARetiredSender_IsRefusedWithAnActionableToolMessage()
+    {
+        // AgentCollaborationBundleTests.TrySend_RefusesAnAgentThatHasLeft_AsTheSender covers this at
+        // the bundle level. This is the same refusal one layer up, through the actual tool a retired
+        // agent's own loop would still be holding: the provider built from ITS OWN
+        // AgentCollaborationSetup, sending after something else (a parent cleanup, a lifecycle sweep)
+        // retired it out from under it. The model behind that loop cannot see "invalid_sender" — only
+        // the text — so the wording has to tell it what happened rather than leaving it to guess why a
+        // message it just tried to send bounced.
+        var root = CreateRegisteredRoot();
+        var (_, peerSetup) = RegisterPeer(root, "peer");
+        var (_, provider) = CreateManager(peerSetup);
+        _ = root.Bundle.RetireAgent(peerSetup.AgentId, AgentCollaborationStatuses.Completed);
+
+        var payload = await InvokeAsync(provider, "SendMessage", new
+        {
+            target = root.Name,
+            content = "hello",
+            msg_type = "question",
+        });
+
+        payload.IsError.Should().BeTrue();
+        payload.ErrorCode.Should().Be(AgentMessageFailureCodes.InvalidSender);
+        payload.Text.Should().Contain("no longer active");
     }
 
     [Fact]
