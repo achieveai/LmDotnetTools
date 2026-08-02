@@ -109,6 +109,21 @@ public class AgentCollaborationBundleTests
     }
 
     [Fact]
+    public void TrySend_RefusesAnAgentThatHasLeft_AsTheSender()
+    {
+        var bundle = CreateBundle();
+        var root = Populate(bundle);
+        _ = AddChild(bundle, root, "agent-a", "reviewer");
+        _ = bundle.RetireAgent("agent-a", "completed");
+
+        var result = bundle.TrySend("agent-a", "root", AgentMessageType.Question);
+
+        result.FailureCode.Should().Be(AgentMessageFailureCodes.InvalidSender);
+        result.Target.Should().BeNull();
+        bundle.Ledger.Count.Should().Be(0);
+    }
+
+    [Fact]
     public void TrySend_ReportsTheLedgerRefusal_WhenAdmissionIsDeclined()
     {
         var bundle = CreateBundle(new AgentCollaborationOptions { MaxInboxMessages = 1 });

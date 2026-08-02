@@ -853,6 +853,8 @@ public class SubAgentToolProvider : IFunctionProvider
                 $"'{target}' has too many messages pending. Wait for it to catch up, then retry.",
             AgentMessageFailureCodes.SelfDelivery =>
                 "You cannot send a message to yourself.",
+            AgentMessageFailureCodes.InvalidSender =>
+                "Your agent is no longer active, so it cannot send new messages.",
             AgentMessageFailureCodes.UnknownCorrelation =>
                 "The 'in_response_to' message_id is not one you received.",
             AgentMessageFailureCodes.CorrelationClosed =>

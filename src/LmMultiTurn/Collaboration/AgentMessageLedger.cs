@@ -63,7 +63,7 @@ public static class AgentMessageFailureCodes
     /// <summary>A message addressed to its own sender.</summary>
     public const string SelfDelivery = "self_delivery";
 
-    /// <summary>The sender identity is blank.</summary>
+    /// <summary>The sender identity is blank, unknown, or belongs to an agent that has left.</summary>
     public const string InvalidSender = "invalid_sender";
 
     /// <summary>
