@@ -20,6 +20,13 @@ namespace LmStreaming.Sample.Services;
 ///     set, so completed workflow tabs survive a restart. Delegate transcripts are already persisted as
 ///     <c>subagent-{id}</c> threads in the conversation store, so a persisted tab replays read-only.
 ///     </para>
+///     <para>
+///     Since #244 the same index also carries hierarchy nodes spawned by the Agent tool, and every row
+///     stamps the shared <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration.CollaborationNodeRecord"/>
+///     schema version so a row can always be read back as the node shape the rest of the system speaks.
+///     Rows written before #244 carry none of the collaboration fields and still deserialize — the added
+///     members are optional, so an old index file loads as exactly the tabs it always described.
+///     </para>
 /// </summary>
 public sealed class WorkflowRunRegistry
 {
@@ -88,7 +95,9 @@ public sealed class WorkflowRunRegistry
             {
                 // Live snapshot wins on conflict (fresher status), and NEVER deletes a previously-persisted
                 // tab that the live snapshot has dropped (that's exactly the run that has left memory).
-                merged[(tab.Kind, tab.AgentId)] = tab;
+                // The viewer-scoped flags are dropped on the way in: they answer "for the reader of this
+                // poll", and the file is read by every later reader.
+                merged[(tab.Kind, tab.AgentId)] = tab with { IsCurrent = false, IsReadable = false };
             }
 
             try
@@ -133,12 +142,9 @@ public sealed class WorkflowRunRegistry
 
         return
         [
-            .. (JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? [])
-                .Select(tab =>
-                    string.Equals(tab.Status, "running", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(tab.Status, "queued", StringComparison.OrdinalIgnoreCase)
-                        ? tab with { Status = "interrupted" }
-                        : tab),
+            .. (
+                JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? []
+            ).Select(static tab => tab.AsRetained()),
         ];
     }
 

@@ -5,6 +5,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -175,6 +176,13 @@ public class ConversationsController(
     /// </summary>
     private const string ArmedWaitDiscardedWarning =
         "A pending Wait was armed on this conversation; it was discarded when the agent was recreated for the switch.";
+
+    /// <summary>
+    /// The hierarchy/transcript reader shared with the in-agent <c>GetAgentTranscript</c> tool (#244).
+    /// Stateless, so it is composed from this controller's own dependencies rather than injected —
+    /// what matters is that HTTP and the tool resolve every access decision through the same code.
+    /// </summary>
+    private readonly AgentHierarchyService _hierarchy = new(agentPool, workflowRunRegistry, store);
 
     /// <summary>
     /// Reserves a new conversation thread and locks its workspace/provider/mode as metadata, without
@@ -404,6 +412,7 @@ public class ConversationsController(
     public async Task<IActionResult> ListSubAgents(
         string threadId,
         bool recursive = false,
+        string? viewer = null,
         CancellationToken ct = default)
     {
         if (recursive)
@@ -411,89 +420,42 @@ public class ConversationsController(
             return await BuildDescendantTreeAsync(threadId, ct);
         }
 
-        agentPool.TryGet(threadId, out var agent);
-        var isLive = agent is not null;
-        var summaries = new Dictionary<(string Kind, string AgentId), SubAgentSummary>();
+        var (rows, isKnown, _) = await _hierarchy.BuildAsync(threadId, viewer, ct);
+        return isKnown
+            ? Ok(rows.ToArray())
+            : NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
+    }
 
-        foreach (var child in (await ScanAllPersistedSubAgentNodesAsync(threadId, ct))
-            .Where(n => string.Equals(n.ParentThreadId, threadId, StringComparison.Ordinal)))
+    /// <summary>
+    /// Returns one agent's transcript to a reader that the collaboration's transcript policy allows to
+    /// see it (#244). Reasoning is never included: an agent's private deliberation is the one part of a
+    /// transcript that was addressed to nobody.
+    /// </summary>
+    /// <remarks>
+    /// The decision is <see cref="AgentHierarchyService.ReadTranscriptAsync"/>'s — the same call the
+    /// in-agent <c>GetAgentTranscript</c> tool makes — so the HTTP surface cannot be a way around the
+    /// policy the tool enforces. A denial returns the content-free
+    /// <see cref="TranscriptAccessReasons"/> code and nothing else: the response must not disclose
+    /// whether the agent exists, what it is called, or what it is doing.
+    /// </remarks>
+    [HttpGet("{threadId}/agents/{agentId}/transcript")]
+    public async Task<IActionResult> GetAgentTranscript(
+        string threadId,
+        string agentId,
+        string? viewer = null,
+        CancellationToken ct = default)
+    {
+        var result = await _hierarchy.ReadTranscriptAsync(threadId, agentId, viewer, ct);
+        return result.Outcome switch
         {
-            summaries[(child.Kind, child.AgentId)] = child;
-        }
-
-        if (agent is MultiTurnAgentLoop { SubAgentManager: { } subAgentManager })
-        {
-            foreach (var snapshot in subAgentManager.ListAgents())
-            {
-                summaries[("subagent", snapshot.AgentId)] = new SubAgentSummary
-                {
-                    AgentId = snapshot.AgentId,
-                    Kind = "subagent",
-                    Name = snapshot.Name,
-                    Template = snapshot.TemplateName,
-                    Task = snapshot.Task,
-                    Status = snapshot.Status.ToString().ToLowerInvariant(),
-                    ThreadId = snapshot.ThreadId,
-                    LastActivityUtc = snapshot.LastActivityUtc,
-                    TerminalAtUtc = snapshot.TerminalAtUtc,
-                    EffectiveModelId = snapshot.EffectiveModelId,
-                    EffectiveModelIntelligence = snapshot.EffectiveModelIntelligence,
-                    ModelSelectionSource = snapshot.ModelSelectionSource,
-                };
-            }
-        }
-
-        var workflowTabs = new List<SubAgentSummary>();
-        if (isLive && workflowRunRegistry.TryGet(threadId, out var workflowManager) && workflowManager is not null)
-        {
-            workflowTabs.AddRange(workflowManager.ListRuns().Select(r => new SubAgentSummary
-            {
-                AgentId = r.WorkflowId,
-                Kind = "workflow",
-                Name = r.Objective,
-                Template = "workflow",
-                Task = r.Objective,
-                Status = r.Status,
-                ThreadId = r.ThreadId ?? $"workflow-{r.WorkflowId}",
-                LastActivityUtc = r.LastActivityUtc ?? r.StartedUtc,
-            }));
-
-            foreach (var run in workflowManager.ListRuns())
-            {
-                workflowTabs.AddRange(workflowManager.ListRunDelegates(run.WorkflowId).Select(s => new SubAgentSummary
-                {
-                    AgentId = s.AgentId,
-                    Kind = "subagent",
-                    Name = s.Name,
-                    Template = s.TemplateName,
-                    Task = s.Task,
-                    Status = s.Status.ToString().ToLowerInvariant(),
-                    ThreadId = s.ThreadId,
-                    LastActivityUtc = s.LastActivityUtc,
-                    TerminalAtUtc = s.TerminalAtUtc,
-                    EffectiveModelId = s.EffectiveModelId,
-                    EffectiveModelIntelligence = s.EffectiveModelIntelligence,
-                    ModelSelectionSource = s.ModelSelectionSource,
-                }));
-            }
-
-            workflowRunRegistry.PersistTabs(threadId, workflowTabs);
-        }
-
-        foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId).Concat(workflowTabs))
-        {
-            summaries[(tab.Kind, tab.AgentId)] = tab;
-        }
-
-        if (summaries.Count == 0 && !await IsKnownThreadAsync(threadId, agent, ct))
-        {
-            return NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" });
-        }
-
-        return Ok(summaries.Values
-            .OrderByDescending(s => s.LastActivityUtc ?? DateTimeOffset.MinValue)
-            .ThenBy(s => s.ThreadId, StringComparer.Ordinal)
-            .ToArray());
+            AgentTranscriptOutcome.UnknownThread =>
+                NotFound(new { error = $"Conversation '{threadId}' not found.", code = "unknown_thread" }),
+            AgentTranscriptOutcome.CollaborationUnavailable =>
+                NotFound(new { error = "Agent collaboration is not enabled.", code = "collaboration_unavailable" }),
+            AgentTranscriptOutcome.Denied =>
+                StatusCode(StatusCodes.Status403Forbidden, new { error = "forbidden", code = result.DenialCode }),
+            _ => Ok(result.Messages),
+        };
     }
 
     /// <summary>

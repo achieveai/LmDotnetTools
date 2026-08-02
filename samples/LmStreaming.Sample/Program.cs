@@ -25,6 +25,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
@@ -44,6 +45,7 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using LmStreaming.Sample.Auth;
+using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
@@ -458,6 +460,17 @@ try
     // so an operator can confirm discoveries are actually arriving (vs. silently lost to an
     // unreachable callback host).
     _ = builder.Services.AddSingleton<ContextDiscoveryDiagnostics>();
+
+    // Hierarchy-wide agent collaboration (#244). Opt-in and validated HERE so a bad limit or an
+    // unknown transcript mode fails this boot rather than the first spawn of some later conversation.
+    // With the section absent (the default) ToCollaborationOptions() returns null, which is the
+    // library's feature gate: legacy tool schemas, one level of nesting, and no collaboration state.
+    var collaborationHostOptions =
+        builder.Configuration.GetSection(AgentCollaborationHostOptions.SectionName)
+            .Get<AgentCollaborationHostOptions>()
+        ?? new AgentCollaborationHostOptions();
+    _ = collaborationHostOptions.ToCollaborationOptions();
+    _ = builder.Services.AddSingleton(collaborationHostOptions);
 
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
     // don't pay the startup cost and so the codex provider stays selectable from the
@@ -1304,6 +1317,21 @@ try
                     // cannot deadlock. The blocking call is HTTP only when a sandbox session is
                     // active; otherwise it completes synchronously.
                     IStreamingAgent subAgentFactory() => agentFactory(normalizedProviderId);
+
+                    // Root collaboration for THIS conversation (#244), or null when the host did not opt
+                    // in. The conversation's own threadId is the collaboration id — deliberately reusing
+                    // the identity the store already keys on rather than minting a second one — so a
+                    // resumed conversation rejoins the same logical collaboration. Every descendant
+                    // (ordinary sub-agent, workflow controller, workflow delegate) receives THIS handle by
+                    // reference, so there is exactly one directory and one ledger per conversation.
+                    var rootCollaboration = collaborationHostOptions.ToCollaborationOptions() is { } collabOptions
+                        ? AgentCollaborationSetup.CreateRoot(
+                            collabOptions,
+                            collaborationId: threadId,
+                            agentId: threadId,
+                            name: "conversation")
+                        : null;
+
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
                         providerAgent,
@@ -1605,7 +1633,11 @@ subAgentFactory,
                             validatePreferredProvider: p =>
                                 !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
                                 : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
-                                : null
+                                : null,
+                            // Admits the run's controller as a hierarchy node under the LAUNCHING agent.
+                            // Passed as a thunk (not a value) purely for symmetry with the other late-bound
+                            // launch inputs above; the handle itself is already built.
+                            callerCollaboration: () => rootCollaboration
                         ));
                         ownedResources = [.. ownedResources ?? [], workflowManager];
 
@@ -1631,6 +1663,23 @@ subAgentFactory,
                                 ],
                             };
                         }
+                    }
+
+                    // Let THIS conversation's agent read the transcript of an agent it is above (#244) —
+                    // the tool counterpart of the /agents/{id}/transcript route, resolving access through
+                    // the same AgentHierarchyService so the two cannot disagree.
+                    if (rootCollaboration is not null)
+                    {
+                        subAgentOptions = RegisterAgentTranscriptTool(
+                            filteredRegistry,
+                            subAgentOptions,
+                            new AgentTranscriptToolProvider(
+                                new AgentHierarchyService(
+                                    sp.GetRequiredService<MultiTurnAgentPool>(),
+                                    sp.GetRequiredService<WorkflowRunRegistry>(),
+                                    conversationStore),
+                                threadId,
+                                rootCollaboration.AgentId));
                     }
 
                     // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
@@ -1691,7 +1740,12 @@ subAgentFactory,
                         // instruction-chain. Broader rollout (enabling triggers for real providers behind a
                         // flag) is tracked in #161.
                         triggerOptions: isTestMode ? triggerOptions : null,
-                        lifecycleServices: lifecycleServices
+                        lifecycleServices: lifecycleServices,
+                        // Null unless the host opted in (#244). Passing it here is the entire opt-in for the
+                        // subtree: the loop registers itself as the root node and forwards the same handle to
+                        // the SubAgentManager it builds, so every descendant shares one directory and one
+                        // ledger. Null keeps the legacy tool schemas and per-manager limits.
+                        collaboration: rootCollaboration
                     );
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
@@ -2675,6 +2729,45 @@ public partial class Program
                             : () => SubAgentProvenance.Build(
                                 parentThreadId,
                                 describeChild?.Invoke(childThreadId))),
+            };
+    }
+
+    /// <summary>
+    /// Registers the <c>GetAgentTranscript</c> tool on <paramref name="registry"/> and, in the same
+    /// step, excludes it from sub-agent inheritance (#244).
+    /// </summary>
+    /// <remarks>
+    /// The two halves are one operation because doing only the first is a privilege escalation:
+    /// <see cref="AgentTranscriptToolProvider"/> is bound to ONE reader, so an inherited copy would
+    /// hand every descendant its parent's reach over the whole hierarchy. Registration happens before
+    /// the loop snapshots the registry, which is exactly why the exclusion has to be explicit — the
+    /// same reason the workflow launch tools list themselves in
+    /// <see cref="SubAgentOptions.NonInheritedToolNames"/>. Existing exclusions are unioned, never
+    /// replaced.
+    /// </remarks>
+    /// <param name="registry">The reader's own function registry.</param>
+    /// <param name="subAgentOptions">The reader's sub-agent options, or null when it spawns none.</param>
+    /// <param name="provider">The transcript tool provider, already bound to its single reader.</param>
+    /// <returns>The options with the tool excluded from inheritance.</returns>
+    internal static SubAgentOptions? RegisterAgentTranscriptTool(
+        FunctionRegistry registry,
+        SubAgentOptions? subAgentOptions,
+        AgentTranscriptToolProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(provider);
+
+        _ = registry.AddProvider(provider);
+
+        return subAgentOptions is null
+            ? null
+            : subAgentOptions with
+            {
+                NonInheritedToolNames =
+                [
+                    .. subAgentOptions.NonInheritedToolNames ?? [],
+                    .. AgentTranscriptToolProvider.ToolNames,
+                ],
             };
     }
 
