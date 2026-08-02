@@ -42,7 +42,8 @@ public static class ScriptedScenario
         IMarketplaceCatalogClient? catalogClient = null,
         HttpMessageHandler? sandboxGatewayHandler = null,
         SandboxGatewayOptions? sandboxOptions = null,
-        IReadOnlyList<CopilotModelInfo>? copilotModels = null
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null,
+        IReadOnlyDictionary<string, string?>? settings = null
     )
     {
         return fixture.OpenWithBuilderAsync(
@@ -52,7 +53,8 @@ public static class ScriptedScenario
             catalogClient,
             sandboxGatewayHandler,
             sandboxOptions,
-            copilotModels);
+            copilotModels,
+            settings);
     }
 
     /// <summary>
@@ -91,7 +93,8 @@ public static class ScriptedScenario
         IMarketplaceCatalogClient? catalogClient,
         HttpMessageHandler? sandboxGatewayHandler,
         SandboxGatewayOptions? sandboxOptions,
-        IReadOnlyList<CopilotModelInfo>? copilotModels = null
+        IReadOnlyList<CopilotModelInfo>? copilotModels,
+        IReadOnlyDictionary<string, string?>? settings = null
     )
     {
         var factory = new BrowserWebAppFactory(
@@ -101,7 +104,8 @@ public static class ScriptedScenario
             catalogClient,
             sandboxGatewayHandler,
             sandboxOptions,
-            copilotModels);
+            copilotModels,
+            settings);
         IBrowserContext? context = null;
         try
         {
