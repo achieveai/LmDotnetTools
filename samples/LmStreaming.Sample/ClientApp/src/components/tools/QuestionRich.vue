@@ -148,8 +148,20 @@ const submitError = ref<string | null>(null);
 const TERMINAL_ERROR_CODES = new Set(['conflict', 'not_found', 'invalid']);
 const submitErrorTerminal = ref(false);
 
+// Cancel (#246 spec-defect fix, declared alongside submit state — see doCancel below for the
+// full rationale): local optimistic "cancelling/cancelled" state, separate from submit's.
+const cancelling = ref(false);
+const cancelled = ref(false);
+const cancelError = ref<string | null>(null);
+const cancelErrorTerminal = ref(false);
+
+/** Once true, this client instance must never submit anything else — a submit or cancel already went out. */
+const isLocked = computed<boolean>(
+  () => submitting.value || submitted.value || cancelling.value || cancelled.value
+);
+
 async function doSubmit(): Promise<void> {
-  if (submitting.value || submitted.value) return;
+  if (isLocked.value) return;
   submitting.value = true;
   submitError.value = null;
   submitErrorTerminal.value = false;
@@ -188,6 +200,42 @@ function skipCurrent(): void {
   goNext();
 }
 
+// #246 spec-defect fix: the Stop button is unavailable while parked on a pending client-tool
+// question, and disconnecting isn't real cancellation. This sends the SAME client_tool_result
+// frame as a normal answer, but with isError:true and a self-describing { error, cancelled: true }
+// body — the server treats `result` as an opaque string (ChatWebSocketManager/MultiTurnAgentLoop
+// never parse it), so this is a client-only convention, not a server contract change. Deliberately
+// distinct from Skip: Skip answers with isError:false (a normal "no preference" answer); Cancel
+// answers with isError:true so a resolved-but-non-answer result can never be mistaken for a real
+// answer (see `isResolvedWithoutAnswers` below). Local `cancelling`/`cancelled` only reflect that
+// the client's own request went out and was acked by the socket layer — the interactive form only
+// actually disappears once the canonical resolved ToolCallResultMessage arrives
+// (`props.view.isDeferred` flips false), so a late/racing real answer from this same client can
+// never resume or override it (`isLocked` above blocks it at the source).
+async function doCancel(): Promise<void> {
+  if (isLocked.value) return;
+  cancelling.value = true;
+  cancelError.value = null;
+  cancelErrorTerminal.value = false;
+  try {
+    const toolCallId = props.toolCall.tool_call_id;
+    if (!toolCallId) throw new Error('Missing tool_call_id');
+    const payload = JSON.stringify({ error: 'Question cancelled by user.', cancelled: true });
+    const outcome: ClientToolSubmitOutcome = await submit(toolCallId, payload, true);
+    if (outcome.status === 'acked') {
+      cancelled.value = true;
+    } else {
+      cancelError.value = outcome.message;
+      cancelErrorTerminal.value = TERMINAL_ERROR_CODES.has(outcome.code);
+    }
+  } catch (err) {
+    cancelError.value = err instanceof Error ? err.message : 'Failed to cancel';
+    cancelErrorTerminal.value = false;
+  } finally {
+    cancelling.value = false;
+  }
+}
+
 // Reset the stepper when a genuinely new deferred call mounts on the same pill instance
 // (tool_call_id changes) — avoids stale drafts leaking across unrelated questions.
 watch(
@@ -197,6 +245,11 @@ watch(
     submitting.value = false;
     submitted.value = false;
     submitError.value = null;
+    submitErrorTerminal.value = false;
+    cancelling.value = false;
+    cancelled.value = false;
+    cancelError.value = null;
+    cancelErrorTerminal.value = false;
   }
 );
 
@@ -212,6 +265,14 @@ const resolvedAnswers = computed<Answer[] | null>(() => {
     return null;
   }
 });
+
+// #246 spec-defect fix: a resolved result that is present but NOT `{answers:[...]}`-shaped (e.g.
+// this component's own Cancel payload, or any other error the server recorded first) must render
+// as a terminal state — never fall through and reopen the interactive form, which would let a
+// cancelled/errored question misleadingly look answerable again.
+const isResolvedWithoutAnswers = computed<boolean>(
+  () => !props.view.isDeferred && props.view.hasResult && resolvedAnswers.value === null
+);
 
 function labelsFor(idx: number, values: string[]): string {
   const q = questions.value[idx];
@@ -242,6 +303,17 @@ function answerFor(idx: number): Answer | undefined {
       </div>
     </div>
 
+    <!-- Resolved, but NOT answer-shaped (e.g. cancelled): a terminal message, never the form. -->
+    <div
+      v-else-if="isResolvedWithoutAnswers"
+      class="question__resolved question__resolved--cancelled"
+      data-testid="question-cancelled-resolved"
+    >
+      <p class="question__answer question__answer--skipped">
+        {{ view.errorText || 'This question was cancelled.' }}
+      </p>
+    </div>
+
     <!-- Awaiting input: interactive form, one question at a time. -->
     <div v-else-if="questions.length" class="question__form" data-testid="question-form">
       <div class="question__stepper">Question {{ currentIndex + 1 }} of {{ questions.length }}</div>
@@ -262,7 +334,7 @@ function answerFor(idx: number): Answer | undefined {
                 :type="q.allowMultiple ? 'checkbox' : 'radio'"
                 :name="`question-${questionIdAt(idx)}`"
                 :checked="isOptionSelected(idx, optionValue(opt))"
-                :disabled="submitted"
+                :disabled="isLocked"
                 @change="toggleOption(idx, optionValue(opt))"
               />
               <span>{{ opt.label }}</span>
@@ -274,7 +346,7 @@ function answerFor(idx: number): Answer | undefined {
                 :type="q.allowMultiple ? 'checkbox' : 'radio'"
                 :name="`question-${questionIdAt(idx)}`"
                 :checked="draftFor(idx).otherActive"
-                :disabled="submitted"
+                :disabled="isLocked"
                 @change="toggleOther(idx)"
               />
               <span>Other</span>
@@ -285,7 +357,7 @@ function answerFor(idx: number): Answer | undefined {
               data-testid="question-other-text"
               type="text"
               placeholder="Type your answer…"
-              :disabled="submitted"
+              :disabled="isLocked"
               v-model="draftFor(idx).otherText"
             />
           </div>
@@ -296,7 +368,13 @@ function answerFor(idx: number): Answer | undefined {
         </div>
       </template>
 
-      <p v-if="submitError" class="question__error" data-testid="question-submit-error">
+      <p v-if="cancelError" class="question__error" data-testid="question-cancel-error">
+        {{ cancelError }}<span v-if="!cancelErrorTerminal"> — you can try again.</span>
+      </p>
+      <p v-else-if="cancelled" class="question__submitted" data-testid="question-cancel-pending">
+        Cancelling… waiting for confirmation…
+      </p>
+      <p v-else-if="submitError" class="question__error" data-testid="question-submit-error">
         {{ submitError }}<span v-if="!submitErrorTerminal"> — you can try again.</span>
       </p>
       <p v-else-if="submitted" class="question__submitted" data-testid="question-submitted">
@@ -307,7 +385,7 @@ function answerFor(idx: number): Answer | undefined {
         <button
           type="button"
           data-testid="question-back"
-          :disabled="currentIndex === 0 || submitting || submitted"
+          :disabled="currentIndex === 0 || isLocked"
           @click="goBack"
         >
           Back
@@ -315,16 +393,24 @@ function answerFor(idx: number): Answer | undefined {
         <button
           type="button"
           data-testid="question-skip"
-          :disabled="submitting || submitted"
+          :disabled="isLocked"
           @click="skipCurrent"
         >
           Skip
         </button>
         <button
+          type="button"
+          data-testid="question-cancel"
+          :disabled="isLocked"
+          @click="doCancel"
+        >
+          {{ cancelling ? 'Cancelling…' : 'Cancel' }}
+        </button>
+        <button
           v-if="!isLast"
           type="button"
           data-testid="question-next"
-          :disabled="!canProceed || submitting || submitted"
+          :disabled="!canProceed || isLocked"
           @click="goNext"
         >
           Next
@@ -333,7 +419,7 @@ function answerFor(idx: number): Answer | undefined {
           v-else
           type="button"
           data-testid="question-submit"
-          :disabled="!canProceed || submitting || submitted"
+          :disabled="!canProceed || isLocked"
           @click="goNext"
         >
           {{ submitting ? 'Submitting…' : 'Submit' }}

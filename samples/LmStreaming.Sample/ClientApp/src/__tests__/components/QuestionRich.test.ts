@@ -13,6 +13,7 @@ function mountQuestion(
     result?: string;
     hasResult?: boolean;
     isDeferred?: boolean;
+    isErrorFlag?: boolean;
     toolCallId?: string;
     submit?: ClientToolSubmitFn;
   } = {}
@@ -21,10 +22,11 @@ function mountQuestion(
     result = '',
     hasResult = false,
     isDeferred = false,
+    isErrorFlag = false,
     toolCallId = 'q1',
     submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome),
   } = opts;
-  const view = deriveToolPillState({ functionArgs, result, hasResult, isErrorFlag: false, isDeferred });
+  const view = deriveToolPillState({ functionArgs, result, hasResult, isErrorFlag, isDeferred });
   const toolCall: ToolCall = { tool_call_id: toolCallId, function_name: 'AskUserQuestion', function_args: functionArgs };
   const w = mount(QuestionRich, {
     props: { view, toolCall },
@@ -131,8 +133,113 @@ describe('QuestionRich — Other and Skip', () => {
     await w.get('[data-testid="question-skip"]').trigger('click');
     await Promise.resolve();
     await Promise.resolve();
-    const payload = JSON.parse(submit.mock.calls[0][1]);
+    const [, payloadRaw, isError] = submit.mock.calls[0];
+    const payload = JSON.parse(payloadRaw);
     expect(payload.answers).toEqual([{ questionId: 'q0', selectedValues: [], otherText: '', skipped: true }]);
+    // #246 fix: Skip is semantically distinct from Cancel — it is a normal (non-error) answer.
+    expect(isError).toBe(false);
+  });
+});
+
+// #246 spec-defect fix: the Stop button is unavailable while parked on a pending client-tool
+// question (hasPendingClientQuestion deliberately doesn't set isLoading/isSending), and
+// disconnect-only isn't real cancellation. QuestionRich exposes an explicit Cancel action that
+// sends a structured, self-describing client_tool_result error payload — the server treats
+// `result` as an opaque string (ChatWebSocketManager/MultiTurnAgentLoop never parse it), so the
+// { error, cancelled: true } shape is a client-only convention agreed with server-gap-tests, not a
+// server contract change. Cancel is deliberately distinct from Skip: Skip answers with
+// isError:false (a normal, "no preference" answer); Cancel answers with isError:true and a
+// `cancelled` marker so a resolved-but-non-answer-shaped result is never mistaken for real answers.
+describe('QuestionRich — Cancel (explicit pending-question cancellation)', () => {
+  it('renders a Cancel action distinct from Skip', () => {
+    const { w } = mountQuestion(singleArgs, { isDeferred: true });
+    const cancelBtn = w.get('[data-testid="question-cancel"]');
+    const skipBtn = w.get('[data-testid="question-skip"]');
+    expect(cancelBtn.element).not.toBe(skipBtn.element);
+    expect(cancelBtn.text()).toMatch(/cancel/i);
+  });
+
+  it('clicking Cancel sends isError:true with a structured { error, cancelled: true } payload for this tool_call_id', async () => {
+    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const { w } = mountQuestion(singleArgs, { isDeferred: true, toolCallId: 'call-cancel-1', submit });
+    await w.get('[data-testid="question-cancel"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(submit).toHaveBeenCalledTimes(1);
+    const [toolCallId, payloadRaw, isError] = submit.mock.calls[0];
+    expect(toolCallId).toBe('call-cancel-1');
+    expect(isError).toBe(true);
+    const payload = JSON.parse(payloadRaw);
+    expect(payload.cancelled).toBe(true);
+    expect(typeof payload.error).toBe('string');
+    expect(payload.error.length).toBeGreaterThan(0);
+  });
+
+  it('after Cancel is acked, shows a waiting-for-confirmation state and disables the form — only the server ack/resolution is canonical', async () => {
+    const { w } = mountQuestion(singleArgs, { isDeferred: true });
+    await w.get('[data-testid="question-option-Red"] input').setValue(true);
+    await w.get('[data-testid="question-cancel"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(w.get('[data-testid="question-cancel-pending"]').text()).toMatch(/waiting|confirmation/i);
+    expect((w.get('[data-testid="question-option-Red"] input').element as HTMLInputElement).disabled).toBe(true);
+    expect((w.get('[data-testid="question-cancel"]').element as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('a locally-acked Cancel blocks a subsequent Submit — late answers cannot override the cancellation', async () => {
+    const submit = vi.fn(async () => ({ status: 'acked', duplicate: false }) as ClientToolSubmitOutcome);
+    const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
+    await w.get('[data-testid="question-option-Red"] input').setValue(true);
+    await w.get('[data-testid="question-cancel"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((w.get('[data-testid="question-submit"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect(submit).toHaveBeenCalledTimes(1); // only the cancel call — no answer ever went out
+  });
+
+  it('a terminal cancel-submission error (conflict) shows the message WITHOUT a retry hint', async () => {
+    const submit = vi.fn(
+      async () => ({ status: 'error', code: 'conflict', message: 'Already answered' }) as ClientToolSubmitOutcome
+    );
+    const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
+    await w.get('[data-testid="question-cancel"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+    const err = w.get('[data-testid="question-cancel-error"]');
+    expect(err.text()).toContain('Already answered');
+    expect(err.text()).not.toMatch(/try again/i);
+  });
+
+  it('a retry-safe cancel-submission error (store_failed) shows a "try again" hint and Cancel stays available', async () => {
+    const submit = vi.fn(
+      async () => ({ status: 'error', code: 'store_failed', message: 'Could not save' }) as ClientToolSubmitOutcome
+    );
+    const { w } = mountQuestion(singleArgs, { isDeferred: true, submit });
+    await w.get('[data-testid="question-cancel"]').trigger('click');
+    await Promise.resolve();
+    await Promise.resolve();
+    const err = w.get('[data-testid="question-cancel-error"]');
+    expect(err.text()).toContain('Could not save');
+    expect(err.text()).toMatch(/try again/i);
+    expect((w.get('[data-testid="question-cancel"]').element as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('once the canonical (server-resolved) result is a non-answer body, the interactive form does not reopen', () => {
+    const resultText = JSON.stringify({ error: 'Question cancelled by user.', cancelled: true });
+    const { w } = mountQuestion(singleArgs, {
+      result: resultText,
+      hasResult: true,
+      isDeferred: false,
+      isErrorFlag: true,
+    });
+
+    expect(w.find('[data-testid="question-form"]').exists()).toBe(false);
+    expect(w.find('[data-testid="question-resolved"]').exists()).toBe(false);
+    const resolved = w.get('[data-testid="question-cancelled-resolved"]');
+    expect(resolved.text()).toContain('Question cancelled by user.');
   });
 });
 
