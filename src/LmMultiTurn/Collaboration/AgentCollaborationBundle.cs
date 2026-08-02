@@ -265,16 +265,28 @@ public sealed class AgentCollaborationBundle
     /// <param name="agentId">The agent that left.</param>
     /// <param name="status">Terminal status to record.</param>
     /// <returns>The messages that were closed, so their correspondents can be told.</returns>
+    /// <remarks>
+    /// Takes the same delivery gate <see cref="TrySendAndDeliver"/> admits under. Without it, a sender
+    /// could read the target's directory entry as live an instant before this method's status update
+    /// lands, then admit its message only after the sweep below has already run — a reply-expecting
+    /// message accepted for an agent that has already left, which no later sweep will ever revisit.
+    /// Serializing the two makes that ordering impossible: either the whole retirement completes
+    /// before the admission starts (so the sweep catches it), or the admission completes before
+    /// retirement starts (so <see cref="TrySend"/>'s own liveness check refuses it).
+    /// </remarks>
     public IReadOnlyList<string> RetireAgent(string agentId, string status)
     {
-        _ = Directory.TryUpdateStatus(agentId, status);
-        _ = Directory.TryMarkRetained(agentId);
+        lock (_deliveryGate)
+        {
+            _ = Directory.TryUpdateStatus(agentId, status);
+            _ = Directory.TryMarkRetained(agentId);
 
-        // Disjoint by construction: an agent cannot address itself, so no message is in both sweeps.
-        return
-        [
-            .. Ledger.AbandonMessagesFor(agentId, TargetLeftReasonCode),
-            .. Ledger.AbandonMessagesFrom(agentId, SenderLeftReasonCode),
-        ];
+            // Disjoint by construction: an agent cannot address itself, so no message is in both sweeps.
+            return
+            [
+                .. Ledger.AbandonMessagesFor(agentId, TargetLeftReasonCode),
+                .. Ledger.AbandonMessagesFrom(agentId, SenderLeftReasonCode),
+            ];
+        }
     }
 }
