@@ -17,7 +17,7 @@ import SubAgentListPanel from './SubAgentListPanel.vue';
 import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
-import { useConversationTabs } from '@/composables/useConversationTabs';
+import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
   GET_AGENT_ROUTING,
@@ -180,6 +180,9 @@ provide('getResultForToolCall', getResultForToolCall);
 // component can resolve a deferred tool call over the shared WebSocket without prop-drilling
 // through MessageList/SubAgentTranscript.
 provide(SUBMIT_CLIENT_TOOL_RESULT, submitClientToolResult);
+// Provide the tab-navigation function (#246) so a client-notification pill (NotificationPill.vue)
+// can jump the center pane straight to the reporting descendant's tab.
+provide(GO_TO_AGENT_TAB, selectTab);
 // Provide agentId → color so ToolPill (agent family) and NotificationPill (completion) can tint a
 // sub-agent's inline calls to match its tab.
 provide(GET_AGENT_COLOR, getAgentColor);

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import NotificationPill from '@/components/NotificationPill.vue';
 import { type NotificationDisplayData } from '@/types';
 import { GET_AGENT_COLOR } from '@/utils/agentColors';
+import { GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 
 describe('NotificationPill.vue', () => {
   it('renders a sub-agent completion notification with kind, source tool and label', () => {
@@ -20,7 +21,6 @@ describe('NotificationPill.vue', () => {
     expect(pill.attributes('data-notify-kind')).toBe('subagent-completion');
     expect(wrapper.find('[data-testid="notification-source"]').text()).toContain('Spawn');
     expect(wrapper.find('[data-testid="notification-label"]').text()).toContain('build-fixer');
-    // It is NOT rendered as a user/assistant chat bubble.
     expect(wrapper.find('.markdown-content').exists()).toBe(false);
   });
 
@@ -54,7 +54,6 @@ describe('NotificationPill.vue', () => {
     expect(pill.attributes('data-notify-kind')).toBe('agent-message');
     expect(pill.text()).toContain('Agent asked');
     expect(wrapper.find('[data-testid="notification-label"]').text()).toContain('reviewer');
-    // No `sourceToolName` — an agent message is not the product of a tool call.
     expect(wrapper.find('[data-testid="notification-source"]').exists()).toBe(false);
     expect(wrapper.find('.markdown-content').exists()).toBe(false);
   });
@@ -77,7 +76,6 @@ describe('NotificationPill.vue', () => {
       props: {
         notification: {
           notifyKind: 'agent-message',
-          // Deliberately not in the union: a server-side addition must not render blank.
           agentMessageType: 'Escalate' as never,
         },
       },
@@ -99,9 +97,70 @@ describe('NotificationPill.vue', () => {
       global: { provide: { [GET_AGENT_COLOR]: (id: string | null) => (id ? '#ff0000' : null) } },
     });
 
-    // The pill matches the sender's tab colour, so the reader can see WHO spoke at a glance.
-    expect(wrapper.find('[data-testid="notification-pill"]').attributes('style')).toContain(
-      '#ff0000'
-    );
+    expect(wrapper.find('[data-testid="notification-pill"]').attributes('style')).toContain('#ff0000');
+  });
+
+  it('renders a client-notification (pending question) with its own icon and label', () => {
+    const notification: NotificationDisplayData = {
+      notifyKind: 'client-notification',
+      sourceToolName: 'AskUserQuestion',
+      sourceToolCallId: 'agent-42',
+      label: 'build-fixer needs input',
+    };
+    const wrapper = mount(NotificationPill, { props: { notification } });
+
+    const pill = wrapper.find('[data-testid="notification-pill"]');
+    expect(pill.attributes('data-notify-kind')).toBe('client-notification');
+    expect(wrapper.find('.notification-kind').text()).toBe('Question pending');
+    expect(wrapper.find('.notification-icon').text()).toBe('❓');
+  });
+
+  it("navigates to the reporting descendant's tab when a client-notification pill is clicked", async () => {
+    const goToAgentTab = vi.fn();
+    const notification: NotificationDisplayData = {
+      notifyKind: 'client-notification',
+      sourceToolCallId: 'agent-42',
+      label: 'build-fixer needs input',
+    };
+    const wrapper = mount(NotificationPill, {
+      props: { notification },
+      global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
+    });
+
+    await wrapper.find('.notification-header').trigger('click');
+    expect(goToAgentTab).toHaveBeenCalledWith('agent-42');
+  });
+
+  it('does not attempt navigation for a client-notification with no sourceToolCallId', async () => {
+    const goToAgentTab = vi.fn();
+    const notification: NotificationDisplayData = {
+      notifyKind: 'client-notification',
+      label: 'needs input',
+    };
+    const wrapper = mount(NotificationPill, {
+      props: { notification },
+      global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
+    });
+
+    await wrapper.find('.notification-header').trigger('click');
+    expect(goToAgentTab).not.toHaveBeenCalled();
+  });
+
+  it('leaves other notification kinds unaffected by navigation (still just expands/collapses)', async () => {
+    const goToAgentTab = vi.fn();
+    const notification: NotificationDisplayData = {
+      notifyKind: 'subagent-completion',
+      sourceToolCallId: 'agent-7',
+      label: 'build-fixer',
+      detail: 'all green',
+    };
+    const wrapper = mount(NotificationPill, {
+      props: { notification },
+      global: { provide: { [GO_TO_AGENT_TAB]: goToAgentTab } },
+    });
+
+    await wrapper.find('.notification-header').trigger('click');
+    expect(goToAgentTab).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="notification-body"]').exists()).toBe(true);
   });
 });

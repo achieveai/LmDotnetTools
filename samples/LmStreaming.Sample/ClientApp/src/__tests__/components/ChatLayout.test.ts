@@ -4,6 +4,7 @@ import { defineComponent, inject, h } from 'vue';
 import ChatLayout from '@/components/ChatLayout.vue';
 import SubAgentListPanel from '@/components/SubAgentListPanel.vue';
 import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
+import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
 
 interface ConversationSummary {
   threadId: string;
@@ -735,5 +736,47 @@ describe('ChatLayout provides SUBMIT_CLIENT_TOOL_RESULT to descendants (#246)', 
 
     await injectedSubmit?.('call-1', '{"answers":[]}', false);
     expect(sharedMocks.submitClientToolResult).toHaveBeenCalledWith('call-1', '{"answers":[]}', false);
+  });
+});
+
+// #246: a client-notification pill (NotificationPill.vue) reports a descendant blocked on a
+// browser-hosted client tool. Clicking it must jump the center pane to that descendant's tab —
+// wired via GO_TO_AGENT_TAB -> useConversationTabs' selectTab, mirroring the GET_AGENT_COLOR /
+// GET_AGENT_ROUTING provides already on ChatLayout.
+describe('ChatLayout provides GO_TO_AGENT_TAB to descendants (#246)', () => {
+  it('injects a function that switches the center pane away from the main tab', async () => {
+    let goToAgentTab: GoToAgentTab | undefined;
+    const Probe = defineComponent({
+      setup() {
+        goToAgentTab = inject<GoToAgentTab>(GO_TO_AGENT_TAB);
+        return () => h('div', { 'data-test': 'probe' });
+      },
+    });
+
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+
+    const wrapper = mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: Probe,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(typeof goToAgentTab).toBe('function');
+
+    goToAgentTab?.('agent-42');
+    await flushPromises();
+
+    const mainView = wrapper.get('[data-testid="main-view"]');
+    expect((mainView.element as HTMLElement).style.display).toBe('none');
   });
 });

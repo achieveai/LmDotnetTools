@@ -3,6 +3,7 @@ import { computed, inject, ref, toRef } from 'vue';
 import type { AgentMessageType, NotificationDisplayData } from '@/types';
 import { AGENT_MESSAGE_NOTIFY_KIND } from '@/composables/messageDisplay';
 import { GET_AGENT_COLOR, type AgentColorLookup } from '@/utils/agentColors';
+import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
 
 /**
  * Presentational pill for a message that is out-of-band relative to the human's own conversation —
@@ -26,6 +27,8 @@ const icon = computed<string>(() => {
       return '\u{1F916}'; // 🤖
     case AGENT_MESSAGE_NOTIFY_KIND:
       return '\u{1F4AC}'; // 💬
+    case 'client-notification':
+      return '❓';
     default:
       return '\u{1F514}'; // 🔔
   }
@@ -55,6 +58,8 @@ const kindLabel = computed<string>(() => {
       const type = data.value.agentMessageType;
       return (type && AGENT_MESSAGE_HEADINGS[type]) || type || 'Agent message';
     }
+    case 'client-notification':
+      return 'Question pending';
     default:
       return data.value.notifyKind;
   }
@@ -72,8 +77,18 @@ const primaryLabel = computed<string | null>(() => {
 const bodyText = computed<string | null>(() => data.value.detail ?? data.value.text ?? null);
 const hasBody = computed<boolean>(() => !!bodyText.value && bodyText.value.trim().length > 0);
 
+const goToAgentTab = inject<GoToAgentTab>(GO_TO_AGENT_TAB, () => {});
+const isNavigable = computed<boolean>(
+  () => data.value.notifyKind === 'client-notification' && !!data.value.sourceToolCallId
+);
+const isClickable = computed<boolean>(() => hasBody.value || isNavigable.value);
+
 const expanded = ref(false);
-function toggle(): void {
+function handleHeaderClick(): void {
+  if (isNavigable.value) {
+    goToAgentTab(data.value.sourceToolCallId!);
+    return;
+  }
   if (hasBody.value) {
     expanded.value = !expanded.value;
   }
@@ -99,8 +114,8 @@ const agentColor = computed<string | null>(() =>
   >
     <div
       class="notification-header"
-      :class="{ clickable: hasBody }"
-      @click="toggle"
+      :class="{ clickable: isClickable }"
+      @click="handleHeaderClick"
     >
       <span class="notification-icon" aria-hidden="true">{{ icon }}</span>
       <span class="notification-kind">{{ kindLabel }}</span>
