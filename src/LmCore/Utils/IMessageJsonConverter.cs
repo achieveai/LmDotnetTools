@@ -273,6 +273,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return "conversation_usage";
         }
 
+        if (type == typeof(AgentMessage))
+        {
+            return "agent";
+        }
+
         // If not a known type, fallback to name conversion
         var typeName = type.Name;
 
@@ -310,6 +315,14 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             if (element.TryGetProperty("notify_kind", out _))
             {
                 return typeof(NotifyMessage);
+            }
+
+            // Same reasoning for an agent-to-agent message: its "text" is the rendered envelope, so
+            // without this guard a $type-less agent message would rehydrate as a plain TextMessage and
+            // silently lose its sender identity and correlation.
+            if (element.TryGetProperty("agent_message_type", out _))
+            {
+                return typeof(AgentMessage);
             }
 
             // Check if this is a TextUpdateMessage or a regular TextMessage
@@ -420,6 +433,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "text_with_citations" => typeof(TextWithCitationsMessage),
             "composite" => typeof(CompositeMessage),
             "notify" => typeof(NotifyMessage),
+            "agent" => typeof(AgentMessage),
             "conversation_usage" => typeof(ConversationUsageMessage),
             _ => null,
         };
