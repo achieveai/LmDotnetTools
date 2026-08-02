@@ -1,7 +1,9 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
+import { defineComponent, inject, h } from 'vue';
 import ChatLayout from '@/components/ChatLayout.vue';
 import SubAgentListPanel from '@/components/SubAgentListPanel.vue';
+import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 
 interface ConversationSummary {
   threadId: string;
@@ -32,6 +34,9 @@ const sharedMocks = vi.hoisted(() => ({
   resumeStreamIfActive: vi.fn(async () => {}),
   markStreamIdle: vi.fn(),
   markStreamLoading: vi.fn(),
+  // #246: browser-hosted client tools (AskUserQuestion) gating.
+  hasPendingClientQuestion: false,
+  submitClientToolResult: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
   // Captures the thread-id getter ChatLayout passes to useSubAgentPanel, so a test can assert the
   // start-gating (the getter returns null until the conversation has a sidebar entry).
   subAgentThreadGetter: null as (() => string | null) | null,
@@ -138,6 +143,8 @@ vi.mock('@/composables/useChat', async () => {
       markStreamIdle: sharedMocks.markStreamIdle,
       markStreamLoading: sharedMocks.markStreamLoading,
       getResultForToolCall: vi.fn(() => null),
+      hasPendingClientQuestion: computed(() => sharedMocks.hasPendingClientQuestion),
+      submitClientToolResult: sharedMocks.submitClientToolResult,
       // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
       threadId: ref('thread-1'),
     }),
@@ -627,5 +634,106 @@ describe('ChatLayout sub-agent panel start-gating', () => {
 
     expect(sharedMocks.subAgentThreadGetter).not.toBeNull();
     expect(sharedMocks.subAgentThreadGetter!()).toBe('thread-1');
+  });
+});
+
+// #246: a deferred client tool (e.g. AskUserQuestion) must lock the mode/provider selectors (an
+// answer, once submitted, is bound to a specific mode/provider context) the same way an in-flight
+// stream does — but must NOT touch the composer (ordinary chat message queuing stays available
+// while a question is pending, per the coordinator's contract).
+describe('ChatLayout client-tool question gating (#246)', () => {
+  const mountWithSelectors = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: {
+            props: ['disabled'],
+            template: '<button data-test="mode-select" :disabled="disabled">Mode</button>',
+          },
+          ProviderSelector: {
+            props: ['disabled'],
+            template: '<button data-test="provider-select" :disabled="disabled">Provider</button>',
+          },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.hasPendingClientQuestion = false;
+  });
+
+  it('leaves the mode/provider selectors enabled while idle with no pending question', async () => {
+    const wrapper = mountWithSelectors();
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="mode-select"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.get('[data-test="provider-select"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('disables the mode selector while a client question is pending, even though the run is idle', async () => {
+    sharedMocks.hasPendingClientQuestion = true;
+
+    const wrapper = mountWithSelectors();
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="mode-select"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('disables the provider selector while a client question is pending, even though the run is idle', async () => {
+    sharedMocks.hasPendingClientQuestion = true;
+
+    const wrapper = mountWithSelectors();
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="provider-select"]').attributes('disabled')).toBeDefined();
+  });
+});
+
+// #246: ChatLayout must provide submitClientToolResult under SUBMIT_CLIENT_TOOL_RESULT, mirroring
+// the existing getResultForToolCall provide, so a descendant "rich" tool component (QuestionRich.vue,
+// via useClientToolSubmit()) can resolve a deferred AskUserQuestion without prop-drilling through
+// MessageList/ToolPill.
+describe('ChatLayout provides SUBMIT_CLIENT_TOOL_RESULT to descendants (#246)', () => {
+  it('injects useChat.submitClientToolResult for a descendant to call', async () => {
+    let injectedSubmit: ClientToolSubmitFn | undefined;
+    const Probe = defineComponent({
+      setup() {
+        injectedSubmit = inject<ClientToolSubmitFn>(SUBMIT_CLIENT_TOOL_RESULT);
+        return () => h('div', { 'data-test': 'probe' });
+      },
+    });
+
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.submitClientToolResult.mockClear();
+
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: Probe,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(injectedSubmit).toBe(sharedMocks.submitClientToolResult);
+
+    await injectedSubmit?.('call-1', '{"answers":[]}', false);
+    expect(sharedMocks.submitClientToolResult).toHaveBeenCalledWith('call-1', '{"answers":[]}', false);
   });
 });

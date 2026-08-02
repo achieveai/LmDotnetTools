@@ -310,6 +310,25 @@ export function useChat(options: UseChatOptions = {}) {
     return toolResults.value.get(toolCallId) || null;
   }
 
+  // #246: a deferred client tool (e.g. AskUserQuestion) leaves a placeholder
+  // ToolCallResultMessage (`is_deferred: true`, `result: ''`) in toolResults until the browser
+  // submits an answer and the server republishes the SAME tool_call_id with the real result. True
+  // whenever ANY tracked tool result is still in that placeholder state.
+  const hasPendingClientQuestion = computed(() => {
+    for (const result of toolResults.value.values()) {
+      if (result.is_deferred) return true;
+    }
+    return false;
+  });
+
+  // #246: resolvers for in-flight submitClientToolResult() calls, keyed by tool_call_id, so the
+  // wsClient onClientToolResultAck/onClientToolResultError callbacks (wired into every
+  // createWebSocketConnection call below) can settle the right promise.
+  const pendingSubmissions = new Map<
+    string,
+    (outcome: import('./useClientToolSubmit').ClientToolSubmitOutcome) => void
+  >();
+
   /**
    * Generate thread ID on first use (persists across messages for multi-turn)
    */
@@ -918,6 +937,34 @@ export function useChat(options: UseChatOptions = {}) {
           wsConnection = null;
         }
       },
+      // #246: settle whichever submitClientToolResult() call is waiting on this toolCallId.
+      // Wired here (not per-call) so ANY caller opening the connection — send, resume, or a
+      // dedicated subscribe-only submit connection — gets ack/error routing uniformly.
+      onClientToolResultAck: (toolCallId, duplicate) => {
+        const resolve = pendingSubmissions.get(toolCallId);
+        if (resolve) {
+          pendingSubmissions.delete(toolCallId);
+          resolve({ status: 'acked', duplicate });
+        } else {
+          log.debug('Received client_tool_result_ack for an untracked toolCallId', { toolCallId, duplicate });
+        }
+      },
+      onClientToolResultError: (toolCallId, code, message) => {
+        // A malformed inbound frame may arrive without a toolCallId; if exactly one submission is
+        // in flight it's an unambiguous correlation, otherwise it can't be attributed safely.
+        const id = toolCallId ?? (pendingSubmissions.size === 1 ? [...pendingSubmissions.keys()][0] : undefined);
+        const resolve = id ? pendingSubmissions.get(id) : undefined;
+        if (resolve && id) {
+          pendingSubmissions.delete(id);
+          resolve({ status: 'error', code, message });
+        } else {
+          log.warn('Received client_tool_result_error that could not be correlated to a pending submission', {
+            toolCallId,
+            code,
+            message,
+          });
+        }
+      },
     });
   }
 
@@ -967,6 +1014,69 @@ export function useChat(options: UseChatOptions = {}) {
       const { sendWebSocketMessage } = await import('@/api/wsClient');
       sendWebSocketMessage(wsConnection!, text);
     }
+  }
+
+  /**
+   * Ensure a live WebSocket for the current thread exists before submitting a client-tool result
+   * (#246). Reuses the same open-connection check as `sendMessageViaWebSocket`; when there is none
+   * (e.g. the run finished/disconnected while a question stayed unanswered) opens a fresh
+   * subscribe-only connection — no message is sent, so this never raises `isLoading`/`isSending`.
+   */
+  async function ensureClientToolSubmitConnection(): Promise<void> {
+    const effectiveThreadId = getOrCreateThreadId();
+    if (
+      wsConnection &&
+      wsConnection.isConnected &&
+      wsConnection.socket.readyState === WebSocket.OPEN &&
+      wsConnection.threadId === effectiveThreadId
+    ) {
+      return;
+    }
+    await openStreamConnection(effectiveThreadId, buildStreamCallbacks());
+  }
+
+  /**
+   * Submit the browser's answer for a deferred client tool call (#246, e.g. `AskUserQuestion`) —
+   * the function `ChatLayout` provides via `SUBMIT_CLIENT_TOOL_RESULT` for `QuestionRich.vue` (and
+   * any future rich tool component) to call. Reuses/opens the persistent WebSocket, sends
+   * `{ $type: 'client_tool_result', toolCallId, result, isError? }`, and resolves once the
+   * matching `client_tool_result_ack` / `client_tool_result_error` frame arrives (see the
+   * `onClientToolResultAck`/`onClientToolResultError` handlers wired into every
+   * `createWebSocketConnection` call in `openStreamConnection`). The resolved value itself always
+   * arrives separately as an ordinary `ToolCallResultMessage` — this promise settles the SUBMIT
+   * outcome only, not the answer's eventual rendering.
+   */
+  async function submitClientToolResult(
+    toolCallId: string,
+    result: string,
+    isError?: boolean
+  ): Promise<import('./useClientToolSubmit').ClientToolSubmitOutcome> {
+    try {
+      await ensureClientToolSubmitConnection();
+    } catch (err) {
+      return {
+        status: 'error',
+        code: 'not_connected',
+        message: err instanceof Error ? err.message : 'Failed to open connection',
+      };
+    }
+    if (!wsConnection) {
+      return { status: 'error', code: 'not_connected', message: 'No active connection' };
+    }
+    const { sendClientToolResult } = await import('@/api/wsClient');
+    return new Promise((resolve) => {
+      pendingSubmissions.set(toolCallId, resolve);
+      try {
+        sendClientToolResult(wsConnection!, toolCallId, result, isError);
+      } catch (err) {
+        pendingSubmissions.delete(toolCallId);
+        resolve({
+          status: 'error',
+          code: 'not_connected',
+          message: err instanceof Error ? err.message : 'Failed to send',
+        });
+      }
+    });
   }
 
   /**
@@ -1046,6 +1156,23 @@ export function useChat(options: UseChatOptions = {}) {
     }
 
     if (!runState?.isInProgress) {
+      // #246: the run itself may have finished (or was never in-flight from the server's point of
+      // view) while a client tool question is still unanswered — e.g. resolution is deferred to a
+      // human and the agent turn completed around it. Re-open a subscribe-only connection so
+      // submitClientToolResult() has a live socket to answer on; deliberately stays idle (does NOT
+      // call markStreamLoading/raise isLoading) since no run is actually streaming.
+      if (hasPendingClientQuestion.value) {
+        log.debug('No in-flight run, but a pending client question exists; opening a subscribe-only connection', {
+          threadId: existingThreadId,
+        });
+        try {
+          await ensureClientToolSubmitConnection();
+        } catch (err) {
+          log.warn('Failed to open connection for pending client question', { threadId: existingThreadId, error: err });
+        }
+        markStreamIdle();
+        return;
+      }
       log.debug('No in-flight run to resume', { threadId: existingThreadId });
       markStreamIdle();
       return;
@@ -1339,6 +1466,8 @@ export function useChat(options: UseChatOptions = {}) {
     resumeStreamIfActive,
     markStreamIdle,
     markStreamLoading,
+    submitClientToolResult,
+    hasPendingClientQuestion,
   };
 }
 

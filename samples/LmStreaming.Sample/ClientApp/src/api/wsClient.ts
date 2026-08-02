@@ -36,9 +36,11 @@ export interface WebSocketClientCallbacks {
   onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
   /**
    * Ack for a `client_tool_result` frame the browser sent to resolve a deferred client tool
-   * (#246, e.g. `AskUserQuestion`). `duplicate` is true when this exact `toolCallId` had already
-   * been resolved server-side (e.g. a retried submit after a dropped ack) — the resolved value
-   * itself always arrives separately as an ordinary `ToolCallResultMessage`, never in the ack.
+   * (#246, e.g. `AskUserQuestion`). Wire shape carries `status: 'resolved' | 'duplicate'`; this
+   * callback receives it pre-normalized to a `duplicate` boolean (true when this exact
+   * `toolCallId` had already been resolved server-side, e.g. a retried submit after a dropped
+   * ack) — the resolved value itself always arrives separately as an ordinary
+   * `ToolCallResultMessage`, never in the ack.
    */
   onClientToolResultAck?: (toolCallId: string, duplicate: boolean) => void;
   /**
@@ -270,8 +272,9 @@ export function openWebSocketConnection(
         // sniffing below — these are protocol acks, not chat content.
         if (data.includes('"$type":"client_tool_result_ack"')) {
           const ackData = JSON.parse(data);
-          log.debug('Received client_tool_result_ack', { toolCallId: ackData.toolCallId, duplicate: !!ackData.duplicate });
-          onClientToolResultAck?.(ackData.toolCallId, !!ackData.duplicate);
+          const duplicate = ackData.status === 'duplicate';
+          log.debug('Received client_tool_result_ack', { toolCallId: ackData.toolCallId, status: ackData.status });
+          onClientToolResultAck?.(ackData.toolCallId, duplicate);
           return;
         }
 

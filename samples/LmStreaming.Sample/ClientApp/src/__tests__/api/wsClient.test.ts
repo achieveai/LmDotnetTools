@@ -304,17 +304,30 @@ describe('openWebSocketConnection client_tool_result_ack / client_tool_result_er
     return { socket, connection };
   }
 
-  it('routes a client_tool_result_ack frame to onClientToolResultAck with its duplicate flag', async () => {
+  it('routes a client_tool_result_ack frame with status "resolved" to onClientToolResultAck(id, false)', async () => {
     const onClientToolResultAck = vi.fn();
     const onMessage = vi.fn();
     const { socket } = await open({ onClientToolResultAck, onMessage });
 
     socket.onmessage?.({
-      data: JSON.stringify({ $type: 'client_tool_result_ack', toolCallId: 'call-1', duplicate: false }),
+      data: JSON.stringify({ $type: 'client_tool_result_ack', toolCallId: 'call-1', status: 'resolved' }),
     });
 
     expect(onClientToolResultAck).toHaveBeenCalledWith('call-1', false);
     // Must not also fall through to the generic message handler.
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
+  it('routes a client_tool_result_ack frame with status "duplicate" to onClientToolResultAck(id, true)', async () => {
+    const onClientToolResultAck = vi.fn();
+    const onMessage = vi.fn();
+    const { socket } = await open({ onClientToolResultAck, onMessage });
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'client_tool_result_ack', toolCallId: 'call-1', status: 'duplicate' }),
+    });
+
+    expect(onClientToolResultAck).toHaveBeenCalledWith('call-1', true);
     expect(onMessage).not.toHaveBeenCalled();
   });
 
