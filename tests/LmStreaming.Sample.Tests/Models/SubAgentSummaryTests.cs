@@ -213,12 +213,16 @@ public sealed class SubAgentSummaryTests
                 "status",
                 "threadId",
                 "lastActivityUtc",
+                "parentThreadId",
+                "depth",
+                "terminalAtUtc",
+                "failureCode",
                 "effectiveModelId",
                 "effectiveModelIntelligence",
                 "modelSelectionSource",
             ],
-            "a host that never enabled collaboration must emit the shape it always did — every #244 "
-                + "member is omitted when it has nothing to say");
+            "a host that never enabled collaboration must retain the current main-branch legacy shape — "
+                + "every collaboration-only #244 member is omitted when it has nothing to say");
     }
 
     [Fact]

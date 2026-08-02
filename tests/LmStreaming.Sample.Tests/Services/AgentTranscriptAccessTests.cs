@@ -476,6 +476,7 @@ public sealed class AgentTranscriptAccessTests
             Mock.Of<IWorkspaceStore>(),
             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             new ConversationStatusResolver(Mock.Of<IConversationStore>(), new InMemoryConversationStore()),
+            TimeProvider.System,
             workflowRunRegistry,
             NullLogger<ConversationsController>.Instance);
 

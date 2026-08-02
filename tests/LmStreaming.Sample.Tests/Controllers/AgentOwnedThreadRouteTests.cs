@@ -324,6 +324,7 @@ public sealed class AgentOwnedThreadRouteTests
             Mock.Of<IWorkspaceStore>(),
             new FakeProviderRegistry(defaultProviderId: "test", available: ["test"]).ToReal(),
             new ConversationStatusResolver(store, new InMemoryConversationStore()),
+            TimeProvider.System,
             new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance);
 }
