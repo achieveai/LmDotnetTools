@@ -434,6 +434,52 @@ public class AgentMessageLedgerTests
     }
 
     [Fact]
+    public void AbandonMessagesFrom_ClosesTheQuestionsAnAgentThatLeftWasStillOwedAnAnswerTo()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var question = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        var fromElsewhere = ledger.TryAdmit(Request(from: "agent-c"), new AgentInbox(8)).MessageId!;
+
+        var closed = ledger.AbandonMessagesFrom(Sender, "sender_left");
+
+        // Left open, the target keeps being offered a question on behalf of somebody who is no longer
+        // there to read the answer — and can still spend a wait interrupt on it.
+        closed.Should().Equal(question);
+        ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Abandoned);
+        ledger.Find(question)!.ReasonCode.Should().Be("sender_left");
+        ledger.GetOpenInbound(Target).Select(e => e.MessageId).Should().Equal(fromElsewhere);
+    }
+
+    [Fact]
+    public void AbandonMessagesFrom_LeavesAloneWhatNobodyOwesAnAnswerTo()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+        var steer = ledger.TryAdmit(Request(AgentMessageType.Steer), new AgentInbox(8)).MessageId!;
+        var answered = ledger.TryAdmit(Request(), new AgentInbox(8)).MessageId!;
+        var reply = ledger
+            .TryAdmit(Request(AgentMessageType.Response, Target, Sender, answered), new AgentInbox(8))
+            .MessageId!;
+        _ = ledger.MarkDelivered(reply);
+
+        ledger.AbandonMessagesFrom(Sender, "sender_left").Should().BeEmpty();
+
+        // A steer is finished on delivery, so an open one is merely mid-hand-off: closing it would race
+        // a delivery already in flight to cancel an obligation that was never there. An answered
+        // question is settled, and retirement must not rewrite what already happened.
+        ledger.Find(steer)!.IsClosed.Should().BeFalse();
+        ledger.Find(answered)!.State.Should().Be(AgentMessageDeliveryState.Answered);
+    }
+
+    [Fact]
+    public void AbandonMessagesFrom_IsHarmlessWhenThereIsNothingToClose()
+    {
+        var ledger = new AgentMessageLedger(new AgentCollaborationOptions());
+
+        ledger.AbandonMessagesFrom("agent-nobody", "sender_left").Should().BeEmpty();
+        ledger.AbandonMessagesFrom("  ", "sender_left").Should().BeEmpty();
+    }
+
+    [Fact]
     public void OpenViews_AreOrderedOldestFirst_SoCallersChooseTheSameMessageEveryTime()
     {
         var clock = new ManualClock();

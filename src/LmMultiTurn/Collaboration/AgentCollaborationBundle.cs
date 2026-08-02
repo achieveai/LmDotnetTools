@@ -46,6 +46,9 @@ public sealed class AgentCollaborationBundle
     /// <summary>Reason recorded against messages abandoned because their target left.</summary>
     public const string TargetLeftReasonCode = "target_left";
 
+    /// <summary>Reason recorded against messages abandoned because the agent that sent them left.</summary>
+    public const string SenderLeftReasonCode = "sender_left";
+
     // One tail per target, so admissions for the same target hand over in the order they were admitted.
     // Keyed by canonical agent id, and therefore no larger than the directory itself.
     private readonly Dictionary<string, Task> _deliveryTails = new(StringComparer.Ordinal);
@@ -243,21 +246,35 @@ public sealed class AgentCollaborationBundle
     }
 
     /// <summary>
-    /// Records that an agent has left: it stays visible but unaddressable, and everything anybody was
-    /// waiting on from it is closed.
+    /// Records that an agent has left: it stays visible but unaddressable, and every obligation it was
+    /// party to in either direction is closed.
     /// </summary>
     /// <remarks>
-    /// One call rather than two, because the two halves are only correct together. Retiring without
+    /// <para>
+    /// One call rather than three, because the parts are only correct together. Retiring without
     /// abandoning strands senders on questions that can never be answered; abandoning without retiring
     /// lets new messages queue for an agent that has already gone.
+    /// </para>
+    /// <para>
+    /// Both directions are swept, and they are genuinely different failures. Inbound leaves the SENDER
+    /// waiting for an answer nobody can give; outbound leaves the RECIPIENT holding a question it is
+    /// still being offered as answerable work on behalf of somebody who has gone. The two reason codes
+    /// stay distinct so the record says which of the two happened.
+    /// </para>
     /// </remarks>
     /// <param name="agentId">The agent that left.</param>
     /// <param name="status">Terminal status to record.</param>
-    /// <returns>The messages that were closed, so their senders can be told.</returns>
+    /// <returns>The messages that were closed, so their correspondents can be told.</returns>
     public IReadOnlyList<string> RetireAgent(string agentId, string status)
     {
         _ = Directory.TryUpdateStatus(agentId, status);
         _ = Directory.TryMarkRetained(agentId);
-        return Ledger.AbandonMessagesFor(agentId, TargetLeftReasonCode);
+
+        // Disjoint by construction: an agent cannot address itself, so no message is in both sweeps.
+        return
+        [
+            .. Ledger.AbandonMessagesFor(agentId, TargetLeftReasonCode),
+            .. Ledger.AbandonMessagesFrom(agentId, SenderLeftReasonCode),
+        ];
     }
 }

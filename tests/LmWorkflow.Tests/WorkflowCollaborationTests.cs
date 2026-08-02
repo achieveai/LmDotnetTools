@@ -345,6 +345,52 @@ public class WorkflowCollaborationTests
     }
 
     [Fact]
+    public async Task TearingTheRunDownAbandonsTheQuestionsNobodyIsLeftToAnswer()
+    {
+        // A controller that vanishes is only half-settled if the directory is updated and the ledger is
+        // not: the node stops being addressable, so nothing can ever deliver an answer, and nothing else
+        // in the system closes the entry. The asker would wait for the lifetime of the collaboration.
+        var caller = Root();
+        var controllerId = WorkflowCollaboration.ComposeControllerAgentId("wf-abandon-1");
+        string question;
+
+        await using (
+            var handle = await WorkflowSession.StartAsync(
+                objective: "drive",
+                inputs: null,
+                definition: MinimalDefinition(),
+                subAgentOptions: EmptyControllerOptions(),
+                controllerAgent: ScriptedController(DriveMinimalToTerminal).Object,
+                threadId: "wf-abandon-thread",
+                instanceId: "wf-abandon-1",
+                callerCollaboration: caller
+            )
+        )
+        {
+            await handle.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+
+            var sent = caller.Bundle.TrySend(
+                caller.AgentId,
+                controllerId,
+                AgentMessageType.Question
+            );
+            sent.Succeeded.Should().BeTrue("the controller is still a live, addressable node");
+            question = sent.MessageId!;
+        }
+
+        caller
+            .Bundle.Ledger.Find(question)!
+            .State.Should()
+            .Be(AgentMessageDeliveryState.Abandoned);
+        caller
+            .Bundle.Ledger.Find(question)!
+            .ReasonCode.Should()
+            .Be(AgentCollaborationBundle.TargetLeftReasonCode);
+        caller.Bundle.Ledger.GetOpenInbound(controllerId).Should().BeEmpty();
+        caller.Bundle.Ledger.GetOpenOutbound(caller.AgentId).Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ABlockedSnapshotFlushDoesNotHoldTheCollaborationsCapacity()
     {
         // Capacity is a lease on EXISTENCE, not on teardown I/O. Retention and the permit are independent:

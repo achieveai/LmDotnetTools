@@ -516,21 +516,55 @@ public sealed class AgentMessageLedger
     /// <param name="toAgentId">The agent that left.</param>
     /// <param name="reasonCode">Content-free explanation, safe to surface and to log.</param>
     /// <returns>The identifiers that were closed, so their senders can be told.</returns>
-    public IReadOnlyList<string> AbandonMessagesFor(string toAgentId, string reasonCode)
-    {
-        if (string.IsNullOrWhiteSpace(toAgentId))
-        {
-            return [];
-        }
+    public IReadOnlyList<string> AbandonMessagesFor(string toAgentId, string reasonCode) =>
+        string.IsNullOrWhiteSpace(toAgentId)
+            ? []
+            : Abandon(
+                entry => string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal),
+                reasonCode
+            );
 
+    /// <summary>
+    /// Closes every open message an agent that has left was still owed an answer to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The mirror image of <see cref="AbandonMessagesFor"/>, and just as necessary: a Question outlives
+    /// the agent that asked it. Left open, the recipient keeps being offered it as answerable work — it
+    /// can still interrupt a wait, and a reply to it is still admitted — on behalf of somebody who is no
+    /// longer there to read the answer.
+    /// </para>
+    /// <para>
+    /// Only entries that <see cref="AgentMessageLedgerEntry.ExpectsReply"/> are closed. A message nobody
+    /// owes a reply to is finished the moment it is delivered, and an open one is simply mid-hand-off;
+    /// closing that would race the delivery already in flight for no benefit, since there is no
+    /// obligation left behind to cancel.
+    /// </para>
+    /// </remarks>
+    /// <param name="fromAgentId">The agent that left.</param>
+    /// <param name="reasonCode">Content-free explanation, safe to surface and to log.</param>
+    /// <returns>The identifiers that were closed, so their recipients can stop holding them.</returns>
+    public IReadOnlyList<string> AbandonMessagesFrom(string fromAgentId, string reasonCode) =>
+        string.IsNullOrWhiteSpace(fromAgentId)
+            ? []
+            : Abandon(
+                entry =>
+                    entry.ExpectsReply
+                    && string.Equals(entry.FromAgentId, fromAgentId, StringComparison.Ordinal),
+                reasonCode
+            );
+
+    /// <summary>Abandons every open entry matching <paramref name="selector"/> under one lock.</summary>
+    private IReadOnlyList<string> Abandon(
+        Func<AgentMessageLedgerEntry, bool> selector,
+        string reasonCode
+    )
+    {
         lock (_gate)
         {
             var now = _timeProvider.GetUtcNow();
             var affected = _entries
-                .Values.Where(entry =>
-                    !entry.IsClosed
-                    && string.Equals(entry.ToAgentId, toAgentId, StringComparison.Ordinal)
-                )
+                .Values.Where(entry => !entry.IsClosed && selector(entry))
                 .Select(entry => entry.MessageId)
                 .ToList();
 

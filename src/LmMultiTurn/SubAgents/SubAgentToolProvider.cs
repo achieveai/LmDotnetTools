@@ -1068,16 +1068,21 @@ public class SubAgentToolProvider : IFunctionProvider
         // Stop the losing races before reporting. The waits are non-destructive, so cancelling them
         // abandons the observation only — every agent listed keeps running either way.
         await linked.CancelAsync();
-        cancellationToken.ThrowIfCancellationRequested();
 
-        // Always observed, even when it lost: a question that claimed its one interrupt but is not
-        // being reported has to give the claim back, or no later wait would ever be woken by it.
+        // Always observed, and always BEFORE this method can leave by any route: a question that
+        // claimed its one interrupt but is not being reported has to give the claim back, or no later
+        // wait would ever be woken by it. Being cancelled counts as not reporting it — the caller is
+        // about to receive an exception rather than the question, so the claim is just as lost as when
+        // another racer won. (The await cannot hang: `linked` is already cancelled, which settles it.)
+        var reported = winner == question && !cancellationToken.IsCancellationRequested;
         var asked = await question;
-        if (winner != question && asked is not null)
+        if (asked is not null && !reported)
         {
             _manager.Collaboration?.Bundle.Ledger.ReleaseWaitInterrupt(asked.MessageId);
             asked = null;
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         var status = asked is not null ? "question_received"
             : winner == completion ? "completed"

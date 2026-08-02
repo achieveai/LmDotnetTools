@@ -266,14 +266,23 @@ internal sealed class WorkflowControllerRegistration
     internal void AttachLoop(IMultiTurnAgent loop) => _endpoint.Attach(loop);
 
     /// <summary>
-    ///     Settles the node exactly once at teardown: records the terminal status, retains the entry so the
-    ///     hierarchy stays inspectable after the run, unbinds the disposed loop, and returns the capacity
-    ///     permit. Safe to call from more than one teardown path.
+    ///     Settles the node exactly once at teardown: retires it from the collaboration (terminal status,
+    ///     retained entry, outstanding messages abandoned), unbinds the disposed loop, and returns the
+    ///     capacity permit. Safe to call from more than one teardown path.
     /// </summary>
     /// <remarks>
-    ///     Retention and capacity are independent: the retained entry is an inspectable record, not a live
-    ///     routing target, and it costs the collaboration nothing. Callers must therefore invoke this as soon
-    ///     as the loop is gone rather than behind any remaining teardown I/O.
+    ///     <para>
+    ///         Retirement goes through <see cref="AgentCollaborationBundle.RetireAgent"/> rather than the
+    ///         directory directly, because settling the directory is only part of leaving: a controller that
+    ///         disappears with an unanswered question addressed to it strands its asker forever, since the
+    ///         node is no longer routable and nothing else will ever close the entry. The bundle is the one
+    ///         place that knows departure means both.
+    ///     </para>
+    ///     <para>
+    ///         Retention and capacity are independent: the retained entry is an inspectable record, not a live
+    ///         routing target, and it costs the collaboration nothing. Callers must therefore invoke this as
+    ///         soon as the loop is gone rather than behind any remaining teardown I/O.
+    ///     </para>
     /// </remarks>
     internal void Finish(bool succeeded)
     {
@@ -282,11 +291,10 @@ internal sealed class WorkflowControllerRegistration
             return;
         }
 
-        _ = Setup.Directory.TryUpdateStatus(
+        _ = Setup.Bundle.RetireAgent(
             Setup.AgentId,
             succeeded ? AgentCollaborationStatuses.Completed : AgentCollaborationStatuses.Error
         );
-        _ = Setup.Directory.TryMarkRetained(Setup.AgentId);
         _endpoint.Detach();
         _ = _lease.Release();
     }

@@ -347,6 +347,40 @@ public class AgentCollaborationBundleTests
     }
 
     [Fact]
+    public void RetireAgent_ClosesTheQuestionsTheDepartingAgentAsked_SoNobodyAnswersAGhost()
+    {
+        var bundle = CreateBundle();
+        var root = Populate(bundle);
+        var asker = AddChild(bundle, root, "agent-a", "reviewer");
+        _ = AddChild(bundle, root, "agent-b", "builder");
+        var question = bundle.TrySend("agent-a", "builder", AgentMessageType.Question).MessageId!;
+
+        var closed = bundle.RetireAgent("agent-a", "stopped");
+
+        // The other half of leaving. Left open, the builder is still offered this as answerable work —
+        // it can spend a wait interrupt on it and write a reply — for an asker that has gone.
+        closed.Should().Equal(question);
+        bundle.Ledger.Find(question)!.State.Should().Be(AgentMessageDeliveryState.Abandoned);
+        bundle
+            .Ledger.Find(question)!
+            .ReasonCode.Should()
+            .Be(AgentCollaborationBundle.SenderLeftReasonCode);
+        bundle.Ledger.GetOpenInbound("agent-b").Should().BeEmpty();
+        bundle
+            .Ledger.TryAdmit(
+                new AgentMessageAdmissionRequest(
+                    "agent-b",
+                    asker.AgentId,
+                    AgentMessageType.Response,
+                    question
+                ),
+                new AgentInbox(8)
+            )
+            .FailureCode.Should()
+            .Be(AgentMessageFailureCodes.CorrelationClosed);
+    }
+
+    [Fact]
     public void RetireAgent_IsHarmlessForAnAgentTheCollaborationNeverKnew()
     {
         var bundle = CreateBundle();
