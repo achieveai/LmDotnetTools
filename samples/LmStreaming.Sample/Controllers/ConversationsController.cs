@@ -117,9 +117,13 @@ public sealed class InboundS2SAuthAttribute : Attribute, IAsyncActionFilter
     /// asks the controller to forward a distinct identity to the gateway. Either marker means the
     /// caller is acting as a service (not the same-origin SPA), so the shared secret is required.
     /// </summary>
-    private static bool IsServiceToServiceRequest(HttpRequest request) =>
-        request.Headers.ContainsKey(HeaderName)
-        || request.Headers.ContainsKey(SandboxCredential.AppIdHeader);
+    public static bool IsServiceToServiceRequest(HttpRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return request.Headers.ContainsKey(HeaderName)
+            || request.Headers.ContainsKey(SandboxCredential.AppIdHeader);
+    }
 
     private static void WarnGuardDisabledOnce(HttpContext httpContext)
     {
@@ -176,6 +180,12 @@ public class ConversationsController(
     /// </summary>
     private const string ArmedWaitDiscardedWarning =
         "A pending Wait was armed on this conversation; it was discarded when the agent was recreated for the switch.";
+
+    /// <summary>Reason code for a raw agent-owned read that must go through the transcript route.</summary>
+    internal const string AgentOwnedThreadReadCode = "use_transcript_route";
+
+    /// <summary>Reason code for an attempt to write into a thread an agent owns.</summary>
+    internal const string AgentOwnedThreadWriteCode = "agent_owned_thread";
 
     /// <summary>
     /// The hierarchy/transcript reader shared with the in-agent <c>GetAgentTranscript</c> tool (#244).
@@ -278,13 +288,11 @@ public class ConversationsController(
     {
         var threads = await store.ListThreadsAsync(limit, offset, ct);
         var result = threads
-            // Sub-agent conversations use the reserved "subagent-{agentId}" thread-id convention and are
-            // surfaced only through the sub-agent panel (GET .../subagents + /ws/subagent). They must not
-            // leak into the primary conversation sidebar (nor be auto-selected on load).
-            .Where(t =>
-                !t.ThreadId.StartsWith("subagent-", StringComparison.Ordinal)
-                && !t.ThreadId.StartsWith("workflow-", StringComparison.Ordinal)
-            )
+            // Sub-agent and workflow-controller conversations use the sample's reserved agent-owned
+            // thread-id space and are surfaced only through the sub-agent panel (GET .../subagents +
+            // /ws/subagent). They must not leak into the primary conversation sidebar (nor be
+            // auto-selected on load).
+            .Where(t => !SubAgentSummary.IsAgentOwnedThreadId(t.ThreadId))
             .Select(t => new ConversationSummary
             {
                 ThreadId = t.ThreadId,
@@ -315,11 +323,40 @@ public class ConversationsController(
         Converters = { new IMessageJsonConverter() },
     };
 
+    /// <summary>
+    /// Returns a conversation's persisted transcript for its own client.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An agent-owned thread (<c>subagent-*</c>/<c>workflow-*</c>) is some agent's transcript, and #244
+    /// decides who may read one. So this raw route answers agent-owned threads ONLY for a caller that
+    /// presents no agent or service identity at all — the conversation's own browser client, which is
+    /// how the sub-agent tab loads its history and why that path is unchanged. A caller that names a
+    /// <paramref name="viewer"/>, or that presents an S2S/caller-credential header, is a machine caller
+    /// and is sent to <see cref="GetAgentTranscript"/>, which applies the transcript policy and excludes
+    /// reasoning. Without that, an agent could simply read the raw route instead of the checked one and
+    /// the policy would decide nothing.
+    /// </para>
+    /// <para>
+    /// This is a boundary, not authentication: the sample's HTTP API is unauthenticated, so a caller
+    /// that presents no identity is TAKEN to be the human's client. What the guard removes is the
+    /// ability to hold an agent identity and still bypass the check that identity is subject to.
+    /// Ordinary (root) conversations are untouched — they keep the legacy read, reasoning included.
+    /// </para>
+    /// </remarks>
     [HttpGet("{threadId}/messages")]
     public async Task<IActionResult> GetMessages(
         string threadId,
+        string? viewer = null,
         CancellationToken ct = default)
     {
+        if (SubAgentSummary.IsAgentOwnedThreadId(threadId) && IsMachineCaller(viewer))
+        {
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = AgentOwnedThreadReadCode });
+        }
+
         var messages = await store.LoadMessagesAsync(threadId, ct);
 
         // Normalize messageJson to ensure consistent discriminators
@@ -350,6 +387,16 @@ public class ConversationsController(
 
         return Ok(normalized);
     }
+
+    /// <summary>
+    /// Whether this request identifies its caller as something other than the conversation's own
+    /// browser client: it names the agent it reads as, or it carries a service/caller-credential
+    /// header. <c>HttpContext</c> is null when an action is invoked directly (a unit test constructing
+    /// the controller without an MVC pipeline), which is treated as "no header" rather than dereferenced.
+    /// </summary>
+    private bool IsMachineCaller(string? viewer) =>
+        viewer is not null
+        || (HttpContext?.Request is { } request && InboundS2SAuthAttribute.IsServiceToServiceRequest(request));
 
     /// <summary>
     /// Returns the persisted conversation-wide token usage &amp; cost aggregate (#196): totals plus the
@@ -605,6 +652,13 @@ public class ConversationsController(
     /// input is durably recorded as accepted, before it is necessarily drained into a run — callers
     /// poll <see cref="GetStatus"/> by the returned <c>inputId</c> to learn when/how it resolved.
     /// </summary>
+    /// <remarks>
+    /// Agent-owned threads (<c>subagent-*</c>/<c>workflow-*</c>) are refused outright. Nothing may speak
+    /// into an agent's thread through this route: doing so would put words in another agent's transcript
+    /// and, because the pool creates an agent for whatever thread id it is handed, would spin up a
+    /// top-level agent bound to that transcript. The client never posts here either — a focused
+    /// sub-agent's input goes over <c>/ws/subagent</c> to the manager that owns it.
+    /// </remarks>
     [HttpPost("{threadId}/messages")]
     public async Task<IActionResult> SendMessage(
         string threadId,
@@ -612,6 +666,13 @@ public class ConversationsController(
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (SubAgentSummary.IsAgentOwnedThreadId(threadId))
+        {
+            return StatusCode(
+                StatusCodes.Status403Forbidden,
+                new { error = "forbidden", code = AgentOwnedThreadWriteCode });
+        }
 
         // A key that cannot be turned into a durable, unambiguous id is refused rather than read as
         // "absent": absent means "no protection asked for", but a caller that SENT a key is asking for a

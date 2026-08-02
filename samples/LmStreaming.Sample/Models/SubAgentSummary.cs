@@ -290,12 +290,35 @@ public sealed record SubAgentSummary
         };
     }
 
+    /// <summary>Reserved thread-id prefix for a sub-agent's own transcript.</summary>
+    private const string SubAgentThreadPrefix = "subagent-";
+
+    /// <summary>Reserved thread-id prefix for a workflow controller's own transcript.</summary>
+    private const string WorkflowThreadPrefix = "workflow-";
+
+    /// <summary>
+    ///     True when <paramref name="threadId"/> is a thread an AGENT owns rather than a conversation a
+    ///     human started — a sub-agent's or a workflow controller's transcript.
+    /// </summary>
+    /// <remarks>
+    ///     These threads are the sample's reserved id space, and they are governed differently from an
+    ///     ordinary conversation: they never appear in the conversation sidebar, and who may read one is
+    ///     the collaboration's decision (#244) rather than "whoever knows the id". Naming the convention
+    ///     once keeps the listing filter and the route guards from drifting apart.
+    /// </remarks>
+    public static bool IsAgentOwnedThreadId(string? threadId) =>
+        threadId is not null
+        && (threadId.StartsWith(SubAgentThreadPrefix, StringComparison.Ordinal)
+            || threadId.StartsWith(WorkflowThreadPrefix, StringComparison.Ordinal));
+
     /// <summary>
     ///     The thread a hierarchy node's transcript lives under, following the ids the rest of the sample
     ///     already forms (<c>subagent-{id}</c> for agents, <c>workflow-*</c> for controllers).
     /// </summary>
     private static string ThreadIdFor(AgentDirectoryEntry entry) =>
-        entry.Kind == CollaborationAgentKind.Root ? entry.AgentId : $"subagent-{entry.AgentId}";
+        entry.Kind == CollaborationAgentKind.Root
+            ? entry.AgentId
+            : $"{SubAgentThreadPrefix}{entry.AgentId}";
 }
 
 /// <summary>Versioned recursive descendant graph response.</summary>
