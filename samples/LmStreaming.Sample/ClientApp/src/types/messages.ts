@@ -145,6 +145,18 @@ export interface ToolCallResultMessage extends IMessage {
   is_error?: boolean;
   error_code?: string | null;
   execution_target?: ExecutionTarget;
+  /**
+   * True while this call is durably parked awaiting a browser-side answer (#246, e.g.
+   * `AskUserQuestion`) — see `ToolHandlerResult.Deferred` / `ToolCallResultBuilder`. The
+   * placeholder result arrives with `result: ''` and `is_deferred: true`; when resolved the SAME
+   * `tool_call_id` gets a follow-up `ToolCallResultMessage` with the real `result` and
+   * `is_deferred` false/absent, which overwrites the placeholder in the client's tool-results map.
+   */
+  is_deferred?: boolean;
+  /** Unix millis when the call was deferred. Present only alongside `is_deferred: true`. */
+  deferred_at?: number | null;
+  /** Unix millis when the deferred call was resolved. Present only on the resolved follow-up. */
+  resolved_at?: number | null;
 }
 
 /**

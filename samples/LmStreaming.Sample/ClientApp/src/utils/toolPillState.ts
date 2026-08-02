@@ -41,7 +41,7 @@ function resolveExitCode(value: unknown, text: string): number | null {
  * Never throws — every field tolerates null/undefined/partial input.
  */
 export function deriveToolPillState(input: ToolPillInput): ToolPillView {
-  const { functionArgs, result, hasResult, isErrorFlag } = input;
+  const { functionArgs, result, hasResult, isErrorFlag, isDeferred = false } = input;
 
   // Parse args once. A growing/invalid prefix parses to null (→ streaming-args).
   let parsedArgs: Record<string, unknown> | null = null;
@@ -95,9 +95,10 @@ export function deriveToolPillState(input: ToolPillInput): ToolPillView {
   if (isRecord(resultValue) && resultValue.status === 'spawned') isBackground = true;
 
   let state: ToolCallState;
-  if (hasResult) state = isError ? 'error' : 'success';
+  if (hasResult && isDeferred) state = 'awaiting-input';
+  else if (hasResult) state = isError ? 'error' : 'success';
   else if (parsedArgs !== null) state = 'awaiting-result';
   else state = 'streaming-args';
 
-  return { state, isError, exitCode, isBackground, parsedArgs, resultText, hasResult, errorText };
+  return { state, isError, exitCode, isBackground, parsedArgs, resultText, hasResult, errorText, isDeferred };
 }

@@ -4,6 +4,7 @@ import {
   normalizeKeys,
   createWebSocketConnection,
   openWebSocketConnection,
+  sendClientToolResult,
   type WebSocketConnection,
 } from '@/api/wsClient';
 import { logger } from '@/utils';
@@ -232,5 +233,101 @@ describe('openWebSocketConnection onmessage sanitization + error-code plumbing (
     socket.onmessage?.({ data: JSON.stringify({ $type: 'sandbox_session_refresh_deferred' }) });
 
     expect(onSandboxSessionRefresh).toHaveBeenCalledWith(true);
+  });
+});
+
+// #246: browser-hosted client tools (AskUserQuestion). The browser answers a deferred tool call
+// over the SAME socket with `{ $type: 'client_tool_result', toolCallId, result, isError? }` and the
+// server replies with a typed `client_tool_result_ack` / `client_tool_result_error` frame — the
+// resolved value itself always arrives separately as an ordinary ToolCallResultMessage.
+describe('sendClientToolResult (#246 outbound frame)', () => {
+  function fakeConnection(): { connection: WebSocketConnection; send: ReturnType<typeof vi.fn> } {
+    const send = vi.fn();
+    const socket = { readyState: WebSocket.OPEN, send } as unknown as WebSocket;
+    const connection: WebSocketConnection = {
+      socket,
+      connectionId: 'conn-1',
+      threadId: 'thread-1',
+      isConnected: true,
+    };
+    return { connection, send };
+  }
+
+  it('sends the client_tool_result frame with toolCallId and result', () => {
+    const { connection, send } = fakeConnection();
+    sendClientToolResult(connection, 'call-1', '{"answers":[]}');
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(send.mock.calls[0][0] as string);
+    expect(sent).toEqual({ $type: 'client_tool_result', toolCallId: 'call-1', result: '{"answers":[]}' });
+  });
+
+  it('includes isError only when true', () => {
+    const { connection, send } = fakeConnection();
+    sendClientToolResult(connection, 'call-2', 'boom', true);
+    const sent = JSON.parse(send.mock.calls[0][0] as string);
+    expect(sent).toEqual({ $type: 'client_tool_result', toolCallId: 'call-2', result: 'boom', isError: true });
+  });
+
+  it('throws when the socket is not open', () => {
+    const socket = { readyState: WebSocket.CLOSED, send: vi.fn() } as unknown as WebSocket;
+    const connection: WebSocketConnection = { socket, connectionId: 'c', threadId: 't', isConnected: false };
+    expect(() => sendClientToolResult(connection, 'call-3', '{}')).toThrow();
+  });
+});
+
+describe('openWebSocketConnection client_tool_result_ack / client_tool_result_error inbound frames (#246)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    MockWebSocket.instances = [];
+  });
+
+  async function open(callbacks: {
+    onMessage?: (m: unknown) => void;
+    onDone?: () => void;
+    onError?: (error: string, code?: string) => void;
+    onClientToolResultAck?: (toolCallId: string, duplicate: boolean) => void;
+    onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
+  }): Promise<{ socket: MockWebSocket; connection: WebSocketConnection }> {
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    const promise = openWebSocketConnection('ws://x/ws', 'thread-42', 'conn-7', {
+      onMessage: callbacks.onMessage ?? (() => {}),
+      onDone: callbacks.onDone ?? (() => {}),
+      onError: (callbacks.onError ?? (() => {})) as (error: string) => void,
+      onClientToolResultAck: callbacks.onClientToolResultAck,
+      onClientToolResultError: callbacks.onClientToolResultError,
+    });
+    const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    socket.readyState = MockWebSocket.OPEN;
+    socket.onopen?.();
+    const connection = await promise;
+    return { socket, connection };
+  }
+
+  it('routes a client_tool_result_ack frame to onClientToolResultAck with its duplicate flag', async () => {
+    const onClientToolResultAck = vi.fn();
+    const onMessage = vi.fn();
+    const { socket } = await open({ onClientToolResultAck, onMessage });
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'client_tool_result_ack', toolCallId: 'call-1', duplicate: false }),
+    });
+
+    expect(onClientToolResultAck).toHaveBeenCalledWith('call-1', false);
+    // Must not also fall through to the generic message handler.
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
+  it('routes a client_tool_result_error frame to onClientToolResultError with code/message', async () => {
+    const onClientToolResultError = vi.fn();
+    const onMessage = vi.fn();
+    const { socket } = await open({ onClientToolResultError, onMessage });
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'client_tool_result_error', toolCallId: 'call-2', code: 'conflict', message: 'already answered' }),
+    });
+
+    expect(onClientToolResultError).toHaveBeenCalledWith('call-2', 'conflict', 'already answered');
+    expect(onMessage).not.toHaveBeenCalled();
   });
 });
