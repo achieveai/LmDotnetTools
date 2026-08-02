@@ -6,6 +6,9 @@ import weatherFx from '../fixtures/persisted/weather.doubleenc.json';
 import editFx from '../fixtures/persisted/edit.diff.json';
 import grepFx from '../fixtures/persisted/grep.matches.json';
 import calcFx from '../fixtures/persisted/calculate.doubleenc.json';
+import sendLegacyFx from '../fixtures/synthetic/sendmessage.legacy.json';
+import sendCollabFx from '../fixtures/synthetic/sendmessage.collab.json';
+import checkAgentsFx from '../fixtures/synthetic/checkagents.list.json';
 
 function summarize(wireName: string, fx: { functionArgs: string; result: string; isError: boolean }) {
   const view = deriveToolPillState({
@@ -53,5 +56,40 @@ describe('registry — enriched collapsed summaries', () => {
     const s = resolveRenderer('MysteryTool').summarize(view.parsedArgs, view.resultText, view);
     expect(s).toContain('foo');
     expect(s).toContain('bar');
+  });
+});
+
+// The collaboration tools (#244) reuse the agent renderer. Both argument vocabularies must render:
+// the old one is already on disk in persisted conversations and can never stop working.
+describe('registry — collaboration tool summaries (#244)', () => {
+  it('summarizes a pre-#244 SendMessage (target + prompt)', () => {
+    const s = summarize('SendMessage', sendLegacyFx);
+    expect(s).toContain('build-fixer');
+    expect(s).toContain('start on task #1');
+  });
+
+  it('summarizes a collaboration SendMessage (target + content)', () => {
+    const s = summarize('SendMessage', sendCollabFx);
+    expect(s).toContain('reviewer');
+    expect(s).toContain('Which repo');
+  });
+
+  it('summarizes the plural checks, whose agent_ids is a list', () => {
+    // A scalar-only lookup returns '' here, leaving the pill blank — the reason firstStringList exists.
+    const s = summarize('CheckAgents', checkAgentsFx);
+    expect(s).toContain('agent-2');
+    expect(s).toContain('agent-3');
+  });
+
+  it('routes WaitForAgents and GetAgentTranscript to the same agent renderer', () => {
+    expect(resolveRenderer('WaitForAgents').family).toBe('agent');
+    expect(resolveRenderer('GetAgentTranscript').family).toBe('agent');
+    expect(resolveRenderer('sandbox-CheckAgents').family).toBe('agent');
+  });
+
+  it('summarizes GetAgents, which takes no arguments, without throwing', () => {
+    const view = deriveToolPillState({ functionArgs: '{}', result: null, hasResult: false });
+    const s = resolveRenderer('GetAgents').summarize(view.parsedArgs, view.resultText, view);
+    expect(s).toBe('');
   });
 });

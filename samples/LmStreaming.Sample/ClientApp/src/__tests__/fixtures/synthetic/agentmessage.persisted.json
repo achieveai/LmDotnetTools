@@ -1,0 +1,12 @@
+{
+  "_note": "Synthetic. One AgentMessage exactly as GET /api/conversations/{id}/messages returns it after a reload (#244): a PersistedMessage whose messageJson is the serialized AgentMessage. role is 'user' — that is the trap this fixture exists to catch, because a consumer that branches on role before type renders an agent-to-agent message as though the human had typed it.",
+  "id": "m-42",
+  "threadId": "thread-root",
+  "runId": "run-1",
+  "generationId": "agentmsg:2f1e9c7c4b1e4a7f9c2d5b8e6a3f0d11",
+  "messageOrderIdx": 3,
+  "timestamp": 1754000000000,
+  "messageType": "AgentMessage",
+  "role": "user",
+  "messageJson": "{\"$type\":\"agent\",\"role\":\"user\",\"runId\":\"run-1\",\"generationId\":\"agentmsg:2f1e9c7c4b1e4a7f9c2d5b8e6a3f0d11\",\"messageOrderIdx\":3,\"message_id\":\"am-1\",\"agent_message_type\":\"Question\",\"from_agent_id\":\"agent-2\",\"from_name\":\"reviewer\",\"body\":\"Which repo should I review first?\",\"text\":\"<agent-message message-id=\\\"am-1\\\" from=\\\"reviewer\\\" from-agent-id=\\\"agent-2\\\" type=\\\"Question\\\">\\nWhich repo should I review first?\\n\\n<reply-instruction in-reply-to=\\\"am-1\\\" reply-to=\\\"agent-2\\\" reply-label=\\\"reviewer\\\" reply-tool-name=\\\"SendMessage\\\" reply-msg-type=\\\"Response\\\"/>\\n</agent-message>\"}"
+}

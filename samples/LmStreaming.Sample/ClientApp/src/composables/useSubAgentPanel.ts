@@ -21,6 +21,7 @@ import {
   isToolsCallUpdateMessage,
   isToolCallUpdateMessage,
   isNotifyMessage,
+  isAgentMessage,
   isServerToolUseMessage,
   isServerToolResultMessage,
   isTextWithCitationsMessage,
@@ -349,7 +350,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
       isToolsCallUpdateMessage(stamped) || isToolCallUpdateMessage(stamped);
     const isComplete =
       isTextMessage(stamped) || isReasoningMessage(stamped) || isToolsCallMessage(stamped) ||
-      isToolCallMessage(stamped) || isNotifyMessage(stamped);
+      isToolCallMessage(stamped) || isNotifyMessage(stamped) || isAgentMessage(stamped);
 
     if (!isUpdate && !isComplete) {
       log.debug('Skipping unknown child message type', { type: stamped.$type });

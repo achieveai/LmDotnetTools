@@ -37,4 +37,13 @@ REST rehydration shape — by correlating a `tool_call` with its `tool_call_resu
 - Edit renders its diff from `functionArgs.old_string`/`new_string` — the `result` is only a
   confirmation string (`Successfully edited …`), so DiffRich must not depend on the result.
 - Token-scrub gate (`ghp_|github_pat_|sk-|Bearer |AKIA|PRIVATE KEY`) passed over every fixture.
-- `synthetic/` holds the two hand-authored fixtures for families with zero persisted data.
+- `synthetic/` holds the hand-authored fixtures for families with zero persisted data.
+
+## Collaboration fixtures (#244)
+Hand-authored in `synthetic/`, covering both the OLD and the NEW vocabularies so a change to one
+cannot silently break the other:
+- `sendmessage.legacy.json` — pre-#244 `SendMessage` args (`target`/`prompt`/`run_in_background`).
+- `sendmessage.collab.json` — #244 `SendMessage` args (`target`/`content`/`msg_type`/`in_response_to`).
+- `checkagents.list.json` — `CheckAgents`/`WaitForAgents`, whose `agent_ids` is a LIST, not a scalar.
+- `agentmessage.persisted.json` — a whole `PersistedMessage` carrying a serialized `AgentMessage`,
+  i.e. what a reload returns. Its `role` is `"user"`, which is exactly why it exists.

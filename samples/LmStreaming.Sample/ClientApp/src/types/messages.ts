@@ -24,6 +24,8 @@ export const MessageType = {
   TextWithCitations: 'text_with_citations',
   // Out-of-band notification (async sub-agent completion, context discovery, monitors, timers)
   Notify: 'notify',
+  // One agent speaking to another inside a collaboration (#244)
+  Agent: 'agent',
   // Live-only conversation-wide usage frame (folded across sub-agents/workflow descendants, #196)
   ConversationUsage: 'conversation_usage',
 } as const;
@@ -368,9 +370,44 @@ export interface NotifyMessage extends IMessage {
 }
 
 /**
- * Normalized data driving the notification pill. `displayItems` produces this from either a
- * {@link NotifyMessage} or a legacy `context_discovery` {@link TextMessage} so both render through the
- * one unified pill.
+ * What one agent is saying to another — the CLOSED set matching C# `AgentMessageType`. The values are
+ * the enum member names verbatim (`JsonStringEnumConverter` with no naming policy), so they arrive
+ * PascalCase on the wire, unlike the lower-case `msg_type` the model writes when calling SendMessage.
+ */
+export type AgentMessageType = 'Question' | 'DelegateTask' | 'TaskUpdate' | 'Steer' | 'Response';
+
+/**
+ * AgentMessage matching C# AgentMessage.cs (#244).
+ *
+ * A message from one agent to another inside a collaboration. Like {@link NotifyMessage} it maps to a
+ * user-role message for the LLM — {@link text} is the self-describing envelope naming the sender —
+ * while the structured snake_case fields (mirroring the C# `[JsonPropertyName]` attributes) let the UI
+ * render it as its own pill without parsing that envelope. It therefore must NEVER render as a user
+ * bubble: `role` defaults to `'user'` on the backend, so every consumer has to test for this type
+ * BEFORE it branches on role.
+ */
+export interface AgentMessage extends IMessage {
+  $type: typeof MessageType.Agent;
+  /** The rendered envelope the receiving LLM reads (computed on the backend from the fields below). */
+  text: string;
+  /** Collaboration-minted id of this message; the correlation key a reply carries in `in_response_to`. */
+  message_id: string;
+  /** What kind of message this is, and hence whether an answer is expected. */
+  agent_message_type: AgentMessageType;
+  /** Stable id of the sending agent — what a reply is addressed to, since names can collide. */
+  from_agent_id: string;
+  /** Human-facing name of the sending agent. */
+  from_name: string;
+  /** The message this one answers, when it answers one. */
+  in_response_to?: string | null;
+  /** The model-authored payload. Opaque — do not parse. */
+  body?: string | null;
+}
+
+/**
+ * Normalized data driving the notification pill. `displayItems` produces this from a
+ * {@link NotifyMessage}, an {@link AgentMessage}, or a legacy `context_discovery` {@link TextMessage},
+ * so all three render through the one unified pill.
  */
 export interface NotificationDisplayData {
   notifyKind: string;
@@ -383,6 +420,8 @@ export interface NotificationDisplayData {
   contextPath?: string | null;
   /** Legacy sandbox context-discovery truncation flag. */
   contextTruncated?: boolean;
+  /** Set only for the `agent-message` kind: which {@link AgentMessageType} the pill is showing. */
+  agentMessageType?: AgentMessageType | null;
 }
 
 /**
@@ -432,6 +471,7 @@ export type Message =
   | ServerToolResultMessage
   | TextWithCitationsMessage
   | NotifyMessage
+  | AgentMessage
   | ConversationUsageMessage;
 
 // Type guard functions
@@ -510,6 +550,10 @@ export function isTextWithCitationsMessage(msg: IMessage): msg is TextWithCitati
 
 export function isNotifyMessage(msg: IMessage): msg is NotifyMessage {
   return msg.$type === MessageType.Notify;
+}
+
+export function isAgentMessage(msg: IMessage): msg is AgentMessage {
+  return msg.$type === MessageType.Agent;
 }
 
 export function isConversationUsageMessage(msg: IMessage): msg is ConversationUsageMessage {
