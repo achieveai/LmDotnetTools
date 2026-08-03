@@ -99,6 +99,121 @@ public sealed class AgentHierarchyServiceTests
     }
 
     [Fact]
+    public async Task BuildAsync_ForALiveNonMultiTurnAgentLoop_NeverCallsListThreadsAsync()
+    {
+        // PRRT_kwDOOPysWM6V1mjj: `loop is null` used to stand in for "no live coverage", but a live
+        // Codex/Copilot CLI pool entry (or any other non-MultiTurnAgentLoop IMultiTurnAgent) also makes
+        // `loop` null — so it paid for the same bounded-but-expensive multi-page store scan on every
+        // 3-second hot poll, even though it can never own an Agent-tool SubAgentManager roster to begin
+        // with. A persisted provenance child is seeded to prove the scan is skipped, not merely empty.
+        const string childId = "cli-sibling-child";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            $"subagent-{childId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{childId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    RootThread,
+                    new SubAgentSnapshot(
+                        childId,
+                        Name: "cli-child",
+                        TemplateName: "worker",
+                        Task: "cli child's task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{childId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+        var countingStore = new CountingConversationStore(store);
+
+        // A live, non-MultiTurnAgentLoop agent — stands in for a Codex/Copilot CLI pool entry. It has no
+        // SubAgentManager/Collaboration at all, so `agent as MultiTurnAgentLoop` is null exactly like the
+        // pre-fix "loop is null" gate saw it, but it is fully live (isLive is true).
+        await using var cliAgent = new FakeMultiTurnAgent(RootThread);
+        await using var pool = CreatePoolReturning(cliAgent);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var service = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance);
+
+        _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        countingStore.ListThreadsCallCount.Should().Be(
+            0,
+            "a live CLI/non-owning agent can never have an Agent-tool SubAgentManager roster, so the "
+                + "persisted-provenance scan must be skipped for it just like a live MultiTurnAgentLoop");
+    }
+
+    [Fact]
+    public async Task ListSubAgents_ReconstructsOrdinaryChildren_FromPersistedProvenance_ForRehydratedCollaborationOffLoop_WithEmptyManager()
+    {
+        // PRRT_kwDOOPysWM6V1mjj, the opposite-direction regression: after a restart/eviction, a fresh
+        // collaboration-off MultiTurnAgentLoop is re-created with an empty SubAgentManager — `loop is
+        // null` used to be false here (the loop IS live), so the cold-path scan was skipped and a
+        // persisted ordinary child became invisible the moment the parent conversation became live again.
+        const string childId = "rehydrated-child";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            $"subagent-{childId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{childId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    RootThread,
+                    new SubAgentSnapshot(
+                        childId,
+                        Name: "beta",
+                        TemplateName: "worker",
+                        Task: "beta's task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{childId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+
+        // A collaboration-off MultiTurnAgentLoop that DOES own a SubAgentManager (subAgentOptions is
+        // supplied), but is a brand-new instance that never spawned anything in this process — exactly
+        // what GetOrCreateAgent rebuilds after a pool eviction/restart. Its SubAgentManager.ListAgents()
+        // is empty, and Collaboration is null (the checked-in default), which is the one combination
+        // live state cannot answer for on its own.
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        await using var rehydratedLoop = new MultiTurnAgentLoop(
+            BlockingProvider(),
+            new FunctionRegistry(),
+            threadId: RootThread,
+            subAgentOptions: subAgentOptions);
+        await using var pool = CreatePoolReturning(rehydratedLoop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        var service = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), store, NullLogger<AgentHierarchyService>.Instance);
+
+        var (rows, isKnown, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown.Should().BeTrue();
+        var child = rows.Should().ContainSingle(s => s.AgentId == childId,
+            "a rehydrated collaboration-off loop's empty SubAgentManager does not cover this persisted "
+                + "child, so BuildAsync must still fall back to the cold-path provenance scan").Which;
+        child.Name.Should().Be("beta");
+        child.Template.Should().Be("worker");
+    }
+
+    [Fact]
     public async Task ScanPersistedSubAgentChildren_WarnsWhenTheThreadCapIsReached()
     {
         // Seeds exactly as many threads as the scan's cap so every page comes back full (200) and the

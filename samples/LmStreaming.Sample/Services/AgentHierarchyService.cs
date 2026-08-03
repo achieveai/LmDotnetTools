@@ -184,13 +184,28 @@ public sealed class AgentHierarchyService(
         // disk. Folded in first so a live row (added below) always wins on a match, restoring the
         // pre-#244 flat-listing contract.
         //
-        // COLD PATH ONLY: gated on there being no live loop for this thread. When the loop is live, the
-        // collaboration-enabled write-through above (or the live SubAgentManager snapshot) already
-        // accounts for every child that matters, and restart recovery for a collaboration-enabled host
-        // goes through the enriched persisted WorkflowRunRegistry tabs a few lines down, not this scan.
-        // Without this gate, every live 3-second sub-agent poll and transcript read paid for a bounded but
-        // still expensive multi-page store scan on every single call.
-        if (loop is null)
+        // Gated on whether live state ALREADY covers the ordinary persisted roster — NOT on the concrete
+        // loop type, which used to (wrongly) stand in for that question:
+        //   - no live agent at all (evicted/idle) — the roster is entirely on disk. Scan.
+        //   - a live agent that is not a MultiTurnAgentLoop (Codex/Copilot CLI loops), or a
+        //     MultiTurnAgentLoop built with no SubAgentManager at all — it can never own an Agent-tool
+        //     child, so scanning on its behalf would only pay a store-wide cost on every hot poll for a
+        //     roster it structurally cannot have. Skip.
+        //   - a live MultiTurnAgentLoop with collaboration ON — the write-through above (or the enriched
+        //     persisted WorkflowRunRegistry tabs a few lines down) already accounts for every child that
+        //     matters. Skip.
+        //   - a live, collaboration-OFF MultiTurnAgentLoop whose SubAgentManager already reports children
+        //     — ListAgents() never prunes a completed child, so its snapshot (folded into `summaries`
+        //     above) already covers everything this loop instance has ever registered. Skip.
+        //   - a live, collaboration-OFF MultiTurnAgentLoop whose SubAgentManager is EMPTY — the one case
+        //     live state does NOT cover: either genuinely childless, or (the restart/eviction regression
+        //     this closes) a freshly rehydrated loop whose brand-new manager instance has never heard of
+        //     the persisted children from before the restart. Scan; the cost is bounded and only paid
+        //     while the manager itself has nothing to show.
+        var needsColdSubAgentScan = !isLive
+            || (loop is { Collaboration: null, SubAgentManager: { } liveSubAgentManager }
+                && liveSubAgentManager.ListAgents().Count == 0);
+        if (needsColdSubAgentScan)
         {
             foreach (var node in await ScanPersistedSubAgentChildrenAsync(threadId, ct))
             {
