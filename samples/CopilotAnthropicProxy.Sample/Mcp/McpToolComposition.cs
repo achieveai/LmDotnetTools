@@ -132,6 +132,15 @@ internal sealed class McpToolComposition
             return false;
         }
 
+        var callProtocolVersion = context.Request.Headers["Mcp-Protocol-Version"].FirstOrDefault();
+        if (
+            !string.IsNullOrWhiteSpace(callProtocolVersion)
+            && !string.Equals(callProtocolVersion, snapshot.ProtocolVersion, StringComparison.Ordinal)
+        )
+        {
+            return false;
+        }
+
         if (parameters["arguments"] is not null and not JsonObject)
         {
             await WriteInvalidParamsAsync(context, request["id"]!);
@@ -285,6 +294,7 @@ internal sealed class McpToolComposition
                 root?["error"] is not null
                 || result is null
                 || tools is null
+                || request["params"]?["cursor"] is not null
                 || !string.IsNullOrWhiteSpace(Text(result["nextCursor"]))
                 || string.IsNullOrWhiteSpace(endpoint)
                 || string.IsNullOrWhiteSpace(sessionId)
@@ -308,7 +318,8 @@ internal sealed class McpToolComposition
 
             var snapshot = new McpToolSnapshot(
                 injectable.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal),
-                headerContext
+                headerContext,
+                context.Request.Headers["Mcp-Protocol-Version"].FirstOrDefault()
             );
 
             if (injectable.Count == 0)
@@ -357,7 +368,7 @@ internal sealed class McpToolComposition
             case McpSnapshotAction.Set:
                 throw new InvalidOperationException("A snapshot is required for the set action.");
             case McpSnapshotAction.Remove:
-                _snapshots.Remove(composed.Endpoint, composed.SessionId);
+                _snapshots.ClearIfGeneration(composed.Endpoint, composed.SessionId, composed.Generation);
                 break;
             case McpSnapshotAction.None:
                 break;

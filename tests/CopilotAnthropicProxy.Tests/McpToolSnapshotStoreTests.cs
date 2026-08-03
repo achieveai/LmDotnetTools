@@ -45,7 +45,7 @@ public class McpToolSnapshotStoreTests
     public void Snapshot_IsIsolatedByEndpointAndSession()
     {
         var store = new McpToolSnapshotStore();
-        store.Set("/mcp", "session-1", new(new HashSet<string> { "web_search" }, "context"));
+        store.Set("/mcp", "session-1", new(new HashSet<string> { "web_search" }, "context", "2025-06-18"));
 
         store.TryGet("/mcp", "session-1", out var snapshot).Should().BeTrue();
         snapshot.LocalToolNames.Should().ContainSingle().Which.Should().Be("web_search");
@@ -57,9 +57,9 @@ public class McpToolSnapshotStoreTests
     public void Set_ReplacesSnapshotAndRemoveClearsOnlyMatch()
     {
         var store = new McpToolSnapshotStore();
-        store.Set("/mcp", "session-1", new(new HashSet<string> { "web_search" }, "first"));
-        store.Set("/mcp/readonly", "session-1", new(new HashSet<string> { "web_fetch" }, "other"));
-        store.Set("/mcp", "session-1", new(new HashSet<string> { "web_fetch" }, "second"));
+        store.Set("/mcp", "session-1", new(new HashSet<string> { "web_search" }, "first", null));
+        store.Set("/mcp/readonly", "session-1", new(new HashSet<string> { "web_fetch" }, "other", null));
+        store.Set("/mcp", "session-1", new(new HashSet<string> { "web_fetch" }, "second", null));
 
         store.TryGet("/mcp", "session-1", out var snapshot).Should().BeTrue();
         snapshot.HeaderContext.Should().Be("second");

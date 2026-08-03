@@ -1,6 +1,10 @@
 using System.Collections.Concurrent;
 
-internal sealed record McpToolSnapshot(IReadOnlySet<string> LocalToolNames, string HeaderContext);
+internal sealed record McpToolSnapshot(
+    IReadOnlySet<string> LocalToolNames,
+    string HeaderContext,
+    string? ProtocolVersion
+);
 
 internal sealed class McpToolSnapshotStore
 {
@@ -61,6 +65,18 @@ internal sealed class McpToolSnapshotStore
 
             snapshot = state.Snapshot;
             return true;
+        }
+    }
+
+    public void ClearIfGeneration(string endpointPath, string sessionId, long expectedGeneration)
+    {
+        var state = _states.GetOrAdd((endpointPath, sessionId), _ => new SessionState());
+        lock (state)
+        {
+            if (state.Generation == expectedGeneration)
+            {
+                state.Snapshot = null;
+            }
         }
     }
 

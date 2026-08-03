@@ -2596,11 +2596,7 @@ internal static class ProxyMcp
                 inboundBody = memory.ToArray();
             }
 
-            if (
-                composition.IsEnabled
-                && McpToolComposition.TryParseSingleRequest(inboundBody, out rpcRequest)
-                && rpcRequest is not null
-            )
+            if (McpToolComposition.TryParseSingleRequest(inboundBody, out rpcRequest) && rpcRequest is not null)
             {
                 listGeneration = composition.CaptureListGeneration(ctx, rpcRequest);
                 _ = composition.TryHandleCancellation(ctx, rpcRequest);
