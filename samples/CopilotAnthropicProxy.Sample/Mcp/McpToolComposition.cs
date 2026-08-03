@@ -5,6 +5,13 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
+internal sealed record McpComposedList(
+    byte[] Body,
+    string? Endpoint,
+    string? SessionId,
+    McpToolSnapshot? Snapshot
+);
+
 internal sealed class McpToolComposition
 {
     private readonly McpJinaToolCatalog _catalog;
@@ -132,12 +139,14 @@ internal sealed class McpToolComposition
         return true;
     }
 
-    public async Task<byte[]?> ComposeListAsync(
+    public async Task<McpComposedList?> ComposeListAsync(
         HttpContext context,
         JsonObject request,
         HttpResponseMessage upstream,
         long maxBodyBytes,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        CancellationTokenSource idleCts,
+        TimeSpan idleTimeout
     )
     {
         if (!IsEnabled || !IsToolsList(request))
@@ -172,11 +181,17 @@ internal sealed class McpToolComposition
             return null;
         }
 
-        var original = await ProxyHttp.ReadCappedBytesAsync(upstream.Content, maxBodyBytes, cancellationToken);
+        var original = await ProxyHttp.ReadCappedBytesAsync(
+            upstream.Content,
+            maxBodyBytes,
+            cancellationToken,
+            idleCts,
+            idleTimeout
+        );
         if (original is null)
         {
             Invalidate();
-            return [];
+            return new McpComposedList([], endpoint, sessionId, null);
         }
 
         ReplaceContent(upstream, original, mediaType);
@@ -189,7 +204,7 @@ internal sealed class McpToolComposition
             if (!TryReadSingleSseMessage(sse, out ssePrefix, out var json, out sseSuffix))
             {
                 Invalidate();
-                return original;
+                return new McpComposedList(original, endpoint, sessionId, null);
             }
 
             jsonBytes = Encoding.UTF8.GetBytes(json);
@@ -211,7 +226,7 @@ internal sealed class McpToolComposition
             )
             {
                 Invalidate();
-                return original;
+                return new McpComposedList(original, endpoint, sessionId, null);
             }
 
             var githubNames = tools
@@ -226,15 +241,14 @@ internal sealed class McpToolComposition
                 tools.Add(local.Definition.DeepClone());
             }
 
-            _snapshots.Set(
-                endpoint,
-                sessionId,
-                new McpToolSnapshot(injectable.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal), headerContext)
+            var snapshot = new McpToolSnapshot(
+                injectable.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal),
+                headerContext
             );
 
             if (injectable.Count == 0)
             {
-                return original;
+                return new McpComposedList(original, endpoint, sessionId, snapshot);
             }
 
             upstream.Headers.ETag = null;
@@ -249,13 +263,25 @@ internal sealed class McpToolComposition
                 (int)upstream.StatusCode,
                 injectable.Count
             );
-            return composed;
+            return new McpComposedList(composed, endpoint, sessionId, snapshot);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             Invalidate();
             _logger.LogWarning(ex, "MCP tool-list composition failed; returning the original upstream response");
-            return original;
+            return new McpComposedList(original, endpoint, sessionId, null);
+        }
+    }
+
+    public void PublishSnapshot(McpComposedList composed)
+    {
+        if (
+            composed.Snapshot is not null
+            && !string.IsNullOrWhiteSpace(composed.Endpoint)
+            && !string.IsNullOrWhiteSpace(composed.SessionId)
+        )
+        {
+            _snapshots.Set(composed.Endpoint, composed.SessionId, composed.Snapshot);
         }
     }
 

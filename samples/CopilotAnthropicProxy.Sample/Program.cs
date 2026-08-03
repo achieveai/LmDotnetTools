@@ -1808,7 +1808,9 @@ internal static class ProxyHttp
     internal static async Task<byte[]?> ReadCappedBytesAsync(
         HttpContent content,
         long maxBytes,
-        CancellationToken token
+        CancellationToken token,
+        CancellationTokenSource? idleCts = null,
+        TimeSpan? idleTimeout = null
     )
     {
         if (content.Headers.ContentLength is { } declared && declared > maxBytes)
@@ -1827,6 +1829,11 @@ internal static class ProxyHttp
                 if (read == 0)
                 {
                     return buffer.ToArray();
+                }
+
+                if (idleCts is not null && idleTimeout is not null)
+                {
+                    idleCts.CancelAfter(idleTimeout.Value);
                 }
 
                 if (buffer.Length + read > maxBytes)
@@ -2675,17 +2682,19 @@ internal static class ProxyMcp
                 composition.RemoveSnapshot(endpoint, sessionId);
             }
 
-            byte[]? composedBody = null;
+            McpComposedList? composedList = null;
             if (rpcRequest is not null && McpToolComposition.IsToolsList(rpcRequest))
             {
                 try
                 {
-                    composedBody = await composition.ComposeListAsync(
+                    composedList = await composition.ComposeListAsync(
                         ctx,
                         rpcRequest,
                         upstream,
                         maxBodyBytes,
-                        linked.Token
+                        linked.Token,
+                        idleCts,
+                        idleTimeout
                     );
                 }
                 catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
@@ -2703,7 +2712,7 @@ internal static class ProxyMcp
                     return;
                 }
 
-                if (composedBody is { Length: 0 })
+                if (composedList?.Body is { Length: 0 })
                 {
                     await WriteMcpErrorAsync(
                         ctx,
@@ -2734,9 +2743,10 @@ internal static class ProxyMcp
 
             ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-            if (composedBody is not null)
+            if (composedList is not null)
             {
-                await ctx.Response.Body.WriteAsync(composedBody, ctx.RequestAborted);
+                await ctx.Response.Body.WriteAsync(composedList.Body, ctx.RequestAborted);
+                composition.PublishSnapshot(composedList);
             }
             else
             {
