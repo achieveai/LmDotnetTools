@@ -121,6 +121,126 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         frame.Should().Contain("\"code\":\"conflict\"");
     }
 
+    /// <summary>
+    /// Issue #246 cancellation contract: the client cancels an <see cref="AskUserQuestionToolProvider"/>
+    /// question by sending the canonical <c>{"error":"Question cancelled by user.","cancelled":true}</c>
+    /// body with <c>isError:true</c>. That is an ordinary resolution as far as
+    /// <c>TryResolveToolCallAsync</c> is concerned — it persists as an errored, no-longer-deferred
+    /// result and legitimately wakes the parked run exactly once (the LLM turn that follows the
+    /// error). What must NOT happen is a SUBSEQUENT, differently-worded "answer" for the same
+    /// <c>toolCallId</c> arriving late (e.g. a slow client double-submit racing the cancel) being
+    /// accepted as a second resolution: history already disagrees with it, so it must come back as
+    /// a <c>conflict</c> and must not trigger a second wake/continuation of the run.
+    /// </summary>
+    [Fact]
+    public async Task PrimaryPath_CancelledQuestion_PersistsResolvedError_AndLateAnswerConflictsWithoutResumingRun()
+    {
+        const string threadId = "ctr-primary-cancelled";
+        const string toolCallId = "tc_1";
+        const string cancelBody = /*lang=json,strict*/ """{"error":"Question cancelled by user.","cancelled":true}""";
+        using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = AskUserQuestionToolProvider.ToolName,
+            FunctionArgs = AskUserQuestionArgs(),
+            ToolCallId = toolCallId,
+            Role = Role.Assistant,
+        };
+        var finalText = new TextMessage { Role = Role.Assistant, Text = "Understood, cancelling the question." };
+
+        var callCount = 0;
+        var mockAgent = new Mock<IStreamingAgent>();
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                callCount++;
+                IMessage msg = callCount == 1 ? toolCall : finalText;
+                return Task.FromResult(ToAsyncEnumerable([msg]));
+            });
+
+        var loop = new MultiTurnAgentLoop(mockAgent.Object, new FunctionRegistry(), threadId);
+        var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(threadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        ToolCallResultMessage? resolvedResult = null;
+        var completions = 0;
+        var firstRunCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondRunCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = ObserveAsync(loop, msg =>
+        {
+            if (msg is ToolCallResultMessage { IsDeferred: false } result && result.ToolCallId == toolCallId)
+            {
+                resolvedResult ??= result;
+            }
+
+            if (msg is RunCompletedMessage)
+            {
+                completions++;
+                if (completions == 1)
+                {
+                    firstRunCompleted.TrySetResult();
+                }
+                else
+                {
+                    secondRunCompleted.TrySetResult();
+                }
+            }
+        }, ct.Token);
+
+        await loop.SendAsync([new TextMessage { Text = "Which color should I use?", Role = Role.User }]);
+        await firstRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct.Token);
+        callCount.Should().Be(1);
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        var cancelFrame = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["$type"] = "client_tool_result",
+            ["toolCallId"] = toolCallId,
+            ["result"] = cancelBody,
+            ["isError"] = true,
+        });
+        socket.EnqueueTextFrame(cancelFrame);
+
+        var handlerTask = manager.HandleConnectionAsync(
+            socket, threadId, null, null, null, null, ct.Token);
+
+        await socket.WaitUntilAsync(() => socket.SentContains("client_tool_result_ack"), ct.Token);
+        var ackFrame = socket.SentFrames.First(f => f.Contains("client_tool_result_ack"));
+        ackFrame.Should().Contain("\"status\":\"resolved\"");
+
+        // The cancellation is a legitimate resolution: it persists as an errored, no-longer-deferred
+        // result and the previously-parked run is allowed to continue exactly once.
+        await secondRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct.Token);
+        callCount.Should().Be(2);
+
+        resolvedResult.Should().NotBeNull("the cancellation must persist as a resolved (non-deferred) result");
+        resolvedResult!.IsError.Should().BeTrue("a cancelled question is recorded as an errored tool result");
+        resolvedResult.Result.Should().Be(cancelBody, "the canonical cancellation body must be persisted verbatim");
+
+        // A LATE, differently-worded "answer" for the SAME toolCallId must Conflict — and must not
+        // wake/continue the run a second time.
+        var framesBeforeLateAnswer = socket.SentFrames.Count;
+        socket.EnqueueTextFrame(
+            $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""");
+
+        await socket.WaitUntilAsync(
+            () => socket.SentFrames.Skip(framesBeforeLateAnswer).Any(f => f.Contains("client_tool_result_error")),
+            ct.Token);
+
+        await ct.CancelAsync();
+        await handlerTask;
+
+        var lateFrame = socket.SentFrames.Skip(framesBeforeLateAnswer).First(f => f.Contains("client_tool_result_error"));
+        lateFrame.Should().Contain("\"code\":\"conflict\"");
+
+        callCount.Should().Be(
+            2, "a late answer arriving after the question was already cancelled must not resume the run");
+    }
+
     [Fact]
     public async Task PrimaryPath_UnknownToolCallId_SendsErrorNotFound()
     {

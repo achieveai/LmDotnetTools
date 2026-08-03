@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -674,6 +675,95 @@ public class MultiTurnAgentPoolTests
 
         (await loop.RecoverAsync()).Should().BeTrue();
 
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HasPendingAskUserQuestionAsync_ReturnsTrue_WhenDirectChildHasParkedAskUserQuestion()
+    {
+        // #246: recreating the primary agent (a mode/provider switch) disposes its ENTIRE live
+        // descendant tree, not just the primary's own deferred calls. A direct child's unresolved
+        // AskUserQuestion must hard-block the switch exactly as the primary's own pending question
+        // already does — even though the PRIMARY itself has nothing deferred. True nested
+        // (grandchild) descendants cannot be produced via the normal Agent-tool spawn path today:
+        // CreateSubAgentAsync never gives a spawned child its own SubAgentOptions, so a plain
+        // sub-agent can never itself spawn further sub-agents. The recursive
+        // HasPendingAskUserQuestionInDescendantsAsync walk exists to stay correct if that topology
+        // ever changes, but a grandchild scenario is not constructible through this test.
+        const string threadId = "thread-child-pending-question";
+        const string toolCallId = "tc_child_color";
+        const string templateName = "asker";
+
+        var childAskCall = new ToolCallMessage
+        {
+            FunctionName = AskUserQuestionToolProvider.ToolName,
+            FunctionArgs = JsonSerializer.Serialize(new
+            {
+                context = "Need to know which color to use.",
+                questions = new[]
+                {
+                    new
+                    {
+                        prompt = "Which color?",
+                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    },
+                },
+            }),
+            ToolCallId = toolCallId,
+            Role = Role.Assistant,
+        };
+
+        var childAgent = new Mock<IStreamingAgent>();
+        childAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable(childAskCall)));
+
+        var parentAgent = new Mock<IStreamingAgent>();
+        parentAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable()));
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                [templateName] = new SubAgentTemplate
+                {
+                    Name = templateName,
+                    SystemPrompt = "You ask the user a clarifying question.",
+                    AgentFactory = () => childAgent.Object,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+
+        await using var pool = new MultiTurnAgentPool(
+            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new MultiTurnAgentLoop(
+                    parentAgent.Object,
+                    new FunctionRegistry(),
+                    tid,
+                    subAgentOptions: subAgentOptions,
+                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
+
+        using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+            templateName, "ask the user", name: "asker", runInBackground: true);
+        using var doc = JsonDocument.Parse(spawnJson);
+        var agentId = doc.RootElement.GetProperty("agent_id").GetString()!;
+
+        _ = await loop.SubAgentManager!.ObserveCompletionAsync(agentId, ct.Token);
+
+        // The primary itself has nothing deferred...
+        (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty();
+
+        // ...but the pool must still see the child's pending question and hard-block a switch on it.
         (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
     }
 

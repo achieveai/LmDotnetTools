@@ -111,6 +111,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
 
+    // Resolved root delivery target for a descendant's parked AskUserQuestion (#246). Always non-null
+    // after construction — see the ctor's descendantQuestionSink resolution.
+    private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
+
     // Everything about tool calls that deferred: what is outstanding, which run parked on it, and
     // which resolved results are waiting to be run as child runs. See DelayedResultCoordinator for
     // why this is a collaborator rather than fields here.
@@ -177,9 +181,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     own bundle. Null uses <paramref name="lifecycleServices"/> after this loop stamps it.
     /// </param>
     /// <param name="collaboration">
-    ///     Optional handle on the hierarchy-wide collaboration this loop takes part in. Null — the
-    ///     default — leaves every collaboration behaviour off, which is exactly the historical surface:
-    ///     no directory, no messaging, and no role/description on a spawn.
+    ///     Optional handle on the hierarchy-wide collaboration this loop takes part in. Null leaves
+    ///     every collaboration behaviour off.
+    /// </param>
+    /// <param name="descendantQuestionSink">
+    ///     Optional root-conversation delivery target for a descendant's parked <c>AskUserQuestion</c>.
+    ///     Null resolves to this loop's own persist-and-publish path.
     /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
@@ -201,7 +208,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         IUsageSink? externalUsageSink = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
-        AgentCollaborationSetup? collaboration = null)
+        AgentCollaborationSetup? collaboration = null,
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null)
         : base(
             threadId,
             systemPrompt,
@@ -234,8 +242,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         Collaboration = collaboration;
 
         // Self-registration is idempotent by design: a spawned sub-agent was already registered by its
-        // parent's manager (which had to know the child's endpoint at accept time), so only an agent
-        // nobody registered — the root — actually publishes itself here.
+        // parent's manager, so only an unregistered root publishes itself here.
         if (collaboration is not null
             && collaboration.Directory.FindById(collaboration.AgentId) is null)
         {
@@ -246,9 +253,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 new AgentLoopWriteEndpoint(this));
         }
 
-        // Client-facing tools (#246): registered BEFORE the sub-agent inheritable-tool snapshot.
-        // Each descendant loop constructs its own correctly-scoped providers; SubAgentManager avoids
-        // copying the parent's instances so the child's registrations do not collide.
+        _descendantQuestionSink = descendantQuestionSink ?? DeliverClientNotificationAsync;
+
+        // Client-facing tools register before the sub-agent inheritable-tool snapshot. Each descendant
+        // constructs its own correctly-scoped provider instances.
+
         _ = functionRegistry.AddProvider(new AskUserQuestionToolProvider());
         _ = functionRegistry.AddProvider(new NotifyClientToolProvider(DeliverClientNotificationAsync));
 
@@ -347,6 +356,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 usageSink: UsageLedger,
                 // Persist immediately on each descendant observation (covers late/background descendants).
                 persistUsageAsync: PersistCurrentUsageAsync,
+                // Thread the SAME resolved root delivery target straight through so a grandchild's parked
+                // question bubbles directly to the true root without an extra relay hop (#246).
+                descendantQuestionSink: _descendantQuestionSink,
                 // The parent's own wiring, from which each child derives its bundle at spawn time.
                 // A sub-agent's events belong in the parent's ordered stream, and a host that gates
                 // the parent's tools did not mean to leave the children's ungated. A workflow controller

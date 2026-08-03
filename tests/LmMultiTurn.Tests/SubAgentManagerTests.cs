@@ -613,6 +613,98 @@ public class SubAgentManagerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Completion_Background_WhenParkedOnAskUserQuestion_DeliversExactlyOneDescendantQuestionNotification()
+    {
+        // Arrange: same parking-on-AskUserQuestion setup as the sibling test above, but this test
+        // asserts on the DISTINCT #246 signal itself — the descendant-question NotifyMessage relayed
+        // via the manager's descendantQuestionSink (default here: straight to the parent agent, since
+        // this manager was built with no upstream root target) — rather than the ordinary
+        // SubAgentCompletion relay's wording.
+        var askArgs = JsonSerializer.Serialize(new
+        {
+            context = "Need input before continuing.",
+            questions = new[]
+            {
+                new
+                {
+                    prompt = "Which color?",
+                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                },
+            },
+        });
+        SetupSubAgentResponse([
+            new ToolCallMessage
+            {
+                FunctionName = AskUserQuestionToolProvider.ToolName,
+                FunctionArgs = askArgs,
+                ToolCallId = "tc_color",
+                Role = Role.Assistant,
+            },
+        ]);
+
+        _manager = CreateManager();
+        var spawnJson = await _manager.SpawnAsync("test-agent", "Pick a color", runInBackground: true);
+        using var spawnDoc = JsonDocument.Parse(spawnJson);
+        var agentId = spawnDoc.RootElement.GetProperty("agent_id").GetString()!;
+
+        // Poll until the descendant-question notification specifically has been relayed.
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.Is<List<IMessage>>(msgs =>
+                                msgs.Count == 1
+                                && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
+        // Assert: EXACTLY one descendant-question notification was delivered — not zero (it must
+        // fire), and not more than one (a duplicate would let the client re-navigate/re-announce the
+        // same pending question spuriously).
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.Is<List<IMessage>>(msgs =>
+                    msgs.Count == 1
+                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Exactly(1),
+            "the #246 descendant-question signal must fire exactly once per parked question, not be duplicated");
+
+        // Re-observing the already-completed background spawn (e.g. a client reconnect re-polling
+        // completion) must not cause a second relay: HandleRunCompletionAsync only ever runs once per
+        // RunCompletedMessage, and ObserveCompletionAsync merely awaits the (already-resolved)
+        // completion latch — it never re-derives or re-sends the notification.
+        _ = await _manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.Is<List<IMessage>>(msgs =>
+                    msgs.Count == 1
+                    && ContainsDescendantQuestionNotification(msgs[0], agentId, "test-agent")),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Exactly(1),
+            "re-observing an already-completed spawn (simulating a client reconnect) must not " +
+            "re-deliver the notification");
+    }
+
+    [Fact]
     public async Task DisposeAsync_StopsAllAgents()
     {
         // Arrange: create a background sub-agent with a delayed response
@@ -1273,6 +1365,28 @@ public class SubAgentManagerTests : IAsyncLifetime
 
         var text = nm.GetText() ?? string.Empty;
         return text.Contains("[Completed]") && text.Contains("(no text response)");
+    }
+
+    /// <summary>
+    /// Checks if a message is the #246 descendant-question NotifyMessage for the given descendant
+    /// <paramref name="expectedAgentId"/>/<paramref name="expectedTemplateName"/>: the right
+    /// <see cref="NotifyKinds.DescendantQuestion"/> kind, <see cref="NotifyMessage.SourceToolCallId"/>
+    /// stamped with the descendant's own agent id (not a tool-call id belonging to the question
+    /// itself), and the "awaiting answer" wording rather than "[Completed]".
+    /// </summary>
+    private static bool ContainsDescendantQuestionNotification(
+        IMessage message,
+        string expectedAgentId,
+        string expectedTemplateName)
+    {
+        if (message is not NotifyMessage { NotifyKind: NotifyKinds.DescendantQuestion } nm)
+        {
+            return false;
+        }
+
+        return nm.SourceToolCallId == expectedAgentId
+            && nm.Label == expectedTemplateName
+            && (nm.GetText() ?? string.Empty).Contains("[AwaitingAnswer]");
     }
 
     /// <summary>

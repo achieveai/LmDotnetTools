@@ -22,6 +22,15 @@ public static class NotifyKinds
 
     /// <summary>The agent pushed an ad-hoc, non-blocking notification to the client via <c>NotifyClient</c>.</summary>
     public const string ClientNotification = "client-notification";
+
+    /// <summary>
+    ///     A descendant (any nesting depth) parked on <c>AskUserQuestion</c> and is awaiting the human's
+    ///     answer. Delivered to the root/primary conversation so a pending question can never be
+    ///     discoverable only inside an unopened sub-agent tab (#246). Distinct from
+    ///     <see cref="SubAgentCompletion" />/<see cref="ClientNotification" /> so the client can key
+    ///     navigation to the originating descendant specifically on this kind.
+    /// </summary>
+    public const string DescendantQuestion = "descendant-question";
 }
 
 /// <summary>

@@ -88,6 +88,12 @@ public sealed class SubAgentManager : IAsyncDisposable
     // descendant usage is persisted immediately instead of waiting for a future primary usage event.
     private readonly Func<Task>? _persistUsageAsync;
 
+    // Root-conversation delivery target for a descendant's parked AskUserQuestion (#246). Always
+    // non-null — MultiTurnAgentLoop resolves a default (its own DeliverClientNotificationAsync) before
+    // constructing this manager, so every level has a live delegate to call, whether it points at
+    // itself (this manager's owner IS the root) or was threaded through from further up.
+    private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
+
     private readonly ConcurrentDictionary<string, SubAgentState> _agents = new();
     private readonly ConcurrentDictionary<string, string> _namesToIds = new();
     private readonly SemaphoreSlim _concurrencyGate;
@@ -338,7 +344,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         IUsageSink? usageSink = null,
         Func<Task>? persistUsageAsync = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
-        AgentCollaborationSetup? collaboration = null)
+        AgentCollaborationSetup? collaboration = null,
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null)
     {
         ArgumentNullException.ThrowIfNull(parentAgent);
         ArgumentNullException.ThrowIfNull(parentContracts);
@@ -383,6 +390,8 @@ public sealed class SubAgentManager : IAsyncDisposable
         // The parent agent's handle on the collaboration, when the host enabled one. Null keeps every
         // collaboration branch in this class inert, which is exactly today's behaviour.
         Collaboration = collaboration;
+        // Fall back to a direct one-hop relay when no upstream root target was supplied.
+        _descendantQuestionSink = descendantQuestionSink ?? RelayDescendantQuestionToParentAsync;
         _concurrencyGate = new SemaphoreSlim(
             options.MaxConcurrentSubAgents,
             options.MaxConcurrentSubAgents);
@@ -391,6 +400,16 @@ public sealed class SubAgentManager : IAsyncDisposable
         // field initializer), so this call returns to the ctor immediately without consuming a thread.
         _pumpTask = RunSpawnPumpAsync(_pumpCts.Token);
     }
+
+    /// <summary>
+    /// Default <see cref="_descendantQuestionSink"/> when no upstream root target is supplied: injects
+    /// the notification into this manager's own owning agent via <see cref="IMultiTurnAgent.SendAsync"/>.
+    /// </summary>
+    private async ValueTask RelayDescendantQuestionToParentAsync(NotifyMessage notify, CancellationToken ct)
+    {
+        _ = await _parentAgent.SendAsync([notify], ct: ct);
+    }
+
 
     /// <summary>
     /// The concrete model ids a spawn's <c>model</c> override may name, surfaced to the <c>Agent</c> tool
@@ -2582,7 +2601,8 @@ public sealed class SubAgentManager : IAsyncDisposable
                     subAgentTemplateSource: childParticipatesInCollaboration ? _source : null,
                     lifecycleServices: MultiTurnLifecycleServices.ForSpawnedAgent(
                         _lifecycleServices, lineage),
-                    collaboration: childCollaboration
+                    collaboration: childCollaboration,
+                    descendantQuestionSink: _descendantQuestionSink
                 ),
                 store,
                 ownedProviderAgent,
@@ -2868,7 +2888,7 @@ public sealed class SubAgentManager : IAsyncDisposable
                         gateGuard.ReleaseOnce(_concurrencyGate);
                     }
 
-                    await HandleRunCompletionAsync(state, rcm, lastTextContent);
+                    await HandleRunCompletionAsync(state, rcm, lastTextContent, ct);
                     lastTextContent = null;
                     textGenerationId = null;
                     _ = textBuilder.Clear();
@@ -2928,7 +2948,8 @@ public sealed class SubAgentManager : IAsyncDisposable
     private async Task HandleRunCompletionAsync(
         SubAgentState state,
         RunCompletedMessage rcm,
-        string? lastTextContent)
+        string? lastTextContent,
+        CancellationToken ct)
     {
         // A run that still has queued messages is NOT terminal: another run will follow and reuse the
         // same loop/provider, so neither flip the sub-agent terminal nor dispose its owned provider
@@ -3032,6 +3053,27 @@ public sealed class SubAgentManager : IAsyncDisposable
 
             _ = state.TryCompleteWithResult(result);
 
+            if (awaitingQuestion)
+            {
+                // Surface a descendant's pending question to the root conversation immediately
+                // (#246): the client navigates only on this distinct kind (never
+                // SubAgentCompletion/ClientNotification), and this fires regardless of
+                // NotifyParentOnCompletion — a foreground (blocking) spawn's caller is still parked
+                // awaiting the child's Task, so this is the ONLY way the human learns the
+                // conversation needs their input rather than appearing to hang. SourceToolCallId is
+                // THIS state's own agent id: HandleRunCompletionAsync runs once per level of
+                // nesting, so whichever level's direct child actually parked is the one attributed
+                // here, however deep it sits.
+                await _descendantQuestionSink(
+                    NotifyMessage.Create(
+                        NotifyKinds.DescendantQuestion,
+                        detail: resultText,
+                        sourceToolName: "Agent",
+                        sourceToolCallId: state.AgentId,
+                        label: state.TemplateName),
+                    ct);
+            }
+
             if (state.NotifyParentOnCompletion)
             {
                 await SendToParentAsync(state, resultText);
@@ -3057,6 +3099,45 @@ public sealed class SubAgentManager : IAsyncDisposable
         var deferred = await loop.GetDeferredToolCallsAsync();
         return deferred.Any(d =>
             string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// True when any live descendant in this manager's subtree — a direct child, or a further-nested
+    /// descendant reached through a child's own <see cref="SubAgentManager"/> — has an unresolved
+    /// <c>AskUserQuestion</c> parked. Used by <c>MultiTurnAgentPool.HasPendingAskUserQuestionAsync</c>
+    /// (LmAgentInfra) to HARD-block a mode/provider switch (#246): recreating the primary agent disposes its ENTIRE
+    /// live descendant tree, not just the primary's own deferred calls, so a switch could otherwise
+    /// silently orphan a question the human hasn't answered yet just because it belongs to a child
+    /// rather than the primary. Bounded to the CURRENT live tree — a snapshot of <see cref="_agents"/>
+    /// keys taken at the start of the call; a descendant spawned or removed mid-traversal is simply not
+    /// reflected. Recursion depth is naturally bounded because only a nested-root loop (e.g. a workflow
+    /// controller) ever constructs its own <see cref="SubAgentManager"/> for its children — a plain
+    /// Agent-spawned sub-agent never does (see <see cref="CreateSubAgentAsync"/>).
+    /// </summary>
+    public async Task<bool> HasPendingAskUserQuestionInDescendantsAsync(CancellationToken ct = default)
+    {
+        foreach (var agentId in _agents.Keys)
+        {
+            if (!TryGetAgent(agentId, out var agent) || agent is not MultiTurnAgentLoop loop)
+            {
+                continue;
+            }
+
+            var deferred = await loop.GetDeferredToolCallsAsync(ct);
+            if (deferred.Any(d =>
+                string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)))
+            {
+                return true;
+            }
+
+            if (loop.SubAgentManager is { } childManager
+                && await childManager.HasPendingAskUserQuestionInDescendantsAsync(ct))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
