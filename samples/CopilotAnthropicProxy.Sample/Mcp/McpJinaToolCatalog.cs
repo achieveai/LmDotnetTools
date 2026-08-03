@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Web.Jina;
@@ -71,7 +72,7 @@ internal sealed class McpJinaToolCatalog
         var schema = contract.GetJsonSchema();
         var schemaNode = schema is null
             ? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
-            : JsonNode.Parse(JsonSerializer.Serialize(schema)) as JsonObject ?? [];
+            : JsonNode.Parse(JsonSerializer.Serialize(schema, JsonSchemaValidator.SchemaSerializationOptions)) as JsonObject ?? [];
         var definition = new JsonObject
         {
             ["name"] = name,

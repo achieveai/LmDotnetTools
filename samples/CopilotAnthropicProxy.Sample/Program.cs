@@ -2585,6 +2585,7 @@ internal static class ProxyMcp
         using var upstreamRequest = new HttpRequestMessage(new HttpMethod(ctx.Request.Method), upstreamPath);
         byte[]? inboundBody = null;
         JsonObject? rpcRequest = null;
+        long listGeneration = 0;
         var composition = services.GetRequiredService<McpToolComposition>();
 
         if (string.Equals(ctx.Request.Method, "POST", StringComparison.OrdinalIgnoreCase))
@@ -2601,6 +2602,7 @@ internal static class ProxyMcp
                 && rpcRequest is not null
             )
             {
+                listGeneration = composition.CaptureListGeneration(ctx, rpcRequest);
                 _ = composition.TryHandleCancellation(ctx, rpcRequest);
                 if (await composition.TryHandleCallAsync(ctx, rpcRequest))
                 {
@@ -2697,7 +2699,8 @@ internal static class ProxyMcp
                         maxBodyBytes,
                         linked.Token,
                         idleCts,
-                        idleTimeout
+                        idleTimeout,
+                        listGeneration
                     );
                 }
                 catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
@@ -2710,7 +2713,8 @@ internal static class ProxyMcp
                     await WriteMcpErrorAsync(
                         ctx,
                         StatusCodes.Status504GatewayTimeout,
-                        "Timed out waiting for the upstream Copilot MCP server to respond."
+                        "Timed out waiting for the upstream Copilot MCP server to respond.",
+                        rpcRequest?["id"]
                     );
                     return;
                 }
@@ -2720,7 +2724,8 @@ internal static class ProxyMcp
                     await WriteMcpErrorAsync(
                         ctx,
                         StatusCodes.Status502BadGateway,
-                        "The upstream Copilot MCP server dropped the connection before its reply was complete."
+                        "The upstream Copilot MCP server dropped the connection before its reply was complete.",
+                        rpcRequest?["id"]
                     );
                     return;
                 }
@@ -2730,7 +2735,8 @@ internal static class ProxyMcp
                     await WriteMcpErrorAsync(
                         ctx,
                         StatusCodes.Status502BadGateway,
-                        $"Upstream MCP reply exceeded the {maxBodyBytes}-byte relay cap."
+                        $"Upstream MCP reply exceeded the {maxBodyBytes}-byte relay cap.",
+                        rpcRequest?["id"]
                     );
                     return;
                 }
@@ -2770,7 +2776,7 @@ internal static class ProxyMcp
                     idleCts,
                     linked,
                     logger,
-                    WriteMcpErrorAsync,
+                    (errorContext, status, message) => WriteMcpErrorAsync(errorContext, status, message),
                     isSse,
                     keepAliveInterval
                 );
@@ -2816,7 +2822,12 @@ internal static class ProxyMcp
     ///     are always passed through verbatim). Per the MCP spec, an error response for input the server
     ///     could not accept has no <c>id</c>.
     /// </summary>
-    private static async Task WriteMcpErrorAsync(HttpContext ctx, int status, string message)
+    private static async Task WriteMcpErrorAsync(
+        HttpContext ctx,
+        int status,
+        string message,
+        JsonNode? requestId = null
+    )
     {
         if (ctx.Response.HasStarted)
         {
@@ -2825,10 +2836,20 @@ internal static class ProxyMcp
 
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json";
-        var payload = JsonSerializer.SerializeToUtf8Bytes(
-            new { jsonrpc = "2.0", error = new { code = -32000, message } }
+        var response = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["error"] = new JsonObject { ["code"] = -32000, ["message"] = message },
+        };
+        if (requestId is not null)
+        {
+            response["id"] = requestId.DeepClone();
+        }
+
+        await ctx.Response.Body.WriteAsync(
+            Encoding.UTF8.GetBytes(response.ToJsonString()),
+            ctx.RequestAborted
         );
-        await ctx.Response.Body.WriteAsync(payload, ctx.RequestAborted);
     }
 }
 
