@@ -103,13 +103,23 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
 
     private readonly string _gatewayBaseUrl;
 
+    /// <summary>
+    /// Test seam for <see cref="HasSufficientDiskSpace"/>: when set, replaces the real <see cref="DriveInfo"/>
+    /// probe against <see cref="HostWorkspaceRoot"/> entirely. Production callers leave this <c>null</c>, so
+    /// the real disk is checked; unit tests inject a deterministic predicate so assertions about provisioning
+    /// behavior don't depend on the ambient free space of the machine running the test (which, on a dev box
+    /// with many concurrent worktrees/build outputs, can genuinely dip below <see cref="MinFreeDiskBytes"/>).
+    /// </summary>
+    private readonly Func<string, bool>? _diskSpaceProbe;
+
     public ReviewSessionProvisioner(
         ISandboxSessionSource sessions,
         CodeReviewDaemonOptions options,
         ILoggerFactory loggerFactory,
         SandboxCredential credential = default,
         string? workspaceBasePath = null,
-        string? gatewayBaseUrl = null)
+        string? gatewayBaseUrl = null,
+        Func<string, bool>? diskSpaceProbe = null)
     {
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -120,6 +130,7 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
         _gatewayBaseUrl = gatewayBaseUrl
             ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
             ?? "http://127.0.0.1:3000";
+        _diskSpaceProbe = diskSpaceProbe;
     }
 
     public static string WorkspaceId(ReviewRun run) => WorkspaceId(run.Id);
@@ -255,6 +266,11 @@ internal sealed class ReviewSessionProvisioner : IReviewSessionProvisioner
     /// </summary>
     private bool HasSufficientDiskSpace()
     {
+        if (_diskSpaceProbe is not null)
+        {
+            return _diskSpaceProbe(HostWorkspaceRoot);
+        }
+
         try
         {
             var root = Path.GetPathRoot(Path.GetFullPath(HostWorkspaceRoot));
