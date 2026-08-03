@@ -158,6 +158,7 @@ const {
   focusChild,
   unfocusChild,
   sendToFocusedChild,
+  submitToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
 } = useSubAgentPanel(() => subAgentParentThreadId.value);
 
@@ -785,6 +786,7 @@ onBeforeUnmount(() => {
           :is-streaming="isFocusedStreaming"
           :error="subAgentError"
           :get-result-for-tool-call="getSubAgentResultForToolCall"
+          :submit-client-tool-result="submitToFocusedChild"
           @send="handleSubAgentSend"
         />
       </div>

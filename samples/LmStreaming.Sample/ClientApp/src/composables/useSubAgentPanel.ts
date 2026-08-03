@@ -29,7 +29,13 @@ import {
 import { loadConversationMessages, type PersistedMessage } from '@/api/conversationsApi';
 import { listSubAgents, type SubAgentSummary } from '@/api/subAgentsApi';
 import { connectSubAgent } from '@/api/subAgentWsClient';
-import { sendWebSocketMessage, closeWebSocketConnection, type WebSocketConnection } from '@/api/wsClient';
+import {
+  sendWebSocketMessage,
+  closeWebSocketConnection,
+  sendClientToolResult,
+  type WebSocketConnection,
+} from '@/api/wsClient';
+import type { ClientToolSubmitOutcome } from './useClientToolSubmit';
 import { useMessageMerger } from './useMessageMerger';
 import { getMergeKey } from './messageMergeKey';
 import {
@@ -89,6 +95,23 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
   const toolResults = ref<Map<string, ToolCallResultMessage>>(new Map());
   let childCurrentRunId: string | null = null;
   let focusedConnection: WebSocketConnection | null = null;
+  // Pending `submitToFocusedChild` submissions keyed by toolCallId (#246 defect 1/2). Settled by a
+  // matching `client_tool_result_ack` / `client_tool_result_error` frame on the CHILD connection, or
+  // — so a resolver never leaks and a QuestionRich `finally` always runs — by that connection's
+  // `onError`/`onClose` firing before any ack arrives. Module-function scoped (not per-focus) so a
+  // submission started just before a focus is superseded still gets a definitive settle rather than
+  // being silently abandoned.
+  const pendingSubmissions = new Map<string, (outcome: ClientToolSubmitOutcome) => void>();
+
+  /** Settle (and clear) every in-flight `submitToFocusedChild` promise with the same outcome. */
+  function settlePendingSubmissions(outcome: ClientToolSubmitOutcome): void {
+    if (pendingSubmissions.size === 0) return;
+    for (const resolve of pendingSubmissions.values()) {
+      resolve(outcome);
+    }
+    pendingSubmissions.clear();
+  }
+
   let merger = useMessageMerger();
   // Monotonic supersession token. Each focusChild invocation claims the next value; a call whose
   // token is no longer the latest has been superseded (even by a concurrent re-focus of the SAME
@@ -548,6 +571,13 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           isFocusedStreaming.value = false;
         },
         onError: (err: string, code?: string) => {
+          // Settle any pending submitToFocusedChild promise unconditionally (even for a superseded
+          // focus) so a resolver never leaks — see settlePendingSubmissions doc comment.
+          settlePendingSubmissions({
+            status: 'error',
+            code: 'not_connected',
+            message: err || 'Sub-agent stream error.',
+          });
           if (focusSeq !== token) return;
           log.error('Sub-agent stream error', { agentId, code });
           isFocusedStreaming.value = false;
@@ -563,6 +593,13 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
           error.value = err || 'Sub-agent stream error.';
         },
         onClose: (info) => {
+          // Settle any pending submitToFocusedChild promise unconditionally (even for a superseded
+          // focus or a close WE initiated) so a resolver never leaks — see settlePendingSubmissions.
+          settlePendingSubmissions({
+            status: 'error',
+            code: 'not_connected',
+            message: 'Sub-agent connection closed.',
+          });
           // Ignore closes for a superseded focus, or a close WE initiated (unfocus/refocus).
           if (focusSeq !== token || intentionalClose) {
             return;
@@ -592,6 +629,34 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
             log.info('Sub-agent focus socket closed unexpectedly; resuming once', { agentId });
             void focusChild(agentId, true).catch((e) => {
               log.error('Sub-agent auto-resume failed', { agentId, error: e });
+            });
+          }
+        },
+        onClientToolResultAck: (toolCallId: string, duplicate: boolean) => {
+          const resolve = pendingSubmissions.get(toolCallId);
+          if (resolve) {
+            pendingSubmissions.delete(toolCallId);
+            resolve({ status: 'acked', duplicate });
+          } else {
+            log.debug('Received client_tool_result_ack for an untracked toolCallId', {
+              agentId,
+              toolCallId,
+              duplicate,
+            });
+          }
+        },
+        onClientToolResultError: (toolCallId: string | undefined, code: string, message: string) => {
+          const id = toolCallId ?? (pendingSubmissions.size === 1 ? [...pendingSubmissions.keys()][0] : undefined);
+          const resolve = id ? pendingSubmissions.get(id) : undefined;
+          if (resolve && id) {
+            pendingSubmissions.delete(id);
+            resolve({ status: 'error', code, message });
+          } else {
+            log.warn('Received client_tool_result_error that could not be correlated to a pending submission', {
+              agentId,
+              toolCallId,
+              code,
+              message,
             });
           }
         },
@@ -767,6 +832,38 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     sendWebSocketMessage(focusedConnection, text);
   }
 
+  /**
+   * Submit a deferred client-tool result (e.g. a descendant's `AskUserQuestion` answer) over the
+   * FOCUSED child's own `/ws/subagent` connection (#246 defect 1) — NOT the root socket, which does
+   * not know this toolCallId and would reply `not_found`. Resolves once that SAME connection's
+   * `client_tool_result_ack` / `client_tool_result_error` frame arrives, or — if the connection
+   * errors/closes first — with a retryable `not_connected` error so a caller's `finally` still runs
+   * (#246 defect 2; see `settlePendingSubmissions`).
+   */
+  async function submitToFocusedChild(
+    toolCallId: string,
+    result: string,
+    isError?: boolean
+  ): Promise<ClientToolSubmitOutcome> {
+    if (!focusedConnection || focusedConnection.socket.readyState !== WebSocket.OPEN) {
+      return { status: 'error', code: 'not_connected', message: 'No active sub-agent connection' };
+    }
+    const connection = focusedConnection;
+    return new Promise<ClientToolSubmitOutcome>((resolve) => {
+      pendingSubmissions.set(toolCallId, resolve);
+      try {
+        sendClientToolResult(connection, toolCallId, result, isError);
+      } catch (err) {
+        pendingSubmissions.delete(toolCallId);
+        resolve({
+          status: 'error',
+          code: 'not_connected',
+          message: err instanceof Error ? err.message : 'Failed to send client tool result',
+        });
+      }
+    });
+  }
+
   /** Look up a captured tool result by tool_call_id (for resolving a focused pill). */
   function getResultForToolCall(toolCallId: string | null | undefined): ToolCallResultMessage | null {
     if (!toolCallId) return null;
@@ -808,6 +905,7 @@ export function useSubAgentPanel(getParentThreadId: () => string | null) {
     focusChild,
     unfocusChild,
     sendToFocusedChild,
+    submitToFocusedChild,
     getResultForToolCall,
   };
 }

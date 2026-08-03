@@ -3,10 +3,12 @@ import { inject } from 'vue';
 import { mount } from '@vue/test-utils';
 import SubAgentTranscript from '@/components/SubAgentTranscript.vue';
 import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
+import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import type { ToolCallResultMessage } from '@/types';
 
-// Stub MessageList so we assert wiring; it also injects the child tool-result resolver to prove the
-// subtree provide points at the child (not the parent chat).
+// Stub MessageList so we assert wiring; it also injects the child tool-result resolver AND the
+// child-scoped submit function to prove the subtree provide points at the FOCUSED CHILD connection
+// (#246 defect 1), not the root chat's SUBMIT_CLIENT_TOOL_RESULT.
 const MessageListStub = {
   props: ['displayItems', 'isLoading'],
   setup() {
@@ -15,7 +17,10 @@ const MessageListStub = {
       () => null
     );
     const resolved = resolver('tc-1');
-    return { marker: resolved ? resolved.result : 'none' };
+    const submit = inject<ClientToolSubmitFn>(SUBMIT_CLIENT_TOOL_RESULT, () =>
+      Promise.resolve({ status: 'error', code: 'not_connected', message: 'no provider' })
+    );
+    return { marker: resolved ? resolved.result : 'none', submit };
   },
   template:
     '<div data-testid="stub-ml" :data-count="displayItems.length" :data-loading="String(isLoading)" :data-marker="marker"></div>',
@@ -38,6 +43,7 @@ function mountView(props: Partial<Record<string, unknown>> = {}) {
       isStreaming: true,
       error: null,
       getResultForToolCall: vi.fn(() => null),
+      submitClientToolResult: vi.fn(() => Promise.resolve({ status: 'acked', duplicate: false })),
       ...props,
     } as never,
     global: { stubs: { MessageList: MessageListStub, ChatInput: ChatInputStub } },
@@ -57,6 +63,38 @@ describe('SubAgentTranscript', () => {
       id === 'tc-1' ? ({ result: 'CHILD-RESULT' } as ToolCallResultMessage) : null;
     const wrapper = mountView({ getResultForToolCall: childResolver });
     expect(wrapper.get('[data-testid="stub-ml"]').attributes('data-marker')).toBe('CHILD-RESULT');
+  });
+
+  it('provides the CHILD-scoped submitClientToolResult to its subtree (#246 defect 1)', async () => {
+    const childSubmit: ClientToolSubmitFn = vi.fn(() =>
+      Promise.resolve({ status: 'acked', duplicate: false })
+    );
+    mount(SubAgentTranscript, {
+      props: {
+        activeAgentId: 'a1',
+        focusedAgentId: 'a1',
+        displayItems: [],
+        isStreaming: false,
+        error: null,
+        getResultForToolCall: vi.fn(() => null),
+        submitClientToolResult: childSubmit,
+      } as never,
+      global: {
+        stubs: {
+          MessageList: {
+            setup() {
+              const submit = inject<ClientToolSubmitFn>(SUBMIT_CLIENT_TOOL_RESULT);
+              // Prove it is the CHILD-scoped function passed in as a prop, not some root fallback.
+              void submit?.('call-1', '{}', false);
+              return {};
+            },
+            template: '<div />',
+          },
+          ChatInput: ChatInputStub,
+        },
+      },
+    });
+    expect(childSubmit).toHaveBeenCalledWith('call-1', '{}', false);
   });
 
   it('surfaces a relay_failed stream error in the banner (FINDING C, relocated from the panel)', () => {

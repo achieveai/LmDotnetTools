@@ -28,10 +28,12 @@ vi.mock('@/api/subAgentWsClient', () => ({
 const wsMocks = vi.hoisted(() => ({
   sendWebSocketMessage: vi.fn(),
   closeWebSocketConnection: vi.fn(),
+  sendClientToolResult: vi.fn(),
 }));
 vi.mock('@/api/wsClient', () => ({
   sendWebSocketMessage: wsMocks.sendWebSocketMessage,
   closeWebSocketConnection: wsMocks.closeWebSocketConnection,
+  sendClientToolResult: wsMocks.sendClientToolResult,
 }));
 
 const convMocks = vi.hoisted(() => ({
@@ -50,6 +52,8 @@ interface Captured {
     onDone: () => void;
     onError: (e: string, code?: string) => void;
     onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
+    onClientToolResultAck?: (toolCallId: string, duplicate: boolean) => void;
+    onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
   };
   connection: { socket: { readyState: number }; connectionId: string; threadId: string; isConnected: boolean };
 }
@@ -75,6 +79,7 @@ beforeEach(() => {
   wsSubMocks.connectSubAgent.mockReset();
   wsMocks.sendWebSocketMessage.mockReset();
   wsMocks.closeWebSocketConnection.mockReset();
+  wsMocks.sendClientToolResult.mockReset();
   convMocks.loadConversationMessages.mockReset();
 
   convMocks.loadConversationMessages.mockResolvedValue([]);
@@ -1384,6 +1389,146 @@ describe('useSubAgentPanel — focusing a child of a FINISHED conversation (deep
 
     expect(panel.isFocusedStreaming.value).toBe(false);
     expect(assistantText(panel.focusedDisplayItems.value)).toContain('done!');
+  });
+});
+
+// #246 defect 1: a descendant's AskUserQuestion must submit over the FOCUSED child's own connection
+// (`/ws/subagent`), not the root socket — the root's SUBMIT_CLIENT_TOOL_RESULT does not know about
+// this toolCallId and the server replies `not_found`. `submitToFocusedChild` sends
+// `{ $type: 'client_tool_result', ... }` on the CHILD connection and resolves once that SAME
+// connection's `client_tool_result_ack` / `client_tool_result_error` frame arrives.
+describe('useSubAgentPanel — submitToFocusedChild (#246 defect 1: descendant-scoped submit)', () => {
+  async function focusFirst(panel: ReturnType<typeof useSubAgentPanel>, agentId = 'a1') {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary(agentId)]);
+    await panel.refreshChildren();
+    await panel.focusChild(agentId);
+  }
+
+  it('sends the frame on the focused child connection and resolves acked/duplicate:false on a "resolved" ack', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const outcomePromise = panel.submitToFocusedChild('call-1', '{"answers":[]}', false);
+    expect(wsMocks.sendClientToolResult).toHaveBeenCalledWith(captured[0].connection, 'call-1', '{"answers":[]}', false);
+
+    captured[0].callbacks.onClientToolResultAck!('call-1', false);
+    const outcome = await outcomePromise;
+    expect(outcome).toEqual({ status: 'acked', duplicate: false });
+  });
+
+  it('resolves acked/duplicate:true on a "duplicate" ack', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const outcomePromise = panel.submitToFocusedChild('call-1', '{"answers":[]}');
+    captured[0].callbacks.onClientToolResultAck!('call-1', true);
+
+    const outcome = await outcomePromise;
+    expect(outcome).toEqual({ status: 'acked', duplicate: true });
+  });
+
+  it('resolves an error outcome when the child connection rejects with client_tool_result_error', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const outcomePromise = panel.submitToFocusedChild('call-1', 'boom', true);
+    captured[0].callbacks.onClientToolResultError!('call-1', 'conflict', 'Already answered');
+
+    const outcome = await outcomePromise;
+    expect(outcome).toEqual({ status: 'error', code: 'conflict', message: 'Already answered' });
+  });
+
+  it('never reaches the root connection — it uses the child socket only', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const outcomePromise = panel.submitToFocusedChild('call-1', '{"answers":[]}');
+    // The ONLY WebSocket send-path exercised for a submit is sendClientToolResult on the child's own
+    // connection object — asserting the exact connection instance pins the fix (a root-scoped submit
+    // would never call this mock at all, since useSubAgentPanel never imports useChat).
+    expect(wsMocks.sendClientToolResult.mock.calls[0][0]).toBe(captured[0].connection);
+    captured[0].callbacks.onClientToolResultAck!('call-1', false);
+    await outcomePromise;
+  });
+
+  it('resolves not_connected immediately when there is no focused child', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    const outcome = await panel.submitToFocusedChild('call-1', '{"answers":[]}');
+    expect(outcome).toEqual({ status: 'error', code: 'not_connected', message: expect.any(String) });
+    expect(wsMocks.sendClientToolResult).not.toHaveBeenCalled();
+  });
+});
+
+// #246 defect 2: a pending submitToFocusedChild() promise must settle (retryable) if the child's
+// connection errors or closes before an ack arrives — otherwise QuestionRich's `finally` never runs
+// and the UI stays locked forever (a resolver leak). Both onError and onClose must settle it.
+describe('useSubAgentPanel — submitToFocusedChild settles on ws error/close before ack (#246 defect 2)', () => {
+  async function focusFirst(panel: ReturnType<typeof useSubAgentPanel>, agentId = 'a1') {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary(agentId)]);
+    await panel.refreshChildren();
+    await panel.focusChild(agentId);
+  }
+
+  it('settles a pending submission as a retryable error when the connection errors before ack', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const outcomePromise = panel.submitToFocusedChild('call-1', '{"answers":[]}');
+    expect(wsMocks.sendClientToolResult).toHaveBeenCalledTimes(1);
+
+    // The socket errors before any client_tool_result_ack/error frame arrives.
+    captured[0].callbacks.onError('WebSocket connection error');
+
+    const outcome = await outcomePromise;
+    expect(outcome.status).toBe('error');
+    expect((outcome as { code: string }).code).toBe('not_connected');
+  });
+
+  it('settles a pending submission as a retryable error when the connection closes before ack', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const outcomePromise = panel.submitToFocusedChild('call-1', '{"answers":[]}');
+    expect(wsMocks.sendClientToolResult).toHaveBeenCalledTimes(1);
+
+    // A clean close (e.g. server-initiated backpressure drop) with no ack ever sent.
+    captured[0].callbacks.onClose!({ wasClean: true, code: 1000, reason: '' });
+
+    const outcome = await outcomePromise;
+    expect(outcome.status).toBe('error');
+    expect((outcome as { code: string }).code).toBe('not_connected');
+  });
+
+  it('does not leak a resolver: a settled-then-late ack for the same toolCallId is ignored, not double-resolved', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const outcomePromise = panel.submitToFocusedChild('call-1', '{"answers":[]}');
+    captured[0].callbacks.onClose!({ wasClean: false, code: 1006, reason: 'dropped' });
+    const outcome = await outcomePromise;
+    expect(outcome).toEqual({ status: 'error', code: 'not_connected', message: expect.any(String) });
+
+    // A late ack for the same id (already settled) must not throw or resolve a second time.
+    expect(() => captured[0].callbacks.onClientToolResultAck!('call-1', false)).not.toThrow();
+  });
+
+  it('settling on close/error does not affect a DIFFERENT still-pending toolCallId', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const p1 = panel.submitToFocusedChild('call-1', 'first');
+    captured[0].callbacks.onError('boom');
+    const outcome1 = await p1;
+    expect(outcome1).toEqual({ status: 'error', code: 'not_connected', message: expect.any(String) });
+
+    // A fresh submission after the connection recovered (a NEW focus/connection) still resolves
+    // normally via its own ack — settling never leaves the panel permanently unable to submit.
+    await panel.unfocusChild();
+    await focusFirst(panel, 'a1');
+    const p2 = panel.submitToFocusedChild('call-2', 'second');
+    captured[captured.length - 1].callbacks.onClientToolResultAck!('call-2', false);
+    const outcome2 = await p2;
+    expect(outcome2).toEqual({ status: 'acked', duplicate: false });
   });
 });
 

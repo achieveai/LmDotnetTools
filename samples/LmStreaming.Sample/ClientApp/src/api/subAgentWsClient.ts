@@ -29,6 +29,18 @@ export interface SubAgentWsCallbacks {
    * close fires neither `onDone` nor `onError`, so callers rely on this to avoid a frozen view.
    */
   onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
+  /**
+   * Ack for a `client_tool_result` frame the browser sent over THIS sub-agent connection to resolve a
+   * deferred client tool on the focused descendant (#246, e.g. a descendant's `AskUserQuestion`).
+   * Mirrors {@link WebSocketClientCallbacks.onClientToolResultAck} — see `useSubAgentPanel.ts`'s
+   * `submitToFocusedChild` for the resolver this settles.
+   */
+  onClientToolResultAck?: (toolCallId: string, duplicate: boolean) => void;
+  /**
+   * The server rejected a `client_tool_result` submission sent over THIS sub-agent connection
+   * (#246). Mirrors {@link WebSocketClientCallbacks.onClientToolResultError}.
+   */
+  onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
 }
 
 /**

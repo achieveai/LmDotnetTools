@@ -38,6 +38,10 @@ const sharedMocks = vi.hoisted(() => ({
   // #246: browser-hosted client tools (AskUserQuestion) gating.
   hasPendingClientQuestion: false,
   submitClientToolResult: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
+  // #246 defect 1: the sub-agent-scoped submit useSubAgentPanel exposes, distinct from the root's
+  // submitClientToolResult above — ChatLayout must bind THIS one to SubAgentTranscript's prop so a
+  // descendant's answer submits over the focused child connection, not the root.
+  submitToFocusedChild: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
   // Captures the thread-id getter ChatLayout passes to useSubAgentPanel, so a test can assert the
   // start-gating (the getter returns null until the conversation has a sidebar entry).
   subAgentThreadGetter: null as (() => string | null) | null,
@@ -208,6 +212,7 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
         focusChild: vi.fn(async () => {}),
         unfocusChild: vi.fn(async () => {}),
         sendToFocusedChild: vi.fn(),
+        submitToFocusedChild: sharedMocks.submitToFocusedChild,
         getResultForToolCall: vi.fn(() => null),
       };
     },
@@ -778,5 +783,63 @@ describe('ChatLayout provides GO_TO_AGENT_TAB to descendants (#246)', () => {
 
     const mainView = wrapper.get('[data-testid="main-view"]');
     expect((mainView.element as HTMLElement).style.display).toBe('none');
+  });
+});
+
+// #246 defect 1: a descendant's AskUserQuestion must submit over the FOCUSED sub-agent's own
+// connection (useSubAgentPanel.submitToFocusedChild), not the root's submitClientToolResult — the
+// root doesn't know the descendant's toolCallId and would reply not_found. ChatLayout must bind
+// SubAgentTranscript's submit-client-tool-result prop to submitToFocusedChild once the center pane
+// switches to a sub-agent tab.
+describe('ChatLayout binds SubAgentTranscript to the focused-child submit (#246 defect 1)', () => {
+  it('provides submitToFocusedChild (not the root submit) inside the sub-agent tab subtree', async () => {
+    let injectedSubmit: ClientToolSubmitFn | undefined;
+    let goToAgentTab: GoToAgentTab | undefined;
+    // Mounted as MessageList in BOTH the main pane and (once activated) SubAgentTranscript. Each
+    // mount re-runs setup() in its own provide scope, so the LAST-mounted instance's inject wins —
+    // that's SubAgentTranscript's, once we switch tabs below.
+    const Probe = defineComponent({
+      setup() {
+        injectedSubmit = inject<ClientToolSubmitFn>(SUBMIT_CLIENT_TOOL_RESULT);
+        goToAgentTab = inject<GoToAgentTab>(GO_TO_AGENT_TAB);
+        return () => h('div', { 'data-test': 'probe' });
+      },
+    });
+
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.submitClientToolResult.mockClear();
+    sharedMocks.submitToFocusedChild.mockClear();
+
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: Probe,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    // Before switching tabs, the main pane's MessageList (outside SubAgentTranscript) injected the
+    // root submit — sanity-checked fully by the SUBMIT_CLIENT_TOOL_RESULT describe above.
+    expect(injectedSubmit).toBe(sharedMocks.submitClientToolResult);
+
+    goToAgentTab?.('agent-42');
+    await flushPromises();
+
+    // Once the sub-agent tab is active, SubAgentTranscript mounts its OWN MessageList, which injects
+    // the CHILD-scoped submit (submitToFocusedChild) instead — never the root's.
+    expect(injectedSubmit).toBe(sharedMocks.submitToFocusedChild);
+    expect(injectedSubmit).not.toBe(sharedMocks.submitClientToolResult);
+
+    await injectedSubmit?.('call-1', '{"answers":[]}', false);
+    expect(sharedMocks.submitToFocusedChild).toHaveBeenCalledWith('call-1', '{"answers":[]}', false);
+    expect(sharedMocks.submitClientToolResult).not.toHaveBeenCalled();
   });
 });
