@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -209,5 +210,84 @@ public sealed class SubAgentScanCoverageCacheTests
 
         hit.Should().BeTrue();
         rows.Select(r => r.AgentId).Should().BeEquivalentTo(["child-a"]);
+    }
+
+    [Fact]
+    public async Task RecordRecovered_ConcurrentDistinctThreads_EvictsToExactlyCapacity_WithNoCrossContamination()
+    {
+        // PR #245 review (MEDIUM): the single-writer eviction tests above prove the bookkeeping is
+        // correct for sequential calls; this test proves the SAME invariants hold when N > capacity
+        // distinct (threadId, owner, rows) triples are recorded from many threads racing the same
+        // `_gate` lock at once — the scenario the sequential tests cannot exercise. It intentionally
+        // does NOT assert which specific threads survive (that is a genuine race, since all writes are
+        // released simultaneously) — only that the ceiling is respected and every surviving entry is
+        // internally consistent (no reader ever observes one thread's owner paired with another
+        // thread's rows).
+        const int capacity = 5;
+        const int distinctThreads = 20;
+        var cache = new SubAgentScanCoverageCache(capacity: capacity);
+
+        var owners = new object[distinctThreads];
+        var expectedRows = new IReadOnlyList<SubAgentSummary>[distinctThreads];
+        for (var i = 0; i < distinctThreads; i++)
+        {
+            owners[i] = new object();
+            expectedRows[i] = Rows($"child-{i}");
+        }
+
+        // Release every writer at (as close to) the same instant as possible, rather than letting
+        // Task.Run trickle them in one at a time — the point is to actually contend the lock.
+        using var ready = new CountdownEvent(distinctThreads);
+        using var start = new ManualResetEventSlim(initialState: false);
+
+        var writeTasks = Enumerable.Range(0, distinctThreads)
+            .Select(i => Task.Run(() =>
+            {
+                ready.Signal();
+                start.Wait();
+                cache.RecordRecovered($"thread-{i}", owners[i], expectedRows[i]);
+            }))
+            .ToArray();
+
+        ready.Wait();
+        start.Set();
+
+        var writeException = await Record.ExceptionAsync(() => Task.WhenAll(writeTasks));
+        writeException.Should().BeNull("concurrent RecordRecovered calls for distinct threads must never throw");
+
+        // Read back concurrently too, and collect results instead of asserting inside the task bodies —
+        // an xUnit assertion failure thrown on a background Task can be swallowed by Task.WhenAll.
+        var observations = new ConcurrentBag<(int Index, bool Hit, IReadOnlyList<SubAgentSummary> Rows)>();
+        var readTasks = Enumerable.Range(0, distinctThreads)
+            .Select(i => Task.Run(() =>
+            {
+                var hit = cache.TryGetRecovered($"thread-{i}", owners[i], out var rows);
+                observations.Add((i, hit, rows));
+            }))
+            .ToArray();
+
+        var readException = await Record.ExceptionAsync(() => Task.WhenAll(readTasks));
+        readException.Should().BeNull("concurrent TryGetRecovered calls must never throw");
+
+        observations.Should().HaveCount(distinctThreads);
+        var hits = observations.Where(o => o.Hit).ToList();
+
+        // The ceiling: exactly `capacity` distinct threads may survive concurrent eviction — never more
+        // (eviction runs under the same lock as the write that triggers it) and never fewer (every write
+        // that lands is a real, retrievable entry until IT is the one evicted). Deliberately not
+        // asserting WHICH indices survive — that outcome is a genuine, non-deterministic race.
+        hits.Should().HaveCount(
+            capacity,
+            "exactly `capacity` distinct threads must survive concurrent eviction, regardless of which ones");
+
+        // No cross-contamination: every surviving hit must return precisely the rows recorded under its
+        // OWN owner, never another thread's rows (which a shared-state race on the dictionary/list would
+        // produce).
+        foreach (var (index, _, rows) in hits)
+        {
+            rows.Select(r => r.AgentId).Should().BeEquivalentTo(
+                expectedRows[index].Select(r => r.AgentId),
+                $"thread-{index}'s surviving entry must return exactly its own recorded rows, never another thread's");
+        }
     }
 }
