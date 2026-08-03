@@ -617,14 +617,20 @@ public class MultiTurnAgentPoolTests
         // SAME store recovers it via RecoverAsync (OnHistoryRestoredAsync rebuilds the in-memory
         // deferred registry from persisted history), and once that loop is registered in the pool,
         // HasPendingAskUserQuestionAsync must see the recovered call exactly as it would a live one.
+        //
+        // This also exercises the end of that story: resolving the recovered call must wake the loop's
+        // background pump and drive the continuation through the provider EXACTLY ONCE — not zero times
+        // (the answer would never be delivered) and not more than once (a double-fired continuation would
+        // send the provider a duplicate turn for an answer already recorded).
         const string threadId = "thread-restart-question";
         const string runId = "run_prev";
         const string generationId = "gen_prev";
+        const string toolCallId = "tc_persisted_question";
         var store = new InMemoryConversationStore();
 
         var toolCall = new ToolCallMessage
         {
-            ToolCallId = "tc_persisted_question",
+            ToolCallId = toolCallId,
             FunctionName = AskUserQuestionToolProvider.ToolName,
             FunctionArgs = "{\"context\":\"ctx\",\"questions\":[{\"prompt\":\"Which?\",\"options\":[{\"label\":\"A\"}]}]}",
             Role = Role.Assistant,
@@ -634,7 +640,7 @@ public class MultiTurnAgentPoolTests
         };
         var deferredResult = new ToolCallResultMessage
         {
-            ToolCallId = "tc_persisted_question",
+            ToolCallId = toolCallId,
             ToolName = AskUserQuestionToolProvider.ToolName,
             Result = string.Empty,
             IsDeferred = true,
@@ -659,7 +665,20 @@ public class MultiTurnAgentPoolTests
                 LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             });
 
+        // Nothing before resolution should ever reach the provider — the original call belonged to a
+        // process that no longer exists, so this mock's very first invocation IS the continuation.
+        var callCount = 0;
         var mockAgent = new Mock<IStreamingAgent>();
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                Interlocked.Increment(ref callCount);
+                IMessage msg = new TextMessage { Text = "Using A.", Role = Role.Assistant };
+                return Task.FromResult(ToAsyncEnumerable(msg));
+            });
+
         await using var pool = new MultiTurnAgentPool(
             (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
                 new MultiTurnAgentLoop(
@@ -676,6 +695,22 @@ public class MultiTurnAgentPoolTests
         (await loop.RecoverAsync()).Should().BeTrue();
 
         (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+
+        var outcome = await loop.TryResolveToolCallAsync(toolCallId, "A", isError: false);
+        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // Resolving wakes the loop in the background; wait for the continuation to actually reach the
+        // provider before asserting on it, rather than racing the pump.
+        await WaitForConditionAsync(() => Volatile.Read(ref callCount) >= 1, TimeSpan.FromSeconds(2));
+
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeFalse(
+            "once the recovered call is resolved and its continuation has run, nothing is deferred any more");
+
+        // Give any spurious second wake-up time to land before asserting the count is exact.
+        await Task.Delay(200);
+        Volatile.Read(ref callCount).Should().Be(
+            1,
+            "resolving the recovered pending question must drive exactly one continuation run, not zero and not more than one");
     }
 
     [Fact]
@@ -1232,6 +1267,15 @@ public class MultiTurnAgentPoolTests
         }
 
         return null;
+    }
+
+    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(25);
+        }
     }
 
     private static MultiTurnAgentPool CreatePool()

@@ -3,8 +3,11 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CodexSdkProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
@@ -579,6 +582,71 @@ public class CodexAgentLoopTests : LoggingTestBase
         metadata.Properties.Should().NotBeNull();
         metadata.Properties!.TryGetValue("codex_thread_id", out var codexThreadId).Should().BeTrue();
         codexThreadId?.ToString().Should().Be("codex_thread_persist_1");
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
+    /// Regression guard for issue #246: the client-facing AskUserQuestion/NotifyClient tools are
+    /// registered ONLY by <see cref="MultiTurnAgentLoop"/>'s own constructor (unconditionally, on
+    /// every in-process loop). CLI-backed loops such as <see cref="CodexAgentLoop"/> instead bridge
+    /// whatever a caller explicitly hands them via <see cref="FunctionRegistry"/> into dynamic tool
+    /// specs sent to the Codex CLI. This test locks down that CodexAgentLoop's OWN construction path
+    /// never injects these two client-only tool names itself: bridging a registry containing one
+    /// ordinary tool must forward exactly that tool, and nothing named AskUserQuestion/NotifyClient,
+    /// guarding against a future copy-paste of MultiTurnAgentLoop's two AddProvider calls into this
+    /// CLI-backed constructor (which would leak an unsupported client-question flow into a bare CLI
+    /// tool run that has nowhere to route the answer back to).
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_DoesNotAdvertiseAskUserQuestionOrNotifyClient_AsDynamicTools()
+    {
+        var fakeClient = new FakeCodexClient(
+        [
+            Event("thread.started", """{"type":"thread.started","thread_id":"thread_codex_no_client_tools"}"""),
+            Event("turn.completed", """
+                {
+                  "type":"turn.completed",
+                  "usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}
+                }
+                """),
+        ]);
+
+        var registry = new FunctionRegistry();
+        _ = registry.AddFunction(
+            new FunctionContract { Name = "ordinary_tool", Description = "An ordinary tool", Parameters = [] },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+
+        await using var loop = new CodexAgentLoop(
+            new CodexSdkOptions(),
+            new Dictionary<string, CodexMcpServerConfig>(),
+            functionRegistry: registry,
+            enabledTools: null,
+            threadId: "thread-no-client-tools",
+            clientFactory: (_, _) => fakeClient,
+            logger: LoggerFactory.CreateLogger<CodexAgentLoop>());
+
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        var input = new UserInput([
+            new TextMessage { Role = Role.User, Text = "hello" },
+        ]);
+
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token))
+        {
+        }
+
+        fakeClient.LastStartOptions.Should().NotBeNull();
+        var toolNames = fakeClient.LastStartOptions!.DynamicTools?.Select(t => t.Name).ToList()
+            ?? [];
+        toolNames.Should().Contain("ordinary_tool", "the explicitly registered tool must still bridge through");
+        toolNames.Should().NotContain(
+            AskUserQuestionToolProvider.ToolName,
+            "CodexAgentLoop must never advertise the client-only AskUserQuestion tool itself");
+        toolNames.Should().NotContain(
+            NotifyClientToolProvider.ToolName,
+            "CodexAgentLoop must never advertise the client-only NotifyClient tool itself");
 
         await cts.CancelAsync();
     }
