@@ -420,6 +420,48 @@ public sealed class InputAcceptanceStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A release/outcome call opens the mutation gate itself before it ever inspects the record, and a PRIOR
+    /// holder's own <c>await using</c> disposes that same gate handle only after the mutation it guarded is
+    /// already durable — so there is a real instant where the record is already gone (or already replaced)
+    /// but the gate handle has not finished closing. A caller for the id's NEW owner, admitted and releasing
+    /// again the moment the id freed up, can land in exactly that instant. Refusing outright there would
+    /// answer a contention that no longer exists; only re-attempting the gate — the same tolerance already
+    /// given to a refused reservation and an unsettled read — decides it correctly.
+    /// <para>
+    /// Driven directly rather than through the wide stress sweep: a handle is held open on the gate file the
+    /// whole time <see cref="IInputAcceptanceStore.TryReleaseAcceptanceAsync"/> is in flight for the TRUE
+    /// current owner's own reservation, and is only closed after the call has had time to attempt the gate at
+    /// least once and start waiting. A store with no retry sees the held handle exactly once and is refused
+    /// for good; this fails as soon as the handle closes.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AReleaseThatMeetsTheGateStillClosingBehindThePriorHolder_RetriesRatherThanFailingOutright()
+    {
+        const string Backing = "gate-still-closing";
+        var store = CreateStore(StoreKind.File, Backing);
+        var admission = Admission();
+        (await store.TryReserveAcceptanceAsync(admission)).Should().BeNull();
+        var gateFile = SoleAcceptanceRecordFile(Backing) + ".mutate";
+
+        // Stands in for the split second between a prior holder's mutation already landing and its own
+        // `await using` finishing the close — the caller here is releasing ITS OWN valid reservation, and
+        // has every right to succeed once the gate frees up rather than being told it lost outright.
+        var held = new FileStream(gateFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+        var release = store.TryReleaseAcceptanceAsync(
+            admission.ThreadId,
+            admission.InputId,
+            admission.ReservationId);
+
+        await Task.Delay(50);
+        await held.DisposeAsync();
+
+        (await release).Should().BeTrue(
+            "a gate contended for only an instant must be retried, not answered as a permanent refusal");
+        (await store.GetAcceptanceAsync(admission.ThreadId, admission.InputId)).Should().BeNull();
+    }
+
+    /// <summary>
     /// An exclusive-creation protocol necessarily has a moment where the record EXISTS but its content has
     /// not landed yet — that is what makes the creation the arbitration point. A reader that meets that
     /// moment and answers "never admitted" would let the host queue a second turn for an input another
