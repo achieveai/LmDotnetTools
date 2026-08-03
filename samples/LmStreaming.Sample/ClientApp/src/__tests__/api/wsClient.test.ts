@@ -343,4 +343,41 @@ describe('openWebSocketConnection client_tool_result_ack / client_tool_result_er
     expect(onClientToolResultError).toHaveBeenCalledWith('call-2', 'conflict', 'already answered');
     expect(onMessage).not.toHaveBeenCalled();
   });
+
+  // PR #249 review: a prior server bug omitted `message` from every client_tool_result_error frame
+  // (ChatWebSocketManager.SendClientToolResultErrorAsync serialized only $type/toolCallId/code), which
+  // this fallback silently papered over as "Unknown error" for every real rejection. This frame has NO
+  // `message` key at all — reproducing exactly the shape the buggy server used to send — to prove the
+  // fallback contract independently of whether the server currently populates the field. Regressing the
+  // server fix again would surface here as user-visible "Unknown error" for every outcome.
+  it('falls back to "Unknown error" when the server omits message entirely', async () => {
+    const onClientToolResultError = vi.fn();
+    const { socket } = await open({ onClientToolResultError });
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'client_tool_result_error', toolCallId: 'call-9', code: 'store_failed' }),
+    });
+
+    expect(onClientToolResultError).toHaveBeenCalledWith('call-9', 'store_failed', 'Unknown error');
+  });
+
+  // Mirrors the real server shape (ChatWebSocketManager now always serializes $type/toolCallId/code/
+  // message) for every outcome code it can produce, rather than a single synthetic conflict frame — so
+  // this fails if a future server change drops `message` for any one of them specifically.
+  it.each([
+    ['invalid', 'The client_tool_result frame was malformed and could not be parsed.'],
+    ['not_found', 'No deferred tool call was found with this identifier.'],
+    ['conflict', 'This tool call was already resolved with different content.'],
+    ['store_failed', 'The result could not be saved; please retry.'],
+    ['cancelled', 'The request was cancelled before it could be saved; please retry.'],
+  ])('passes through server code %s with its safe diagnostic message', async (code, message) => {
+    const onClientToolResultError = vi.fn();
+    const { socket } = await open({ onClientToolResultError });
+
+    socket.onmessage?.({
+      data: JSON.stringify({ $type: 'client_tool_result_error', toolCallId: 'call-10', code, message }),
+    });
+
+    expect(onClientToolResultError).toHaveBeenCalledWith('call-10', code, message);
+  });
 });

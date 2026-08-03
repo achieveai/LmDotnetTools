@@ -1252,10 +1252,31 @@ public sealed class ChatWebSocketManager
             ["$type"] = "client_tool_result_error",
             ["toolCallId"] = toolCallId,
             ["code"] = code,
+            ["message"] = SafeClientToolResultErrorMessage(code),
         };
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
         _ = await connection.TrySendTextAsync(json, ct);
     }
+
+    /// <summary>
+    /// Maps a <c>client_tool_result_error</c> <paramref name="code"/> to a stable, safe-to-display
+    /// diagnostic message (PR #249 review). Before this, the frame carried only <c>code</c> — the
+    /// browser client's <c>onClientToolResultError</c> handler falls back to the literal string
+    /// "Unknown error" whenever <c>message</c> is absent, so every real rejection reason (a stale
+    /// tool-call id, a conflicting resubmission, a persistence failure, a cancelled request) was
+    /// indistinguishable to the user and to anyone reading client-side logs. These strings never echo
+    /// server internals (no exception text, no store paths) — only the fixed, code-derived reason.
+    /// </summary>
+    private static string SafeClientToolResultErrorMessage(string code) =>
+        code switch
+        {
+            "invalid" => "The client_tool_result frame was malformed and could not be parsed.",
+            "not_found" => "No deferred tool call was found with this identifier.",
+            "conflict" => "This tool call was already resolved with different content.",
+            "store_failed" => "The result could not be saved; please retry.",
+            "cancelled" => "The request was cancelled before it could be saved; please retry.",
+            _ => "Unknown error",
+        };
 
     /// <summary>
     /// Logs a sub-agent relay failure with a STABLE category plus content-free identifiers only
