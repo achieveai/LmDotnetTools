@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
@@ -540,6 +541,75 @@ public class SubAgentManagerTests : IAsyncLifetime
                 It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()),
             Times.AtLeastOnce);
+    }
+
+    [Fact]
+    public async Task Completion_Background_WhenParkedOnAskUserQuestion_DoesNotClaimCompleted()
+    {
+        // Arrange: sub-agent defers on AskUserQuestion — which every MultiTurnAgentLoop registers
+        // unconditionally, including the child loop this manager builds for "test-agent" — instead of
+        // returning a final answer. The run still terminates (HasPendingMessages == false: nothing is
+        // queued, the loop is simply waiting on an external resolution that nothing here can provide),
+        // so HandleRunCompletionAsync takes the same "terminal" branch a genuinely finished run would.
+        var askArgs = JsonSerializer.Serialize(new
+        {
+            context = "Need input before continuing.",
+            questions = new[]
+            {
+                new
+                {
+                    prompt = "Which color?",
+                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                },
+            },
+        });
+        SetupSubAgentResponse([
+            new ToolCallMessage
+            {
+                FunctionName = AskUserQuestionToolProvider.ToolName,
+                FunctionArgs = askArgs,
+                ToolCallId = "tc_color",
+                Role = Role.Assistant,
+            },
+        ]);
+
+        _manager = CreateManager();
+        await _manager.SpawnAsync("test-agent", "Pick a color", runInBackground: true);
+
+        // Poll until the sub-agent's (mis)completion is relayed to parent.
+        await WaitForConditionAsync(
+            () =>
+            {
+                try
+                {
+                    _parentMock.Verify(
+                        p => p.SendAsync(
+                            It.IsAny<List<IMessage>>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<string?>(),
+                            It.IsAny<CancellationToken>()),
+                        Times.AtLeastOnce);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
+        // Assert: a child parked on a question it asked (and cannot get answered through any path
+        // reachable here) must not be reported to the parent as "[Completed] ... (no text response)" —
+        // that tells the parent LLM the sub-agent finished with nothing to show, when it actually never
+        // got to finish at all.
+        _parentMock.Verify(
+            p => p.SendAsync(
+                It.Is<List<IMessage>>(msgs => msgs.Count == 1 && ContainsMisleadingCompletedTag(msgs[0])),
+                It.IsAny<string?>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a sub-agent parked on its own pending question is not '[Completed]' with no result");
     }
 
     [Fact]
@@ -1187,6 +1257,22 @@ public class SubAgentManagerTests : IAsyncLifetime
         return text.Contains($"<sub-agent name=\"{templateName}\"")
             && text.Contains("</sub-agent>")
             && text.Contains("[Error]");
+    }
+
+    /// <summary>
+    /// Checks if a message is a sub-agent-completion NotifyMessage that misleadingly claims the child
+    /// finished with no result ("[Completed] ... (no text response)"), the exact text a child parked on
+    /// its own pending <c>AskUserQuestion</c> must never be reported with.
+    /// </summary>
+    private static bool ContainsMisleadingCompletedTag(IMessage message)
+    {
+        if (message is not NotifyMessage { NotifyKind: NotifyKinds.SubAgentCompletion } nm)
+        {
+            return false;
+        }
+
+        var text = nm.GetText() ?? string.Empty;
+        return text.Contains("[Completed]") && text.Contains("(no text response)");
     }
 
     /// <summary>

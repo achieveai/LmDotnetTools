@@ -3008,12 +3008,25 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         else
         {
-            var result = lastTextContent ?? "(no text response)";
+            // A run with HasPendingMessages == false is not necessarily done: a child that just
+            // deferred on its own AskUserQuestion reports the exact same flag value (that flag only
+            // tracks queued NEXT-turn inputs — see MultiTurnAgentBase.CompleteRunAsync), yet the loop
+            // itself (state.Agent, distinct from the just-disposed OwnedProviderAgent) still holds the
+            // deferred call live in its own registry. Report that state accurately instead of claiming
+            // "[Completed] ... (no text response)", which would misleadingly read as a finished child
+            // that produced nothing, when it is really still waiting on the human.
+            var awaitingQuestion = await HasPendingAskUserQuestionAsync(state);
+
+            var result = awaitingQuestion
+                ? "(awaiting the human's answer to a pending question)"
+                : lastTextContent ?? "(no text response)";
+
+            var statusTag = awaitingQuestion ? "[AwaitingAnswer]" : "[Completed]";
 
             var resultText =
                 $"<sub-agent name=\"{state.TemplateName}\" " +
                 $"id=\"{state.AgentId}\">\n" +
-                $"[Completed] Task: {state.Task}\n" +
+                $"{statusTag} Task: {state.Task}\n" +
                 $"Result: {result}\n" +
                 $"</sub-agent>";
 
@@ -3025,6 +3038,25 @@ public sealed class SubAgentManager : IAsyncDisposable
             }
         }
 
+    }
+
+    /// <summary>
+    /// Mirrors the same pending-question check <c>MultiTurnAgentPool.HasPendingAskUserQuestionAsync</c>
+    /// performs for pooled top-level agents: true when the child's own loop (not its now-possibly-disposed
+    /// owned provider) still has a deferred <see cref="AskUserQuestionToolProvider.ToolName"/> call
+    /// parked. Returns false for any non-<see cref="MultiTurnAgentLoop"/> agent (degrades gracefully
+    /// rather than throwing).
+    /// </summary>
+    private static async Task<bool> HasPendingAskUserQuestionAsync(SubAgentState state)
+    {
+        if (state.Agent is not MultiTurnAgentLoop loop)
+        {
+            return false;
+        }
+
+        var deferred = await loop.GetDeferredToolCallsAsync();
+        return deferred.Any(d =>
+            string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal));
     }
 
     /// <summary>

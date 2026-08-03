@@ -1,5 +1,9 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
@@ -155,6 +159,39 @@ public class ConversationsControllerTests
     }
 
     [Fact]
+    public async Task SwitchMode_ReturnsConflict_WhenAskUserQuestionIsPending()
+    {
+        // #4 (mode-switch hard-block guard): FakeMultiTurnAgent always degrades HasPendingAskUserQuestionAsync
+        // to false, so this guard can only be proven true with a REAL MultiTurnAgentLoop parked on a
+        // deferred AskUserQuestion — not the run-in-progress conflict above, which is a different guard.
+        const string threadId = "thread-mode-pending-question";
+        const string toolCallId = "tc_mode_switch";
+        await using var pool = await CreatePoolWithParkedAskUserQuestionAsync(threadId, toolCallId);
+
+        var modeStore = new Mock<IChatModeStore>();
+        modeStore.Setup(m => m.GetModeAsync("math-helper", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SystemChatModes.GetById("math-helper"));
+
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, modeStore.Object);
+
+        var result = await controller.SwitchMode(
+            threadId,
+            new SwitchModeRequest { ModeId = "math-helper" },
+            CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        conflict.StatusCode.Should().Be(409);
+        var payload = JsonSerializer.Serialize(conflict.Value);
+        payload.Should().Contain("mode_switch_blocked_by_pending_ask_user_question");
+        payload.Should().Contain(threadId);
+
+        // No recreate happened — the agent (and its mode) is still pooled and the deferred call is
+        // still pending, untouched by the blocked switch attempt.
+        pool.GetAgentMode(threadId)!.Id.Should().Be(SystemChatModes.DefaultModeId);
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task List_ExcludesSubAgentThreads_FromTheConversationSidebar()
     {
         // Sub-agent conversations use the reserved "subagent-{agentId}" thread id and are surfaced
@@ -240,6 +277,66 @@ public class ConversationsControllerTests
             NullLogger<MultiTurnAgentPool>.Instance);
     }
 
+    /// <summary>
+    /// Builds a pool-registered REAL <see cref="MultiTurnAgentLoop"/> (not <see cref="FakeMultiTurnAgent"/>,
+    /// which always degrades <c>HasPendingAskUserQuestionAsync</c> to false) whose mock LLM emits a
+    /// single <c>AskUserQuestion</c> tool call, parking a deferred placeholder and ending the run.
+    /// Patterned on <c>ChatWebSocketManagerClientToolResultTests.CreatePoolWithParkedAskUserQuestionAsync</c>.
+    /// </summary>
+    private static async Task<MultiTurnAgentPool> CreatePoolWithParkedAskUserQuestionAsync(
+        string threadId, string toolCallId)
+    {
+        var toolCall = new ToolCallMessage
+        {
+            FunctionName = AskUserQuestionToolProvider.ToolName,
+            FunctionArgs = JsonSerializer.Serialize(new
+            {
+                context = "Need to know which color to use.",
+                questions = new[]
+                {
+                    new { prompt = "Which color?", options = new object[] { new { label = "Red" }, new { label = "Blue" } } },
+                },
+            }),
+            ToolCallId = toolCallId,
+            Role = Role.Assistant,
+        };
+
+        var mockAgent = new Mock<IStreamingAgent>();
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns(() => Task.FromResult(ToAsyncEnumerable(toolCall)));
+
+        var pool = new MultiTurnAgentPool(
+            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new MultiTurnAgentLoop(
+                    mockAgent.Object,
+                    new FunctionRegistry(),
+                    tid,
+                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
+
+        var userInput = new UserInput([new TextMessage { Text = "Which color should I use?", Role = Role.User }]);
+        await foreach (var _ in loop.ExecuteRunAsync(userInput))
+        {
+            // drain until the run parks on the deferred AskUserQuestion
+        }
+
+        return pool;
+    }
+
+    private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(params IMessage[] messages)
+    {
+        foreach (var msg in messages)
+        {
+            yield return msg;
+            await Task.Yield();
+        }
+    }
+
     [Fact]
     public async Task SwitchProvider_ReturnsConflict_WhenRunIsInProgress()
     {
@@ -264,6 +361,35 @@ public class ConversationsControllerTests
 
         // No recreate happened — the agent (and its mode) is still pooled.
         pool.GetAgentMode(threadId)!.Id.Should().Be(SystemChatModes.DefaultModeId);
+    }
+
+    [Fact]
+    public async Task SwitchProvider_ReturnsConflict_WhenAskUserQuestionIsPending()
+    {
+        // #4 (provider-switch hard-block guard), mirroring the SwitchMode test above: needs a REAL
+        // MultiTurnAgentLoop parked on a deferred AskUserQuestion since FakeMultiTurnAgent always
+        // degrades HasPendingAskUserQuestionAsync to false.
+        const string threadId = "thread-prov-pending-question";
+        const string toolCallId = "tc_provider_switch";
+        await using var pool = await CreatePoolWithParkedAskUserQuestionAsync(threadId, toolCallId);
+
+        var controller = CreateController(Mock.Of<IConversationStore>(), pool, Mock.Of<IChatModeStore>());
+
+        var result = await controller.SwitchProvider(
+            threadId,
+            new SwitchProviderRequest { ProviderId = "openai" },
+            CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        conflict.StatusCode.Should().Be(409);
+        var payload = JsonSerializer.Serialize(conflict.Value);
+        payload.Should().Contain("provider_switch_blocked_by_pending_ask_user_question");
+        payload.Should().Contain(threadId);
+
+        // No recreate happened — the agent (and its mode) is still pooled and the deferred call is
+        // still pending, untouched by the blocked switch attempt.
+        pool.GetAgentMode(threadId)!.Id.Should().Be(SystemChatModes.DefaultModeId);
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
     }
 
     [Fact]
