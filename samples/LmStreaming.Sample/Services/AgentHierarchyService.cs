@@ -382,6 +382,19 @@ public sealed class AgentHierarchyService(
     ///     only once it completes successfully, so a cancelled or failed attempt leaves the thread
     ///     uncached for the next caller to retry rather than poisoning the cache with a partial answer.
     /// </summary>
+    /// <remarks>
+    ///     PR #245 review — scan/delete interleaving: the store scan below can run concurrently with a
+    ///     <c>ConversationsController.Delete</c> for the SAME <paramref name="threadId"/>. Without a
+    ///     sequencing signal, a delete that lands WHILE this scan is in flight (after the miss above, before
+    ///     the record below) would otherwise be silently undone: the scan already has its answer in hand
+    ///     from before the delete and would write it back regardless, resurrecting the deleted thread's
+    ///     roster in the cache. <see cref="SubAgentScanCoverageCache.CaptureGeneration"/> /
+    ///     <see cref="SubAgentScanCoverageCache.RecordRecovered"/>'s generation parameter close this: the
+    ///     generation is captured immediately before the scan starts, and the writeback is rejected if
+    ///     <see cref="SubAgentScanCoverageCache.Forget"/> ran for this thread in the meantime (bumping the
+    ///     generation). The scanned rows are still returned to THIS caller either way — only the shared
+    ///     cache entry is affected — since this caller's request legitimately started before the delete.
+    /// </remarks>
     private async Task<IReadOnlyList<SubAgentSummary>> GetOrScanPersistedSubAgentChildrenAsync(
         string threadId,
         object owner,
@@ -392,8 +405,9 @@ public sealed class AgentHierarchyService(
             return cached;
         }
 
+        var generation = scanCoverageCache.CaptureGeneration(threadId);
         var scanned = await ScanPersistedSubAgentChildrenAsync(threadId, ct);
-        scanCoverageCache.RecordRecovered(threadId, owner, scanned);
+        scanCoverageCache.RecordRecovered(threadId, owner, scanned, generation);
         return scanned;
     }
 

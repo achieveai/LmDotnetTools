@@ -655,6 +655,107 @@ public sealed class AgentHierarchyServiceTests
     }
 
     [Fact]
+    public async Task BuildAsync_RejectsAResurrectedRoster_WhenDeleteForgetsTheThreadWhileAScanIsStillInFlight()
+    {
+        // PR #245 review (PRRT_kwDOOPysWM6V39Ux): Forget() was not ordered against an in-flight scan's
+        // writeback — a cache miss could start a scan, ConversationsController.Delete could call Forget
+        // for the SAME thread while that scan was still running, and the scan completing afterward would
+        // call RecordRecovered regardless, resurrecting the deleted thread's roster.
+        //
+        // Deterministic proof via a store whose ListThreadsAsync pauses mid-scan on a
+        // TaskCompletionSource, so the interleaving below is exact rather than a timing-dependent race:
+        //   1. BuildAsync starts scanning RootThread (cache miss) and blocks inside ListThreadsAsync.
+        //   2. While blocked, the real Forget call Delete makes lands for the SAME thread.
+        //   3. The scan is released, completes with its PRE-delete answer, and tries to record it.
+        // The write must be rejected (the caller in flight still gets its own valid pre-delete answer —
+        // only the SHARED cache entry is affected), and the next caller for the reused thread id must
+        // rescan rather than reuse a poisoned/resurrected entry.
+        const string childId = "will-be-deleted-child";
+        var innerStore = new InMemoryConversationStore();
+
+        // The root conversation itself is a real, known thread (as it would be in production the moment
+        // its first message is persisted) — independent of whether it currently has any children. Without
+        // this, BuildAsync's isKnown fallback (store.LoadMetadataAsync(threadId)) has nothing to find once
+        // the only child is deleted, which would conflate "genuinely unknown thread" with "known thread
+        // that now has zero children" and make the reuse assertion below meaningless.
+        await innerStore.SaveMetadataAsync(
+            RootThread,
+            new ThreadMetadata { ThreadId = RootThread, LastUpdated = 0 });
+
+        await innerStore.SaveMetadataAsync(
+            $"subagent-{childId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{childId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    RootThread,
+                    new SubAgentSnapshot(
+                        childId,
+                        Name: "alpha",
+                        TemplateName: "worker",
+                        Task: "alpha's task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{childId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+
+        var pausableStore = new PausableConversationStore(innerStore);
+        var sharedCache = new SubAgentScanCoverageCache();
+        await using var pool = CreateFakeAgentPool();
+
+        var service = new AgentHierarchyService(
+            pool,
+            new WorkflowRunRegistry(),
+            pausableStore,
+            NullLogger<AgentHierarchyService>.Instance,
+            sharedCache);
+
+        var buildTask = service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        await pausableStore.WaitUntilListThreadsCallStartedAsync();
+
+        // Simulate ConversationsController.Delete running concurrently with the in-flight scan above —
+        // this is the exact call Delete makes on the shared cache after a successful store delete.
+        sharedCache.Forget(RootThread);
+
+        pausableStore.ReleaseListThreadsCall();
+
+        var (rows, isKnown, _) = await buildTask;
+
+        isKnown.Should().BeTrue();
+        rows.Should().ContainSingle(
+            r => r.AgentId == childId,
+            "the in-flight caller started scanning before the delete landed, so its own in-hand answer "
+                + "is unaffected — only the shared cache write is at stake");
+
+        sharedCache.TryGetRecovered(RootThread, SubAgentScanCoverageCache.NoLiveManager, out _).Should().BeFalse(
+            "the scan's writeback must be rejected because Forget ran while it was in flight — otherwise "
+                + "the deleted thread's roster would be resurrected in the shared cache for every later poll");
+
+        // Thread reuse: the delete actually takes effect in the store, and a later caller for the SAME
+        // thread id (a client reusing it, or simply the next poll) must rescan — not reuse a
+        // poisoned/resurrected cache entry — and see the store as it truly is now.
+        await innerStore.DeleteThreadAsync($"subagent-{childId}", CancellationToken.None);
+        var followUpService = new AgentHierarchyService(
+            pool,
+            new WorkflowRunRegistry(),
+            pausableStore,
+            NullLogger<AgentHierarchyService>.Instance,
+            sharedCache);
+
+        var (rowsAfterReuse, isKnownAfterReuse, _) =
+            await followUpService.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        pausableStore.ListThreadsCallCount.Should().Be(
+            2, "the rejected write must not have poisoned the cache — this call must actually rescan");
+        isKnownAfterReuse.Should().BeTrue();
+        rowsAfterReuse.Should().BeEmpty(
+            "the child was actually deleted, and this rescan correctly reflects the store as it is now");
+    }
+
+    [Fact]
     public async Task BuildAsync_SupportsConcurrentCallsForTheSameThread_WithoutCorruptingTheCache()
     {
         // Requirement: the cache must be concurrency-safe for simultaneous BuildAsync calls. Redundant
@@ -764,6 +865,76 @@ public sealed class AgentHierarchyServiceTests
             }
 
             return inner.ListThreadsAsync(limit, offset, ct);
+        }
+    }
+
+    /// <summary>
+    /// A forwarding <see cref="IConversationStore"/> whose FIRST <see cref="ListThreadsAsync"/> call
+    /// blocks until the test releases it (<see cref="ReleaseListThreadsCall"/>), signalling once it has
+    /// actually entered the call (<see cref="WaitUntilListThreadsCallStartedAsync"/>) so a test can pause
+    /// a scan exactly mid-flight and deterministically interleave another operation (e.g. a concurrent
+    /// <c>Forget</c>) before releasing it. Every call after the first forwards immediately, so a
+    /// follow-up scan (thread reuse) is not paused again.
+    /// </summary>
+    private sealed class PausableConversationStore(IConversationStore inner) : IConversationStore
+    {
+        private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _listThreadsCalls;
+        private int _pausedCalls;
+
+        public int ListThreadsCallCount => Volatile.Read(ref _listThreadsCalls);
+
+        /// <summary>Waits until the (only ever paused) FIRST <see cref="ListThreadsAsync"/> call has been entered.</summary>
+        public Task WaitUntilListThreadsCallStartedAsync() => _started.Task;
+
+        /// <summary>Releases the paused FIRST <see cref="ListThreadsAsync"/> call so it can complete.</summary>
+        public void ReleaseListThreadsCall() => _release.TrySetResult();
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(
+            string threadId,
+            ThreadMetadata metadata,
+            CancellationToken ct = default) => inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _listThreadsCalls);
+
+            if (Interlocked.CompareExchange(ref _pausedCalls, 1, 0) == 0)
+            {
+                _started.TrySetResult();
+                await _release.Task;
+            }
+
+            return await inner.ListThreadsAsync(limit, offset, ct);
         }
     }
 

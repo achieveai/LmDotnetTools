@@ -199,6 +199,148 @@ public sealed class SubAgentScanCoverageCacheTests
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
+    // --- PR #245 review: scan/delete generation protocol -------------------------------------------
+    // These tests isolate the cache's own generation bookkeeping without needing a real scan or store
+    // — the race AgentHierarchyService guards against is entirely reproducible by sequencing
+    // CaptureGeneration / Forget / RecordRecovered calls directly, since the cache has no notion of
+    // "a scan is running": it only ever sees the generation token the caller captured before starting
+    // one.
+
+    [Fact]
+    public void CaptureGeneration_ReturnsZero_ForAThreadThatHasNeverBeenRecordedOrForgotten()
+    {
+        var cache = new SubAgentScanCoverageCache();
+
+        cache.CaptureGeneration("never-seen").Should().Be(0L);
+    }
+
+    [Fact]
+    public void RecordRecovered_WithMatchingGeneration_Commits_AndReturnsTrue()
+    {
+        var cache = new SubAgentScanCoverageCache();
+        var owner = new object();
+
+        var generation = cache.CaptureGeneration("thread-1");
+        var committed = cache.RecordRecovered("thread-1", owner, Rows("child-a"), generation);
+
+        committed.Should().BeTrue("no Forget ran between the capture and the write, so it must commit");
+        cache.TryGetRecovered("thread-1", owner, out var rows).Should().BeTrue();
+        rows.Select(r => r.AgentId).Should().BeEquivalentTo(["child-a"]);
+    }
+
+    [Fact]
+    public void RecordRecovered_RejectsALateWriteback_WhenForgetRanAfterTheGenerationWasCaptured()
+    {
+        // The exact race from PRRT_kwDOOPysWM6V39Ux: a caller misses the cache, captures the
+        // generation, and starts a (here: simulated) scan. Before that scan's result is recorded,
+        // ConversationsController.Delete calls Forget for the SAME thread. The scan's writeback must
+        // be rejected — not resurrect the deleted thread's roster — even though the caller's rows are
+        // a perfectly good answer from BEFORE the delete.
+        var cache = new SubAgentScanCoverageCache();
+        var owner = new object();
+
+        // Caller A misses the cache and captures the generation right before starting its "scan".
+        var generationBeforeScan = cache.CaptureGeneration("thread-1");
+
+        // The scan is slow; meanwhile the thread is deleted.
+        cache.Forget("thread-1");
+
+        // Caller A's scan finally completes and tries to record what it found — this must be rejected.
+        var committed = cache.RecordRecovered("thread-1", owner, Rows("stale-child"), generationBeforeScan);
+
+        committed.Should().BeFalse(
+            "a Forget landed between CaptureGeneration and RecordRecovered, so this write is stale and "
+                + "must not resurrect the deleted thread's roster");
+        cache.TryGetRecovered("thread-1", owner, out var rows).Should().BeFalse(
+            "the rejected write must not have replaced the tombstone Forget left behind");
+        rows.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RecordRecovered_StaleGeneration_IsRejected_EvenUnderADifferentOwner()
+    {
+        // The generation guard must apply BEFORE any owner-based overwrite logic — a late writeback
+        // under a brand-new owner (e.g. a reset that also raced in) is just as stale as one under the
+        // original owner, and must be rejected the same way.
+        var cache = new SubAgentScanCoverageCache();
+        var originalOwner = new object();
+        var ownerAfterReset = new object();
+
+        var generationBeforeScan = cache.CaptureGeneration("thread-1");
+        cache.Forget("thread-1");
+
+        var committed = cache.RecordRecovered(
+            "thread-1", ownerAfterReset, Rows("stale-child"), generationBeforeScan);
+
+        committed.Should().BeFalse();
+        cache.TryGetRecovered("thread-1", ownerAfterReset, out _).Should().BeFalse();
+        cache.TryGetRecovered("thread-1", originalOwner, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Forget_ThenFreshCaptureAndRecord_Commits_SoAReusedThreadIdRescansSuccessfully()
+    {
+        // Thread reuse: once a thread id is deleted and later reused (a fresh conversation created
+        // with the same client-supplied id), a NEW scan that captures the generation AFTER the Forget
+        // must be able to record its result normally — the generation guard must not permanently wedge
+        // the thread id.
+        var cache = new SubAgentScanCoverageCache();
+        var deletedOwner = new object();
+        var reusedOwner = new object();
+
+        cache.RecordRecovered("thread-1", deletedOwner, Rows("old-child"));
+        cache.Forget("thread-1");
+
+        // The reused conversation's caller captures the generation AFTER the delete this time.
+        var freshGeneration = cache.CaptureGeneration("thread-1");
+        var committed = cache.RecordRecovered("thread-1", reusedOwner, Rows("new-child"), freshGeneration);
+
+        committed.Should().BeTrue("a scan that captured its generation AFTER the Forget is not stale");
+        cache.TryGetRecovered("thread-1", reusedOwner, out var rows).Should().BeTrue();
+        rows.Select(r => r.AgentId).Should().BeEquivalentTo(["new-child"]);
+    }
+
+    [Fact]
+    public void RecordRecovered_ForAnOwnerReset_StillCommits_WhenNoForgetRanInBetween()
+    {
+        // Composes with owner-keyed reset invalidation: a manager reset (mode/provider switch, pool
+        // eviction+reopen, restart) does not call Forget and must not bump the generation, so a scan
+        // racing a reset (not a delete) keeps resolving purely through the owner check, unaffected by
+        // this guard.
+        var cache = new SubAgentScanCoverageCache();
+        var originalOwner = new object();
+        var ownerAfterReset = new object();
+
+        cache.RecordRecovered("thread-1", originalOwner, Rows("gen1-child"));
+
+        var generation = cache.CaptureGeneration("thread-1");
+        var committed = cache.RecordRecovered("thread-1", ownerAfterReset, Rows("gen2-child"), generation);
+
+        committed.Should().BeTrue("an owner reset with no intervening Forget does not bump the generation");
+        cache.TryGetRecovered("thread-1", ownerAfterReset, out var rows).Should().BeTrue();
+        rows.Select(r => r.AgentId).Should().BeEquivalentTo(["gen2-child"]);
+    }
+
+    [Fact]
+    public void Forget_TombstoneEntry_IsBoundByCapacity_LikeAnyOtherEntry_SoADeletedThreadDoesNotLeakForever()
+    {
+        // "No unbounded generation memory": a Forget tombstone occupies one slot in the SAME bounded
+        // structure as a real entry, so recording enough OTHER distinct threads evicts it exactly like
+        // it would evict a real entry — the deleted thread id does not pin memory forever.
+        var cache = new SubAgentScanCoverageCache(capacity: 2);
+        var owner = new object();
+        cache.RecordRecovered("thread-1", owner, Rows("child-a"));
+
+        cache.Forget("thread-1");
+        cache.RecordRecovered("thread-2", new object(), Rows("child-b"));
+        cache.RecordRecovered("thread-3", new object(), Rows("child-c"));
+
+        // thread-1's tombstone (recorded most-recently at the time of Forget, then aged by two more
+        // writes) should now be evicted, resetting its generation back to the 0 baseline.
+        cache.CaptureGeneration("thread-1").Should().Be(
+            0L, "the tombstone must have been evicted by capacity pressure, same as a real entry would be");
+    }
+
     [Fact]
     public void NoLiveManager_IsASingleSharedInstance_SoRepeatedColdPollsForTheSameThreadKeepHitting()
     {
