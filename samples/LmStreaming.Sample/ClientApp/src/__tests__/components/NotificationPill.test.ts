@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils';
 import NotificationPill from '@/components/NotificationPill.vue';
 import { type NotificationDisplayData } from '@/types';
 import { GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
+import { GET_AGENT_COLOR } from '@/utils/agentColors';
 
 describe('NotificationPill.vue', () => {
   it('renders a sub-agent completion notification with kind, source tool and label', () => {
@@ -37,6 +38,69 @@ describe('NotificationPill.vue', () => {
     expect(pill.attributes('data-notify-kind')).toBe('context-discovery');
     expect(wrapper.find('[data-testid="notification-label"]').text()).toContain('AGENTS.md');
     expect(wrapper.find('[data-testid="notification-truncated"]').exists()).toBe(true);
+  });
+
+  // #244: an agent-to-agent message reuses this pill rather than adding another DisplayItem kind.
+  it('renders an agent-to-agent message with a per-type heading and the sender name', () => {
+    const notification: NotificationDisplayData = {
+      notifyKind: 'agent-message',
+      label: 'reviewer',
+      sourceToolCallId: 'agent-2',
+      detail: 'Which repo should I review first?',
+      agentMessageType: 'Question',
+    };
+    const wrapper = mount(NotificationPill, { props: { notification } });
+
+    const pill = wrapper.find('[data-testid="notification-pill"]');
+    expect(pill.attributes('data-notify-kind')).toBe('agent-message');
+    expect(pill.text()).toContain('Agent asked');
+    expect(wrapper.find('[data-testid="notification-label"]').text()).toContain('reviewer');
+    expect(wrapper.find('[data-testid="notification-source"]').exists()).toBe(false);
+    expect(wrapper.find('.markdown-content').exists()).toBe(false);
+  });
+
+  it('names each agent message type distinctly', () => {
+    const headings = (['Question', 'DelegateTask', 'TaskUpdate', 'Steer', 'Response'] as const).map(
+      (agentMessageType) =>
+        mount(NotificationPill, {
+          props: { notification: { notifyKind: 'agent-message', agentMessageType } },
+        })
+          .find('[data-testid="notification-pill"]')
+          .text()
+    );
+
+    expect(new Set(headings).size, 'each type reads differently').toBe(headings.length);
+  });
+
+  it('falls back to the raw type when a future agent message type arrives', () => {
+    const wrapper = mount(NotificationPill, {
+      props: {
+        notification: {
+          notifyKind: 'agent-message',
+          agentMessageType: 'Escalate' as never,
+        },
+      },
+    });
+
+    expect(wrapper.find('[data-testid="notification-pill"]').text()).toContain('Escalate');
+  });
+
+  it('tints an agent message with the sender agent colour', () => {
+    const wrapper = mount(NotificationPill, {
+      props: {
+        notification: {
+          notifyKind: 'agent-message',
+          label: 'reviewer',
+          sourceToolCallId: 'agent-2',
+          agentMessageType: 'Response',
+        },
+      },
+      global: { provide: { [GET_AGENT_COLOR]: (id: string | null) => (id ? '#ff0000' : null) } },
+    });
+
+    expect(wrapper.find('[data-testid="notification-pill"]').attributes('style')).toContain(
+      '#ff0000'
+    );
   });
 
   // #246 (fixed): a descendant (sub-agent) blocked on a browser-hosted client tool (e.g.

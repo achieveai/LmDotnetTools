@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, toRef } from 'vue';
-import type { NotificationDisplayData } from '@/types';
+import type { AgentMessageType, NotificationDisplayData } from '@/types';
+import { AGENT_MESSAGE_NOTIFY_KIND } from '@/composables/messageDisplay';
 import { GET_AGENT_COLOR, type AgentColorLookup } from '@/utils/agentColors';
 import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
 
@@ -25,10 +26,21 @@ const icon = computed<string>(() => {
       return '\u{1F916}'; // 🤖
     case 'descendant-question':
       return '❓'; // ❓
+    case AGENT_MESSAGE_NOTIFY_KIND:
+      return '\u{1F4AC}'; // 💬
     default:
       return '\u{1F514}'; // 🔔
   }
 });
+
+/** Human-friendly headings for the existing agent-to-agent message types (#244). */
+const AGENT_MESSAGE_HEADINGS: Record<AgentMessageType, string> = {
+  Question: 'Agent asked',
+  DelegateTask: 'Agent delegated',
+  TaskUpdate: 'Agent update',
+  Steer: 'Agent steered',
+  Response: 'Agent replied',
+};
 
 /** Human-friendly heading per well-known kind; unknown kinds show the raw kind string. */
 const kindLabel = computed<string>(() => {
@@ -41,6 +53,10 @@ const kindLabel = computed<string>(() => {
       return 'Question pending';
     case 'client-notification':
       return 'Notification';
+    case AGENT_MESSAGE_NOTIFY_KIND: {
+      const type = data.value.agentMessageType;
+      return (type && AGENT_MESSAGE_HEADINGS[type]) || type || 'Agent message';
+    }
     default:
       return data.value.notifyKind;
   }
@@ -82,11 +98,13 @@ function handleHeaderClick(): void {
   }
 }
 
-// Tint a sub-agent-completion pill with the completing agent's color (its `source_tool_call_id` is the
-// exact agentId) so it matches that agent's tab. Other notification kinds are unchanged.
+// Tint notifications that belong to a known agent: a completion uses the completing agent's id,
+// while an agent-message uses the normalized sender id. Other notification kinds are unchanged.
 const getAgentColor = inject<AgentColorLookup>(GET_AGENT_COLOR, () => null);
 const agentColor = computed<string | null>(() =>
-  data.value.notifyKind === 'subagent-completion' ? getAgentColor(data.value.sourceToolCallId) : null
+  data.value.notifyKind === 'subagent-completion' || data.value.notifyKind === AGENT_MESSAGE_NOTIFY_KIND
+    ? getAgentColor(data.value.sourceToolCallId)
+    : null
 );
 </script>
 
