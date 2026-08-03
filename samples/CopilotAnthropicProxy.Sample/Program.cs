@@ -2653,7 +2653,7 @@ internal static class ProxyMcp
         catch (InvalidOperationException ex)
         {
             // Token acquisition failure surfaces from CopilotHeadersHandler before the first byte.
-            logger.LogError("Copilot token acquisition failed: {Reason}", ex.Message);
+            logger.LogError(ex, "Copilot token acquisition failed while forwarding an MCP request.");
             await WriteMcpErrorAsync(
                 ctx,
                 StatusCodes.Status401Unauthorized,
@@ -2665,7 +2665,7 @@ internal static class ProxyMcp
         }
         catch (HttpRequestException ex)
         {
-            logger.LogError("Upstream MCP connection failed: {Reason}", ex.Message);
+            logger.LogError(ex, "Upstream MCP connection failed while forwarding an MCP request.");
             await WriteMcpErrorAsync(
                 ctx,
                 StatusCodes.Status502BadGateway,
