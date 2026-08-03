@@ -34,6 +34,21 @@ export interface WebSocketClientCallbacks {
    * `onDone` nor `onError`), e.g. the sub-agent focus view resuming after a backpressure drop.
    */
   onClose?: (info: { wasClean: boolean; code: number; reason: string }) => void;
+  /**
+   * Ack for a `client_tool_result` frame the browser sent to resolve a deferred client tool
+   * (#246, e.g. `AskUserQuestion`). Wire shape carries `status: 'resolved' | 'duplicate'`; this
+   * callback receives it pre-normalized to a `duplicate` boolean (true when this exact
+   * `toolCallId` had already been resolved server-side, e.g. a retried submit after a dropped
+   * ack) — the resolved value itself always arrives separately as an ordinary
+   * `ToolCallResultMessage`, never in the ack.
+   */
+  onClientToolResultAck?: (toolCallId: string, duplicate: boolean) => void;
+  /**
+   * The server rejected a `client_tool_result` submission (#246). `code` is one of
+   * `invalid | not_found | conflict | store_failed | cancelled`; `toolCallId` may be absent when
+   * the inbound frame itself was malformed enough that the server couldn't identify the call.
+   */
+  onClientToolResultError?: (toolCallId: string | undefined, code: string, message: string) => void;
 }
 
 /**
@@ -196,7 +211,16 @@ export function openWebSocketConnection(
   connectionId: string,
   callbacks: WebSocketClientCallbacks
 ): Promise<WebSocketConnection> {
-  const { onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose } = callbacks;
+  const {
+    onMessage,
+    onDone,
+    onError,
+    onAuthEvent,
+    onSandboxSessionRefresh,
+    onClose,
+    onClientToolResultAck,
+    onClientToolResultError,
+  } = callbacks;
 
   return new Promise((resolve, reject) => {
     log.info('Connecting to WebSocket', { url: wsUrl, connectionId, threadId: effectiveThreadId });
@@ -240,6 +264,24 @@ export function openWebSocketConnection(
         if (data === '{"$type":"done"}' || data.includes('"$type":"done"')) {
           log.debug('Received done signal');
           onDone();
+          return;
+        }
+
+        // #246: ack/error frames for a client_tool_result the browser submitted to resolve a
+        // deferred client tool (e.g. AskUserQuestion). Handled before the generic error/message
+        // sniffing below — these are protocol acks, not chat content.
+        if (data.includes('"$type":"client_tool_result_ack"')) {
+          const ackData = JSON.parse(data);
+          const duplicate = ackData.status === 'duplicate';
+          log.debug('Received client_tool_result_ack', { toolCallId: ackData.toolCallId, status: ackData.status });
+          onClientToolResultAck?.(ackData.toolCallId, duplicate);
+          return;
+        }
+
+        if (data.includes('"$type":"client_tool_result_error"')) {
+          const errData = JSON.parse(data);
+          log.warn('Received client_tool_result_error', { toolCallId: errData.toolCallId, code: errData.code });
+          onClientToolResultError?.(errData.toolCallId, errData.code, errData.message || 'Unknown error');
           return;
         }
 
@@ -303,7 +345,7 @@ export function openWebSocketConnection(
 export function createWebSocketConnection(
   options: WebSocketClientOptions
 ): Promise<WebSocketConnection> {
-  const { threadId, onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose } = options;
+  const { threadId, onMessage, onDone, onError, onAuthEvent, onSandboxSessionRefresh, onClose, onClientToolResultAck, onClientToolResultError } = options;
   const connectionId = generateConnectionId();
   const effectiveThreadId = threadId || generateThreadId();
   const wsUrl = buildChatWebSocketUrl(options, effectiveThreadId, connectionId);
@@ -314,6 +356,8 @@ export function createWebSocketConnection(
     onAuthEvent,
     onSandboxSessionRefresh,
     onClose,
+    onClientToolResultAck,
+    onClientToolResultError,
   });
 }
 
@@ -332,6 +376,35 @@ export function sendWebSocketMessage(
   const request: ChatRequest = { Message: message };
   log.info('Sending chat message via WebSocket', { messageLength: message.length });
   connection.socket.send(JSON.stringify(request));
+}
+
+/**
+ * Submit the browser's answer for a deferred client tool call (#246, e.g. `AskUserQuestion`) over
+ * an existing WebSocket connection. Sends `{ $type: 'client_tool_result', toolCallId, result,
+ * isError? }`; the server replies with a `client_tool_result_ack` / `client_tool_result_error`
+ * frame (see {@link WebSocketClientCallbacks.onClientToolResultAck}). The resolved
+ * `ToolCallResultMessage` itself always arrives separately, not in the ack.
+ */
+export function sendClientToolResult(
+  connection: WebSocketConnection,
+  toolCallId: string,
+  result: string,
+  isError?: boolean
+): void {
+  if (!connection.isConnected || connection.socket.readyState !== WebSocket.OPEN) {
+    throw new Error('WebSocket is not connected');
+  }
+
+  const frame: { $type: string; toolCallId: string; result: string; isError?: boolean } = {
+    $type: 'client_tool_result',
+    toolCallId,
+    result,
+  };
+  if (isError) {
+    frame.isError = true;
+  }
+  log.info('Sending client_tool_result', { toolCallId, isError: !!isError });
+  connection.socket.send(JSON.stringify(frame));
 }
 
 /**

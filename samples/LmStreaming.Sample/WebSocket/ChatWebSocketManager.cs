@@ -55,6 +55,15 @@ public sealed class ChatWebSocketManager
     /// </summary>
     internal TimeSpan InboundAssemblyDeadline { get; set; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// <c>$type</c> discriminator for an inbound frame resolving a previously-deferred client-hosted tool
+    /// call (issue #246: <c>AskUserQuestion</c>/other client-tool answers). Recognized on BOTH the
+    /// primary (<see cref="ProcessClientMessageAsync"/>) and sub-agent (<see cref="RelaySubAgentMessageAsync"/>)
+    /// inbound paths, peeked before the existing <see cref="ChatRequest"/> deserialize so that shape is
+    /// left completely unchanged for ordinary chat frames.
+    /// </summary>
+    private const string ClientToolResultFrameType = "client_tool_result";
+
     public ChatWebSocketManager(
         MultiTurnAgentPool agentPool,
         WebSocketConnectionRegistry connectionRegistry,
@@ -818,6 +827,12 @@ public sealed class ChatWebSocketManager
         string json,
         CancellationToken ct)
     {
+        if (TryPeekFrameType(json, out var frameType) && frameType == ClientToolResultFrameType)
+        {
+            await HandleClientToolResultAsync(connection, agent, threadId, json, ct);
+            return;
+        }
+
         try
         {
             var request = JsonSerializer.Deserialize<ChatRequest>(json, _jsonOptions);
@@ -931,6 +946,12 @@ public sealed class ChatWebSocketManager
     {
         var byteCount = Encoding.UTF8.GetByteCount(json);
 
+        if (TryPeekFrameType(json, out var frameType) && frameType == ClientToolResultFrameType)
+        {
+            await HandleSubAgentClientToolResultAsync(connection, subAgentManager, agentId, json, ct);
+            return;
+        }
+
         ChatRequest? request;
         try
         {
@@ -994,6 +1015,268 @@ public sealed class ChatWebSocketManager
             await SendRelayFailedErrorAsync(connection, agentId, ct);
         }
     }
+
+    /// <summary>
+    /// Resolves a <see cref="ClientToolResultFrameType"/> frame against the PRIMARY thread's agent
+    /// (issue #246). The target loop is the <paramref name="agent"/> already bound to this connection by
+    /// its route — never anything named in the payload. An agent that is not a <see cref="MultiTurnAgentLoop"/>
+    /// (e.g. a CLI-backed loop, which never exposes deferred client-tool calls) is reported as
+    /// <c>not_found</c>: there is definitionally nothing there to resolve.
+    /// </summary>
+    /// <remarks>
+    /// Internal (not private) so tests can drive the disposed-agent race (issue #246) directly,
+    /// deterministically, without racing the connection's own subscription teardown — disposing the
+    /// agent through the full <see cref="HandleConnectionAsync"/> path also completes that
+    /// connection's <c>agent.SubscribeAsync</c> subscriber channel, which legitimately (and
+    /// near-instantly) ends the whole connection before a queued frame can ever reach this handler.
+    /// </remarks>
+    internal async Task HandleClientToolResultAsync(
+        RegisteredWebSocketConnection connection,
+        IMultiTurnAgent agent,
+        string threadId,
+        string json,
+        CancellationToken ct)
+    {
+        if (!TryParseClientToolResultFrame(json, out var toolCallId, out var result, out var isError))
+        {
+            _logger.LogWarning("Discarded malformed client_tool_result frame for thread {ThreadId}", threadId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "invalid", ct);
+            return;
+        }
+
+        if (agent is not MultiTurnAgentLoop loop)
+        {
+            _logger.LogWarning(
+                "client_tool_result for thread {ThreadId} (tool_call {ToolCallId}) targets an agent that "
+                    + "does not support deferred tool resolution",
+                threadId,
+                toolCallId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
+            return;
+        }
+
+        ResolveToolCallOutcome outcome;
+        try
+        {
+            outcome = await loop.TryResolveToolCallAsync(toolCallId!, result!, isError, ct: ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Reachable race (issue #246): the connection captured this agent before a concurrent
+            // ConversationsController.Delete (or pool eviction) disposed it. Treat it the same as an
+            // agent that can no longer be resolved rather than letting the receive loop fault.
+            _logger.LogWarning(
+                "client_tool_result for thread {ThreadId} (tool_call {ToolCallId}) targets an agent "
+                    + "that was disposed before the frame was processed",
+                threadId,
+                toolCallId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
+            return;
+        }
+
+        await SendClientToolResultOutcomeAsync(connection, toolCallId!, outcome, ct);
+    }
+
+    /// <summary>
+    /// Resolves a <see cref="ClientToolResultFrameType"/> frame against the focused SUB-AGENT (issue
+    /// #246). The target loop is derived from the route (<paramref name="agentId"/>, the sub-agent
+    /// socket's own path segment) via <see cref="SubAgentManager.TryGetAgent"/> — never from the payload.
+    /// </summary>
+    /// <remarks>
+    /// Internal (not private) for the same testability reason as <see cref="HandleClientToolResultAsync"/>.
+    /// </remarks>
+    internal async Task HandleSubAgentClientToolResultAsync(
+        RegisteredWebSocketConnection connection,
+        SubAgentManager subAgentManager,
+        string agentId,
+        string json,
+        CancellationToken ct)
+    {
+        if (!TryParseClientToolResultFrame(json, out var toolCallId, out var result, out var isError))
+        {
+            _logger.LogWarning("Discarded malformed client_tool_result frame for sub-agent {AgentId}", agentId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "invalid", ct);
+            return;
+        }
+
+        if (!subAgentManager.TryGetAgent(agentId, out var childAgent) || childAgent is not MultiTurnAgentLoop loop)
+        {
+            _logger.LogWarning(
+                "client_tool_result for sub-agent {AgentId} (tool_call {ToolCallId}) targets an unavailable "
+                    + "or non-deferrable agent",
+                agentId,
+                toolCallId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
+            return;
+        }
+
+        ResolveToolCallOutcome outcome;
+        try
+        {
+            outcome = await loop.TryResolveToolCallAsync(toolCallId!, result!, isError, ct: ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Same reachable race as the primary path, but here `childAgent` was re-resolved from
+            // SubAgentManager on this very frame (see the doc comment above), and STILL lost the race
+            // against a concurrent dispose (e.g. parent teardown tearing down the whole descendant tree).
+            _logger.LogWarning(
+                "client_tool_result for sub-agent {AgentId} (tool_call {ToolCallId}) targets an agent "
+                    + "that was disposed before the frame was processed",
+                agentId,
+                toolCallId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
+            return;
+        }
+
+        await SendClientToolResultOutcomeAsync(connection, toolCallId!, outcome, ct);
+    }
+
+    /// <summary>
+    /// Peeks the <c>$type</c> discriminator of an inbound frame without committing to any particular
+    /// payload shape. Returns <see langword="false"/> for non-JSON-object or unparsable input, in which
+    /// case the caller falls through to its existing (unchanged) <see cref="ChatRequest"/> handling — the
+    /// same malformed input then surfaces via that path's own <see cref="JsonException"/> handling.
+    /// </summary>
+    private static bool TryPeekFrameType(string json, out string? frameType)
+    {
+        frameType = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (
+                doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("$type", out var typeEl)
+                && typeEl.ValueKind == JsonValueKind.String
+            )
+            {
+                frameType = typeEl.GetString();
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Parses a <see cref="ClientToolResultFrameType"/> frame by exact-key <see cref="JsonDocument"/>
+    /// reads — sidestepping any <see cref="_jsonOptions"/> naming-policy question, consistent with how
+    /// <c>AskUserQuestionToolProvider</c>/<c>NotifyClientToolProvider</c> parse their own tool args.
+    /// Requires a non-empty <c>toolCallId</c> and a present (possibly empty-string) <c>result</c>;
+    /// <c>isError</c> defaults to <see langword="false"/> when absent.
+    /// </summary>
+    private static bool TryParseClientToolResultFrame(
+        string json,
+        out string? toolCallId,
+        out string? result,
+        out bool isError)
+    {
+        toolCallId = null;
+        result = null;
+        isError = false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            toolCallId = root.TryGetProperty("toolCallId", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                ? idEl.GetString()
+                : null;
+            result = root.TryGetProperty("result", out var resultEl) && resultEl.ValueKind == JsonValueKind.String
+                ? resultEl.GetString()
+                : null;
+            isError = root.TryGetProperty("isError", out var errorEl) && errorEl.ValueKind == JsonValueKind.True;
+
+            return !string.IsNullOrEmpty(toolCallId) && result != null;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Sends the ack/error frame corresponding to a <see cref="ResolveToolCallOutcome"/> (issue #246).
+    /// <see cref="ResolveToolCallOutcome.Resolved"/>/<see cref="ResolveToolCallOutcome.Duplicate"/> are
+    /// both successes (the call is settled) and map to <c>client_tool_result_ack</c>; every other value is
+    /// permanent-or-retryable-but-still-unresolved and maps to <c>client_tool_result_error</c>.
+    /// </summary>
+    private Task SendClientToolResultOutcomeAsync(
+        RegisteredWebSocketConnection connection,
+        string toolCallId,
+        ResolveToolCallOutcome outcome,
+        CancellationToken ct) =>
+        outcome switch
+        {
+            ResolveToolCallOutcome.Resolved => SendClientToolResultAckAsync(connection, toolCallId, "resolved", ct),
+            ResolveToolCallOutcome.Duplicate => SendClientToolResultAckAsync(connection, toolCallId, "duplicate", ct),
+            ResolveToolCallOutcome.NotFound => SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct),
+            ResolveToolCallOutcome.Conflict => SendClientToolResultErrorAsync(connection, toolCallId, "conflict", ct),
+            ResolveToolCallOutcome.StoreFailed => SendClientToolResultErrorAsync(connection, toolCallId, "store_failed", ct),
+            ResolveToolCallOutcome.Cancelled => SendClientToolResultErrorAsync(connection, toolCallId, "cancelled", ct),
+            _ => SendClientToolResultErrorAsync(connection, toolCallId, "invalid", ct),
+        };
+
+    private async Task SendClientToolResultAckAsync(
+        RegisteredWebSocketConnection connection,
+        string toolCallId,
+        string status,
+        CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "client_tool_result_ack",
+            ["toolCallId"] = toolCallId,
+            ["status"] = status,
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+        _ = await connection.TrySendTextAsync(json, ct);
+    }
+
+    private async Task SendClientToolResultErrorAsync(
+        RegisteredWebSocketConnection connection,
+        string? toolCallId,
+        string code,
+        CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["$type"] = "client_tool_result_error",
+            ["toolCallId"] = toolCallId,
+            ["code"] = code,
+            ["message"] = SafeClientToolResultErrorMessage(code),
+        };
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+        _ = await connection.TrySendTextAsync(json, ct);
+    }
+
+    /// <summary>
+    /// Maps a <c>client_tool_result_error</c> <paramref name="code"/> to a stable, safe-to-display
+    /// diagnostic message (PR #249 review). Before this, the frame carried only <c>code</c> — the
+    /// browser client's <c>onClientToolResultError</c> handler falls back to the literal string
+    /// "Unknown error" whenever <c>message</c> is absent, so every real rejection reason (a stale
+    /// tool-call id, a conflicting resubmission, a persistence failure, a cancelled request) was
+    /// indistinguishable to the user and to anyone reading client-side logs. These strings never echo
+    /// server internals (no exception text, no store paths) — only the fixed, code-derived reason.
+    /// </summary>
+    private static string SafeClientToolResultErrorMessage(string code) =>
+        code switch
+        {
+            "invalid" => "The client_tool_result frame was malformed and could not be parsed.",
+            "not_found" => "No deferred tool call was found with this identifier.",
+            "conflict" => "This tool call was already resolved with different content.",
+            "store_failed" => "The result could not be saved; please retry.",
+            "cancelled" => "The request was cancelled before it could be saved; please retry.",
+            _ => "Unknown error",
+        };
 
     /// <summary>
     /// Logs a sub-agent relay failure with a STABLE category plus content-free identifiers only

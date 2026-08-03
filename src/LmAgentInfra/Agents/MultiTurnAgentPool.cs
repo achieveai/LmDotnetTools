@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
@@ -912,6 +913,43 @@ public sealed class MultiTurnAgentPool : IAsyncDisposable
         var deferred = await loop.GetDeferredToolCallsAsync(ct);
         return deferred.Any(d =>
             string.Equals(d.FunctionName, WaitToolProvider.WaitToolName, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Returns true when the pooled agent for <paramref name="threadId"/> currently has an unanswered
+    /// <c>AskUserQuestion</c> parked — i.e. a deferred tool call named
+    /// <see cref="AskUserQuestionToolProvider.ToolName"/> — OR any LIVE descendant in its sub-agent
+    /// tree (direct child, or a further-nested descendant reached through a child's own
+    /// <c>SubAgentManager</c>) does. Unlike <see cref="HasArmedWaitAsync"/> (which is warn-only),
+    /// callers use this to HARD-block a mode/provider switch (issue #246): recreating the primary
+    /// agent disposes its ENTIRE live descendant tree, so a pending question belonging to a child —
+    /// not just the primary itself — would otherwise be silently discarded and orphaned, with no way
+    /// for the client to recover it. Returns false when no agent is pooled or the pooled agent type
+    /// does not expose deferred-call inspection (e.g. a CLI-backed loop).
+    /// </summary>
+    /// <param name="threadId">The thread identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<bool> HasPendingAskUserQuestionAsync(string threadId, CancellationToken ct = default)
+    {
+        if (!_agents.TryGetValue(threadId, out var entry))
+        {
+            return false;
+        }
+
+        if (entry.Agent is not MultiTurnAgentLoop loop)
+        {
+            return false;
+        }
+
+        var deferred = await loop.GetDeferredToolCallsAsync(ct);
+        if (deferred.Any(d =>
+            string.Equals(d.FunctionName, AskUserQuestionToolProvider.ToolName, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        return loop.SubAgentManager is { } subAgentManager
+            && await subAgentManager.HasPendingAskUserQuestionInDescendantsAsync(ct);
     }
 
     /// <summary>

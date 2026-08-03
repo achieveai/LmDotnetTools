@@ -3,7 +3,9 @@ using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Triggers;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -535,6 +537,272 @@ public class MultiTurnAgentPoolTests
     }
 
     [Fact]
+    public async Task HasPendingAskUserQuestionAsync_ReturnsTrue_WhenPooledLoopHasParkedAskUserQuestion_AndFalseAfterResolve()
+    {
+        // TRUE path for #246's mode/provider hard-block guards: a real MultiTurnAgentLoop parked on
+        // AskUserQuestion (registered unconditionally by every loop's constructor). Only a real loop —
+        // never the FakeMultiTurnAgent every other pool/controller test uses — can exercise
+        // HasPendingAskUserQuestionAsync's true branch, since the method downcasts to MultiTurnAgentLoop
+        // and degrades to false otherwise.
+        const string toolCallId = "tc_color";
+        var askCall = new ToolCallMessage
+        {
+            FunctionName = AskUserQuestionToolProvider.ToolName,
+            FunctionArgs = JsonSerializer.Serialize(new
+            {
+                context = "Need to know which color to use.",
+                questions = new[]
+                {
+                    new
+                    {
+                        prompt = "Which color?",
+                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    },
+                },
+            }),
+            ToolCallId = toolCallId,
+            Role = Role.Assistant,
+        };
+
+        // The mock must answer only ONCE with the deferred AskUserQuestion. TryResolveToolCallAsync
+        // wakes the loop's background pump to run the resolved call's continuation on a task the test
+        // does not await directly (ScheduleLoopWake) — if the mock kept returning askCall unconditionally,
+        // that continuation would immediately re-defer the SAME tool call id, racing the assertion below
+        // and making it flaky depending on whether the background wake beat the test to the check.
+        var callCount = 0;
+        var mockAgent = new Mock<IStreamingAgent>();
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                IMessage msg = Interlocked.Increment(ref callCount) == 1
+                    ? askCall
+                    : new TextMessage { Text = "Using blue.", Role = Role.Assistant };
+                return Task.FromResult(ToAsyncEnumerable(msg));
+            });
+
+        await using var pool = new MultiTurnAgentPool(
+            (threadId, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new MultiTurnAgentLoop(
+                    mockAgent.Object,
+                    new FunctionRegistry(),
+                    threadId,
+                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent("thread-pending-question", mode);
+
+        var userInput = new UserInput([new TextMessage { Text = "Which color should I use?", Role = Role.User }]);
+        await foreach (var _ in loop.ExecuteRunAsync(userInput))
+        {
+            // drain until the run parks on the deferred AskUserQuestion
+        }
+
+        (await pool.HasPendingAskUserQuestionAsync("thread-pending-question")).Should().BeTrue();
+
+        var outcome = await loop.TryResolveToolCallAsync(toolCallId, "blue", isError: false);
+        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
+
+        (await pool.HasPendingAskUserQuestionAsync("thread-pending-question")).Should().BeFalse(
+            "once resolved the call is no longer deferred, so the pending lookup must clear too");
+    }
+
+    [Fact]
+    public async Task HasPendingAskUserQuestionAsync_ReturnsTrue_AfterRestartRecovery_FromPersistedAskUserQuestion()
+    {
+        // #1 (restart restoration) + #3 (pool pending lookup) together: a previous process persisted a
+        // deferred AskUserQuestion placeholder and then exited/crashed. A freshly-built loop over the
+        // SAME store recovers it via RecoverAsync (OnHistoryRestoredAsync rebuilds the in-memory
+        // deferred registry from persisted history), and once that loop is registered in the pool,
+        // HasPendingAskUserQuestionAsync must see the recovered call exactly as it would a live one.
+        //
+        // This also exercises the end of that story: resolving the recovered call must wake the loop's
+        // background pump and drive the continuation through the provider EXACTLY ONCE — not zero times
+        // (the answer would never be delivered) and not more than once (a double-fired continuation would
+        // send the provider a duplicate turn for an answer already recorded).
+        const string threadId = "thread-restart-question";
+        const string runId = "run_prev";
+        const string generationId = "gen_prev";
+        const string toolCallId = "tc_persisted_question";
+        var store = new InMemoryConversationStore();
+
+        var toolCall = new ToolCallMessage
+        {
+            ToolCallId = toolCallId,
+            FunctionName = AskUserQuestionToolProvider.ToolName,
+            FunctionArgs = "{\"context\":\"ctx\",\"questions\":[{\"prompt\":\"Which?\",\"options\":[{\"label\":\"A\"}]}]}",
+            Role = Role.Assistant,
+            FromAgent = "test",
+            GenerationId = generationId,
+            RunId = runId,
+        };
+        var deferredResult = new ToolCallResultMessage
+        {
+            ToolCallId = toolCallId,
+            ToolName = AskUserQuestionToolProvider.ToolName,
+            Result = string.Empty,
+            IsDeferred = true,
+            DeferredAt = 1_700_000_000_000,
+            Role = Role.User,
+            GenerationId = generationId,
+            RunId = runId,
+        };
+
+        await store.AppendMessagesAsync(
+            threadId,
+            [
+                MessagePersistenceConverter.ToPersistedMessage(toolCall, threadId, runId),
+                MessagePersistenceConverter.ToPersistedMessage(deferredResult, threadId, runId),
+            ]);
+        await store.SaveMetadataAsync(
+            threadId,
+            new ThreadMetadata
+            {
+                ThreadId = threadId,
+                LatestRunId = runId,
+                LastUpdated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+        // Nothing before resolution should ever reach the provider — the original call belonged to a
+        // process that no longer exists, so this mock's very first invocation IS the continuation.
+        var callCount = 0;
+        var mockAgent = new Mock<IStreamingAgent>();
+        mockAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                Interlocked.Increment(ref callCount);
+                IMessage msg = new TextMessage { Text = "Using A.", Role = Role.Assistant };
+                return Task.FromResult(ToAsyncEnumerable(msg));
+            });
+
+        await using var pool = new MultiTurnAgentPool(
+            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new MultiTurnAgentLoop(
+                    mockAgent.Object,
+                    new FunctionRegistry(),
+                    tid,
+                    store: store,
+                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
+
+        (await loop.RecoverAsync()).Should().BeTrue();
+
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+
+        var outcome = await loop.TryResolveToolCallAsync(toolCallId, "A", isError: false);
+        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // Resolving wakes the loop in the background; wait for the continuation to actually reach the
+        // provider before asserting on it, rather than racing the pump.
+        await WaitForConditionAsync(() => Volatile.Read(ref callCount) >= 1, TimeSpan.FromSeconds(2));
+
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeFalse(
+            "once the recovered call is resolved and its continuation has run, nothing is deferred any more");
+
+        // Give any spurious second wake-up time to land before asserting the count is exact.
+        await Task.Delay(200);
+        Volatile.Read(ref callCount).Should().Be(
+            1,
+            "resolving the recovered pending question must drive exactly one continuation run, not zero and not more than one");
+    }
+
+    [Fact]
+    public async Task HasPendingAskUserQuestionAsync_ReturnsTrue_WhenDirectChildHasParkedAskUserQuestion()
+    {
+        // #246: recreating the primary agent (a mode/provider switch) disposes its ENTIRE live
+        // descendant tree, not just the primary's own deferred calls. A direct child's unresolved
+        // AskUserQuestion must hard-block the switch exactly as the primary's own pending question
+        // already does — even though the PRIMARY itself has nothing deferred. True nested
+        // (grandchild) descendants cannot be produced via the normal Agent-tool spawn path today:
+        // CreateSubAgentAsync never gives a spawned child its own SubAgentOptions, so a plain
+        // sub-agent can never itself spawn further sub-agents. The recursive
+        // HasPendingAskUserQuestionInDescendantsAsync walk exists to stay correct if that topology
+        // ever changes, but a grandchild scenario is not constructible through this test.
+        const string threadId = "thread-child-pending-question";
+        const string toolCallId = "tc_child_color";
+        const string templateName = "asker";
+
+        var childAskCall = new ToolCallMessage
+        {
+            FunctionName = AskUserQuestionToolProvider.ToolName,
+            FunctionArgs = JsonSerializer.Serialize(new
+            {
+                context = "Need to know which color to use.",
+                questions = new[]
+                {
+                    new
+                    {
+                        prompt = "Which color?",
+                        options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                    },
+                },
+            }),
+            ToolCallId = toolCallId,
+            Role = Role.Assistant,
+        };
+
+        var childAgent = new Mock<IStreamingAgent>();
+        childAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable(childAskCall)));
+
+        var parentAgent = new Mock<IStreamingAgent>();
+        parentAgent
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable()));
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                [templateName] = new SubAgentTemplate
+                {
+                    Name = templateName,
+                    SystemPrompt = "You ask the user a clarifying question.",
+                    AgentFactory = () => childAgent.Object,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+
+        await using var pool = new MultiTurnAgentPool(
+            (tid, _, _) => new MultiTurnAgentPool.AgentCreationResult(
+                new MultiTurnAgentLoop(
+                    parentAgent.Object,
+                    new FunctionRegistry(),
+                    tid,
+                    subAgentOptions: subAgentOptions,
+                    logger: NullLogger<MultiTurnAgentLoop>.Instance)),
+            NullLogger<MultiTurnAgentPool>.Instance);
+
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var loop = (MultiTurnAgentLoop)pool.GetOrCreateAgent(threadId, mode);
+
+        using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var spawnJson = await loop.SubAgentManager!.SpawnAsync(
+            templateName, "ask the user", name: "asker", runInBackground: true);
+        using var doc = JsonDocument.Parse(spawnJson);
+        var agentId = doc.RootElement.GetProperty("agent_id").GetString()!;
+
+        await WaitUntilChildAwaitingQuestionAsync(loop.SubAgentManager!, agentId, ct.Token);
+
+        // The primary itself has nothing deferred...
+        (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty();
+
+        // ...but the pool must still see the child's pending question and hard-block a switch on it.
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task ThreadRemoved_FiresOnce_OnRemoveAgentAsync()
     {
         await using var pool = CreatePool();
@@ -999,6 +1267,45 @@ public class MultiTurnAgentPoolTests
         }
 
         return null;
+    }
+
+    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary>
+    /// Waits for a spawned sub-agent to park on its own <c>AskUserQuestion</c> call. Since the
+    /// <c>SubAgentManager</c> fix that keeps a parked AskUserQuestion non-terminal, <c>state.Completion</c>
+    /// (what <see cref="SubAgentManager.ObserveCompletionAsync"/> awaits) is deliberately never resolved
+    /// while parked — only the answer-triggered run performs the one true final completion. So tests that
+    /// need the child parked (not finished) must instead poll the child loop's own deferred-call registry
+    /// directly, mirroring the production-side <c>HasPendingAskUserQuestionAsync</c> check, rather than
+    /// waiting on a completion that will never come.
+    /// </summary>
+    private static async Task WaitUntilChildAwaitingQuestionAsync(
+        SubAgentManager subAgentManager, string agentId, CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (subAgentManager.TryGetAgent(agentId, out var childAgent)
+                && childAgent is MultiTurnAgentLoop childLoop)
+            {
+                var deferred = await childLoop.GetDeferredToolCallsAsync(ct);
+                if (deferred.Count > 0)
+                {
+                    return;
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(20), ct);
+        }
     }
 
     private static MultiTurnAgentPool CreatePool()

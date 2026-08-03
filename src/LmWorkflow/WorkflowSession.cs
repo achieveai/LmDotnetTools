@@ -356,8 +356,12 @@ public static class WorkflowSession
             // The controller is ALREADY registered (WorkflowCollaboration took its capacity lease and owns
             // its endpoints), so the loop's own self-registration finds it and no-ops. Handing the setup down
             // is what lets the controller's SubAgentManager admit delegates one delegation hop deeper.
-            collaboration: collaboration
-
+            collaboration: collaboration,
+            // A workflow controller has no browser socket of its own, so deferred browser-hosted tools
+            // would be unresolvable here. Delegates still receive eligible external tools through the
+            // existing inheritable-tool snapshot.
+            includeAskUserQuestionTool: false,
+            includeNotifyClientTool: false
         );
     }
 

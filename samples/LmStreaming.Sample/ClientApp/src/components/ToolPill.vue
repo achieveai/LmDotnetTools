@@ -17,6 +17,7 @@ import DiffRich from '@/components/tools/DiffRich.vue';
 import TerminalRich from '@/components/tools/TerminalRich.vue';
 import MatchesRich from '@/components/tools/MatchesRich.vue';
 import WeatherRich from '@/components/tools/WeatherRich.vue';
+import QuestionRich from '@/components/tools/QuestionRich.vue';
 
 const props = defineProps<{ toolCall: ToolCall }>();
 
@@ -36,6 +37,7 @@ const view = computed(() =>
     result: resultMsg.value?.result ?? null,
     hasResult: resultMsg.value !== null,
     isErrorFlag: resultMsg.value?.is_error ?? null,
+    isDeferred: resultMsg.value?.is_deferred ?? false,
   })
 );
 
@@ -82,6 +84,7 @@ const richMap: Partial<Record<string, Component>> = {
   task: TerminalRich,
   grep: MatchesRich,
   weather: WeatherRich,
+  question: QuestionRich,
 };
 const richComponent = computed<Component | null>(() => richMap[renderer.value.family] ?? null);
 
@@ -91,6 +94,7 @@ const STATUS: Record<ToolCallState, { icon: string; label: string }> = {
   error: { icon: '⚠', label: 'failed' },
   'awaiting-result': { icon: '◌', label: 'running' },
   'streaming-args': { icon: '…', label: 'receiving' },
+  'awaiting-input': { icon: '❓', label: 'waiting for your answer' },
 };
 const statusIcon = computed(() => STATUS[view.value.state].icon);
 const statusLabel = computed(() => STATUS[view.value.state].label);
@@ -286,6 +290,10 @@ async function copyResult() {
 .tool-pill__status.st-awaiting-result,
 .tool-pill__status.st-streaming-args {
   color: #999;
+}
+
+.tool-pill__status.st-awaiting-input {
+  color: #b8860b;
 }
 
 .tool-pill__chevron {

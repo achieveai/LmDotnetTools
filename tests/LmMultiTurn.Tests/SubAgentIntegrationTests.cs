@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using FluentAssertions;
@@ -299,6 +300,167 @@ public class SubAgentIntegrationTests
         await cts.CancelAsync();
     }
 
+    /// <summary>
+    /// #246: a descendant parking on <c>AskUserQuestion</c> must surface to the ROOT conversation as a
+    /// DISTINCT <see cref="NotifyKinds.DescendantQuestion"/> notification — never the generic
+    /// <see cref="NotifyKinds.ClientNotification"/> kind, and never conflated with the ordinary
+    /// <see cref="NotifyKinds.SubAgentCompletion"/> relay that a background spawn also produces — so a
+    /// client watching only the root/primary stream can navigate straight to the pending question
+    /// without already having the child's own tab open. Exercises the REAL production wiring end to
+    /// end: <see cref="MultiTurnAgentLoop"/> (root) -&gt; <see cref="SubAgentManager"/> (child) -&gt;
+    /// the loop's <c>DeliverClientNotificationAsync</c> default sink, which both persists the
+    /// notification to history and publishes it to subscribers.
+    /// </summary>
+    [Fact]
+    public async Task ParentSpawnsBackgroundSubAgent_WhenChildParksOnAskUserQuestion_RootReceivesExactlyOneDescendantQuestionNotification()
+    {
+        var childAskArgs = JsonSerializer.Serialize(new
+        {
+            context = "Need to know which color to use.",
+            questions = new[]
+            {
+                new
+                {
+                    prompt = "Which color?",
+                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                },
+            },
+        });
+
+        var childAgentMock = new Mock<IStreamingAgent>();
+        childAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(ToAsyncEnumerable([
+                new ToolCallMessage
+                {
+                    FunctionName = AskUserQuestionToolProvider.ToolName,
+                    FunctionArgs = childAskArgs,
+                    ToolCallId = "tc_child_color",
+                    Role = Role.Assistant,
+                },
+            ])));
+
+        var parentAgentMock = new Mock<IStreamingAgent>();
+        var parentCallCount = 0;
+        parentAgentMock
+            .Setup(a => a.GenerateReplyStreamingAsync(
+                It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>((_, _, _) =>
+            {
+                parentCallCount++;
+                if (parentCallCount == 1)
+                {
+                    // Spawn "asker" in the background so the parent's turn finishes immediately with
+                    // a receipt, leaving the child free to park on its own AskUserQuestion afterward.
+                    return Task.FromResult(ToAsyncEnumerable([
+                        new ToolCallMessage
+                        {
+                            FunctionName = "Agent",
+                            FunctionArgs = JsonSerializer.Serialize(new
+                            {
+                                subagent_type = "asker",
+                                prompt = "ask the user which color",
+                                run_in_background = true,
+                            }),
+                            ToolCallId = "call_spawn_asker",
+                            Role = Role.Assistant,
+                        },
+                    ]));
+                }
+
+                return Task.FromResult(ToAsyncEnumerable([
+                    new TextMessage { Text = "Dispatched the asker sub-agent.", Role = Role.Assistant },
+                ]));
+            });
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["asker"] = new SubAgentTemplate
+                {
+                    Name = "asker",
+                    SystemPrompt = "You ask the user a clarifying question.",
+                    AgentFactory = () => childAgentMock.Object,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+
+        var registry = new FunctionRegistry();
+        await using var loop = new MultiTurnAgentLoop(
+            parentAgentMock.Object,
+            registry,
+            threadId: "descendant-question-root-thread",
+            subAgentOptions: subAgentOptions);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var runTask = loop.RunAsync(cts.Token);
+
+        var descendantQuestionNotifications = new List<NotifyMessage>();
+        var observeTask = ObserveAsync(loop, msg =>
+        {
+            if (msg is NotifyMessage { NotifyKind: NotifyKinds.DescendantQuestion } nm)
+            {
+                lock (descendantQuestionNotifications)
+                {
+                    descendantQuestionNotifications.Add(nm);
+                }
+            }
+        }, cts.Token);
+
+        var userInput = new UserInput(
+            [new TextMessage { Text = "Please figure out the color, asking me if needed.", Role = Role.User }]);
+
+        string? spawnedAgentId = null;
+        await foreach (var msg in loop.ExecuteRunAsync(userInput, cts.Token))
+        {
+            if (msg is ToolCallResultMessage { Result: var result } && result.Contains("agent_id"))
+            {
+                using var doc = JsonDocument.Parse(result);
+                spawnedAgentId = doc.RootElement.GetProperty("agent_id").GetString();
+            }
+        }
+
+        spawnedAgentId.Should().NotBeNullOrEmpty(
+            "the background spawn must have returned a receipt with an agent id");
+
+        // The background child races the parent's own run; wait deterministically for its
+        // notification to land on the root's publish stream.
+        await WaitForConditionAsync(
+            () =>
+            {
+                lock (descendantQuestionNotifications)
+                {
+                    return descendantQuestionNotifications.Count > 0;
+                }
+            },
+            TimeSpan.FromSeconds(10));
+
+        await cts.CancelAsync();
+        await observeTask;
+
+        List<NotifyMessage> snapshot;
+        lock (descendantQuestionNotifications)
+        {
+            snapshot = [.. descendantQuestionNotifications];
+        }
+
+        snapshot.Should().HaveCount(
+            1,
+            "the root conversation must receive EXACTLY ONE descendant-question notification for the " +
+            "one parked child — never zero, and never a duplicate");
+        snapshot[0].SourceToolCallId.Should().Be(
+            spawnedAgentId, "the notification must be attributed to the descendant's own agent id");
+        snapshot[0].Label.Should().Be("asker");
+
+        // The primary/root's OWN deferred-call registry has nothing parked — the pending question
+        // belongs entirely to the child, proving this notification genuinely came from the descendant
+        // tree rather than the primary's own AskUserQuestion handling.
+        (await loop.GetDeferredToolCallsAsync()).Should().BeEmpty();
+    }
+
     #region Helpers
 
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerable(
@@ -310,6 +472,42 @@ public class SubAgentIntegrationTests
             ct.ThrowIfCancellationRequested();
             yield return msg;
             await Task.Yield();
+        }
+    }
+
+    private static Task ObserveAsync(MultiTurnAgentLoop loop, Action<IMessage> onMessage, CancellationToken ct)
+    {
+        var messages = loop.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+        var first = messages.MoveNextAsync();
+
+        // Not `ct`: a cancelled token would skip this body entirely, leaving the subscription
+        // attached and the pending move unobserved.
+        return Task.Run(async () =>
+        {
+            try
+            {
+                for (var hasMessage = await first; hasMessage; hasMessage = await messages.MoveNextAsync())
+                {
+                    onMessage(messages.Current);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancelling the token is how these tests end the subscription.
+            }
+            finally
+            {
+                await messages.DisposeAsync();
+            }
+        }, CancellationToken.None);
+    }
+
+    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(25);
         }
     }
 

@@ -223,4 +223,78 @@ public static class UiHelpers
     {
         return page.GetByTestId("marketplace-modal-close");
     }
+
+    // -------------------------------------------------------------------------------------------
+    // Browser-hosted client tools (#246): AskUserQuestion (QuestionRich) / NotifyClient.
+    // -------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A single tool-call pill matched by its raw <c>data-tool-name</c> (e.g. <c>AskUserQuestion</c>,
+    /// <c>NotifyClient</c> — exact casing, not the lowercased registry key). Rich content (including
+    /// <c>QuestionRich</c>) only renders once the pill is expanded — click it first.
+    /// </summary>
+    public static ILocator ToolCallPillByName(this IPage page, string toolName)
+    {
+        return page.Locator($"[data-testid=\"tool-call-pill\"][data-tool-name=\"{toolName}\"]");
+    }
+
+    /// <summary>The AskUserQuestion rich body root (only meaningful once its pill is expanded).</summary>
+    public static ILocator QuestionRich(this IPage page)
+    {
+        return page.GetByTestId("question-rich");
+    }
+
+    /// <summary>The interactive, awaiting-answer question form — absent once resolved.</summary>
+    public static ILocator QuestionForm(this IPage page)
+    {
+        return page.GetByTestId("question-form");
+    }
+
+    /// <summary>The read-only resolved-answer view — absent while the question is still pending.</summary>
+    public static ILocator QuestionResolved(this IPage page)
+    {
+        return page.GetByTestId("question-resolved");
+    }
+
+    /// <summary>A selectable option for the currently-shown question, keyed by its (effective) <c>value</c>.</summary>
+    public static ILocator QuestionOption(this IPage page, string value)
+    {
+        return page.GetByTestId($"question-option-{value}");
+    }
+
+    /// <summary>The "Other" toggle for the currently-shown question (only rendered when <c>allowOther</c>).</summary>
+    public static ILocator QuestionOtherToggle(this IPage page)
+    {
+        return page.GetByTestId("question-other-toggle");
+    }
+
+    /// <summary>The free-text input for an "Other" answer (only rendered once the Other toggle is active).</summary>
+    public static ILocator QuestionOtherText(this IPage page)
+    {
+        return page.GetByTestId("question-other-text");
+    }
+
+    /// <summary>Skip button for the currently-shown question.</summary>
+    public static ILocator QuestionSkipButton(this IPage page)
+    {
+        return page.GetByTestId("question-skip");
+    }
+
+    /// <summary>Submit button — only rendered on the last question of the batch.</summary>
+    public static ILocator QuestionSubmitButton(this IPage page)
+    {
+        return page.GetByTestId("question-submit");
+    }
+
+    /// <summary>Next button — only rendered while earlier questions remain in a multi-question batch.</summary>
+    public static ILocator QuestionNextButton(this IPage page)
+    {
+        return page.GetByTestId("question-next");
+    }
+
+    /// <summary>Error banner shown when a <c>client_tool_result</c> submission is rejected/fails.</summary>
+    public static ILocator QuestionSubmitError(this IPage page)
+    {
+        return page.GetByTestId("question-submit-error");
+    }
 }

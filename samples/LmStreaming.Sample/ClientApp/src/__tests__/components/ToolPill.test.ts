@@ -172,6 +172,60 @@ describe('ToolPill — live family → rich-component dispatch', () => {
   }
 });
 
+describe('ToolPill — question (#246 AskUserQuestion, awaiting-input + QuestionRich dispatch)', () => {
+  const args = JSON.stringify({
+    context: 'Need your input',
+    questions: [{ prompt: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] }],
+  });
+
+  it('shows the awaiting-input status while deferred (hasResult true, empty result, is_deferred true)', () => {
+    const tc: ToolCall = { tool_call_id: 'q1', function_name: 'AskUserQuestion', function_args: args };
+    const deferredResult: ToolCallResultMessage = {
+      $type: MessageType.ToolCallResult,
+      tool_call_id: 'q1',
+      result: '',
+      is_error: false,
+      is_deferred: true,
+      role: 'tool',
+    };
+    const w = mountPill(tc, deferredResult);
+    expect(w.get('[data-testid="tool-call-pill"]').classes()).toContain('st-awaiting-input');
+  });
+
+  it('mounts QuestionRich (.question root) and NOT the generic body while awaiting input', async () => {
+    const tc: ToolCall = { tool_call_id: 'q2', function_name: 'AskUserQuestion', function_args: args };
+    const deferredResult: ToolCallResultMessage = {
+      $type: MessageType.ToolCallResult,
+      tool_call_id: 'q2',
+      result: '',
+      is_error: false,
+      is_deferred: true,
+      role: 'tool',
+    };
+    const w = mountPill(tc, deferredResult);
+    await w.get('.tool-pill__header').trigger('click');
+    expect(w.find('[data-testid="question-rich"]').exists()).toBe(true);
+    expect(w.find('[data-testid="question-form"]').exists()).toBe(true);
+  });
+
+  it('flips to the resolved (non-deferred) state once the follow-up result overwrites the placeholder', async () => {
+    const tc: ToolCall = { tool_call_id: 'q3', function_name: 'AskUserQuestion', function_args: args };
+    const resolvedResult: ToolCallResultMessage = {
+      $type: MessageType.ToolCallResult,
+      tool_call_id: 'q3',
+      result: JSON.stringify({ answers: [{ questionId: 'q0', selectedValues: ['A'], otherText: '', skipped: false }] }),
+      is_error: false,
+      is_deferred: false,
+      role: 'tool',
+    };
+    const w = mountPill(tc, resolvedResult);
+    expect(w.get('[data-testid="tool-call-pill"]').classes()).toContain('st-success');
+    await w.get('.tool-pill__header').trigger('click');
+    expect(w.find('[data-testid="question-resolved"]').exists()).toBe(true);
+    expect(w.get('[data-testid="question-resolved"]').text()).toContain('A');
+  });
+});
+
 describe('ToolPill — visible effective routing', () => {
   it('shows raw Luna/0 separately from effective Opus/tier 5 without changing the result', async () => {
     const rawArgs = JSON.stringify({

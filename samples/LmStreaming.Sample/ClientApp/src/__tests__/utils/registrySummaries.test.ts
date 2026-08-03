@@ -93,3 +93,50 @@ describe('registry — collaboration tool summaries (#244)', () => {
     expect(s).toBe('');
   });
 });
+
+describe('registry — question (#246 AskUserQuestion)', () => {
+  it('resolves via the normalized (lowercase, no sandbox- prefix) wire name', () => {
+    expect(resolveRenderer('AskUserQuestion').family).toBe('question');
+    expect(resolveRenderer('sandbox-AskUserQuestion').family).toBe('question');
+  });
+
+  it('single question: summary shows the prompt, no count prefix', () => {
+    const args = JSON.stringify({
+      context: 'Need a decision',
+      questions: [{ prompt: 'Pick a color', options: [{ label: 'Red' }, { label: 'Blue' }] }],
+    });
+    const view = deriveToolPillState({ functionArgs: args, result: null, hasResult: false });
+    const s = resolveRenderer('AskUserQuestion').summarize(view.parsedArgs, view.resultText, view);
+    expect(s).toContain('Pick a color');
+    expect(s).not.toMatch(/questions ·/);
+  });
+
+  it('multiple questions: summary is prefixed with the question count', () => {
+    const args = JSON.stringify({
+      context: 'ctx',
+      questions: [
+        { prompt: 'First?', options: [{ label: 'A' }] },
+        { prompt: 'Second?', options: [{ label: 'B' }] },
+      ],
+    });
+    const view = deriveToolPillState({ functionArgs: args, result: null, hasResult: false });
+    const s = resolveRenderer('AskUserQuestion').summarize(view.parsedArgs, view.resultText, view);
+    expect(s).toContain('2 questions ·');
+    expect(s).toContain('First?');
+  });
+
+  it('falls back to the shared context when questions is empty/absent', () => {
+    const view = deriveToolPillState({
+      functionArgs: '{"context":"Just checking in"}',
+      result: null,
+      hasResult: false,
+    });
+    const s = resolveRenderer('AskUserQuestion').summarize(view.parsedArgs, view.resultText, view);
+    expect(s).toBe('Just checking in');
+  });
+
+  it('never throws on missing/malformed args', () => {
+    const view = deriveToolPillState({ functionArgs: null, result: null, hasResult: false });
+    expect(() => resolveRenderer('AskUserQuestion').summarize(view.parsedArgs, view.resultText, view)).not.toThrow();
+  });
+});

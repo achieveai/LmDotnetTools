@@ -13,6 +13,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
@@ -110,6 +111,10 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     // Owns the Wait/trigger lifecycle when trigger options are supplied. Null otherwise.
     private readonly TriggerRuntime? _triggerRuntime;
 
+    // Resolved root delivery target for a descendant's parked AskUserQuestion (#246). Always non-null
+    // after construction — see the ctor's descendantQuestionSink resolution.
+    private readonly Func<NotifyMessage, CancellationToken, ValueTask> _descendantQuestionSink;
+
     // Everything about tool calls that deferred: what is outstanding, which run parked on it, and
     // which resolved results are waiting to be run as child runs. See DelayedResultCoordinator for
     // why this is a collaborator rather than fields here.
@@ -176,10 +181,22 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     own bundle. Null uses <paramref name="lifecycleServices"/> after this loop stamps it.
     /// </param>
     /// <param name="collaboration">
-    ///     Optional handle on the hierarchy-wide collaboration this loop takes part in. Null — the
-    ///     default — leaves every collaboration behaviour off, which is exactly the historical surface:
-    ///     no directory, no messaging, and no role/description on a spawn.
+    ///     Optional handle on the hierarchy-wide collaboration this loop takes part in. Null leaves
+    ///     every collaboration behaviour off.
     /// </param>
+    /// <remarks>
+    /// This overload is kept byte-for-byte identical to the constructor that shipped on <c>main</c>
+    /// before this work — same 20 parameters, same order, same optionality/defaults — so an
+    /// already-compiled caller of the packable <c>AchieveAi.LmDotnetTools.LmMultiTurn</c> library
+    /// does not hit a <see cref="MissingMethodException"/> after upgrading. It always registers both
+    /// <c>AskUserQuestion</c> and <c>NotifyClient</c>, and always routes a descendant's parked
+    /// question through this loop's own persist-and-publish path — the only behavior this
+    /// constructor ever had. Callers that need to control tool registration or supply a custom
+    /// descendant-question sink (e.g. a spawned sub-agent, or a workflow controller loop with no
+    /// browser socket of its own) must use the
+    /// <see cref="MultiTurnAgentLoop(IStreamingAgent, FunctionRegistry, string, bool, bool, string?, GenerateReplyOptions?, int, int, int, IConversationStore?, ILogger{MultiTurnAgentLoop}?, SubAgentOptions?, MutableSubAgentTemplateSource?, ILoggerFactory?, bool, TriggerOptions?, IPricingResolver?, IUsageSink?, MultiTurnLifecycleServices?, MultiTurnLifecycleServices?, AgentCollaborationSetup?, Func{NotifyMessage, CancellationToken, ValueTask}?)"/>
+    /// overload instead. Both route through the same implementation.
+    /// </remarks>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -201,6 +218,119 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         MultiTurnLifecycleServices? lifecycleServices = null,
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
         AgentCollaborationSetup? collaboration = null)
+        : this(
+            providerAgent,
+            functionRegistry,
+            threadId,
+            includeAskUserQuestionTool: true,
+            includeNotifyClientTool: true,
+            systemPrompt: systemPrompt,
+            defaultOptions: defaultOptions,
+            maxTurnsPerRun: maxTurnsPerRun,
+            inputChannelCapacity: inputChannelCapacity,
+            outputChannelCapacity: outputChannelCapacity,
+            store: store,
+            logger: logger,
+            subAgentOptions: subAgentOptions,
+            subAgentTemplateSource: subAgentTemplateSource,
+            loggerFactory: loggerFactory,
+            persistRunLedger: persistRunLedger,
+            triggerOptions: triggerOptions,
+            pricingResolver: pricingResolver,
+            externalUsageSink: externalUsageSink,
+            lifecycleServices: lifecycleServices,
+            subAgentLifecycleServices: subAgentLifecycleServices,
+            collaboration: collaboration,
+            descendantQuestionSink: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new MultiTurnAgentLoop with FunctionRegistry for tool management, with explicit
+    /// control over whether the browser-hosted client tools (#246) are registered. This is the
+    /// designated constructor; every other overload forwards here.
+    /// </summary>
+    /// <param name="providerAgent">The base provider streaming agent (without middleware - the loop builds the stack)</param>
+    /// <param name="functionRegistry">The function registry containing tool definitions and handlers</param>
+    /// <param name="threadId">Unique identifier for this conversation thread</param>
+    /// <param name="includeAskUserQuestionTool">
+    ///     Whether this loop has a browser result channel capable of resolving <c>AskUserQuestion</c>.
+    /// </param>
+    /// <param name="includeNotifyClientTool">
+    ///     Whether this loop has a browser subscriber capable of receiving <c>NotifyClient</c>.
+    /// </param>
+    /// <param name="systemPrompt">System prompt for the agent (persists across all runs)</param>
+    /// <param name="defaultOptions">Default GenerateReplyOptions template (ModelId, Temperature, MaxThinkingTokens, etc.)</param>
+    /// <param name="maxTurnsPerRun">Maximum turns per run before stopping (default: 50)</param>
+    /// <param name="inputChannelCapacity">Capacity of the input queue (default: 100)</param>
+    /// <param name="outputChannelCapacity">Capacity per subscriber output channel (default: 1000)</param>
+    /// <param name="store">Optional persistence store for conversation state</param>
+    /// <param name="logger">Optional logger</param>
+    /// <param name="subAgentOptions">Optional sub-agent orchestration configuration</param>
+    /// <param name="subAgentTemplateSource">
+    ///     Optional mutable template catalog shared with an outer owner (e.g. a sandbox
+    ///     session registry that activates discovered subagents mid-session). When null
+    ///     and <paramref name="subAgentOptions"/> is provided, the loop wraps
+    ///     <c>subAgentOptions.Templates</c> in a fresh, private source.
+    /// </param>
+    /// <param name="loggerFactory">
+    ///     Optional logger factory used to give the internal message pipeline middlewares
+    ///     (MessageTransformation, MessageUpdateJoiner) their own category loggers so their
+    ///     ordering/de-dup decisions are visible in structured logs. When null they stay silent.
+    /// </param>
+    /// <param name="persistRunLedger">When true, enables durable run-ledger persistence via <see cref="IRunLedgerStore"/> (requires <paramref name="store"/> to implement it).</param>
+    /// <param name="triggerOptions">
+    ///     Optional Wait/trigger configuration. When provided, the loop enables the
+    ///     <c>Wait</c>/<c>CancelWait</c>/<c>ListWaits</c> tools backed by a <see cref="TriggerRuntime"/>
+    ///     (with the built-in one-shot <c>timer</c> source plus any host registrations). When null,
+    ///     no wait tools are exposed.
+    /// </param>
+    /// <param name="pricingResolver">
+    ///     Optional public-pricing resolver for conversation-wide usage accounting (#196). When supplied,
+    ///     the usage ledger fills an estimated public cost per model; null still captures token totals.
+    /// </param>
+    /// <param name="externalUsageSink">
+    ///     Optional external root sink this loop's usage ledger forwards every record to (#196).
+    /// </param>
+    /// <param name="lifecycleServices">
+    ///     Optional lifecycle observation and tool approval. Null leaves both off.
+    /// </param>
+    /// <param name="subAgentLifecycleServices">
+    ///     Optional lifecycle bundle inherited by spawned sub-agents when it must differ from this loop's
+    ///     own bundle. Null uses <paramref name="lifecycleServices"/> after this loop stamps it.
+    /// </param>
+    /// <param name="collaboration">
+    ///     Optional handle on the hierarchy-wide collaboration this loop takes part in. Null leaves
+    ///     every collaboration behaviour off.
+    /// </param>
+    /// <param name="descendantQuestionSink">
+    ///     Optional root-conversation delivery target for a descendant's parked <c>AskUserQuestion</c>.
+    ///     Null resolves to this loop's own persist-and-publish path.
+    /// </param>
+    public MultiTurnAgentLoop(
+        IStreamingAgent providerAgent,
+        FunctionRegistry functionRegistry,
+        string threadId,
+        bool includeAskUserQuestionTool,
+        bool includeNotifyClientTool,
+        string? systemPrompt = null,
+        GenerateReplyOptions? defaultOptions = null,
+        int maxTurnsPerRun = 50,
+        int inputChannelCapacity = 100,
+        int outputChannelCapacity = 1000,
+        IConversationStore? store = null,
+        ILogger<MultiTurnAgentLoop>? logger = null,
+        SubAgentOptions? subAgentOptions = null,
+        MutableSubAgentTemplateSource? subAgentTemplateSource = null,
+        ILoggerFactory? loggerFactory = null,
+        bool persistRunLedger = false,
+        TriggerOptions? triggerOptions = null,
+        IPricingResolver? pricingResolver = null,
+        IUsageSink? externalUsageSink = null,
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        MultiTurnLifecycleServices? subAgentLifecycleServices = null,
+        AgentCollaborationSetup? collaboration = null,
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null)
         : base(
             threadId,
             systemPrompt,
@@ -233,8 +363,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         Collaboration = collaboration;
 
         // Self-registration is idempotent by design: a spawned sub-agent was already registered by its
-        // parent's manager (which had to know the child's endpoint at accept time), so only an agent
-        // nobody registered — the root — actually publishes itself here.
+        // parent's manager, so only an unregistered root publishes itself here.
         if (collaboration is not null
             && collaboration.Directory.FindById(collaboration.AgentId) is null)
         {
@@ -243,6 +372,20 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 collaboration.Name,
                 AgentCollaborationStatuses.Running,
                 new AgentLoopWriteEndpoint(this));
+        }
+
+        _descendantQuestionSink = descendantQuestionSink ?? DeliverClientNotificationAsync;
+
+        // Client-facing tools register before the sub-agent inheritable-tool snapshot. Each descendant
+        // constructs its own correctly-scoped provider instances when the owning host enables them.
+        if (includeAskUserQuestionTool)
+        {
+            _ = functionRegistry.AddProvider(new AskUserQuestionToolProvider());
+        }
+
+        if (includeNotifyClientTool)
+        {
+            _ = functionRegistry.AddProvider(new NotifyClientToolProvider(DeliverClientNotificationAsync));
         }
 
         // When sub-agent orchestration is configured, snapshot the current tools
@@ -340,6 +483,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 usageSink: UsageLedger,
                 // Persist immediately on each descendant observation (covers late/background descendants).
                 persistUsageAsync: PersistCurrentUsageAsync,
+                // Thread the SAME resolved root delivery target straight through so a grandchild's parked
+                // question bubbles directly to the true root without an extra relay hop (#246).
+                descendantQuestionSink: _descendantQuestionSink,
                 // The parent's own wiring, from which each child derives its bundle at spawn time.
                 // A sub-agent's events belong in the parent's ordered stream, and a host that gates
                 // the parent's tools did not mean to leave the children's ungated. A workflow controller
@@ -408,6 +554,18 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 name: "MessageJoiner",
                 logger: loggerFactory?.CreateLogger<MessageUpdateJoinerMiddleware>()))
             .WithMiddleware(toolCallMiddleware);
+    }
+
+    /// <summary>
+    /// The <c>NotifyClient</c> tool's narrow persist+publish path (#246). Deliberately bypasses
+    /// <c>SendAsync</c>/the input queue — it must never start or inject a turn — mirroring how
+    /// <see cref="TriggerRuntime"/> is handed <c>resolve</c>/<c>notify</c> delegates closing over
+    /// this loop's own methods rather than calling back through the public run surface.
+    /// </summary>
+    private ValueTask DeliverClientNotificationAsync(NotifyMessage notify, CancellationToken ct)
+    {
+        AddToHistory(notify);
+        return PublishToAllAsync(notify, ct);
     }
 
     /// <inheritdoc />

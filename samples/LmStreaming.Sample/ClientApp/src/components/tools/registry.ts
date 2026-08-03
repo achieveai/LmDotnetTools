@@ -218,6 +218,24 @@ export const genericRenderer: ToolRenderer = {
   summarize: (args) => genericSummary(args),
 };
 
+// #246: AskUserQuestion (browser-hosted client tool). function_args:
+// { context: string, questions: [{ id?, prompt, description?, allowMultiple?, allowOther?,
+//   options: [{ label, value?, description?, preview? }] }] } (1-4 questions). The collapsed
+// summary shows the question count and the first prompt (or the shared context) — QuestionRich
+// renders the interactive form.
+const questionRenderer: ToolRenderer = {
+  family: 'question',
+  icon: '❓',
+  iconAlt: 'question for you',
+  summarize: (args) => {
+    const questions = Array.isArray(args?.questions) ? (args!.questions as Array<Record<string, unknown>>) : [];
+    if (questions.length === 0) return typeof args?.context === 'string' ? trunc(args.context) : '';
+    const firstPrompt = typeof questions[0]?.prompt === 'string' ? (questions[0].prompt as string) : '';
+    const countLabel = questions.length > 1 ? `${questions.length} questions · ` : '';
+    return trunc(`${countLabel}${firstPrompt}`);
+  },
+};
+
 const registry = new Map<string, ToolRenderer>();
 
 function register(names: readonly string[], renderer: ToolRenderer): void {
@@ -263,6 +281,7 @@ register(['wait', 'cancelwait', 'listwaits'], waitRenderer);
 register(['math_eval', 'calculate', 'calculator', 'math'], mathRenderer);
 register(['web_search', 'web_fetch', 'websearch', 'webfetch'], webRenderer);
 register(['get_weather', 'weather', 'fetch_weather', 'get_forecast'], weatherRenderer);
+register(['askuserquestion'], questionRenderer);
 
 /** The flat, shared-reference name → renderer map. */
 export function getRegistry(): Map<string, ToolRenderer> {

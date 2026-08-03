@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using FluentAssertions;
 using Xunit;
@@ -97,6 +98,51 @@ public class ClaudeAgentLoopForkSemanticsTests
         var completed = received.OfType<RunCompletedMessage>().Should().ContainSingle().Subject;
         completed.WasForked.Should().BeFalse();
         completed.ForkedToRunId.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Regression guard for issue #246: the client-facing AskUserQuestion/NotifyClient tools are
+    /// registered ONLY by <see cref="MultiTurnAgentLoop"/>'s own constructor (unconditionally, via
+    /// <see cref="AchieveAi.LmDotnetTools.LmCore.Middleware.FunctionRegistry"/>). Unlike Codex/Copilot,
+    /// <see cref="ClaudeAgentLoop"/> has no FunctionRegistry concept at all — its only tool surface
+    /// is the CLI's built-in <c>--tools</c> allow-list and whatever MCP servers a caller configures.
+    /// This locks down that neither of those ever mentions the two client-only tool names, guarding
+    /// against a future change that tries to expose them via a hardcoded MCP server or an addition
+    /// to the default allow-list (which would be meaningless here since ClaudeAgentLoop has no
+    /// mechanism to answer such a call back through this loop).
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_DoesNotAdvertiseAskUserQuestionOrNotifyClient()
+    {
+        var scriptedMessages = new List<IMessage>
+        {
+            new TextMessage { Text = "hi back", Role = Role.Assistant },
+            new ResultEventMessage { IsError = false },
+        };
+
+        var mockClient = new ScriptedClaudeClient(scriptedMessages, sessionId: "sess-no-client-tools");
+        var options = new ClaudeAgentSdkOptions { Mode = ClaudeAgentSdkMode.Interactive, MaxTurnsPerRun = 5 };
+
+        await using var loop = new ClaudeAgentLoop(
+            claudeOptions: options,
+            mcpServers: null,
+            threadId: "claude-no-client-tools-test",
+            clientFactory: (_, _) => mockClient);
+
+        _ = await DriveOneRunAsync(loop, parentRunId: null);
+
+        mockClient.LastRequest.Should().NotBeNull();
+        var allowedTools = mockClient.LastRequest!.AllowedTools ?? string.Empty;
+        allowedTools.Should().NotContain(
+            AskUserQuestionToolProvider.ToolName,
+            "ClaudeAgentLoop's built-in --tools allow-list must never advertise the client-only AskUserQuestion tool");
+        allowedTools.Should().NotContain(
+            NotifyClientToolProvider.ToolName,
+            "ClaudeAgentLoop's built-in --tools allow-list must never advertise the client-only NotifyClient tool");
+
+        var mcpServerNames = mockClient.LastRequest.McpServers?.Keys ?? Enumerable.Empty<string>();
+        mcpServerNames.Should().NotContain(AskUserQuestionToolProvider.ToolName);
+        mcpServerNames.Should().NotContain(NotifyClientToolProvider.ToolName);
     }
 
     /// <summary>

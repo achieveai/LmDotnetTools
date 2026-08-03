@@ -1,7 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
+import { defineComponent, inject, h } from 'vue';
 import ChatLayout from '@/components/ChatLayout.vue';
 import SubAgentListPanel from '@/components/SubAgentListPanel.vue';
+import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
+import { GO_TO_AGENT_TAB, type GoToAgentTab } from '@/composables/useConversationTabs';
 
 interface ConversationSummary {
   threadId: string;
@@ -32,6 +35,13 @@ const sharedMocks = vi.hoisted(() => ({
   resumeStreamIfActive: vi.fn(async () => {}),
   markStreamIdle: vi.fn(),
   markStreamLoading: vi.fn(),
+  // #246: browser-hosted client tools (AskUserQuestion) gating.
+  hasPendingClientQuestion: false,
+  submitClientToolResult: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
+  // #246 defect 1: the sub-agent-scoped submit useSubAgentPanel exposes, distinct from the root's
+  // submitClientToolResult above — ChatLayout must bind THIS one to SubAgentTranscript's prop so a
+  // descendant's answer submits over the focused child connection, not the root.
+  submitToFocusedChild: vi.fn(async () => ({ status: 'acked' as const, duplicate: false })),
   // Captures the thread-id getter ChatLayout passes to useSubAgentPanel, so a test can assert the
   // start-gating (the getter returns null until the conversation has a sidebar entry).
   subAgentThreadGetter: null as (() => string | null) | null,
@@ -138,6 +148,8 @@ vi.mock('@/composables/useChat', async () => {
       markStreamIdle: sharedMocks.markStreamIdle,
       markStreamLoading: sharedMocks.markStreamLoading,
       getResultForToolCall: vi.fn(() => null),
+      hasPendingClientQuestion: computed(() => sharedMocks.hasPendingClientQuestion),
+      submitClientToolResult: sharedMocks.submitClientToolResult,
       // Hoisted useSubAgentPanel(() => chatThreadId.value) reads this; useConversationTabs watches it.
       threadId: ref('thread-1'),
     }),
@@ -200,6 +212,7 @@ vi.mock('@/composables/useSubAgentPanel', async () => {
         focusChild: vi.fn(async () => {}),
         unfocusChild: vi.fn(async () => {}),
         sendToFocusedChild: vi.fn(),
+        submitToFocusedChild: sharedMocks.submitToFocusedChild,
         getResultForToolCall: vi.fn(() => null),
       };
     },
@@ -627,5 +640,206 @@ describe('ChatLayout sub-agent panel start-gating', () => {
 
     expect(sharedMocks.subAgentThreadGetter).not.toBeNull();
     expect(sharedMocks.subAgentThreadGetter!()).toBe('thread-1');
+  });
+});
+
+// #246: a deferred client tool (e.g. AskUserQuestion) must lock the mode/provider selectors (an
+// answer, once submitted, is bound to a specific mode/provider context) the same way an in-flight
+// stream does — but must NOT touch the composer (ordinary chat message queuing stays available
+// while a question is pending, per the coordinator's contract).
+describe('ChatLayout client-tool question gating (#246)', () => {
+  const mountWithSelectors = () =>
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: true,
+          PendingMessageQueue: true,
+          ChatInput: true,
+          ModeSelector: {
+            props: ['disabled'],
+            template: '<button data-test="mode-select" :disabled="disabled">Mode</button>',
+          },
+          ProviderSelector: {
+            props: ['disabled'],
+            template: '<button data-test="provider-select" :disabled="disabled">Provider</button>',
+          },
+        },
+      },
+    });
+
+  beforeEach(() => {
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.hasPendingClientQuestion = false;
+  });
+
+  it('leaves the mode/provider selectors enabled while idle with no pending question', async () => {
+    const wrapper = mountWithSelectors();
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="mode-select"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.get('[data-test="provider-select"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('disables the mode selector while a client question is pending, even though the run is idle', async () => {
+    sharedMocks.hasPendingClientQuestion = true;
+
+    const wrapper = mountWithSelectors();
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="mode-select"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('disables the provider selector while a client question is pending, even though the run is idle', async () => {
+    sharedMocks.hasPendingClientQuestion = true;
+
+    const wrapper = mountWithSelectors();
+    await flushPromises();
+
+    expect(wrapper.get('[data-test="provider-select"]').attributes('disabled')).toBeDefined();
+  });
+});
+
+// #246: ChatLayout must provide submitClientToolResult under SUBMIT_CLIENT_TOOL_RESULT, mirroring
+// the existing getResultForToolCall provide, so a descendant "rich" tool component (QuestionRich.vue,
+// via useClientToolSubmit()) can resolve a deferred AskUserQuestion without prop-drilling through
+// MessageList/ToolPill.
+describe('ChatLayout provides SUBMIT_CLIENT_TOOL_RESULT to descendants (#246)', () => {
+  it('injects useChat.submitClientToolResult for a descendant to call', async () => {
+    let injectedSubmit: ClientToolSubmitFn | undefined;
+    const Probe = defineComponent({
+      setup() {
+        injectedSubmit = inject<ClientToolSubmitFn>(SUBMIT_CLIENT_TOOL_RESULT);
+        return () => h('div', { 'data-test': 'probe' });
+      },
+    });
+
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.submitClientToolResult.mockClear();
+
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: Probe,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(injectedSubmit).toBe(sharedMocks.submitClientToolResult);
+
+    await injectedSubmit?.('call-1', '{"answers":[]}', false);
+    expect(sharedMocks.submitClientToolResult).toHaveBeenCalledWith('call-1', '{"answers":[]}', false);
+  });
+});
+
+// #246: a client-notification pill (NotificationPill.vue) reports a descendant blocked on a
+// browser-hosted client tool. Clicking it must jump the center pane to that descendant's tab —
+// wired via GO_TO_AGENT_TAB -> useConversationTabs' selectTab, mirroring the GET_AGENT_COLOR /
+// GET_AGENT_ROUTING provides already on ChatLayout.
+describe('ChatLayout provides GO_TO_AGENT_TAB to descendants (#246)', () => {
+  it('injects a function that switches the center pane away from the main tab', async () => {
+    let goToAgentTab: GoToAgentTab | undefined;
+    const Probe = defineComponent({
+      setup() {
+        goToAgentTab = inject<GoToAgentTab>(GO_TO_AGENT_TAB);
+        return () => h('div', { 'data-test': 'probe' });
+      },
+    });
+
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+
+    const wrapper = mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: Probe,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(typeof goToAgentTab).toBe('function');
+
+    goToAgentTab?.('agent-42');
+    await flushPromises();
+
+    const mainView = wrapper.get('[data-testid="main-view"]');
+    expect((mainView.element as HTMLElement).style.display).toBe('none');
+  });
+});
+
+// #246 defect 1: a descendant's AskUserQuestion must submit over the FOCUSED sub-agent's own
+// connection (useSubAgentPanel.submitToFocusedChild), not the root's submitClientToolResult — the
+// root doesn't know the descendant's toolCallId and would reply not_found. ChatLayout must bind
+// SubAgentTranscript's submit-client-tool-result prop to submitToFocusedChild once the center pane
+// switches to a sub-agent tab.
+describe('ChatLayout binds SubAgentTranscript to the focused-child submit (#246 defect 1)', () => {
+  it('provides submitToFocusedChild (not the root submit) inside the sub-agent tab subtree', async () => {
+    let injectedSubmit: ClientToolSubmitFn | undefined;
+    let goToAgentTab: GoToAgentTab | undefined;
+    // Mounted as MessageList in BOTH the main pane and (once activated) SubAgentTranscript. Each
+    // mount re-runs setup() in its own provide scope, so the LAST-mounted instance's inject wins —
+    // that's SubAgentTranscript's, once we switch tabs below.
+    const Probe = defineComponent({
+      setup() {
+        injectedSubmit = inject<ClientToolSubmitFn>(SUBMIT_CLIENT_TOOL_RESULT);
+        goToAgentTab = inject<GoToAgentTab>(GO_TO_AGENT_TAB);
+        return () => h('div', { 'data-test': 'probe' });
+      },
+    });
+
+    sharedMocks.chatLoading = false;
+    sharedMocks.isSending = false;
+    sharedMocks.modesLoading = false;
+    sharedMocks.currentThreadId = 'thread-1';
+    sharedMocks.conversations = [{ threadId: 'thread-1' }];
+    sharedMocks.submitClientToolResult.mockClear();
+    sharedMocks.submitToFocusedChild.mockClear();
+
+    mount(ChatLayout, {
+      global: {
+        stubs: {
+          ConversationSidebar: true,
+          MessageList: Probe,
+          PendingMessageQueue: true,
+          ChatInput: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    // Before switching tabs, the main pane's MessageList (outside SubAgentTranscript) injected the
+    // root submit — sanity-checked fully by the SUBMIT_CLIENT_TOOL_RESULT describe above.
+    expect(injectedSubmit).toBe(sharedMocks.submitClientToolResult);
+
+    goToAgentTab?.('agent-42');
+    await flushPromises();
+
+    // Once the sub-agent tab is active, SubAgentTranscript mounts its OWN MessageList, which injects
+    // the CHILD-scoped submit (submitToFocusedChild) instead — never the root's.
+    expect(injectedSubmit).toBe(sharedMocks.submitToFocusedChild);
+    expect(injectedSubmit).not.toBe(sharedMocks.submitClientToolResult);
+
+    await injectedSubmit?.('call-1', '{"answers":[]}', false);
+    expect(sharedMocks.submitToFocusedChild).toHaveBeenCalledWith('call-1', '{"answers":[]}', false);
+    expect(sharedMocks.submitClientToolResult).not.toHaveBeenCalled();
   });
 });

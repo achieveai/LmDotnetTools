@@ -17,13 +17,14 @@ import SubAgentListPanel from './SubAgentListPanel.vue';
 import ConversationTabs from './ConversationTabs.vue';
 import SubAgentTranscript from './SubAgentTranscript.vue';
 import { useSubAgentPanel } from '@/composables/useSubAgentPanel';
-import { useConversationTabs } from '@/composables/useConversationTabs';
+import { useConversationTabs, GO_TO_AGENT_TAB } from '@/composables/useConversationTabs';
 import {
   GET_AGENT_COLOR,
   GET_AGENT_ROUTING,
   resolveAgentRoutingFromCall,
   type AgentRoutingLookup,
 } from '@/utils/agentColors';
+import { SUBMIT_CLIENT_TOOL_RESULT } from '@/composables/useClientToolSubmit';
 import ModeSelector from './ModeSelector.vue';
 import ProviderSelector from './ProviderSelector.vue';
 import WorkspaceSelector from './WorkspaceSelector.vue';
@@ -104,6 +105,8 @@ const {
   markStreamIdle,
   markStreamLoading,
   getResultForToolCall,
+  hasPendingClientQuestion,
+  submitClientToolResult,
   threadId: chatThreadId,
 } = useChat({
   getModeId: () => currentModeId.value,
@@ -155,6 +158,7 @@ const {
   focusChild,
   unfocusChild,
   sendToFocusedChild,
+  submitToFocusedChild,
   getResultForToolCall: getSubAgentResultForToolCall,
 } = useSubAgentPanel(() => subAgentParentThreadId.value);
 
@@ -173,6 +177,13 @@ function handleSubAgentSend(text: string): void {
 // Provide getResultForToolCall to the MAIN view's pills. The sub-agent view (SubAgentTranscript)
 // shadows this with the child's own resolver for its subtree.
 provide('getResultForToolCall', getResultForToolCall);
+// Provide the client-tool submit function (#246, e.g. AskUserQuestion) so a descendant question
+// component can resolve a deferred tool call over the shared WebSocket without prop-drilling
+// through MessageList/SubAgentTranscript.
+provide(SUBMIT_CLIENT_TOOL_RESULT, submitClientToolResult);
+// Provide the tab-navigation function (#246) so a client-notification pill (NotificationPill.vue)
+// can jump the center pane straight to the reporting descendant's tab.
+provide(GO_TO_AGENT_TAB, selectTab);
 // Provide agentId → color so ToolPill (agent family) and NotificationPill (completion) can tint a
 // sub-agent's inline calls to match its tab.
 provide(GET_AGENT_COLOR, getAgentColor);
@@ -196,7 +207,12 @@ function handleCloseEgressModal(): void {
   closeEgressDialog();
 }
 const modeSwitchDisabled = computed(
-  () => modesLoading.value || chatLoading.value || isSending.value || isSwitchingMode.value
+  () =>
+    modesLoading.value ||
+    chatLoading.value ||
+    isSending.value ||
+    isSwitchingMode.value ||
+    hasPendingClientQuestion.value
 );
 
 /**
@@ -206,7 +222,12 @@ const modeSwitchDisabled = computed(
  * per-thread lock — provider is mutable once the run completes.
  */
 const providerSelectorDisabled = computed(
-  () => providersLoading.value || chatLoading.value || isSending.value || isSwitchingProvider.value
+  () =>
+    providersLoading.value ||
+    chatLoading.value ||
+    isSending.value ||
+    isSwitchingProvider.value ||
+    hasPendingClientQuestion.value
 );
 
 async function handleSelectProvider(providerId: string): Promise<void> {
@@ -765,6 +786,7 @@ onBeforeUnmount(() => {
           :is-streaming="isFocusedStreaming"
           :error="subAgentError"
           :get-result-for-tool-call="getSubAgentResultForToolCall"
+          :submit-client-tool-result="submitToFocusedChild"
           @send="handleSubAgentSend"
         />
       </div>

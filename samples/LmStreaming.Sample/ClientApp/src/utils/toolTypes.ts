@@ -24,6 +24,7 @@ export type ToolFamily =
   | 'math'
   | 'web'
   | 'weather'
+  | 'question'
   | 'generic';
 
 /**
@@ -37,8 +38,13 @@ export interface UnwrapResult {
   text: string;
 }
 
-/** Lifecycle state of a single tool call (families differ only in content, not the machine). */
-export type ToolCallState = 'streaming-args' | 'awaiting-result' | 'success' | 'error';
+/**
+ * Lifecycle state of a single tool call (families differ only in content, not the machine).
+ * `awaiting-input` is distinct from `awaiting-result`: it means the call is durably parked
+ * server-side (`ToolHandlerResult.Deferred`, e.g. `AskUserQuestion`) waiting on a HUMAN action
+ * in the browser, not a normal in-flight tool execution.
+ */
+export type ToolCallState = 'streaming-args' | 'awaiting-result' | 'awaiting-input' | 'success' | 'error';
 
 /** Input to {@link deriveToolPillState}. All fields tolerate null/undefined/partial. */
 export interface ToolPillInput {
@@ -50,6 +56,12 @@ export interface ToolPillInput {
   hasResult: boolean;
   /** The `is_error` flag from the ToolCallResultMessage, if any. */
   isErrorFlag?: boolean | null;
+  /**
+   * Mirrors `ToolCallResultMessage.is_deferred` on the call awaiting a result (#246). True while a
+   * durable client tool (e.g. AskUserQuestion) is parked awaiting a browser answer. Absent/false
+   * for ordinary tools — never changes their existing state-machine behavior.
+   */
+  isDeferred?: boolean;
 }
 
 /**
@@ -71,6 +83,8 @@ export interface ToolPillView {
   hasResult: boolean;
   /** Error message to surface when `isError` (from `{error}` key / MCP prefix / raw), else null. */
   errorText: string | null;
+  /** Mirrors {@link ToolPillInput.isDeferred} — true while parked awaiting a browser answer. */
+  isDeferred: boolean;
 }
 
 /**

@@ -5,6 +5,17 @@ import { hueForIndex, type AgentColorLookup } from '@/utils/agentColors';
 /** The id of the always-present top-level tab. */
 export const MAIN_TAB_ID = 'main';
 
+/**
+ * provide/inject key for navigating the center-pane tab strip from a descendant (mirrors
+ * GET_AGENT_COLOR/GET_AGENT_ROUTING). Used by NotificationPill (#246) so clicking a
+ * client-notification pill (a descendant blocked on a browser-hosted client tool) jumps straight
+ * to that descendant's tab via {@link useConversationTabs}'s `selectTab`.
+ */
+export const GO_TO_AGENT_TAB = 'goToAgentTab';
+
+/** Resolver injected into descendant pills: jump the center pane to this agent's tab. */
+export type GoToAgentTab = (agentId: string) => void;
+
 /** One entry in the center-pane tab strip: the `main` conversation, a sub-agent, or a workflow run. */
 export interface ConversationTab {
   /** `'main'` for the top-level agent, else the sub-agent's / workflow's `agentId`. */

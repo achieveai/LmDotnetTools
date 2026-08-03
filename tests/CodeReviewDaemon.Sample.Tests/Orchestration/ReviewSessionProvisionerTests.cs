@@ -31,11 +31,19 @@ public class ReviewSessionProvisionerTests
             PrLifecycleState = PrLifecycleState.Open,
         };
 
+    /// <summary>
+    /// Always-sufficient disk probe injected into every test below so provisioning outcomes are decided by
+    /// the fake session source alone, never by the real free space of the drive running the test (Task 18's
+    /// guard reads the actual host disk by default — see <see cref="GetOrCreateAsync_ReturnsNull_WhenDiskSpaceProbeReportsInsufficientSpace"/>
+    /// for a test that exercises that guard deterministically instead).
+    /// </summary>
+    private static readonly Func<string, bool> SufficientDisk = _ => true;
+
     [Fact]
     public async Task GetOrCreateAsync_SameRun_ReusesOneSession()
     {
         var fake = new FakeSessionSource();
-        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
 
         var a = await provisioner.GetOrCreateAsync(Run(), default);
         var b = await provisioner.GetOrCreateAsync(Run(), default);
@@ -47,10 +55,23 @@ public class ReviewSessionProvisionerTests
     }
 
     [Fact]
+    public async Task GetOrCreateAsync_ReturnsNull_WhenDiskSpaceProbeReportsInsufficientSpace()
+    {
+        var fake = new FakeSessionSource();
+        var provisioner = new ReviewSessionProvisioner(
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: _ => false);
+
+        var session = await provisioner.GetOrCreateAsync(Run(), default);
+
+        session.Should().BeNull();
+        fake.CreateCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task DestroyAsync_TearsDownTheRunSession()
     {
         var fake = new FakeSessionSource();
-        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+        var provisioner = new ReviewSessionProvisioner(fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
 
         _ = await provisioner.GetOrCreateAsync(Run(), default);
         await provisioner.DestroyAsync(Run(), default);
@@ -63,7 +84,7 @@ public class ReviewSessionProvisionerTests
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
         var slot = new ReviewSlot(
             0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
 
@@ -82,7 +103,7 @@ public class ReviewSessionProvisionerTests
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
         var slot = new ReviewSlot(
             0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
 
@@ -101,7 +122,7 @@ public class ReviewSessionProvisionerTests
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: workspaceBase);
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: workspaceBase, diskSpaceProbe: SufficientDisk);
         var slot = new ReviewSlot(0, slotPath, $"{slotPath}/store", $"{slotPath}/scratch");
 
         Func<Task> act = () => provisioner.GetOrCreateRequiredForSlotAsync(Run(), slot, default);
@@ -116,7 +137,7 @@ public class ReviewSessionProvisionerTests
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: null);
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: null, diskSpaceProbe: SufficientDisk);
         var slot = new ReviewSlot(
             0, "/ws/review-pool/slot-0", "/ws/review-pool/slot-0/store", "/ws/review-pool/slot-0/scratch");
 
@@ -133,7 +154,7 @@ public class ReviewSessionProvisionerTests
     {
         var fake = new FakeSessionSource();
         var provisioner = new ReviewSessionProvisioner(
-            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws");
+            fake, new CodeReviewDaemonOptions(), NullLoggerFactory.Instance, workspaceBasePath: "/ws", diskSpaceProbe: SufficientDisk);
         // The slot lives OUTSIDE the configured base, so mounting it at /workspace would escape the base —
         // the provisioner refuses and degrades to the per-run mount rather than throwing.
         var slot = new ReviewSlot(0, "/other/slot-0", "/other/slot-0/store", "/other/slot-0/scratch");

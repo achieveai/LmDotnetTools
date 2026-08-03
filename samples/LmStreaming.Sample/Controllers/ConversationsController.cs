@@ -202,6 +202,17 @@ public class ConversationsController(
         new(agentPool, workflowRunRegistry, store, hierarchyLogger, scanCoverageCache);
 
     /// <summary>
+    /// Error surfaced when a mode/provider switch is HARD-blocked (issue #246) because the
+    /// conversation has an unanswered <c>AskUserQuestion</c> parked. Unlike an armed <c>Wait</c>
+    /// (warn-only — the switch proceeds and the client is merely told what was discarded), recreating
+    /// the agent here would silently orphan a question the human hasn't answered yet, with no
+    /// surviving deferred call for the client to resolve against. The switch must be rejected, not
+    /// merely warned about.
+    /// </summary>
+    private const string PendingAskUserQuestionBlockedMessage =
+        "Cannot switch mode/provider while an AskUserQuestion is awaiting the user's answer.";
+
+    /// <summary>
     /// Reserves a new conversation thread and locks its workspace/provider/mode as metadata, without
     /// starting a live agent/sandbox session. Enables a headless caller to provision a conversation
     /// ahead of the first message, so the server (not the caller) mints the thread id.
@@ -1360,6 +1371,24 @@ public class ConversationsController(
                 });
         }
 
+        // HARD block (issue #246): an unanswered AskUserQuestion must not be silently orphaned by a
+        // recreate. Checked BEFORE the (warn-only, unchanged) armed-Wait capture below, mirroring how
+        // the IsInProgress conflict above is checked first among the hard blocks.
+        if (await agentPool.HasPendingAskUserQuestionAsync(threadId, ct))
+        {
+            logger.LogWarning(
+                "Blocked mode switch for thread {ThreadId} to mode {ModeId} because an AskUserQuestion is awaiting an answer.",
+                threadId,
+                request.ModeId);
+            return Conflict(
+                new
+                {
+                    error = PendingAskUserQuestionBlockedMessage,
+                    code = "mode_switch_blocked_by_pending_ask_user_question",
+                    threadId,
+                });
+        }
+
         // A mode switch recreates the agent, which tears down its trigger runtime. If a Wait is armed
         // (the run is parked on a timer, not streaming — so it passed the IsInProgress guard above), the
         // switch is still allowed but the pending wait is discarded; capture that up front so the
@@ -1483,6 +1512,23 @@ public class ConversationsController(
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
                 new { error = "Could not resolve the conversation's current mode.", threadId });
+        }
+
+        // HARD block (issue #246): mirrors SwitchMode — an unanswered AskUserQuestion must not be
+        // silently orphaned by a provider recreate. Checked before the warn-only armed-Wait capture.
+        if (await agentPool.HasPendingAskUserQuestionAsync(threadId, ct))
+        {
+            logger.LogWarning(
+                "Blocked provider switch for thread {ThreadId} to provider {ProviderId} because an AskUserQuestion is awaiting an answer.",
+                threadId,
+                request.ProviderId);
+            return Conflict(
+                new
+                {
+                    error = PendingAskUserQuestionBlockedMessage,
+                    code = "provider_switch_blocked_by_pending_ask_user_question",
+                    threadId,
+                });
         }
 
         // See SwitchMode: a provider swap recreates the agent and discards any armed Wait. Capture it

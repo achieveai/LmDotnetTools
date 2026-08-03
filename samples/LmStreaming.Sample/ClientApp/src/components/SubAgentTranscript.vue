@@ -2,6 +2,7 @@
 import { provide } from 'vue';
 import type { DisplayItem, ToolCallResultMessage } from '@/types';
 import { GET_RESULT_FOR_TOOL_CALL } from '@/composables/useToolResult';
+import { SUBMIT_CLIENT_TOOL_RESULT, type ClientToolSubmitFn } from '@/composables/useClientToolSubmit';
 import MessageList from './MessageList.vue';
 import ChatInput from './ChatInput.vue';
 
@@ -20,6 +21,12 @@ const props = defineProps<{
   error: string | null;
   /** Child-scoped tool-result resolver (this sub-agent's results, not the parent chat's). */
   getResultForToolCall: (toolCallId: string | null | undefined) => ToolCallResultMessage | null;
+  /**
+   * Child-scoped deferred client-tool submit (#246 defect 1): submits over the FOCUSED sub-agent's
+   * own `/ws/subagent` connection (`useSubAgentPanel.submitToFocusedChild`), not the root chat's
+   * connection — the root does not know a descendant's toolCallId and would reply `not_found`.
+   */
+  submitClientToolResult: ClientToolSubmitFn;
 }>();
 
 const emit = defineEmits<{ send: [text: string] }>();
@@ -28,6 +35,9 @@ const emit = defineEmits<{ send: [text: string] }>();
 // results — identical to the override SubAgentListPanel used to do. The resolver reads live state at
 // call time, so a stable identity provided once stays correct across focus changes.
 provide(GET_RESULT_FOR_TOOL_CALL, props.getResultForToolCall);
+// Shadow ChatLayout's root SUBMIT_CLIENT_TOOL_RESULT so a descendant's AskUserQuestion (rendered via
+// QuestionRich inside this subtree) answers over the FOCUSED CHILD connection, not the root (#246).
+provide(SUBMIT_CLIENT_TOOL_RESULT, props.submitClientToolResult);
 </script>
 
 <template>

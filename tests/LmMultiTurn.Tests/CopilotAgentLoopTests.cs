@@ -3,8 +3,11 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Agents;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.CopilotSdkProvider.Models;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.ClientTools;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
@@ -236,6 +239,59 @@ public class CopilotAgentLoopTests : LoggingTestBase
         metadata!.Properties.Should().NotBeNull();
         metadata.Properties!.TryGetValue("copilot_session_id", out var copilotSessionId).Should().BeTrue();
         copilotSessionId?.ToString().Should().Be("sess_persist_1");
+
+        await cts.CancelAsync();
+    }
+
+    /// <summary>
+    /// Regression guard for issue #246: mirrors the Codex counterpart. The client-facing
+    /// AskUserQuestion/NotifyClient tools are registered ONLY by <see cref="MultiTurnAgentLoop"/>'s
+    /// own constructor. <see cref="CopilotAgentLoop"/> instead bridges whatever a caller explicitly
+    /// hands it via <see cref="FunctionRegistry"/> into dynamic tool specs sent to the Copilot CLI.
+    /// This locks down that CopilotAgentLoop's OWN construction path never injects these two
+    /// client-only tool names itself.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteRunAsync_DoesNotAdvertiseAskUserQuestionOrNotifyClient_AsDynamicTools()
+    {
+        var fakeClient = new FakeCopilotClient(
+            sessionId: "sess_no_client_tools",
+            events: [PromptCompleted("""{"usage":{"inputTokens":1,"outputTokens":1}}""")]);
+
+        var registry = new FunctionRegistry();
+        _ = registry.AddFunction(
+            new FunctionContract { Name = "ordinary_tool", Description = "An ordinary tool", Parameters = [] },
+            (_, _, _) => Task.FromResult<ToolHandlerResult>(ToolHandlerResult.FromText("ok")));
+
+        await using var loop = new CopilotAgentLoop(
+            new CopilotSdkOptions(),
+            functionRegistry: registry,
+            enabledTools: null,
+            threadId: "thread-copilot-no-client-tools",
+            clientFactory: (_, _) => fakeClient,
+            logger: LoggerFactory.CreateLogger<CopilotAgentLoop>());
+
+        using var cts = new CancellationTokenSource();
+        _ = loop.RunAsync(cts.Token);
+
+        var input = new UserInput([
+            new TextMessage { Role = Role.User, Text = "hello" },
+        ]);
+
+        await foreach (var _ in loop.ExecuteRunAsync(input, cts.Token))
+        {
+        }
+
+        fakeClient.LastStartOptions.Should().NotBeNull();
+        var toolNames = fakeClient.LastStartOptions!.Tools?.Select(t => t.Name).ToList()
+            ?? [];
+        toolNames.Should().Contain("ordinary_tool", "the explicitly registered tool must still bridge through");
+        toolNames.Should().NotContain(
+            AskUserQuestionToolProvider.ToolName,
+            "CopilotAgentLoop must never advertise the client-only AskUserQuestion tool itself");
+        toolNames.Should().NotContain(
+            NotifyClientToolProvider.ToolName,
+            "CopilotAgentLoop must never advertise the client-only NotifyClient tool itself");
 
         await cts.CancelAsync();
     }

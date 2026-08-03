@@ -52,6 +52,39 @@ describe('deriveToolPillState', () => {
     });
   });
 
+  describe('awaiting-input (deferred client tool, e.g. AskUserQuestion)', () => {
+    // Server contract (ToolCallResultBuilder.FromHandlerResult, ToolHandlerResult.Deferred): a
+    // deferred call emits its ToolCallResultMessage placeholder IMMEDIATELY with an empty Result
+    // and IsDeferred=true — there is always a result message, just an empty/unresolved one.
+    it('awaiting-input for the deferred placeholder result (empty result, isDeferred true)', () => {
+      const v = deriveToolPillState({
+        functionArgs: '{"questions":[{"prompt":"Pick one"}]}',
+        result: '',
+        hasResult: true,
+        isDeferred: true,
+      });
+      expect(v.state).toBe('awaiting-input');
+      expect(v.isDeferred).toBe(true);
+    });
+
+    it('a resolved deferred call (isDeferred now false, real result) reports success/error normally', () => {
+      const v = deriveToolPillState({
+        functionArgs: '{"questions":[{"prompt":"Pick one"}]}',
+        result: '{"answers":[{"selectedValues":["a"]}]}',
+        hasResult: true,
+        isDeferred: false,
+      });
+      expect(v.state).toBe('success');
+      expect(v.isDeferred).toBe(false);
+    });
+
+    it('isDeferred defaults to false when absent (no regression for ordinary tools)', () => {
+      const v = deriveToolPillState(noResult('{"location":"Seattle"}'));
+      expect(v.isDeferred).toBe(false);
+      expect(v.state).toBe('awaiting-result');
+    });
+  });
+
   describe('error detection (independent of is_error flag)', () => {
     it('MCP-prefix infra error with is_error=false → error', () => {
       const v = deriveToolPillState({ functionArgs: mcpError.functionArgs, result: mcpError.result, hasResult: true, isErrorFlag: false });

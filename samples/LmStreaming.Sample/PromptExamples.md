@@ -576,6 +576,63 @@ literal; only the inner JSON quotes are escaped.
 
 ---
 
+## Client tools (#246): AskUserQuestion / NotifyClient UI tests
+
+Prompts for the browser-hosted client tools
+([`playwright-scripts/ask-question-notify-client.mjs`](playwright-scripts/ask-question-notify-client.mjs)
+and the C# scenarios `Scenarios/AskUserQuestionTests.cs` / `Scenarios/NotifyClientTests.cs`). Both
+tools are registered **unconditionally** by `MultiTurnAgentLoop` — no chat mode restricts them. Use
+the `test` or `test-anthropic` mock providers; no real LLM calls needed.
+
+### AskUserQuestion — single-select question, then a scripted follow-up
+
+The model asks one question with two options; the run **parks** until the client answers, then
+resumes with the next scripted turn (proof the answer round-tripped, not a static replay):
+
+<|instruction_start|>{"instruction_chain":[{"id":"ask-color","id_message":"Asking a question","messages":[{"tool_call":[{"name":"AskUserQuestion","args":{"context":"Need to know your favorite color before continuing.","questions":[{"prompt":"Pick a color","options":[{"label":"Red","value":"red"},{"label":"Blue","value":"blue"}]}]}}]}]},{"id":"ask-followup","messages":[{"text":"Great, blue it is."}]}]}<|instruction_end|>
+
+Expected UI:
+1. An `AskUserQuestion` tool-call pill appears; the send/stop control returns to idle even though the
+   conversation is not finished (a deferred call is not a completed run from the client's view).
+2. Expand the pill (rich content — `QuestionRich`, `data-testid="question-rich"` — only renders once
+   expanded) → the interactive `question-form` shows the prompt + two options.
+3. Click the "Blue" option (`question-option-blue`), then `question-submit` → the resolved,
+   read-only view (`question-resolved`) appears and reads "Blue".
+4. The parked run resumes automatically: the follow-up text "Great, blue it is." streams in.
+
+**Skip** (on a single-question batch, Skip submits immediately — Skip is also treated as the last
+question, no separate Submit click needed): click `question-skip` instead of picking an option and
+submitting → `question-resolved` reads "Skipped" → the run still resumes with its scripted follow-up.
+
+**Reload while pending:** after the pill is expanded and `question-form` is visible, note the
+current conversation's `data-thread-id` and navigate to `{BASE}/?threadId={id}` (the same deep-link
+pattern `ChatLayout.vue`'s `onMounted` uses to re-select a conversation from `window.location.search`
+— not a bare reload of "most recent conversation"). The rehydrated pill still shows `question-form`
+(NOT `question-resolved`) — the deferred placeholder round-trips through the REST history — and can
+still be answered from there.
+
+### NotifyClient — live notification, no pause, no extra run
+
+Unlike `AskUserQuestion`, `NotifyClient` never defers and never triggers a run of its own — it
+resolves immediately and separately publishes a `NotifyMessage` (`notify_kind:
+client-notification`) that renders as its own `notification-pill`, distinct from the ordinary
+tool-call pill for the call itself. Pair it with a long text turn so there's a real multi-second
+window in which to observe the pill appearing WHILE the run is still streaming, not only afterward:
+
+<|instruction_start|>{"instruction_chain":[{"id":"notify-1","messages":[{"tool_call":[{"name":"NotifyClient","args":{"message":"Heads up: kicking off a long summary now.","label":"Progress"}}]}]},{"id":"notify-2","messages":[{"text_message":{"length":300}}]}]}<|instruction_end|>
+
+Expected UI:
+1. While the `stop-button` is still visible (turn 2's long text is still streaming), a
+   `notification-pill` with `data-notify-kind="client-notification"` is already present.
+2. The `NotifyClient` call also renders as an ordinary (non-blocking) tool-call pill — it never shows
+   an awaiting-input form.
+3. Once idle: exactly one `user-message-group` and one `assistant-message-group` — `NotifyClient`
+   must not enqueue an additional user turn or fork a redundant assistant run.
+4. Reload via `?threadId=` → the `notification-pill` rehydrates from persisted history without
+   duplicating the notify as a second user bubble.
+
+---
+
 ## Codex Mode Prompt Examples
 
 These prompts are for `LM_PROVIDER_MODE=codex`.
