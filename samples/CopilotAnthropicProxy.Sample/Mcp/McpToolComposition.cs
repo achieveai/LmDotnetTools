@@ -97,8 +97,7 @@ internal sealed class McpToolComposition
         var endpoint = context.Request.Path.Value;
         if (request["params"] is not JsonObject parameters)
         {
-            await WriteInvalidParamsAsync(context, request["id"]!);
-            return true;
+            return false;
         }
 
         var name = Text(parameters["name"]);

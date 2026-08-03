@@ -268,17 +268,46 @@ public class McpToolCompositionTests
     }
 
     [Fact]
-    public async Task ToolsCall_MalformedParamsReturnsJsonRpcInvalidParams()
+    public async Task ToolsCall_MalformedParamsForUnknownOwnershipPassesThrough()
     {
-        await using var factory = CreateFactory(EmptyListResponse());
+        const string malformed = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":[]}";
+        var githubCalls = 0;
+        await using var factory = CreateFactory(
+            EmptyListResponse(),
+            github: (_, _) =>
+            {
+                githubCalls++;
+                return Task.FromResult(
+                    TestUpstream.Json(
+                        githubCalls == 1
+                            ? EmptyListResponse()
+                            : "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32602,\"message\":\"github invalid params\"}}"
+                    )
+                );
+            }
+        );
         using var client = factory.CreateClient();
         using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1");
-        const string malformed = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":[]}";
 
         using var call = await SendAsync(client, "/mcp", malformed, "session-1");
         var body = JsonNode.Parse(await call.Content.ReadAsStringAsync())!;
 
-        body["id"]!.GetValue<int>().Should().Be(7);
+        body["error"]!["message"]!.GetValue<string>().Should().Be("github invalid params");
+        githubCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ToolsCall_MalformedArgumentsForLocalToolReturnsJsonRpcInvalidParams()
+    {
+        await using var factory = CreateFactory(EmptyListResponse());
+        using var client = factory.CreateClient();
+        using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1");
+        const string malformed = "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"web_search\",\"arguments\":[]}}";
+
+        using var call = await SendAsync(client, "/mcp", malformed, "session-1");
+        var body = JsonNode.Parse(await call.Content.ReadAsStringAsync())!;
+
+        body["id"]!.GetValue<int>().Should().Be(8);
         body["error"]!["code"]!.GetValue<int>().Should().Be(-32602);
     }
 
