@@ -224,6 +224,42 @@ public class ConversationsControllerTests
         pool.GetAgentMode(threadId)!.Id.Should().Be(SystemChatModes.DefaultModeId);
     }
 
+    /// <summary>
+    /// Issue #246 test-review finding: unlike <c>SwitchMode</c>/<c>SwitchProvider</c> (which hard-block
+    /// on a pending <see cref="AskUserQuestionToolProvider"/> question via
+    /// <c>HasPendingAskUserQuestionAsync</c>), <see cref="ConversationsController.Delete"/> has NO such
+    /// guard — it unconditionally calls <c>MultiTurnAgentPool.RemoveAgentAsync</c>, which disposes the
+    /// agent regardless of any deferred tool call awaiting an answer. This is intentional "delete-as-cancel"
+    /// semantics: deleting a conversation implicitly abandons any pending question rather than blocking
+    /// the delete or synthesizing a resolution on the client's behalf. This test locks in that existing
+    /// behavior as a deliberate contract (not an oversight): a pending question must not prevent Delete
+    /// from succeeding, and once deleted the agent is gone from the pool entirely — so a
+    /// <c>client_tool_result</c> that later arrives for that <c>toolCallId</c> hits the disposed-agent
+    /// <c>not_found</c> path added to <c>ChatWebSocketManager</c>, not a resolvable agent.
+    /// </summary>
+    [Fact]
+    public async Task Delete_WithPendingAskUserQuestion_RemovesAgentUnconditionally_PreservingDeleteAsCancelSemantics()
+    {
+        const string threadId = "thread-delete-pending-question";
+        const string toolCallId = "tc_delete_pending";
+        var store = new InMemoryConversationStore();
+        await using var pool = await CreatePoolWithParkedAskUserQuestionAsync(threadId, toolCallId);
+
+        // Precondition: the question really is pending before Delete runs.
+        (await pool.HasPendingAskUserQuestionAsync(threadId)).Should().BeTrue();
+
+        var controller = CreateController(store, pool, ModeStoreResolvingSystemModes());
+
+        var result = await controller.Delete(threadId, CancellationToken.None);
+
+        result.Should().BeOfType<NoContentResult>();
+
+        // Delete neither blocked on nor attempted to resolve the pending question — the agent (and its
+        // deferred call) is simply gone.
+        pool.TryGet(threadId, out _).Should().BeFalse();
+        pool.GetAgentMode(threadId).Should().BeNull();
+    }
+
     [Fact]
     public async Task List_ExcludesSubAgentThreads_FromTheConversationSidebar()
     {

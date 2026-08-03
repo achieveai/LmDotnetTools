@@ -1023,7 +1023,14 @@ public sealed class ChatWebSocketManager
     /// (e.g. a CLI-backed loop, which never exposes deferred client-tool calls) is reported as
     /// <c>not_found</c>: there is definitionally nothing there to resolve.
     /// </summary>
-    private async Task HandleClientToolResultAsync(
+    /// <remarks>
+    /// Internal (not private) so tests can drive the disposed-agent race (issue #246) directly,
+    /// deterministically, without racing the connection's own subscription teardown — disposing the
+    /// agent through the full <see cref="HandleConnectionAsync"/> path also completes that
+    /// connection's <c>agent.SubscribeAsync</c> subscriber channel, which legitimately (and
+    /// near-instantly) ends the whole connection before a queued frame can ever reach this handler.
+    /// </remarks>
+    internal async Task HandleClientToolResultAsync(
         RegisteredWebSocketConnection connection,
         IMultiTurnAgent agent,
         string threadId,
@@ -1048,7 +1055,25 @@ public sealed class ChatWebSocketManager
             return;
         }
 
-        var outcome = await loop.TryResolveToolCallAsync(toolCallId!, result!, isError, ct: ct);
+        ResolveToolCallOutcome outcome;
+        try
+        {
+            outcome = await loop.TryResolveToolCallAsync(toolCallId!, result!, isError, ct: ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Reachable race (issue #246): the connection captured this agent before a concurrent
+            // ConversationsController.Delete (or pool eviction) disposed it. Treat it the same as an
+            // agent that can no longer be resolved rather than letting the receive loop fault.
+            _logger.LogWarning(
+                "client_tool_result for thread {ThreadId} (tool_call {ToolCallId}) targets an agent "
+                    + "that was disposed before the frame was processed",
+                threadId,
+                toolCallId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
+            return;
+        }
+
         await SendClientToolResultOutcomeAsync(connection, toolCallId!, outcome, ct);
     }
 
@@ -1057,7 +1082,10 @@ public sealed class ChatWebSocketManager
     /// #246). The target loop is derived from the route (<paramref name="agentId"/>, the sub-agent
     /// socket's own path segment) via <see cref="SubAgentManager.TryGetAgent"/> — never from the payload.
     /// </summary>
-    private async Task HandleSubAgentClientToolResultAsync(
+    /// <remarks>
+    /// Internal (not private) for the same testability reason as <see cref="HandleClientToolResultAsync"/>.
+    /// </remarks>
+    internal async Task HandleSubAgentClientToolResultAsync(
         RegisteredWebSocketConnection connection,
         SubAgentManager subAgentManager,
         string agentId,
@@ -1082,7 +1110,25 @@ public sealed class ChatWebSocketManager
             return;
         }
 
-        var outcome = await loop.TryResolveToolCallAsync(toolCallId!, result!, isError, ct: ct);
+        ResolveToolCallOutcome outcome;
+        try
+        {
+            outcome = await loop.TryResolveToolCallAsync(toolCallId!, result!, isError, ct: ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Same reachable race as the primary path, but here `childAgent` was re-resolved from
+            // SubAgentManager on this very frame (see the doc comment above), and STILL lost the race
+            // against a concurrent dispose (e.g. parent teardown tearing down the whole descendant tree).
+            _logger.LogWarning(
+                "client_tool_result for sub-agent {AgentId} (tool_call {ToolCallId}) targets an agent "
+                    + "that was disposed before the frame was processed",
+                agentId,
+                toolCallId);
+            await SendClientToolResultErrorAsync(connection, toolCallId, "not_found", ct);
+            return;
+        }
+
         await SendClientToolResultOutcomeAsync(connection, toolCallId!, outcome, ct);
     }
 

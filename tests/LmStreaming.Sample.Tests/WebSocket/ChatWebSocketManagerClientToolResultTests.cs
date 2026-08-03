@@ -267,6 +267,60 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         frame.Should().Contain("\"code\":\"not_found\"");
     }
 
+    /// <summary>
+    /// Reachable race (issue #246 test-review finding): the browser already has this PRIMARY socket
+    /// open and bound to <c>agent</c>, then <c>ConversationsController.Delete</c> races in and disposes
+    /// that exact agent (<c>MultiTurnAgentPool.RemoveAgentAsync</c> → <c>AgentEntry.DisposeAsync</c> →
+    /// <c>Agent.DisposeAsync</c>) before the in-flight <c>client_tool_result</c> frame is processed.
+    /// Unlike the <c>ChatRequest</c> path, <c>HandleClientToolResultAsync</c> never re-resolves the agent
+    /// from the pool — it resolves against the connection's already-captured agent reference — so
+    /// this is exactly the object <c>TryResolveToolCallAsync</c>'s <c>ThrowIfDisposed()</c> guard now sees.
+    /// Before the fix this threw an unhandled <see cref="ObjectDisposedException"/> out of the receive
+    /// loop (no catch for it existed), so no typed frame ever reached the client and the connection's
+    /// receive task simply faulted. The fix must translate it into a <c>client_tool_result_error</c> with a
+    /// stable code, WITHOUT closing the connection or crashing the receive loop.
+    ///
+    /// This drives <c>HandleClientToolResultAsync</c> directly (it is <c>internal</c> for exactly this
+    /// reason) rather than through <c>HandleConnectionAsync</c>: disposing the connection's own bound
+    /// agent also completes that agent's <c>SubscribeAsync</c> subscriber channel, which legitimately
+    /// (and near-instantly) ends the WHOLE connection via its <c>Task.WhenAny</c> race — before a queued
+    /// inbound frame could ever reach the receive pump. Calling the handler directly isolates the exact
+    /// unit the bug lives in, without racing that unrelated (and correct) teardown behavior.
+    /// </summary>
+    [Fact]
+    public async Task PrimaryPath_AgentDisposedBeforeFrameArrives_SendsErrorNotFound_WithoutCrashingConnection()
+    {
+        const string threadId = "ctr-primary-disposed";
+        const string toolCallId = "tc_1";
+        using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using var pool = await CreatePoolWithParkedAskUserQuestionAsync(threadId, toolCallId, ct.Token);
+
+        pool.TryGet(threadId, out var agent).Should().BeTrue();
+
+        // Simulate the concurrent delete: dispose the SAME agent instance the connection is bound to
+        // (mirrors ConversationsController.Delete racing an in-flight client_tool_result for a
+        // conversation the user just closed/deleted), then feed the frame straight into the handler
+        // with that now-disposed reference — exactly what ProcessClientMessageAsync would do with its
+        // already-captured `agent` field.
+        await ((MultiTurnAgentLoop)agent!).DisposeAsync();
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register(threadId, socket);
+
+        await manager.HandleClientToolResultAsync(
+            connection,
+            agent!,
+            threadId,
+            /*lang=json,strict*/
+            $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""",
+            ct.Token);
+
+        var frame = socket.SentFrames.First(f => f.Contains("client_tool_result_error"));
+        frame.Should().Contain($"\"toolCallId\":\"{toolCallId}\"");
+        frame.Should().Contain("\"code\":\"not_found\"");
+    }
+
     [Fact]
     public async Task PrimaryPath_MissingToolCallId_SendsErrorInvalid()
     {
@@ -412,6 +466,55 @@ public sealed class ChatWebSocketManagerClientToolResultTests
 
         await ct.CancelAsync();
         await handlerTask;
+
+        var frame = socket.SentFrames.First(f => f.Contains("client_tool_result_error"));
+        frame.Should().Contain("\"code\":\"not_found\"");
+    }
+
+    /// <summary>
+    /// Same reachable race as <see cref="PrimaryPath_AgentDisposedBeforeFrameArrives_SendsErrorNotFound_WithoutCrashingConnection"/>,
+    /// on the SUB-AGENT path: <c>HandleSubAgentClientToolResultAsync</c> re-resolves the child via
+    /// <see cref="SubAgentManager.TryGetAgent"/> on every frame, but a disposed-yet-still-registered child
+    /// (e.g. a completed sub-agent the manager has not yet evicted — the same state this file's
+    /// <c>HandleSubAgentConnectionAsync</c> doc comments describe for a "COMPLETED sub-agent" whose
+    /// transcript persists after eviction) is returned as-is. Calling <c>TryResolveToolCallAsync</c> on it
+    /// must not crash the receive loop before a typed frame reaches the client.
+    ///
+    /// Drives <c>HandleSubAgentClientToolResultAsync</c> directly for the same reason as the primary-path
+    /// test above: disposing the child through the full <c>HandleSubAgentConnectionAsync</c> path also
+    /// completes that connection's own subscription and races away the connection before the queued
+    /// frame can be processed.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentPath_AgentDisposedBeforeFrameArrives_SendsErrorNotFound_WithoutCrashingConnection()
+    {
+        const string toolCallId = "tc_child_4";
+        await using var parentLoop = CreateParentLoopForSubAgent(() => CreateAskUserQuestionChildAgent(toolCallId));
+        await using var pool = CreatePoolReturning(parentLoop);
+        _ = pool.GetOrCreateAgent(SubAgentParentThreadId, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        using var ct = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
+            SubAgentTemplateName, "ask the user", name: "asker4", runInBackground: true);
+        var agentId = ParseAgentId(spawnJson);
+        _ = await parentLoop.SubAgentManager!.ObserveCompletionAsync(agentId, ct.Token);
+
+        // Simulate the concurrent disposal: the child stays registered (still resolvable by agentId) but
+        // its underlying loop is disposed before the frame is processed.
+        parentLoop.SubAgentManager!.TryGetAgent(agentId, out var childAgent).Should().BeTrue();
+        await ((MultiTurnAgentLoop)childAgent!).DisposeAsync();
+
+        var manager = CreateManager(pool);
+        var socket = new FakeWebSocket();
+        var connection = new WebSocketConnectionRegistry().Register($"subagent-{agentId}", socket);
+
+        await manager.HandleSubAgentClientToolResultAsync(
+            connection,
+            parentLoop.SubAgentManager!,
+            agentId,
+            /*lang=json,strict*/
+            $$"""{"$type":"client_tool_result","toolCallId":"{{toolCallId}}","result":"blue","isError":false}""",
+            ct.Token);
 
         var frame = socket.SentFrames.First(f => f.Contains("client_tool_result_error"));
         frame.Should().Contain("\"code\":\"not_found\"");
