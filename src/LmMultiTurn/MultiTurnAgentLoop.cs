@@ -188,6 +188,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional root-conversation delivery target for a descendant's parked <c>AskUserQuestion</c>.
     ///     Null resolves to this loop's own persist-and-publish path.
     /// </param>
+    /// <param name="includeAskUserQuestionTool">
+    ///     Whether this loop has a browser result channel capable of resolving <c>AskUserQuestion</c>.
+    /// </param>
+    /// <param name="includeNotifyClientTool">
+    ///     Whether this loop has a browser subscriber capable of receiving <c>NotifyClient</c>.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -209,7 +215,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         MultiTurnLifecycleServices? lifecycleServices = null,
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
         AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null)
+        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null,
+        bool includeAskUserQuestionTool = true,
+        bool includeNotifyClientTool = true)
         : base(
             threadId,
             systemPrompt,
@@ -256,10 +264,16 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         _descendantQuestionSink = descendantQuestionSink ?? DeliverClientNotificationAsync;
 
         // Client-facing tools register before the sub-agent inheritable-tool snapshot. Each descendant
-        // constructs its own correctly-scoped provider instances.
+        // constructs its own correctly-scoped provider instances when the owning host enables them.
+        if (includeAskUserQuestionTool)
+        {
+            _ = functionRegistry.AddProvider(new AskUserQuestionToolProvider());
+        }
 
-        _ = functionRegistry.AddProvider(new AskUserQuestionToolProvider());
-        _ = functionRegistry.AddProvider(new NotifyClientToolProvider(DeliverClientNotificationAsync));
+        if (includeNotifyClientTool)
+        {
+            _ = functionRegistry.AddProvider(new NotifyClientToolProvider(DeliverClientNotificationAsync));
+        }
 
         // When sub-agent orchestration is configured, snapshot the current tools
         // and register Agent/CheckAgent tools before building the middleware stack.
