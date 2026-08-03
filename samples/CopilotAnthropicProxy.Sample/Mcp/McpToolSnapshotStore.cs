@@ -5,16 +5,27 @@ internal sealed record McpToolSnapshot(IReadOnlySet<string> LocalToolNames, stri
 internal sealed class McpToolSnapshotStore
 {
     private const char EntrySeparator = '';
-    private readonly ConcurrentDictionary<(string EndpointPath, string SessionId), long> _generations = [];
     private const string ValueSeparator = "";
     private const int MaxHeaderContextLength = 8 * 1024;
-    private readonly ConcurrentDictionary<(string EndpointPath, string SessionId), McpToolSnapshot> _snapshots = [];
+    private readonly ConcurrentDictionary<(string EndpointPath, string SessionId), SessionState> _states = [];
 
-    public long Generation(string endpointPath, string sessionId) =>
-        _generations.GetOrAdd((endpointPath, sessionId), 0);
+    public long Generation(string endpointPath, string sessionId)
+    {
+        var state = _states.GetOrAdd((endpointPath, sessionId), _ => new SessionState());
+        lock (state)
+        {
+            return state.Generation;
+        }
+    }
 
-    public void Set(string endpointPath, string sessionId, McpToolSnapshot snapshot) =>
-        _snapshots[(endpointPath, sessionId)] = snapshot;
+    public void Set(string endpointPath, string sessionId, McpToolSnapshot snapshot)
+    {
+        var state = _states.GetOrAdd((endpointPath, sessionId), _ => new SessionState());
+        lock (state)
+        {
+            state.Snapshot = snapshot;
+        }
+    }
 
     public void SetIfGeneration(
         string endpointPath,
@@ -23,19 +34,44 @@ internal sealed class McpToolSnapshotStore
         McpToolSnapshot snapshot
     )
     {
-        if (Generation(endpointPath, sessionId) == expectedGeneration)
+        var state = _states.GetOrAdd((endpointPath, sessionId), _ => new SessionState());
+        lock (state)
         {
-            _snapshots[(endpointPath, sessionId)] = snapshot;
+            if (state.Generation == expectedGeneration)
+            {
+                state.Snapshot = snapshot;
+            }
         }
     }
 
-    public bool TryGet(string endpointPath, string sessionId, out McpToolSnapshot snapshot) =>
-        _snapshots.TryGetValue((endpointPath, sessionId), out snapshot!);
+    public bool TryGet(string endpointPath, string sessionId, out McpToolSnapshot snapshot)
+    {
+        snapshot = null!;
+        if (!_states.TryGetValue((endpointPath, sessionId), out var state))
+        {
+            return false;
+        }
+
+        lock (state)
+        {
+            if (state.Snapshot is null)
+            {
+                return false;
+            }
+
+            snapshot = state.Snapshot;
+            return true;
+        }
+    }
 
     public void Remove(string endpointPath, string sessionId)
     {
-        _generations.AddOrUpdate((endpointPath, sessionId), 1, (_, current) => current + 1);
-        _snapshots.TryRemove((endpointPath, sessionId), out _);
+        var state = _states.GetOrAdd((endpointPath, sessionId), _ => new SessionState());
+        lock (state)
+        {
+            state.Generation++;
+            state.Snapshot = null;
+        }
     }
 
     public static string BuildHeaderContext(IHeaderDictionary headers) =>
@@ -54,4 +90,10 @@ internal sealed class McpToolSnapshotStore
 
     public static bool HasToolFilterHeaders(IHeaderDictionary headers) =>
         headers.Keys.Any(key => key.StartsWith("X-MCP-", StringComparison.OrdinalIgnoreCase));
+
+    private sealed class SessionState
+    {
+        public long Generation { get; set; }
+        public McpToolSnapshot? Snapshot { get; set; }
+    }
 }

@@ -239,9 +239,14 @@ internal sealed class McpToolComposition
         var isJson = string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase);
         var isSse = string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase);
         var hasBoundedSseBody = isSse && upstream.Content.Headers.ContentLength is { } sseLength && sseLength <= maxBodyBytes;
-        if (!upstream.IsSuccessStatusCode || (!isJson && !hasBoundedSseBody))
+        if (!upstream.IsSuccessStatusCode)
         {
             return null;
+        }
+
+        if (!isJson && !hasBoundedSseBody)
+        {
+            return new McpComposedList(null, endpoint, sessionId, McpSnapshotAction.Remove, Generation: generation);
         }
 
         var original = await ProxyHttp.ReadCappedBytesAsync(

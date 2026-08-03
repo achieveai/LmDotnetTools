@@ -2645,7 +2645,8 @@ internal static class ProxyMcp
             await WriteMcpErrorAsync(
                 ctx,
                 StatusCodes.Status504GatewayTimeout,
-                "Timed out waiting for the upstream Copilot MCP server to respond."
+                "Timed out waiting for the upstream Copilot MCP server to respond.",
+                rpcRequest?["id"]
             );
             return;
         }
@@ -2657,7 +2658,8 @@ internal static class ProxyMcp
                 ctx,
                 StatusCodes.Status401Unauthorized,
                 "Failed to acquire a GitHub Copilot token. Re-authenticate with the GitHub Copilot CLI or "
-                    + "`gh auth login`, or set GITHUB_COPILOT_TOKEN / GH_TOKEN."
+                    + "`gh auth login`, or set GITHUB_COPILOT_TOKEN / GH_TOKEN.",
+                rpcRequest?["id"]
             );
             return;
         }
@@ -2667,7 +2669,8 @@ internal static class ProxyMcp
             await WriteMcpErrorAsync(
                 ctx,
                 StatusCodes.Status502BadGateway,
-                "Failed to reach the upstream Copilot MCP server."
+                "Failed to reach the upstream Copilot MCP server.",
+                rpcRequest?["id"]
             );
             return;
         }
@@ -2762,7 +2765,7 @@ internal static class ProxyMcp
 
             ctx.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-            if (composedList is not null)
+            if (composedList?.Body is not null)
             {
                 await ctx.Response.Body.WriteAsync(composedList.Body, ctx.RequestAborted);
                 composition.PublishSnapshot(composedList);
@@ -2776,10 +2779,15 @@ internal static class ProxyMcp
                     idleCts,
                     linked,
                     logger,
-                    (errorContext, status, message) => WriteMcpErrorAsync(errorContext, status, message),
+                    (errorContext, status, message) =>
+                        WriteMcpErrorAsync(errorContext, status, message, rpcRequest?["id"]),
                     isSse,
                     keepAliveInterval
                 );
+                if (composedList is not null)
+                {
+                    composition.PublishSnapshot(composedList);
+                }
             }
 
             logger.LogInformation(
