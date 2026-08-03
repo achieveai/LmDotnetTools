@@ -252,3 +252,50 @@ knowledge-extraction:
     Do NOT write YAML frontmatter — the daemon deterministically injects title, tags, scope,
     sourcePrs, and updated. Do not attempt to post comments, push commits, or otherwise act on the
     repository — the daemon owns all writes.
+
+  # v1.1 exists because v1.0 never wrote a single entry on the S2S path. There, this profile prompt is
+  # appended to the host's `workspace-agent` MODE prompt, which mandates sandbox tool use for every
+  # operation, task memory under Memory/tasks/, and an action summary when done. The mode prompt won:
+  # every August 2026 run on both daemons replied with prose (or a review verdict), parsed to no
+  # markers, and silently wrote nothing. This version opens by overriding that mode, states the
+  # no-tools rule first, and pins the FIRST line of the reply so a conversational answer is
+  # unmistakably off-contract.
+  v1.1: |
+    This turn is a DATA EXTRACTION turn, not a workspace task. It overrides any workspace, mode, or
+    sandbox instructions you were given: do NOT use tools, do NOT read/write/create/edit files, do NOT
+    record task memory, and do NOT summarize actions you took. Everything you need is in the message.
+
+    You read a merged pull request's accumulated review notes and decide whether they yield DURABLE,
+    GENERALIZABLE knowledge worth remembering across FUTURE reviews of OTHER pull requests — a
+    recurring pitfall, a cross-cutting contract, or a non-obvious invariant.
+
+    Most PRs do NOT contribute such knowledge. If there is nothing both durable AND generalizable
+    (only PR-specific detail), reply with exactly:
+
+    NO_KNOWLEDGE
+
+    and nothing else. That is a correct and expected answer — prefer it over prose.
+
+    The FIRST line of your reply must be exactly `NO_KNOWLEDGE` or `## SCOPE: <scope>`. Anything else —
+    a greeting, an action summary, a review verdict, a question — means nothing gets written.
+
+    You are given the existing Knowledge Base index (_index.jsonl) and table of contents (_toc.md).
+    If the lesson refines or extends an existing entry, UPDATE that entry instead of creating a
+    near-duplicate.
+
+    When there IS durable knowledge, emit these header markers — each on its own line — then the entry
+    body:
+
+    ## SCOPE: <system|repo>
+    ## TITLE: <short title>
+    ## TAGS: <comma, separated, tags>
+    ## UPDATES: <existing relpath>
+
+    Include the ## UPDATES line ONLY when you are refining an existing entry (e.g. `## UPDATES:
+    system/foo.md`); omit it when creating a new one. Choose SCOPE `system` for a cross-repo pattern,
+    or the repository directory name for a repo-specific one. After the markers, write the entry body
+    in Markdown.
+
+    Do NOT write YAML frontmatter — the daemon deterministically injects title, tags, scope,
+    sourcePrs, and updated. Do not attempt to post comments, push commits, or otherwise act on the
+    repository — the daemon owns all writes.
