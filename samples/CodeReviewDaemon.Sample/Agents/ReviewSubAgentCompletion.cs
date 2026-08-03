@@ -88,6 +88,20 @@ internal interface IReviewAgentTranscriptSource
         string rootThreadId,
         string agentId,
         CancellationToken ct);
+
+    /// <summary>
+    /// The lead reviewer's own transcript — the root conversation itself, not one of its descendants.
+    /// <para>
+    /// A separate member because the roster this interface's other half is addressed by contains
+    /// <b>descendants only</b>: the review host builds it by walking down from the root thread, so the
+    /// primary agent is by construction not a node in it and cannot be named to
+    /// <see cref="GetTranscriptAsync"/>. Without this the artifacts would carry every specialist's
+    /// reasoning and nothing from the reviewer that actually decided the verdict.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetRootTranscriptAsync(
+        string rootThreadId,
+        CancellationToken ct);
 }
 
 /// <summary>One observation of the whole descendant roster, flattened across every depth.</summary>

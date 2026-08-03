@@ -40,4 +40,9 @@ internal sealed class S2SReviewSubAgentCompletionSource
         string agentId,
         CancellationToken ct) =>
         _client.GetAgentTranscriptAsync(rootThreadId, agentId, ct);
+
+    public Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetRootTranscriptAsync(
+        string rootThreadId,
+        CancellationToken ct) =>
+        _client.GetConversationTranscriptAsync(rootThreadId, ct);
 }

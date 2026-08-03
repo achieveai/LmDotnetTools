@@ -367,6 +367,33 @@ internal sealed class LmStreamingS2SClient
         return ParseAgentTranscript(body);
     }
 
+    /// <summary>
+    /// Reads the root review conversation's own messages via
+    /// <c>GET api/conversations/{threadId}/messages</c> — the lead reviewer's transcript.
+    /// <para>
+    /// A different route from <see cref="GetAgentTranscriptAsync"/> because it has to be. The host's
+    /// agent-transcript route resolves its <c>agentId</c> against the polled thread's <b>descendants</b>,
+    /// so the root agent is not a candidate there and no id can name it. The messages route serves an
+    /// ordinary (non <c>subagent-</c>/<c>workflow-</c>) root conversation to a machine caller and returns
+    /// the same persisted-message array, which is why the same parser applies unchanged.
+    /// </para>
+    /// <para>
+    /// Note this route does <b>not</b> strip reasoning the way the descendant route does; the caller is
+    /// responsible for deciding what of it is worth retaining.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetConversationTranscriptAsync(
+        string threadId,
+        CancellationToken ct)
+    {
+        var body = await SendReadAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(threadId)}/messages",
+            body: null,
+            ct);
+        return ParseAgentTranscript(body);
+    }
+
     // ── HTTP plumbing ────────────────────────────────────────────────────────────────────────────
 
     private async Task SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
