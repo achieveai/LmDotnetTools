@@ -50,6 +50,46 @@ internal interface IReviewSubAgentCompletionSource
     Task<ReviewSubAgentTreeSnapshot> GetSnapshotAsync(ReviewRun run, string parentThreadId, CancellationToken ct);
 }
 
+/// <summary>
+/// One row of a collaborating agent's transcript, as the agent directory's read half publishes it.
+/// <para>
+/// <b>Untrusted by construction.</b> <see cref="Body"/> is model- and tool-produced text from an agent the
+/// daemon does not control: it can carry ANSI escapes, unbalanced markdown fences, and text shaped like
+/// tool-call markers. It may only ever reach a file through
+/// <see cref="Orchestration.UntrustedTranscriptText"/>, and must never be concatenated into a prompt.
+/// </para>
+/// </summary>
+/// <param name="MessageType">Persisted message type (<c>TextMessage</c>, <c>ToolCallMessage</c>, …).</param>
+/// <param name="Role">Who produced it (<c>User</c>/<c>Assistant</c>/<c>System</c>/<c>Tool</c>).</param>
+/// <param name="FromAgent">The agent that authored it, when the host recorded one.</param>
+/// <param name="TimestampUtc">When it was recorded, when the host recorded one.</param>
+/// <param name="Body">The message payload, already reduced to text where the shape allowed it.</param>
+internal sealed record ReviewAgentTranscriptEntry(
+    string MessageType,
+    string Role,
+    string? FromAgent,
+    DateTimeOffset? TimestampUtc,
+    string Body);
+
+/// <summary>
+/// Provider-neutral read half of the agent directory: the transcript of one agent named by a
+/// <see cref="ReviewSubAgentNode.AgentId"/> from the roster the barrier settled on.
+/// <para>
+/// Separate from <see cref="IReviewSubAgentCompletionSource"/> on purpose, mirroring the collaboration
+/// directory's own split: knowing an agent exists and being able to read what it said are two different
+/// privileges, and the barrier needs only the first. Optional at the call site — a daemon whose review
+/// host predates the transcript route still reviews and still retains <c>review.md</c>; it just cannot
+/// enrich the per-PR artifacts.
+/// </para>
+/// </summary>
+internal interface IReviewAgentTranscriptSource
+{
+    Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetTranscriptAsync(
+        string rootThreadId,
+        string agentId,
+        CancellationToken ct);
+}
+
 /// <summary>One observation of the whole descendant roster, flattened across every depth.</summary>
 internal sealed record ReviewSubAgentTreeSnapshot(IReadOnlyList<ReviewSubAgentNode> Nodes)
 {

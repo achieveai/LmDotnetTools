@@ -224,6 +224,22 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private readonly IReviewSubAgentCompletionSource? _completionSource;
 
+    /// <summary>
+    /// The agent directory's read half, used to fold each reviewer's own transcript into the per-PR notes
+    /// artifacts. Optional and non-load-bearing: a null source (or a review host predating the transcript
+    /// route) costs artifact detail, never the review — see <see cref="ReviewNotesArtifactBuilder"/>.
+    /// </summary>
+    private readonly IReviewAgentTranscriptSource? _transcriptSource;
+
+    /// <summary>
+    /// Per-run notes-artifact context (run id → what the settled barrier knew), captured in
+    /// <see cref="RunReviewAttemptAsync"/> and consumed once at the commit gate. In memory like
+    /// <see cref="_preparedWorkspaces"/>, and for the same reason: it only has to survive the gap between two
+    /// points of one review, and after a restart the review re-runs and re-captures it. Absence is handled —
+    /// the commit still writes <c>review.md</c>, and says in the log that it wrote nothing else.
+    /// </summary>
+    private readonly ConcurrentDictionary<long, ReviewNotesArtifactContext> _artifactContexts = new();
+
     public DaemonReviewStageExecutor(
         ReviewStore store,
         IReviewAgentLoopFactory loopFactory,
@@ -241,7 +257,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? gatewayBaseUrl = null,
         S2SReviewWorkspacePreparer? preparer = null,
         IGatewaySkillProbe? skillProbe = null,
-        IReviewSubAgentCompletionSource? completionSource = null)
+        IReviewSubAgentCompletionSource? completionSource = null,
+        IReviewAgentTranscriptSource? transcriptSource = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _loopFactory = loopFactory ?? throw new ArgumentNullException(nameof(loopFactory));
@@ -261,6 +278,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _preparer = preparer;
         _skillProbe = skillProbe;
         _completionSource = completionSource;
+        _transcriptSource = transcriptSource;
         _comparisonVariant = new ReviewVariant(
             VariantId: "b",
             ModelId: _options.VariantModelId,
@@ -1974,9 +1992,24 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // 2. Barrier: block until every descendant has settled (or the shared deadline expires). A resumed
         //    lifecycle re-queries it from scratch and must re-prove stability, which is why no snapshot is
         //    checkpointed: one taken before an outage says nothing about what the children did during it.
-        var inventory = await AwaitSubAgentSettlementAsync(
+        var settledRoster = await AwaitSubAgentSettlementAsync(
                 run, completionSource, conversationThreadId!, checkpoint.DeadlineUtc, cancellationToken)
             .ConfigureAwait(false);
+        // Stash everything the notes artifacts need while it is all still in hand. The commit gate runs far
+        // from here (after the escalation ladder has picked a winning attempt), and re-deriving the roster
+        // there is not possible: the barrier's guarantee is about THIS moment. Last attempt wins — the
+        // artifacts must describe the review that is actually being committed.
+        _artifactContexts[run.Id] = new ReviewNotesArtifactContext(
+            ReviewRound: reviewRound,
+            ModelId: modelOverride ?? run.ModelId ?? "(unspecified)",
+            ToolAssisted: toolContext is not null,
+            HostedThreadId: conversationThreadId,
+            LocalThreadId: threadId,
+            CheckoutRoot: checkoutRoot,
+            StoreRoot: storeRoot,
+            NotesDir: notesDir,
+            PrevHeadSha: prevHeadSha,
+            Roster: settledRoster);
         // 3. Synthesis: same agent, same thread, children's results now all delivered. THIS is the review, and
         //    the only turn carrying the posting contract. Arm it first: a restart mid-synthesis then rejoins
         //    the accepted input rather than queueing a second synthesis on the same conversation, and a send
@@ -1985,7 +2018,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             TurnIdempotencyKey(threadId, SynthesisTurn),
             checkpoint.SynthesisInputId,
             inputId => RecordSynthesisRequest(run, provider, inputId, conversationThreadId!));
-        var synthesisPrompt = DaemonAgentFactory.CreateSynthesisPrompt(variables, inventory);
+        var synthesisPrompt = DaemonAgentFactory.CreateSynthesisPrompt(
+            variables, settledRoster.ToSafeInventory());
         return await agent
             .SynthesizeFinalAsync(synthesisPrompt, shouldPost, checkpoint.DeadlineUtc, cancellationToken)
             .ConfigureAwait(false);
@@ -2228,7 +2262,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// A barrier timeout propagates — never treated as "probably done".
     /// </para>
     /// </summary>
-    private async Task<string> AwaitSubAgentSettlementAsync(
+    /// <returns>
+    /// The settled roster itself, not just its rendered inventory. The synthesis prompt still gets only
+    /// <see cref="ReviewSubAgentTreeSnapshot.ToSafeInventory"/>, but the notes artifacts need the full nodes —
+    /// above all the agent ids, which the inventory deliberately strips. This is the only moment the roster is
+    /// both complete and still addressable, so discarding it here is what left the PR directories with nothing
+    /// but <c>review.md</c>. A source-less run returns an empty snapshot, whose inventory is byte-identical to
+    /// the <see cref="ReviewSubAgentTreeSnapshot.NoSubAgents"/> text this used to return directly.
+    /// </returns>
+    private async Task<ReviewSubAgentTreeSnapshot> AwaitSubAgentSettlementAsync(
         ReviewRun run,
         IReviewSubAgentCompletionSource? loopCompletionSource,
         string parentThreadId,
@@ -2240,7 +2282,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var source = loopCompletionSource ?? _completionSource;
         if (source is null)
         {
-            return ReviewSubAgentTreeSnapshot.NoSubAgents;
+            return new ReviewSubAgentTreeSnapshot([]);
         }
 
         var barrier = new ReviewSubAgentCompletionBarrier(
@@ -2255,7 +2297,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _logger.LogInformation(
             "Run {RunId}: sub-agent barrier opened on thread {ThreadId} with {Count} settled child(ren).",
             run.Id, parentThreadId, settled.Nodes.Count);
-        return settled.ToSafeInventory();
+        return settled;
     }
 
     /// <summary>
@@ -2499,6 +2541,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             await PublishToReviewBotAsync(run, repo, provider, reviewText, cancellationToken).ConfigureAwait(false);
         }
 
+        // Whatever notes-artifact context survives here belongs to a review that never reached a commit gate
+        // (no content, no ReviewBot repo configured). Drop it: the entry is only meaningful to the commit that
+        // would have consumed it, and a re-run re-captures its own at the barrier.
+        _ = _artifactContexts.TryRemove(run.Id, out _);
+
         // Delivery truthfulness (last, so the notes are already retained and the slot already freed): a run
         // DISCOVERED in post mode is supposed to put this review on the PR. Completing the terminal stage
         // records the run as done forever, so it may only do so on durable evidence that a provider comment
@@ -2600,7 +2647,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // The review file lives directly inside the accumulating per-PR notes dir (design §4.3 D3); only
         // that dir is staged, so nothing the agent wrote elsewhere (code, scratch) can reach the commit.
         var reviewFile = $"{lease.NotesRelPath}/review.md";
-        var reqFiles = new[] { new ReviewArtifactFile(reviewFile, reviewBody) };
+        var reqFiles = new List<ReviewArtifactFile> { new(reviewFile, reviewBody) };
+        reqFiles.AddRange(
+            await BuildDaemonNotesArtifactsAsync(run, repo, lease.NotesRelPath, cancellationToken)
+                .ConfigureAwait(false));
         var request = BuildNotesRequest(repo, run, reqFiles);
 
         var result = await manager
@@ -2629,6 +2679,53 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             _logger.LogWarning(
                 "Run {RunId}: pooled notes failed to push; branch '{Branch}' kept for reconcile.",
                 run.Id, result.ReviewBranch);
+        }
+    }
+
+    /// <summary>
+    /// Builds the per-PR notes artifacts the <b>daemon</b> owns — the PR context sheet and one findings file
+    /// per review agent — from the context stashed at the sub-agent barrier.
+    /// <para>
+    /// These files used to be the review agent's job, requested by a prompt directive. Across five live
+    /// threads (~680 messages) the hosted agent never once invoked a write tool, so every PR directory held
+    /// nothing but <c>review.md</c>. Authorship moved here because a directive the model may decline is not a
+    /// guarantee, and the daemon already holds every fact the files need.
+    /// </para>
+    /// <para>
+    /// Nothing here may fail the commit: a review that produces only <c>review.md</c> is worse than one with
+    /// thin artifacts, so every failure path logs and returns what it has. The absent-context case is logged
+    /// at <c>Warning</c> on purpose — it is the one outcome that looks identical to the old silent breakage,
+    /// and we want it loud enough to notice on the first occurrence rather than a week later.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<ReviewArtifactFile>> BuildDaemonNotesArtifactsAsync(
+        ReviewRun run, RepoIdentity repo, string notesRelPath, CancellationToken cancellationToken)
+    {
+        if (!_artifactContexts.TryRemove(run.Id, out var context))
+        {
+            _logger.LogWarning(
+                "Run {RunId}: no notes-artifact context was captured for this review; committing review.md "
+                    + "only. The sub-agent barrier is where the context is stashed, so this means the review "
+                    + "committed without reaching it (or restarted between the two).",
+                run.Id);
+            return [];
+        }
+
+        try
+        {
+            var builder = new ReviewNotesArtifactBuilder(
+                _transcriptSource, _loggerFactory.CreateLogger<ReviewNotesArtifactBuilder>());
+            return await builder
+                .BuildAsync(run, repo, notesRelPath, context, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(
+                ex,
+                "Run {RunId}: notes-artifact building failed; committing review.md only.",
+                run.Id);
+            return [];
         }
     }
 
@@ -2675,16 +2772,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             fileSystem,
             _loggerFactory.CreateLogger<ReviewBranchManager>());
 
-        // Only the PRs/... artifact is supplied explicitly; the manager's `git add -A` still captures any
-        // other tracked changes in the checkout.
-        var prArtifactPath =
-            $"PRs/{ReviewBotRepoManagerSlug(repo)}-{run.PrId}/review.md";
+        // Only the PRs/... artifacts are supplied explicitly; the manager's `git add -A` still captures any
+        // other tracked changes in the checkout. The daemon-authored context/findings files land in the same
+        // per-PR dir as review.md, so this path keeps parity with the pooled commit gate — a review that took
+        // the host-retention branch must not produce a thinner PR directory than one that leased a slot.
+        var notesRelPath = $"PRs/{ReviewBotRepoManagerSlug(repo)}-{run.PrId}";
+        var files = new List<ReviewArtifactFile> { new($"{notesRelPath}/review.md", reviewBody) };
+        files.AddRange(
+            await BuildDaemonNotesArtifactsAsync(run, repo, notesRelPath, cancellationToken).ConfigureAwait(false));
         var request = new ReviewBotPublishRequest(
             repo,
             PrNumber: int.Parse(run.PrId, System.Globalization.CultureInfo.InvariantCulture),
             HeadSha: run.HeadSha,
             DefaultBranch: ReviewBotDefaultBranch,
-            Files: [new ReviewArtifactFile(prArtifactPath, reviewBody)]);
+            Files: files);
 
         var result = await manager.CommitNotesAsync(repoRoot, request, cancellationToken).ConfigureAwait(false);
 

@@ -334,6 +334,39 @@ internal sealed class LmStreamingS2SClient
         return ParseSubAgentTree(body);
     }
 
+    /// <summary>
+    /// Reads one collaborating agent's transcript via
+    /// <c>GET api/conversations/{rootThreadId}/agents/{agentId}/transcript</c> — the read half of the
+    /// agent directory the review host publishes over HTTP (<see cref="GetSubAgentTreeAsync"/> is the
+    /// roster half). <paramref name="agentId"/> is the <c>AgentId</c> carried by a
+    /// <see cref="ReviewSubAgentNode"/>, which is exactly the key the host's hierarchy projection
+    /// resolves.
+    /// <para>
+    /// The daemon reads with no <c>viewer</c>, so the host authorizes it as the ROOT agent — an ancestor
+    /// of every descendant, and therefore allowed by the transcript visibility policy. Reasoning is
+    /// stripped host-side and never appears in the response.
+    /// </para>
+    /// <para>
+    /// Unlike the sub-agent tree, this route legitimately returns a BARE JSON array (the host's
+    /// <c>Ok(result.Messages)</c>), so a bare array is the success shape here — not the version skew it
+    /// signals there. Anything that is not an array throws with the raw body embedded rather than being
+    /// silently read as an empty transcript.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<ReviewAgentTranscriptEntry>> GetAgentTranscriptAsync(
+        string rootThreadId,
+        string agentId,
+        CancellationToken ct)
+    {
+        var body = await SendReadAsync(
+            HttpMethod.Get,
+            $"api/conversations/{Uri.EscapeDataString(rootThreadId)}"
+                + $"/agents/{Uri.EscapeDataString(agentId)}/transcript",
+            body: null,
+            ct);
+        return ParseAgentTranscript(body);
+    }
+
     // ── HTTP plumbing ────────────────────────────────────────────────────────────────────────────
 
     private async Task SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
@@ -568,6 +601,77 @@ internal sealed class LmStreamingS2SClient
             "stopped" => ReviewSubAgentStatus.Stopped,
             _ => ReviewSubAgentStatus.Unknown,
         };
+
+    /// <summary>
+    /// Parses the transcript route's bare array of persisted-message rows. Every field is read
+    /// defensively: this feeds a diagnostic artifact, so a row the host shapes slightly differently
+    /// should degrade to a blank field rather than abort the whole transcript — but a body that is not
+    /// an array at all is a contract failure and throws with the body embedded.
+    /// </summary>
+    private static IReadOnlyList<ReviewAgentTranscriptEntry> ParseAgentTranscript(string body)
+    {
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+
+        if (root.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                "Agent transcript response was not a JSON array — the review host may predate the "
+                    + $"transcript route or returned an error envelope. Body: {body}");
+        }
+
+        var messages = new List<ReviewAgentTranscriptEntry>(root.GetArrayLength());
+        foreach (var element in root.EnumerateArray())
+        {
+            messages.Add(new ReviewAgentTranscriptEntry(
+                MessageType: OptionalString(element, "messageType") ?? string.Empty,
+                Role: OptionalString(element, "role") ?? string.Empty,
+                FromAgent: OptionalString(element, "fromAgent"),
+                TimestampUtc: element.TryGetProperty("timestamp", out var ts)
+                    && ts.ValueKind == JsonValueKind.Number
+                        ? DateTimeOffset.FromUnixTimeMilliseconds(ts.GetInt64())
+                        : null,
+                Body: ExtractTranscriptBody(OptionalString(element, "messageJson"))));
+        }
+
+        return messages;
+    }
+
+    /// <summary>
+    /// Reduces one persisted <c>messageJson</c> payload to the text worth writing down. The host
+    /// serializes every <c>IMessage</c> shape through the same field, so this tries the two that carry
+    /// plain prose and otherwise keeps the payload verbatim — an unrecognized shape is preserved rather
+    /// than dropped, because dropping it would silently lose the very reviewer output we are collecting.
+    /// </summary>
+    private static string ExtractTranscriptBody(string? messageJson)
+    {
+        if (string.IsNullOrWhiteSpace(messageJson))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(messageJson);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var name in new[] { "text", "content" })
+                {
+                    if (doc.RootElement.TryGetProperty(name, out var value)
+                        && value.ValueKind == JsonValueKind.String)
+                    {
+                        return value.GetString() ?? string.Empty;
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Not JSON (or not the shape we hoped for) — keep the raw payload below.
+        }
+
+        return messageJson;
+    }
 }
 
 /// <summary>A workspace as returned by the review host's <c>api/workspaces</c> list/create endpoints.</summary>

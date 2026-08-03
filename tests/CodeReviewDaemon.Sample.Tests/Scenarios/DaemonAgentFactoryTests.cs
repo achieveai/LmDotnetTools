@@ -114,11 +114,11 @@ public sealed class DaemonAgentFactoryTests
     }
 
     [Fact]
-    public void CreateReviewProfile_with_variables_renders_the_rereview_section_and_write_convention()
+    public void CreateReviewProfile_with_variables_renders_the_rereview_section()
     {
         // A re-review is told it's a re-review, sees the previously-reviewed commit and the current
-        // head, is pointed at its own prior notes files, and is told which numbered files to write
-        // this round (round 02, since one prior round already completed).
+        // head, and is pointed at its own prior notes files (round 02, since one prior round already
+        // completed). It is NOT told to write this round's numbered files — the daemon authors those.
         var vars = new Dictionary<string, object>
         {
             ["checkout_root"] = "/workspace/target",
@@ -141,8 +141,11 @@ public sealed class DaemonAgentFactoryTests
         prompt.Should().Contain("abc123");
         prompt.Should().Contain("def456");
         prompt.Should().Contain("PR_Findings_01.md");
-        prompt.Should().Contain("PR_Context_02.md"); // write-convention names this round's context file
-        prompt.Should().Contain("PR_Findings_02.md"); // and this round's findings file
+        // The prompt no longer dictates a write convention: ReviewNotesArtifactBuilder in the daemon
+        // authors PR_Context_NN.md / PR_Findings_NN_*.md deterministically after the round completes,
+        // so the agent is never asked (and never told how) to write them itself.
+        prompt.Should().NotContain("PR_Context_02.md");
+        prompt.Should().NotContain("PR_Findings_02.md");
     }
 
     [Fact]
@@ -170,8 +173,11 @@ public sealed class DaemonAgentFactoryTests
         // prepended to the review input whatever the round, and reading it is collect-only work.
         prompt.Should().NotContain("This is a RE-REVIEW"); // no re-review section on a first review
         prompt.Should().NotContain("abc123");
-        prompt.Should().Contain("PR_Context_01.md"); // the write-convention still names round 01
-        prompt.Should().Contain("PR_Findings_01.md");
+        // No write convention in any round — the daemon owns the numbered artifacts. What the agent
+        // IS still told is where its scratch notes may go.
+        prompt.Should().NotContain("PR_Context_01.md");
+        prompt.Should().NotContain("PR_Findings_01.md");
+        prompt.Should().Contain("/workspace/store/PRs/acme-1");
         prompt.Should().NotMatchRegex(@"\{\{|\}\}"); // no leftover Scriban syntax
     }
 
