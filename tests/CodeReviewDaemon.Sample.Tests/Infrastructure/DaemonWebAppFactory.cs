@@ -23,6 +23,11 @@ public sealed class DaemonWebAppFactory : WebApplicationFactory<Program>
         // Isolate the orchestration store (it migrates SQLite at construction) to a throwaway file so
         // booting the host for a test never touches a developer's review.db beside the binary.
         builder.UseSetting("CodeReviewDaemon:DatabasePath", _databasePath);
+        // The daemon requires S2S mode and a base URL to boot (in-process path removed). A fake URL
+        // satisfies the guard — these tests never exercise the S2S client, only the route surface.
+        builder.UseSetting("CodeReviewDaemon:UseS2SReviewAgent", "true");
+        builder.UseSetting("CodeReviewDaemon:LmStreamingBaseUrl", "http://localhost:9999");
+        builder.UseSetting("SandboxGateway:WorkspaceBasePath", Path.GetTempPath());
     }
 
     protected override void Dispose(bool disposing)

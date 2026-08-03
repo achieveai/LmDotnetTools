@@ -27,9 +27,9 @@ internal interface IReviewLoopSubAgentSurface
 }
 
 /// <summary>
-/// A decorator that forwards <see cref="IMultiTurnAgent"/> to an inner loop. Implemented by
-/// <see cref="ToolScopedReviewLoop"/> so capability resolution can see PAST the wrapper without knowing the
-/// concrete wrapper type — a new decorator only has to implement this to keep the barrier working.
+/// A decorator that forwards <see cref="IMultiTurnAgent"/> to an inner loop. Capability resolution can
+/// see PAST the wrapper without knowing the concrete wrapper type — a new decorator only has to implement
+/// this to keep the barrier working.
 /// </summary>
 internal interface IReviewLoopWrapper
 {
@@ -46,8 +46,8 @@ internal static class ReviewLoopSubAgentSurface
 {
     /// <summary>
     /// Returns <paramref name="agent"/>'s sub-agent surface, or <c>null</c> when the agent neither declares
-    /// one nor is (or wraps) a live <see cref="MultiTurnAgentLoop"/>. <c>null</c> means UNKNOWN — the caller
-    /// must decide whether the run was allowed to spawn, not assume it was not.
+    /// one nor wraps one that does. <c>null</c> means UNKNOWN — the caller must decide whether the run was
+    /// allowed to spawn, not assume it was not.
     /// <para>
     /// A decorator that BOTH declares the interface and wraps another loop is merged member-wise rather than
     /// short-circuited: its own non-null members win (it is entitled to override), but a member it leaves
@@ -126,12 +126,7 @@ internal static class ReviewLoopSubAgentSurface
                     + $"sub-agent surface of '{agent.GetType().Name}'; the wrappers are probably cyclic.");
         }
 
-        var declared = agent switch
-        {
-            IReviewLoopSubAgentSurface surface => surface,
-            MultiTurnAgentLoop loop => new LiveLoopSurface(loop),
-            _ => null,
-        };
+        var declared = agent as IReviewLoopSubAgentSurface;
 
         IReviewLoopSubAgentSurface? wrapped = null;
         if (agent is IReviewLoopWrapper wrapper)
@@ -154,22 +149,6 @@ internal static class ReviewLoopSubAgentSurface
             (_, null) => declared,
             _ => new MergedSurface(declared, wrapped),
         };
-    }
-
-    /// <summary>Adapts the SDK's live loop, which predates this interface, onto it.</summary>
-    private sealed class LiveLoopSurface(MultiTurnAgentLoop loop) : IReviewLoopSubAgentSurface
-    {
-        private IReviewSubAgentCompletionSource? _completionSource;
-
-        /// <summary>Cached: the barrier polls one source repeatedly, and a fresh adapter per read would
-        /// discard nothing but is pure churn on a hot path.</summary>
-        public IReviewSubAgentCompletionSource? CompletionSource =>
-            _completionSource ??= loop.SubAgentManager is { } manager
-                ? new InProcessReviewSubAgentCompletionSource(manager)
-                : null;
-
-        public Func<IDisposable>? SuppressSpawning =>
-            loop.SubAgentTools is { } tools ? tools.SuppressSpawning : null;
     }
 
     /// <summary>A decorator's own surface laid over the surface of what it wraps, member by member.</summary>

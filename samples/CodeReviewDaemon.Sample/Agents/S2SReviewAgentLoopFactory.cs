@@ -5,9 +5,8 @@ using CodeReviewDaemon.Sample.Configuration;
 namespace CodeReviewDaemon.Sample.Agents;
 
 /// <summary>
-/// The S2S-backed <see cref="IReviewAgentLoopFactory"/> (selected when
-/// <see cref="CodeReviewDaemonOptions.UseS2SReviewAgent"/> is on): instead of assembling an in-process
-/// <c>MultiTurnAgentLoop</c> like <see cref="LiveReviewAgentLoopFactory"/>, it returns an
+/// The S2S-backed <see cref="IReviewAgentLoopFactory"/>: instead of assembling an in-process
+/// <c>MultiTurnAgentLoop</c>, it returns an
 /// <see cref="S2SReviewAgent"/> that drives the review as a real conversation on a running
 /// <b>LmStreaming.Sample</b> review host over REST. That is what makes the review a live LmStreaming
 /// conversation (parent loop + <c>code-reviewer:*</c> sub-agent tree) reachable from the deep-link the

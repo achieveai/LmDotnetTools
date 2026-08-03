@@ -8,7 +8,7 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// variant) drives for one collect-only run. This is the single seam between the declarative
 /// <see cref="AgentProfile"/> (built by <see cref="DaemonAgentFactory"/>) and the concrete provider
 /// loop, so the stage executor's agent logic stays verifiable against a fake while the real provider
-/// wiring lives in <see cref="LiveReviewAgentLoopFactory"/>.
+/// wiring lives in <see cref="S2SReviewAgentLoopFactory"/>.
 /// </summary>
 internal interface IReviewAgentLoopFactory
 {
@@ -24,9 +24,8 @@ internal interface IReviewAgentLoopFactory
     /// is the prepared LmStreaming workspace the S2S factory provisions the hosted review conversation
     /// against (minted by <see cref="S2SReviewWorkspacePreparer"/>) — the whole record, not just its id,
     /// because the factory also titles the conversation from the PR it was prepared for. It is <c>null</c>
-    /// — and ignored — on the in-process paths (<see cref="LiveReviewAgentLoopFactory"/> and the test
-    /// fake), which own the conversation locally. <paramref name="resumeHostedThreadId"/> rejoins an
-    /// ALREADY-PROVISIONED hosted conversation instead of minting a new one (S2S only): a review is two
+    /// — and ignored — on paths that own the conversation locally (test fakes). <paramref name="resumeHostedThreadId"/> rejoins an
+    /// ALREADY-PROVISIONED hosted conversation instead of minting a new one: a review is two
     /// turns — collect-only provisional, then authoritative synthesis after the sub-agent completion
     /// barrier — and one picked up after a restart must continue on the thread its provisional turn ran on,
     /// which is also the deep-link already posted on the PR. The caller owns the returned loop's lifetime

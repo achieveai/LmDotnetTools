@@ -3,8 +3,6 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Configuration;
 using CodeReviewDaemon.Sample.Persistence;
@@ -164,8 +162,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private readonly ILogger<DaemonReviewStageExecutor> _logger;
     private readonly IReviewSessionProvisioner? _provisioner;
     private readonly IDiscoveredItemsSource? _discoveredItemsSource;
-    private readonly DiscoveredSubAgentTemplateBuilder? _subAgentTemplateBuilder;
-    private readonly Func<IStreamingAgent>? _providerAgentFactory;
     private readonly HostRetentionWorkspace? _hostRetention;
     private readonly SandboxCredential _credential;
     private readonly ReviewSlotWorkspace? _slotWorkspace;
@@ -238,8 +234,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         ILoggerFactory loggerFactory,
         IReviewSessionProvisioner? provisioner = null,
         IDiscoveredItemsSource? discoveredItemsSource = null,
-        DiscoveredSubAgentTemplateBuilder? subAgentTemplateBuilder = null,
-        Func<IStreamingAgent>? providerAgentFactory = null,
         HostRetentionWorkspace? hostRetention = null,
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
@@ -259,8 +253,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         _logger = loggerFactory.CreateLogger<DaemonReviewStageExecutor>();
         _provisioner = provisioner;
         _discoveredItemsSource = discoveredItemsSource;
-        _subAgentTemplateBuilder = subAgentTemplateBuilder;
-        _providerAgentFactory = providerAgentFactory;
         _hostRetention = hostRetention;
         _credential = credential;
         _slotWorkspace = slotWorkspace;
@@ -319,7 +311,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// Capability gaps (unreachable session, gateway down, or the host-dir disk guard declining to
     /// provision, Task 18) log and degrade — they never fail the stage (design §7). When the session
     /// resolves, sub-agent discovery is a further, independent degrade tier: a discovery/mapping failure
-    /// (or nothing discovered) leaves <c>SubAgentOptions</c> null — a skill-only tool context — rather than
+    /// (or nothing discovered) degrades to null (no daemon-side tool context) rather than
     /// dropping all the way back to diff-only.
     /// </summary>
     private async Task<ReviewToolContext?> BuildToolContextAsync(ReviewRun run, CancellationToken cancellationToken)
@@ -364,30 +356,12 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // are bounded to. Absent a pooled lease the reviewer stays hard read-only exactly as before.
             var writeScope = ResolvePooledWriteScope(run);
 
-            var subAgentOptions = await BuildSubAgentOptionsAsync(run, session.SessionId, cancellationToken)
-                .ConfigureAwait(false);
-
-            // Fail-fast (RequireSkillSupport): a session with NO code-reviewer sub-agents can't support a
-            // proper review, so abort rather than posting a degraded skill-only one — and stop the daemon so
-            // the operator fixes the sandbox/plugin setup instead of it silently churning out weak reviews.
-            if (_options.RequireSkillSupport && subAgentOptions is null)
-            {
-                _logger.LogCritical(
-                    "Run {RunId}: sandbox session {SessionId} has no code-reviewer sub-agent support; Revobot "
-                        + "will not review without proper skills/agents. Aborting this review and stopping the "
-                        + "daemon (RequireSkillSupport=true).",
-                    run.Id, session.SessionId);
-                _appLifetime?.StopApplication();
-                throw SkillSupportUnavailableException.ForSession(session.SessionId);
-            }
-
             return new ReviewToolContext(
                 GatewayBaseUrl: _gatewayBaseUrl
                     ?? Environment.GetEnvironmentVariable("CRD_SANDBOX_GATEWAY")
                     ?? "http://127.0.0.1:3000",
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
-                SubAgentOptions: subAgentOptions,
                 Credential: _credential,
                 EnableReviewerWrites: writeScope.Enabled,
                 WritableToolAllowList: writeScope.WritableAllow,
@@ -458,65 +432,6 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         }
 
         _gatewaySkillsVerified = true;
-    }
-
-    /// <summary>
-    /// Discovers <c>code-reviewer:*</c> sub-agents in the resolved session and maps them to
-    /// <see cref="SubAgentTemplate"/>s (Task 11). Only attempted when all three sub-agent dependencies were
-    /// supplied (they default to null, so hosts/tests that don't wire discovery keep today's skill-only
-    /// tool context unchanged). Never throws — a discovery or mapping failure degrades to null (skill-only).
-    /// </summary>
-    private async Task<SubAgentOptions?> BuildSubAgentOptionsAsync(
-        ReviewRun run, string sessionId, CancellationToken cancellationToken)
-    {
-        if (_discoveredItemsSource is null || _subAgentTemplateBuilder is null || _providerAgentFactory is null)
-        {
-            _logger.LogInformation(
-                "Run {RunId}: sub-agent discovery deps not wired (itemsSource={ItemsSource}, builder={Builder}, "
-                    + "agentFactory={AgentFactory}); skill-only review.",
-                run.Id,
-                _discoveredItemsSource is not null,
-                _subAgentTemplateBuilder is not null,
-                _providerAgentFactory is not null);
-            return null;
-        }
-
-        try
-        {
-            var discovered = await _discoveredItemsSource
-                .ListDiscoveredAsync(sessionId, cancellationToken)
-                .ConfigureAwait(false);
-            var subagentCount = discovered.Count(d => string.Equals(d.Kind, "subagent", StringComparison.Ordinal));
-            _logger.LogInformation(
-                "Run {RunId}: gateway /discovered returned {Total} item(s) for session {SessionId} ({Subagents} subagent(s)); "
-                    + "kinds=[{Kinds}].",
-                run.Id,
-                discovered.Count,
-                sessionId,
-                subagentCount,
-                string.Join(",", discovered.Select(d => d.Kind).Distinct()));
-            var templates = _subAgentTemplateBuilder.Build(
-                discovered, _options.SubAgentMarketplaces, _providerAgentFactory, _options.SubAgentModelId);
-            if (templates.Count > 0)
-            {
-                return new SubAgentOptions
-                {
-                    Templates = templates,
-                    MaxConcurrentSubAgents = _options.MaxConcurrentSubAgents,
-                };
-            }
-
-            _logger.LogInformation(
-                "Run {RunId}: no sub-agents discovered from marketplace(s) [{Marketplaces}]; skill-only review.",
-                run.Id,
-                _options.SubAgentMarketplaces.Count > 0 ? string.Join(",", _options.SubAgentMarketplaces) : "(all)");
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Run {RunId}: sub-agent discovery failed; skill-only review.", run.Id);
-            return null;
-        }
     }
 
     public Task ExecuteStageAsync(ReviewStage stage, ReviewRun run, CancellationToken cancellationToken)
@@ -2001,7 +1916,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // and gating on it alone would let an S2S loop with no surface through unchecked. Where spawning is
         // possible, a usable suppression scope is REQUIRED — a declared surface with a null SuppressSpawning
         // is just as unable to keep the synthesis turn from fanning out as no surface at all.
-        var runCanSpawn = toolContext?.SubAgentOptions is not null || _options.UseS2SReviewAgent;
+        var runCanSpawn = _options.UseS2SReviewAgent;
         if (runCanSpawn && surface?.SuppressSpawning is null)
         {
             throw new InvalidOperationException(
