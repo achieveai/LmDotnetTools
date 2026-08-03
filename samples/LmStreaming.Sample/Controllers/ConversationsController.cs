@@ -1309,6 +1309,15 @@ public class ConversationsController(
 
         await agentPool.RemoveAgentAsync(threadId);
         await store.DeleteThreadAsync(threadId, ct);
+
+        // Owner-keyed invalidation (see SubAgentScanCoverageCache's remarks) already covers every
+        // mode/provider/restart reset automatically, but a deleted thread id CAN be reused by a caller
+        // (ids are not guaranteed server-minted for every path), and a fresh conversation on that id
+        // would start "cold" under the same shared NoLiveManager owner the deleted conversation's cold
+        // entry was also recorded under — a coincidental owner match that would otherwise resurrect the
+        // deleted conversation's stale recovered rows. Forget it explicitly so a reused id always rescans.
+        scanCoverageCache.Forget(threadId);
+
         return NoContent();
     }
 

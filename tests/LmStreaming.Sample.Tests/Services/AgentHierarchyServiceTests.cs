@@ -500,6 +500,108 @@ public sealed class AgentHierarchyServiceTests
     }
 
     [Fact]
+    public async Task BuildAsync_RecoversPersistedChildren_AcrossTwoConsecutiveManagerResetCycles_WithSpawnAndPersistBetweenEach()
+    {
+        // PR #245 review (HIGH): owner-keyed invalidation must not just handle a SINGLE reset — a mode
+        // switch followed later by a provider switch (or a restart, or a pool eviction+reopen) is a
+        // SEQUENCE of resets, and a child spawned+persisted in an EARLIER generation must still be
+        // recoverable via the cold-path scan after MULTIPLE subsequent resets, not just the first one.
+        // Three generations (two resets) of a brand-new MultiTurnAgentLoop/SubAgentManager simulate that
+        // sequence; a real child is spawned and its provenance persisted in each of the first two
+        // generations (mirroring what the production NonOwningConversationStore decorator would do,
+        // which this unit test wires manually since it isn't part of this test's store).
+        var store = new InMemoryConversationStore();
+        var countingStore = new CountingConversationStore(store);
+        var sharedCache = new SubAgentScanCoverageCache();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+
+        // --- Generation 1: a live root loop with its own fresh SubAgentManager. ---
+        await using var loop1 = new MultiTurnAgentLoop(
+            BlockingProvider(), new FunctionRegistry(), threadId: RootThread, subAgentOptions: subAgentOptions);
+        await using var pool1 = CreatePoolReturning(loop1);
+        _ = pool1.GetOrCreateAgent(RootThread, mode);
+
+        var gen1ChildId = await SpawnAndResolveIdAsync(loop1.SubAgentTools!, "gen1-child");
+        await PersistProvenanceAsync(store, gen1ChildId, "gen1-child");
+
+        var service1 = new AgentHierarchyService(
+            pool1, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows1, isKnown1, _) = await service1.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown1.Should().BeTrue();
+        rows1.Select(r => r.AgentId).Should().Contain(gen1ChildId);
+        countingStore.ListThreadsCallCount.Should().Be(
+            1, "the first-ever poll for generation 1's owner must scan once");
+
+        // --- Reset 1 (e.g. a mode switch): a brand-new loop/SubAgentManager for the SAME threadId. ---
+        await using var loop2 = new MultiTurnAgentLoop(
+            BlockingProvider(), new FunctionRegistry(), threadId: RootThread, subAgentOptions: subAgentOptions);
+        await using var pool2 = CreatePoolReturning(loop2);
+        _ = pool2.GetOrCreateAgent(RootThread, mode);
+
+        var service2 = new AgentHierarchyService(
+            pool2, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows2, isKnown2, _) = await service2.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown2.Should().BeTrue();
+        rows2.Select(r => r.AgentId).Should().BeEquivalentTo(
+            [gen1ChildId],
+            "generation 1's persisted child must surface via the cold-path scan after the FIRST reset, "
+                + "since generation 2's fresh manager never spawned it itself");
+        countingStore.ListThreadsCallCount.Should().Be(
+            2,
+            "generation 2's owner has never been seen before, so the FIRST reset forces exactly one "
+                + "fresh rescan rather than reusing generation 1's cached entry");
+
+        // Spawn+persist a second child under generation 2's own (still-live) manager.
+        var gen2ChildId = await SpawnAndResolveIdAsync(loop2.SubAgentTools!, "gen2-child");
+        await PersistProvenanceAsync(store, gen2ChildId, "gen2-child");
+
+        var service2b = new AgentHierarchyService(
+            pool2, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows2b, _, _) = await service2b.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        rows2b.Select(r => r.AgentId).Should().BeEquivalentTo(
+            [gen1ChildId, gen2ChildId],
+            "a repeated poll under the SAME (still-live) generation-2 owner must union the cached "
+                + "recovered roster with the newly spawned live child");
+        countingStore.ListThreadsCallCount.Should().Be(
+            2, "a repeated poll under the SAME owner must not trigger another rescan");
+
+        // --- Reset 2 (e.g. a later restart): a SECOND independent reset — another brand-new manager
+        // instance, distinct from BOTH generation 1 and generation 2. ---
+        await using var loop3 = new MultiTurnAgentLoop(
+            BlockingProvider(), new FunctionRegistry(), threadId: RootThread, subAgentOptions: subAgentOptions);
+        await using var pool3 = CreatePoolReturning(loop3);
+        _ = pool3.GetOrCreateAgent(RootThread, mode);
+
+        var service3 = new AgentHierarchyService(
+            pool3, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows3, isKnown3, _) = await service3.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown3.Should().BeTrue();
+        rows3.Select(r => r.AgentId).Should().BeEquivalentTo(
+            [gen1ChildId, gen2ChildId],
+            "both earlier generations' persisted children must survive the SECOND reset cycle too — "
+                + "owner-keyed invalidation must keep working across repeated resets, not just the first one");
+        countingStore.ListThreadsCallCount.Should().Be(
+            3, "the SECOND reset's brand-new owner again forces exactly one fresh rescan");
+    }
+
+    [Fact]
     public async Task BuildAsync_DoesNotPoisonTheCache_WhenTheScanFails_SoARetryCanStillRecoverTheChild()
     {
         // Requirement: cancellation/failure of the underlying scan must not leave the thread's coverage
@@ -664,6 +766,33 @@ public sealed class AgentHierarchyServiceTests
             return inner.ListThreadsAsync(limit, offset, ct);
         }
     }
+
+    /// <summary>
+    /// Persists <paramref name="agentId"/>'s <see cref="SubAgentProvenance"/> directly to
+    /// <paramref name="store"/> under <see cref="RootThread"/> — what the production
+    /// <c>NonOwningConversationStore</c> decorator stamps onto a spawned child's own metadata writes
+    /// automatically, reproduced by hand here since these unit tests spawn children through a plain
+    /// <see cref="InMemoryConversationStore"/> with no such decorator wired.
+    /// </summary>
+    private static Task PersistProvenanceAsync(IConversationStore store, string agentId, string name) =>
+        store.SaveMetadataAsync(
+            $"subagent-{agentId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{agentId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    RootThread,
+                    new SubAgentSnapshot(
+                        agentId,
+                        Name: name,
+                        TemplateName: "worker",
+                        Task: $"{name}'s task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{agentId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
 
     private static object NewSpawn(string name, string subagentType = "worker") => new
     {

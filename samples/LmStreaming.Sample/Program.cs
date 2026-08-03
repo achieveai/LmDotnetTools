@@ -194,8 +194,13 @@ try
     // Process-lifetime cache of the persisted Agent-tool child roster AgentHierarchyService's cold path
     // recovers per conversation (PRRT_kwDOOPysWM6V1mjj) — shared across every AgentHierarchyService
     // instance built for a request or a spawned agent's transcript tool, both of which construct that
-    // service fresh rather than resolving it from DI. See SubAgentScanCoverageCache's own remarks.
-    _ = builder.Services.AddSingleton<SubAgentScanCoverageCache>();
+    // service fresh rather than resolving it from DI. Bounded by the same retention knob as
+    // WorkflowRunRegistry above (AgentCollaboration:MaxPersistedHierarchyEntries) — reusing it here keeps
+    // this cache's own distinct-conversation ceiling configurable without adding a second knob for the
+    // same "how many conversations should this process remember" question. See
+    // SubAgentScanCoverageCache's own remarks for the owner-keyed invalidation and eviction policy.
+    _ = builder.Services.AddSingleton(sp => new SubAgentScanCoverageCache(
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
 
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry

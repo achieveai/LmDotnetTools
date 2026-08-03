@@ -211,7 +211,15 @@ public sealed class AgentHierarchyService(
         var subAgentRosterRelevant = !isLive || loop is { Collaboration: null, SubAgentManager: not null };
         if (subAgentRosterRelevant)
         {
-            foreach (var node in await GetOrScanPersistedSubAgentChildrenAsync(threadId, ct))
+            // The cache entry is keyed on this owner alongside threadId (see SubAgentScanCoverageCache's
+            // remarks): the live SubAgentManager instance when one covers this thread, or the shared
+            // NoLiveManager sentinel otherwise. A mode/provider switch, pool eviction+reopen, or restart
+            // rehydration each construct a brand-new SubAgentManager, so the owner here changes and the
+            // cache is invalidated automatically — no recreation call site needs to remember to do it.
+            var owner = loop is { Collaboration: null, SubAgentManager: { } liveSubAgentManager }
+                ? liveSubAgentManager
+                : SubAgentScanCoverageCache.NoLiveManager;
+            foreach (var node in await GetOrScanPersistedSubAgentChildrenAsync(threadId, owner, ct))
             {
                 merged[(node.Kind, node.AgentId)] = node;
             }
@@ -366,24 +374,26 @@ public sealed class AgentHierarchyService(
 
     /// <summary>
     ///     Returns the persisted Agent-tool child roster for <paramref name="threadId"/>, scanning the
-    ///     store at most once per thread for this process's lifetime (see
-    ///     <see cref="SubAgentScanCoverageCache"/>). A cache hit — including a cached EMPTY roster for a
-    ///     genuinely childless thread — never touches the store again; a miss runs
-    ///     <see cref="ScanPersistedSubAgentChildrenAsync"/> and records the result only once it completes
-    ///     successfully, so a cancelled or failed attempt leaves the thread uncached for the next caller
-    ///     to retry rather than poisoning the cache with a partial answer.
+    ///     store at most once per (thread, <paramref name="owner"/>) pair for this process's lifetime
+    ///     (see <see cref="SubAgentScanCoverageCache"/>). A cache hit — including a cached EMPTY roster
+    ///     for a genuinely childless thread — never touches the store again; a miss (including one caused
+    ///     by <paramref name="owner"/> no longer matching a previously-recorded owner, i.e. the live
+    ///     manager was reset) runs <see cref="ScanPersistedSubAgentChildrenAsync"/> and records the result
+    ///     only once it completes successfully, so a cancelled or failed attempt leaves the thread
+    ///     uncached for the next caller to retry rather than poisoning the cache with a partial answer.
     /// </summary>
     private async Task<IReadOnlyList<SubAgentSummary>> GetOrScanPersistedSubAgentChildrenAsync(
         string threadId,
+        object owner,
         CancellationToken ct)
     {
-        if (scanCoverageCache.TryGetRecovered(threadId, out var cached))
+        if (scanCoverageCache.TryGetRecovered(threadId, owner, out var cached))
         {
             return cached;
         }
 
         var scanned = await ScanPersistedSubAgentChildrenAsync(threadId, ct);
-        scanCoverageCache.RecordRecovered(threadId, scanned);
+        scanCoverageCache.RecordRecovered(threadId, owner, scanned);
         return scanned;
     }
 
