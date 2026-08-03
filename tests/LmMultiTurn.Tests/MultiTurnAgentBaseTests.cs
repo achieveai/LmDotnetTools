@@ -25,6 +25,7 @@ public class MultiTurnAgentBaseTests
         private readonly List<IMessage> _messagesToReturn;
         private readonly bool _stripReceiptIdsFromAssignment;
         private readonly TimeSpan _fallbackGracePeriod;
+        private readonly Task? _startGate;
 
         public int ExecuteCallCount { get; private set; }
         public string? LastRunId { get; private set; }
@@ -40,6 +41,10 @@ public class MultiTurnAgentBaseTests
         public ValueTask PublishForTest(IMessage message, CancellationToken ct) =>
             PublishToAllAsync(message, ct);
 
+        /// <summary>Test-only window into the protected pending-input count, used to prove inputs are
+        /// queued (not yet drained) while the run loop is deterministically stalled.</summary>
+        public int PendingInputCountForTest => PendingInputCount;
+
         public TestMultiTurnAgent(
             string threadId,
             List<IMessage>? messagesToReturn = null,
@@ -48,19 +53,30 @@ public class MultiTurnAgentBaseTests
             ILogger? logger = null,
             IConversationStore? store = null,
             bool stripReceiptIdsFromAssignment = false,
-            TimeSpan? fallbackGracePeriod = null)
+            TimeSpan? fallbackGracePeriod = null,
+            Task? startGate = null)
             : base(threadId, systemPrompt, store: store, logger: logger)
         {
             _messagesToReturn = messagesToReturn ?? [];
             _stripReceiptIdsFromAssignment = stripReceiptIdsFromAssignment;
             _fallbackGracePeriod = fallbackGracePeriod ?? TimeSpan.FromMilliseconds(100);
             _ = shouldFork; // No longer used but kept for API compatibility
+            _startGate = startGate;
         }
 
         protected override TimeSpan FallbackGracePeriod => _fallbackGracePeriod;
 
         protected override async Task RunLoopAsync(CancellationToken ct)
         {
+            // Test-only deterministic stall: when set, the loop cannot make ANY progress
+            // (not even reading the input channel) until the gate is released or ct fires.
+            // This lets a test prove a caller-facing method returns without waiting on
+            // run-loop processing, with no reliance on wall-clock timing.
+            if (_startGate != null)
+            {
+                await _startGate.WaitAsync(ct);
+            }
+
             while (!ct.IsCancellationRequested)
             {
                 // Wait for at least one input
@@ -637,26 +653,35 @@ public class MultiTurnAgentBaseTests
     [Fact]
     public async Task SendAsync_ReturnsImmediately_BeforeProcessingCompletes()
     {
-        // Arrange
-        var agent = new TestMultiTurnAgent("test-thread");
+        // Arrange - a gate that deterministically stalls the run loop before it can make
+        // ANY progress (it will not even read the input channel) until released. This
+        // proves SendAsync returns without waiting on run-loop processing without relying
+        // on a wall-clock threshold, which is brittle under system load (see history: this
+        // test previously asserted elapsed time < 100ms and flaked at 152ms during a full,
+        // heavily-loaded solution test run even though SendAsync performs no blocking I/O).
+        var startGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agent = new TestMultiTurnAgent("test-thread", startGate: startGate.Task);
         using var cts = new CancellationTokenSource();
         var runTask = agent.RunAsync(cts.Token);
 
-        // Act - send multiple messages quickly
-        var startTime = DateTimeOffset.UtcNow;
+        // Act - send multiple messages while the run loop is provably stalled
         var receipt1 = await agent.SendAsync([new TextMessage { Text = "Hello 1", Role = Role.User }], "input-1");
         var receipt2 = await agent.SendAsync([new TextMessage { Text = "Hello 2", Role = Role.User }], "input-2");
         var receipt3 = await agent.SendAsync([new TextMessage { Text = "Hello 3", Role = Role.User }], "input-3");
-        var endTime = DateTimeOffset.UtcNow;
 
-        // Assert - all receipts should be returned almost immediately (non-blocking)
-        (endTime - startTime).Should().BeLessThan(TimeSpan.FromMilliseconds(100),
-            "SendAsync should return immediately without waiting for processing");
+        // Assert - deterministic proof: all three sends completed while the run loop has
+        // made zero progress (it never even started draining the channel), so SendAsync
+        // cannot have waited on any processing to complete.
+        agent.ExecuteCallCount.Should().Be(0,
+            "SendAsync must return before the run loop even begins processing, not merely quickly");
+        agent.PendingInputCountForTest.Should().Be(3,
+            "all three inputs must be sitting in the channel, unread, while the run loop is stalled");
 
         receipt1.ReceiptId.Should().NotBe(receipt2.ReceiptId);
         receipt2.ReceiptId.Should().NotBe(receipt3.ReceiptId);
 
-        // Cleanup
+        // Cleanup - release the gate so the loop can drain and finish, then stop it
+        startGate.SetResult();
         await cts.CancelAsync();
         await agent.DisposeAsync();
     }
