@@ -268,6 +268,41 @@ public class McpToolCompositionTests
     }
 
     [Fact]
+    public async Task ToolsCall_MalformedParamsReturnsJsonRpcInvalidParams()
+    {
+        await using var factory = CreateFactory(EmptyListResponse());
+        using var client = factory.CreateClient();
+        using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1");
+        const string malformed = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":[]}";
+
+        using var call = await SendAsync(client, "/mcp", malformed, "session-1");
+        var body = JsonNode.Parse(await call.Content.ReadAsStringAsync())!;
+
+        body["id"]!.GetValue<int>().Should().Be(7);
+        body["error"]!["code"]!.GetValue<int>().Should().Be(-32602);
+    }
+
+    [Fact]
+    public async Task ToolsList_SessionlessResponseHeaderDoesNotInjectLocalTools()
+    {
+        await using var factory = new ProxyWebAppFactory(
+            (_, _) => Task.FromResult(
+                TestUpstream.Json(
+                    EmptyListResponse(),
+                    headers: new Dictionary<string, string> { ["Mcp-Session-Id"] = "upstream-session" }
+                )
+            ),
+            jinaApiKey: "jina-key",
+            jinaUpstream: (_, _) => throw new InvalidOperationException("Jina must not run")
+        );
+        using var client = factory.CreateClient();
+
+        using var list = await SendAsync(client, "/mcp", ListRequest());
+
+        (await list.Content.ReadAsStringAsync()).Should().Be(EmptyListResponse());
+    }
+
+    [Fact]
     public async Task ToolsCall_ValidationFailurePreservesMcpIsError()
     {
         await using var factory = CreateFactory(EmptyListResponse());

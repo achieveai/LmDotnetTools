@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -5,17 +6,26 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
+internal enum McpSnapshotAction
+{
+    None,
+    Set,
+    Remove,
+}
+
 internal sealed record McpComposedList(
-    byte[] Body,
+    byte[]? Body,
     string? Endpoint,
     string? SessionId,
-    McpToolSnapshot? Snapshot
+    McpSnapshotAction SnapshotAction,
+    McpToolSnapshot? Snapshot = null
 );
 
 internal sealed class McpToolComposition
 {
     private readonly McpJinaToolCatalog _catalog;
     private readonly McpToolSnapshotStore _snapshots;
+    private readonly ConcurrentDictionary<(string Endpoint, string SessionId, string RequestId), CancellationTokenSource> _localCalls = [];
     private readonly ILogger _logger;
 
     public McpToolComposition(
@@ -49,6 +59,33 @@ internal sealed class McpToolComposition
 
     public static bool IsToolsCall(JsonObject request) => Text(request["method"]) == "tools/call";
 
+    public bool TryHandleCancellation(HttpContext context, JsonObject request)
+    {
+        if (Text(request["method"]) != "notifications/cancelled")
+        {
+            return false;
+        }
+
+        var sessionId = context.Request.Headers["Mcp-Session-Id"].FirstOrDefault();
+        var endpoint = context.Request.Path.Value;
+        var requestId = request["params"]?["requestId"];
+        if (
+            string.IsNullOrWhiteSpace(endpoint)
+            || string.IsNullOrWhiteSpace(sessionId)
+            || requestId is null
+        )
+        {
+            return false;
+        }
+
+        if (_localCalls.TryGetValue((endpoint, sessionId, requestId.ToJsonString()), out var cancellation))
+        {
+            cancellation.Cancel();
+        }
+
+        return false;
+    }
+
     public async Task<bool> TryHandleCallAsync(HttpContext context, JsonObject request)
     {
         if (!IsEnabled || !IsToolsCall(request) || !request.ContainsKey("id") || request["id"] is null)
@@ -58,7 +95,13 @@ internal sealed class McpToolComposition
 
         var sessionId = context.Request.Headers["Mcp-Session-Id"].FirstOrDefault();
         var endpoint = context.Request.Path.Value;
-        var name = Text(request["params"]?["name"]);
+        if (request["params"] is not JsonObject parameters)
+        {
+            await WriteInvalidParamsAsync(context, request["id"]!);
+            return true;
+        }
+
+        var name = Text(parameters["name"]);
         if (
             string.IsNullOrWhiteSpace(sessionId)
             || string.IsNullOrWhiteSpace(endpoint)
@@ -82,18 +125,32 @@ internal sealed class McpToolComposition
             return false;
         }
 
+        if (parameters["arguments"] is not null and not JsonObject)
+        {
+            await WriteInvalidParamsAsync(context, request["id"]!);
+            return true;
+        }
+
         var stopwatch = Stopwatch.StartNew();
+        var requestKey = (endpoint, sessionId, request["id"]!.ToJsonString());
+        using var localCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+        if (!_localCalls.TryAdd(requestKey, localCts))
+        {
+            await WriteInvalidParamsAsync(context, request["id"]!);
+            return true;
+        }
+
         ToolHandlerResult result;
         try
         {
-            var arguments = request["params"]?["arguments"]?.ToJsonString() ?? "{}";
+            var arguments = parameters["arguments"]?.ToJsonString() ?? "{}";
             result = await tool.Handler(
                 arguments,
                 new ToolCallContext { ToolCallId = ToolCallId(request["id"]!) },
-                context.RequestAborted
+                localCts.Token
             );
         }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        catch (OperationCanceledException) when (localCts.IsCancellationRequested)
         {
             return true;
         }
@@ -101,6 +158,10 @@ internal sealed class McpToolComposition
         {
             _logger.LogError(ex, "Local MCP tool {ToolName} failed unexpectedly", name);
             result = ToolHandlerResult.FromError("The local MCP tool failed unexpectedly.");
+        }
+        finally
+        {
+            _localCalls.TryRemove(requestKey, out _);
         }
 
         var payload = result switch
@@ -156,13 +217,6 @@ internal sealed class McpToolComposition
 
         var endpoint = context.Request.Path.Value;
         var sessionId = context.Request.Headers["Mcp-Session-Id"].FirstOrDefault();
-        if (
-            sessionId is null
-            && upstream.Headers.TryGetValues("Mcp-Session-Id", out var responseSessionIds)
-        )
-        {
-            sessionId = responseSessionIds.FirstOrDefault();
-        }
 
         void Invalidate()
         {
@@ -191,7 +245,7 @@ internal sealed class McpToolComposition
         if (original is null)
         {
             Invalidate();
-            return new McpComposedList([], endpoint, sessionId, null);
+            return new McpComposedList([], endpoint, sessionId, McpSnapshotAction.Remove);
         }
 
         ReplaceContent(upstream, original, mediaType);
@@ -204,7 +258,7 @@ internal sealed class McpToolComposition
             if (!TryReadSingleSseMessage(sse, out ssePrefix, out var json, out sseSuffix))
             {
                 Invalidate();
-                return new McpComposedList(original, endpoint, sessionId, null);
+                return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.Remove);
             }
 
             jsonBytes = Encoding.UTF8.GetBytes(json);
@@ -226,7 +280,7 @@ internal sealed class McpToolComposition
             )
             {
                 Invalidate();
-                return new McpComposedList(original, endpoint, sessionId, null);
+                return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.Remove);
             }
 
             var githubNames = tools
@@ -248,7 +302,7 @@ internal sealed class McpToolComposition
 
             if (injectable.Count == 0)
             {
-                return new McpComposedList(original, endpoint, sessionId, snapshot);
+                return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.Set, snapshot);
             }
 
             upstream.Headers.ETag = null;
@@ -263,25 +317,37 @@ internal sealed class McpToolComposition
                 (int)upstream.StatusCode,
                 injectable.Count
             );
-            return new McpComposedList(composed, endpoint, sessionId, snapshot);
+            return new McpComposedList(composed, endpoint, sessionId, McpSnapshotAction.Set, snapshot);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             Invalidate();
             _logger.LogWarning(ex, "MCP tool-list composition failed; returning the original upstream response");
-            return new McpComposedList(original, endpoint, sessionId, null);
+            return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.Remove);
         }
     }
 
     public void PublishSnapshot(McpComposedList composed)
     {
-        if (
-            composed.Snapshot is not null
-            && !string.IsNullOrWhiteSpace(composed.Endpoint)
-            && !string.IsNullOrWhiteSpace(composed.SessionId)
-        )
+        if (string.IsNullOrWhiteSpace(composed.Endpoint) || string.IsNullOrWhiteSpace(composed.SessionId))
         {
-            _snapshots.Set(composed.Endpoint, composed.SessionId, composed.Snapshot);
+            return;
+        }
+
+        switch (composed.SnapshotAction)
+        {
+            case McpSnapshotAction.Set when composed.Snapshot is not null:
+                _snapshots.Set(composed.Endpoint, composed.SessionId, composed.Snapshot);
+                break;
+            case McpSnapshotAction.Set:
+                throw new InvalidOperationException("A snapshot is required for the set action.");
+            case McpSnapshotAction.Remove:
+                _snapshots.Remove(composed.Endpoint, composed.SessionId);
+                break;
+            case McpSnapshotAction.None:
+                break;
+            default:
+                throw new ArgumentOutOfRangeException();
         }
     }
 
@@ -291,6 +357,22 @@ internal sealed class McpToolComposition
         {
             _snapshots.Remove(endpoint, sessionId);
         }
+    }
+
+    private static async Task WriteInvalidParamsAsync(HttpContext context, JsonNode id)
+    {
+        var response = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = id.DeepClone(),
+            ["error"] = new JsonObject { ["code"] = -32602, ["message"] = "Invalid params" },
+        };
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "application/json";
+        await context.Response.Body.WriteAsync(
+            Encoding.UTF8.GetBytes(response.ToJsonString()),
+            context.RequestAborted
+        );
     }
 
     private static string? Text(JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;

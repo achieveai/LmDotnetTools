@@ -2599,10 +2599,13 @@ internal static class ProxyMcp
                 composition.IsEnabled
                 && McpToolComposition.TryParseSingleRequest(inboundBody, out rpcRequest)
                 && rpcRequest is not null
-                && await composition.TryHandleCallAsync(ctx, rpcRequest)
             )
             {
-                return;
+                _ = composition.TryHandleCancellation(ctx, rpcRequest);
+                if (await composition.TryHandleCallAsync(ctx, rpcRequest))
+                {
+                    return;
+                }
             }
 
             upstreamRequest.Content = new ByteArrayContent(inboundBody);
