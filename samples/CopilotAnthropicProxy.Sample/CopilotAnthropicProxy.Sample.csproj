@@ -28,4 +28,11 @@
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Ship the Claude Code launch helper with the proxy so a published drop is
+         self-contained. The Web SDK already globs **\*.json into Content, so the
+         MCP config must be Update-d (Include would be a duplicate item). -->
+    <Content Include="setupClaude.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Update="claude-web-mcp.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
