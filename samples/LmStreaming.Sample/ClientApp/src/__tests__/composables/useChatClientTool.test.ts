@@ -211,6 +211,82 @@ describe('useChat — submitClientToolResult (#246)', () => {
   });
 });
 
+// #246 defect 2: a pending submitClientToolResult() promise must settle (retryable) if the
+// connection errors or closes before an ack arrives — otherwise QuestionRich's `finally` never runs
+// and the UI stays locked forever (a resolver leak). Both onError and onClose must settle it.
+describe('useChat — submitClientToolResult settles on ws error/close before ack (#246 defect 2)', () => {
+  beforeEach(() => {
+    wsMocks.createWebSocketConnection.mockReset();
+    wsMocks.sendWebSocketMessage.mockReset();
+    wsMocks.closeWebSocketConnection.mockReset();
+    wsMocks.sendClientToolResult.mockReset();
+    convMocks.loadConversationMessages.mockReset();
+    convMocks.getRunState.mockReset();
+  });
+
+  function mockConnection() {
+    let captured: any;
+    wsMocks.createWebSocketConnection.mockImplementation(async (options: any) => {
+      captured = options;
+      return {
+        socket: { readyState: WebSocket.OPEN },
+        connectionId: 'ws-1',
+        threadId: options.threadId,
+        isConnected: true,
+      };
+    });
+    return () => captured;
+  }
+
+  it('settles a pending submission as a retryable error when the connection errors before ack', async () => {
+    const getCaptured = mockConnection();
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+
+    const outcomePromise = chat.submitClientToolResult('call-1', '{"answers":[]}');
+    await vi.waitFor(() => expect(wsMocks.sendClientToolResult).toHaveBeenCalledTimes(1));
+
+    // The socket errors before any client_tool_result_ack/error frame arrives.
+    await getCaptured().onError('WebSocket connection error');
+
+    const outcome = await outcomePromise;
+    expect(outcome.status).toBe('error');
+    expect((outcome as { code: string }).code).toBe('not_connected');
+  });
+
+  it('settles a pending submission as a retryable error when the connection closes before ack', async () => {
+    const getCaptured = mockConnection();
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+
+    const outcomePromise = chat.submitClientToolResult('call-1', '{"answers":[]}');
+    await vi.waitFor(() => expect(wsMocks.sendClientToolResult).toHaveBeenCalledTimes(1));
+
+    // A clean close (e.g. server-initiated backpressure drop) with no ack ever sent.
+    getCaptured().onClose?.({ wasClean: true, code: 1000, reason: '' });
+
+    const outcome = await outcomePromise;
+    expect(outcome.status).toBe('error');
+    expect((outcome as { code: string }).code).toBe('not_connected');
+  });
+
+  it('does not leak a resolver: a settled-then-late ack for the same toolCallId is ignored, not double-resolved', async () => {
+    const getCaptured = mockConnection();
+    const chat = useChat({ getModeId: () => 'default' });
+    chat.setThreadId('thread-1');
+
+    const outcomePromise = chat.submitClientToolResult('call-1', '{"answers":[]}');
+    await vi.waitFor(() => expect(wsMocks.sendClientToolResult).toHaveBeenCalledTimes(1));
+
+    getCaptured().onClose?.({ wasClean: false, code: 1006, reason: 'dropped' });
+    const outcome = await outcomePromise;
+    expect(outcome).toEqual({ status: 'error', code: 'not_connected', message: expect.any(String) });
+
+    // A late ack for the same id (already settled) must not throw or resolve a second time.
+    expect(() => getCaptured().onClientToolResultAck('call-1', false)).not.toThrow();
+  });
+});
+
 describe('useChat — resumeStreamIfActive opens a subscribe-only connection for a pending client question (#246)', () => {
   beforeEach(() => {
     wsMocks.createWebSocketConnection.mockReset();

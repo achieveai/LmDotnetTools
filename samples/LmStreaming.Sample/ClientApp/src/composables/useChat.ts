@@ -330,6 +330,22 @@ export function useChat(options: UseChatOptions = {}) {
   >();
 
   /**
+   * Settle (and clear) every in-flight submitClientToolResult() promise with the same outcome
+   * (#246 defect 2). Called from the connection's onError/onClose so a submission never hangs
+   * forever waiting on an ack/error frame that will now never arrive — without this a caller's
+   * `finally` (e.g. QuestionRich unlocking its UI) would never run.
+   */
+  function settlePendingSubmissions(
+    outcome: import('./useClientToolSubmit').ClientToolSubmitOutcome
+  ): void {
+    if (pendingSubmissions.size === 0) return;
+    for (const resolve of pendingSubmissions.values()) {
+      resolve(outcome);
+    }
+    pendingSubmissions.clear();
+  }
+
+  /**
    * Generate thread ID on first use (persists across messages for multi-turn)
    */
   function getOrCreateThreadId(): string {
@@ -929,6 +945,14 @@ export function useChat(options: UseChatOptions = {}) {
       onError: async (error) => {
         log.error('WebSocket error', { error });
         clearSandboxRefreshState();
+        // #246 defect 2: settle any in-flight submitClientToolResult() as a retryable error —
+        // it will never receive an ack/error frame on a connection that just errored, and without
+        // this the caller's promise (and e.g. QuestionRich's `finally`) would hang forever.
+        settlePendingSubmissions({
+          status: 'error',
+          code: 'not_connected',
+          message: error || 'WebSocket connection error',
+        });
         callbacks.onError(error);
         // Close and cleanup on error
         if (wsConnection) {
@@ -936,6 +960,15 @@ export function useChat(options: UseChatOptions = {}) {
           closeWebSocketConnection(wsConnection);
           wsConnection = null;
         }
+      },
+      // #246 defect 2: mirrors the onError settle above — a clean or unclean close with no ack ever
+      // sent must also unlock a pending submission rather than leaking its resolver forever.
+      onClose: () => {
+        settlePendingSubmissions({
+          status: 'error',
+          code: 'not_connected',
+          message: 'WebSocket connection closed',
+        });
       },
       // #246: settle whichever submitClientToolResult() call is waiting on this toolCallId.
       // Wired here (not per-call) so ANY caller opening the connection — send, resume, or a
