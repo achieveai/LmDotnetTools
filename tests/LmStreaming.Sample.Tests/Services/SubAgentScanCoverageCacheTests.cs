@@ -4,12 +4,15 @@ using LmStreaming.Sample.Services;
 namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
-/// Direct unit coverage for <see cref="SubAgentScanCoverageCache"/>'s owner/generation keying and
+/// Direct unit coverage for <see cref="SubAgentScanCoverageCache"/>'s owner/epoch keying and
 /// bounded-retention policy (PR #245 review — HIGH/MEDIUM findings on the cache introduced for
-/// PRRT_kwDOOPysWM6V1mjj). <see cref="AgentHierarchyServiceTests"/> covers these same guarantees
-/// end-to-end through real <c>MultiTurnAgentLoop</c>/<c>SubAgentManager</c> resets; this file isolates
-/// the cache's own bookkeeping (owner-mismatch miss, delete eviction, capacity eviction) so those
-/// invariants have a fast, precise, non-integration proof independent of the loop plumbing.
+/// PRRT_kwDOOPysWM6V1mjj, and a follow-up stress review that found the original per-thread tombstone
+/// generation protocol reopened the exact resurrection it was meant to close — see
+/// <see cref="SubAgentScanCoverageCache"/>'s remarks for the ABA hazard and the cache-wide forget-epoch
+/// fix). <see cref="AgentHierarchyServiceTests"/> covers these same guarantees end-to-end through real
+/// <c>MultiTurnAgentLoop</c>/<c>SubAgentManager</c> resets; this file isolates the cache's own bookkeeping
+/// (owner-mismatch miss, delete eviction, capacity eviction, forget-epoch races) so those invariants have
+/// a fast, precise, non-integration proof independent of the loop plumbing.
 /// </summary>
 public sealed class SubAgentScanCoverageCacheTests
 {
@@ -40,7 +43,7 @@ public sealed class SubAgentScanCoverageCacheTests
         var cache = new SubAgentScanCoverageCache();
         var owner = new object();
 
-        cache.RecordRecovered("thread-1", owner, Rows("child-a"));
+        cache.RecordRecovered("thread-1", owner, Rows("child-a"), cache.CaptureWriteEpoch());
 
         var hit = cache.TryGetRecovered("thread-1", owner, out var rows);
 
@@ -58,7 +61,7 @@ public sealed class SubAgentScanCoverageCacheTests
         var originalOwner = new object();
         var ownerAfterReset = new object();
 
-        cache.RecordRecovered("thread-1", originalOwner, Rows("child-a"));
+        cache.RecordRecovered("thread-1", originalOwner, Rows("child-a"), cache.CaptureWriteEpoch());
 
         var hitWithNewOwner = cache.TryGetRecovered("thread-1", ownerAfterReset, out var rows);
 
@@ -78,9 +81,10 @@ public sealed class SubAgentScanCoverageCacheTests
         var generation2 = new object();
         var generation3 = new object();
 
-        cache.RecordRecovered("thread-1", generation1, Rows("gen1-child"));
-        cache.RecordRecovered("thread-1", generation2, Rows("gen1-child", "gen2-child"));
-        cache.RecordRecovered("thread-1", generation3, Rows("gen1-child", "gen2-child", "gen3-child"));
+        cache.RecordRecovered("thread-1", generation1, Rows("gen1-child"), cache.CaptureWriteEpoch());
+        cache.RecordRecovered("thread-1", generation2, Rows("gen1-child", "gen2-child"), cache.CaptureWriteEpoch());
+        cache.RecordRecovered(
+            "thread-1", generation3, Rows("gen1-child", "gen2-child", "gen3-child"), cache.CaptureWriteEpoch());
 
         cache.TryGetRecovered("thread-1", generation1, out _).Should().BeFalse(
             "generation 1's owner reference no longer matches the recorded entry after two more resets");
@@ -101,11 +105,11 @@ public sealed class SubAgentScanCoverageCacheTests
         var cache = new SubAgentScanCoverageCache();
         var owner = new object();
 
-        cache.RecordRecovered("thread-1", owner, []);
+        cache.RecordRecovered("thread-1", owner, [], cache.CaptureWriteEpoch());
         cache.TryGetRecovered("thread-1", owner, out var emptyRows).Should().BeTrue();
         emptyRows.Should().BeEmpty();
 
-        cache.RecordRecovered("thread-1", owner, Rows("child-a"));
+        cache.RecordRecovered("thread-1", owner, Rows("child-a"), cache.CaptureWriteEpoch());
         var hit = cache.TryGetRecovered("thread-1", owner, out var rows);
 
         hit.Should().BeTrue();
@@ -117,7 +121,7 @@ public sealed class SubAgentScanCoverageCacheTests
     {
         var cache = new SubAgentScanCoverageCache();
         var owner = new object();
-        cache.RecordRecovered("thread-1", owner, Rows("child-a"));
+        cache.RecordRecovered("thread-1", owner, Rows("child-a"), cache.CaptureWriteEpoch());
 
         cache.Forget("thread-1");
 
@@ -127,13 +131,37 @@ public sealed class SubAgentScanCoverageCacheTests
     }
 
     [Fact]
-    public void Forget_OnAnUnknownThreadId_IsANoOp()
+    public void Forget_OnAnUnknownThreadId_IsANoOp_ButStillBumpsTheWriteEpoch()
     {
         var cache = new SubAgentScanCoverageCache();
+        var epochBefore = cache.CaptureWriteEpoch();
 
         var act = () => cache.Forget("never-recorded");
 
         act.Should().NotThrow();
+        cache.CaptureWriteEpoch().Should().NotBe(
+            epochBefore, "Forget bumps the cache-wide epoch even for a thread id with no recorded entry");
+    }
+
+    [Fact]
+    public void Forget_CalledRepeatedly_NeverThrows_AndKeepsAdvancingTheEpoch()
+    {
+        // "Repeated Forget" (PR #245 stress review RED->GREEN list): the cache-wide epoch must keep
+        // moving forward monotonically across many consecutive deletes, whether or not each one hits a
+        // real entry, and must never throw.
+        var cache = new SubAgentScanCoverageCache();
+
+        var act = () =>
+        {
+            for (var i = 0; i < 25; i++)
+            {
+                cache.Forget("thread-1");
+                cache.Forget($"thread-{i}");
+            }
+        };
+
+        act.Should().NotThrow();
+        cache.CaptureWriteEpoch().Should().Be(50UL, "every Forget call bumps the epoch by exactly one");
     }
 
     [Fact]
@@ -145,13 +173,13 @@ public sealed class SubAgentScanCoverageCacheTests
         var owner3 = new object();
         var owner4 = new object();
 
-        cache.RecordRecovered("thread-1", owner1, Rows("a"));
-        cache.RecordRecovered("thread-2", owner2, Rows("b"));
-        cache.RecordRecovered("thread-3", owner3, Rows("c"));
+        cache.RecordRecovered("thread-1", owner1, Rows("a"), cache.CaptureWriteEpoch());
+        cache.RecordRecovered("thread-2", owner2, Rows("b"), cache.CaptureWriteEpoch());
+        cache.RecordRecovered("thread-3", owner3, Rows("c"), cache.CaptureWriteEpoch());
 
         // Fourth distinct thread pushes the tracked-thread count past capacity — thread-1 (the oldest
         // by last write) must be evicted first, deterministically, not thread-2 or thread-3.
-        cache.RecordRecovered("thread-4", owner4, Rows("d"));
+        cache.RecordRecovered("thread-4", owner4, Rows("d"), cache.CaptureWriteEpoch());
 
         cache.TryGetRecovered("thread-1", owner1, out _).Should().BeFalse(
             "thread-1 was the oldest entry by last write and must be evicted once capacity is exceeded");
@@ -171,13 +199,13 @@ public sealed class SubAgentScanCoverageCacheTests
         var owner2 = new object();
         var owner3 = new object();
 
-        cache.RecordRecovered("thread-1", owner1, Rows("a"));
-        cache.RecordRecovered("thread-2", owner2, Rows("b"));
+        cache.RecordRecovered("thread-1", owner1, Rows("a"), cache.CaptureWriteEpoch());
+        cache.RecordRecovered("thread-2", owner2, Rows("b"), cache.CaptureWriteEpoch());
 
         // Re-writing thread-1 (same owner, e.g. the live manager gained a new child) bumps it to
         // most-recently-written, so thread-2 — now the oldest — is the one evicted next, not thread-1.
-        cache.RecordRecovered("thread-1", owner1, Rows("a", "a2"));
-        cache.RecordRecovered("thread-3", owner3, Rows("c"));
+        cache.RecordRecovered("thread-1", owner1, Rows("a", "a2"), cache.CaptureWriteEpoch());
+        cache.RecordRecovered("thread-3", owner3, Rows("c"), cache.CaptureWriteEpoch());
 
         cache.TryGetRecovered("thread-1", owner1, out var rows1).Should().BeTrue(
             "thread-1 was re-written after thread-2, so it should survive the eviction thread-2 triggers");
@@ -199,29 +227,28 @@ public sealed class SubAgentScanCoverageCacheTests
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
-    // --- PR #245 review: scan/delete generation protocol -------------------------------------------
-    // These tests isolate the cache's own generation bookkeeping without needing a real scan or store
-    // — the race AgentHierarchyService guards against is entirely reproducible by sequencing
-    // CaptureGeneration / Forget / RecordRecovered calls directly, since the cache has no notion of
-    // "a scan is running": it only ever sees the generation token the caller captured before starting
-    // one.
+    // --- PR #245 stress review: cache-wide forget-epoch protocol -----------------------------------
+    // These tests isolate the cache's own epoch bookkeeping without needing a real scan or store — the
+    // race AgentHierarchyService guards against is entirely reproducible by sequencing
+    // CaptureWriteEpoch / Forget / RecordRecovered calls directly, since the cache has no notion of "a
+    // scan is running": it only ever sees the epoch token the caller captured before starting one.
 
     [Fact]
-    public void CaptureGeneration_ReturnsZero_ForAThreadThatHasNeverBeenRecordedOrForgotten()
+    public void CaptureWriteEpoch_ReturnsZero_Initially()
     {
         var cache = new SubAgentScanCoverageCache();
 
-        cache.CaptureGeneration("never-seen").Should().Be(0L);
+        cache.CaptureWriteEpoch().Should().Be(0UL);
     }
 
     [Fact]
-    public void RecordRecovered_WithMatchingGeneration_Commits_AndReturnsTrue()
+    public void RecordRecovered_WithMatchingEpoch_Commits_AndReturnsTrue()
     {
         var cache = new SubAgentScanCoverageCache();
         var owner = new object();
 
-        var generation = cache.CaptureGeneration("thread-1");
-        var committed = cache.RecordRecovered("thread-1", owner, Rows("child-a"), generation);
+        var epoch = cache.CaptureWriteEpoch();
+        var committed = cache.RecordRecovered("thread-1", owner, Rows("child-a"), epoch);
 
         committed.Should().BeTrue("no Forget ran between the capture and the write, so it must commit");
         cache.TryGetRecovered("thread-1", owner, out var rows).Should().BeTrue();
@@ -229,48 +256,48 @@ public sealed class SubAgentScanCoverageCacheTests
     }
 
     [Fact]
-    public void RecordRecovered_RejectsALateWriteback_WhenForgetRanAfterTheGenerationWasCaptured()
+    public void RecordRecovered_RejectsALateWriteback_WhenForgetRanAfterTheEpochWasCaptured_SameThread()
     {
-        // The exact race from PRRT_kwDOOPysWM6V39Ux: a caller misses the cache, captures the
-        // generation, and starts a (here: simulated) scan. Before that scan's result is recorded,
-        // ConversationsController.Delete calls Forget for the SAME thread. The scan's writeback must
-        // be rejected — not resurrect the deleted thread's roster — even though the caller's rows are
-        // a perfectly good answer from BEFORE the delete.
+        // The exact race from PRRT_kwDOOPysWM6V39Ux: a caller misses the cache, captures the epoch, and
+        // starts a (here: simulated) scan. Before that scan's result is recorded, ConversationsController
+        // .Delete calls Forget for the SAME thread. The scan's writeback must be rejected — not
+        // resurrect the deleted thread's roster — even though the caller's rows are a perfectly good
+        // answer from BEFORE the delete.
         var cache = new SubAgentScanCoverageCache();
         var owner = new object();
 
-        // Caller A misses the cache and captures the generation right before starting its "scan".
-        var generationBeforeScan = cache.CaptureGeneration("thread-1");
+        // Caller A misses the cache and captures the epoch right before starting its "scan".
+        var epochBeforeScan = cache.CaptureWriteEpoch();
 
         // The scan is slow; meanwhile the thread is deleted.
         cache.Forget("thread-1");
 
         // Caller A's scan finally completes and tries to record what it found — this must be rejected.
-        var committed = cache.RecordRecovered("thread-1", owner, Rows("stale-child"), generationBeforeScan);
+        var committed = cache.RecordRecovered("thread-1", owner, Rows("stale-child"), epochBeforeScan);
 
         committed.Should().BeFalse(
-            "a Forget landed between CaptureGeneration and RecordRecovered, so this write is stale and "
+            "a Forget landed between CaptureWriteEpoch and RecordRecovered, so this write is stale and "
                 + "must not resurrect the deleted thread's roster");
         cache.TryGetRecovered("thread-1", owner, out var rows).Should().BeFalse(
-            "the rejected write must not have replaced the tombstone Forget left behind");
+            "the rejected write must not have inserted anything for the forgotten thread");
         rows.Should().BeEmpty();
     }
 
     [Fact]
-    public void RecordRecovered_StaleGeneration_IsRejected_EvenUnderADifferentOwner()
+    public void RecordRecovered_StaleEpoch_IsRejected_EvenUnderADifferentOwner()
     {
-        // The generation guard must apply BEFORE any owner-based overwrite logic — a late writeback
-        // under a brand-new owner (e.g. a reset that also raced in) is just as stale as one under the
-        // original owner, and must be rejected the same way.
+        // The epoch guard must apply BEFORE any owner-based overwrite logic — a late writeback under a
+        // brand-new owner (e.g. a reset that also raced in) is just as stale as one under the original
+        // owner, and must be rejected the same way.
         var cache = new SubAgentScanCoverageCache();
         var originalOwner = new object();
         var ownerAfterReset = new object();
 
-        var generationBeforeScan = cache.CaptureGeneration("thread-1");
+        var epochBeforeScan = cache.CaptureWriteEpoch();
         cache.Forget("thread-1");
 
         var committed = cache.RecordRecovered(
-            "thread-1", ownerAfterReset, Rows("stale-child"), generationBeforeScan);
+            "thread-1", ownerAfterReset, Rows("stale-child"), epochBeforeScan);
 
         committed.Should().BeFalse();
         cache.TryGetRecovered("thread-1", ownerAfterReset, out _).Should().BeFalse();
@@ -278,24 +305,57 @@ public sealed class SubAgentScanCoverageCacheTests
     }
 
     [Fact]
+    public void RecordRecovered_RejectsALateWriteback_WhenForgetRanForADifferentThread_CrossThreadInvalidation()
+    {
+        // "Cross-thread deletion rejects in-flight scan and later retry caches" (PR #245 stress review
+        // RED->GREEN list): the forget-epoch guard is deliberately cache-WIDE, not per-thread — any
+        // Forget anywhere invalidates every write epoch captured before it, even for a completely
+        // unrelated thread. This is the conservative trade-off the redesign accepts (an occasional extra
+        // rescan) in exchange for never letting capacity eviction reset a per-thread counter back to a
+        // stale value (the ABA hazard the tombstone design had).
+        var cache = new SubAgentScanCoverageCache();
+        var ownerB = new object();
+
+        var epochBeforeScanB = cache.CaptureWriteEpoch();
+
+        // An unrelated conversation (thread-A) is deleted while thread-B's scan is still in flight.
+        cache.Forget("thread-A");
+
+        var rejected = cache.RecordRecovered("thread-B", ownerB, Rows("stale-b-child"), epochBeforeScanB);
+
+        rejected.Should().BeFalse(
+            "any Forget — even for a different thread — invalidates an epoch captured before it");
+        cache.TryGetRecovered("thread-B", ownerB, out _).Should().BeFalse();
+
+        // The later retry (a fresh poll, capturing a fresh epoch after the unrelated delete) must still
+        // succeed normally — the cross-thread invalidation costs one extra rescan, not a permanent wedge.
+        var freshEpoch = cache.CaptureWriteEpoch();
+        var committed = cache.RecordRecovered("thread-B", ownerB, Rows("fresh-b-child"), freshEpoch);
+
+        committed.Should().BeTrue("a fresh epoch captured after the unrelated delete is not stale");
+        cache.TryGetRecovered("thread-B", ownerB, out var rows).Should().BeTrue();
+        rows.Select(r => r.AgentId).Should().BeEquivalentTo(["fresh-b-child"]);
+    }
+
+    [Fact]
     public void Forget_ThenFreshCaptureAndRecord_Commits_SoAReusedThreadIdRescansSuccessfully()
     {
         // Thread reuse: once a thread id is deleted and later reused (a fresh conversation created
-        // with the same client-supplied id), a NEW scan that captures the generation AFTER the Forget
-        // must be able to record its result normally — the generation guard must not permanently wedge
-        // the thread id.
+        // with the same client-supplied id), a NEW scan that captures the epoch AFTER the Forget must
+        // be able to record its result normally — the epoch guard must not permanently wedge the thread
+        // id.
         var cache = new SubAgentScanCoverageCache();
         var deletedOwner = new object();
         var reusedOwner = new object();
 
-        cache.RecordRecovered("thread-1", deletedOwner, Rows("old-child"));
+        cache.RecordRecovered("thread-1", deletedOwner, Rows("old-child"), cache.CaptureWriteEpoch());
         cache.Forget("thread-1");
 
-        // The reused conversation's caller captures the generation AFTER the delete this time.
-        var freshGeneration = cache.CaptureGeneration("thread-1");
-        var committed = cache.RecordRecovered("thread-1", reusedOwner, Rows("new-child"), freshGeneration);
+        // The reused conversation's caller captures the epoch AFTER the delete this time.
+        var freshEpoch = cache.CaptureWriteEpoch();
+        var committed = cache.RecordRecovered("thread-1", reusedOwner, Rows("new-child"), freshEpoch);
 
-        committed.Should().BeTrue("a scan that captured its generation AFTER the Forget is not stale");
+        committed.Should().BeTrue("a scan that captured its epoch AFTER the Forget is not stale");
         cache.TryGetRecovered("thread-1", reusedOwner, out var rows).Should().BeTrue();
         rows.Select(r => r.AgentId).Should().BeEquivalentTo(["new-child"]);
     }
@@ -304,41 +364,96 @@ public sealed class SubAgentScanCoverageCacheTests
     public void RecordRecovered_ForAnOwnerReset_StillCommits_WhenNoForgetRanInBetween()
     {
         // Composes with owner-keyed reset invalidation: a manager reset (mode/provider switch, pool
-        // eviction+reopen, restart) does not call Forget and must not bump the generation, so a scan
-        // racing a reset (not a delete) keeps resolving purely through the owner check, unaffected by
-        // this guard.
+        // eviction+reopen, restart) does not call Forget and must not bump the epoch, so a scan racing
+        // a reset (not a delete) keeps resolving purely through the owner check, unaffected by this
+        // guard.
         var cache = new SubAgentScanCoverageCache();
         var originalOwner = new object();
         var ownerAfterReset = new object();
 
-        cache.RecordRecovered("thread-1", originalOwner, Rows("gen1-child"));
+        cache.RecordRecovered("thread-1", originalOwner, Rows("gen1-child"), cache.CaptureWriteEpoch());
 
-        var generation = cache.CaptureGeneration("thread-1");
-        var committed = cache.RecordRecovered("thread-1", ownerAfterReset, Rows("gen2-child"), generation);
+        var epoch = cache.CaptureWriteEpoch();
+        var committed = cache.RecordRecovered("thread-1", ownerAfterReset, Rows("gen2-child"), epoch);
 
-        committed.Should().BeTrue("an owner reset with no intervening Forget does not bump the generation");
+        committed.Should().BeTrue("an owner reset with no intervening Forget does not bump the epoch");
         cache.TryGetRecovered("thread-1", ownerAfterReset, out var rows).Should().BeTrue();
         rows.Select(r => r.AgentId).Should().BeEquivalentTo(["gen2-child"]);
     }
 
     [Fact]
-    public void Forget_TombstoneEntry_IsBoundByCapacity_LikeAnyOtherEntry_SoADeletedThreadDoesNotLeakForever()
+    public void Forget_NeverConsumesACapacitySlot_SoADeletedThreadDoesNotDisplaceOtherEntries()
     {
-        // "No unbounded generation memory": a Forget tombstone occupies one slot in the SAME bounded
-        // structure as a real entry, so recording enough OTHER distinct threads evicts it exactly like
-        // it would evict a real entry — the deleted thread id does not pin memory forever.
-        var cache = new SubAgentScanCoverageCache(capacity: 2);
-        var owner = new object();
-        cache.RecordRecovered("thread-1", owner, Rows("child-a"));
+        // "No tombstone consumes capacity" (PR #245 stress review RED->GREEN list): the redesign removes
+        // the tombstone entirely — Forget frees the thread's slot outright instead of replacing it with a
+        // stand-in. At capacity: 1, recording a second thread right after a Forget must succeed without
+        // needing to evict anything (there is nothing left to evict), and the freed thread must stay gone.
+        var cache = new SubAgentScanCoverageCache(capacity: 1);
+        var owner1 = new object();
+        var owner2 = new object();
 
+        cache.RecordRecovered("thread-1", owner1, Rows("a"), cache.CaptureWriteEpoch());
         cache.Forget("thread-1");
-        cache.RecordRecovered("thread-2", new object(), Rows("child-b"));
-        cache.RecordRecovered("thread-3", new object(), Rows("child-c"));
 
-        // thread-1's tombstone (recorded most-recently at the time of Forget, then aged by two more
-        // writes) should now be evicted, resetting its generation back to the 0 baseline.
-        cache.CaptureGeneration("thread-1").Should().Be(
-            0L, "the tombstone must have been evicted by capacity pressure, same as a real entry would be");
+        var committed = cache.RecordRecovered("thread-2", owner2, Rows("b"), cache.CaptureWriteEpoch());
+
+        committed.Should().BeTrue(
+            "no tombstone occupies thread-1's freed slot, so recording thread-2 at capacity 1 must succeed "
+                + "without contending for room");
+        cache.TryGetRecovered("thread-2", owner2, out var rows).Should().BeTrue();
+        rows.Select(r => r.AgentId).Should().BeEquivalentTo(["b"]);
+        cache.TryGetRecovered("thread-1", owner1, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CapacityOne_DeletePlusUnrelatedWriteAndEviction_StillRejectsTheStaleScan()
+    {
+        // The precise ABA reproduction from the PR #245 stress review: at capacity 1, the OLD tombstone
+        // design could have the tombstone for thread-1 evicted by unrelated capacity pressure (a single
+        // other write is enough at capacity 1), which reset thread-1's per-thread counter back to its 0
+        // baseline — the SAME value a stale in-flight scan had captured before the delete — so the guard
+        // silently accepted the resurrection. The cache-wide epoch has no per-thread counter to reset:
+        // capacity churn on OTHER threads must never let a stale capture for thread-1 slip back through.
+        var cache = new SubAgentScanCoverageCache(capacity: 1);
+
+        // Caller A misses the cache for thread-1 and captures the epoch before its scan starts.
+        var epochBeforeScan = cache.CaptureWriteEpoch();
+
+        // thread-1 is deleted while caller A's scan is still in flight (thread-1 had no entry yet, so
+        // this exercises the "no-op removal, epoch still bumps" path).
+        cache.Forget("thread-1");
+
+        // Unrelated capacity churn: two other distinct threads are recorded at capacity 1, each evicting
+        // the previous one. In the old tombstone design this is exactly the pressure that would have
+        // evicted thread-1's tombstone.
+        cache.RecordRecovered("thread-2", new object(), Rows("x"), cache.CaptureWriteEpoch());
+        cache.RecordRecovered("thread-3", new object(), Rows("y"), cache.CaptureWriteEpoch());
+
+        // Caller A's scan finally completes and tries to record its PRE-delete (now stale) answer.
+        var committed = cache.RecordRecovered("thread-1", new object(), Rows("stale"), epochBeforeScan);
+
+        committed.Should().BeFalse(
+            "unrelated capacity eviction must never let a stale epoch captured before a Forget slip back "
+                + "through — the cache-wide epoch has no per-thread counter for eviction to reset");
+        cache.TryGetRecovered("thread-1", SubAgentScanCoverageCache.NoLiveManager, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void RecordRecovered_EpochParameter_HasNoDefaultValue()
+    {
+        // "Explicit epoch required (compile)" (PR #245 stress review RED->GREEN list): the predecessor's
+        // `generation = 0` default let a caller silently skip CaptureWriteEpoch/RecordRecovered pairing —
+        // an unguarded write compiled without any caller ever naming an epoch. Asserting the parameter
+        // carries no default value is what makes that regression a build break instead of a silent
+        // runtime hazard: if a default were reintroduced, this test fails immediately.
+        var method = typeof(SubAgentScanCoverageCache).GetMethod(nameof(SubAgentScanCoverageCache.RecordRecovered));
+
+        method.Should().NotBeNull();
+        var epochParameter = method!.GetParameters().Single(p => p.Name == "epoch");
+
+        epochParameter.HasDefaultValue.Should().BeFalse(
+            "RecordRecovered must require every caller to name the epoch it captured — no silent default");
+        epochParameter.ParameterType.Should().Be(typeof(ulong));
     }
 
     [Fact]
@@ -346,7 +461,8 @@ public sealed class SubAgentScanCoverageCacheTests
     {
         var cache = new SubAgentScanCoverageCache();
 
-        cache.RecordRecovered("thread-1", SubAgentScanCoverageCache.NoLiveManager, Rows("child-a"));
+        cache.RecordRecovered(
+            "thread-1", SubAgentScanCoverageCache.NoLiveManager, Rows("child-a"), cache.CaptureWriteEpoch());
 
         var hit = cache.TryGetRecovered("thread-1", SubAgentScanCoverageCache.NoLiveManager, out var rows);
 
@@ -387,7 +503,7 @@ public sealed class SubAgentScanCoverageCacheTests
             {
                 ready.Signal();
                 start.Wait();
-                cache.RecordRecovered($"thread-{i}", owners[i], expectedRows[i]);
+                cache.RecordRecovered($"thread-{i}", owners[i], expectedRows[i], cache.CaptureWriteEpoch());
             }))
             .ToArray();
 

@@ -112,7 +112,8 @@ public sealed class SubAgentScanCoverageCacheCompositionTests
                         Task = "task",
                         Status = "completed",
                         ThreadId = $"subagent-child-{i}",
-                    }]);
+                    }],
+                    cache.CaptureWriteEpoch());
             }
 
             var survivorCount = Enumerable.Range(0, distinctThreads)

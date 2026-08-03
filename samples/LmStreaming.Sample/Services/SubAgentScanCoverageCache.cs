@@ -70,7 +70,9 @@ namespace LmStreaming.Sample.Services;
 ///         uses for its own retention ceiling — see <c>Program.cs</c>) caps the number of distinct
 ///         threads tracked; the oldest entry BY LAST WRITE (not last read — no recency bump on a cache
 ///         hit, which keeps the policy simple and deterministic to test) is evicted first. Losing a cold
-///         entry only costs the next poll for that thread one extra rescan — it does not lose data.
+///         entry only costs the next poll for that thread one extra rescan — it does not lose data. Only
+///         REAL recorded rosters ever occupy a slot (see the forget-epoch design below) — the bounded
+///         structure never has to make room for bookkeeping that carries no roster of its own.
 ///     </para>
 ///     <para>
 ///         <b>Delete eviction.</b> <see cref="Forget"/> removes a thread's entry outright, regardless of
@@ -82,38 +84,56 @@ namespace LmStreaming.Sample.Services;
 ///         calls <see cref="Forget"/> after a successful delete to close that gap.
 ///     </para>
 ///     <para>
-///         <b>Scan/delete interleaving (PR #245 review — a late scan writeback must not resurrect a
-///         delete).</b> <see cref="Forget"/> above closes the gap for a scan that STARTS after the
-///         delete. It does not by itself close the reverse ordering: a scan already in flight when
-///         <see cref="Forget"/> runs is not cancelled by it — <c>AgentHierarchyService</c> still holds a
-///         completed, in-hand roster from BEFORE the delete and, without a caller-provided sequencing
-///         signal, would call <see cref="RecordRecovered"/> with it right after <see cref="Forget"/>
-///         returns, silently re-inserting the deleted thread's stale roster. Every entry — including a
-///         <see cref="Forget"/> tombstone — therefore also carries a <c>Generation</c> counter.
-///         <see cref="CaptureGeneration"/> reads the counter BEFORE the scan starts; <see cref="Forget"/>
-///         increments it (and replaces the entry with a tombstone recorded under a private sentinel
-///         owner no real caller can ever reference-equal, so it is an ordinary cache MISS from every
-///         external caller's point of view — "removes the entry" from <see cref="TryGetRecovered"/>'s
-///         perspective, while still remembering that a delete happened); <see cref="RecordRecovered"/>
-///         only commits the write if the current generation still equals the one captured before the
-///         scan started, otherwise it rejects the write outright (returns <see langword="false"/>) and
-///         leaves the tombstone alone. An owner-keyed reset (mode/provider switch, pool eviction+reopen,
-///         restart) does NOT bump the generation — only an explicit <see cref="Forget"/> does — so a
-///         race between a reset and an in-flight scan is unaffected by this counter and continues to
-///         resolve purely through the owner check documented above (last write wins, both answers are
-///         equally valid). Plain capacity eviction (below) also never bumps the generation; it just
-///         removes whichever entry — real or tombstone — is oldest by last write, same as it always has.
+///         <b>Scan/delete interleaving — cache-wide forget epoch (PR #245 stress review — a tombstone-based,
+///         per-thread generation protocol reopens the exact resurrection it was meant to close).</b>
+///         <see cref="Forget"/> above closes the gap for a scan that STARTS after the delete. It does not
+///         by itself close the reverse ordering: a scan already in flight when <see cref="Forget"/> runs is
+///         not cancelled by it — <c>AgentHierarchyService</c> still holds a completed, in-hand roster from
+///         BEFORE the delete and, without a caller-provided sequencing signal, would call
+///         <see cref="RecordRecovered"/> with it right after <see cref="Forget"/> returns, silently
+///         re-inserting the deleted thread's stale roster.
 ///     </para>
 ///     <para>
-///         The generation counter piggybacks on the SAME bounded <c>_byThread</c>/<c>_writeOrder</c>
-///         structure capacity eviction already maintains, rather than a second, separately-retained map —
-///         a tombstone is just an entry like any other and ages out under ordinary capacity pressure
-///         exactly like a real one, so a deleted thread never pins memory forever. The trade-off this
-///         accepts: if capacity pressure evicts a thread's tombstone before its interleaved in-flight
-///         scan writes back, the generation counter for that thread resets to the 0 baseline and the
-///         stale write is no longer distinguishable from a legitimate first-ever recording. This can only
-///         happen under simultaneous delete + eviction + in-flight-scan pressure on the SAME thread id,
-///         and is the accepted cost of keeping this cache's memory bounded rather than unbounded.
+///         An earlier version of this guard recorded a per-thread tombstone (a fourth <c>CacheEntry</c>
+///         under a private sentinel owner) carrying its own generation counter, aging out under the SAME
+///         bounded capacity structure as a real entry. That was the bug: because the tombstone occupied an
+///         ordinary slot, ordinary capacity pressure (trivially reachable at <c>capacity: 1</c>, where a
+///         SINGLE unrelated write evicts it) could evict the tombstone before the in-flight scan's stale
+///         writeback landed. Evicting the tombstone reset that thread's per-thread counter back to its 0
+///         baseline — the SAME value the stale scan had captured before the delete (for a thread whose
+///         tombstone was its first-ever entry) — so the "generation still matches" check silently passed
+///         and the deleted roster was resurrected anyway. A classic ABA hazard: the counter returned to a
+///         value it had already held, and the guard could not tell the difference.
+///     </para>
+///     <para>
+///         The fix removes the per-thread counter (and the tombstone entry) entirely in favor of one
+///         cache-wide, monotonically increasing <see cref="_writeEpoch"/>, guarded by the same
+///         <see cref="_gate"/> as everything else. <see cref="CaptureWriteEpoch"/> reads it BEFORE a scan
+///         starts; <see cref="Forget"/> increments it (there is exactly one counter, so there is nothing
+///         left for capacity eviction to reset — a deleted thread's slot is removed outright, not replaced
+///         with a stand-in); <see cref="RecordRecovered"/> requires the caller to pass back the epoch it
+///         captured and rejects the write outright if the CURRENT epoch has since moved on, regardless of
+///         which thread's <see cref="Forget"/> caused that — <b>any</b> delete anywhere in the cache
+///         invalidates every write captured before it, not just the one for the same thread id. This is
+///         deliberately conservative: a scan for thread B in flight when thread A is deleted pays for one
+///         extra, harmless rescan it did not strictly need, in exchange for a guard that can never wrap
+///         back around to a value a stale caller already captured. Because eviction no longer has a
+///         tombstone to reset, this holds true no matter how small <c>_capacity</c> is — including
+///         <c>capacity: 1</c>, the case that broke the old per-thread design.
+///     </para>
+///     <para>
+///         There is no default value for the <c>epoch</c> parameter <see cref="RecordRecovered"/> takes:
+///         the predecessor's <c>generation = 0</c> default let a caller silently skip the
+///         <see cref="CaptureWriteEpoch"/>/<see cref="RecordRecovered"/> pairing altogether (compiling
+///         "successfully" straight into an unguarded write) — a footgun this redesign removes by making
+///         every call site name the epoch it captured, explicitly, at the point it started scanning.
+///     </para>
+///     <para>
+///         <see cref="_writeEpoch"/> is a <see cref="ulong"/> incremented with unchecked wraparound. A wrap
+///         back to a value a caller already captured would need exactly 2^64 intervening <see cref="Forget"/>
+///         calls between that caller's <see cref="CaptureWriteEpoch"/> and its <see cref="RecordRecovered"/> —
+///         even at one billion deletes per second that is well over 500 years, so it is treated as
+///         impossible in practice rather than guarded against explicitly.
 ///     </para>
 /// </remarks>
 public sealed class SubAgentScanCoverageCache
@@ -129,22 +149,22 @@ public sealed class SubAgentScanCoverageCache
     /// </summary>
     public static readonly object NoLiveManager = new();
 
-    /// <summary>
-    ///     Private owner sentinel <see cref="Forget"/> tombstones are recorded under. No external caller
-    ///     can ever hold a reference to this instance, so a tombstoned entry is an unconditional MISS from
-    ///     <see cref="TryGetRecovered"/> regardless of which owner the caller passes — including
-    ///     <see cref="NoLiveManager"/> itself.
-    /// </summary>
-    private static readonly object TombstoneOwner = new();
+    private sealed record CacheEntry(object Owner, IReadOnlyList<SubAgentSummary> Rows);
 
-    private sealed record CacheEntry(object Owner, IReadOnlyList<SubAgentSummary> Rows, long Generation);
-
-    /// <summary>Guards both collections below; operations are in-memory dictionary/list bookkeeping only,
-    /// never held across the store scan itself, so contention is negligible.</summary>
+    /// <summary>Guards the collections below AND <see cref="_writeEpoch"/>; operations are in-memory
+    /// dictionary/list/counter bookkeeping only, never held across the store scan itself, so contention
+    /// is negligible.</summary>
     private readonly object _gate = new();
     private readonly Dictionary<string, LinkedListNode<KeyValuePair<string, CacheEntry>>> _byThread = [];
     private readonly LinkedList<KeyValuePair<string, CacheEntry>> _writeOrder = new();
     private readonly int _capacity;
+
+    /// <summary>
+    ///     Cache-wide monotonic counter; see the forget-epoch remarks above. Incremented by every
+    ///     <see cref="Forget"/> call, regardless of thread id — never by <see cref="RecordRecovered"/> or
+    ///     capacity eviction, and never reset.
+    /// </summary>
+    private ulong _writeEpoch;
 
     public SubAgentScanCoverageCache(int capacity = DefaultCapacity)
     {
@@ -157,8 +177,8 @@ public sealed class SubAgentScanCoverageCache
     ///     an earlier <see cref="RecordRecovered"/>, if the persisted scan has already run for this exact
     ///     (thread, owner) pair this process lifetime. An empty list is a valid, cached "genuinely
     ///     childless" answer — distinct from a miss, which returns <see langword="false"/> and means
-    ///     either the scan has never completed for this thread, or it last completed for a DIFFERENT
-    ///     owner (the live manager was reset since).
+    ///     either the scan has never completed for this thread, it last completed for a DIFFERENT owner
+    ///     (the live manager was reset since), or the entry was removed by <see cref="Forget"/>.
     /// </summary>
     public bool TryGetRecovered(string threadId, object owner, out IReadOnlyList<SubAgentSummary> rows)
     {
@@ -176,24 +196,23 @@ public sealed class SubAgentScanCoverageCache
     }
 
     /// <summary>
-    ///     Returns the generation counter currently associated with <paramref name="threadId"/> — 0 if
-    ///     the thread has no entry at all (never recorded, or aged out of the bounded cache). Call this
-    ///     BEFORE starting a persisted-store scan and pass the result back into the matching
-    ///     <see cref="RecordRecovered"/> call once the scan completes (see the scan/delete interleaving
-    ///     remarks above) — this is what lets a <see cref="Forget"/> that lands while the scan is in
-    ///     flight cause that scan's writeback to be rejected instead of resurrecting a deleted thread.
+    ///     Returns the cache-wide write epoch — see the forget-epoch remarks above. Call this BEFORE
+    ///     starting a persisted-store scan and pass the result back into the matching
+    ///     <see cref="RecordRecovered"/> call once the scan completes: this is what lets a
+    ///     <see cref="Forget"/> (for this thread OR any other) that lands while the scan is in flight
+    ///     cause that scan's writeback to be rejected instead of resurrecting stale data.
     /// </summary>
-    public long CaptureGeneration(string threadId)
+    public ulong CaptureWriteEpoch()
     {
         lock (_gate)
         {
-            return _byThread.TryGetValue(threadId, out var node) ? node.Value.Value.Generation : 0L;
+            return _writeEpoch;
         }
     }
 
     /// <summary>
     ///     Records the roster a completed scan reconstructed for <paramref name="threadId"/> under
-    ///     <paramref name="owner"/>, so no later call for the same (thread, owner) pays for the scan
+    ///     <paramref name="owner"/>, so no later call for the same (thread, owner) pair pays for the scan
     ///     again. Call only after the scan has finished successfully — never for a cancelled or failed
     ///     attempt. Overwrites any entry already recorded for this thread (under any owner) and marks it
     ///     as the most-recently-written entry, so bounded eviction below evicts the least-recently-WRITTEN
@@ -205,44 +224,38 @@ public sealed class SubAgentScanCoverageCache
     ///     see the owner/generation keying remarks above.
     /// </param>
     /// <param name="rows">The roster the scan reconstructed.</param>
-    /// <param name="generation">
-    ///     The value <see cref="CaptureGeneration"/> returned for <paramref name="threadId"/> immediately
-    ///     BEFORE the scan that produced <paramref name="rows"/> was started. Defaults to 0 (the baseline
-    ///     for a thread that has never been forgotten), which is correct for any caller that does not need
-    ///     to guard against an interleaved <see cref="Forget"/> — every existing call site that predates
-    ///     this parameter keeps its original unconditional-write behavior unchanged. If the current
-    ///     generation no longer matches (a <see cref="Forget"/> ran for this thread after the caller's
-    ///     scan started), the write is rejected and this method returns <see langword="false"/> without
-    ///     touching the cache — the tombstone <see cref="Forget"/> left behind is preserved.
+    /// <param name="epoch">
+    ///     The value <see cref="CaptureWriteEpoch"/> returned immediately BEFORE the scan that produced
+    ///     <paramref name="rows"/> was started. There is deliberately no default: every caller must name
+    ///     the epoch it captured, so an unguarded write can never compile by omission (see the remarks
+    ///     above). If the cache-wide epoch has since moved on — a <see cref="Forget"/> ran for ANY thread
+    ///     after the caller captured this value — the write is rejected and this method returns
+    ///     <see langword="false"/> without touching the cache.
     /// </param>
     /// <returns>
     ///     <see langword="true"/> if the roster was recorded; <see langword="false"/> if the write was
-    ///     rejected because the generation captured before the scan is stale.
+    ///     rejected because the epoch captured before the scan is stale.
     /// </returns>
     public bool RecordRecovered(
         string threadId,
         object owner,
         IReadOnlyList<SubAgentSummary> rows,
-        long generation = 0)
+        ulong epoch)
     {
         lock (_gate)
         {
-            var currentGeneration = _byThread.TryGetValue(threadId, out var existing)
-                ? existing.Value.Value.Generation
-                : 0L;
-
-            if (currentGeneration != generation)
+            if (epoch != _writeEpoch)
             {
                 return false;
             }
 
-            if (existing is not null)
+            if (_byThread.TryGetValue(threadId, out var existing))
             {
                 _writeOrder.Remove(existing);
             }
 
             var node = _writeOrder.AddLast(
-                new KeyValuePair<string, CacheEntry>(threadId, new CacheEntry(owner, rows, generation)));
+                new KeyValuePair<string, CacheEntry>(threadId, new CacheEntry(owner, rows)));
             _byThread[threadId] = node;
 
             while (_byThread.Count > _capacity)
@@ -257,40 +270,32 @@ public sealed class SubAgentScanCoverageCache
     }
 
     /// <summary>
-    ///     Removes any recorded entry for <paramref name="threadId"/>, regardless of owner, from every
-    ///     external caller's point of view (<see cref="TryGetRecovered"/> misses unconditionally
-    ///     afterward). Called on conversation delete (see remarks above) so a later reuse of the same
-    ///     thread id never resurrects a deleted conversation's recovered rows.
+    ///     Removes any recorded entry for <paramref name="threadId"/> outright, regardless of owner, so
+    ///     <see cref="TryGetRecovered"/> misses unconditionally afterward, AND bumps the cache-wide write
+    ///     epoch so any <see cref="RecordRecovered"/> already in flight (for this thread OR any other) with
+    ///     an epoch captured before this call is rejected. Called on conversation delete (see remarks
+    ///     above) so a later reuse of the same thread id never resurrects a deleted conversation's
+    ///     recovered rows.
     /// </summary>
     /// <remarks>
-    ///     Internally this does not fully erase the slot: it replaces whatever was there with a
-    ///     tombstone — recorded under <see cref="TombstoneOwner"/> (so it can never match a real caller's
-    ///     owner) at one generation past whatever was there before. The generation bump is what lets
-    ///     <see cref="RecordRecovered"/> reject a scan that was already in flight when this call landed
-    ///     (see the scan/delete interleaving remarks above); the tombstone still occupies one slot in the
-    ///     SAME bounded structure capacity eviction maintains, so it ages out under ordinary capacity
-    ///     pressure like any other entry rather than pinning memory for this thread id forever.
+    ///     Unlike the tombstone-based predecessor, this does not leave anything behind in
+    ///     <see cref="_byThread"/>/<see cref="_writeOrder"/> — the slot is freed immediately, so it never
+    ///     competes for capacity and can never be evicted out from under the epoch check (see the
+    ///     forget-epoch remarks above for why that mattered).
     /// </remarks>
     public void Forget(string threadId)
     {
         lock (_gate)
         {
-            var nextGeneration = 1L;
-            if (_byThread.TryGetValue(threadId, out var existing))
+            unchecked
             {
-                nextGeneration = existing.Value.Value.Generation + 1;
-                _writeOrder.Remove(existing);
+                _writeEpoch++;
             }
 
-            var node = _writeOrder.AddLast(
-                new KeyValuePair<string, CacheEntry>(threadId, new CacheEntry(TombstoneOwner, [], nextGeneration)));
-            _byThread[threadId] = node;
-
-            while (_byThread.Count > _capacity)
+            if (_byThread.TryGetValue(threadId, out var existing))
             {
-                var oldest = _writeOrder.First!;
-                _writeOrder.RemoveFirst();
-                _ = _byThread.Remove(oldest.Value.Key);
+                _writeOrder.Remove(existing);
+                _ = _byThread.Remove(threadId);
             }
         }
     }
