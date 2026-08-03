@@ -685,11 +685,17 @@ public class SubAgentManagerTests : IAsyncLifetime
             Times.Exactly(1),
             "the #246 descendant-question signal must fire exactly once per parked question, not be duplicated");
 
-        // Re-observing the already-completed background spawn (e.g. a client reconnect re-polling
-        // completion) must not cause a second relay: HandleRunCompletionAsync only ever runs once per
-        // RunCompletedMessage, and ObserveCompletionAsync merely awaits the (already-resolved)
-        // completion latch — it never re-derives or re-sends the notification.
-        _ = await _manager.ObserveCompletionAsync(agentId, CancellationToken.None);
+        // Re-observing the parked spawn (e.g. a client reconnect re-polling completion) must not cause
+        // a second relay. Unlike a genuinely finished run, a child parked on its own question is NOT
+        // terminal (see the Finding-2 fix in HandleRunCompletionAsync): its Completion latch is
+        // deliberately left unresolved until the human's answer produces a real final run, so observing
+        // it with a bounded token times out rather than returning a (stale/placeholder) result — and,
+        // critically, must not re-derive or re-send the notification.
+        using var reobserveCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        var reobserve = async () => await _manager.ObserveCompletionAsync(agentId, reobserveCts.Token);
+        await reobserve.Should().ThrowAsync<OperationCanceledException>(
+            "the child is parked (not terminal), so its Completion latch is intentionally left "
+                + "unresolved until the human answers the pending question");
 
         _parentMock.Verify(
             p => p.SendAsync(
@@ -700,8 +706,136 @@ public class SubAgentManagerTests : IAsyncLifetime
                 It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()),
             Times.Exactly(1),
-            "re-observing an already-completed spawn (simulating a client reconnect) must not " +
-            "re-deliver the notification");
+            "re-observing a parked spawn (simulating a client reconnect) must not re-deliver the " +
+            "notification");
+
+        // The sub-agent itself is still reported Running (non-terminal): the parked question keeps its
+        // loop/provider live and its concurrency slot held, rather than being misreported "completed".
+        using var peekDoc = JsonDocument.Parse(_manager.Peek(agentId));
+        peekDoc.RootElement.GetProperty("status").GetString().Should().Be("running");
+    }
+
+    [Fact]
+    public async Task SpawnAsync_Foreground_WhenParkedOnAskUserQuestion_BlocksThenReturnsRealAnswerAfterResolution()
+    {
+        // Arrange: same AskUserQuestion-parking setup as the background tests above, but this test
+        // drives the actual FOREGROUND (runInBackground: false) path, which blocks on
+        // AwaitCompletionAsync(state, ct) -> state.Completion.Task. Before the Finding-2 fix, a parked
+        // question was (mis)treated as terminal: TryCompleteWithResult ran immediately with the
+        // misleading "(no text response)" placeholder, so this foreground call would return almost
+        // instantly with the WRONG text, and the sub-agent's concurrency slot/loop/provider would
+        // already be torn down — losing the real answer forever. The fix keeps Completion unresolved
+        // while parked, so the foreground call must still be pending when the question is observed,
+        // and must only complete (with the REAL final text) after the deferred AskUserQuestion tool
+        // call is resolved and the resulting run finishes.
+        var askArgs = JsonSerializer.Serialize(new
+        {
+            context = "Need input before continuing.",
+            questions = new[]
+            {
+                new
+                {
+                    prompt = "Which color?",
+                    options = new object[] { new { label = "Red" }, new { label = "Blue" } },
+                },
+            },
+        });
+        SetupSubAgentResponse([
+            new ToolCallMessage
+            {
+                FunctionName = AskUserQuestionToolProvider.ToolName,
+                FunctionArgs = askArgs,
+                ToolCallId = "tc_color",
+                Role = Role.Assistant,
+            },
+        ]);
+
+        // maxConcurrent: 1 so the capacity assertion below (a second spawn must queue, not start) is
+        // meaningful: the parked foreground spawn must still be holding its permit.
+        _manager = CreateManager(maxConcurrent: 1);
+
+        var foregroundTask = _manager.SpawnAsync(
+            "test-agent", "Pick a color", name: "color-agent", runInBackground: false);
+
+        // Poll (rather than a fixed delay, which would be flaky under load) until the child actually
+        // parks on its own AskUserQuestion — i.e. GetDeferredToolCallsAsync reports it — resolving
+        // the live MultiTurnAgentLoop instance through the same seam SubAgentManager itself has no
+        // dedicated "answer a sub-agent's question" API for: TryGetAgent + a cast to the concrete
+        // loop type, exactly as a real caller would have to.
+        MultiTurnAgentLoop? loop = null;
+        IReadOnlyList<DeferredToolCallInfo> deferred = [];
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (_manager!.TryGetAgent("color-agent", out var agent) && agent is MultiTurnAgentLoop l)
+            {
+                loop = l;
+                deferred = await l.GetDeferredToolCallsAsync();
+                if (deferred.Any(d => d.ToolCallId == "tc_color"))
+                {
+                    break;
+                }
+            }
+
+            await Task.Delay(50);
+        }
+
+        loop.Should().NotBeNull("the child must have registered as a MultiTurnAgentLoop by now");
+        deferred.Should().Contain(
+            d => d.ToolCallId == "tc_color",
+            "the child must have parked its AskUserQuestion tool call for external resolution");
+
+        // Peek (unlike TryGetAgent/SendMessageAsync) is keyed strictly by the internal agent_id, not
+        // the caller-supplied name, so resolve it once via ListAgents now that the child is registered.
+        var agentId = _manager!.ListAgents().Single(a => a.Name == "color-agent").AgentId;
+
+        // Assert (lifecycle): the foreground caller must still be blocked — NOT resolved with a
+        // placeholder — while the question is outstanding.
+        foregroundTask.IsCompleted.Should().BeFalse(
+            "a foreground spawn parked on its own pending question must keep blocking for the real "
+                + "answer, not settle immediately with a '(no text response)' placeholder");
+
+        using (var peekDoc2 = JsonDocument.Parse(_manager.Peek(agentId)))
+        {
+            peekDoc2.RootElement.GetProperty("status").GetString().Should().Be(
+                "running",
+                "the parked child is not terminal: its loop/provider/concurrency slot all stay live");
+        }
+
+        // Assert (capacity): with maxConcurrent: 1, the parked child must still be holding its
+        // permit, so a second spawn attempt is deferred (queued), never started outright.
+        var secondJson = await _manager.SpawnAsync(
+            "test-agent", "unrelated second task", runInBackground: true);
+        using (var secondDoc = JsonDocument.Parse(secondJson))
+        {
+            secondDoc.RootElement.GetProperty("status").GetString().Should().Be(
+                "queued",
+                "the parked foreground child must still hold its concurrency permit, so a second "
+                    + "spawn cannot start until the real answer resolves the first");
+        }
+
+        // Act: reconfigure the mock for the run the answer triggers, then resolve the deferred call
+        // exactly the way a real client answering the AskUserQuestion prompt would — directly on the
+        // child's own live MultiTurnAgentLoop (the production resolution mechanism).
+        SetupSubAgentResponse([
+            new TextMessage { Text = "Final answer: chose Red.", Role = Role.Assistant },
+        ]);
+
+        var outcome = await loop!.TryResolveToolCallAsync("tc_color", "Red");
+        outcome.Should().Be(ResolveToolCallOutcome.Resolved);
+
+        // Assert: the foreground caller unblocks with the REAL final text from the answer-triggered
+        // run — not the placeholder, and exactly once (a stray second completion would mean the
+        // parked-question branch and the genuine-terminal branch both tried to settle it).
+        var result = await foregroundTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be("Final answer: chose Red.");
+
+        using (var finalPeekDoc = JsonDocument.Parse(_manager.Peek(agentId)))
+        {
+            finalPeekDoc.RootElement.GetProperty("status").GetString().Should().Be(
+                "completed",
+                "only the answer-triggered run's genuine completion should flip the child terminal");
+        }
     }
 
     [Fact]

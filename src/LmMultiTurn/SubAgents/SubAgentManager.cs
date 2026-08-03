@@ -2876,19 +2876,31 @@ public sealed class SubAgentManager : IAsyncDisposable
                 {
                     state.LastResult = lastTextContent;
 
+                    // A run reporting HasPendingMessages == false is not necessarily done: a child that
+                    // just deferred on its own AskUserQuestion reports the exact same flag value (it only
+                    // tracks queued NEXT-turn inputs — see MultiTurnAgentBase.CompleteRunAsync), yet its
+                    // loop (state.Agent) still holds the deferred call live in its own registry. Compute
+                    // that HERE, before deciding whether to release the concurrency slot, so the decision
+                    // and HandleRunCompletionAsync's own terminal/non-terminal branching never disagree.
+                    var awaitingQuestion = !rcm.HasPendingMessages
+                        && !rcm.IsError
+                        && await HasPendingAskUserQuestionAsync(state);
+
                     // Release the slot BEFORE the (possibly slow/backpressured) parent relay in
-                    // HandleRunCompletionAsync — but ONLY for a TERMINAL completion. A nonterminal
-                    // (HasPendingMessages) completion keeps the SAME loop/provider busy processing queued
-                    // work, so releasing its permit now would let another sub-agent start while this one
-                    // is still active, exceeding MaxConcurrentSubAgents. The permit is held until the run
-                    // truly ends: the terminal completion here, or the monitor's finally if the stream
-                    // ends first. Idempotent, so that fallback release is a safe no-op afterward.
-                    if (!rcm.HasPendingMessages)
+                    // HandleRunCompletionAsync — but ONLY for a genuinely TERMINAL completion. A
+                    // nonterminal completion — either HasPendingMessages (another run will follow) or a
+                    // parked AskUserQuestion (the SAME loop/provider stay live awaiting the human's
+                    // answer) — keeps this sub-agent's resources busy, so releasing its permit now would
+                    // let another sub-agent start while this one is still active, exceeding
+                    // MaxConcurrentSubAgents. The permit is held until the run truly ends: the terminal
+                    // completion here, or the monitor's finally if the stream ends first. Idempotent, so
+                    // that fallback release is a safe no-op afterward.
+                    if (!rcm.HasPendingMessages && !awaitingQuestion)
                     {
                         gateGuard.ReleaseOnce(_concurrencyGate);
                     }
 
-                    await HandleRunCompletionAsync(state, rcm, lastTextContent, ct);
+                    await HandleRunCompletionAsync(state, rcm, lastTextContent, awaitingQuestion, ct);
                     lastTextContent = null;
                     textGenerationId = null;
                     _ = textBuilder.Clear();
@@ -2945,10 +2957,20 @@ public sealed class SubAgentManager : IAsyncDisposable
     /// Handles a sub-agent run completion: resolves the synchronous completion signal
     /// and, for background spawns/continuations, relays the result to the parent.
     /// </summary>
+    /// <param name="state">The sub-agent's state.</param>
+    /// <param name="rcm">The run-completion message the monitor just observed.</param>
+    /// <param name="lastTextContent">The run's last accumulated assistant text, if any.</param>
+    /// <param name="awaitingQuestion">
+    /// Precomputed by the monitor loop (via <see cref="HasPendingAskUserQuestionAsync"/>) BEFORE this
+    /// call, so the concurrency-gate release decision and this method's terminal/non-terminal branching
+    /// always agree on the same answer for the same <see cref="RunCompletedMessage"/>.
+    /// </param>
+    /// <param name="ct">Cancellation token for this run's lifetime.</param>
     private async Task HandleRunCompletionAsync(
         SubAgentState state,
         RunCompletedMessage rcm,
         string? lastTextContent,
+        bool awaitingQuestion,
         CancellationToken ct)
     {
         // A run that still has queued messages is NOT terminal: another run will follow and reuse the
@@ -2956,6 +2978,50 @@ public sealed class SubAgentManager : IAsyncDisposable
         // here — the final completion (HasPendingMessages == false) resolves and, if owned, disposes.
         if (rcm.HasPendingMessages)
         {
+            return;
+        }
+
+        if (awaitingQuestion)
+        {
+            // A child that just deferred on its own AskUserQuestion reports the exact same
+            // HasPendingMessages == false a genuinely finished run would (that flag only tracks queued
+            // NEXT-turn inputs — see MultiTurnAgentBase.CompleteRunAsync), yet the loop itself
+            // (state.Agent) still holds the deferred call live in its own registry — it is NOT done.
+            // Treat this as explicitly non-terminal: never flip the sub-agent's status, persist a
+            // Completed/Error state, or dispose its owned provider — the loop must stay exactly as it
+            // is so that resolving the deferred call (whichever path does so) starts a new run against
+            // the SAME live provider, not a rebuilt one. Above all, never resolve state.Completion here:
+            // a foreground caller blocked on it must keep waiting for the REAL answer, and the answer's
+            // eventual run is what performs the one true final completion (see the non-awaiting branch
+            // below, invoked again for that later RunCompletedMessage).
+            var awaitingResultText =
+                $"<sub-agent name=\"{state.TemplateName}\" " +
+                $"id=\"{state.AgentId}\">\n" +
+                $"[AwaitingAnswer] Task: {state.Task}\n" +
+                $"Result: (awaiting the human's answer to a pending question)\n" +
+                $"</sub-agent>";
+
+            // Surface a descendant's pending question to the root conversation immediately (#246): the
+            // client navigates only on this distinct kind (never SubAgentCompletion/ClientNotification),
+            // and this fires regardless of NotifyParentOnCompletion — a foreground (blocking) spawn's
+            // caller is still parked awaiting the child's Task, so this is the ONLY way the human learns
+            // the conversation needs their input rather than appearing to hang. SourceToolCallId is THIS
+            // state's own agent id: HandleRunCompletionAsync runs once per level of nesting, so whichever
+            // level's direct child actually parked is the one attributed here, however deep it sits.
+            await _descendantQuestionSink(
+                NotifyMessage.Create(
+                    NotifyKinds.DescendantQuestion,
+                    detail: awaitingResultText,
+                    sourceToolName: "Agent",
+                    sourceToolCallId: state.AgentId,
+                    label: state.TemplateName),
+                ct);
+
+            if (state.NotifyParentOnCompletion)
+            {
+                await SendToParentAsync(state, awaitingResultText);
+            }
+
             return;
         }
 
@@ -3029,50 +3095,18 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
         else
         {
-            // A run with HasPendingMessages == false is not necessarily done: a child that just
-            // deferred on its own AskUserQuestion reports the exact same flag value (that flag only
-            // tracks queued NEXT-turn inputs — see MultiTurnAgentBase.CompleteRunAsync), yet the loop
-            // itself (state.Agent, distinct from the just-disposed OwnedProviderAgent) still holds the
-            // deferred call live in its own registry. Report that state accurately instead of claiming
-            // "[Completed] ... (no text response)", which would misleadingly read as a finished child
-            // that produced nothing, when it is really still waiting on the human.
-            var awaitingQuestion = await HasPendingAskUserQuestionAsync(state);
-
-            var result = awaitingQuestion
-                ? "(awaiting the human's answer to a pending question)"
-                : lastTextContent ?? "(no text response)";
-
-            var statusTag = awaitingQuestion ? "[AwaitingAnswer]" : "[Completed]";
+            // Genuinely terminal at this point: awaitingQuestion (precomputed by the caller) already
+            // returned early above when true, so a run reaching here truly has nothing more to do.
+            var result = lastTextContent ?? "(no text response)";
 
             var resultText =
                 $"<sub-agent name=\"{state.TemplateName}\" " +
                 $"id=\"{state.AgentId}\">\n" +
-                $"{statusTag} Task: {state.Task}\n" +
+                $"[Completed] Task: {state.Task}\n" +
                 $"Result: {result}\n" +
                 $"</sub-agent>";
 
             _ = state.TryCompleteWithResult(result);
-
-            if (awaitingQuestion)
-            {
-                // Surface a descendant's pending question to the root conversation immediately
-                // (#246): the client navigates only on this distinct kind (never
-                // SubAgentCompletion/ClientNotification), and this fires regardless of
-                // NotifyParentOnCompletion — a foreground (blocking) spawn's caller is still parked
-                // awaiting the child's Task, so this is the ONLY way the human learns the
-                // conversation needs their input rather than appearing to hang. SourceToolCallId is
-                // THIS state's own agent id: HandleRunCompletionAsync runs once per level of
-                // nesting, so whichever level's direct child actually parked is the one attributed
-                // here, however deep it sits.
-                await _descendantQuestionSink(
-                    NotifyMessage.Create(
-                        NotifyKinds.DescendantQuestion,
-                        detail: resultText,
-                        sourceToolName: "Agent",
-                        sourceToolCallId: state.AgentId,
-                        label: state.TemplateName),
-                    ct);
-            }
 
             if (state.NotifyParentOnCompletion)
             {
