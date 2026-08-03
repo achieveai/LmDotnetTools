@@ -244,7 +244,9 @@ is configured. Client restrictions remain authoritative: `X-MCP-Tools` allowlist
 `X-MCP-Exclude-Tools` excludes them, and lockdown suppresses local injection. There is no mid-call
 failover.
 
-SSE-framed and paginated tool catalogs, JSON-RPC batches, sessionless catalogs, and unrelated methods
+GitHub currently returns `tools/list` as a single `event: message` SSE block containing one JSON-RPC
+`data:` line. The proxy composes that bounded shape while preserving its SSE framing; multi-event or
+multi-data-line SSE, paginated catalogs, JSON-RPC batches, sessionless catalogs, and unrelated methods
 remain raw pass-through and do not gain local fallback tools. `DELETE` and an upstream session `404`
 clear the corresponding local routing snapshot. `/mcp` and `/mcp/readonly` keep independent snapshots.
 Point MCP Streamable-HTTP clients at `http://127.0.0.1:8787/mcp` or `/mcp/readonly` as before.

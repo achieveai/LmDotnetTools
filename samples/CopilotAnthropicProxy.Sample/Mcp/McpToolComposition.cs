@@ -164,10 +164,9 @@ internal sealed class McpToolComposition
         }
 
         var mediaType = upstream.Content.Headers.ContentType?.MediaType;
-        if (
-            !upstream.IsSuccessStatusCode
-            || !string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase)
-        )
+        var isJson = string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase);
+        var isSse = string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase);
+        if (!upstream.IsSuccessStatusCode || (!isJson && !isSse))
         {
             Invalidate();
             return null;
@@ -181,9 +180,24 @@ internal sealed class McpToolComposition
         }
 
         ReplaceContent(upstream, original, mediaType);
+        var jsonBytes = original;
+        string? ssePrefix = null;
+        string? sseSuffix = null;
+        if (isSse)
+        {
+            var sse = Encoding.UTF8.GetString(original);
+            if (!TryReadSingleSseMessage(sse, out ssePrefix, out var json, out sseSuffix))
+            {
+                Invalidate();
+                return original;
+            }
+
+            jsonBytes = Encoding.UTF8.GetBytes(json);
+        }
+
         try
         {
-            var root = JsonNode.Parse(original) as JsonObject;
+            var root = JsonNode.Parse(jsonBytes) as JsonObject;
             var result = root?["result"] as JsonObject;
             var tools = result?["tools"] as JsonArray;
             if (
@@ -224,7 +238,10 @@ internal sealed class McpToolComposition
             }
 
             upstream.Headers.ETag = null;
-            var composed = Encoding.UTF8.GetBytes(root!.ToJsonString());
+            var composedJson = root!.ToJsonString();
+            var composed = isSse
+                ? Encoding.UTF8.GetBytes(ssePrefix + composedJson + sseSuffix)
+                : Encoding.UTF8.GetBytes(composedJson);
             _logger.LogInformation(
                 "MCP tools listed endpoint={Endpoint} backend={Backend} status={Status} localToolCount={LocalToolCount}",
                 endpoint,
@@ -254,6 +271,50 @@ internal sealed class McpToolComposition
 
     private static string ToolCallId(JsonNode id) =>
         id is JsonValue value && value.TryGetValue<string>(out var text) ? text : id.ToJsonString();
+
+    private static bool TryReadSingleSseMessage(
+        string sse,
+        out string prefix,
+        out string json,
+        out string suffix
+    )
+    {
+        prefix = string.Empty;
+        json = string.Empty;
+        suffix = string.Empty;
+        var newline = sse.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var terminator = newline + newline;
+        if (!sse.EndsWith(terminator, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var lines = sse[..^terminator.Length].Split(newline, StringSplitOptions.None);
+        var dataIndexes = lines
+            .Select((line, index) => (line, index))
+            .Where(item => item.line.StartsWith("data:", StringComparison.Ordinal))
+            .Select(item => item.index)
+            .ToArray();
+        if (dataIndexes.Length != 1 || lines.Any(string.IsNullOrWhiteSpace))
+        {
+            return false;
+        }
+
+        var dataIndex = dataIndexes[0];
+        var dataLine = lines[dataIndex];
+        var separatorLength = dataLine.StartsWith("data: ", StringComparison.Ordinal) ? 6 : 5;
+        json = dataLine[separatorLength..];
+        prefix = string.Join(newline, lines[..dataIndex]);
+        if (dataIndex > 0)
+        {
+            prefix += newline;
+        }
+        prefix += dataLine[..separatorLength];
+        suffix = dataIndex + 1 < lines.Length
+            ? newline + string.Join(newline, lines[(dataIndex + 1)..]) + terminator
+            : terminator;
+        return true;
+    }
 
     private static void ReplaceContent(HttpResponseMessage upstream, byte[] body, string? mediaType)
     {

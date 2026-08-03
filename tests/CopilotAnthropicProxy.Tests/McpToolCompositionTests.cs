@@ -92,29 +92,55 @@ public class McpToolCompositionTests
     }
 
     [Fact]
-    public async Task ToolsList_SseAndBatchPassThroughWithoutLocalOwnership()
+    public async Task ToolsList_SseMessageComposesLocalFallbackAndPreservesFraming()
+    {
+        var jinaCalls = 0;
+        const string sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
+        await using var factory = new ProxyWebAppFactory(
+            (_, _) => Task.FromResult(TestUpstream.Sse(sse)),
+            jinaApiKey: "jina-key",
+            jinaUpstream: (_, _) =>
+            {
+                jinaCalls++;
+                return Task.FromResult(TestUpstream.Json("{\"data\":[]}"));
+            }
+        );
+        using var client = factory.CreateClient();
+
+        using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1");
+        var listed = await list.Content.ReadAsStringAsync();
+        listed.Should().StartWith("event: message\ndata: ").And.EndWith("\n\n");
+        var data = listed.Split('\n').Single(line => line.StartsWith("data: ", StringComparison.Ordinal))[6..];
+        var tools = JsonNode.Parse(data)!["result"]!["tools"]!.AsArray();
+        tools.Select(tool => tool!["name"]!.GetValue<string>()).Should().BeEquivalentTo("web_search", "web_fetch");
+
+        using var call = await SendAsync(
+            client,
+            "/mcp",
+            CallRequest("web_search", 2, "{\"query\":\"status\"}"),
+            "session-1"
+        );
+        jinaCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ToolsList_BatchPassesThroughWithoutLocalOwnership()
     {
         var githubCalls = 0;
-        const string sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\n\n";
         await using var factory = new ProxyWebAppFactory(
             (_, _) =>
             {
                 githubCalls++;
-                return Task.FromResult(githubCalls == 1 ? TestUpstream.Sse(sse) : TestUpstream.Json("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}"));
+                return Task.FromResult(TestUpstream.Json("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[]}}"));
             },
             jinaApiKey: "jina-key",
             jinaUpstream: (_, _) => throw new InvalidOperationException("Jina must not run")
         );
         using var client = factory.CreateClient();
 
-        using var list = await SendAsync(client, "/mcp", ListRequest(), "session-1");
-        (await list.Content.ReadAsStringAsync()).Should().Be(sse);
-        using var call = await SendAsync(client, "/mcp", CallRequest("web_search", 2), "session-1");
-        githubCalls.Should().Be(2);
-
         var batch = $"[{ListRequest()}]";
         using var batchResponse = await SendAsync(client, "/mcp", batch, "session-1");
-        githubCalls.Should().Be(3);
+        githubCalls.Should().Be(1);
     }
 
     [Fact]
