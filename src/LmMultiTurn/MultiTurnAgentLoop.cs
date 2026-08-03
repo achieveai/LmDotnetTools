@@ -184,17 +184,15 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional handle on the hierarchy-wide collaboration this loop takes part in. Null leaves
     ///     every collaboration behaviour off.
     /// </param>
-    /// <param name="descendantQuestionSink">
-    ///     Optional root-conversation delivery target for a descendant's parked <c>AskUserQuestion</c>.
-    ///     Null resolves to this loop's own persist-and-publish path.
-    /// </param>
     /// <remarks>
-    /// This overload is kept byte-for-byte identical to the constructor that shipped before the
-    /// browser-hosted client tools (#246) added the ability to omit them, so an already-compiled
-    /// caller of the packable <c>AchieveAi.LmDotnetTools.LmMultiTurn</c> library does not hit a
-    /// <see cref="MissingMethodException"/> after upgrading. It always registers both
-    /// <c>AskUserQuestion</c> and <c>NotifyClient</c> — the only behavior this constructor ever had.
-    /// Callers that need to control that registration (e.g. a workflow controller loop with no
+    /// This overload is kept byte-for-byte identical to the constructor that shipped on <c>main</c>
+    /// before this work — same 20 parameters, same order, same optionality/defaults — so an
+    /// already-compiled caller of the packable <c>AchieveAi.LmDotnetTools.LmMultiTurn</c> library
+    /// does not hit a <see cref="MissingMethodException"/> after upgrading. It always registers both
+    /// <c>AskUserQuestion</c> and <c>NotifyClient</c>, and always routes a descendant's parked
+    /// question through this loop's own persist-and-publish path — the only behavior this
+    /// constructor ever had. Callers that need to control tool registration or supply a custom
+    /// descendant-question sink (e.g. a spawned sub-agent, or a workflow controller loop with no
     /// browser socket of its own) must use the
     /// <see cref="MultiTurnAgentLoop(IStreamingAgent, FunctionRegistry, string, bool, bool, string?, GenerateReplyOptions?, int, int, int, IConversationStore?, ILogger{MultiTurnAgentLoop}?, SubAgentOptions?, MutableSubAgentTemplateSource?, ILoggerFactory?, bool, TriggerOptions?, IPricingResolver?, IUsageSink?, MultiTurnLifecycleServices?, MultiTurnLifecycleServices?, AgentCollaborationSetup?, Func{NotifyMessage, CancellationToken, ValueTask}?)"/>
     /// overload instead. Both route through the same implementation.
@@ -219,8 +217,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         IUsageSink? externalUsageSink = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
         MultiTurnLifecycleServices? subAgentLifecycleServices = null,
-        AgentCollaborationSetup? collaboration = null,
-        Func<NotifyMessage, CancellationToken, ValueTask>? descendantQuestionSink = null)
+        AgentCollaborationSetup? collaboration = null)
         : this(
             providerAgent,
             functionRegistry,
@@ -244,7 +241,7 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             lifecycleServices: lifecycleServices,
             subAgentLifecycleServices: subAgentLifecycleServices,
             collaboration: collaboration,
-            descendantQuestionSink: descendantQuestionSink)
+            descendantQuestionSink: null)
     {
     }
 

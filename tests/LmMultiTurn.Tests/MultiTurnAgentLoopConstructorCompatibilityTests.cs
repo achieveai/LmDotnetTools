@@ -24,17 +24,19 @@ namespace LmMultiTurn.Tests;
 /// constructor metadata token, so an already-compiled consumer of a prior package version can throw
 /// <see cref="MissingMethodException"/> at runtime after upgrading — even though the source still
 /// compiles fine. These tests pin, via reflection, that:
-/// 1. the exact prior constructor shape (the one that existed before #246 added the ability to omit
-///    the browser-hosted client tools) still exists with the same parameter types, order, and
-///    optionality/defaults, and
+/// 1. the exact prior constructor shape — the one that shipped on <c>origin/main</c> before this work,
+///    ending at <c>AgentCollaborationSetup? collaboration</c> with NO <c>descendantQuestionSink</c>
+///    parameter — still exists with the same parameter types, order, and optionality/defaults, and
 /// 2. a distinct overload exposes the new <c>includeAskUserQuestionTool</c>/<c>includeNotifyClientTool</c>
-///    controls without creating an ambiguous-call situation for existing source callers.
+///    controls (plus the new <c>descendantQuestionSink</c> parameter) without creating an
+///    ambiguous-call situation for existing source callers.
 /// </summary>
 public class MultiTurnAgentLoopConstructorCompatibilityTests
 {
-    // The exact parameter type sequence of the constructor that shipped before #246 added the
-    // includeAskUserQuestionTool/includeNotifyClientTool controls. Nullable annotations do not change
-    // the runtime Type for reference types, so `string?` and `string` resolve identically here.
+    // The exact parameter type sequence of the constructor released on origin/main before this work —
+    // i.e. before #246 added the includeAskUserQuestionTool/includeNotifyClientTool controls and before
+    // descendantQuestionSink existed at all. Nullable annotations do not change the runtime Type for
+    // reference types, so `string?` and `string` resolve identically here.
     private static readonly Type[] PriorConstructorParameterTypes =
     [
         typeof(IStreamingAgent),
@@ -57,7 +59,6 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
         typeof(MultiTurnLifecycleServices),
         typeof(MultiTurnLifecycleServices),
         typeof(AgentCollaborationSetup),
-        typeof(Func<NotifyMessage, CancellationToken, ValueTask>),
     ];
 
     private static ConstructorInfo? FindConstructor(Type[] parameterTypes) =>
@@ -109,31 +110,40 @@ public class MultiTurnAgentLoopConstructorCompatibilityTests
         byName["outputChannelCapacity"].DefaultValue.Should().Be(1000);
         byName["persistRunLedger"].DefaultValue.Should().Be(false);
         byName["systemPrompt"].DefaultValue.Should().BeNull();
-        byName["descendantQuestionSink"].DefaultValue.Should().BeNull();
+
+        // This overload has no descendantQuestionSink parameter at all — origin/main never had one.
+        byName.Should().NotContainKey("descendantQuestionSink");
     }
 
     [Fact]
-    public void ToolControlOverload_Exists_WithRequiredIncludeFlags_AndNoAmbiguityWithPriorConstructor()
+    public void ToolControlOverload_Exists_WithRequiredIncludeFlagsAndDescendantQuestionSink_AndNoAmbiguityWithPriorConstructor()
     {
         // The designated overload: same shape as the prior constructor, plus two REQUIRED (no
-        // default) bool parameters carrying the new controls. Because they have no default value,
-        // C# cannot resolve a short-form call (e.g. 3 positional args) to this overload, so it can
-        // never collide with the back-compat constructor above — the two are only ambiguous if both
-        // are simultaneously applicable, and a required parameter with no supplied argument makes an
+        // default) bool parameters carrying the new controls, plus the new optional
+        // descendantQuestionSink parameter. Because the bool flags have no default value, C# cannot
+        // resolve a short-form call (e.g. 3 positional args) to this overload, so it can never collide
+        // with the back-compat constructor above — the two are only ambiguous if both are
+        // simultaneously applicable, and a required parameter with no supplied argument makes an
         // overload inapplicable, not merely lower-priority.
         var ctors = typeof(MultiTurnAgentLoop).GetConstructors(BindingFlags.Public | BindingFlags.Instance);
 
         var withFlags = ctors.SingleOrDefault(ctor =>
         {
             var parameters = ctor.GetParameters();
-            return parameters.Length == PriorConstructorParameterTypes.Length + 2
+            return parameters.Length == PriorConstructorParameterTypes.Length + 3
                 && parameters.Any(p => p.Name == "includeAskUserQuestionTool" && p.ParameterType == typeof(bool) && !p.IsOptional)
-                && parameters.Any(p => p.Name == "includeNotifyClientTool" && p.ParameterType == typeof(bool) && !p.IsOptional);
+                && parameters.Any(p => p.Name == "includeNotifyClientTool" && p.ParameterType == typeof(bool) && !p.IsOptional)
+                && parameters.Any(p =>
+                    p.Name == "descendantQuestionSink"
+                    && p.ParameterType == typeof(Func<NotifyMessage, CancellationToken, ValueTask>)
+                    && p.IsOptional
+                    && p.DefaultValue == null);
         });
 
         withFlags.Should().NotBeNull(
-            "callers that need to control browser-hosted client tool registration must have a "
-                + "dedicated overload exposing includeAskUserQuestionTool/includeNotifyClientTool");
+            "callers that need to control browser-hosted client tool registration or supply a custom "
+                + "descendant-question sink must have a dedicated overload exposing "
+                + "includeAskUserQuestionTool/includeNotifyClientTool/descendantQuestionSink");
     }
 
     [Fact]

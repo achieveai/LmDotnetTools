@@ -420,7 +420,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var agentId = ParseAgentId(spawnJson);
 
         // The deferred AskUserQuestion call ends the child's run — wait for it before resolving.
-        _ = await parentLoop.SubAgentManager!.ObserveCompletionAsync(agentId, ct.Token);
+        await WaitUntilChildAwaitingQuestionAsync(parentLoop.SubAgentManager!, agentId, ct.Token);
 
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
@@ -452,7 +452,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
             SubAgentTemplateName, "ask the user", name: "asker2", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
-        _ = await parentLoop.SubAgentManager!.ObserveCompletionAsync(agentId, ct.Token);
+        await WaitUntilChildAwaitingQuestionAsync(parentLoop.SubAgentManager!, agentId, ct.Token);
 
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
@@ -497,7 +497,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
             SubAgentTemplateName, "ask the user", name: "asker4", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
-        _ = await parentLoop.SubAgentManager!.ObserveCompletionAsync(agentId, ct.Token);
+        await WaitUntilChildAwaitingQuestionAsync(parentLoop.SubAgentManager!, agentId, ct.Token);
 
         // Simulate the concurrent disposal: the child stays registered (still resolvable by agentId) but
         // its underlying loop is disposed before the frame is processed.
@@ -532,7 +532,7 @@ public sealed class ChatWebSocketManagerClientToolResultTests
         var spawnJson = await parentLoop.SubAgentManager!.SpawnAsync(
             SubAgentTemplateName, "ask the user", name: "asker3", runInBackground: true);
         var agentId = ParseAgentId(spawnJson);
-        _ = await parentLoop.SubAgentManager!.ObserveCompletionAsync(agentId, ct.Token);
+        await WaitUntilChildAwaitingQuestionAsync(parentLoop.SubAgentManager!, agentId, ct.Token);
 
         var manager = CreateManager(pool);
         var socket = new FakeWebSocket();
@@ -692,6 +692,36 @@ public sealed class ChatWebSocketManagerClientToolResultTests
     {
         using var doc = JsonDocument.Parse(spawnJson);
         return doc.RootElement.GetProperty("agent_id").GetString()!;
+    }
+
+    /// <summary>
+    /// Waits for a spawned sub-agent to park on its own <c>AskUserQuestion</c> call. Since the
+    /// <c>SubAgentManager</c> fix that keeps a parked AskUserQuestion non-terminal, <c>state.Completion</c>
+    /// (what <see cref="SubAgentManager.ObserveCompletionAsync"/> awaits) is deliberately never resolved
+    /// while parked — only the answer-triggered run performs the one true final completion. So tests that
+    /// need the child parked (not finished) must instead poll the child loop's own deferred-call registry
+    /// directly, mirroring the production-side <c>HasPendingAskUserQuestionAsync</c> check, rather than
+    /// waiting on a completion that will never come.
+    /// </summary>
+    private static async Task WaitUntilChildAwaitingQuestionAsync(
+        SubAgentManager subAgentManager, string agentId, CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (subAgentManager.TryGetAgent(agentId, out var childAgent)
+                && childAgent is MultiTurnAgentLoop childLoop)
+            {
+                var deferred = await childLoop.GetDeferredToolCallsAsync(ct);
+                if (deferred.Count > 0)
+                {
+                    return;
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(20), ct);
+        }
     }
 
     private static Task ObserveAsync(MultiTurnAgentLoop loop, Action<IMessage> onMessage, CancellationToken ct)
