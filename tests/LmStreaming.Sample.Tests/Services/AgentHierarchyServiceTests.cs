@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
@@ -125,6 +126,166 @@ public sealed class AgentHierarchyServiceTests
                 && e.Message.Contains(RootThread, StringComparison.Ordinal)
                 && e.Message.Contains(scanCap.ToString(), StringComparison.Ordinal),
             "hitting the scan cap must be observable, not a silent truncation");
+    }
+
+    [Fact]
+    public async Task BuildAsync_PersistsAnUnmatchedGrandchild_SoItSurvivesARestart_AndItsTranscriptStaysReadable()
+    {
+        // Reproduces the #244 review finding at PRRT_kwDOOPysWM6V1ACd: a grandchild owned by a
+        // CHILD's own SubAgentManager (not this conversation's own SubAgentManager) is invisible to
+        // BuildAsync's own `summaries`/`workflowTabs` — only the shared collaboration directory knows
+        // about it. Before the fix, the write-through to WorkflowRunRegistry only ever ran
+        // AgentHierarchyProjection.Enrich() over those two lists, so the grandchild's row never made
+        // it to disk: fine while the root loop stayed live (Project()'s own unmatched-node pass still
+        // surfaced it), but gone the moment a restart replaced the root loop and its collaboration
+        // directory with a fresh one containing only the root — exactly what phase 2 below simulates.
+        const string childName = "child";
+        const string grandchildName = "grandchild";
+        var indexDirectory = Path.Combine(Path.GetTempPath(), "AgentHierarchyServiceTests-" + Guid.NewGuid().ToString("N"));
+
+        var collaborationOptions = new AgentCollaborationOptions { MaxDelegationDepth = 2 };
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        var store = new InMemoryConversationStore();
+        var mode = SystemChatModes.GetById(SystemChatModes.DefaultModeId)!;
+
+        string childId;
+        string grandchildId;
+        try
+        {
+            // Phase 1: a live root with a real spawned child, whose OWN manager spawns a real
+            // grandchild — the exact shape the review describes. BuildAsync's write-through is what
+            // is under test, so its return value here is only a sanity check that the LIVE path
+            // already sees the grandchild (already covered by AgentHierarchyProjectionTests); the
+            // real assertions are in phase 2, after persistence is the only thing left standing.
+            var rootCollaboration = AgentCollaborationSetup.CreateRoot(
+                collaborationOptions, collaborationId: "collab-1", agentId: "root-agent");
+            await using var rootLoop = new MultiTurnAgentLoop(
+                BlockingProvider(),
+                new FunctionRegistry(),
+                threadId: RootThread,
+                subAgentOptions: subAgentOptions,
+                collaboration: rootCollaboration);
+            await using var pool1 = CreatePoolReturning(rootLoop);
+            _ = pool1.GetOrCreateAgent(RootThread, mode);
+
+            var registry1 = new WorkflowRunRegistry(indexDirectory);
+            var service1 = new AgentHierarchyService(
+                pool1, registry1, store, NullLogger<AgentHierarchyService>.Instance);
+
+            childId = await SpawnAndResolveIdAsync(rootLoop.SubAgentTools!, childName);
+            var childLoop = ChildLoop(rootLoop.SubAgentManager!, childId);
+            grandchildId = await SpawnAndResolveIdAsync(childLoop.SubAgentTools!, grandchildName);
+
+            var (rows1, _, _) = await service1.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+            rows1.Should().Contain(
+                r => r.AgentId == grandchildId,
+                "the live directory already surfaces the grandchild for today's answer (Project's own "
+                    + "unmatched-node pass) — this is not what's broken");
+
+            // Phase 2: simulate a restart. A brand-new WorkflowRunRegistry instance re-reads the SAME
+            // on-disk index, and a brand-new root loop gets a brand-new, otherwise-empty collaboration
+            // directory (same ids, but nothing spawned in THIS process) — the root is the only node it
+            // self-registers. Any answer about the grandchild from here on can only come from what
+            // phase 1 persisted to disk.
+            var rootCollaboration2 = AgentCollaborationSetup.CreateRoot(
+                collaborationOptions, collaborationId: "collab-1", agentId: "root-agent");
+            await using var rootLoop2 = new MultiTurnAgentLoop(
+                BlockingProvider(),
+                new FunctionRegistry(),
+                threadId: RootThread,
+                subAgentOptions: subAgentOptions,
+                collaboration: rootCollaboration2);
+            await using var pool2 = CreatePoolReturning(rootLoop2);
+            _ = pool2.GetOrCreateAgent(RootThread, mode);
+
+            var registry2 = new WorkflowRunRegistry(indexDirectory);
+            var service2 = new AgentHierarchyService(
+                pool2, registry2, store, NullLogger<AgentHierarchyService>.Instance);
+
+            var (rows2, isKnown2, _) = await service2.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+            isKnown2.Should().BeTrue();
+            var grandchildRow = rows2.Should().ContainSingle(r => r.AgentId == grandchildId,
+                "the grandchild must have been written through to the durable index BEFORE the restart, "
+                    + "not reconstructed from a live directory the fresh root never populated").Which;
+            grandchildRow.ParentAgentId.Should().Be(childId);
+            grandchildRow.AncestorAgentIds.Should().Equal("root-agent", childId);
+            grandchildRow.StructuralDepth.Should().Be(2);
+            grandchildRow.IsReadable.Should().BeTrue(
+                "the root is a genuine ancestor of the persisted grandchild row, even though the fresh "
+                    + "in-memory directory never heard of either the child or the grandchild");
+
+            var transcript = await service2.ReadTranscriptAsync(
+                RootThread, grandchildId, viewerAgentId: null, CancellationToken.None);
+            transcript.Outcome.Should().Be(
+                AgentTranscriptOutcome.Allowed,
+                "a root transcript read for the grandchild must succeed after restart, not fail closed "
+                    + "with unknown_target");
+        }
+        finally
+        {
+            if (Directory.Exists(indexDirectory))
+            {
+                Directory.Delete(indexDirectory, recursive: true);
+            }
+        }
+    }
+
+    private static object NewSpawn(string name, string subagentType = "worker") => new
+    {
+        subagent_type = subagentType,
+        prompt = "work",
+        role = "worker role",
+        description = "Does a unit of work.",
+        name,
+        run_in_background = true,
+    };
+
+    private static async Task<string> SpawnAndResolveIdAsync(
+        SubAgentToolProvider provider,
+        string name,
+        string subagentType = "worker")
+    {
+        var payload = await InvokeAsync(provider, "Agent", NewSpawn(name, subagentType));
+        payload.IsError.Should().BeFalse(payload.Text);
+
+        using var doc = JsonDocument.Parse(payload.Text);
+        return doc.RootElement.GetProperty("agent_id").GetString()!;
+    }
+
+    /// <summary>
+    /// The loop the REAL spawn path built for <paramref name="agentId"/> — the only place the child
+    /// actually runs, and (when collaboration is on) the only place its OWN SubAgentManager/SubAgentTools
+    /// live, since every collaborating child is automatically given its own.
+    /// </summary>
+    private static MultiTurnAgentLoop ChildLoop(SubAgentManager manager, string agentId)
+    {
+        manager.TryGetAgent(agentId, out var agent).Should().BeTrue();
+        return agent.Should().BeOfType<MultiTurnAgentLoop>().Subject;
+    }
+
+    private static async Task<ToolHandlerResultPayload> InvokeAsync(
+        SubAgentToolProvider provider,
+        string toolName,
+        object args,
+        CancellationToken ct = default)
+    {
+        var handler = provider.GetFunctions().First(f => f.Contract.Name == toolName).Handler;
+        var result = await handler(JsonSerializer.Serialize(args), new ToolCallContext(), ct);
+
+        return result.Should().BeOfType<ToolHandlerResult.Resolved>().Subject.Payload;
     }
 
     private static MultiTurnAgentPool CreateFakeAgentPool() =>

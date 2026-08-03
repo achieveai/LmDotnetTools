@@ -83,18 +83,56 @@ public static class AgentHierarchyProjection
             rows.Add(WithViewerFlags(row, node ?? row.ToNodeRecord()?.ToEntry(), viewer, visibility));
         }
 
+        foreach (var row in UnmatchedDescendantRows(tabs, nodes))
+        {
+            // The row was built by FromDirectoryEntry(node), so its AgentNodeId is exactly that node's
+            // AgentId — the lookup below always resolves it back to the same node this method skipped.
+            var target = byAgentId.GetValueOrDefault(row.AgentNodeId ?? row.AgentId);
+            rows.Add(WithViewerFlags(row, target, viewer, visibility));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    ///     The nodes in <paramref name="nodes"/> that no tab in <paramref name="tabs"/> already accounts
+    ///     for, each as a row of its own — an ordinary descendant owned by another manager's
+    ///     <c>SubAgentManager</c> (this conversation's own tabs cannot see it, only the shared directory
+    ///     can), or, after a restart, any node the live snapshot no longer explains. The root (the
+    ///     conversation itself, not one of its children) and a workflow controller with no run left to
+    ///     speak for it (its tab id and transcript belong to the run that produced it, not to a formula)
+    ///     are never invented a row.
+    /// </summary>
+    /// <remarks>
+    ///     Shared by <see cref="Project"/> (the live, per-viewer answer) and by whatever persists the
+    ///     durable tab index (see the write-through in <c>AgentHierarchyService.BuildAsync</c>), so a
+    ///     descendant that would appear in today's live listing is also written through BEFORE any
+    ///     particular viewer is known — mirroring why <see cref="Enrich"/> exists standalone. Viewer-scoped
+    ///     flags are never set here; a caller that needs them (<see cref="Project"/>) computes them
+    ///     afterward, per reader.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="tabs"/> or <paramref name="nodes"/> is null.</exception>
+    public static IReadOnlyList<SubAgentSummary> UnmatchedDescendantRows(
+        IReadOnlyList<SubAgentSummary> tabs,
+        IReadOnlyList<AgentDirectoryEntry> nodes)
+    {
+        ArgumentNullException.ThrowIfNull(tabs);
+        ArgumentNullException.ThrowIfNull(nodes);
+
+        // Every id a tab already accounts for. Includes an entry for a tab whose NodeIdFor names no real
+        // node in `nodes` at all — harmless, since the loop below only ever tests membership for an
+        // actual node.AgentId, which by construction is exactly what a real match would have added here.
+        var matched = new HashSet<string>(tabs.Select(NodeIdFor), StringComparer.Ordinal);
+        var rows = new List<SubAgentSummary>();
+
         foreach (var node in nodes)
         {
-            // The root is the conversation itself, not one of its children. A workflow controller's tab
-            // id and transcript thread belong to the run that produced it, so a controller with no run
-            // left to speak for it is skipped rather than given an invented thread to open.
-            if (matched.Contains(node.AgentId)
-                || node.Kind is AgentKind.Root or AgentKind.WorkflowController)
+            if (matched.Contains(node.AgentId) || node.Kind is AgentKind.Root or AgentKind.WorkflowController)
             {
                 continue;
             }
 
-            rows.Add(WithViewerFlags(SubAgentSummary.FromDirectoryEntry(node), node, viewer, visibility));
+            rows.Add(SubAgentSummary.FromDirectoryEntry(node));
         }
 
         return rows;

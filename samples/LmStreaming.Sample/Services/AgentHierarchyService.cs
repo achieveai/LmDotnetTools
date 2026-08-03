@@ -156,11 +156,18 @@ public sealed class AgentHierarchyService(
         // with unknown_target even for its legitimate root ancestor. Enrich() only stamps the structural
         // fields (WithCollaboration), never the viewer-scoped IsCurrent/IsReadable pair, so nothing here
         // bakes in one reader's answer for every future one.
+        //
+        // Enrich() alone only ever touches a tab THIS conversation already knew about. An ordinary
+        // descendant owned by a child's own SubAgentManager (a grandchild the model spawned through a
+        // spawn of its own) has no tab here at all — it exists only in the shared directory snapshot —
+        // so Enrich() never sees it and it never reaches the index. Project() below still surfaces it for
+        // THIS live answer (via its own unmatched-node pass), which is why the gap only shows up after a
+        // restart: PersistableRowsFor also folds in AgentHierarchyProjection.UnmatchedDescendantRows so
+        // that same descendant is written through now, before any particular viewer is known, exactly
+        // like Project would show it today.
         var persistable = loop?.Collaboration is null
             ? workflowTabs
-            : AgentHierarchyProjection.Enrich(
-                [.. workflowTabs, .. summaries],
-                loop.Collaboration.Directory.Snapshot());
+            : PersistableRowsFor([.. workflowTabs, .. summaries], loop.Collaboration.Directory.Snapshot());
         if (persistable.Count > 0)
         {
             workflowRunRegistry.PersistTabs(threadId, persistable);
@@ -291,6 +298,27 @@ public sealed class AgentHierarchyService(
             : collaboration.Bundle
                 .EvaluateTranscriptAccess(viewerAgentId ?? collaboration.AgentId, row.AgentNodeId ?? agentId)
                 .Reason;
+
+    /// <summary>
+    ///     Every row write-through persistence should stamp for one snapshot: <paramref name="tabs"/>
+    ///     enriched with their matching node's hierarchy metadata, plus a row for every node in
+    ///     <paramref name="nodes"/> that none of those tabs already accounts for — an ordinary descendant
+    ///     owned by a child's own <c>SubAgentManager</c>, invisible to this conversation's own tabs but
+    ///     present in the shared directory (see the remarks at the call site in <see cref="BuildAsync"/>).
+    /// </summary>
+    /// <remarks>
+    ///     The two halves can never collide: <see cref="AgentHierarchyProjection.Enrich"/> only ever
+    ///     touches a tab already present in <paramref name="tabs"/>, and
+    ///     <see cref="AgentHierarchyProjection.UnmatchedDescendantRows"/> only ever produces a row for a
+    ///     node none of those tabs matched.
+    /// </remarks>
+    private static IReadOnlyList<SubAgentSummary> PersistableRowsFor(
+        IReadOnlyList<SubAgentSummary> tabs,
+        IReadOnlyList<AgentDirectoryEntry> nodes) =>
+        [
+            .. AgentHierarchyProjection.Enrich(tabs, nodes),
+            .. AgentHierarchyProjection.UnmatchedDescendantRows(tabs, nodes),
+        ];
 
     /// <summary>Projects one sub-agent snapshot (an Agent-tool spawn or a workflow delegate) to a tab row.</summary>
     private static SubAgentSummary ToSummary(SubAgentSnapshot s) =>
