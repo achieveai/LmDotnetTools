@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmWorkflow.Binding;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
@@ -117,6 +118,7 @@ public sealed class WorkflowRuntime
     // public method so the run can be resumed (single-root) after a restart. No store attached => no-op.
     private IWorkflowStore? _store;
     private string? _instanceId;
+    private CollaborationNodeRecord? _collaboration;
 
     // Persistence sequencing is delegated to a collaborator that owns its OWN save-chain lock (independent of
     // _lock): the runtime captures the snapshot under _lock, releases it, then enqueues the save. The
@@ -168,6 +170,19 @@ public sealed class WorkflowRuntime
         {
             _store = store;
             _instanceId = instanceId;
+        }
+    }
+
+    /// <summary>
+    ///     Records the controller's collaboration node so it is captured in every subsequent snapshot, and a
+    ///     later resume can reacquire capacity under the SAME identity and the SAME trusted role/description.
+    ///     A <c>null</c> record (collaboration off) clears it, keeping the persisted field absent.
+    /// </summary>
+    internal void AttachCollaboration(CollaborationNodeRecord? record)
+    {
+        lock (_lock)
+        {
+            _collaboration = record;
         }
     }
 
@@ -703,18 +718,36 @@ public sealed class WorkflowRuntime
     /// </summary>
     internal SubAgentSpawnModelSelection? ResolveSpawnModelSelection(string? name)
     {
+        var unit = ResolveSpawnUnit(name);
+        return unit is null ? null : new SubAgentSpawnModelSelection(Model: null, unit.ModelIntelligence);
+    }
+
+    /// <summary>
+    ///     Returns the workflow unit's authoritative collaboration role/description for an exact spawn name,
+    ///     so a delegate is published under the identity the workflow author defined rather than under
+    ///     whatever the controller LLM typed into the Agent call. Null return means the name is not a
+    ///     workflow unit, which leaves ordinary caller-supplied metadata in force.
+    /// </summary>
+    internal SubAgentSpawnMetadata? ResolveSpawnMetadata(string? name)
+    {
+        var unit = ResolveSpawnUnit(name);
+        return unit is null || unit.Role is null || unit.Description is null
+            ? null
+            : new SubAgentSpawnMetadata(unit.Role, unit.Description);
+    }
+
+    /// <summary>
+    ///     Resolves an exact spawn name to its composed unit. Composition is refreshed first because the
+    ///     controller can call Agent before anything else re-composed the active node's units.
+    /// </summary>
+    private SpawnUnit? ResolveSpawnUnit(string? name)
+    {
         lock (_lock)
         {
             _ = _coordinator.Compose();
-            if (string.IsNullOrWhiteSpace(name) || CurrentNodeId is null)
-            {
-                return null;
-            }
-
-            var unit = _coordinator.FindComposedUnit(name);
-            return unit is null
+            return string.IsNullOrWhiteSpace(name) || CurrentNodeId is null
                 ? null
-                : new SubAgentSpawnModelSelection(Model: null, unit.ModelIntelligence);
+                : _coordinator.FindComposedUnit(name);
         }
     }
 
@@ -1544,6 +1577,11 @@ public sealed class WorkflowRuntime
             _outputs = CloneObject(snapshot.Outputs);
             _notes = CloneObject(snapshot.Notes);
 
+            // Carried forward so a run that is resumed but NOT re-admitted (collaboration switched off) does
+            // not silently lose the node it was originally admitted as. A live re-admission overwrites this
+            // via AttachCollaboration immediately after restore.
+            _collaboration = snapshot.Collaboration;
+
             _visits.Clear();
             foreach (var (nodeId, count) in snapshot.Visits)
             {
@@ -1572,6 +1610,7 @@ public sealed class WorkflowRuntime
             Notes = CloneObject(_notes),
             Visits = new Dictionary<string, int>(_visits, StringComparer.Ordinal),
             Tasks = _coordinator.BuildTaskSnapshots(),
+            Collaboration = _collaboration,
         };
 
     /// <summary>Builds a snapshot for persistence, or <c>null</c> when no store is attached. Caller holds the lock.</summary>

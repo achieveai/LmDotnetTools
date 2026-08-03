@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using LmStreaming.Sample.Services;
 
 namespace LmStreaming.Sample.Tests.Services;
@@ -28,7 +29,7 @@ public sealed class WorkflowRunRegistryTests : IDisposable
         }
     }
 
-    private static SubAgentSummary Tab(string kind, string id, string status) =>
+    private static SubAgentSummary Tab(string kind, string id, string status, int? activityMinute = null) =>
         new()
         {
             AgentId = id,
@@ -38,6 +39,9 @@ public sealed class WorkflowRunRegistryTests : IDisposable
             Task = "task",
             Status = status,
             ThreadId = $"{kind}-{id}",
+            LastActivityUtc = activityMinute is null
+                ? null
+                : new DateTimeOffset(2026, 7, 1, 0, activityMinute.Value, 0, TimeSpan.Zero),
         };
 
     [Fact]
@@ -125,5 +129,134 @@ public sealed class WorkflowRunRegistryTests : IDisposable
         var registry = new WorkflowRunRegistry(_dir);
 
         registry.GetPersistedTabs("never-persisted").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void PersistTabs_RoundTripsCollaborationMetadata()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+        var tab = Tab("subagent", "d1", AgentCollaborationStatuses.Completed)
+            .WithCollaboration(
+                new AgentDirectoryEntry
+                {
+                    AgentId = "d1",
+                    CollaborationId = "thread-root",
+                    Name = "d1",
+                    ParentAgentId = "wfctl-w1",
+                    AncestorAgentIds = ["thread-root", "wfctl-w1"],
+                    Kind = AgentKind.WorkflowDelegate,
+                    Role = "review the diff",
+                    Description = "ask about the diff",
+                    AgentType = "code-reviewer",
+                    StructuralDepth = 2,
+                    DelegationDepth = 1,
+                    Status = AgentCollaborationStatuses.Completed,
+                });
+
+        registry.PersistTabs("t1", [tab]);
+        var restored = new WorkflowRunRegistry(_dir).GetPersistedTabs("t1").Should().ContainSingle().Subject;
+
+        restored.SchemaVersion.Should().Be(CollaborationNodeRecord.CurrentSchemaVersion);
+        restored.CollaborationId.Should().Be("thread-root");
+        restored.ParentAgentId.Should().Be("wfctl-w1");
+        restored.AncestorAgentIds.Should().Equal("thread-root", "wfctl-w1");
+        restored.AgentKind.Should().Be(nameof(AgentKind.WorkflowDelegate));
+        restored.Role.Should().Be("review the diff");
+        restored.StructuralDepth.Should().Be(2);
+        restored.DelegationDepth.Should().Be(1);
+        restored.ToNodeRecord().Should().NotBeNull("a persisted row must read back as the shared node shape");
+    }
+
+    [Fact]
+    public void RestoredCollaborationTab_IsNeverReportedAsLive()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+        registry.PersistTabs(
+            "t1",
+            [
+                Tab("subagent", "d1", AgentCollaborationStatuses.Completed) with
+                {
+                    CollaborationId = "thread-root",
+                    AgentKind = nameof(AgentKind.SubAgent),
+                    IsLive = true,
+                },
+            ]);
+
+        var restored = new WorkflowRunRegistry(_dir).GetPersistedTabs("t1").Single();
+
+        restored.IsLive.Should().BeFalse("nothing in this file survived the process that wrote it");
+    }
+
+    [Fact]
+    public void PersistTabs_NeverWritesViewerScopedFlags()
+    {
+        var registry = new WorkflowRunRegistry(_dir);
+        registry.PersistTabs(
+            "t1",
+            [Tab("subagent", "d1", "completed") with { IsCurrent = true, IsReadable = true }]);
+
+        var raw = File.ReadAllText(Directory.GetFiles(_dir, "*.json").Single());
+
+        raw.Should().NotContain("isCurrent").And.NotContain("isReadable",
+            "those answer 'for this reader', and every later reader is a different one");
+    }
+
+    [Fact]
+    public void Pre244IndexFile_LoadsAsTheTabsItAlwaysDescribed()
+    {
+        _ = Directory.CreateDirectory(_dir);
+        // A file exactly as a pre-#244 build left it: none of the collaboration members exist.
+        File.WriteAllText(
+            Path.Combine(_dir, "t1.json"),
+            """
+            [{"agentId":"wf1","kind":"workflow","name":"review","template":"code-review",
+              "task":"review pr","status":"running","threadId":"workflow-w1-t1",
+              "lastActivityUtc":"2026-07-01T10:00:00+00:00"}]
+            """);
+
+        var restored = new WorkflowRunRegistry(_dir).GetPersistedTabs("t1").Should().ContainSingle().Subject;
+
+        restored.AgentId.Should().Be("wf1");
+        restored.Template.Should().Be("code-review");
+        restored.Status.Should().Be("interrupted", "it was still running when its host stopped");
+        restored.SchemaVersion.Should().Be(0);
+        restored.CollaborationId.Should().BeNull();
+        restored.IsLive.Should().BeNull("a legacy row never claimed to know, and we must not invent it");
+    }
+
+    /// <summary>
+    /// The index is merge-only, so without a bound a long-lived conversation's hierarchy would grow
+    /// forever on disk and in every listing built from it. Retention is the configured
+    /// <c>AgentCollaboration:MaxPersistedHierarchyEntries</c>, applied per conversation.
+    /// </summary>
+    [Fact]
+    public void PersistTabs_KeepsTheIndexWithinTheConfiguredRetention()
+    {
+        var registry = new WorkflowRunRegistry(_dir, maxPersistedEntriesPerConversation: 3);
+
+        registry.PersistTabs(
+            "t1",
+            [
+                Tab("subagent", "oldest", "completed", activityMinute: 1),
+                Tab("subagent", "middle", "completed", activityMinute: 2),
+                Tab("subagent", "newest", "completed", activityMinute: 3),
+            ]);
+        // A fourth run arrives on a later snapshot, taking the merged set over the cap.
+        registry.PersistTabs("t1", [Tab("subagent", "live", "running", activityMinute: 0)]);
+
+        var retained = registry.GetPersistedTabs("t1").Select(t => t.AgentId).ToList();
+
+        retained.Should().HaveCount(3, "retention is the cap, not a suggestion");
+        retained.Should().BeEquivalentTo(
+            ["live", "newest", "middle"],
+            "the live snapshot is never evicted, and the rest go by most recent activity");
+    }
+
+    [Fact]
+    public void Registry_RejectsARetentionThatCouldNotHoldAnything()
+    {
+        var act = () => new WorkflowRunRegistry(_dir, maxPersistedEntriesPerConversation: 0);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
     }
 }

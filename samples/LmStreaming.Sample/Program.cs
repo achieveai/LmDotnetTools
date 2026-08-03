@@ -25,6 +25,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence.Sqlite;
@@ -44,6 +45,7 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using LmStreaming.Sample.Auth;
+using LmStreaming.Sample.Configuration;
 using LmStreaming.Sample.Controllers;
 using LmStreaming.Sample.Models;
 using LmStreaming.Sample.Persistence;
@@ -182,9 +184,23 @@ try
 
     // Side-table so the read-only /subagents endpoint + sub-agent WebSocket can surface a conversation's
     // StartWorkflowAgent runs (isolated controller loops, owned by a per-conversation WorkflowManager the
-    // agent loop can't reference) as center-pane tabs.
-    _ = builder.Services.AddSingleton(_ => new WorkflowRunRegistry(
-        Path.Combine(AppContext.BaseDirectory, "workflow-index")));
+    // agent loop can't reference) as center-pane tabs. Its durable index is capped by the configured
+    // retention (AgentCollaboration:MaxPersistedHierarchyEntries) — the index never deletes a row a live
+    // snapshot dropped, so the ceiling is what keeps a long-lived conversation's file from growing forever.
+    _ = builder.Services.AddSingleton(sp => new WorkflowRunRegistry(
+        Path.Combine(AppContext.BaseDirectory, "workflow-index"),
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
+
+    // Process-lifetime cache of the persisted Agent-tool child roster AgentHierarchyService's cold path
+    // recovers per conversation (PRRT_kwDOOPysWM6V1mjj) — shared across every AgentHierarchyService
+    // instance built for a request or a spawned agent's transcript tool, both of which construct that
+    // service fresh rather than resolving it from DI. Bounded by the same retention knob as
+    // WorkflowRunRegistry above (AgentCollaboration:MaxPersistedHierarchyEntries) — reusing it here keeps
+    // this cache's own distinct-conversation ceiling configurable without adding a second knob for the
+    // same "how many conversations should this process remember" question. See
+    // SubAgentScanCoverageCache's own remarks for the owner-keyed invalidation and eviction policy.
+    _ = builder.Services.AddSingleton(sp => new SubAgentScanCoverageCache(
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
 
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
@@ -458,6 +474,17 @@ try
     // so an operator can confirm discoveries are actually arriving (vs. silently lost to an
     // unreachable callback host).
     _ = builder.Services.AddSingleton<ContextDiscoveryDiagnostics>();
+
+    // Hierarchy-wide agent collaboration (#244). Opt-in and validated HERE so a bad limit or an
+    // unknown transcript mode fails this boot rather than the first spawn of some later conversation.
+    // With the section absent (the default) ToCollaborationOptions() returns null, which is the
+    // library's feature gate: legacy tool schemas, one level of nesting, and no collaboration state.
+    var collaborationHostOptions =
+        builder.Configuration.GetSection(AgentCollaborationHostOptions.SectionName)
+            .Get<AgentCollaborationHostOptions>()
+        ?? new AgentCollaborationHostOptions();
+    _ = collaborationHostOptions.ToCollaborationOptions();
+    _ = builder.Services.AddSingleton(collaborationHostOptions);
 
     // Codex MCP server: registered unconditionally but started lazily, so non-codex boots
     // don't pay the startup cost and so the codex provider stays selectable from the
@@ -1304,6 +1331,21 @@ try
                     // cannot deadlock. The blocking call is HTTP only when a sandbox session is
                     // active; otherwise it completes synchronously.
                     IStreamingAgent subAgentFactory() => agentFactory(normalizedProviderId);
+
+                    // Root collaboration for THIS conversation (#244), or null when the host did not opt
+                    // in. The conversation's own threadId is the collaboration id — deliberately reusing
+                    // the identity the store already keys on rather than minting a second one — so a
+                    // resumed conversation rejoins the same logical collaboration. Every descendant
+                    // (ordinary sub-agent, workflow controller, workflow delegate) receives THIS handle by
+                    // reference, so there is exactly one directory and one ledger per conversation.
+                    var rootCollaboration = collaborationHostOptions.ToCollaborationOptions() is { } collabOptions
+                        ? AgentCollaborationSetup.CreateRoot(
+                            collabOptions,
+                            collaborationId: threadId,
+                            agentId: threadId,
+                            name: "conversation")
+                        : null;
+
                     var characteristicsAgentFactory = new CharacteristicsAgentFactory(
                         providerRegistry,
                         providerAgent,
@@ -1605,7 +1647,11 @@ subAgentFactory,
                             validatePreferredProvider: p =>
                                 !providerRegistry.IsKnown(p) ? $"Unknown provider '{p}'."
                                 : !providerRegistry.IsAvailable(p) ? $"Provider '{p}' is not available."
-                                : null
+                                : null,
+                            // Admits the run's controller as a hierarchy node under the LAUNCHING agent.
+                            // Passed as a thunk (not a value) purely for symmetry with the other late-bound
+                            // launch inputs above; the handle itself is already built.
+                            callerCollaboration: () => rootCollaboration
                         ));
                         ownedResources = [.. ownedResources ?? [], workflowManager];
 
@@ -1631,6 +1677,26 @@ subAgentFactory,
                                 ],
                             };
                         }
+                    }
+
+                    // Let THIS conversation's agent read the transcript of an agent it is above (#244) —
+                    // the tool counterpart of the /agents/{id}/transcript route, resolving access through
+                    // the same AgentHierarchyService so the two cannot disagree. Every spawned agent gets
+                    // its own reader-bound instance too, so an ancestor deeper than the root can exercise
+                    // the same visibility over the children IT spawned.
+                    if (rootCollaboration is not null)
+                    {
+                        subAgentOptions = RegisterAgentTranscriptTool(
+                            filteredRegistry,
+                            subAgentOptions,
+                            new AgentHierarchyService(
+                                sp.GetRequiredService<MultiTurnAgentPool>(),
+                                sp.GetRequiredService<WorkflowRunRegistry>(),
+                                conversationStore,
+                                sp.GetRequiredService<ILogger<AgentHierarchyService>>(),
+                                sp.GetRequiredService<SubAgentScanCoverageCache>()),
+                            threadId,
+                            rootCollaboration.AgentId);
                     }
 
                     // Persist spawned sub-agent transcripts (keyed per subagent-{agentId} thread) to the
@@ -1691,7 +1757,12 @@ subAgentFactory,
                         // instruction-chain. Broader rollout (enabling triggers for real providers behind a
                         // flag) is tracked in #161.
                         triggerOptions: isTestMode ? triggerOptions : null,
-                        lifecycleServices: lifecycleServices
+                        lifecycleServices: lifecycleServices,
+                        // Null unless the host opted in (#244). Passing it here is the entire opt-in for the
+                        // subtree: the loop registers itself as the root node and forwards the same handle to
+                        // the SubAgentManager it builds, so every descendant shares one directory and one
+                        // ledger. Null keeps the legacy tool schemas and per-manager limits.
+                        collaboration: rootCollaboration
                     );
 
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
@@ -2675,6 +2746,53 @@ public partial class Program
                             : () => SubAgentProvenance.Build(
                                 parentThreadId,
                                 describeChild?.Invoke(childThreadId))),
+            };
+    }
+
+    /// <summary>
+    /// Registers the <c>GetAgentTranscript</c> tool for <paramref name="readerAgentId"/> and, in the same
+    /// step, arranges for every agent BELOW it to get its own instance instead of inheriting this one
+    /// (#244).
+    /// </summary>
+    /// <remarks>
+    /// The parts are one operation because doing only the first is a privilege escalation and doing only
+    /// the second is a dead tool. <see cref="AgentTranscriptToolProvider"/> is bound to ONE reader, so an
+    /// inherited copy would hand every descendant its ancestor's reach over the whole hierarchy — hence
+    /// the exclusion from inheritance. But an excluded tool that is registered only on the root leaves
+    /// every deeper ancestor unable to read the children it is genuinely above, which is the visibility
+    /// the feature exists for. <see cref="SubAgentOptions.ChildToolProviderFactory"/> closes that: each
+    /// spawned participant is handed a provider bound to ITSELF, so reach always matches the reader.
+    /// Existing exclusions are unioned, never replaced.
+    /// </remarks>
+    /// <param name="registry">The reader's own function registry.</param>
+    /// <param name="subAgentOptions">The reader's sub-agent options, or null when it spawns none.</param>
+    /// <param name="hierarchy">The shared hierarchy/authorization service both surfaces resolve through.</param>
+    /// <param name="threadId">The conversation whose hierarchy these readers belong to.</param>
+    /// <param name="readerAgentId">The collaboration id of the agent owning <paramref name="registry"/>.</param>
+    /// <returns>The options with the tool excluded from inheritance and re-bound per child.</returns>
+    internal static SubAgentOptions? RegisterAgentTranscriptTool(
+        FunctionRegistry registry,
+        SubAgentOptions? subAgentOptions,
+        AgentHierarchyService hierarchy,
+        string threadId,
+        string readerAgentId)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(hierarchy);
+
+        _ = registry.AddProvider(new AgentTranscriptToolProvider(hierarchy, threadId, readerAgentId));
+
+        return subAgentOptions is null
+            ? null
+            : subAgentOptions with
+            {
+                NonInheritedToolNames =
+                [
+                    .. subAgentOptions.NonInheritedToolNames ?? [],
+                    .. AgentTranscriptToolProvider.ToolNames,
+                ],
+                ChildToolProviderFactory = childAgentId =>
+                    new AgentTranscriptToolProvider(hierarchy, threadId, childAgentId),
             };
     }
 

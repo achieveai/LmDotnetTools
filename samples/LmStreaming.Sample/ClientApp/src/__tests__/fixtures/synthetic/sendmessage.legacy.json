@@ -1,0 +1,10 @@
+{
+  "family": "agent",
+  "sourceThread": "synthetic",
+  "toolName": "SendMessage",
+  "toolCallId": "call_legacy_send",
+  "functionArgs": "{\"target\":\"build-fixer\",\"prompt\":\"start on task #1\",\"run_in_background\":true}",
+  "result": "Message delivered to build-fixer.",
+  "isError": false,
+  "_note": "Synthetic. The PRE-#244 SendMessage argument vocabulary (target/prompt/run_in_background). Calls in this shape are already on disk in persisted conversations, so the renderer must keep summarizing them after the collaboration vocabulary lands."
+}

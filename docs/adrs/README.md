@@ -52,3 +52,4 @@ What improved, what became more complex, and what future work this implies.
 * [0006 — Order a workflow transition against the run observer with a publish-order watermark](0006-workflow-transition-observation-barrier.md)
 * [0007 — Observe turns and context at the seam where the fact settles](0007-observe-at-the-settling-seam.md)
 * [0008 — Dispatch provider tool requests off the stdio read loop, bounded and refusing](0008-asynchronous-provider-tool-dispatch.md)
+* [0009 — Scope agent collaboration to a root-owned directory, and leave delivery with the owner](0009-hierarchy-wide-agent-collaboration.md)

@@ -25,6 +25,23 @@ function trunc(s: string, n = 60): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+/**
+ * Comma-joins the first non-empty string ARRAY among `keys` (e.g. CheckAgents' `agent_ids`), or ''.
+ * Separate from {@link firstString} because those args are lists, not scalars, and a list arg would
+ * otherwise summarize as nothing at all.
+ */
+function firstStringList(args: Record<string, unknown> | null, keys: readonly string[]): string {
+  if (!args) return '';
+  for (const key of keys) {
+    const value = args[key];
+    if (Array.isArray(value)) {
+      const names = value.filter((v): v is string => typeof v === 'string' && v.length > 0);
+      if (names.length > 0) return trunc(names.join(', '), 40);
+    }
+  }
+  return '';
+}
+
 /** Cheap line count for a collapsed summary — no row allocation (empty/nullish → 0). */
 function lineCount(value: unknown): number {
   return typeof value === 'string' && value.length > 0 ? value.split('\n').length : 0;
@@ -123,8 +140,16 @@ const agentRenderer: ToolRenderer = {
   icon: '🤖',
   iconAlt: 'sub-agent',
   summarize: (args) => {
-    const type = firstString(args, ['subagent_type', 'agent_id', 'shell_id']);
-    const prompt = firstString(args, ['prompt', 'message']);
+    // WHO the call concerns: a spawn names its template, an addressed call names one agent
+    // (`target` for collaboration SendMessage, `agent_id` for CheckAgent/GetAgentTranscript), and the
+    // plural checks carry a LIST (`agent_ids`). GetAgents takes no args at all and correctly
+    // summarizes to the bare icon.
+    const type =
+      firstString(args, ['subagent_type', 'agent_id', 'target', 'shell_id']) ||
+      firstStringList(args, ['agent_ids']);
+    // WHAT was said: `prompt` is the legacy SendMessage/Agent wording, `content` the collaboration
+    // one. Both are supported permanently — old persisted calls must keep rendering.
+    const prompt = firstString(args, ['prompt', 'message', 'content']);
     return prompt ? `${type ? type + ' · ' : ''}${trunc(prompt, 40)}` : type;
   },
 };
@@ -208,7 +233,19 @@ register(['taskoutput', 'killshell'], taskRenderer);
 register(['grep'], grepRenderer);
 register(['glob'], globRenderer);
 register(['skill'], skillRenderer);
-register(['agent', 'sendmessage', 'checkagent'], agentRenderer);
+register(
+  [
+    'agent',
+    'sendmessage',
+    'checkagent',
+    // Collaboration tools (#244): the plural checks and the directory/transcript reads.
+    'checkagents',
+    'waitforagents',
+    'getagents',
+    'getagenttranscript',
+  ],
+  agentRenderer
+);
 register(
   [
     'setworkflow',

@@ -1,0 +1,10 @@
+{
+  "family": "agent",
+  "sourceThread": "synthetic",
+  "toolName": "SendMessage",
+  "toolCallId": "call_collab_send",
+  "functionArgs": "{\"target\":\"reviewer\",\"content\":\"Which repo should I review first?\",\"msg_type\":\"question\",\"in_response_to\":\"am-7\"}",
+  "result": "{\"message_id\":\"am-8\",\"delivered\":true}",
+  "isError": false,
+  "_note": "Synthetic. The #244 collaboration SendMessage vocabulary (target/content/msg_type/in_response_to). Note msg_type is the LOWER-CASE word the model writes, unlike the PascalCase AgentMessageType that comes back on the wire."
+}

@@ -57,6 +57,10 @@ public class MessageExtensionsWithIdsTests
                 nameof(UsageMessage),
                 new UsageMessage { Usage = new Usage { PromptTokens = 1, CompletionTokens = 1, TotalTokens = 2 }, Role = Role.Assistant, GenerationId = opaque }
             },
+            {
+                nameof(AgentMessage),
+                AgentMessage.Create("agentmsg-1", AgentMessageType.Question, "agent-7", "build-fixer", body: "b", generationId: opaque)
+            },
         };
     }
 
@@ -221,5 +225,30 @@ public class MessageExtensionsWithIdsTests
         Assert.Equal(runId, updatedToolsCallResult.RunId);
         Assert.Equal(threadId, updatedToolsCallResult.ThreadId);
     }
-}
 
+    // A collaboration message is injected into a receiver's history rather than produced by a
+    // provider, so it is easy to forget in this switch — and without an arm it silently keeps null
+    // run/thread identity and renders detached from the turn it arrived in.
+    [Fact]
+    public void WithIds_StampsAgentMessage_WithoutDisturbingItsEnvelope()
+    {
+        var agent = AgentMessage.Create(
+            "agentmsg-1",
+            AgentMessageType.Question,
+            fromAgentId: "agent-7",
+            fromName: "build-fixer",
+            body: "status?"
+        );
+
+        var updated = Assert.IsType<AgentMessage>(agent.WithIds("run-1", "parent-1", "thread-1"));
+
+        Assert.Equal("run-1", updated.RunId);
+        Assert.Equal("parent-1", updated.ParentRunId);
+        Assert.Equal("thread-1", updated.ThreadId);
+        // Identity and correlation are what the receiver acts on; a copy that lost or staled them
+        // would arrive unanswerable.
+        Assert.Equal("agentmsg-1", updated.MessageId);
+        Assert.Equal(agent.GenerationId, updated.GenerationId);
+        Assert.Equal(agent.Text, updated.Text);
+    }
+}

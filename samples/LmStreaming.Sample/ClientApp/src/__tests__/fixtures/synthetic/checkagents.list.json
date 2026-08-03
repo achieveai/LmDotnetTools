@@ -1,0 +1,10 @@
+{
+  "family": "agent",
+  "sourceThread": "synthetic",
+  "toolName": "CheckAgents",
+  "toolCallId": "call_check_agents",
+  "functionArgs": "{\"agent_ids\":[\"agent-2\",\"agent-3\"],\"mode\":\"any\"}",
+  "result": "{\"agents\":[{\"agent_id\":\"agent-2\",\"status\":\"running\"},{\"agent_id\":\"agent-3\",\"status\":\"completed\"}]}",
+  "isError": false,
+  "_note": "Synthetic. CheckAgents/WaitForAgents address a LIST of agents (agent_ids), unlike the singular CheckAgent (agent_id) — a scalar-only summarizer renders these as an empty one-liner."
+}

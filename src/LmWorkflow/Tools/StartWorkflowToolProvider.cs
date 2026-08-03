@@ -4,6 +4,8 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
+using AchieveAi.LmDotnetTools.LmWorkflow.Collaboration;
 using AchieveAi.LmDotnetTools.LmWorkflow.Ingest;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 
@@ -41,6 +43,7 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
 
     private readonly WorkflowManager _manager;
     private readonly Func<string, string?>? _validatePreferredProvider;
+    private readonly Func<AgentCollaborationSetup?>? _callerCollaboration;
 
     /// <summary>Creates the provider over <paramref name="manager"/>.</summary>
     /// <param name="manager">The workflow manager this tool family drives.</param>
@@ -50,14 +53,22 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
     ///     host injects a <c>ProviderRegistry</c>-backed check. Null skips validation (any non-null provider is
     ///     forwarded and the manager's profile factory decides).
     /// </param>
+    /// <param name="callerCollaboration">
+    ///     Resolves the LAUNCHING agent's collaboration handle, so the run's controller is admitted as a node
+    ///     under whoever actually called the tool. Resolved per call rather than captured at construction
+    ///     because the same provider instance is registered on a loop whose collaboration is bound later.
+    ///     Null (or a null result) keeps the pre-collaboration behaviour.
+    /// </param>
     public StartWorkflowToolProvider(
         WorkflowManager manager,
-        Func<string, string?>? validatePreferredProvider = null
+        Func<string, string?>? validatePreferredProvider = null,
+        Func<AgentCollaborationSetup?>? callerCollaboration = null
     )
     {
         ArgumentNullException.ThrowIfNull(manager);
         _manager = manager;
         _validatePreferredProvider = validatePreferredProvider;
+        _callerCollaboration = callerCollaboration;
     }
 
     /// <inheritdoc />
@@ -308,10 +319,17 @@ public sealed class StartWorkflowToolProvider : IFunctionProvider
                         cancellationToken,
                         context.ToolCallId,
                         preferredProvider: provider,
-                        preferredModel: model
+                        preferredModel: model,
+                        callerCollaboration: _callerCollaboration?.Invoke()
                     )
                     .ConfigureAwait(false);
                 return ToolHandlerResult.FromText(Serialize(result));
+            }
+            catch (WorkflowCollaborationException ex)
+            {
+                // A refused admission (nested launch, agent cap, directory rejection) is a normal, recoverable
+                // tool outcome carrying the collaboration's own stable code — never a thrown tool failure.
+                return ToolHandlerResult.FromError(ex.Message, ex.FailureCode);
             }
             catch (WorkflowValidationException ex)
             {

@@ -13,6 +13,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmLifecycle;
 using AchieveAi.LmDotnetTools.LmLifecycle.Payloads;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Middleware;
@@ -73,6 +74,12 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
 
     /// <inheritdoc />
     public override bool EnforcesSpawnSuppression => true;
+
+    /// <summary>
+    /// This loop's handle on the hierarchy-wide collaboration, or null when the host did not enable
+    /// one. Null is the historical configuration and keeps every collaboration surface off.
+    /// </summary>
+    public AgentCollaborationSetup? Collaboration { get; }
 
     /// <summary>
     ///     This loop's own usage sink (its <c>UsageLedger</c>), or null when usage accounting is disabled.
@@ -168,6 +175,11 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
     ///     Optional lifecycle bundle inherited by spawned sub-agents when it must differ from this loop's
     ///     own bundle. Null uses <paramref name="lifecycleServices"/> after this loop stamps it.
     /// </param>
+    /// <param name="collaboration">
+    ///     Optional handle on the hierarchy-wide collaboration this loop takes part in. Null — the
+    ///     default — leaves every collaboration behaviour off, which is exactly the historical surface:
+    ///     no directory, no messaging, and no role/description on a spawn.
+    /// </param>
     public MultiTurnAgentLoop(
         IStreamingAgent providerAgent,
         FunctionRegistry functionRegistry,
@@ -187,7 +199,8 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
         IPricingResolver? pricingResolver = null,
         IUsageSink? externalUsageSink = null,
         MultiTurnLifecycleServices? lifecycleServices = null,
-        MultiTurnLifecycleServices? subAgentLifecycleServices = null)
+        MultiTurnLifecycleServices? subAgentLifecycleServices = null,
+        AgentCollaborationSetup? collaboration = null)
         : base(
             threadId,
             systemPrompt,
@@ -216,6 +229,21 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
             pricingResolver,
             forwardTo: externalUsageSink,
             onAggregateUpdated: PublishUsageAggregateFrame);
+
+        Collaboration = collaboration;
+
+        // Self-registration is idempotent by design: a spawned sub-agent was already registered by its
+        // parent's manager (which had to know the child's endpoint at accept time), so only an agent
+        // nobody registered — the root — actually publishes itself here.
+        if (collaboration is not null
+            && collaboration.Directory.FindById(collaboration.AgentId) is null)
+        {
+            _ = collaboration.Directory.TryRegister(
+                collaboration.Context,
+                collaboration.Name,
+                AgentCollaborationStatuses.Running,
+                new AgentLoopWriteEndpoint(this));
+        }
 
         // When sub-agent orchestration is configured, snapshot the current tools
         // and register Agent/CheckAgent tools before building the middleware stack.
@@ -317,7 +345,9 @@ public sealed class MultiTurnAgentLoop : MultiTurnAgentBase, ISubAgentContextSin
                 // the parent's tools did not mean to leave the children's ungated. A workflow controller
                 // can exempt only its own control-plane tools while explicitly retaining the host bundle
                 // for delegates through subAgentLifecycleServices.
-                lifecycleServices: subAgentLifecycleServices ?? LifecycleServices);
+                lifecycleServices: subAgentLifecycleServices ?? LifecycleServices,
+                // This loop's own collaboration handle, from which the manager derives each child's.
+                collaboration: collaboration);
 
             SubAgentTools = new SubAgentToolProvider(
                 SubAgentManager,

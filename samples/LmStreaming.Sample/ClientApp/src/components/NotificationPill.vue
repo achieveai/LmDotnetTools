@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, inject, ref, toRef } from 'vue';
-import type { NotificationDisplayData } from '@/types';
+import type { AgentMessageType, NotificationDisplayData } from '@/types';
+import { AGENT_MESSAGE_NOTIFY_KIND } from '@/composables/messageDisplay';
 import { GET_AGENT_COLOR, type AgentColorLookup } from '@/utils/agentColors';
 
 /**
- * Presentational pill for an out-of-band notification (async sub-agent completion, sandbox
- * context-discovery, monitors, timers). Distinct from a user bubble. Takes the normalized
+ * Presentational pill for a message that is out-of-band relative to the human's own conversation —
+ * an async sub-agent completion, sandbox context-discovery, a monitor/timer, or one agent speaking to
+ * another (#244). Distinct from a user bubble. Takes the normalized
  * {@link NotificationDisplayData} that `useChat`'s `displayItems` produces — the single normalization
- * site for both new NotifyMessages and legacy context_discovery rows.
+ * site for NotifyMessages, AgentMessages, and legacy context_discovery rows alike.
  */
 const props = defineProps<{
   notification: NotificationDisplayData;
@@ -22,10 +24,25 @@ const icon = computed<string>(() => {
       return '\u{1F4C4}'; // 📄
     case 'subagent-completion':
       return '\u{1F916}'; // 🤖
+    case AGENT_MESSAGE_NOTIFY_KIND:
+      return '\u{1F4AC}'; // 💬
     default:
       return '\u{1F514}'; // 🔔
   }
 });
+
+/**
+ * Heading for an agent-to-agent pill: what the sender is doing, in the reader's language rather than
+ * the enum's. An unrecognized type falls back to its wire value so a newly added kind still names
+ * itself instead of rendering blank.
+ */
+const AGENT_MESSAGE_HEADINGS: Record<AgentMessageType, string> = {
+  Question: 'Agent asked',
+  DelegateTask: 'Agent delegated',
+  TaskUpdate: 'Agent update',
+  Steer: 'Agent steered',
+  Response: 'Agent replied',
+};
 
 /** Human-friendly heading per well-known kind; unknown kinds show the raw kind string. */
 const kindLabel = computed<string>(() => {
@@ -34,6 +51,10 @@ const kindLabel = computed<string>(() => {
       return 'Context loaded';
     case 'subagent-completion':
       return 'Sub-agent completed';
+    case AGENT_MESSAGE_NOTIFY_KIND: {
+      const type = data.value.agentMessageType;
+      return (type && AGENT_MESSAGE_HEADINGS[type]) || type || 'Agent message';
+    }
     default:
       return data.value.notifyKind;
   }
@@ -58,11 +79,14 @@ function toggle(): void {
   }
 }
 
-// Tint a sub-agent-completion pill with the completing agent's color (its `source_tool_call_id` is the
-// exact agentId) so it matches that agent's tab. Other notification kinds are unchanged.
+// Tint a pill that BELONGS to a known agent with that agent's color so it matches the agent's tab: a
+// sub-agent completion (whose `source_tool_call_id` is the exact agentId) and an agent-to-agent
+// message (whose sender agentId is normalized into the same field). Other kinds are unchanged.
 const getAgentColor = inject<AgentColorLookup>(GET_AGENT_COLOR, () => null);
 const agentColor = computed<string | null>(() =>
-  data.value.notifyKind === 'subagent-completion' ? getAgentColor(data.value.sourceToolCallId) : null
+  data.value.notifyKind === 'subagent-completion' || data.value.notifyKind === AGENT_MESSAGE_NOTIFY_KIND
+    ? getAgentColor(data.value.sourceToolCallId)
+    : null
 );
 </script>
 

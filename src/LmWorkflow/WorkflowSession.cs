@@ -5,11 +5,13 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Lifecycle;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.LmMultiTurn.UsageAccounting;
+using AchieveAi.LmDotnetTools.LmWorkflow.Collaboration;
 using AchieveAi.LmDotnetTools.LmWorkflow.Model;
 using AchieveAi.LmDotnetTools.LmWorkflow.Persistence;
 using AchieveAi.LmDotnetTools.LmWorkflow.Prompts;
@@ -79,6 +81,16 @@ public static class WorkflowSession
     ///     is never gated. Declared after <paramref name="ct"/> so existing positional callers keep
     ///     compiling, matching how <c>WorkflowManager.StartAsync</c> already grew.
     /// </param>
+    /// <param name="callerCollaboration">
+    ///     The LAUNCHING agent's own collaboration handle (issue #244). When supplied, the controller is
+    ///     admitted as a visible node in that hierarchy — at the caller's own delegation depth, because a
+    ///     controller is a zero-cost hop — and its delegates land one delegation hop deeper. Null (the
+    ///     default) keeps the run outside any collaboration, exactly as before.
+    /// </param>
+    /// <exception cref="WorkflowCollaborationException">
+    ///     Collaboration was requested but the controller could not be admitted (nested launch, agent cap
+    ///     reached, or a directory refusal). Thrown before any loop is built.
+    /// </exception>
     public static Task<WorkflowRunHandle> StartAsync(
         string objective,
         JsonObject? inputs,
@@ -97,7 +109,8 @@ public static class WorkflowSession
 
         IUsageSink? usageSink = null,
         CancellationToken ct = default,
-        MultiTurnLifecycleServices? lifecycleServices = null
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        AgentCollaborationSetup? callerCollaboration = null
 
     )
     {
@@ -117,37 +130,62 @@ public static class WorkflowSession
             runtime.MergeInputs(inputs);
         }
 
-        // Attach AFTER seeding so the first persisted snapshot (taken at the first controller mutation)
-        // already reflects the loaded definition and merged inputs.
-        if (store is not null && instanceId is not null)
-        {
-            runtime.AttachStore(store, instanceId);
-        }
-
-        var loop = BuildLoop(
-            controllerAgent,
-            runtime,
+        // Admit the controller BEFORE the store is attached (so the very first persisted snapshot already
+        // carries the collaboration node) and before the loop is built (so a capacity refusal costs nothing).
+        var registration = WorkflowCollaboration.TryAdmitController(
+            callerCollaboration,
+            workflowId: instanceId ?? threadId,
+            definition,
             threadId,
-            subAgentOptions,
             conversationStore,
-            includeAuthoringTool,
-            controllerMaxTurnsPerRun,
-            controllerDefaultOptions,
-
-            usageSink,
-            logger,
-            lifecycleServices
-
+            () => runtime.IsComplete
         );
+        runtime.AttachCollaboration(registration?.Record);
 
-        // A fresh workflow launch must begin with an EMPTY controller conversation. The controller thread
-        // id is workflow-{workflowId} (caller-chosen); if it collides with an earlier run's thread in the
-        // shared conversation store, MultiTurnAgentBase.RunAsync would otherwise auto-recover that PRIOR
-        // run's messages and the controller would "inherit" a previous workflow conversation. Recovery is
-        // reserved for the deliberate ResumeAsync path, which calls RecoverAsync explicitly.
-        loop.SuppressHistoryRecovery();
+        try
+        {
+            // Attach AFTER seeding so the first persisted snapshot (taken at the first controller mutation)
+            // already reflects the loaded definition and merged inputs.
+            if (store is not null && instanceId is not null)
+            {
+                runtime.AttachStore(store, instanceId);
+            }
 
-        return Task.FromResult(BeginRun(loop, runtime, objective, TryBuildRepairer(subAgentOptions, logger), ct));
+            var loop = BuildLoop(
+                controllerAgent,
+                runtime,
+                threadId,
+                subAgentOptions,
+                conversationStore,
+                includeAuthoringTool,
+                controllerMaxTurnsPerRun,
+                controllerDefaultOptions,
+
+                usageSink,
+                logger,
+                lifecycleServices,
+                registration?.Setup
+
+            );
+
+            // A fresh workflow launch must begin with an EMPTY controller conversation. The controller thread
+            // id is workflow-{workflowId} (caller-chosen); if it collides with an earlier run's thread in the
+            // shared conversation store, MultiTurnAgentBase.RunAsync would otherwise auto-recover that PRIOR
+            // run's messages and the controller would "inherit" a previous workflow conversation. Recovery is
+            // reserved for the deliberate ResumeAsync path, which calls RecoverAsync explicitly.
+            loop.SuppressHistoryRecovery();
+
+            return Task.FromResult(
+                BeginRun(loop, runtime, objective, TryBuildRepairer(subAgentOptions, logger), ct, registration)
+            );
+        }
+        catch
+        {
+            // The controller was admitted but no handle will exist to dispose, so settle its node here or the
+            // caller's hierarchy would permanently lose a capacity permit to a launch that never ran.
+            registration?.Finish(succeeded: false);
+            throw;
+        }
     }
 
     /// <summary>
@@ -172,7 +210,17 @@ public static class WorkflowSession
     ///     Optional lifecycle observation for the resumed controller loop. Any approval gate on it is
     ///     dropped — see <see cref="MultiTurnLifecycleServices.ForObservationOnly"/>.
     /// </param>
+    /// <param name="callerCollaboration">
+    ///     The live agent's collaboration handle to re-admit the resumed controller under (issue #244). The
+    ///     original launcher no longer exists after a restart, so the resumed node reacquires a capacity lease
+    ///     under the CURRENT hierarchy — visibly failing when the configured cap cannot admit it — while
+    ///     reusing the role and description captured in the snapshot verbatim. Null keeps the resumed run
+    ///     outside any collaboration, which is also what a pre-#244 snapshot (no persisted node) yields.
+    /// </param>
     /// <exception cref="InvalidOperationException">No snapshot exists for <paramref name="instanceId"/>.</exception>
+    /// <exception cref="WorkflowCollaborationException">
+    ///     Collaboration was requested but the resumed controller could not reacquire capacity.
+    /// </exception>
     public static async Task<WorkflowRunHandle> ResumeAsync(
         string instanceId,
         IWorkflowStore store,
@@ -183,7 +231,8 @@ public static class WorkflowSession
         ILogger? logger = null,
         IJsonSchemaValidator? schemaValidator = null,
         CancellationToken ct = default,
-        MultiTurnLifecycleServices? lifecycleServices = null
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        AgentCollaborationSetup? callerCollaboration = null
     )
     {
         ArgumentException.ThrowIfNullOrEmpty(instanceId);
@@ -200,22 +249,47 @@ public static class WorkflowSession
 
         // Rebuild the runtime (orphaned in-flight tasks reset) and keep persisting under the same id.
         var runtime = WorkflowRuntime.FromSnapshot(snapshot, schemaValidator, logger);
-        runtime.AttachStore(store, instanceId);
 
+        // Reacquire the collaboration lease BEFORE the run continues, so a resume the configured cap cannot
+        // admit fails here rather than running unbounded. A pre-#244 snapshot carries no node record, so the
+        // controller is admitted with freshly derived metadata instead of resurrecting nothing.
+        var registration = WorkflowCollaboration.TryAdmitController(
+            callerCollaboration,
+            instanceId,
+            snapshot.Definition,
+            threadId,
+            conversationStore,
+            () => runtime.IsComplete,
+            snapshot.Collaboration
+        );
+        runtime.AttachCollaboration(registration?.Record);
 
-        var loop = BuildLoop(
-            controllerAgent, runtime, threadId, subAgentOptions, conversationStore,
-            logger: logger, lifecycleServices: lifecycleServices);
-
-
-        // Restore the controller's prior conversation BEFORE driving so it continues with full context.
-        // Doing it explicitly here also marks recovery complete so RunAsync does not re-recover.
-        if (conversationStore is not null)
+        try
         {
-            _ = await loop.RecoverAsync(ct).ConfigureAwait(false);
-        }
+            runtime.AttachStore(store, instanceId);
 
-        return BeginRun(loop, runtime, ResumeObjective, TryBuildRepairer(subAgentOptions, logger), ct);
+            var loop = BuildLoop(
+                controllerAgent, runtime, threadId, subAgentOptions, conversationStore,
+                logger: logger, lifecycleServices: lifecycleServices, collaboration: registration?.Setup);
+
+
+            // Restore the controller's prior conversation BEFORE driving so it continues with full context.
+            // Doing it explicitly here also marks recovery complete so RunAsync does not re-recover.
+            if (conversationStore is not null)
+            {
+                _ = await loop.RecoverAsync(ct).ConfigureAwait(false);
+            }
+
+            return BeginRun(
+                loop, runtime, ResumeObjective, TryBuildRepairer(subAgentOptions, logger), ct, registration
+            );
+        }
+        catch
+        {
+            // See StartAsync: a reacquired lease with no handle to dispose would strand a capacity permit.
+            registration?.Finish(succeeded: false);
+            throw;
+        }
     }
 
     /// <summary>Builds the controller loop over a fresh registry carrying the workflow tools.</summary>
@@ -231,7 +305,8 @@ public static class WorkflowSession
 
         IUsageSink? usageSink = null,
         ILogger? logger = null,
-        MultiTurnLifecycleServices? lifecycleServices = null
+        MultiTurnLifecycleServices? lifecycleServices = null,
+        AgentCollaborationSetup? collaboration = null
 
     )
     {
@@ -243,10 +318,14 @@ public static class WorkflowSession
         // leaving the unit pending and provoking a re-spawn loop. This rejects it up front at the Agent-tool
         // boundary with an actionable correction (the ready unit name(s)) so the controller re-issues the exact
         // name. Runtime backstop to the ControllerSystemPrompt guidance; covers StartAsync AND ResumeAsync.
+        // The metadata resolver rides the same exact-name correlation: a delegate's collaboration role and
+        // description come from the authored task/node labels, so the controller cannot relabel what the
+        // directory advertises to the rest of the collaboration.
         subAgentOptions = subAgentOptions with
         {
             SpawnNameGate = runtime.DescribeSpawnNameRejection,
             SpawnModelSelectionResolver = runtime.ResolveSpawnModelSelection,
+            SpawnMetadataResolver = runtime.ResolveSpawnMetadata,
         };
 
         return new MultiTurnAgentLoop(
@@ -273,7 +352,11 @@ public static class WorkflowSession
             lifecycleServices: MultiTurnLifecycleServices.ForObservationOnly(lifecycleServices),
             // Only the controller's workflow control-plane tools are exempt from approval. Delegates can
             // inherit the launching host's domain tools, so they must retain that host approval gate.
-            subAgentLifecycleServices: lifecycleServices
+            subAgentLifecycleServices: lifecycleServices,
+            // The controller is ALREADY registered (WorkflowCollaboration took its capacity lease and owns
+            // its endpoints), so the loop's own self-registration finds it and no-ops. Handing the setup down
+            // is what lets the controller's SubAgentManager admit delegates one delegation hop deeper.
+            collaboration: collaboration
 
         );
     }
@@ -339,9 +422,14 @@ public static class WorkflowSession
         WorkflowRuntime runtime,
         string initialMessage,
         WorkflowJsonRepairer? repairer,
-        CancellationToken ct
+        CancellationToken ct,
+        WorkflowControllerRegistration? registration
     )
     {
+        // Bind the loop to the controller's collaboration endpoint BEFORE the run starts, so a peer message
+        // that arrives during the very first turn is delivered rather than refused as "not running".
+        registration?.AttachLoop(loop);
+
         // DriveAndObserveAsync below is that single ordered consumer. Declare it BEFORE the loop can execute
         // any tool so a transition can wait for the observer to catch up instead of routing off stale state.
         runtime.AttachOrderedObserver();
@@ -369,7 +457,7 @@ public static class WorkflowSession
         var input = new UserInput([new TextMessage { Text = initialMessage, Role = Role.User }]);
         var driveTask = DriveAndObserveAsync(loop, runtime, input, repairer, ct);
 
-        return new WorkflowRunHandle(runtime, loop, runTask, driveTask);
+        return new WorkflowRunHandle(runtime, loop, runTask, driveTask, registration);
     }
 
     /// <summary>
@@ -475,19 +563,29 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
 {
     private readonly Task _runTask;
     private readonly Task _driveTask;
+    private readonly WorkflowControllerRegistration? _collaboration;
 
     internal WorkflowRunHandle(
         WorkflowRuntime runtime,
         MultiTurnAgentLoop loop,
         Task runTask,
-        Task driveTask
+        Task driveTask,
+        WorkflowControllerRegistration? collaboration = null
     )
     {
         Runtime = runtime;
         Loop = loop;
         _runTask = runTask;
         _driveTask = driveTask;
+        _collaboration = collaboration;
     }
+
+    /// <summary>
+    ///     This run's controller node in the launching hierarchy's collaboration, or <c>null</c> when the run
+    ///     is not part of one. Persisted into the workflow snapshot so a resume can reacquire under the same
+    ///     identity and with the same trusted role/description.
+    /// </summary>
+    public CollaborationNodeRecord? CollaborationNode => _collaboration?.Record;
 
     /// <summary>The runtime that holds all workflow state. Internal so hosts cannot bypass the controller.</summary>
     internal WorkflowRuntime Runtime { get; }
@@ -543,6 +641,19 @@ public sealed class WorkflowRunHandle : IAsyncDisposable
         {
             // The pump fault is surfaced via Completion (SignalFailure); disposal must not throw.
         }
+
+        // Settle the collaboration node once the loop it points at is gone: record the terminal status, retain
+        // the entry so the finished hierarchy stays inspectable, and return the capacity permit exactly once. A
+        // run that never reached a terminal node settles as an error, which is what it was.
+        //
+        // Ordered BEFORE the snapshot drain deliberately. Retention and the permit are independent: a retained
+        // entry is an inspectable record, not a live routing target, and holding the permit across a store
+        // flush of unbounded duration would let one slow teardown freeze collaboration capacity for its whole
+        // hierarchy. The drain cannot change IsComplete, so settling here reports exactly what settling after
+        // it would have. This mirrors the sub-agent rule that the lease is returned when the agent stops
+        // existing, ahead of a potentially slow dispose — and differs from an ordinary sub-agent's COMPLETION
+        // only because a finished controller is not restartable by a later message: it really is gone.
+        _collaboration?.Finish(Runtime.IsComplete);
 
         // Flush any pending best-effort snapshot saves (serialized in capture order; faults are swallowed and
         // logged) before the handle goes away.

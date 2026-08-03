@@ -75,7 +75,9 @@ public class ConversationsControllerWorkspaceTests
             new ConversationStatusResolver(new InMemoryConversationStore(), new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
-            NullLogger<ConversationsController>.Instance);
+            NullLogger<ConversationsController>.Instance,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
     }
 
     private static MultiTurnAgentPool CreatePool()

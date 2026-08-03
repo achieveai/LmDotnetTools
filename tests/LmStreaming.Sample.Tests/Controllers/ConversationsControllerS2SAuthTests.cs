@@ -46,7 +46,9 @@ public class ConversationsControllerS2SAuthTests
             statusResolver ?? new ConversationStatusResolver(store, store as IRunLedgerStore ?? new InMemoryConversationStore()),
             TimeProvider.System,
             new WorkflowRunRegistry(),
-            NullLogger<ConversationsController>.Instance);
+            NullLogger<ConversationsController>.Instance,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
     }
 
     private static IChatModeStore ModeStoreResolvingSystemModes()

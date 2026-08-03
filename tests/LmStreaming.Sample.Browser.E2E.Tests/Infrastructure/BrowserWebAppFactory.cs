@@ -45,6 +45,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     private readonly HttpMessageHandler? _sandboxGatewayHandler;
     private readonly SandboxGatewayOptions? _sandboxOptions;
     private readonly IReadOnlyList<CopilotModelInfo>? _copilotModels;
+    private readonly IReadOnlyDictionary<string, string?>? _settings;
     private IHost? _kestrelHost;
     private string? _serverAddress;
 
@@ -79,6 +80,12 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     /// overflow regression to deterministically fill the selector. Left null for every other scenario
     /// (the real startup discovery applies, which yields nothing without a token).
     /// </param>
+    /// <param name="settings">
+    /// Optional host configuration overrides applied with <c>UseSetting</c>, for scenarios whose premise
+    /// is a feature the sample ships switched OFF — <c>AgentCollaboration:Enabled</c> above all. Using
+    /// configuration rather than a mock is deliberate: the browser must exercise the same wiring a real
+    /// deployment turns on, not a stand-in for it. Left null for every other scenario.
+    /// </param>
     public BrowserWebAppFactory(
         string providerMode,
         ITestAgentBuilder? builder,
@@ -86,7 +93,8 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         IMarketplaceCatalogClient? catalogClient = null,
         HttpMessageHandler? sandboxGatewayHandler = null,
         SandboxGatewayOptions? sandboxOptions = null,
-        IReadOnlyList<CopilotModelInfo>? copilotModels = null)
+        IReadOnlyList<CopilotModelInfo>? copilotModels = null,
+        IReadOnlyDictionary<string, string?>? settings = null)
     {
         // Scripted SSE modes ('test' / 'test-anthropic') drive a fake handler via ITestAgentBuilder.
         // 'claude-mock' (and other *-mock providers) drive the real CLI against the in-process
@@ -127,6 +135,7 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
         _sandboxGatewayHandler = sandboxGatewayHandler;
         _sandboxOptions = sandboxOptions;
         _copilotModels = copilotModels;
+        _settings = settings;
         _conversationPath = Path.Combine(
             Path.GetTempPath(),
             "lm-streaming-browser-e2e",
@@ -156,6 +165,16 @@ public sealed class BrowserWebAppFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");
+
+        // Per-test host configuration, applied before ConfigureTestServices so the options the sample
+        // binds at startup (collaboration above all) see the overridden values.
+        if (_settings is not null)
+        {
+            foreach (var (key, value) in _settings)
+            {
+                builder.UseSetting(key, value);
+            }
+        }
 
         builder.ConfigureTestServices(services =>
         {

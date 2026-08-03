@@ -29,6 +29,7 @@ import {
   isServerToolResultMessage,
   isTextWithCitationsMessage,
   isNotifyMessage,
+  isAgentMessage,
   isConversationUsageMessage,
   normalizeReasoningVisibility,
 } from '@/types';
@@ -638,10 +639,11 @@ export function useChat(options: UseChatOptions = {}) {
     const isUpdate = isTextUpdateMessage(msg) || isReasoningUpdateMessage(msg) ||
                      isToolsCallUpdateMessage(msg) || isToolCallUpdateMessage(msg);
 
-    // Determine if this is a complete (non-update) content message. A NotifyMessage is a terminal,
-    // non-streamed message (out-of-band notification) — routed here so it is NOT dropped as an
-    // "unknown message type"; the displayItems notification branch renders it as a pill.
-    const isCompleteMessage = isTextMessage(msg) || isReasoningMessage(msg) || isToolsCallMessage(msg) || isToolCallMessage(msg) || isNotifyMessage(msg);
+    // Determine if this is a complete (non-update) content message. A NotifyMessage and an
+    // AgentMessage are terminal, non-streamed messages (out-of-band relative to the human's own
+    // turn) — routed here so they are NOT dropped as an "unknown message type"; the displayItems
+    // notification branch renders both as pills.
+    const isCompleteMessage = isTextMessage(msg) || isReasoningMessage(msg) || isToolsCallMessage(msg) || isToolCallMessage(msg) || isNotifyMessage(msg) || isAgentMessage(msg);
 
     if (!isUpdate && !isCompleteMessage) {
       // Unknown message type - skip

@@ -20,9 +20,33 @@ namespace LmStreaming.Sample.Services;
 ///     set, so completed workflow tabs survive a restart. Delegate transcripts are already persisted as
 ///     <c>subagent-{id}</c> threads in the conversation store, so a persisted tab replays read-only.
 ///     </para>
+///     <para>
+///     Since #244 the same index also carries hierarchy nodes spawned by the Agent tool, and every row
+///     stamps the shared <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration.CollaborationNodeRecord"/>
+///     schema version so a row can always be read back as the node shape the rest of the system speaks.
+///     Rows written before #244 carry none of the collaboration fields and still deserialize — the added
+///     members are optional, so an old index file loads as exactly the tabs it always described.
+///     </para>
+///     <para>
+///     <b>The index is BOUNDED.</b> Its upsert never deletes a row the live snapshot dropped, which is
+///     exactly what makes a completed run survive a restart — and equally what would let a long-lived
+///     conversation accumulate rows without limit, since every poll rewrites and re-reads the whole file
+///     and the projection walks all of it. So a write keeps at most
+///     <see cref="MaxPersistedEntriesPerConversation"/> rows per conversation, preferring the ones the
+///     live snapshot still reports and then the most recently active. The retained tail is what is
+///     dropped, and only ever from the on-disk index: a live run is never evicted by this bound, and
+///     nothing here touches the collaboration directory, which is the library's to bound.
+///     </para>
 /// </summary>
 public sealed class WorkflowRunRegistry
 {
+    /// <summary>
+    ///     Default ceiling on how many tab rows one conversation's persisted index keeps. Chosen well above
+    ///     any plausible interactive hierarchy (a conversation's workflow runs plus their delegates) so the
+    ///     bound is invisible in normal use and only ever trims a runaway.
+    /// </summary>
+    public const int DefaultMaxPersistedEntriesPerConversation = 256;
+
     private readonly ConcurrentDictionary<string, WorkflowManager> _byThread = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, object> _fileLocks = new(StringComparer.Ordinal);
     private readonly string? _indexDirectory;
@@ -35,14 +59,30 @@ public sealed class WorkflowRunRegistry
     ///     persisted there (one JSON file per conversation) so tabs survive a restart; when null (the default,
     ///     used by unit tests that don't exercise persistence) the index is a no-op and tabs are in-memory only.
     /// </summary>
-    public WorkflowRunRegistry(string? indexDirectory = null)
+    /// <param name="indexDirectory">Where the per-conversation index files live, or null to disable persistence.</param>
+    /// <param name="maxPersistedEntriesPerConversation">
+    ///     Ceiling on retained rows per conversation; see <see cref="MaxPersistedEntriesPerConversation"/>.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    ///     <paramref name="maxPersistedEntriesPerConversation"/> is not positive — an index that may hold
+    ///     nothing would silently discard every tab it was asked to make durable.
+    /// </exception>
+    public WorkflowRunRegistry(
+        string? indexDirectory = null,
+        int maxPersistedEntriesPerConversation = DefaultMaxPersistedEntriesPerConversation)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxPersistedEntriesPerConversation, 1);
+
         _indexDirectory = indexDirectory;
+        MaxPersistedEntriesPerConversation = maxPersistedEntriesPerConversation;
         if (!string.IsNullOrWhiteSpace(_indexDirectory))
         {
             _ = Directory.CreateDirectory(_indexDirectory);
         }
     }
+
+    /// <summary>The configured ceiling on retained rows per conversation.</summary>
+    public int MaxPersistedEntriesPerConversation { get; }
 
     /// <summary>Associates <paramref name="manager"/> with <paramref name="threadId"/> (overwriting any stale entry).</summary>
     public void Register(string threadId, WorkflowManager manager)
@@ -62,7 +102,8 @@ public sealed class WorkflowRunRegistry
     /// <summary>
     ///     Merges the given workflow + delegate tabs into the conversation's persisted index (upsert by
     ///     Kind+AgentId, never removing an entry a live snapshot no longer reports), so a run that has left
-    ///     memory — e.g. after a restart — still surfaces as a tab. No-op when persistence is disabled or the
+    ///     memory — e.g. after a restart — still surfaces as a tab. The result is capped at
+    ///     <see cref="MaxPersistedEntriesPerConversation"/> rows. No-op when persistence is disabled or the
     ///     snapshot is empty.
     /// </summary>
     public void PersistTabs(string threadId, IReadOnlyList<SubAgentSummary> tabs)
@@ -88,7 +129,9 @@ public sealed class WorkflowRunRegistry
             {
                 // Live snapshot wins on conflict (fresher status), and NEVER deletes a previously-persisted
                 // tab that the live snapshot has dropped (that's exactly the run that has left memory).
-                merged[(tab.Kind, tab.AgentId)] = tab;
+                // The viewer-scoped flags are dropped on the way in: they answer "for the reader of this
+                // poll", and the file is read by every later reader.
+                merged[(tab.Kind, tab.AgentId)] = tab with { IsCurrent = false, IsReadable = false };
             }
 
             try
@@ -97,7 +140,7 @@ public sealed class WorkflowRunRegistry
                 var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
                 try
                 {
-                    File.WriteAllText(temp, JsonSerializer.Serialize(merged.Values, IndexJson));
+                    File.WriteAllText(temp, JsonSerializer.Serialize(Bound(merged, tabs), IndexJson));
                     File.Move(temp, path, overwrite: true);
                 }
                 finally
@@ -114,6 +157,31 @@ public sealed class WorkflowRunRegistry
                 // persisted; the next poll re-attempts. Never fail the read the caller is servicing.
             }
         }
+    }
+
+    /// <summary>
+    ///     Applies the per-conversation ceiling to a merged index. Rows the live snapshot still reports are
+    ///     kept first — evicting one would hide a run that is actually happening — and the remaining places
+    ///     go to the most recently active retained rows, so what falls off the end is the oldest history.
+    /// </summary>
+    private IReadOnlyCollection<SubAgentSummary> Bound(
+        Dictionary<(string Kind, string AgentId), SubAgentSummary> merged,
+        IReadOnlyList<SubAgentSummary> live)
+    {
+        if (merged.Count <= MaxPersistedEntriesPerConversation)
+        {
+            return merged.Values;
+        }
+
+        var liveKeys = live.Select(static tab => (tab.Kind, tab.AgentId)).ToHashSet();
+        return
+        [
+            .. merged
+                .OrderByDescending(entry => liveKeys.Contains(entry.Key))
+                .ThenByDescending(entry => entry.Value.LastActivityUtc ?? DateTimeOffset.MinValue)
+                .Take(MaxPersistedEntriesPerConversation)
+                .Select(static entry => entry.Value),
+        ];
     }
 
     /// <summary>The persisted workflow + delegate tabs for a conversation (empty when none / persistence off).</summary>
@@ -133,12 +201,9 @@ public sealed class WorkflowRunRegistry
 
         return
         [
-            .. (JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? [])
-                .Select(tab =>
-                    string.Equals(tab.Status, "running", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(tab.Status, "queued", StringComparison.OrdinalIgnoreCase)
-                        ? tab with { Status = "interrupted" }
-                        : tab),
+            .. (
+                JsonSerializer.Deserialize<List<SubAgentSummary>>(File.ReadAllText(path), IndexJson) ?? []
+            ).Select(static tab => tab.AsRetained()),
         ];
     }
 

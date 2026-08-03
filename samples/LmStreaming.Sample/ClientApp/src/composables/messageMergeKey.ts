@@ -1,5 +1,6 @@
 import type { Message } from '@/types';
 import {
+  isAgentMessage,
   isNotifyMessage,
   isTextMessage,
   isTextUpdateMessage,
@@ -18,8 +19,11 @@ import {
  * Extracted verbatim from useChat so multiple consumers (the parent chat and the sub-agent panel)
  * key messages identically without duplicating this bug-prone identity logic.
  */
-export function getMergeKind(msg: Message): 'text' | 'reasoning' | 'tools' | 'tool' | 'notify' | 'other' {
+export function getMergeKind(
+  msg: Message
+): 'text' | 'reasoning' | 'tools' | 'tool' | 'notify' | 'agent' | 'other' {
   if (isNotifyMessage(msg)) return 'notify';
+  if (isAgentMessage(msg)) return 'agent';
   if (isTextMessage(msg) || isTextUpdateMessage(msg)) return 'text';
   if (isReasoningMessage(msg) || isReasoningUpdateMessage(msg)) return 'reasoning';
   if (isToolsCallMessage(msg) || isToolsCallUpdateMessage(msg)) return 'tools';
@@ -49,6 +53,14 @@ export function getMergeKey(msg: Message, turnSeq = 0): string {
   // notifications onto one pill.
   if (isNotifyMessage(msg)) {
     return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}`;
+  }
+
+  // An agent-to-agent message carries a collaboration-minted message_id that is unique by contract,
+  // so it disambiguates on that rather than trusting generationId alone (the notify case above can,
+  // because the backend stamps one there). Several agents can speak into the same run at the same
+  // messageOrderIdx, so without the id they would collapse onto a single pill.
+  if (isAgentMessage(msg)) {
+    return `${mergeKind}-${runId}-${generationId}-${messageOrderIdx}-${msg.message_id || 'am'}`;
   }
 
   // Individual tool calls — streaming OR finalized — are keyed by tool_call_id. Several concurrent

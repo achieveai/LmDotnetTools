@@ -33,6 +33,15 @@ public sealed class ConversationsControllerSubAgentsTests
         WorkflowRunRegistry workflowRunRegistry,
         IConversationStore store)
     {
+        return CreateController(pool, workflowRunRegistry, store, new SubAgentScanCoverageCache());
+    }
+
+    private static ConversationsController CreateController(
+        MultiTurnAgentPool pool,
+        WorkflowRunRegistry workflowRunRegistry,
+        IConversationStore store,
+        SubAgentScanCoverageCache cache)
+    {
         return new ConversationsController(
             store,
             pool,
@@ -42,7 +51,9 @@ public sealed class ConversationsControllerSubAgentsTests
             new ConversationStatusResolver(Mock.Of<IConversationStore>(), new InMemoryConversationStore()),
             TimeProvider.System,
             workflowRunRegistry,
-            NullLogger<ConversationsController>.Instance);
+            NullLogger<ConversationsController>.Instance,
+            NullLogger<AgentHierarchyService>.Instance,
+            cache);
     }
 
     private static MultiTurnAgentPool CreateFakeAgentPool()
@@ -93,6 +104,75 @@ public sealed class ConversationsControllerSubAgentsTests
         var ok = Assert.IsType<OkObjectResult>(result);
         var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value);
         summaries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Delete_EvictsTheScanCoverageCacheEntry_SoAThreadIdReusedByAFreshConversation_Rescans()
+    {
+        // PR #245 review (HIGH): owner-keyed invalidation alone does not cover a DELETED conversation
+        // whose thread id is later reused — both the deleted conversation and a fresh one reusing its id
+        // have no live manager, so both resolve the SAME SubAgentScanCoverageCache.NoLiveManager
+        // sentinel owner. Without Delete calling Forget() explicitly, the fresh conversation would
+        // incorrectly inherit the deleted conversation's cached rows instead of rescanning.
+        const string reusedThreadId = "thread-reused-after-delete";
+        const string oldChildThreadId = "subagent-old-child";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(reusedThreadId, new ThreadMetadata { ThreadId = reusedThreadId, LastUpdated = 0 });
+        await store.SaveMetadataAsync(
+            oldChildThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = oldChildThreadId,
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    reusedThreadId,
+                    new SubAgentSnapshot(
+                        "old-child",
+                        Name: "old-child",
+                        TemplateName: "worker",
+                        Task: "old task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: oldChildThreadId,
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+        var countingStore = new CountingConversationStore(store);
+        var sharedCache = new SubAgentScanCoverageCache();
+
+        // No live loop for this thread in either phase — the NoLiveManager sentinel owner is resolved
+        // both before and after delete, so only Forget() (not an owner change) can invalidate the entry.
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, new WorkflowRunRegistry(), countingStore, sharedCache);
+
+        var before = await controller.ListSubAgents(reusedThreadId);
+        var summariesBefore = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(
+            Assert.IsType<OkObjectResult>(before).Value);
+        summariesBefore.Should().ContainSingle(s => s.AgentId == "old-child");
+        countingStore.ListThreadsCallCount.Should().Be(1);
+
+        var deleteResult = await controller.Delete(reusedThreadId);
+        deleteResult.Should().BeOfType<NoContentResult>();
+
+        // Simulate the deleted conversation's child record also having been cleaned up in the meantime
+        // (by whatever mechanism owns that, out of scope here) so a genuinely fresh conversation reusing
+        // the thread id has nothing left to recover — the only way this test can tell "served a real,
+        // freshly-scanned answer" apart from "served a stale cached one" is if the two answers differ.
+        await store.DeleteThreadAsync(oldChildThreadId, CancellationToken.None);
+
+        // A fresh conversation is provisioned reusing the SAME thread id.
+        await store.SaveMetadataAsync(reusedThreadId, new ThreadMetadata { ThreadId = reusedThreadId, LastUpdated = 0 });
+
+        var after = await controller.ListSubAgents(reusedThreadId);
+        var summariesAfter = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(
+            Assert.IsType<OkObjectResult>(after).Value);
+
+        summariesAfter.Should().BeEmpty(
+            "the deleted conversation's stale recovered child must not resurrect for a thread id reused "
+                + "by a fresh conversation");
+        countingStore.ListThreadsCallCount.Should().Be(
+            2,
+            "Delete must Forget() the cache entry so the reused thread id actually rescans instead of "
+                + "reusing the deleted conversation's cached rows under the same NoLiveManager owner");
     }
 
     [Fact]
@@ -236,6 +316,55 @@ public sealed class ConversationsControllerSubAgentsTests
                 // Best-effort temp cleanup.
             }
         }
+    }
+
+    [Fact]
+    public async Task ListSubAgents_ReconstructsOrdinaryChildren_FromPersistedProvenance_AfterPoolEviction()
+    {
+        // Collaboration is OFF (the checked-in default), so an Agent-tool child never enters the
+        // WorkflowRunRegistry tab index (the write-through in AgentHierarchyService.BuildAsync only
+        // persists there once collaboration is enabled). Its only durable trace is the
+        // SubAgentProvenance stamp on its OWN persisted thread metadata — what
+        // Program.ApplyDefaultSubAgentStore/NonOwningConversationStore write in production. This is the
+        // pre-#244 flat-listing contract (ConversationsController.ListSubAgents used to reconstruct it
+        // via a direct bounded scan); #244's replacement dropped it when it started delegating fully to
+        // AgentHierarchyService.BuildAsync.
+        var threadId = "thread-restarted-plain";
+        const string childId = "evicted-child";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            $"subagent-{childId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{childId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    threadId,
+                    new SubAgentSnapshot(
+                        childId,
+                        Name: "alpha",
+                        TemplateName: "worker",
+                        Task: "alpha's task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{childId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+
+        // Pool has NO live loop for this thread (restart evicted it) — TryGet returns false, so
+        // BuildAsync's only route to this child is the persisted-provenance scan.
+        await using var pool = CreateFakeAgentPool();
+        var controller = CreateController(pool, new WorkflowRunRegistry(), store);
+
+        var result = await controller.ListSubAgents(threadId);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var summaries = Assert.IsAssignableFrom<IReadOnlyCollection<SubAgentSummary>>(ok.Value).ToList();
+        var child = summaries.Should().ContainSingle(s => s.AgentId == childId).Which;
+        child.Name.Should().Be("alpha");
+        child.Template.Should().Be("worker");
+        child.Status.Should().Be("completed");
+        child.ThreadId.Should().Be($"subagent-{childId}");
     }
 
     private static string ParseAgentId(string spawnJson)

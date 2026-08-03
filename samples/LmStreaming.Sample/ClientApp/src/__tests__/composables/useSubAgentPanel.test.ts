@@ -1139,6 +1139,93 @@ describe('useSubAgentPanel — child transcript parity for provider-side frames 
   });
 });
 
+describe('useSubAgentPanel — inbound agent-to-agent messages (#244)', () => {
+  // An AgentMessage carries role 'user' on the wire (that is how the receiving LLM reads it), so the
+  // panel has to recognise the TYPE before it branches on role — otherwise a peer agent's question
+  // renders as though the human had typed it into the child's transcript.
+  function agentMessage(messageId: string, body: string, overrides: Record<string, unknown> = {}) {
+    return {
+      $type: MessageType.Agent,
+      role: 'user',
+      text: `<agent_message from="Researcher">${body}</agent_message>`,
+      message_id: messageId,
+      agent_message_type: 'Question',
+      from_agent_id: 'agent-7',
+      from_name: 'Researcher',
+      body,
+      generationId: GEN,
+      messageOrderIdx: 5,
+      ...overrides,
+    };
+  }
+
+  function notifications(items: ReturnType<typeof useSubAgentPanel>['focusedDisplayItems']['value']) {
+    return items
+      .filter((i) => i.type === 'notification')
+      .map((i) => (i as { notification: { notifyKind: string; label?: string | null; detail?: string | null; agentMessageType?: string | null } }).notification);
+  }
+
+  /** The persisted row a live agent message is written to disk as (role 'user', as the backend stores it). */
+  function persistedAgentMessage(rowId: string, messageId: string, body: string) {
+    return {
+      id: rowId, threadId: 'subagent-a1', runId: RUN, generationId: GEN, messageOrderIdx: 5,
+      timestamp: 1005, messageType: 'agent', role: 'user',
+      messageJson: JSON.stringify(agentMessage(messageId, body)),
+    };
+  }
+
+  async function focusFirst(panel: ReturnType<typeof useSubAgentPanel>, agentId = 'a1') {
+    subAgentsMocks.listSubAgents.mockResolvedValue([summary(agentId)]);
+    await panel.refreshChildren();
+    await panel.focusChild(agentId);
+  }
+
+  it('renders a LIVE inbound agent message as its own pill, never as a user bubble', async () => {
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+
+    const cb = captured[0].callbacks;
+    cb.onMessage(runAssignment());
+    cb.onMessage(agentMessage('am-1', 'What did you find?'));
+
+    const items = panel.focusedDisplayItems.value;
+    expect(items.filter((i) => i.type === 'user-message')).toHaveLength(0);
+    expect(notifications(items)).toEqual([
+      expect.objectContaining({
+        notifyKind: 'agent-message',
+        label: 'Researcher',
+        detail: 'What did you find?',
+        agentMessageType: 'Question',
+      }),
+    ]);
+  });
+
+  it('a persisted twin of the same agent message dedups; a different message_id does not', async () => {
+    // History holds the already-persisted copy of am-1 (stamped with the run's real id).
+    convMocks.loadConversationMessages.mockResolvedValue([
+      persistedAgentMessage('p-am-1', 'am-1', 'What did you find?'),
+    ]);
+
+    const panel = useSubAgentPanel(() => 'parent-1');
+    await focusFirst(panel);
+    expect(notifications(panel.focusedDisplayItems.value)).toHaveLength(1);
+
+    // The live replay delivers the SAME message (runId-less, as everything but run_assignment is).
+    // Its message_id keys it onto the rehydrated twin instead of adding a second pill.
+    const cb = captured[0].callbacks;
+    cb.onMessage(runAssignment());
+    cb.onMessage(agentMessage('am-1', 'What did you find?'));
+    expect(notifications(panel.focusedDisplayItems.value)).toHaveLength(1);
+
+    // A distinct message at the SAME run/generation/order — two agents can speak into one turn — is a
+    // separate pill, proving the dedup keys on message_id rather than collapsing every agent message.
+    cb.onMessage(agentMessage('am-2', 'Anything else?', { from_name: 'Reviewer' }));
+    const labels = notifications(panel.focusedDisplayItems.value).map((n) => n.label);
+    expect(labels).toEqual(['Researcher', 'Reviewer']);
+    expect(panel.focusedDisplayItems.value.filter((i) => i.type === 'user-message')).toHaveLength(0);
+  });
+});
+
 describe('useSubAgentPanel — ordered polling (#148)', () => {
   it('applies only the LATEST of two overlapping same-parent refreshes (older late response ignored)', async () => {
     const panel = useSubAgentPanel(() => 'parent-1');

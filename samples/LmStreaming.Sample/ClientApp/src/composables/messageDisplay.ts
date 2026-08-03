@@ -4,6 +4,7 @@ import type {
   ReasoningMessage,
   ToolsCallMessage,
   ToolCallMessage,
+  AgentMessage,
   NotifyMessage,
   NotificationDisplayData,
   DisplayItem,
@@ -11,6 +12,7 @@ import type {
 } from '@/types';
 import {
   MessageType,
+  isAgentMessage,
   isNotifyMessage,
   isTextMessage,
   isReasoningMessage,
@@ -48,6 +50,34 @@ export function notifyToDisplayData(msg: NotifyMessage): NotificationDisplayData
     sourceToolCallId: msg.source_tool_call_id,
     detail: msg.detail,
     text: msg.text,
+  };
+}
+
+/**
+ * The {@link NotificationDisplayData.notifyKind} agent-to-agent messages render under. Named once so
+ * the producer here and the pill that styles it cannot drift (it is also the `data-notify-kind`
+ * attribute value browser tests select on).
+ */
+export const AGENT_MESSAGE_NOTIFY_KIND = 'agent-message';
+
+/**
+ * Normalize an {@link AgentMessage} into the same pill shape a notification uses (#244).
+ *
+ * Reusing the notification pill is deliberate: an agent message is out-of-band relative to the
+ * conversation the human is having, exactly like a sub-agent completion, and it must never render as
+ * a user bubble. Mapping `from_agent_id` onto `sourceToolCallId` also makes the pill pick up the
+ * sender's agent colour through the existing tint lookup. The envelope {@link AgentMessage.text} is
+ * only the fallback body — the structured `body` is preferred so the pill shows what the agent wrote
+ * rather than the XML wrapper the LLM reads.
+ */
+export function agentToDisplayData(msg: AgentMessage): NotificationDisplayData {
+  return {
+    notifyKind: AGENT_MESSAGE_NOTIFY_KIND,
+    label: msg.from_name,
+    sourceToolCallId: msg.from_agent_id,
+    detail: msg.body,
+    text: msg.text,
+    agentMessageType: msg.agent_message_type,
   };
 }
 
@@ -108,6 +138,17 @@ export function buildDisplayItems(sortedMessages: DisplayableMessage[]): Display
           contextTruncated: content.context_discovery.truncated,
           text: content.text,
         },
+        runId: msg.runId,
+      });
+    } else if (isAgentMessage(content)) {
+      // One agent speaking to another (#244). Placed with the notification branch, and likewise
+      // BEFORE the `role === 'user'` catch-all, because AgentMessage also maps to Role.User for the
+      // receiving LLM — without this it would render as though the human had typed it.
+      flushPill();
+      items.push({
+        type: 'notification',
+        id: msg.id,
+        notification: agentToDisplayData(content),
         runId: msg.runId,
       });
     } else if (msg.role === 'user') {

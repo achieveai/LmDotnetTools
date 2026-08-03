@@ -19,7 +19,6 @@ public sealed class FileConversationStore
     private const string AcceptedInputsFileName = "accepted-inputs.json";
     private const string AcceptancesDirectoryName = "acceptances";
     private const string MutationGateSuffix = ".mutate";
-    private const int ReserveAttempts = 3;
     private static readonly TimeSpan AcceptanceSettleTimeout = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan AcceptanceSettlePoll = TimeSpan.FromMilliseconds(5);
 
@@ -891,7 +890,15 @@ public sealed class FileConversationStore
         ArgumentNullException.ThrowIfNull(acceptance);
         var acceptanceFile = GetAcceptanceFile(acceptance.ThreadId, acceptance.InputId, createDirectory: true);
 
-        for (var attempt = 1; ; attempt++)
+        // Bounded by the same settle budget the reader uses rather than by a count of tries: what has to be
+        // waited out is a transient of the OS, not a fixed number of collisions. A record deleted while any
+        // reader still holds it keeps its name on Windows in a delete-pending state that refuses every open,
+        // and a machine under load holds that reader open for far longer than a handful of immediate retries
+        // covers. Spending the budget instead lets the arbitration finish; a refusal that outlives it is a
+        // real fault and is rethrown as itself.
+        var deadline = Stopwatch.GetTimestamp()
+            + (long)(AcceptanceSettleTimeout.TotalSeconds * Stopwatch.Frequency);
+        while (true)
         {
             FileStream claim;
             try
@@ -911,14 +918,14 @@ public sealed class FileConversationStore
                     return existing;
                 }
 
-                if (attempt >= ReserveAttempts)
+                if (Stopwatch.GetTimestamp() >= deadline)
                 {
                     throw;
                 }
 
                 continue;
             }
-            catch (UnauthorizedAccessException) when (attempt < ReserveAttempts)
+            catch (UnauthorizedAccessException) when (Stopwatch.GetTimestamp() < deadline)
             {
                 await Task.Delay(AcceptanceSettlePoll, ct);
                 continue;
@@ -991,18 +998,8 @@ public sealed class FileConversationStore
         InputAcceptance? replacement,
         CancellationToken ct)
     {
-        FileStream gate;
-        try
-        {
-            gate = new FileStream(
-                acceptanceFile + MutationGateSuffix,
-                FileMode.OpenOrCreate,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 1,
-                FileOptions.None);
-        }
-        catch (IOException)
+        var gate = await OpenMutationGateAsync(acceptanceFile + MutationGateSuffix, ct);
+        if (gate is null)
         {
             return false;
         }
@@ -1023,6 +1020,48 @@ public sealed class FileConversationStore
 
             await WriteJsonFileAsync(acceptanceFile, replacement, AcceptanceJsonOptions, ct);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Takes the exclusive gate that serializes mutations of one admission record, waiting out a holder
+    /// that is merely mid-mutation rather than reporting the record as not this caller's.
+    /// <para>
+    /// A retraction deletes the record and only THEN drops its handle, so between those two moments the
+    /// id is free: the next caller can be granted it by the exclusive create — which takes no gate,
+    /// because the create is itself the arbitration — and arrive here holding a record that is
+    /// demonstrably its own while the previous owner's handle is still open. Answering that caller
+    /// <c>false</c> tells it there was nothing of its own to retract, and it then leaves an admission
+    /// standing for work that never ran. A gate still held once the settle budget is spent is a mutation
+    /// genuinely in flight, and standing down is the right answer to that.
+    /// </para>
+    /// </summary>
+    private static async Task<FileStream?> OpenMutationGateAsync(string gateFile, CancellationToken ct)
+    {
+        var deadline = Stopwatch.GetTimestamp()
+            + (long)(AcceptanceSettleTimeout.TotalSeconds * Stopwatch.Frequency);
+        while (true)
+        {
+            try
+            {
+                return new FileStream(
+                    gateFile,
+                    FileMode.OpenOrCreate,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.None);
+            }
+            catch (IOException) when (Stopwatch.GetTimestamp() < deadline)
+            {
+                // Another mutation of this record holds the gate; it is released by a handle close.
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+
+            await Task.Delay(AcceptanceSettlePoll, ct);
         }
     }
 

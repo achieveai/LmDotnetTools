@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Persistence;
 
 namespace AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -157,7 +158,58 @@ public record SubAgentOptions
     /// discovered template. Null (default), or a null resolver result, preserves ordinary Agent behavior.
     /// </summary>
     public Func<string?, SubAgentSpawnModelSelection?>? SpawnModelSelectionResolver { get; init; }
+
+    /// <summary>
+    /// Optional host authority for a named spawn's collaboration <c>role</c> and <c>description</c>. When
+    /// this resolver returns metadata, admission uses it in place of the caller/LLM supplied values, so a
+    /// host that already knows what it delegated — a workflow controller spawning an authored task —
+    /// publishes directory metadata derived from its own trusted definition rather than from whatever the
+    /// tool-calling model typed. A <see cref="SubAgentTemplate"/> whose role is
+    /// <see cref="SubAgentRoleMode.Fixed"/> still wins over both: that template already owns a trusted role.
+    /// Null (default), or a null resolver result, preserves ordinary Agent behavior.
+    /// </summary>
+    public Func<string?, SubAgentSpawnMetadata?>? SpawnMetadataResolver { get; init; }
+
+    /// <summary>
+    /// Host-supplied factory for a tool provider that must be built PER AGENT because it is bound to the
+    /// agent it acts AS — the transcript read tool of #244 being the motivating case: an instance
+    /// authorized for one reader can never be inherited, because an inherited copy hands every descendant
+    /// its ancestor's reach. The manager calls this once per collaborating child, with that child's
+    /// collaboration agent id, and registers the result on the child's own registry BEFORE the child loop
+    /// snapshots its inheritable tools — so every participant in the hierarchy gets its OWN instance
+    /// instead of one shared instance or none at all. Pair it with <see cref="NonInheritedToolNames"/> for
+    /// the same tool names: the factory supplies each level and the exclusion stops the level below from
+    /// ALSO inheriting the level above's instance, which is the leak. A null return builds no provider for
+    /// that child. Null (default) = no per-agent providers, so every non-host consumer is unaffected.
+    /// </summary>
+    public Func<string, IFunctionProvider?>? ChildToolProviderFactory { get; init; }
+
+    /// <summary>
+    /// The options a spawned child's OWN loop runs on. Everything the host configured — templates,
+    /// limits, model selection/validation, tool inheritance, per-agent providers — is preserved, but the
+    /// three spawn-authority hooks are cleared, because they belong to ONE host at ONE level rather than
+    /// to the whole subtree. A workflow controller closes them over its live runtime to gate spawns by
+    /// authored unit name and to stamp trusted role/description onto them; inherited verbatim by a
+    /// delegate, they would reject the delegate's ordinary sub-agents (whose names are not workflow
+    /// units), silently overwrite their model selection, and publish the controller's authored metadata
+    /// as if it described work the delegate invented. See #244.
+    /// </summary>
+    internal SubAgentOptions ForChildLoop() =>
+        this with
+        {
+            SpawnNameGate = null,
+            SpawnModelSelectionResolver = null,
+            SpawnMetadataResolver = null,
+        };
 }
 
 /// <summary>An authoritative per-spawn model override/tier pair supplied by a host.</summary>
 public sealed record SubAgentSpawnModelSelection(string? Model, int? ModelIntelligence);
+
+/// <summary>
+/// Authoritative per-spawn collaboration metadata supplied by a host that owns the delegation's meaning.
+/// Both values are subject to the ordinary length validation in
+/// <see cref="AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration.AgentCollaborationContext"/>; a host is expected to bound them itself so a long
+/// authored label is shortened rather than failing the spawn.
+/// </summary>
+public sealed record SubAgentSpawnMetadata(string Role, string Description);
