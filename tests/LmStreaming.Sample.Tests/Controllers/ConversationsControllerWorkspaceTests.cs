@@ -76,7 +76,8 @@ public class ConversationsControllerWorkspaceTests
             TimeProvider.System,
             new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance,
-            NullLogger<AgentHierarchyService>.Instance);
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
     }
 
     private static MultiTurnAgentPool CreatePool()

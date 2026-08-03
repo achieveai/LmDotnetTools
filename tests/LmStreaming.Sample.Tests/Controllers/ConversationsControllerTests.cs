@@ -36,7 +36,8 @@ public class ConversationsControllerTests
             TimeProvider.System,
             new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance,
-            NullLogger<AgentHierarchyService>.Instance);
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
     }
 
     /// <summary>Resolves any real system mode id (default mode, math-helper, etc.) — for tests that

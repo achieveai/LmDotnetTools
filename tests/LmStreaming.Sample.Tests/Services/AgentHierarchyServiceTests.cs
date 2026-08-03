@@ -45,7 +45,11 @@ public sealed class AgentHierarchyServiceTests
         _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var service = new AgentHierarchyService(
-            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance);
+            pool,
+            new WorkflowRunRegistry(),
+            countingStore,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
 
         _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
@@ -88,7 +92,7 @@ public sealed class AgentHierarchyServiceTests
         // this child is the persisted-provenance cold-path scan.
         await using var pool = CreateFakeAgentPool();
         var service = new AgentHierarchyService(
-            pool, new WorkflowRunRegistry(), store, NullLogger<AgentHierarchyService>.Instance);
+            pool, new WorkflowRunRegistry(), store, NullLogger<AgentHierarchyService>.Instance, new SubAgentScanCoverageCache());
 
         var (rows, isKnown, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
@@ -136,7 +140,11 @@ public sealed class AgentHierarchyServiceTests
         _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var service = new AgentHierarchyService(
-            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance);
+            pool,
+            new WorkflowRunRegistry(),
+            countingStore,
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
 
         _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
@@ -201,7 +209,7 @@ public sealed class AgentHierarchyServiceTests
         _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
 
         var service = new AgentHierarchyService(
-            pool, new WorkflowRunRegistry(), store, NullLogger<AgentHierarchyService>.Instance);
+            pool, new WorkflowRunRegistry(), store, NullLogger<AgentHierarchyService>.Instance, new SubAgentScanCoverageCache());
 
         var (rows, isKnown, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
@@ -232,7 +240,8 @@ public sealed class AgentHierarchyServiceTests
         // No live loop for RootThread — the cold-path scan is what runs here.
         await using var pool = CreateFakeAgentPool();
         var logger = new CapturingLogger<AgentHierarchyService>();
-        var service = new AgentHierarchyService(pool, new WorkflowRunRegistry(), store, logger);
+        var service = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), store, logger, new SubAgentScanCoverageCache());
 
         _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
@@ -297,7 +306,7 @@ public sealed class AgentHierarchyServiceTests
 
             var registry1 = new WorkflowRunRegistry(indexDirectory);
             var service1 = new AgentHierarchyService(
-                pool1, registry1, store, NullLogger<AgentHierarchyService>.Instance);
+                pool1, registry1, store, NullLogger<AgentHierarchyService>.Instance, new SubAgentScanCoverageCache());
 
             childId = await SpawnAndResolveIdAsync(rootLoop.SubAgentTools!, childName);
             var childLoop = ChildLoop(rootLoop.SubAgentManager!, childId);
@@ -327,7 +336,7 @@ public sealed class AgentHierarchyServiceTests
 
             var registry2 = new WorkflowRunRegistry(indexDirectory);
             var service2 = new AgentHierarchyService(
-                pool2, registry2, store, NullLogger<AgentHierarchyService>.Instance);
+                pool2, registry2, store, NullLogger<AgentHierarchyService>.Instance, new SubAgentScanCoverageCache());
 
             var (rows2, isKnown2, _) = await service2.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
@@ -355,6 +364,304 @@ public sealed class AgentHierarchyServiceTests
             {
                 Directory.Delete(indexDirectory, recursive: true);
             }
+        }
+    }
+
+    [Fact]
+    public async Task BuildAsync_ForAGenuinelyChildlessRehydratedCollaborationOffLoop_ScansAtMostOnce_AndReusesEmptyResult()
+    {
+        // PRRT_kwDOOPysWM6V1mjj: before SubAgentScanCoverageCache existed, a genuinely childless
+        // collaboration-off loop's empty SubAgentManager re-triggered ScanPersistedSubAgentChildrenAsync
+        // on EVERY request — the old gate was "is the manager empty right now", not "have I already
+        // covered this thread" — so a conversation that will never have anything to show still paid for
+        // a bounded-but-still-expensive up-to-2000-thread store scan on every single hierarchy poll.
+        var countingStore = new CountingConversationStore(new InMemoryConversationStore());
+        var sharedCache = new SubAgentScanCoverageCache();
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        await using var loop = new MultiTurnAgentLoop(
+            BlockingProvider(), new FunctionRegistry(), threadId: RootThread, subAgentOptions: subAgentOptions);
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        // Each poll gets its OWN AgentHierarchyService instance — mirrors production, where the service
+        // is constructed fresh per HTTP request/tool call rather than resolved from DI — sharing only the
+        // cache/pool/store, exactly like two real requests would.
+        var service1 = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows1, isKnown1, _) = await service1.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown1.Should().BeTrue();
+        rows1.Should().BeEmpty();
+        countingStore.ListThreadsCallCount.Should().Be(
+            1, "the first poll must scan once to confirm there is truly nothing persisted for this thread");
+
+        var service2 = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows2, isKnown2, _) = await service2.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown2.Should().BeTrue();
+        rows2.Should().BeEmpty();
+        countingStore.ListThreadsCallCount.Should().Be(
+            1,
+            "a repeated poll against a genuinely childless loop must reuse the cached empty result "
+                + "instead of rescanning the store");
+    }
+
+    [Fact]
+    public async Task BuildAsync_UnionsTheRecoveredRoster_WithANewlySpawnedLiveChild_AfterTheEmptyToPopulatedTransition()
+    {
+        // PRRT_kwDOOPysWM6V1mjj's core reopened complaint: a rehydrated collaboration-off loop recovers
+        // an old persisted child on its first (empty-manager) poll. Before this fix, the moment it
+        // spawned ONE new child, SubAgentManager.ListAgents().Count became nonempty, the cold-path scan
+        // was skipped on every later poll (the old gate reasoned "the live manager already covers
+        // everything now"), and the OLD recovered child vanished from the response — only the new live
+        // child remained visible, even though ordinary collaboration-off rows are never write-through-
+        // persisted into WorkflowRunRegistry. The cache must retain the recovered roster across that
+        // transition and union it with the live rows.
+        const string oldChildId = "old-recovered-child";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            $"subagent-{oldChildId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{oldChildId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    RootThread,
+                    new SubAgentSnapshot(
+                        oldChildId,
+                        Name: "old-child",
+                        TemplateName: "worker",
+                        Task: "old child's task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{oldChildId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+        var countingStore = new CountingConversationStore(store);
+        var sharedCache = new SubAgentScanCoverageCache();
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        await using var rehydratedLoop = new MultiTurnAgentLoop(
+            BlockingProvider(), new FunctionRegistry(), threadId: RootThread, subAgentOptions: subAgentOptions);
+        await using var pool = CreatePoolReturning(rehydratedLoop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        // First poll: empty manager, recovers the old child via the persisted-provenance cold scan.
+        var service1 = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows1, _, _) = await service1.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+        rows1.Select(r => r.AgentId).Should().BeEquivalentTo([oldChildId]);
+        countingStore.ListThreadsCallCount.Should().Be(1);
+
+        // The SAME live loop now spawns a brand-new child — SubAgentManager.ListAgents() becomes
+        // nonempty for the first time in this process.
+        var newChildId = await SpawnAndResolveIdAsync(rehydratedLoop.SubAgentTools!, "new-child");
+
+        // Second poll: a fresh AgentHierarchyService instance (a fresh HTTP request), sharing only the
+        // same cache/pool/store.
+        var service2 = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        var (rows2, isKnown2, _) = await service2.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown2.Should().BeTrue();
+        rows2.Select(r => r.AgentId).Should().BeEquivalentTo(
+            [oldChildId, newChildId],
+            "both the cached recovered roster AND the newly spawned live child must appear together");
+        countingStore.ListThreadsCallCount.Should().Be(
+            1,
+            "the manager becoming nonempty must not trigger a rescan — the recovered roster is served "
+                + "from the cache, and the new child comes from the live SubAgentManager snapshot");
+    }
+
+    [Fact]
+    public async Task BuildAsync_DoesNotPoisonTheCache_WhenTheScanFails_SoARetryCanStillRecoverTheChild()
+    {
+        // Requirement: cancellation/failure of the underlying scan must not leave the thread's coverage
+        // permanently (and incorrectly) marked as "covered with nothing". GetOrScanPersistedSubAgentChildrenAsync
+        // only calls RecordRecovered AFTER ScanPersistedSubAgentChildrenAsync completes successfully, so a
+        // throwing/cancelled attempt must leave the thread uncached for the next caller to retry.
+        const string childId = "recovered-after-retry";
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(
+            $"subagent-{childId}",
+            new ThreadMetadata
+            {
+                ThreadId = $"subagent-{childId}",
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    RootThread,
+                    new SubAgentSnapshot(
+                        childId,
+                        Name: "child",
+                        TemplateName: "worker",
+                        Task: "task",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: $"subagent-{childId}",
+                        LastActivityUtc: DateTimeOffset.UtcNow,
+                        TerminalAtUtc: DateTimeOffset.UtcNow)),
+            });
+        var flakyStore = new FlakyConversationStore(store) { FailNextCall = true };
+        var sharedCache = new SubAgentScanCoverageCache();
+
+        await using var pool = CreateFakeAgentPool();
+
+        var service1 = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), flakyStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service1.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None));
+
+        flakyStore.ListThreadsCallCount.Should().Be(1);
+
+        // Retry via a fresh service instance sharing the same cache — must NOT be poisoned by the failed
+        // attempt: it must scan again and recover the persisted child this time.
+        var service2 = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), flakyStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+
+        var (rows, isKnown, _) = await service2.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        isKnown.Should().BeTrue();
+        rows.Should().ContainSingle(r => r.AgentId == childId);
+        flakyStore.ListThreadsCallCount.Should().Be(
+            2, "the retry after a failed scan must actually rescan, not reuse a poisoned/missing cache entry");
+    }
+
+    [Fact]
+    public async Task BuildAsync_SupportsConcurrentCallsForTheSameThread_WithoutCorruptingTheCache()
+    {
+        // Requirement: the cache must be concurrency-safe for simultaneous BuildAsync calls. Redundant
+        // concurrent scans racing before the first one records its result are tolerated (harmless
+        // duplicate work) rather than requiring exactly-once semantics, but the cache must still settle:
+        // once any of the racing scans has recorded a result, every later call must reuse it.
+        var countingStore = new CountingConversationStore(new InMemoryConversationStore());
+        var sharedCache = new SubAgentScanCoverageCache();
+
+        var subAgentOptions = new SubAgentOptions
+        {
+            Templates = new Dictionary<string, SubAgentTemplate>
+            {
+                ["worker"] = new SubAgentTemplate
+                {
+                    SystemPrompt = "You are a worker.",
+                    Description = "Does work.",
+                    AgentFactory = BlockingProvider,
+                },
+            },
+            MaxConcurrentSubAgents = 5,
+        };
+        await using var loop = new MultiTurnAgentLoop(
+            BlockingProvider(), new FunctionRegistry(), threadId: RootThread, subAgentOptions: subAgentOptions);
+        await using var pool = CreatePoolReturning(loop);
+        _ = pool.GetOrCreateAgent(RootThread, SystemChatModes.GetById(SystemChatModes.DefaultModeId)!);
+
+        // Ten concurrent "requests", each its own fresh AgentHierarchyService instance sharing the same
+        // cache/pool/store — mirrors ten simultaneous HTTP polls against the same live conversation.
+        var tasks = Enumerable.Range(0, 10)
+            .Select(_ =>
+            {
+                var service = new AgentHierarchyService(
+                    pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+                return service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+            })
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks);
+
+        results.Should().OnlyContain(r => r.IsKnown && r.Rows.Count == 0);
+
+        var settledCallCount = countingStore.ListThreadsCallCount;
+        settledCallCount.Should().BeGreaterThan(0);
+
+        var followUpService = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), countingStore, NullLogger<AgentHierarchyService>.Instance, sharedCache);
+        _ = await followUpService.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        countingStore.ListThreadsCallCount.Should().Be(
+            settledCallCount, "once any concurrent scan has recorded a result, the cache must be settled and reused");
+    }
+
+    /// <summary>
+    /// A forwarding <see cref="IConversationStore"/> whose <see cref="ListThreadsAsync"/> throws on the
+    /// next call when <see cref="FailNextCall"/> is set — simulates a transient scan failure so a test
+    /// can prove <see cref="SubAgentScanCoverageCache"/> is not poisoned by it.
+    /// </summary>
+    private sealed class FlakyConversationStore(IConversationStore inner) : IConversationStore
+    {
+        private int _listThreadsCalls;
+
+        public bool FailNextCall { get; set; }
+
+        public int ListThreadsCallCount => Volatile.Read(ref _listThreadsCalls);
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default) => inner.LoadMessagesAsync(threadId, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(
+            string threadId,
+            ThreadMetadata metadata,
+            CancellationToken ct = default) => inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _listThreadsCalls);
+            if (FailNextCall)
+            {
+                FailNextCall = false;
+                throw new InvalidOperationException("Simulated transient scan failure.");
+            }
+
+            return inner.ListThreadsAsync(limit, offset, ct);
         }
     }
 

@@ -173,7 +173,8 @@ public class ConversationsController(
     TimeProvider timeProvider,
     WorkflowRunRegistry workflowRunRegistry,
     ILogger<ConversationsController> logger,
-    ILogger<AgentHierarchyService> hierarchyLogger) : ControllerBase
+    ILogger<AgentHierarchyService> hierarchyLogger,
+    SubAgentScanCoverageCache scanCoverageCache) : ControllerBase
 {
     /// <summary>
     /// Warning returned from a mode/provider switch that recreated the agent while a <c>Wait</c> was
@@ -190,10 +191,15 @@ public class ConversationsController(
 
     /// <summary>
     /// The hierarchy/transcript reader shared with the in-agent <c>GetAgentTranscript</c> tool (#244).
-    /// Stateless, so it is composed from this controller's own dependencies rather than injected —
-    /// what matters is that HTTP and the tool resolve every access decision through the same code.
+    /// Composed from this controller's own dependencies rather than injected as itself — what matters is
+    /// that HTTP and the tool resolve every access decision through the same code. It holds no state of
+    /// its own, but <c>scanCoverageCache</c> IS a shared singleton: this controller instance (like
+    /// <see cref="AgentHierarchyService"/> itself) is rebuilt fresh on every request, so the cache is the
+    /// one thing that lets a repeated poll remember a persisted child roster this same code already
+    /// scanned for on an earlier request instead of rescanning it every time.
     /// </summary>
-    private readonly AgentHierarchyService _hierarchy = new(agentPool, workflowRunRegistry, store, hierarchyLogger);
+    private readonly AgentHierarchyService _hierarchy =
+        new(agentPool, workflowRunRegistry, store, hierarchyLogger, scanCoverageCache);
 
     /// <summary>
     /// Reserves a new conversation thread and locks its workspace/provider/mode as metadata, without

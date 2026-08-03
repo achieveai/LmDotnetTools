@@ -353,7 +353,8 @@ public sealed class AgentTranscriptAccessTests
                 pool,
                 new WorkflowRunRegistry(),
                 new InMemoryConversationStore(),
-                NullLogger<AgentHierarchyService>.Instance),
+                NullLogger<AgentHierarchyService>.Instance,
+                new SubAgentScanCoverageCache()),
             RootThread,
             RootThread);
 
@@ -387,7 +388,8 @@ public sealed class AgentTranscriptAccessTests
                 pool,
                 new WorkflowRunRegistry(),
                 new InMemoryConversationStore(),
-                NullLogger<AgentHierarchyService>.Instance),
+                NullLogger<AgentHierarchyService>.Instance,
+                new SubAgentScanCoverageCache()),
             RootThread,
             RootThread);
 
@@ -417,7 +419,12 @@ public sealed class AgentTranscriptAccessTests
         var options = global::Program.RegisterAgentTranscriptTool(
             registry,
             WorkerOptions(),
-            new AgentHierarchyService(pool, new WorkflowRunRegistry(), store, NullLogger<AgentHierarchyService>.Instance),
+            new AgentHierarchyService(
+                pool,
+                new WorkflowRunRegistry(),
+                store,
+                NullLogger<AgentHierarchyService>.Instance,
+                new SubAgentScanCoverageCache()),
             RootThread,
             RootThread);
 
@@ -499,7 +506,8 @@ public sealed class AgentTranscriptAccessTests
                 poolBeforeRestart,
                 registryBeforeRestart,
                 store,
-                NullLogger<AgentHierarchyService>.Instance);
+                NullLogger<AgentHierarchyService>.Instance,
+                new SubAgentScanCoverageCache());
             _ = await serviceBeforeRestart.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
             // --- Restart: a brand-new loop with a FRESH collaboration directory (root only, no memory of
@@ -540,7 +548,10 @@ public sealed class AgentTranscriptAccessTests
         string argsJson)
     {
         var provider = new AgentTranscriptToolProvider(
-            new AgentHierarchyService(pool, registry, store, NullLogger<AgentHierarchyService>.Instance), RootThread, viewerAgentId);
+            new AgentHierarchyService(
+                pool, registry, store, NullLogger<AgentHierarchyService>.Instance, new SubAgentScanCoverageCache()),
+            RootThread,
+            viewerAgentId);
 
         var descriptor = provider.GetFunctions().Single();
         descriptor.Contract.Name.Should().Be(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
@@ -624,7 +635,8 @@ public sealed class AgentTranscriptAccessTests
     private static ConversationsController CreateController(
         MultiTurnAgentPool pool,
         WorkflowRunRegistry workflowRunRegistry,
-        IConversationStore store) =>
+        IConversationStore store,
+        SubAgentScanCoverageCache? scanCoverageCache = null) =>
         new(
             store,
             pool,
@@ -635,7 +647,8 @@ public sealed class AgentTranscriptAccessTests
             TimeProvider.System,
             workflowRunRegistry,
             NullLogger<ConversationsController>.Instance,
-            NullLogger<AgentHierarchyService>.Instance);
+            NullLogger<AgentHierarchyService>.Instance,
+            scanCoverageCache ?? new SubAgentScanCoverageCache());
 
     private static MultiTurnAgentPool CreateFakeAgentPool() =>
         new(

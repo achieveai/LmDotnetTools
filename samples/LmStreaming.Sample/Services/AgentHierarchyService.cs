@@ -84,7 +84,8 @@ public sealed class AgentHierarchyService(
     MultiTurnAgentPool agentPool,
     WorkflowRunRegistry workflowRunRegistry,
     IConversationStore store,
-    ILogger<AgentHierarchyService> logger)
+    ILogger<AgentHierarchyService> logger,
+    SubAgentScanCoverageCache scanCoverageCache)
 {
     /// <summary>
     ///     Assembles one conversation's agent rows: the live sub-agent/workflow snapshot, unioned with the
@@ -184,9 +185,13 @@ public sealed class AgentHierarchyService(
         // disk. Folded in first so a live row (added below) always wins on a match, restoring the
         // pre-#244 flat-listing contract.
         //
-        // Gated on whether live state ALREADY covers the ordinary persisted roster — NOT on the concrete
-        // loop type, which used to (wrongly) stand in for that question:
-        //   - no live agent at all (evicted/idle) — the roster is entirely on disk. Scan.
+        // Gated on whether live state could EVER cover the ordinary persisted roster on its own — NOT on
+        // the concrete loop type, and NOT on whether the manager happens to be empty right now (see
+        // PRRT_kwDOOPysWM6V1mjj: `ListAgents().Count == 0` is not a stable coverage signal — a rehydrated
+        // loop starts empty, recovers old children via this same scan, but the moment it spawns ONE new
+        // child the manager stops looking empty and a per-call gate would silently drop every recovered
+        // row on the next call, since ordinary collaboration-off rows are never write-through-persisted
+        // above):
         //   - a live agent that is not a MultiTurnAgentLoop (Codex/Copilot CLI loops), or a
         //     MultiTurnAgentLoop built with no SubAgentManager at all — it can never own an Agent-tool
         //     child, so scanning on its behalf would only pay a store-wide cost on every hot poll for a
@@ -194,20 +199,19 @@ public sealed class AgentHierarchyService(
         //   - a live MultiTurnAgentLoop with collaboration ON — the write-through above (or the enriched
         //     persisted WorkflowRunRegistry tabs a few lines down) already accounts for every child that
         //     matters. Skip.
-        //   - a live, collaboration-OFF MultiTurnAgentLoop whose SubAgentManager already reports children
-        //     — ListAgents() never prunes a completed child, so its snapshot (folded into `summaries`
-        //     above) already covers everything this loop instance has ever registered. Skip.
-        //   - a live, collaboration-OFF MultiTurnAgentLoop whose SubAgentManager is EMPTY — the one case
-        //     live state does NOT cover: either genuinely childless, or (the restart/eviction regression
-        //     this closes) a freshly rehydrated loop whose brand-new manager instance has never heard of
-        //     the persisted children from before the restart. Scan; the cost is bounded and only paid
-        //     while the manager itself has nothing to show.
-        var needsColdSubAgentScan = !isLive
-            || (loop is { Collaboration: null, SubAgentManager: { } liveSubAgentManager }
-                && liveSubAgentManager.ListAgents().Count == 0);
-        if (needsColdSubAgentScan)
+        //   - everything else (no live agent at all, or a live collaboration-OFF MultiTurnAgentLoop with
+        //     a SubAgentManager) — the persisted roster is relevant, but is resolved through
+        //     GetOrScanPersistedSubAgentChildrenAsync below rather than scanned unconditionally: that
+        //     helper caches the FIRST answer for this thread's process lifetime (via
+        //     SubAgentScanCoverageCache, the one thing shared across the otherwise-fresh
+        //     AgentHierarchyService instance built for every call site) and reuses it afterward, so a
+        //     genuinely childless loop stops paying for a rescan on every 3-second poll, and a rehydrated
+        //     loop's recovered roster survives every later poll — including the one right after it
+        //     spawns a new child, when the manager stops looking empty.
+        var subAgentRosterRelevant = !isLive || loop is { Collaboration: null, SubAgentManager: not null };
+        if (subAgentRosterRelevant)
         {
-            foreach (var node in await ScanPersistedSubAgentChildrenAsync(threadId, ct))
+            foreach (var node in await GetOrScanPersistedSubAgentChildrenAsync(threadId, ct))
             {
                 merged[(node.Kind, node.AgentId)] = node;
             }
@@ -359,6 +363,29 @@ public sealed class AgentHierarchyService(
     /// </summary>
     private const int SubAgentScanPageSize = 200;
     private const int SubAgentScanMaxThreads = 2000;
+
+    /// <summary>
+    ///     Returns the persisted Agent-tool child roster for <paramref name="threadId"/>, scanning the
+    ///     store at most once per thread for this process's lifetime (see
+    ///     <see cref="SubAgentScanCoverageCache"/>). A cache hit — including a cached EMPTY roster for a
+    ///     genuinely childless thread — never touches the store again; a miss runs
+    ///     <see cref="ScanPersistedSubAgentChildrenAsync"/> and records the result only once it completes
+    ///     successfully, so a cancelled or failed attempt leaves the thread uncached for the next caller
+    ///     to retry rather than poisoning the cache with a partial answer.
+    /// </summary>
+    private async Task<IReadOnlyList<SubAgentSummary>> GetOrScanPersistedSubAgentChildrenAsync(
+        string threadId,
+        CancellationToken ct)
+    {
+        if (scanCoverageCache.TryGetRecovered(threadId, out var cached))
+        {
+            return cached;
+        }
+
+        var scanned = await ScanPersistedSubAgentChildrenAsync(threadId, ct);
+        scanCoverageCache.RecordRecovered(threadId, scanned);
+        return scanned;
+    }
 
     /// <summary>
     ///     Bounded, parent-filtered reconstruction of ordinary Agent-tool children from persisted

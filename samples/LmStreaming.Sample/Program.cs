@@ -191,6 +191,12 @@ try
         Path.Combine(AppContext.BaseDirectory, "workflow-index"),
         sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
 
+    // Process-lifetime cache of the persisted Agent-tool child roster AgentHierarchyService's cold path
+    // recovers per conversation (PRRT_kwDOOPysWM6V1mjj) — shared across every AgentHierarchyService
+    // instance built for a request or a spawned agent's transcript tool, both of which construct that
+    // service fresh rather than resolving it from DI. See SubAgentScanCoverageCache's own remarks.
+    _ = builder.Services.AddSingleton<SubAgentScanCoverageCache>();
+
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
     // dependency below reads its IsRunning flag for availability gating.
@@ -1682,7 +1688,8 @@ subAgentFactory,
                                 sp.GetRequiredService<MultiTurnAgentPool>(),
                                 sp.GetRequiredService<WorkflowRunRegistry>(),
                                 conversationStore,
-                                sp.GetRequiredService<ILogger<AgentHierarchyService>>()),
+                                sp.GetRequiredService<ILogger<AgentHierarchyService>>(),
+                                sp.GetRequiredService<SubAgentScanCoverageCache>()),
                             threadId,
                             rootCollaboration.AgentId);
                     }

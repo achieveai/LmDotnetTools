@@ -43,7 +43,8 @@ public sealed class ConversationsControllerSubAgentsTests
             TimeProvider.System,
             workflowRunRegistry,
             NullLogger<ConversationsController>.Instance,
-            NullLogger<AgentHierarchyService>.Instance);
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
     }
 
     private static MultiTurnAgentPool CreateFakeAgentPool()
