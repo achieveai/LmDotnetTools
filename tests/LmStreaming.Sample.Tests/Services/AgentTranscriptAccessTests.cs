@@ -349,7 +349,11 @@ public sealed class AgentTranscriptAccessTests
                 Templates = new Dictionary<string, SubAgentTemplate>(),
                 NonInheritedToolNames = ["SomethingTheHostAlreadyExcluded"],
             },
-            new AgentHierarchyService(pool, new WorkflowRunRegistry(), new InMemoryConversationStore()),
+            new AgentHierarchyService(
+                pool,
+                new WorkflowRunRegistry(),
+                new InMemoryConversationStore(),
+                NullLogger<AgentHierarchyService>.Instance),
             RootThread,
             RootThread);
 
@@ -379,7 +383,11 @@ public sealed class AgentTranscriptAccessTests
         var options = global::Program.RegisterAgentTranscriptTool(
             registry,
             subAgentOptions: null,
-            new AgentHierarchyService(pool, new WorkflowRunRegistry(), new InMemoryConversationStore()),
+            new AgentHierarchyService(
+                pool,
+                new WorkflowRunRegistry(),
+                new InMemoryConversationStore(),
+                NullLogger<AgentHierarchyService>.Instance),
             RootThread,
             RootThread);
 
@@ -409,7 +417,7 @@ public sealed class AgentTranscriptAccessTests
         var options = global::Program.RegisterAgentTranscriptTool(
             registry,
             WorkerOptions(),
-            new AgentHierarchyService(pool, new WorkflowRunRegistry(), store),
+            new AgentHierarchyService(pool, new WorkflowRunRegistry(), store, NullLogger<AgentHierarchyService>.Instance),
             RootThread,
             RootThread);
 
@@ -487,7 +495,11 @@ public sealed class AgentTranscriptAccessTests
                 $"subagent-{alphaId}",
                 [Persisted("m1", new TextMessage { Text = "alpha's finding", Role = Role.Assistant })]);
 
-            var serviceBeforeRestart = new AgentHierarchyService(poolBeforeRestart, registryBeforeRestart, store);
+            var serviceBeforeRestart = new AgentHierarchyService(
+                poolBeforeRestart,
+                registryBeforeRestart,
+                store,
+                NullLogger<AgentHierarchyService>.Instance);
             _ = await serviceBeforeRestart.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
 
             // --- Restart: a brand-new loop with a FRESH collaboration directory (root only, no memory of
@@ -528,7 +540,7 @@ public sealed class AgentTranscriptAccessTests
         string argsJson)
     {
         var provider = new AgentTranscriptToolProvider(
-            new AgentHierarchyService(pool, registry, store), RootThread, viewerAgentId);
+            new AgentHierarchyService(pool, registry, store, NullLogger<AgentHierarchyService>.Instance), RootThread, viewerAgentId);
 
         var descriptor = provider.GetFunctions().Single();
         descriptor.Contract.Name.Should().Be(AgentTranscriptToolProvider.GetAgentTranscriptToolName);
@@ -622,7 +634,8 @@ public sealed class AgentTranscriptAccessTests
             new ConversationStatusResolver(Mock.Of<IConversationStore>(), new InMemoryConversationStore()),
             TimeProvider.System,
             workflowRunRegistry,
-            NullLogger<ConversationsController>.Instance);
+            NullLogger<ConversationsController>.Instance,
+            NullLogger<AgentHierarchyService>.Instance);
 
     private static MultiTurnAgentPool CreateFakeAgentPool() =>
         new(

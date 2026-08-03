@@ -1681,7 +1681,8 @@ subAgentFactory,
                             new AgentHierarchyService(
                                 sp.GetRequiredService<MultiTurnAgentPool>(),
                                 sp.GetRequiredService<WorkflowRunRegistry>(),
-                                conversationStore),
+                                conversationStore,
+                                sp.GetRequiredService<ILogger<AgentHierarchyService>>()),
                             threadId,
                             rootCollaboration.AgentId);
                     }

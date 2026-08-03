@@ -172,7 +172,8 @@ public class ConversationsController(
     ConversationStatusResolver statusResolver,
     TimeProvider timeProvider,
     WorkflowRunRegistry workflowRunRegistry,
-    ILogger<ConversationsController> logger) : ControllerBase
+    ILogger<ConversationsController> logger,
+    ILogger<AgentHierarchyService> hierarchyLogger) : ControllerBase
 {
     /// <summary>
     /// Warning returned from a mode/provider switch that recreated the agent while a <c>Wait</c> was
@@ -192,7 +193,7 @@ public class ConversationsController(
     /// Stateless, so it is composed from this controller's own dependencies rather than injected —
     /// what matters is that HTTP and the tool resolve every access decision through the same code.
     /// </summary>
-    private readonly AgentHierarchyService _hierarchy = new(agentPool, workflowRunRegistry, store);
+    private readonly AgentHierarchyService _hierarchy = new(agentPool, workflowRunRegistry, store, hierarchyLogger);
 
     /// <summary>
     /// Reserves a new conversation thread and locks its workspace/provider/mode as metadata, without

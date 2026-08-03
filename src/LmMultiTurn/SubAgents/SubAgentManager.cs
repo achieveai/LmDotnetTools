@@ -860,11 +860,15 @@ public sealed class SubAgentManager : IAsyncDisposable
         }
 
         // Fault any spawns still queued at shutdown so a foreground caller blocked on StateReady does
-        // not hang past disposal.
+        // not hang past disposal. Routed through CancelQueuedSpawn (not a bare RemoveQueuedSpawn +
+        // TrySetCanceled) so this exit also hands back the root-wide capacity lease and retires the
+        // directory row admission took at queue time - the same accounting every other pre-start exit
+        // in this loop already gets. RetireFromCollaboration is idempotent, so this is safe even though
+        // DisposeAsync's own admissions sweep (see the loop over _admissions.Keys near the end of
+        // DisposeAsync) would otherwise catch anything left behind here.
         while (_spawnQueue.TryDequeue(out var pending))
         {
-            RemoveQueuedSpawn(pending);
-            _ = pending.StateReady.TrySetCanceled(CancellationToken.None);
+            CancelQueuedSpawn(pending, CancellationToken.None);
         }
     }
 
@@ -2245,13 +2249,15 @@ public sealed class SubAgentManager : IAsyncDisposable
         // Drain any spawns still queued at teardown (the pump above already faults those it dequeued;
         // this covers a race where an enqueue landed after the pump exited) so a foreground caller
         // blocked on StateReady unblocks with cancellation instead of hanging, then dispose the
-        // defer-queue primitives.
+        // defer-queue primitives. Routed through CancelQueuedSpawn for the same reason as the pump's
+        // own tail drain: it must hand back the root-wide capacity lease too, not just unblock the
+        // caller. RetireFromCollaboration is idempotent, so this is harmless even for an entry the
+        // _admissions sweep above already retired.
         lock (_spawnQueue)
         {
             while (_spawnQueue.TryDequeue(out var pending))
             {
-                RemoveQueuedSpawn(pending);
-                _ = pending.StateReady.TrySetCanceled(CancellationToken.None);
+                CancelQueuedSpawn(pending, CancellationToken.None);
             }
         }
 

@@ -221,6 +221,78 @@ public sealed class AgentHierarchyProjectionTests
     }
 
     [Fact]
+    public void UnresolvedPlaceholderTab_PrefersTheLiveNodeIdentity_OverThePlaceholder()
+    {
+        // SubAgentProvenance.Build(parentThreadId, snapshot: null) only ever stamps the parent link, so
+        // a tab reconstructed from it (SubAgentProvenance.TryProject) carries no Name and the sentinel
+        // Template — exactly the shape the persisted-provenance scan produces for a child that wrote
+        // metadata before its identity was ever resolved. When the live directory holds a REAL node for
+        // that same id, that node's identity must win outright rather than being layered onto the blank
+        // placeholder via WithCollaboration, which deliberately never touches Name/Template and would
+        // otherwise let the placeholder's blanks survive into the presented row.
+        var placeholder = new SubAgentSummary
+        {
+            AgentId = "a-1",
+            Kind = SubAgentSummary.SubAgentTabKind,
+            Name = null,
+            Template = SubAgentProvenance.UnknownTemplate,
+            Task = string.Empty,
+            Status = SubAgentProvenance.UnknownStatus,
+            ThreadId = "subagent-a-1",
+        };
+
+        var row = Project([placeholder], [RootNode(), Node("a-1")]).Single();
+
+        row.Name.Should().Be("a-1", "the live directory node is a real name; the placeholder has none");
+        row.Template.Should().Be(
+            "general-purpose",
+            "the live node's AgentType is a real template; the placeholder's is the unresolved sentinel");
+        row.ThreadId.Should().Be(
+            "subagent-a-1", "restart-recoverability depends on the thread id keeping its convention");
+    }
+
+    [Fact]
+    public void Enrich_MatchingNode_StampsStructuralMetadata_ButPreservesViewerFlagsAlreadyOnTheRow()
+    {
+        // Enrich runs before any particular viewer is known (write-through persistence), so if the
+        // caller already set IsCurrent/IsReadable on the row it hands in, those must survive untouched —
+        // only Project is allowed to (re)compute viewer-scoped flags.
+        var tab = Tab("a-1") with { IsCurrent = true, IsReadable = true };
+
+        var enriched = AgentHierarchyProjection.Enrich([tab], [RootNode(), Node("a-1")]).Single();
+
+        enriched.CollaborationId.Should().Be(Root);
+        enriched.ParentAgentId.Should().Be(Root);
+        enriched.StructuralDepth.Should().Be(1);
+        enriched.DelegationDepth.Should().Be(1);
+        enriched.IsCurrent.Should().BeTrue("Enrich must not overwrite flags the caller already set");
+        enriched.IsReadable.Should().BeTrue("Enrich must not overwrite flags the caller already set");
+    }
+
+    [Fact]
+    public void Enrich_NoMatchingNode_ReturnsAnEquivalentRowUntouched()
+    {
+        var tab = Tab("a-1");
+
+        var enriched = AgentHierarchyProjection.Enrich([tab], [RootNode()]).Single();
+
+        enriched.Should().Be(tab, "a tab the collaboration knows nothing about must pass through unchanged");
+    }
+
+    [Fact]
+    public void Enrich_MixedBatch_OnlyEnrichesTheTabsWithAMatchingNode()
+    {
+        var matched = Tab("a-1");
+        var unmatched = Tab("a-2");
+
+        var rows = AgentHierarchyProjection.Enrich([matched, unmatched], [RootNode(), Node("a-1")]);
+
+        rows.Should().HaveCount(2);
+        rows.Single(r => r.AgentId == "a-1").CollaborationId.Should().Be(Root);
+        rows.Single(r => r.AgentId == "a-2").CollaborationId.Should().BeNull();
+    }
+
+    [Fact]
     public void Find_AcceptsEitherIdentifierARowPublishes()
     {
         var rows = Project(

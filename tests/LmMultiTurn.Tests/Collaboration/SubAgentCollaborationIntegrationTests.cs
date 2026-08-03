@@ -395,6 +395,57 @@ public class SubAgentCollaborationIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DisposeAsync_WithSpawnsStillQueued_ReclaimsRootCapacityAndRetiresEveryRow()
+    {
+        // Companion to the cancellation test above, exercising the OTHER pre-start exit: spawns still
+        // sitting in the defer-queue when the MANAGER ITSELF is disposed (server shutdown / conversation
+        // eviction), not when an individual caller cancels. Two queued spawns are used deliberately
+        // (rather than one) so the disposal path drains at least one entry through EACH of the two
+        // shutdown drain loops in SubAgentManager (the spawn pump's own tail drain in
+        // RunSpawnPumpAsync, and DisposeAsync's own final _spawnQueue drain) — both must retire the
+        // collaboration admission they took at queue time, not just fault the caller's StateReady.
+        // Left unreclaimed, disposing a manager with queued work permanently shrinks the collaboration's
+        // root-wide capacity by one agent per abandoned queued spawn.
+        var root = CreateRegisteredRoot(new AgentCollaborationOptions { MaxTotalAgents = 5 });
+        var (manager, _) = CreateManager(
+            root,
+            template: BlockingTemplate(),
+            configure: options => options with { MaxConcurrentSubAgents = 1 });
+
+        // Occupies the only local slot forever (BlockingTemplate never completes).
+        _ = await manager.SpawnAsync(
+            "worker", "work", name: "first", role: "worker role",
+            description: "Holds the only local slot.", runInBackground: true);
+
+        // Both queue behind the saturated local gate; neither ever gets a permit before disposal.
+        _ = await manager.SpawnAsync(
+            "worker", "work", name: "second", role: "worker role",
+            description: "Queued behind the saturated gate.", runInBackground: true);
+        _ = await manager.SpawnAsync(
+            "worker", "work", name: "third", role: "worker role",
+            description: "Also queued behind the saturated gate.", runInBackground: true);
+
+        root.Directory.Capacity.InUse.Should().Be(
+            3, "all three spawns admitted to the collaboration before any of them ran or queued");
+
+        await manager.DisposeAsync();
+
+        root.Directory.Capacity.InUse.Should().Be(
+            0, "disposal must give back every root-wide lease — the one held by the running agent AND "
+                + "the ones held by spawns that never got past the defer-queue");
+
+        foreach (var name in new[] { "second", "third" })
+        {
+            var entry = root.Directory.Resolve(name).Entry;
+            entry.Should().NotBeNull(because: "the row is retained for correlation, not deleted");
+            entry!.Status.Should().Be(
+                AgentCollaborationStatuses.Stopped,
+                because: $"'{name}' never ran and must not be left looking like pending work");
+            entry.IsLive.Should().BeFalse();
+        }
+    }
+
+    [Fact]
     public async Task Spawn_PastTheDelegationLimit_IsRefusedEvenWhenTheToolIsNotAdvertised()
     {
         // Hiding the tool is guidance, not enforcement: a model can call a tool it was told about on

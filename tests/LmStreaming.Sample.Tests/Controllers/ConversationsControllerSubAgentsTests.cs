@@ -42,7 +42,8 @@ public sealed class ConversationsControllerSubAgentsTests
             new ConversationStatusResolver(Mock.Of<IConversationStore>(), new InMemoryConversationStore()),
             TimeProvider.System,
             workflowRunRegistry,
-            NullLogger<ConversationsController>.Instance);
+            NullLogger<ConversationsController>.Instance,
+            NullLogger<AgentHierarchyService>.Instance);
     }
 
     private static MultiTurnAgentPool CreateFakeAgentPool()

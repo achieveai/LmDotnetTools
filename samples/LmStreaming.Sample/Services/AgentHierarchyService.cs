@@ -83,7 +83,8 @@ public sealed record AgentTranscriptResult
 public sealed class AgentHierarchyService(
     MultiTurnAgentPool agentPool,
     WorkflowRunRegistry workflowRunRegistry,
-    IConversationStore store)
+    IConversationStore store,
+    ILogger<AgentHierarchyService> logger)
 {
     /// <summary>
     ///     Assembles one conversation's agent rows: the live sub-agent/workflow snapshot, unioned with the
@@ -175,9 +176,19 @@ public sealed class AgentHierarchyService(
         // index above (see the write-through gate), yet the child's transcript/provenance is still on
         // disk. Folded in first so a live row (added below) always wins on a match, restoring the
         // pre-#244 flat-listing contract.
-        foreach (var node in await ScanPersistedSubAgentChildrenAsync(threadId, ct))
+        //
+        // COLD PATH ONLY: gated on there being no live loop for this thread. When the loop is live, the
+        // collaboration-enabled write-through above (or the live SubAgentManager snapshot) already
+        // accounts for every child that matters, and restart recovery for a collaboration-enabled host
+        // goes through the enriched persisted WorkflowRunRegistry tabs a few lines down, not this scan.
+        // Without this gate, every live 3-second sub-agent poll and transcript read paid for a bounded but
+        // still expensive multi-page store scan on every single call.
+        if (loop is null)
         {
-            merged[(node.Kind, node.AgentId)] = node;
+            foreach (var node in await ScanPersistedSubAgentChildrenAsync(threadId, ct))
+            {
+                merged[(node.Kind, node.AgentId)] = node;
+            }
         }
 
         foreach (var tab in workflowRunRegistry.GetPersistedTabs(threadId))
@@ -345,6 +356,11 @@ public sealed class AgentHierarchyService(
             }
         }
 
+        logger.LogWarning(
+            "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
+                + "children persisted beyond that point are not listed.",
+            threadId,
+            SubAgentScanMaxThreads);
         return found;
     }
 }

@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmMultiTurn.Collaboration;
 using AchieveAi.LmDotnetTools.LmWorkflow.Collaboration;
 using LmStreaming.Sample.Models;
+using LmStreaming.Sample.Persistence;
 
 namespace LmStreaming.Sample.Services;
 
@@ -65,7 +66,17 @@ public static class AgentHierarchyProjection
                 _ = matched.Add(node.AgentId);
             }
 
-            var row = node is null ? tab : tab.WithCollaboration(node);
+            // An unresolved provenance placeholder (only the parent link was ever stamped — see
+            // SubAgentProvenance.Build) carries no real Name/Template of its own. When the live directory
+            // has a node for the same id, that node is a strictly better source of identity than the
+            // placeholder: prefer building the row from it entirely, rather than layering the node's
+            // hierarchy metadata onto a tab whose own Name/Template WithCollaboration deliberately never
+            // touches (so the placeholder's blanks would otherwise survive into the presented row).
+            var row = node is null
+                ? tab
+                : IsUnresolvedPlaceholder(tab)
+                    ? SubAgentSummary.FromDirectoryEntry(node)
+                    : tab.WithCollaboration(node);
 
             // A tab with no live node may still describe a collaboration agent: the durable index keeps
             // the hierarchy metadata, so a retained row can be authorized from its own persisted shape.
@@ -147,6 +158,15 @@ public static class AgentHierarchyProjection
         tab.Kind == SubAgentSummary.WorkflowTabKind
             ? WorkflowCollaboration.ComposeControllerAgentId(tab.AgentId)
             : tab.AgentId;
+
+    /// <summary>
+    ///     A tab produced from <see cref="SubAgentProvenance.Build"/> with no resolved snapshot — only the
+    ///     parent link was stamped, so <c>Name</c> was never set and <c>Template</c> fell back to the
+    ///     sentinel. Real tabs (live snapshots, retained rows, persisted workflow tabs) always carry a
+    ///     resolved <c>Name</c>.
+    /// </summary>
+    private static bool IsUnresolvedPlaceholder(SubAgentSummary tab) =>
+        tab.Name is null && tab.Template == SubAgentProvenance.UnknownTemplate;
 
     /// <summary>
     ///     Answers "is this me" and "may I read this" for one row, or leaves both unclaimed when the row
