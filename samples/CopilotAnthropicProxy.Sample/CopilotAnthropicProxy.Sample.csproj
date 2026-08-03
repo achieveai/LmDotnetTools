@@ -10,10 +10,13 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <!-- The Copilot transport (CopilotHttpClientFactory / CopilotHeadersHandler / token providers /
-         CopilotOptions / CopilotSessionContext) lives in GithubCopilotProvider, which references
-         LmCore transitively. This is the only project reference the proxy needs. -->
+    <!-- Copilot transport and authentication live in GithubCopilotProvider. Web-tool contracts,
+         validation, output hygiene, and the Jina integration live in Misc. -->
     <ProjectReference Include="..\..\src\GithubCopilotProvider\AchieveAi.LmDotnetTools.GithubCopilotProvider.csproj" />
+    <ProjectReference Include="..\..\src\Misc\AchieveAi.LmDotnetTools.Misc.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CopilotAnthropicProxy.Tests" />
   </ItemGroup>
   <ItemGroup>
     <!-- Structured JSONL logging (Serilog + CompactJsonFormatter), matching LmStreaming.Sample

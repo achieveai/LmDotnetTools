@@ -1,10 +1,13 @@
 using AchieveAi.LmDotnetTools.GithubCopilotProvider.Auth;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.Misc.Configuration;
+using AchieveAi.LmDotnetTools.Misc.Web.Jina;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.CopilotAnthropicProxy.Tests;
 
@@ -27,6 +30,7 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
 
     private readonly HttpMessageHandler _upstreamHandler;
     private readonly ICopilotTokenProvider _tokenProvider;
+    private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? _jinaUpstream;
 
     /// <summary>Creates a factory whose upstream is driven by <paramref name="upstream"/>.</summary>
     /// <param name="upstream">Fake upstream handler invoked for every forwarded request.</param>
@@ -54,6 +58,10 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
     ///     only meaningful alongside a non-null <paramref name="model"/>, which otherwise has no
     ///     discovered endpoint list.
     /// </param>
+    /// <param name="jinaApiKey">Optional Jina key that enables local MCP web-tool fallback.</param>
+    /// <param name="webToolsOutputCap">Optional local web-tool output character cap.</param>
+    /// <param name="webToolsTimeoutMs">Optional local web-tool timeout in milliseconds.</param>
+    /// <param name="jinaUpstream">Optional fake Jina transport, isolated from the fake Copilot transport.</param>
     public ProxyWebAppFactory(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> upstream,
         ICopilotTokenProvider? tokenProvider = null,
@@ -61,14 +69,22 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
         int? idleTimeoutSeconds = null,
         int? keepAliveSeconds = null,
         long? maxBodyBytes = null,
-        string? modelEndpoints = null
+        string? modelEndpoints = null,
+        string? jinaApiKey = null,
+        int? webToolsOutputCap = null,
+        int? webToolsTimeoutMs = null,
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? jinaUpstream = null
     )
     {
         ArgumentNullException.ThrowIfNull(upstream);
 
         _upstreamHandler = new FakeHttpMessageHandler(upstream);
         _tokenProvider = tokenProvider ?? new FakeCopilotTokenProvider("fake-token");
+        _jinaUpstream = jinaUpstream;
         Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL", model);
+        Environment.SetEnvironmentVariable("JINA_API_KEY", jinaApiKey);
+        Environment.SetEnvironmentVariable("WEB_TOOLS_OUTPUT_CAP", webToolsOutputCap?.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Environment.SetEnvironmentVariable("WEB_TOOLS_TIMEOUT_MS", webToolsTimeoutMs?.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MODEL_ENDPOINTS", modelEndpoints);
         if (idleTimeoutSeconds is not null)
         {
@@ -108,6 +124,22 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<HttpMessageHandler>();
             services.AddSingleton(_upstreamHandler);
+
+            if (_jinaUpstream is not null)
+            {
+                services.RemoveAll<JinaWebProvider>();
+                services.AddSingleton(sp =>
+                    new JinaWebProvider(
+                        new HttpClient(new FakeHttpMessageHandler(_jinaUpstream)),
+                        sp.GetRequiredService<WebToolsOptions>(),
+                        sp.GetRequiredService<ILoggerFactory>().CreateLogger<JinaWebProvider>()
+                    )
+                );
+                services.RemoveAll<McpJinaToolCatalog>();
+                services.AddSingleton<McpJinaToolCatalog>();
+                services.RemoveAll<McpToolComposition>();
+                services.AddSingleton<McpToolComposition>();
+            }
         });
     }
 
@@ -126,6 +158,9 @@ public sealed class ProxyWebAppFactory : WebApplicationFactory<Program>
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_IDLE_TIMEOUT_SECONDS", null);
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_KEEPALIVE_SECONDS", null);
                 Environment.SetEnvironmentVariable("COPILOT_ANTHROPIC_MAX_BODY_BYTES", null);
+                Environment.SetEnvironmentVariable("JINA_API_KEY", null);
+                Environment.SetEnvironmentVariable("WEB_TOOLS_OUTPUT_CAP", null);
+                Environment.SetEnvironmentVariable("WEB_TOOLS_TIMEOUT_MS", null);
             }
         }
     }
