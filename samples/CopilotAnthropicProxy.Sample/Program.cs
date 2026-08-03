@@ -2714,6 +2714,16 @@ internal static class ProxyMcp
                     );
                     return;
                 }
+                catch (Exception ex) when (ex is HttpRequestException or IOException)
+                {
+                    logger.LogWarning(ex, "Upstream MCP tool-list body failed while being buffered.");
+                    await WriteMcpErrorAsync(
+                        ctx,
+                        StatusCodes.Status502BadGateway,
+                        "The upstream Copilot MCP server dropped the connection before its reply was complete."
+                    );
+                    return;
+                }
 
                 if (composedList?.Body is { Length: 0 })
                 {

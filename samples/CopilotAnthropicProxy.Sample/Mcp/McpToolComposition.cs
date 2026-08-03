@@ -68,7 +68,7 @@ internal sealed class McpToolComposition
 
         var sessionId = context.Request.Headers["Mcp-Session-Id"].FirstOrDefault();
         var endpoint = context.Request.Path.Value;
-        var requestId = request["params"]?["requestId"];
+        var requestId = (request["params"] as JsonObject)?["requestId"];
         if (
             string.IsNullOrWhiteSpace(endpoint)
             || string.IsNullOrWhiteSpace(sessionId)
@@ -80,7 +80,14 @@ internal sealed class McpToolComposition
 
         if (_localCalls.TryGetValue((endpoint, sessionId, requestId.ToJsonString()), out var cancellation))
         {
-            cancellation.Cancel();
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The local call completed between lookup and cancellation; treat it as already finished.
+            }
         }
 
         return false;
@@ -217,20 +224,11 @@ internal sealed class McpToolComposition
         var endpoint = context.Request.Path.Value;
         var sessionId = context.Request.Headers["Mcp-Session-Id"].FirstOrDefault();
 
-        void Invalidate()
-        {
-            if (!string.IsNullOrWhiteSpace(endpoint) && !string.IsNullOrWhiteSpace(sessionId))
-            {
-                _snapshots.Remove(endpoint, sessionId);
-            }
-        }
-
         var mediaType = upstream.Content.Headers.ContentType?.MediaType;
         var isJson = string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase);
         var isSse = string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase);
         if (!upstream.IsSuccessStatusCode || (!isJson && !isSse))
         {
-            Invalidate();
             return null;
         }
 
@@ -243,7 +241,6 @@ internal sealed class McpToolComposition
         );
         if (original is null)
         {
-            Invalidate();
             return new McpComposedList([], endpoint, sessionId, McpSnapshotAction.Remove);
         }
 
@@ -256,7 +253,6 @@ internal sealed class McpToolComposition
             var sse = Encoding.UTF8.GetString(original);
             if (!TryReadSingleSseMessage(sse, out ssePrefix, out var json, out sseSuffix))
             {
-                Invalidate();
                 return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.Remove);
             }
 
@@ -278,7 +274,6 @@ internal sealed class McpToolComposition
                 || !McpToolSnapshotStore.TryBuildHeaderContext(context.Request.Headers, out var headerContext)
             )
             {
-                Invalidate();
                 return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.Remove);
             }
 
@@ -320,7 +315,6 @@ internal sealed class McpToolComposition
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
-            Invalidate();
             _logger.LogWarning(ex, "MCP tool-list composition failed; returning the original upstream response");
             return new McpComposedList(original, endpoint, sessionId, McpSnapshotAction.Remove);
         }

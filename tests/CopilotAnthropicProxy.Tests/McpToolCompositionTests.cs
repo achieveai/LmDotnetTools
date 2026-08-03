@@ -191,6 +191,44 @@ public class McpToolCompositionTests
     }
 
     [Fact]
+    public async Task ToolsList_DroppedBodyReturnsJsonRpcBadGateway()
+    {
+        await using var factory = new ProxyWebAppFactory(
+            (_, _) => Task.FromResult(TestUpstream.JsonStream(new ThrowingStream(""))),
+            jinaApiKey: "jina-key",
+            jinaUpstream: (_, _) => Task.FromResult(TestUpstream.Json("{\"data\":[]}"))
+        );
+        using var client = factory.CreateClient();
+
+        using var response = await SendAsync(client, "/mcp", ListRequest(), "session-1");
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("\"jsonrpc\":\"2.0\"");
+    }
+
+    [Fact]
+    public async Task CancellationNotificationWithMalformedParamsPassesThroughWithoutThrowing()
+    {
+        var githubCalls = 0;
+        await using var factory = new ProxyWebAppFactory(
+            (_, _) =>
+            {
+                githubCalls++;
+                return Task.FromResult(TestUpstream.Json("{}", HttpStatusCode.Accepted));
+            },
+            jinaApiKey: "jina-key",
+            jinaUpstream: (_, _) => Task.FromResult(TestUpstream.Json("{\"data\":[]}"))
+        );
+        using var client = factory.CreateClient();
+        const string malformed = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":[]}";
+
+        using var response = await SendAsync(client, "/mcp", malformed, "session-1");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        githubCalls.Should().Be(1);
+    }
+
+    [Fact]
     public async Task ToolsList_IdleTimeoutReturnsBoundedGatewayTimeout()
     {
         await using var factory = new ProxyWebAppFactory(
