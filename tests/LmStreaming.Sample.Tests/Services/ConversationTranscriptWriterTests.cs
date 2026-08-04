@@ -91,6 +91,27 @@ public sealed class ConversationTranscriptWriterTests
     /// </summary>
     private const string ExpectedGuardScript = ExpectedGuardPreamble + "guard \"$1\" || exit 44\n";
 
+    /// <summary>
+    /// The rename script, duplicated for the same reason and carrying the same weight. Its text is a
+    /// contract three times over. The <c>target()</c> check is not belt-and-braces: <c>mv A B</c> moves A
+    /// INSIDE B whenever B resolves to a directory, symlinked or not, so an unguarded rename relocates the
+    /// whole transcript out of <c>.conversations</c> and out from under the <c>.gitignore</c> — a rename
+    /// does NOT merely "replace the destination path", which was the belief that left this call site
+    /// unguarded for several rounds. <c>-T</c> closes the window outright by making the destination a NAME,
+    /// and is tried first; it is a GNU extension, so the plain form has to remain behind it for a BSD
+    /// <c>mv</c>. And that fallback is only safe because <c>target</c> is re-run before it: <c>mv -T</c>
+    /// also fails on a real non-empty directory, which is exactly the <c>_agents</c> case, and a bare
+    /// fallback would then nest.
+    /// </summary>
+    private const string ExpectedMoveScript =
+        ExpectedGuardPreamble
+        + "target() { guard \"$1\" || exit 44; [ ! -d \"$1\" ] || exit 45; }\n"
+        + "guard \"$1\" || exit 44\n"
+        + "target \"$2\"\n"
+        + "mv -T -- \"$1\" \"$2\" 2>/dev/null && exit 0\n"
+        + "target \"$2\"\n"
+        + "mv -- \"$1\" \"$2\"\n";
+
     private static readonly string ShortThreadId = WorkspaceTranscriptLine.ShortId(ThreadId);
 
     private static readonly string TempPath =
@@ -323,6 +344,9 @@ public sealed class ConversationTranscriptWriterTests
     /// <inheritdoc cref="IsSplice"/>
     private static bool IsGuard(SandboxCommand command) => RunsScript(command, ExpectedGuardScript);
 
+    /// <inheritdoc cref="IsSplice"/>
+    private static bool IsMove(SandboxCommand command) => RunsScript(command, ExpectedMoveScript);
+
     private static bool RunsScript(SandboxCommand command, string script) =>
         command.Arguments.Count > 2 && string.Equals(command.Arguments[2], script, StringComparison.Ordinal);
 
@@ -398,8 +422,8 @@ public sealed class ConversationTranscriptWriterTests
         _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 2));
 
         // No second probe: the watermark survived in process, keyed by thread. Nor a second containment
-        // guard: the ignore file is written once per writer. The staging guard DOES run again — it is per
-        // flush, not per writer, because a symlink can be planted between two flushes.
+        // guard: the ignore file is written once per writer. The staging guard DOES run again — it runs
+        // before EVERY staging PUT, because a symlink can be planted between any two of them.
         _ = browser.Commands.Select(c => c.Arguments[2]).Should()
             .Equal(
                 ExpectedGuardScript,
@@ -1232,9 +1256,10 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         _ = browser.Commands.Should().HaveCount(4);
-        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
+        _ = browser.Commands[0].Arguments.Should()
+            .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands[1].Arguments.Should()
-            .Equal("mv", "--", AgentsDirectory(Title), AgentsDirectory(RetitledTo));
+            .Equal("sh", "-c", ExpectedMoveScript, "sh", AgentsDirectory(Title), AgentsDirectory(RetitledTo));
         _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", TempPath);
         _ = browser.Commands[3].Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(RetitledTo));
@@ -1256,14 +1281,15 @@ public sealed class ConversationTranscriptWriterTests
         var writer = CreateWriter(store, browser);
         _ = await writer.FlushAsync();
 
-        browser.ExecuteHandler = command => command.Arguments[0] == "mv" ? Fail("device busy") : Ok();
+        browser.ExecuteHandler = command => IsMove(command) ? Fail("device busy") : Ok();
         await SeedConversationAsync(store, RetitledTo);
         PersistedMessage[] all = [Msg("m1", 1, "User"), Msg("m2", 2)];
         await store.AppendMessagesAsync(ThreadId, [all[1]]);
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
+        _ = browser.Commands[0].Arguments.Should()
+            .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands.Single(IsSplice).Arguments[6].Should().Be(MainPath(Title));
         _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 1));
 
@@ -1273,7 +1299,8 @@ public sealed class ConversationTranscriptWriterTests
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
+        _ = browser.Commands[0].Arguments.Should()
+            .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands.Single(IsSplice).Arguments[6].Should().Be(MainPath(RetitledTo));
         _ = Written(browser, 2).Should().Be(ExpectedAppend(everything, skip: 2));
     }
@@ -1321,9 +1348,10 @@ public sealed class ConversationTranscriptWriterTests
         // Adopted by the same move the warm path uses, and BEFORE the tail that recovers the watermark —
         // otherwise the watermark is read from a file this flush is about to stop writing to. The call
         // between them is the guard ahead of the ignore file's write, which reads and writes nothing.
-        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(RetitledTo), MainPath(Title));
+        _ = browser.Commands[0].Arguments.Should()
+            .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(RetitledTo), MainPath(Title));
         _ = browser.Commands[1].Arguments.Should()
-            .Equal("mv", "--", AgentsDirectory(RetitledTo), AgentsDirectory(Title));
+            .Equal("sh", "-c", ExpectedMoveScript, "sh", AgentsDirectory(RetitledTo), AgentsDirectory(Title));
         _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", GitignorePath);
         _ = browser.Commands[3].Arguments.Should()
             .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
@@ -1374,7 +1402,8 @@ public sealed class ConversationTranscriptWriterTests
         // And once the gateway answers, the SAME writer adopts the file that was there all along.
         browser.ListThrows = null;
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(RetitledTo), MainPath(Title));
+        _ = browser.Commands[0].Arguments.Should()
+            .Equal("sh", "-c", ExpectedMoveScript, "sh", MainPath(RetitledTo), MainPath(Title));
         _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title));
     }
@@ -1609,10 +1638,10 @@ public sealed class ConversationTranscriptWriterTests
     /// <summary>
     /// The security invariant, stated as a test. <c>ExecuteWorkspaceCommandAsync</c> is a native argv
     /// vector with NO implicit shell, so every place a shell IS invoked — the splice that writes, the
-    /// watermark probe that reads, and the path guard that does neither — must carry a compile-time
-    /// constant script: the file leaf is derived from a user-authored title, and interpolating it into the
-    /// script text would make <c>$(…)</c> in a title executable. <c>--</c> on the pure-argv calls stops
-    /// option parsing, but it is the positional parameters that make the title inert.
+    /// watermark probe that reads, the rename that moves and the path guard that does none of those — must
+    /// carry a compile-time constant script: the file leaf is derived from a user-authored title, and
+    /// interpolating it into the script text would make <c>$(…)</c> in a title executable. The positional
+    /// parameters are what make the title inert.
     /// </summary>
     [Fact]
     public async Task EveryShellCall_UsesTheConstantScript_AndPassesTheTitleDerivedPathAsAPositionalParameter()
@@ -1643,7 +1672,7 @@ public sealed class ConversationTranscriptWriterTests
         {
             _ = command.Arguments[1].Should().Be("-c");
             _ = command.Arguments[2].Should()
-                .BeOneOf(ExpectedProbeScript, ExpectedSpliceScript, ExpectedGuardScript);
+                .BeOneOf(ExpectedProbeScript, ExpectedSpliceScript, ExpectedGuardScript, ExpectedMoveScript);
             _ = command.Arguments[3].Should().Be("sh");
 
             // Whatever the call touches reaches `sh` as a positional parameter, never as script text.
@@ -1656,15 +1685,17 @@ public sealed class ConversationTranscriptWriterTests
             _ = splice.Arguments[6].Should().Contain(leaf);
         }
 
-        // No script ever grows a dynamic fragment, and the pure-argv calls keep their `--`.
+        // No script ever grows a dynamic fragment.
         _ = ExpectedSpliceScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
         _ = ExpectedProbeScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
         _ = ExpectedGuardScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
-        // Every shell call is covered by the loop above; what is left is the pure-argv calls, and none of
-        // them may omit `--`. (Stated as "no call omits it" so the invariant does not change meaning when
-        // a flow happens not to move anything.)
-        _ = browser.Commands.Where(c => c.Arguments[0] != "sh")
-            .Should().NotContain(c => !c.Arguments.Contains("--"));
+        _ = ExpectedMoveScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
+
+        // And there is nothing left OUTSIDE the loop above. The rename was the last workspace call issued
+        // as a bare argv, which also made it the one workspace mutation with no path guard in scope; now
+        // every command the writer emits is a shell call running one of the four constant scripts, so the
+        // loop's coverage is total rather than partial.
+        _ = browser.Commands.Should().OnlyContain(c => c.Arguments[0] == "sh");
     }
 
     // ---------------------------------------------------------------- doubles

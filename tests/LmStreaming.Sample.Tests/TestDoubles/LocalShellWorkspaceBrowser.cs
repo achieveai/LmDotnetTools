@@ -27,6 +27,15 @@ namespace LmStreaming.Sample.Tests.TestDoubles;
 /// <param name="shell">Absolute path to a POSIX <c>sh</c>.</param>
 internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IWorkspaceFileBrowser
 {
+    /// <summary>
+    /// Runs after each command completes, with the argv that was executed. It exists so a test can change
+    /// the filesystem BETWEEN two of the writer's workspace operations — planting a symlink after one
+    /// descendant has been spliced and before the next is staged, say. Nothing else can express that: a
+    /// flush is one <c>await</c>, and a link planted before it starts is a different scenario entirely,
+    /// answered by a guard that only ever runs once.
+    /// </summary>
+    public Action<SandboxCommand>? AfterCommand { get; set; }
+
     /// <summary>Resolves an <c>sh</c> on this machine, or null when there is none to run.</summary>
     /// <remarks>
     /// On Windows the shell ships with Git but is frequently absent from a non-Bash <c>PATH</c>, so the
@@ -132,6 +141,8 @@ internal sealed class LocalShellWorkspaceBrowser(string root, string shell) : IW
         var stdout = await process.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
         var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
         await process.WaitForExitAsync(ct).ConfigureAwait(false);
+
+        AfterCommand?.Invoke(command);
 
         return new SandboxCommandResult
         {

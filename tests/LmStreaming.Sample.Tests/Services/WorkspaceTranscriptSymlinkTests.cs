@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 
@@ -35,14 +36,22 @@ public sealed class WorkspaceTranscriptSymlinkTests
     private const string ThreadId = "conv-link-7a3b";
     private const string WorkspaceId = "ws-link";
     private const string Title = "Link Proof";
-    private const string AgentId = "agent-link-1";
-    private const string AgentName = "researcher";
+    private const string RetitledTo = "Renamed Proof";
+
+    /// <summary>Sub-agent ids and display names, paired by index and consumed in seeding order.</summary>
+    private static readonly string[] AgentIds = ["agent-link-1", "agent-link-2"];
+
+    private static readonly string[] AgentNames = ["researcher", "reviewer"];
 
     /// <summary>Content of the file each symlink points at. No flush may ever change it.</summary>
     private const string TrackedContent = "tracked source file, not a transcript\n";
 
-    private static readonly string Leaf =
-        WorkspaceTranscriptLine.MainFileLeaf(Title, WorkspaceTranscriptLine.ShortId(ThreadId));
+    private static readonly string ShortThreadId = WorkspaceTranscriptLine.ShortId(ThreadId);
+
+    private static readonly string Leaf = WorkspaceTranscriptLine.MainFileLeaf(Title, ShortThreadId);
+
+    private static readonly string RetitledLeaf =
+        WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId);
 
     /// <summary>
     /// The destination transcript file is a symlink to a tracked file. <c>cat &gt;&gt;</c> follows it, so the
@@ -52,9 +61,9 @@ public sealed class WorkspaceTranscriptSymlinkTests
     [SkippableFact]
     public async Task Flush_RefusesToAppendThroughASymlinkedDestinationFile()
     {
-        var (root, writer) = await SetupAsync(nameof(Flush_RefusesToAppendThroughASymlinkedDestinationFile));
+        var (root, writer, _, _) = await SetupAsync(nameof(Flush_RefusesToAppendThroughASymlinkedDestinationFile));
         var tracked = WriteTrackedFile(root, "tracked.txt");
-        var destination = Path.Combine(root, ConversationTranscriptWriter.TranscriptDirectory, Leaf + ".jsonl");
+        var destination = TranscriptPath(root, Leaf);
         _ = Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         LinkToFile(destination, tracked);
 
@@ -74,8 +83,8 @@ public sealed class WorkspaceTranscriptSymlinkTests
     [SkippableFact]
     public async Task Flush_RefusesToWriteThroughASymlinkedTranscriptDirectory()
     {
-        var (root, writer) = await SetupAsync(nameof(Flush_RefusesToWriteThroughASymlinkedTranscriptDirectory));
-        var elsewhere = Directory.CreateDirectory(Path.Combine(root, "elsewhere")).FullName;
+        var (root, writer, _, _) = await SetupAsync(nameof(Flush_RefusesToWriteThroughASymlinkedTranscriptDirectory));
+        var elsewhere = ElsewhereIn(root);
         var transcriptDirectory = Path.Combine(root, ConversationTranscriptWriter.TranscriptDirectory);
         LinkToDirectory(transcriptDirectory, elsewhere);
 
@@ -95,14 +104,11 @@ public sealed class WorkspaceTranscriptSymlinkTests
     [SkippableFact]
     public async Task Flush_RefusesToWriteADescendantThroughASymlinkedAgentsDirectory()
     {
-        var (root, writer) = await SetupAsync(
+        var (root, writer, _, _) = await SetupAsync(
             nameof(Flush_RefusesToWriteADescendantThroughASymlinkedAgentsDirectory),
-            withSubAgent: true);
-        var elsewhere = Directory.CreateDirectory(Path.Combine(root, "elsewhere")).FullName;
-        var agentsDirectory = Path.Combine(
-            root,
-            ConversationTranscriptWriter.TranscriptDirectory,
-            Leaf + ConversationTranscriptWriter.AgentsDirectorySuffix);
+            subAgents: 1);
+        var elsewhere = ElsewhereIn(root);
+        var agentsDirectory = AgentsDirectoryPath(root, Leaf);
         _ = Directory.CreateDirectory(Path.GetDirectoryName(agentsDirectory)!);
         LinkToDirectory(agentsDirectory, elsewhere);
 
@@ -115,8 +121,7 @@ public sealed class WorkspaceTranscriptSymlinkTests
 
         // The main transcript DID get written: the refusal is scoped to the redirected path, and this flush
         // was doing real work rather than failing before it started.
-        _ = File.Exists(Path.Combine(root, ConversationTranscriptWriter.TranscriptDirectory, Leaf + ".jsonl"))
-            .Should().BeTrue();
+        _ = File.Exists(TranscriptPath(root, Leaf)).Should().BeTrue();
     }
 
     /// <summary>
@@ -128,12 +133,9 @@ public sealed class WorkspaceTranscriptSymlinkTests
     [SkippableFact]
     public async Task Flush_RefusesToStageThroughASymlinkedTempPath()
     {
-        var (root, writer) = await SetupAsync(nameof(Flush_RefusesToStageThroughASymlinkedTempPath));
+        var (root, writer, _, _) = await SetupAsync(nameof(Flush_RefusesToStageThroughASymlinkedTempPath));
         var tracked = WriteTrackedFile(root, "tracked-staging.txt");
-        var tempPath = Path.Combine(
-            root,
-            ConversationTranscriptWriter.TempDirectory,
-            WorkspaceTranscriptLine.ShortId(ThreadId) + ConversationTranscriptWriter.TempExtension);
+        var tempPath = TempPath(root);
         _ = Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
         LinkToFile(tempPath, tracked);
 
@@ -152,7 +154,7 @@ public sealed class WorkspaceTranscriptSymlinkTests
     [SkippableFact]
     public async Task Flush_RefusesToWriteContainmentThroughASymlink()
     {
-        var (root, writer) = await SetupAsync(nameof(Flush_RefusesToWriteContainmentThroughASymlink));
+        var (root, writer, _, _) = await SetupAsync(nameof(Flush_RefusesToWriteContainmentThroughASymlink));
         var tracked = WriteTrackedFile(root, "tracked-config.txt");
         var gitignore = Path.Combine(
             root,
@@ -172,15 +174,147 @@ public sealed class WorkspaceTranscriptSymlinkTests
             .BeEmpty("containment could not be established, so no transcript may exist either");
     }
 
+    /// <summary>
+    /// The staging path becomes a symlink PART-WAY THROUGH a flush — after one descendant has been spliced
+    /// and before the next is staged. One temp path serves the whole flush, and between two consecutive
+    /// PUTs sits a full shell execution, so a guard that answers once per flush leaves every append after
+    /// the first writing through whatever was planted in that window.
+    /// </summary>
+    /// <remarks>
+    /// Planting the link before the flush starts is a different and far weaker claim — it is already
+    /// covered by <see cref="Flush_RefusesToStageThroughASymlinkedTempPath"/>, and it passes against a
+    /// once-per-flush guard, so it says nothing about this. The discriminating assertion is the tracked
+    /// file's CONTENT: the flush defers either way (the append script guards its own destination), but only
+    /// a per-append staging guard keeps the second descendant's rows out of the link's target.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Flush_RefusesToStageThroughATempPathSymlinkedBetweenTwoDescendants()
+    {
+        var (root, writer, _, browser) = await SetupAsync(
+            nameof(Flush_RefusesToStageThroughATempPathSymlinkedBetweenTwoDescendants),
+            subAgents: 2);
+        var tracked = WriteTrackedFile(root, "tracked-interleaved.txt");
+        var tempPath = TempPath(root);
+
+        // Fire on the first splice INTO the sub-agent directory: descendant one is on disk by then, and
+        // descendant two has not been staged yet. The append script's own `rm -f` has just removed the temp
+        // file, so the link goes down on a clear path — which is also why planting it after the PUT instead
+        // would not survive to be followed.
+        var planted = false;
+        browser.AfterCommand = command =>
+        {
+            if (planted || !IsDescendantSplice(command))
+            {
+                return;
+            }
+
+            planted = true;
+            _ = Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
+            File.Delete(tempPath);
+            LinkToFile(tempPath, tracked);
+        };
+
+        var outcome = await writer.FlushAsync();
+
+        _ = planted.Should().BeTrue("the plant has to land mid-flush or the case is not being exercised");
+        AssertUntouched(tracked);
+        AssertStillALink(tempPath);
+        _ = outcome.Should().Be(TranscriptFlushOutcome.Deferred);
+
+        // The first descendant DID get written, so the flush was mid-fan-out rather than stopped early.
+        _ = Directory.GetFiles(AgentsDirectoryPath(root, Leaf)).Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// A retitle whose destination leaf is a symlink resolving to a DIRECTORY. <c>mv</c> then moves the
+    /// transcript INSIDE that directory instead of renaming it, carrying the whole unredacted file out of
+    /// <c>.conversations</c> and out from under the <c>.gitignore</c> beside it.
+    /// </summary>
+    /// <remarks>
+    /// An earlier round of this work left the rename unguarded on the rationale that "<c>mv A B</c>
+    /// replaces the destination PATH rather than writing through a link at B". That rationale is wrong for
+    /// the case that matters. It holds only when the link resolves to a FILE — <c>rename(2)</c> then
+    /// replaces the link itself and leaves its target alone — and a link to a directory inverts it
+    /// completely.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Retitle_RefusesToMoveTheTranscriptThroughASymlinkedDestination()
+    {
+        var (root, writer, store, _) = await SetupAsync(
+            nameof(Retitle_RefusesToMoveTheTranscriptThroughASymlinkedDestination));
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var original = TranscriptPath(root, Leaf);
+        var before = await File.ReadAllTextAsync(original);
+        var elsewhere = ElsewhereIn(root);
+        var destination = TranscriptPath(root, RetitledLeaf);
+        LinkToDirectory(destination, elsewhere);
+
+        await SaveTitleAsync(store, RetitledTo);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m3", 3, "User", "\"and now?\"", ThreadId)]);
+        _ = await writer.FlushAsync();
+
+        _ = Directory.GetFileSystemEntries(elsewhere).Should().BeEmpty(
+            "mv moves its source INSIDE a destination that resolves to a directory, which would carry the "
+                + "whole unredacted transcript out of the ignored directory");
+        AssertDirectoryStillALink(destination);
+
+        // Refusing the rename must not cost the conversation its mirror: the transcript keeps the old name
+        // and keeps growing there.
+        _ = File.Exists(original).Should().BeTrue();
+        _ = (await File.ReadAllTextAsync(original)).Should().StartWith(before);
+    }
+
+    /// <summary>
+    /// The <c>_agents</c> half of the same rename, which carries every descendant transcript and has
+    /// exactly the same exposure. Its destination is a symlink to a directory, so an unguarded <c>mv</c>
+    /// relocates the whole directory rather than renaming it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Retitle_RefusesToMoveTheAgentsDirectoryThroughASymlinkedDestination()
+    {
+        var (root, writer, store, _) = await SetupAsync(
+            nameof(Retitle_RefusesToMoveTheAgentsDirectoryThroughASymlinkedDestination),
+            subAgents: 1);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var agentsDirectory = AgentsDirectoryPath(root, Leaf);
+        _ = Directory.GetFiles(agentsDirectory).Should().ContainSingle();
+
+        var elsewhere = ElsewhereIn(root);
+        var destination = AgentsDirectoryPath(root, RetitledLeaf);
+        LinkToDirectory(destination, elsewhere);
+
+        await SaveTitleAsync(store, RetitledTo);
+        _ = await writer.FlushAsync();
+
+        _ = Directory.GetFileSystemEntries(elsewhere).Should().BeEmpty(
+            "a descendant's reasoning leaves through a redirected rename exactly as the root's does");
+        AssertDirectoryStillALink(destination);
+        _ = Directory.GetFiles(agentsDirectory).Should().ContainSingle(
+            "the sub-agent transcripts stay where they were rather than travelling through the link");
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    /// <summary>
+    /// Whether an argv is the append script splicing a SUB-AGENT file — i.e. a descendant has just landed.
+    /// The append script's directory argument is what distinguishes it from the main transcript's splice.
+    /// </summary>
+    private static bool IsDescendantSplice(SandboxCommand command) =>
+        command.Arguments.Count == 7
+        && command.Arguments[4].EndsWith(ConversationTranscriptWriter.AgentsDirectorySuffix, StringComparison.Ordinal);
 
     /// <summary>
     /// A clean workspace root and a writer pointed at it through a real shell. Skips when the machine has
     /// no POSIX shell — the same condition <see cref="WorkspaceTranscriptLiveFileTests"/> skips on.
     /// </summary>
-    private static async Task<(string Root, ConversationTranscriptWriter Writer)> SetupAsync(
-        string caseName,
-        bool withSubAgent = false)
+    /// <param name="caseName">Names the workspace root, so cases cannot see each other's files.</param>
+    /// <param name="subAgents">
+    /// How many descendant threads to seed. Two of them is what makes a mid-flush plant expressible: the
+    /// fan-out stages each descendant through the SAME temp path, one after the other.
+    /// </param>
+    private static async Task<Fixture> SetupAsync(string caseName, int subAgents = 0)
     {
         var shell = LocalShellWorkspaceBrowser.FindPosixShell();
         Skip.If(
@@ -196,16 +330,7 @@ public sealed class WorkspaceTranscriptSymlinkTests
         _ = Directory.CreateDirectory(root);
 
         var store = new InMemoryConversationStore();
-        await store.SaveMetadataAsync(
-            ThreadId,
-            new ThreadMetadata
-            {
-                ThreadId = ThreadId,
-                LastUpdated = 0,
-                Properties = ImmutableDictionary<string, object>
-                    .Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, WorkspaceId)
-                    .Add("title", Title),
-            });
+        await SaveTitleAsync(store, Title);
         await store.AppendMessagesAsync(
             ThreadId,
             [
@@ -213,9 +338,10 @@ public sealed class WorkspaceTranscriptSymlinkTests
                 Msg("m2", 2, "Assistant", "\"a secret\"", ThreadId),
             ]);
 
-        if (withSubAgent)
+        for (var i = 0; i < subAgents; i++)
         {
-            var childThreadId = SubAgentProvenance.ThreadIdPrefix + AgentId;
+            var agentId = AgentIds[i];
+            var childThreadId = SubAgentProvenance.ThreadIdPrefix + agentId;
             await store.SaveMetadataAsync(
                 childThreadId,
                 new ThreadMetadata
@@ -225,8 +351,8 @@ public sealed class WorkspaceTranscriptSymlinkTests
                     Properties = SubAgentProvenance.Build(
                         ThreadId,
                         new SubAgentSnapshot(
-                            AgentId,
-                            Name: AgentName,
+                            agentId,
+                            Name: AgentNames[i],
                             TemplateName: "worker",
                             Task: "look it up",
                             Status: SubAgentStatus.Completed,
@@ -236,20 +362,61 @@ public sealed class WorkspaceTranscriptSymlinkTests
                 });
             await store.AppendMessagesAsync(
                 childThreadId,
-                [Msg("s1", 1, "Assistant", "\"found it\"", childThreadId)]);
+                [Msg($"s{i}", 1, "Assistant", "\"found it\"", childThreadId)]);
         }
 
+        var browser = new LocalShellWorkspaceBrowser(root, shell);
         var writer = new ConversationTranscriptWriter(
             ThreadId,
             store,
-            new LocalShellWorkspaceBrowser(root, shell),
+            browser,
             new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
             NullLogger<ConversationTranscriptWriter>.Instance,
             TimeSpan.Zero,
             ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush);
 
-        return (root, writer);
+        return new Fixture(root, writer, store, browser);
     }
+
+    /// <summary>Everything a case needs to reach past the writer and change the world mid-flush.</summary>
+    private sealed record Fixture(
+        string Root,
+        ConversationTranscriptWriter Writer,
+        InMemoryConversationStore Store,
+        LocalShellWorkspaceBrowser Browser);
+
+    private static Task SaveTitleAsync(InMemoryConversationStore store, string title) =>
+        store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 0,
+                Properties = ImmutableDictionary<string, object>
+                    .Empty.Add(MultiTurnAgentPool.WorkspacePropertyKey, WorkspaceId)
+                    .Add("title", title),
+            });
+
+    private static string TranscriptPath(string root, string leaf) =>
+        Path.Combine(
+            root,
+            ConversationTranscriptWriter.TranscriptDirectory,
+            leaf + ConversationTranscriptWriter.TranscriptExtension);
+
+    private static string AgentsDirectoryPath(string root, string leaf) =>
+        Path.Combine(
+            root,
+            ConversationTranscriptWriter.TranscriptDirectory,
+            leaf + ConversationTranscriptWriter.AgentsDirectorySuffix);
+
+    private static string TempPath(string root) =>
+        Path.Combine(
+            root,
+            ConversationTranscriptWriter.TempDirectory,
+            ShortThreadId + ConversationTranscriptWriter.TempExtension);
+
+    private static string ElsewhereIn(string root) =>
+        Directory.CreateDirectory(Path.Combine(root, "elsewhere")).FullName;
 
     private static string WriteTrackedFile(string root, string name)
     {

@@ -69,21 +69,26 @@ public enum TranscriptFlushOutcome
 ///     append costs bytes, whereas a skipped append costs the record itself.
 ///     </para>
 ///     <para>
-///     <b>Writes go through exactly one shell call site</b> (<see cref="AppendScript"/>); the other two
-///     shell invocations, <see cref="WatermarkProbeScript"/> and <see cref="PathGuardScript"/>, read and
-///     write nothing. <c>ExecuteWorkspaceCommandAsync</c> is a native argv vector with no implicit shell,
-///     so a shell is invoked explicitly. All three script texts are fixed at compile time and <i>no
-///     dynamic value is ever interpolated into any of them</i>: the destination directory, the temp file
-///     and the destination file arrive as positional parameters <c>$1</c>/<c>$2</c>/<c>$3</c>. That
-///     matters because the file leaf is derived from a user-authored conversation title. <c>--</c> on the
-///     pure-argv calls stops option parsing, which is worth having, but it is the positional parameters —
-///     not <c>--</c> — that make a title containing <c>$(…)</c> or whitespace inert.
+///     <b>Every workspace call goes through a shell, and every script text is fixed at compile time.</b>
+///     Two scripts change the workspace — <see cref="AppendScript"/>, which splices bytes in, and
+///     <see cref="MoveScript"/>, which renames on a retitle — while <see cref="WatermarkProbeScript"/>
+///     and <see cref="PathGuardScript"/> read and write nothing. <c>ExecuteWorkspaceCommandAsync</c> is a
+///     native argv vector with no implicit shell, so a shell is invoked explicitly; the rename used to be
+///     issued as a bare <c>mv</c> argv instead, which left it the one workspace mutation with no guard in
+///     scope. <i>No dynamic value is ever interpolated into any script</i>: the destination directory, the
+///     temp file, the destination file and the two rename operands all arrive as positional parameters
+///     <c>$1</c>/<c>$2</c>/<c>$3</c>. That matters because the file leaf is derived from a user-authored
+///     conversation title — it is the positional parameters, not <c>--</c>, that make a title containing
+///     <c>$(…)</c> or whitespace inert.
 ///     </para>
 ///     <para>
-///     <b>No path is written to before it has been checked for redirection.</b> Every script guards its
-///     own path parameters, and the two writes that bypass the shell entirely — the staged payload and the
-///     <c>.gitignore</c>, both PUT by the gateway — are guarded by <see cref="IsPathSafeAsync"/> first. A
-///     redirected path is refused and left alone, never unlinked; see <see cref="UnsafePathExitCode"/>.
+///     <b>No path is written to before it has been checked for redirection, and the check is never
+///     cached.</b> Every script guards its own path parameters, and the two writes that bypass the shell
+///     entirely — the staged payload and the <c>.gitignore</c>, both PUT by the gateway — are guarded by
+///     <see cref="IsPathSafeAsync"/> immediately before each PUT. The staging guard in particular runs per
+///     APPEND rather than per flush: one flush stages the main transcript and every descendant through the
+///     same path, with a full gateway round trip between consecutive PUTs. A redirected path is refused and
+///     left alone, never unlinked; see <see cref="UnsafePathExitCode"/>.
 ///     </para>
 ///     <para>
 ///     <b>Concurrency:</b> <see cref="FlushAsync"/> is not re-entrant and must not be called concurrently
@@ -166,6 +171,22 @@ public sealed class ConversationTranscriptWriter
     ///     </para>
     /// </remarks>
     public const int UnsafePathExitCode = 44;
+
+    /// <summary>
+    ///     Exit code <see cref="MoveScript"/> reports when a rename's DESTINATION resolves to a directory,
+    ///     which is the one shape under which <c>mv</c> writes somewhere other than the name it was given.
+    ///     Chosen on the same grounds as <see cref="WatermarkMissingExitCode"/>: outside every code the
+    ///     scripts' own commands can mint (GNU <c>mv</c> answers 0 or 1; a BSD <c>mv</c> rejecting an
+    ///     option answers 64).
+    /// </summary>
+    /// <remarks>
+    ///     Distinct from <see cref="UnsafePathExitCode"/> because it is a different fact: the destination
+    ///     need not be a symlink at all. A real directory sitting where the transcript's new name goes
+    ///     makes <c>mv</c> move the file INSIDE it, which for the <c>_agents</c> rename means nesting the
+    ///     old directory under the new one rather than renaming it. Both readings are wrong and both are
+    ///     refused, but they are worth telling apart in a log.
+    /// </remarks>
+    public const int MoveTargetDirectoryExitCode = 45;
 
     /// <summary>
     ///     How many leading characters of each windowed line the probe returns. This is what bounds the
@@ -362,6 +383,67 @@ public sealed class ConversationTranscriptWriter
         + "\n";
 
     /// <summary>
+    ///     The retitle rename. <c>$1</c> is the existing path, <c>$2</c> the new one. It is a shell script
+    ///     rather than a bare <c>mv</c> argv because a rename needs the same guard every other path here
+    ///     gets, and a native argv vector has nowhere to put one.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b><c>mv A B</c> does NOT simply replace the path <c>B</c>, and an earlier revision left this
+    ///     call unguarded on the belief that it did. That belief was wrong for the case that matters.</b>
+    ///     When <c>B</c> resolves to a DIRECTORY — including through a symlink — <c>mv</c> moves <c>A</c>
+    ///     INSIDE it. A link planted at the transcript's next name therefore relocates the whole
+    ///     unredacted file out of <c>.conversations</c> and out from under the <c>.gitignore</c>, at exit
+    ///     code 0, with nothing left behind to notice. Directly observed, not inferred:
+    ///     <c>mv -- covered/old.jsonl covered/new.jsonl</c> with <c>covered/new.jsonl</c> a symlink to a
+    ///     directory leaves the transcript at <c>&lt;target&gt;/old.jsonl</c> and the link untouched. The
+    ///     <c>_agents</c> rename has the identical shape and the identical exposure.
+    ///     </para>
+    ///     <para>
+    ///     A symlink to a FILE is a different matter and never was the hazard: <c>rename(2)</c> replaces
+    ///     the link itself, so the link's target is not written through. Resolving to a directory is the
+    ///     whole of it, which is why <c>[ ! -d ]</c> is an exact test rather than a conservative one.
+    ///     </para>
+    ///     <para>
+    ///     <c>mv -T</c> (<c>--no-target-directory</c>) is tried FIRST because it treats the destination as
+    ///     a name rather than a directory, which closes the window between the check and the move instead
+    ///     of merely narrowing it: against the same fixture it renames onto the link, leaves the link's
+    ///     target empty, and reports 0. It is a GNU extension, present in the sandbox image
+    ///     (<c>mcr.microsoft.com/dotnet/sdk:10.0-noble</c>, GNU coreutils) but absent from a BSD
+    ///     <c>mv</c> — and these scripts also run against a developer machine's own <c>sh</c> under test,
+    ///     so an unconditional <c>-T</c> would wedge every retitle on such a host. Hence the fallback.
+    ///     </para>
+    ///     <para>
+    ///     <b>The fallback is safe only because of the <c>target</c> check, and only because that check is
+    ///     re-run ahead of it.</b> A bare <c>mv -T … || mv …</c> is a trap: <c>mv -T</c> also fails on a
+    ///     destination that is a real NON-EMPTY directory, and the plain <c>mv</c> behind it would then
+    ///     nest the source inside — which is precisely the <c>_agents</c> case. Refusing a directory
+    ///     destination outright removes that branch, and repeating the check keeps the fallback's exposure
+    ///     no wider than the primary's.
+    ///     </para>
+    ///     <para>
+    ///     What remains is the same residual TOCTOU every other path here carries: a link planted between
+    ///     the check and the <c>mv</c> is still followed on a host without <c>-T</c>. Closing it needs
+    ///     <c>O_NOFOLLOW</c>/<c>renameat2</c>, which no shell exposes. See <see cref="UnsafePathExitCode"/>
+    ///     for why the answer is refusal rather than repair — the link is never unlinked, and a refused
+    ///     rename simply keeps the transcript under its old name, which <see cref="MoveLeafAsync"/> already
+    ///     treats as the safe outcome.
+    ///     </para>
+    /// </remarks>
+    private static readonly string MoveScript =
+        PathGuardPreamble
+        + "target() { guard \"$1\" || exit "
+        + UnsafePathExitCode.ToString(CultureInfo.InvariantCulture)
+        + "; [ ! -d \"$1\" ] || exit "
+        + MoveTargetDirectoryExitCode.ToString(CultureInfo.InvariantCulture)
+        + "; }\n"
+        + GuardLine("$1")
+        + "target \"$2\"\n"
+        + "mv -T -- \"$1\" \"$2\" 2>/dev/null && exit 0\n"
+        + "target \"$2\"\n"
+        + "mv -- \"$1\" \"$2\"\n";
+
+    /// <summary>
     ///     The one property <see cref="TryReadUid"/> looks for, as UTF-8 so the reader can compare it
     ///     without materialising the name. Must match the key <c>WorkspaceTranscriptLine.Serialize</c>
     ///     writes.
@@ -412,14 +494,6 @@ public sealed class ConversationTranscriptWriter
     ///     transcript an earlier process left behind.
     /// </summary>
     private bool _transcriptExists;
-
-    /// <summary>
-    ///     Whether THIS flush has already checked that the staging path is not redirected. Per flush
-    ///     rather than per writer: the path never varies within one flush, so re-checking it for each of
-    ///     the sub-agent files would buy nothing, while remembering the answer for the writer's whole life
-    ///     would miss a link planted between flushes. See <see cref="IsPathSafeAsync"/>.
-    /// </summary>
-    private bool _tempPathGuarded;
 
     private bool _agentsDirectoryTouched;
     private int _subAgentCursor;
@@ -524,8 +598,6 @@ public sealed class ConversationTranscriptWriter
 
     private async Task<TranscriptFlushOutcome> FlushCoreAsync(CancellationToken ct)
     {
-        _tempPathGuarded = false;
-
         // Metadata carries BOTH values the flush needs — the workspace binding for step 1 and the title
         // for the retitle check — so it is read once here rather than twice at the two points of use.
         var metadata = await _store.LoadMetadataAsync(ThreadId, ct).ConfigureAwait(false);
@@ -1196,15 +1268,18 @@ public sealed class ConversationTranscriptWriter
         // The staging path is guarded for the same reason the destination is, and it cannot be guarded by
         // AppendScript: the payload is PUT here BEFORE any script runs. Its name is no less guessable than
         // the transcript's — a compile-time directory plus a hash of the thread id — and the bytes it
-        // carries are the same unredacted rows. Once per flush, because the path does not vary within one.
-        if (!_tempPathGuarded)
+        // carries are the same unredacted rows.
+        //
+        // Guarded before EVERY staging PUT, and deliberately NOT cached for the flush. One flush stages
+        // the main transcript and each descendant through this ONE path, and between two consecutive PUTs
+        // sits a whole AppendScript shell execution — a gateway round trip, not a millisecond. A cached
+        // answer would let a link planted in that window be followed by every PUT after it, once per
+        // descendant. The rationale for caching was that the path does not vary within a flush; the path
+        // not varying says nothing about the FILESYSTEM AT that path not varying, which is the only thing
+        // this guard reads.
+        if (!await IsPathSafeAsync(sessionId, _tempPath, ct).ConfigureAwait(false))
         {
-            if (!await IsPathSafeAsync(sessionId, _tempPath, ct).ConfigureAwait(false))
-            {
-                return AppendResult.Failed;
-            }
-
-            _tempPathGuarded = true;
+            return AppendResult.Failed;
         }
 
         try
@@ -1544,10 +1619,27 @@ public sealed class ConversationTranscriptWriter
 
     private async Task<bool> TryMoveAsync(string sessionId, string from, string to, CancellationToken ct)
     {
-        var result = await RunAsync(sessionId, ["mv", "--", from, to], ct).ConfigureAwait(false);
+        var result = await RunAsync(sessionId, ["sh", "-c", MoveScript, "sh", from, to], ct)
+            .ConfigureAwait(false);
         if (result is { ExitCode: 0 })
         {
             return true;
+        }
+
+        if (result is { ExitCode: UnsafePathExitCode or MoveTargetDirectoryExitCode })
+        {
+            _logger.LogWarning(
+                "Refusing to rename transcript {From} to {To} for thread {ThreadId} (exit {ExitCode}): one "
+                    + "of the two paths is a symlink or lies under one, or the destination resolves to a "
+                    + "directory — in which case mv moves the transcript INSIDE it, out of the directory "
+                    + "the .gitignore covers. Nothing is renamed and nothing is unlinked; the transcript "
+                    + "keeps its old name and the next flush tries again.",
+                from,
+                to,
+                ThreadId,
+                result.ExitCode
+            );
+            return false;
         }
 
         _logger.LogWarning(
