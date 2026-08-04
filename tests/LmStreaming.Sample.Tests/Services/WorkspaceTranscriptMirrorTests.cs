@@ -166,8 +166,92 @@ public sealed class WorkspaceTranscriptMirrorTests
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 
-    // ---------------------------------------------------------------- helpers
+    /// <summary>
+    /// Fails the FIRST subscription setup and forwards every later one to a real
+    /// <see cref="PublishingAgent"/>, so a test can drive a transient failure and then a genuine recovery
+    /// through the same agent INSTANCE — which is the identity the mirror's idempotent re-attach turns on.
+    /// </summary>
+    /// <param name="inner">The real agent every surviving attempt subscribes to.</param>
+    /// <param name="failOnFirstMoveNext">
+    /// <c>false</c> throws out of <c>SubscribeAsync</c> itself, before any enumerator exists; <c>true</c>
+    /// hands back an enumerable whose first <c>MoveNextAsync</c> throws, which is the case that leaves an
+    /// enumerator — and with it a live channel registration — behind for the mirror to clean up.
+    /// </param>
+    private sealed class FlakySubscriptionAgent(PublishingAgent inner, bool failOnFirstMoveNext)
+        : IMultiTurnAgent
+    {
+        private int _attempts;
+        private int _abandonedDisposals;
 
+        /// <summary>How many times anything asked this agent for its message stream.</summary>
+        public int SubscribeAttempts => Volatile.Read(ref _attempts);
+
+        /// <summary>How many enumerators of the FAILING enumerable were disposed.</summary>
+        public int AbandonedEnumeratorDisposals => Volatile.Read(ref _abandonedDisposals);
+
+        public string? CurrentRunId => inner.CurrentRunId;
+
+        public string ThreadId => inner.ThreadId;
+
+        public bool IsRunning => inner.IsRunning;
+
+        public IAsyncEnumerable<IMessage> SubscribeAsync(CancellationToken ct = default)
+        {
+            if (Interlocked.Increment(ref _attempts) > 1)
+            {
+                return inner.SubscribeAsync(ct);
+            }
+
+            return failOnFirstMoveNext
+                ? new ThrowingEnumerable(() => Interlocked.Increment(ref _abandonedDisposals))
+                : throw new InvalidOperationException("the fan-out refused the subscriber");
+        }
+
+        public ValueTask<SendReceipt> SendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) => inner.SendAsync(messages, inputId, parentRunId, ct);
+
+        public ValueTask<SendReceipt?> TrySendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) => inner.TrySendAsync(messages, inputId, parentRunId, ct);
+
+        public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default) =>
+            inner.ExecuteRunAsync(userInput, ct);
+
+        public Task RunAsync(CancellationToken ct = default) => inner.RunAsync(ct);
+
+        public Task StopAsync(TimeSpan? timeout = null) => inner.StopAsync(timeout);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+        /// <summary>An enumerable whose first <c>MoveNextAsync</c> throws, reporting whether the enumerator
+        /// the caller had already created was disposed.</summary>
+        private sealed class ThrowingEnumerable(Action onDispose) : IAsyncEnumerable<IMessage>
+        {
+            public IAsyncEnumerator<IMessage> GetAsyncEnumerator(CancellationToken ct = default) =>
+                new Enumerator(onDispose);
+
+            private sealed class Enumerator(Action onDispose) : IAsyncEnumerator<IMessage>
+            {
+                public IMessage Current => throw new NotSupportedException();
+
+                public ValueTask<bool> MoveNextAsync() =>
+                    throw new InvalidOperationException("the fan-out refused the subscriber");
+
+                public ValueTask DisposeAsync()
+                {
+                    onDispose();
+                    return ValueTask.CompletedTask;
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- helpers
 
     private static WorkspaceTranscriptMirror CreateMirror(
         IConversationStore store,
@@ -393,6 +477,83 @@ public sealed class WorkspaceTranscriptMirrorTests
         await WaitForAsync(
             () => SplicedInto(browser, MainPath),
             "A single run completion published after Attach returned never reached the mirror.");
+        _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
+    }
+
+    /// <summary>
+    /// A subscription whose SETUP failed must leave nothing behind. The registration is recorded before the
+    /// pump starts — deliberately, so nothing can be published into the window between them — and
+    /// <c>Attach</c> treats an existing registration for the same agent instance as an idempotent no-op, so
+    /// a failure that leaves that registration in place converts one transient error into a conversation
+    /// that can never be mirrored again: the pool hands the same instance back, <c>Attach</c> returns
+    /// without subscribing, and no later turn of that conversation reaches a transcript.
+    /// </summary>
+    [Fact]
+    public async Task Attach_ReSubscribes_WhenAnEarlierSubscriptionSetupFailed()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        PersistedMessage[] only = [Msg("m1", 1)];
+        await store.AppendMessagesAsync(ThreadId, only);
+
+        var browser = new FakeFileBrowser();
+        await using var inner = new PublishingAgent(ThreadId);
+        var agent = new FlakySubscriptionAgent(inner, failOnFirstMoveNext: false);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        // The failure must not escape into the pool's agent factory, which is what calls this.
+        var attach = () => mirror.Attach(agent);
+        _ = attach.Should().NotThrow();
+        _ = agent.SubscribeAttempts.Should().Be(1);
+
+        // The pool hands the SAME instance back on a later request. This is the re-attach the idempotent
+        // early return swallows while the failed registration is still resident.
+        mirror.Attach(agent);
+        _ = agent.SubscribeAttempts.Should().Be(
+            2,
+            "a registration whose pump never started must not make a re-attach of that agent a no-op");
+
+        await inner.PublishAsync(RunCompleted());
+        await WaitForAsync(
+            () => SplicedInto(browser, MainPath),
+            "The conversation stayed unmirrored after a transient subscription failure and a re-attach.");
+        _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
+    }
+
+    /// <summary>
+    /// The other half of the same failure: when <c>MoveNextAsync</c> is what threw, an enumerator already
+    /// exists — and it is the enumerator, not the call that produced it, that holds this subscriber's slot
+    /// in the agent's fan-out and its channel. Abandoning it retains both for the life of the agent, and
+    /// the re-subscription then publishes alongside a registration nobody is draining.
+    /// </summary>
+    [Fact]
+    public async Task Attach_DisposesTheEnumerator_WhenTheFirstMoveNextFails()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        PersistedMessage[] only = [Msg("m1", 1)];
+        await store.AppendMessagesAsync(ThreadId, only);
+
+        var browser = new FakeFileBrowser();
+        await using var inner = new PublishingAgent(ThreadId);
+        var agent = new FlakySubscriptionAgent(inner, failOnFirstMoveNext: true);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        var attach = () => mirror.Attach(agent);
+        _ = attach.Should().NotThrow();
+
+        // Disposal is deliberately off the caller's thread — Attach may neither block nor throw inside the
+        // pool's factory — so it is awaited rather than asserted inline.
+        await WaitForAsync(
+            () => agent.AbandonedEnumeratorDisposals == 1,
+            "The enumerator whose first MoveNextAsync threw was never disposed, so its subscriber registration and channel leak.");
+
+        // And the recovery still works, exactly as in the throw-before-the-enumerator case.
+        mirror.Attach(agent);
+        await inner.PublishAsync(RunCompleted());
+        await WaitForAsync(
+            () => SplicedInto(browser, MainPath),
+            "The conversation stayed unmirrored after a failed first MoveNextAsync and a re-attach.");
         _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
     }
 

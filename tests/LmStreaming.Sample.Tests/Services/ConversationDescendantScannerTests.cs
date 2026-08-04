@@ -230,6 +230,83 @@ public sealed class ConversationDescendantScannerTests
         afterNotice.Select(n => n.ThreadId).Should().Equal("subagent-raced");
     }
 
+    /// <summary>
+    /// A scan in flight belongs to the cache slot it STARTED against, and to no later one. When that slot
+    /// is dropped mid-scan the answer in flight describes the conversation that is gone — and a thread id
+    /// is client-suppliable and gets reused — so committing it into whatever slot the root has by then
+    /// serves the PREVIOUS conversation's descendants to every later reader: the recursive listing lists
+    /// them, and the transcript mirror fans a workspace copy out to them.
+    /// </summary>
+    /// <remarks>
+    /// The version stamp cannot catch this on its own. <c>Version</c> is a refresh counter that starts at
+    /// zero on every replacement slot, so the version observed before the drop compares EQUAL to a slot
+    /// created after it and the staleness check passes. This is the <see cref="ConversationDescendantScanner.Forget"/>
+    /// trigger; the bound-eviction trigger is the next test.
+    /// </remarks>
+    [Fact]
+    public async Task GetOrScanAsync_DiscardsAnInFlightScan_WhenTheRootWasForgottenMidScan()
+    {
+        const string root = "thread-reused-after-forget";
+        var store = new InMemoryConversationStore();
+        await SeedChildAsync(store, root, "old-child", "subagent-old");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocking = new BlockingListThreadsStore(store, gate.Task);
+        var scanner = CreateScanner(blocking);
+
+        // Parked holding the OLD conversation's roster.
+        var inFlight = scanner.GetOrScanAsync(root);
+        await blocking.FirstReadCompleted;
+
+        // The conversation is removed and the same thread id is reused by a different one.
+        scanner.Forget(root);
+        await store.DeleteThreadAsync("subagent-old", CancellationToken.None);
+        await SeedChildAsync(store, root, "new-child", "subagent-new");
+
+        gate.SetResult();
+        (await inFlight).Select(n => n.ThreadId).Should().Equal("subagent-old");
+
+        // The reader after the reuse must see the NEW conversation's descendants. Serving "subagent-old"
+        // here means the parked scan was committed into the slot that replaced the one it started against.
+        var afterReuse = await scanner.GetOrScanAsync(root);
+
+        afterReuse.Select(n => n.ThreadId).Should().Equal("subagent-new");
+    }
+
+    /// <summary>
+    /// The same defect, reached by its other trigger: the slot is not removed by
+    /// <see cref="ConversationDescendantScanner.Forget"/> but dropped by the LRU bound while the scan is in
+    /// flight. Nothing about the commit path distinguishes the two — both leave the root with a fresh,
+    /// zero-versioned slot — so both have to be covered, and a fix that only checks for an explicit forget
+    /// still mis-attributes an evicted root's scan.
+    /// </summary>
+    [Fact]
+    public async Task GetOrScanAsync_DiscardsAnInFlightScan_WhenTheRootWasEvictedMidScan()
+    {
+        const string root = "thread-reused-after-eviction";
+        const string other = "thread-evicting-root";
+        var store = new InMemoryConversationStore();
+        await SeedChildAsync(store, root, "old-child", "subagent-old");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocking = new BlockingListThreadsStore(store, gate.Task);
+        var scanner = CreateScanner(blocking, capacity: 1);
+
+        var inFlight = scanner.GetOrScanAsync(root);
+        await blocking.FirstReadCompleted;
+
+        // A second root claims the only slot, so the in-flight scan's slot is bound-evicted under it.
+        _ = await scanner.GetOrScanAsync(other);
+
+        await store.DeleteThreadAsync("subagent-old", CancellationToken.None);
+        await SeedChildAsync(store, root, "new-child", "subagent-new");
+
+        gate.SetResult();
+        (await inFlight).Select(n => n.ThreadId).Should().Equal("subagent-old");
+
+        var afterReuse = await scanner.GetOrScanAsync(root);
+
+        afterReuse.Select(n => n.ThreadId).Should().Equal("subagent-new");
+    }
+
     [Fact]
     public async Task Forget_DropsTheRootsGraph_SoTheNextCallRescans()
     {
@@ -379,23 +456,35 @@ public sealed class ConversationDescendantScannerTests
             new SubAgentScanCoverageCache(),
             scanner);
 
-    /// <summary>Holds the first <c>ListThreadsAsync</c> open until a gate completes, so a test can signal
-    /// a refresh while a scan is genuinely in flight.</summary>
+    /// <summary>Holds the first <c>ListThreadsAsync</c> open until a gate completes, so a test can act while
+    /// a scan is genuinely in flight.</summary>
+    /// <remarks>
+    /// The inner read happens BEFORE the park and its result is what the gated call eventually returns, so
+    /// the parked scan is carrying a genuinely stale answer — which is what makes "where does that answer
+    /// get committed" observable at all.
+    /// </remarks>
     private sealed class BlockingListThreadsStore(IConversationStore inner, Task gate) : IConversationStore
     {
+        private readonly TaskCompletionSource _read = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _calls;
+
+        /// <summary>Completes once the gated call has read the store and parked on the gate.</summary>
+        public Task FirstReadCompleted => _read.Task;
 
         public async Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
             int limit = 50,
             int offset = 0,
             CancellationToken ct = default)
         {
-            if (Interlocked.Increment(ref _calls) == 1)
+            var first = Interlocked.Increment(ref _calls) == 1;
+            var page = await inner.ListThreadsAsync(limit, offset, ct);
+            if (first)
             {
+                _read.SetResult();
                 await gate;
             }
 
-            return await inner.ListThreadsAsync(limit, offset, ct);
+            return page;
         }
 
         public Task AppendMessagesAsync(

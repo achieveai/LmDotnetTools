@@ -79,6 +79,11 @@ public sealed class ConversationDescendantScanner
     ///     signalled WHILE a scan was in flight discards that scan's now-stale answer instead of recording
     ///     it as fresh.
     /// </summary>
+    /// <remarks>
+    ///     The INSTANCE is the slot's lifecycle identity and a scan in flight is bound to the one it
+    ///     started against — <see cref="Version"/> is a refresh counter, not a generation, and restarts at
+    ///     zero on every replacement slot, so it cannot by itself tell a slot apart from its successor.
+    /// </remarks>
     private sealed class RootState
     {
         public long Version;
@@ -178,16 +183,17 @@ public sealed class ConversationDescendantScanner
         string rootThreadId,
         CancellationToken ct = default)
     {
+        RootState observed;
         long observedVersion;
         lock (_gate)
         {
-            var state = GetOrAddState(rootThreadId);
-            if (state.Nodes is not null && state.NodesVersion == state.Version)
+            observed = GetOrAddState(rootThreadId);
+            if (observed.Nodes is not null && observed.NodesVersion == observed.Version)
             {
-                return state.Nodes;
+                return observed.Nodes;
             }
 
-            observedVersion = state.Version;
+            observedVersion = observed.Version;
         }
 
         // Scanned outside the lock: two callers that both miss simply both scan (redundant, not
@@ -196,11 +202,27 @@ public sealed class ConversationDescendantScanner
 
         lock (_gate)
         {
-            var state = GetOrAddState(rootThreadId);
-            if (state.Version == observedVersion)
+            // The SLOT INSTANCE, not the key, is what this scan's answer belongs to. A version match
+            // alone is not enough: Version starts at 0 on every new RootState, so if this root's slot was
+            // dropped mid-scan — by Forget, or by the bound-eviction in GetOrAddState — a slot re-created
+            // afterwards compares equal to the version observed before the drop, and this scan's answer
+            // (the PREVIOUS conversation's descendants, since a thread id is client-suppliable and may be
+            // reused) would be committed as the replacement's cached graph, then served to every later
+            // reader and mirrored into the wrong workspace.
+            //
+            // Looked up rather than GetOrAddState'd on purpose: when the original slot is gone there is
+            // nothing this answer may be written into, and creating one only to discard the result would
+            // grow the cache and can bound-evict a live root for nothing.
+            if (_byRoot.TryGetValue(rootThreadId, out var node)
+                && ReferenceEquals(node.Value.Value, observed))
             {
-                state.Nodes = nodes;
-                state.NodesVersion = observedVersion;
+                // A completed write-back is USE, so the slot is renewed even when the answer is stale.
+                Renew(node);
+                if (observed.Version == observedVersion)
+                {
+                    observed.Nodes = nodes;
+                    observed.NodesVersion = observedVersion;
+                }
             }
         }
 

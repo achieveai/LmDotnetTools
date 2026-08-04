@@ -261,7 +261,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         var agent = subscription.Agent;
         var ct = subscription.Cancellation.Token;
 
-        IAsyncEnumerator<IMessage> enumerator;
+        IAsyncEnumerator<IMessage>? enumerator = null;
         ValueTask<bool> pending;
         try
         {
@@ -274,10 +274,73 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                 ex,
                 "Subscribing the transcript mirror to thread {ThreadId} failed",
                 agent.ThreadId);
+            AbandonFailedSubscription(subscription, enumerator);
             return;
         }
 
         _ = Task.Run(() => PumpAsync(subscription, enumerator, pending));
+    }
+
+    /// <summary>
+    ///     Undoes a subscription whose setup failed, so the conversation is merely unmirrored rather than
+    ///     permanently unmirrorable.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>The registration has to go.</b> <see cref="Attach"/> records the subscription before starting
+    ///     the pump — deliberately, so no message can be published into the window between the two — which
+    ///     means a failure here leaves behind a mapping no pump is consuming. <see cref="Attach"/> treats an
+    ///     existing mapping for the SAME agent instance as an idempotent no-op, so the pool re-attaching
+    ///     that instance (a request that reuses the pooled agent, say) would return without ever
+    ///     re-subscribing, and a transient setup failure would cost the conversation its transcript for the
+    ///     rest of its life rather than for one attempt.
+    ///     </para>
+    ///     <para>
+    ///     <b>Removed by reference, never by key.</b> A concurrent <see cref="Attach"/> — a mode switch is
+    ///     the ordinary case — may already have replaced this mapping with a live successor's; deleting the
+    ///     key would then cancel nothing but silently unregister the subscription that is actually working.
+    ///     </para>
+    ///     <para>
+    ///     <b>Nothing here may throw or block.</b> <see cref="Attach"/> runs inside the pool's agent
+    ///     factory. The enumerator — which exists when <c>MoveNextAsync</c> is what threw, and holds that
+    ///     subscriber's channel registration until it is disposed — is therefore drained off-thread through
+    ///     a path that swallows its own faults.
+    ///     </para>
+    /// </remarks>
+    private void AbandonFailedSubscription(Subscription subscription, IAsyncEnumerator<IMessage>? enumerator)
+    {
+        var threadId = subscription.Agent.ThreadId;
+
+        lock (_gate)
+        {
+            if (_subscriptions.TryGetValue(threadId, out var current)
+                && ReferenceEquals(current, subscription))
+            {
+                _ = _subscriptions.Remove(threadId);
+            }
+        }
+
+        Cancel(subscription);
+
+        if (enumerator is null)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Disposing the failed transcript subscription for thread {ThreadId} threw",
+                    threadId);
+            }
+        });
     }
 
     /// <summary>
