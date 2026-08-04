@@ -392,7 +392,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
                 + "\n"
                 + """{"file":"system/pagination.md","title":"Filter before paging","tags":["pagination"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}"""
                 + "\n");
-        fixture.FileSystem.Seed("/workspace/store/KnowledgeBase/_toc.md", "# Knowledge Base\n");
+        fixture.FileSystem.Seed("/workspace/store/KnowledgeBase/_toc.md", "# Knowledge Base\n\nTOC-ONLY-MARKER\n");
         var run = fixture.SeedRun();
 
         await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
@@ -407,8 +407,63 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         text.Should().Contain("tags: null, boundaries", "metadata is what lets a lesson be matched to a dimension");
         text.Should().Contain("sub-agent", "the parent is told to copy matching paths into each sub-agent's brief");
         text.Should().NotContain(
-            "Prior knowledge (KnowledgeBase/_toc.md)",
+            "TOC-ONLY-MARKER",
             "with an index present the weaker title-only ToC block must not be used");
+    }
+
+    [Fact]
+    public async Task Reviewed_ranks_knowledge_against_files_the_bounded_diff_truncated_away()
+    {
+        // The persisted diff is CAPPED, so on a large PR every `diff --git` header past the cap is gone.
+        // Ranking off that text makes the files changed late in a PR invisible to retrieval — exactly the
+        // files a big PR is most likely to need a lesson about. The changed-path list has to come from a
+        // lossless source (`git diff --name-only`), which stays tiny even when the patch does not.
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+                Limits = new CodeReviewDaemon.Sample.Configuration.SandboxLimits { MaxArtifactPayloadChars = 320 },
+            },
+            diffResult: new SandboxCommandResult(
+                0,
+                "diff --git a/src/Alpha/Widget.cs b/src/Alpha/Widget.cs\n"
+                    + string.Join('\n', Enumerable.Repeat("+ a line of widget body text", 20))
+                    + "\ndiff --git a/src/Zeta/KrakenTentacle.cs b/src/Zeta/KrakenTentacle.cs\n+ late\n",
+                string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/Alpha/Widget.cs\n", string.Empty));
+        // Registered FIRST: the fixture's broad "diff" rule would otherwise swallow this narrower one.
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only",
+            new SandboxCommandResult(0, "src/Alpha/Widget.cs\nsrc/Zeta/KrakenTentacle.cs\n", string.Empty));
+
+        // The kraken entry matches two tokens of a path that only the lossless list still carries, so it
+        // must outscore the widget entry. Its file sorts LAST ordinally and both entries share an Updated
+        // date, so neither tie-break can produce this order — only the score can.
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"system/a-widget.md","title":"Widget lifecycle","tags":["widget"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n"
+                + """{"file":"system/z-kraken.md","title":"Kraken tentacle retries","tags":["kraken","tentacle"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain(
+            "KrakenTentacle.cs\nb/src",
+            "the fixture's cap must really have truncated the diff, or this test proves nothing");
+        text.IndexOf("system/z-kraken.md", StringComparison.Ordinal).Should().BeGreaterThan(-1);
+        text.IndexOf("system/z-kraken.md", StringComparison.Ordinal).Should().BeLessThan(
+            text.IndexOf("system/a-widget.md", StringComparison.Ordinal),
+            "the entry matching the truncated-away path must still be ranked on it");
     }
 
     [Fact]
@@ -437,8 +492,15 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
 
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().Contain("Prior knowledge (KnowledgeBase/_toc.md)", "the ToC is prepended as a labelled block");
+        // The prompt teaches ONE canonical heading and teaches that its absence means "no Knowledge Base
+        // exists, don't go looking". The fallback must therefore arrive under that same heading — a
+        // separately-labelled block is one the agent has been told to ignore — and must still carry an exact
+        // absolute path, since a bare "_toc.md" is not something the agent can open.
+        text.Should().Contain("## Prior knowledge (Knowledge Base)", "the ToC is prepended as a labelled block");
         text.Should().Contain("Null-guard boundaries", "the seeded ToC entries are surfaced to the reviewer");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "the fallback must hand over the ToC's exact absolute path");
     }
 
     [Fact]
@@ -476,7 +538,7 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         await act.Should().NotThrowAsync("a KB/notes read failure must degrade, not kill the review (design §6)");
         var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
         var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
-        text.Should().NotContain("Prior knowledge (KnowledgeBase/_toc.md)", "the failed KB read is skipped, not prepended");
+        text.Should().NotContain("Prior knowledge", "the failed KB read is skipped, not prepended");
     }
 
     [Fact]

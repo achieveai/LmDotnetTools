@@ -31,6 +31,17 @@ internal sealed class FakeSandboxCommandRunner : ISandboxCommandRunner
         On(c => ArgvContains(c, argvSubstring), result);
 
     /// <summary>
+    /// Same as <see cref="OnArgvContains"/> but registers the rule AHEAD of every rule added so far. Rules
+    /// are first-match-wins, so a narrow rule ("diff --name-only") added after a fixture's broad one
+    /// ("diff") would never fire; this lets a test refine a fixture-provided rule without rebuilding it.
+    /// </summary>
+    public FakeSandboxCommandRunner OnArgvContainsFirst(string argvSubstring, SandboxCommandResult result)
+    {
+        _rules.Insert(0, (c => ArgvContains(c, argvSubstring), () => result));
+        return this;
+    }
+
+    /// <summary>
     /// Scripts results for successive matches of <paramref name="argvSubstring"/>: the first match
     /// returns <paramref name="results"/>[0], the next [1], and so on, repeating the last entry once
     /// exhausted. Used to exercise rebase-retry (fail, fail, succeed) paths.

@@ -579,6 +579,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
         var fileManifest = await BuildFileManifestAsync(git, layout.TargetDir, cancellationToken).ConfigureAwait(false);
+        var changedPaths = await BuildChangedPathsAsync(git, layout.TargetDir, run, cancellationToken)
+            .ConfigureAwait(false);
 
         _ = _store.AddArtifact(new ReviewArtifact
         {
@@ -587,7 +589,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactKind = ContextArtifactKind,
             Provider = provider,
             Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, layout.TargetDir, layout.StoreRoot)),
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, layout.TargetDir, layout.StoreRoot,
+                changedPaths)),
         });
 
         _logger.LogInformation(
@@ -626,6 +629,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
         var fileManifest = await BuildFileManifestAsync(git, prepared.HostDir, cancellationToken).ConfigureAwait(false);
+        var changedPaths = await BuildChangedPathsAsync(git, prepared.HostDir, run, cancellationToken)
+            .ConfigureAwait(false);
 
         _ = _store.AddArtifact(new ReviewArtifact
         {
@@ -634,7 +639,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ArtifactKind = ContextArtifactKind,
             Provider = provider,
             Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
-                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, S2SCheckoutRoot, null)),
+                run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest, S2SCheckoutRoot, null,
+                changedPaths)),
         });
 
         _logger.LogInformation(
@@ -733,6 +739,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
             var fileManifest = await BuildFileManifestAsync(sdkGit, prepared.TargetDir, cancellationToken)
                 .ConfigureAwait(false);
+            var changedPaths = await BuildChangedPathsAsync(sdkGit, prepared.TargetDir, run, cancellationToken)
+                .ConfigureAwait(false);
             var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
 
             _ = _store.AddArtifact(new ReviewArtifact
@@ -743,7 +751,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 Provider = provider,
                 Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
                     run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
-                    prepared.TargetDir, StoreRoot)),
+                    prepared.TargetDir, StoreRoot, changedPaths)),
             });
 
             if (!_leasedReviews.TryAdd(
@@ -819,6 +827,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var boundedDiff = _options.Limits.CapArtifactPayload(diff.Stdout);
         var fileManifest = await BuildFileManifestAsync(hostGit, prepared.TargetDir, cancellationToken)
             .ConfigureAwait(false);
+        var changedPaths = await BuildChangedPathsAsync(hostGit, prepared.TargetDir, run, cancellationToken)
+            .ConfigureAwait(false);
         var notesDirSandbox = PosixJoin(StoreRoot, notesRelPath);
         var scratchDirSandbox = $"{SandboxWorkspaceRoot}/{_options.ScratchDirName}";
         _ = _store.AddArtifact(new ReviewArtifact
@@ -829,7 +839,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             Provider = provider,
             Payload = JsonSerializer.Serialize(new ContextArtifactPayload(
                 run.PrId, run.BaseSha, run.HeadSha, boundedDiff, fileManifest,
-                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot)),
+                PosixJoin(StoreRoot, submoduleRelPath), StoreRoot, changedPaths)),
         });
         if (!_leasedReviews.TryAdd(
             run.Id,
@@ -1170,6 +1180,40 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         return _options.Limits.CapArtifactPayload(lsFiles.Stdout.Trim());
     }
 
+    /// <summary>
+    /// The <c>base...head</c> changed-path listing (<c>git diff --name-only</c>), bounded like every other
+    /// artifact payload. Kept SEPARATE from the diff because the diff is capped: on a large PR the patch
+    /// text loses its later <c>diff --git</c> headers entirely, so anything that ranks or routes by changed
+    /// file would go blind to exactly the files changed last. This listing is one line per file, so it
+    /// survives the same cap for a PR one or two orders of magnitude larger.
+    /// <para>
+    /// <c>--no-renames</c> keeps a rename as its delete+add pair, so both the old and the new path are
+    /// listed — the same both-sides semantics the diff headers carry, and either may be what a Knowledge
+    /// Base lesson was filed against. Best-effort: an unavailable listing degrades to ranking off the diff
+    /// headers rather than failing the run.
+    /// </para>
+    /// </summary>
+    private async Task<string> BuildChangedPathsAsync(
+        GitRunner git, string targetDir, ReviewRun run, CancellationToken cancellationToken)
+    {
+        var nameOnly = await git
+            .RunAsync(
+                ["-C", targetDir, "diff", "--name-only", "--no-renames", $"{run.BaseSha}...{run.HeadSha}"],
+                targetDir,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!nameOnly.Succeeded)
+        {
+            _logger.LogWarning(
+                "Run {RunId}: changed-path listing unavailable (git diff --name-only exit {ExitCode}): {Stderr}; "
+                    + "prior-knowledge ranking falls back to the bounded diff headers.",
+                run.Id, nameOnly.ExitCode, nameOnly.Stderr);
+            return string.Empty;
+        }
+
+        return _options.Limits.CapArtifactPayload(nameOnly.Stdout.Trim());
+    }
+
     private static int ManifestFileCount(string manifest) =>
         string.IsNullOrWhiteSpace(manifest)
             ? 0
@@ -1278,7 +1322,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
         reviewInput = await PrependPriorKnowledgeAsync(
-                reviewInput, run.Id, context.StoreRoot, repo, context.Diff, cancellationToken)
+                reviewInput, run.Id, context.StoreRoot, repo, context.Diff, context.ChangedPaths, cancellationToken)
             .ConfigureAwait(false);
         reviewInput = await PrependRepoGuidanceAsync(reviewInput, run.Id, cancellationToken)
             .ConfigureAwait(false);
@@ -1463,6 +1507,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? storeRoot,
         RepoIdentity repo,
         string? diff,
+        string? changedPaths,
         CancellationToken cancellationToken)
     {
         // A pooled review reads KnowledgeBase/_toc.md HOST-side from its leased slot's store checkout — the same
@@ -1471,39 +1516,53 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // 404s ("Session not found"); every pooled retrieval through it failed silently, so reviews never saw
         // prior knowledge even though extraction populates the KB on the store's main. Non-pooled/legacy runs
         // (no lease) keep the original _fileSystem/storeRoot path unchanged.
+        //
+        // The root we READ through and the root we RENDER into the prompt are NOT the same in pooled S2S mode:
+        // there the lease's prepared store root is a HOST path (the slot's store/ directory on the daemon's
+        // disk), while the agent sees that very directory mounted at StoreRoot. Handing the agent the host
+        // path yields entries it can never open, so render against the root the context artifact advertises —
+        // the one the agent's tools resolve — and keep reading through the host root.
         ISandboxFileSystem fileSystem;
-        string? root;
+        string? readRoot;
+        string? renderRoot;
         if (_slotWorkspace is not null && _leasedReviews.TryGetValue(runId, out var lease))
         {
             fileSystem = lease.Session?.FileSystem ?? _slotWorkspace.HostFileSystem;
-            root = lease.Prepared.StoreRoot;
+            readRoot = lease.Prepared.StoreRoot;
+            renderRoot = string.IsNullOrWhiteSpace(storeRoot) ? StoreRoot : storeRoot;
         }
         else
         {
             fileSystem = _fileSystem;
-            root = storeRoot;
+            readRoot = storeRoot;
+            renderRoot = storeRoot;
         }
 
-        if (string.IsNullOrWhiteSpace(root))
+        if (string.IsNullOrWhiteSpace(readRoot) || string.IsNullOrWhiteSpace(renderRoot))
         {
             return reviewInput;
         }
 
-        var knowledgeBaseDir = PosixJoin(root, "KnowledgeBase");
+        var knowledgeBaseDir = PosixJoin(readRoot, "KnowledgeBase");
+        var agentKnowledgeBaseDir = PosixJoin(renderRoot, "KnowledgeBase");
         var index = await TryReadKnowledgeFileAsync(
             fileSystem, PosixJoin(knowledgeBaseDir, "_index.jsonl"), cancellationToken).ConfigureAwait(false);
 
-        var digest = BuildKnowledgeDigest(index, knowledgeBaseDir, repo, diff);
+        var digest = BuildKnowledgeDigest(index, agentKnowledgeBaseDir, repo, diff, changedPaths);
         if (digest.Length > 0)
         {
             return $"{digest}\n{reviewInput}";
         }
 
         // No usable index (never extracted, or a torn file): fall back to the table of contents. Titles and
-        // links only — the agent gets no tags, no scope and no absolute paths — but it beats reviewing blind.
+        // links only — the agent gets no tags, no scope and no ranking — but it beats reviewing blind. It is
+        // rendered under the SAME heading as the ranked digest on purpose: the prompt teaches that heading
+        // as the one place prior knowledge appears, and teaches that its absence means there is no Knowledge
+        // Base to look for, so a separately-labelled fallback block would be read as noise and skipped.
         var toc = await TryReadKnowledgeFileAsync(
             fileSystem, PosixJoin(knowledgeBaseDir, "_toc.md"), cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(toc))
+        var tocBlock = KnowledgeDigest.RenderTableOfContents(toc, agentKnowledgeBaseDir);
+        if (tocBlock.Length == 0)
         {
             _logger.LogInformation(
                 "No usable Knowledge Base at {KnowledgeBaseDir}; reviewing without prior knowledge.",
@@ -1513,8 +1572,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         _logger.LogInformation(
             "Knowledge Base index unavailable; falling back to _toc.md ({Length} chars) for prior knowledge.",
-            toc.Length);
-        return $"## Prior knowledge (KnowledgeBase/_toc.md)\n\n{toc}\n\n{reviewInput}";
+            toc!.Length);
+        return $"{tocBlock}\n{reviewInput}";
     }
 
     /// <summary>
@@ -1523,7 +1582,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// retrieval failure and a healthy review are indistinguishable in the daemon's logs, which is how this
     /// step went unnoticed as a no-op before.
     /// </summary>
-    private string BuildKnowledgeDigest(string? index, string knowledgeBaseDir, RepoIdentity repo, string? diff)
+    private string BuildKnowledgeDigest(
+        string? index, string knowledgeBaseDir, RepoIdentity repo, string? diff, string? changedPaths)
     {
         var entries = KnowledgeIndex.ParseIndex(index);
         if (entries.Count == 0)
@@ -1531,23 +1591,34 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return string.Empty;
         }
 
-        var changedPaths = KnowledgeDigest.ExtractChangedPaths(diff);
+        // Rank off the lossless changed-path listing; the diff headers are only a fallback for artifacts
+        // written before that listing was persisted, and they under-report on exactly the large PRs where
+        // the ranking matters most, because the diff they live in was capped.
+        var ranked = KnowledgeDigest.ParseChangedPaths(changedPaths);
+        if (ranked.Count == 0)
+        {
+            ranked = KnowledgeDigest.ExtractChangedPaths(diff);
+        }
+
         var selected = KnowledgeDigest.SelectRelevant(
-            entries, changedPaths, repo.RepoName, MaxKnowledgeEntries);
+            entries, ranked, repo.RepoName, MaxKnowledgeEntries);
         var digest = KnowledgeDigest.Render(
             selected, knowledgeBaseDir, MaxKnowledgeDigestChars, entries.Count - selected.Count);
 
+        // Report the RENDERED entries, never the selected ones: the character budget can cut the tail off
+        // the block, and a log line naming entries the reviewer never received would make a partial
+        // retrieval indistinguishable from a complete one — the same blindness this line exists to end.
         _logger.LogInformation(
             "Prior knowledge: surfaced {SurfacedCount} of {TotalCount} Knowledge Base entries ({DigestLength} chars) "
                 + "ranked against {ChangedPathCount} changed paths for scope '{RepoScope}': {SurfacedEntries}",
-            selected.Count,
+            digest.Rendered.Count,
             entries.Count,
-            digest.Length,
-            changedPaths.Count,
+            digest.Text.Length,
+            ranked.Count,
             repo.RepoName,
-            string.Join(", ", selected.Select(entry => entry.File)));
+            string.Join(", ", digest.Rendered.Select(entry => entry.File)));
 
-        return digest;
+        return digest.Text;
     }
 
     /// <summary>
@@ -3081,7 +3152,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 /// newline-joined tracked-file list of the head checkout (bounded), appended so the review agent can Read
 /// files by exact path; <see cref="CheckoutRoot"/> is the absolute dir the reviewed repo is checked out in
 /// (the manifest paths are relative to it), and <see cref="StoreRoot"/> is the cross-repo store root when the
-/// reviewed repo was checked out as a store submodule (else null). All are null/empty on older artifacts.</summary>
+/// reviewed repo was checked out as a store submodule (else null). <see cref="ChangedPaths"/> is the
+/// newline-joined <c>git diff --name-only</c> listing for the same range: <see cref="Diff"/> is capped, so on
+/// a large PR its later headers are gone and it is NOT a complete record of what changed — anything that
+/// ranks or routes by changed file must read this instead. All are null/empty on older artifacts.</summary>
 internal sealed record ContextArtifactPayload(
     string PrId,
     string BaseSha,
@@ -3089,7 +3163,8 @@ internal sealed record ContextArtifactPayload(
     string Diff,
     string? FileManifest = null,
     string? CheckoutRoot = null,
-    string? StoreRoot = null);
+    string? StoreRoot = null,
+    string? ChangedPaths = null);
 
 /// <summary>The persisted primary review output (kind <c>review</c>). <see cref="ThreadId"/> is the conversation
 /// thread the review ran on — on the S2S path the LmStreaming-minted id the Posted stage turns into the posted

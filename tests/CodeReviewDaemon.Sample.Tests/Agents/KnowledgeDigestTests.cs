@@ -1,4 +1,5 @@
 using CodeReviewDaemon.Sample.Agents;
+using CodeReviewDaemon.Sample.Configuration;
 
 namespace CodeReviewDaemon.Sample.Tests.Agents;
 
@@ -45,6 +46,58 @@ public class KnowledgeDigestTests
     public void ExtractChangedPaths_NoHeaders_ReturnsEmpty(string? diff)
     {
         KnowledgeDigest.ExtractChangedPaths(diff).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ExtractChangedPaths_ReadsGitsQuotedHeaderForm()
+    {
+        // Git quotes a header path that carries non-ASCII or special bytes, octal-escaping each UTF-8 byte.
+        // A parser that only knows the bare form silently drops the file — and a dropped file contributes
+        // nothing to ranking, so the lesson that would have matched it never surfaces.
+        var diff = """diff --git "a/src/Caf\303\251/Br\303\274cke.cs" "b/src/Caf\303\251/Br\303\274cke.cs" """.TrimEnd();
+
+        KnowledgeDigest.ExtractChangedPaths(diff).Should().Equal("src/Café/Brücke.cs");
+    }
+
+    [Fact]
+    public void ExtractChangedPaths_ReadsAQuotedRenameAsBothPaths()
+    {
+        var diff = """diff --git "a/old/na\"me.cs" "b/new/na\"me.cs" """.TrimEnd();
+
+        KnowledgeDigest.ExtractChangedPaths(diff).Should().Equal("old/na\"me.cs", "new/na\"me.cs");
+    }
+
+    // ---- ParseChangedPaths ---------------------------------------------------------------------
+
+    [Fact]
+    public void ParseChangedPaths_ReadsOnePathPerLineAndDeduplicates()
+    {
+        var nameOnly = "src/A.cs\nsrc/B.cs\n\nsrc/A.cs\n";
+
+        KnowledgeDigest.ParseChangedPaths(nameOnly).Should().Equal("src/A.cs", "src/B.cs");
+    }
+
+    [Fact]
+    public void ParseChangedPaths_UnquotesGitsQuotedForm()
+    {
+        KnowledgeDigest.ParseChangedPaths("\"src/Caf\\303\\251.cs\"\n").Should().Equal("src/Café.cs");
+    }
+
+    [Fact]
+    public void ParseChangedPaths_DropsTheTruncationMarkerRatherThanRankingAgainstIt()
+    {
+        var nameOnly = "src/A.cs\n" + SandboxLimits.TruncationMarker;
+
+        KnowledgeDigest.ParseChangedPaths(nameOnly).Should().Equal("src/A.cs");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ParseChangedPaths_Blank_ReturnsEmpty(string? nameOnly)
+    {
+        KnowledgeDigest.ParseChangedPaths(nameOnly).Should().BeEmpty();
     }
 
     // ---- Ranking -------------------------------------------------------------------------------
@@ -128,11 +181,11 @@ public class KnowledgeDigestTests
         var digest = KnowledgeDigest.Render(
             [Entry("system/alpha.md", "Alpha lesson", ["a", "b"])], KbRoot, charBudget: 10_000, omitted: 0);
 
-        digest.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md");
-        digest.Should().Contain("Alpha lesson");
-        digest.Should().Contain("a, b");
-        digest.Should().Contain("Read");
-        digest.Should().Contain("Grep", "the digest must actively warn the agent off Grep");
+        digest.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md");
+        digest.Text.Should().Contain("Alpha lesson");
+        digest.Text.Should().Contain("a, b");
+        digest.Text.Should().Contain("Read");
+        digest.Text.Should().Contain("Grep", "the digest must actively warn the agent off Grep");
     }
 
     [Fact]
@@ -141,13 +194,13 @@ public class KnowledgeDigestTests
         var digest = KnowledgeDigest.Render(
             [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
 
-        digest.Should().Contain("sub-agent");
+        digest.Text.Should().Contain("sub-agent");
     }
 
     [Fact]
     public void Render_NoEntries_ReturnsEmptySoTheCallerLeavesInputUntouched()
     {
-        KnowledgeDigest.Render([], KbRoot, charBudget: 10_000, omitted: 0).Should().BeEmpty();
+        KnowledgeDigest.Render([], KbRoot, charBudget: 10_000, omitted: 0).Text.Should().BeEmpty();
     }
 
     [Fact]
@@ -159,9 +212,9 @@ public class KnowledgeDigestTests
 
         var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 900, omitted: 0);
 
-        digest.Length.Should().BeLessThan(1200, "the budget must actually bound the output");
-        digest.Should().MatchRegex(@"\d+ more entr");
-        digest.Should().Contain("_toc.md", "the agent needs a route to the entries that did not fit");
+        digest.Text.Length.Should().BeLessThan(1200, "the budget must actually bound the output");
+        digest.Text.Should().MatchRegex(@"\d+ more entr");
+        digest.Text.Should().Contain("_toc.md", "the agent needs a route to the entries that did not fit");
     }
 
     [Fact]
@@ -170,6 +223,65 @@ public class KnowledgeDigestTests
         var digest = KnowledgeDigest.Render(
             [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 7);
 
-        digest.Should().Contain("7 more entr");
+        digest.Text.Should().Contain("7 more entr");
+    }
+
+    [Fact]
+    public void Render_ReportsExactlyTheEntriesItPutInTheBlock()
+    {
+        // The caller logs this list as its proof that retrieval worked. If it reported what was SELECTED
+        // rather than what was RENDERED, the budget cut-off would silently turn that proof into a lie —
+        // the log would name entries the reviewer never received, which is the exact silent failure the
+        // proof-of-use logging exists to make impossible.
+        var entries = Enumerable.Range(0, 40)
+            .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
+            .ToArray();
+
+        var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 900, omitted: 0);
+
+        digest.Rendered.Should().NotBeEmpty();
+        digest.Rendered.Count.Should().BeLessThan(entries.Length, "the budget must have dropped some entries");
+        foreach (var entry in digest.Rendered)
+        {
+            digest.Text.Should().Contain(entry.File, "a reported entry must actually be in the block");
+        }
+
+        foreach (var entry in entries.Except(digest.Rendered))
+        {
+            digest.Text.Should().NotContain(entry.File, "an unreported entry must not be in the block");
+        }
+    }
+
+    [Fact]
+    public void Render_NoEntries_ReportsNothingAsRendered()
+    {
+        KnowledgeDigest.Render([], KbRoot, charBudget: 10_000, omitted: 3).Rendered.Should().BeEmpty();
+    }
+
+    // ---- RenderTableOfContents ------------------------------------------------------------------
+
+    [Fact]
+    public void RenderTableOfContents_UsesTheCanonicalHeadingAndTheTocsAbsolutePath()
+    {
+        var block = KnowledgeDigest.RenderTableOfContents(
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n", KbRoot);
+
+        block.Should().StartWith(
+            "## Prior knowledge (Knowledge Base)",
+            "the prompt teaches one heading and teaches that its absence means there is no KB at all");
+        block.Should().Contain("/workspace/store/KnowledgeBase/_toc.md");
+        block.Should().Contain("/workspace/store/KnowledgeBase/", "the links are relative to a root the agent needs");
+        block.Should().Contain("[Alpha](system/alpha.md)", "the table of contents rides along verbatim");
+        block.Should().Contain("Grep", "the fallback must warn the agent off Grep too");
+        block.Should().Contain("sub-agent");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   \n")]
+    public void RenderTableOfContents_Blank_ReturnsEmptySoTheCallerLeavesInputUntouched(string? toc)
+    {
+        KnowledgeDigest.RenderTableOfContents(toc, KbRoot).Should().BeEmpty();
     }
 }

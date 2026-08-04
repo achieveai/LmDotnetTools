@@ -1,4 +1,5 @@
 using System.Text;
+using CodeReviewDaemon.Sample.Configuration;
 
 namespace CodeReviewDaemon.Sample.Agents;
 
@@ -81,6 +82,44 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
+    /// Reads the paths of a <c>git diff --name-only</c> listing (one path per line, git's quoted form
+    /// allowed) into a deduplicated, first-seen-order list. This is the PREFERRED ranking input: the diff
+    /// text the review persists is capped, so on a large PR its later <c>diff --git</c> headers are simply
+    /// gone and <see cref="ExtractChangedPaths"/> cannot see the files changed last — the name-only listing
+    /// stays orders of magnitude smaller and survives the same cap intact. A trailing truncation marker (if
+    /// even this listing was capped) is dropped rather than ranked against. Returns empty for blank input,
+    /// which lets the caller fall back to the diff headers for artifacts written before this existed.
+    /// </summary>
+    public static IReadOnlyList<string> ParseChangedPaths(string? nameOnlyListing)
+    {
+        if (string.IsNullOrWhiteSpace(nameOnlyListing))
+        {
+            return [];
+        }
+
+        var paths = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var markerHead = SandboxLimits.TruncationMarker.TrimStart('\n');
+
+        foreach (var raw in nameOnlyListing.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith(markerHead, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var path = Unquote(line);
+            if (path.Length > 0 && seen.Add(path))
+            {
+                paths.Add(path);
+            }
+        }
+
+        return paths;
+    }
+
+    /// <summary>
     /// Ranks <paramref name="entries"/> against <paramref name="changedPaths"/> and returns at most
     /// <paramref name="maxEntries"/> of them, best first. An entry scores on tag and title tokens shared
     /// with the changed paths, plus a bonus when its scope is <paramref name="repoScope"/>.
@@ -128,10 +167,16 @@ internal static class KnowledgeDigest
     /// path the agent can Read directly. Entries are appended while the block fits in
     /// <paramref name="charBudget"/>; whatever does not fit, plus the <paramref name="omitted"/> entries
     /// the ranking already dropped, is reported in a footer that points at <c>_toc.md</c> so nothing
-    /// disappears silently. Returns an empty string when there is nothing to say, letting the caller leave
-    /// the review input untouched.
+    /// disappears silently. Returns an empty <see cref="KnowledgeDigestBlock.Text"/> when there is nothing
+    /// to say, letting the caller leave the review input untouched.
+    /// <para>
+    /// <see cref="KnowledgeDigestBlock.Rendered"/> lists the entries that SURVIVED the budget, which is
+    /// deliberately not the same as the entries passed in: the caller logs that list as its proof that
+    /// retrieval reached the reviewer, and a proof that names entries the reviewer never received is worse
+    /// than no proof at all — it is the silent failure this logging exists to expose, wearing a green badge.
+    /// </para>
     /// </summary>
-    public static string Render(
+    public static KnowledgeDigestBlock Render(
         IReadOnlyList<KnowledgeEntryMeta> entries,
         string knowledgeBaseRoot,
         int charBudget,
@@ -142,30 +187,66 @@ internal static class KnowledgeDigest
 
         if (entries.Count == 0)
         {
-            return omitted > 0 ? Header() + Footer(omitted, knowledgeBaseRoot) : string.Empty;
+            return new KnowledgeDigestBlock(
+                omitted > 0 ? Header() + Footer(omitted, knowledgeBaseRoot) : string.Empty, []);
         }
 
         var builder = new StringBuilder(Header());
-        var listed = 0;
+        var rendered = new List<KnowledgeEntryMeta>(entries.Count);
         foreach (var entry in entries)
         {
             var line = RenderEntry(entry, knowledgeBaseRoot);
-            if (listed > 0 && builder.Length + line.Length > charBudget)
+            if (rendered.Count > 0 && builder.Length + line.Length > charBudget)
             {
                 break; // Always list at least one entry, even under an implausibly small budget.
             }
 
             _ = builder.Append(line);
-            listed++;
+            rendered.Add(entry);
         }
 
-        var missing = omitted + (entries.Count - listed);
-        return builder.Append(missing > 0 ? Footer(missing, knowledgeBaseRoot) : string.Empty).ToString();
+        var missing = omitted + (entries.Count - rendered.Count);
+        return new KnowledgeDigestBlock(
+            builder.Append(missing > 0 ? Footer(missing, knowledgeBaseRoot) : string.Empty).ToString(),
+            rendered);
+    }
+
+    /// <summary>
+    /// Renders a raw <c>_toc.md</c> as the prior-knowledge block, for when <c>_index.jsonl</c> is missing or
+    /// torn (a Knowledge Base written before the index existed, or a crash mid-write). Strictly weaker than
+    /// <see cref="Render"/> — the ToC carries titles and KB-relative links, so there are no tags, no scope
+    /// and no ranking — but it arrives under the same <see cref="Heading"/> and states the absolute root the
+    /// links hang off, so the agent can still open an entry and still hand paths to its sub-agents. Returns
+    /// an empty string for a blank table of contents, letting the caller leave the review input untouched.
+    /// </summary>
+    public static string RenderTableOfContents(string? tableOfContents, string knowledgeBaseRoot)
+    {
+        ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
+
+        if (string.IsNullOrWhiteSpace(tableOfContents))
+        {
+            return string.Empty;
+        }
+
+        var root = knowledgeBaseRoot.Replace('\\', '/').TrimEnd('/');
+        return $"""
+            {Heading}
+
+            Durable lessons from earlier reviews. The ranked index was unavailable, so this is the Knowledge
+            Base table of contents verbatim, read from {Join(knowledgeBaseRoot, "_toc.md")}. Its links are
+            RELATIVE to {root}/ — join a link onto that directory to get the entry's exact absolute path and
+            open it with the Read tool; do NOT Grep or Glob for it, because a root-level Grep can come back
+            empty even when the file exists. When you dispatch a sub-agent for a dimension, copy the paths
+            that match that dimension into its brief; it has no other way to see them and will otherwise
+            review with no prior knowledge at all.
+
+
+            """ + tableOfContents.TrimEnd('\n') + "\n";
     }
 
     private static string Header() =>
-        """
-        ## Prior knowledge (Knowledge Base)
+        $"""
+        {Heading}
 
         Durable lessons from earlier reviews, ranked by relevance to the files this PR changes. Open one
         with the Read tool using the EXACT ABSOLUTE PATH shown below — do NOT Grep or Glob for it, because
@@ -175,6 +256,15 @@ internal static class KnowledgeDigest
 
 
         """;
+
+    /// <summary>
+    /// The one heading the prior-knowledge block ever carries. The review prompt teaches this exact string
+    /// AND teaches that its absence means no Knowledge Base exists, so a block rendered under any other
+    /// heading is one the agent has been told not to go looking for — it would read as knowledge-blind even
+    /// though the knowledge was right there in its input. Both the ranked digest and the
+    /// <see cref="RenderTableOfContents"/> fallback therefore share it.
+    /// </summary>
+    private const string Heading = "## Prior knowledge (Knowledge Base)";
 
     private static string Footer(int missing, string knowledgeBaseRoot) =>
         $"\n{missing} more entr{(missing == 1 ? "y is" : "ies are")} not listed here; the full list is in "
@@ -195,18 +285,31 @@ internal static class KnowledgeDigest
         $"{root.Replace('\\', '/').TrimEnd('/')}/{relative.Replace('\\', '/').TrimStart('/')}";
 
     /// <summary>
-    /// Splits the <c>a/… b/…</c> remainder of a <c>diff --git</c> header. Paths may themselves contain
-    /// " b/", so the candidate whose two sides are equal wins (the overwhelmingly common unchanged-name
-    /// case); failing that, the first candidate is taken, which is correct for a rename.
+    /// Splits the <c>a/… b/…</c> remainder of a <c>diff --git</c> header. Either side may be given in git's
+    /// quoted form (<c>"a/caf\303\251.cs"</c>) when the path carries non-ASCII or special bytes, so both the
+    /// bare <c>" b/"</c> and the quoted <c>" \"b/"</c> separators are considered. Paths may themselves
+    /// contain a separator, so the candidate whose two sides are equal wins (the overwhelmingly common
+    /// unchanged-name case); failing that, the first candidate is taken, which is correct for a rename.
     /// </summary>
     private static (string Left, string Right) SplitHeaderPaths(string remainder)
     {
         var fallback = (Left: string.Empty, Right: string.Empty);
-        for (var i = remainder.IndexOf(" b/", StringComparison.Ordinal); i >= 0;
-            i = remainder.IndexOf(" b/", i + 1, StringComparison.Ordinal))
+        for (var i = 0; i < remainder.Length - 2; i++)
         {
+            if (remainder[i] != ' ')
+            {
+                continue;
+            }
+
+            var rest = remainder[(i + 1)..];
+            if (!rest.StartsWith("b/", StringComparison.Ordinal)
+                && !rest.StartsWith("\"b/", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             var left = Unprefix(remainder[..i], "a/");
-            var right = Unprefix(remainder[(i + 1)..], "b/");
+            var right = Unprefix(rest, "b/");
             if (left == right)
             {
                 return (left, right);
@@ -223,8 +326,66 @@ internal static class KnowledgeDigest
 
     private static string Unprefix(string value, string prefix)
     {
-        var trimmed = value.Trim().Trim('"');
+        var trimmed = Unquote(value.Trim());
         return trimmed.StartsWith(prefix, StringComparison.Ordinal) ? trimmed[prefix.Length..] : trimmed;
+    }
+
+    /// <summary>
+    /// Decodes git's quoted path form — a double-quoted C string whose non-ASCII bytes appear as three-digit
+    /// octal escapes, one per UTF-8 byte. Escapes are collected as BYTES and decoded once at the end, so a
+    /// multi-byte character split across several escapes round-trips. A value that is not quoted is returned
+    /// unchanged, so callers can pass either form.
+    /// </summary>
+    private static string Unquote(string value)
+    {
+        if (value.Length < 2 || value[0] != '"' || value[^1] != '"')
+        {
+            return value;
+        }
+
+        var bytes = new List<byte>(value.Length);
+        var inner = value[1..^1];
+        for (var i = 0; i < inner.Length; i++)
+        {
+            if (inner[i] != '\\' || i + 1 >= inner.Length)
+            {
+                bytes.AddRange(Encoding.UTF8.GetBytes(inner[i].ToString()));
+                continue;
+            }
+
+            var next = inner[++i];
+            if (next is >= '0' and <= '7')
+            {
+                var octal = 0;
+                var digits = 0;
+                while (digits < 3 && i < inner.Length && inner[i] is >= '0' and <= '7')
+                {
+                    octal = (octal * 8) + (inner[i] - '0');
+                    i++;
+                    digits++;
+                }
+
+                i--;
+                bytes.Add((byte)octal);
+                continue;
+            }
+
+            bytes.AddRange(
+                Encoding.UTF8.GetBytes(
+                    (next switch
+                    {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        'a' => '\a',
+                        'b' => '\b',
+                        'f' => '\f',
+                        'v' => '\v',
+                        _ => next, // \\ and \" decode to themselves.
+                    }).ToString()));
+        }
+
+        return Encoding.UTF8.GetString([.. bytes]);
     }
 
     private static int Score(KnowledgeEntryMeta entry, HashSet<string> pathTokens, string? repoScope)
@@ -320,3 +481,10 @@ internal static class KnowledgeDigest
         }
     }
 }
+
+/// <summary>
+/// The rendered prior-knowledge block: its <paramref name="Text"/>, and the entries that actually made it
+/// into that text after the character budget was applied. The two are reported together so a caller can
+/// log what the reviewer genuinely received rather than what was merely selected for it.
+/// </summary>
+internal sealed record KnowledgeDigestBlock(string Text, IReadOnlyList<KnowledgeEntryMeta> Rendered);
