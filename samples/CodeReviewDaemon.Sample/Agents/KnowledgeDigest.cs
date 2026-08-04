@@ -375,6 +375,46 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
+    /// Clears escaping links out of every entry's title, tags and scope, returning the cleaned entries in
+    /// their original order alongside the ORIGINALS of the ones that changed.
+    /// <para>
+    /// This runs BEFORE ranking, not inside <see cref="Render"/>, because the ranking reads exactly the
+    /// fields the cleaning deletes. An entry whose only match for a changed path is a tag like
+    /// <c>[runner](../../../etc/passwd)</c> scores on that tag, takes a retrieval slot, and then has the tag
+    /// stripped on the way out — so the delivered set does not contain the relevance that justified selecting
+    /// it, while a clean entry that genuinely matched was pushed past the cap. Same crowding-out as ranking
+    /// before containment, with a field deletion in place of an entry rejection.
+    /// </para>
+    /// <para>
+    /// Note this CLEANS, it does not filter: every entry passed in comes back, so no knowledge is lost to a
+    /// bad tag. Refusing the entry would delete sound knowledge over a link in a field the reviewer does not
+    /// need — the distinction the twin route earned, where the link IS the entry and refusal is the only
+    /// option left.
+    /// </para>
+    /// </summary>
+    public static KnowledgeSanitizedEntries SanitizeMetadata(
+        IReadOnlyList<KnowledgeEntryMeta> entries, string knowledgeBaseRoot)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
+
+        var cleaned = new List<KnowledgeEntryMeta>(entries.Count);
+        var neutralized = new List<KnowledgeEntryMeta>();
+        foreach (var entry in entries)
+        {
+            var safe = ClearEscapingMetadata(entry, knowledgeBaseRoot);
+            if (!ReferenceEquals(safe, entry))
+            {
+                neutralized.Add(entry);
+            }
+
+            cleaned.Add(safe);
+        }
+
+        return new KnowledgeSanitizedEntries(cleaned, neutralized);
+    }
+
+    /// <summary>
     /// Renders a raw <c>_toc.md</c> as the prior-knowledge block, for when <c>_index.jsonl</c> is missing or
     /// torn (a Knowledge Base written before the index existed, or a crash mid-write). Strictly weaker than
     /// <see cref="Render"/> — the ToC carries titles and KB-relative links, so there are no tags, no scope
@@ -1313,10 +1353,18 @@ internal static class KnowledgeDigest
 /// Knowledge Base that never held the entry.
 /// <para>
 /// <paramref name="Neutralized"/> is separate from <paramref name="Rejected"/> because the entry was NOT
-/// rejected: it is in <paramref name="Rendered"/> too, path intact, and the reviewer can open it. What the
-/// operator needs to know is that the knowledge agent wrote a link into a title, tag or scope that pointed
-/// outside the Knowledge Base - a fact about extraction quality that would otherwise leave no trace at all,
-/// since the entry it happened to arrives looking perfectly healthy.
+/// rejected: it keeps its slot and its path is intact. What the operator needs to know is that the knowledge
+/// agent wrote a link into a title, tag or scope that pointed outside the Knowledge Base - a fact about
+/// extraction quality that would otherwise leave no trace at all, since the entry it happened to arrives
+/// looking perfectly healthy.
+/// </para>
+/// <para>
+/// It is <b>not</b> a subset of <paramref name="Rendered"/>, and reading it as one is how a delivery claim
+/// gets made out of a defect report. An entry is added here before the character budget is applied, so an
+/// entry cut by the budget - or every entry, when the header alone does not fit - appears here and in
+/// neither <paramref name="Text"/> nor <paramref name="Rendered"/>. That asymmetry is deliberate: what the
+/// extraction agent wrote is true whether or not there was room left to print it. A caller that wants the
+/// entries the reviewer actually received has to intersect the two lists itself.
 /// </para>
 /// </summary>
 internal sealed record KnowledgeDigestBlock(
@@ -1345,3 +1393,15 @@ internal sealed record KnowledgeTocBlock(
 internal sealed record KnowledgeContainmentPartition(
     IReadOnlyList<KnowledgeEntryMeta> Usable,
     IReadOnlyList<KnowledgeEntryMeta> Refused);
+
+/// <summary>
+/// Knowledge Base entries with their model-authored metadata already cleaned, plus the ORIGINALS of the
+/// ones that needed cleaning.
+/// <para>
+/// The originals are carried rather than the cleaned copies because the diagnostic exists to say what the
+/// extraction agent wrote, and the cleaned copy is precisely the evidence with the interesting part removed.
+/// </para>
+/// </summary>
+internal sealed record KnowledgeSanitizedEntries(
+    IReadOnlyList<KnowledgeEntryMeta> Entries,
+    IReadOnlyList<KnowledgeEntryMeta> Neutralized);

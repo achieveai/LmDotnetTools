@@ -1666,10 +1666,19 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // the sound knowledge behind them is never reached - enough of them and the review runs with no
         // prior knowledge at all, which is the outcome this whole feature exists to prevent.
         var partition = KnowledgeDigest.PartitionByContainment(entries, knowledgeBaseDir);
+
+        // Metadata is cleaned BEFORE ranking for the same reason containment is decided before the cap, and
+        // the failure is the subtler of the two: the ranking scores exactly the fields the cleaning deletes.
+        // An entry whose only match for a changed path is a tag like "[runner](../../../etc/passwd)" outranks
+        // an entry that genuinely matched, takes its slot, and then loses the tag on the way out - so the
+        // delivered set does not even contain the relevance that selected it. Cleaning here keeps every
+        // entry, exactly as it did inside Render; it only moves the scoring onto fields that will still exist
+        // when the reviewer reads them.
+        var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, knowledgeBaseDir);
         var selected = KnowledgeDigest.SelectRelevant(
-            partition.Usable, ranked, repo.RepoName, MaxKnowledgeEntries);
+            sanitized.Entries, ranked, repo.RepoName, MaxKnowledgeEntries);
         var digest = KnowledgeDigest.Render(
-            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, partition.Usable.Count - selected.Count);
+            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, sanitized.Entries.Count - selected.Count);
 
         // Report the RENDERED entries, never the selected ones: the character budget can cut the tail off
         // the block, and a log line naming entries the reviewer never received would make a partial
@@ -1698,18 +1707,39 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // line: the knowledge agent wrote a link pointing outside the Knowledge Base into a title, tag or
         // scope, which is the same extraction defect the refusals report, and an entry that arrives looking
         // perfectly healthy is exactly the one nobody would otherwise go and check.
-        if (digest.Neutralized.Count > 0)
+        //
+        // The two questions are reported SEPARATELY, because only one of them is a delivery claim. What the
+        // extraction agent wrote is true of every candidate, whether or not it was ranked in or fitted the
+        // budget - that is the defect report, and narrowing it to what shipped would hide the defect on the
+        // entries nobody received. What the REVIEWER got is the rendered subset, and this line used to state
+        // it as "kept and still surfaced" over a list built before the budget ran: an entry cut by the
+        // character budget was named as delivered. Both sources of cleaning are unioned in, the same way the
+        // refusal line above unions the partition with Render's own recheck.
+        var neutralized = sanitized
+            .Neutralized.Concat(digest.Neutralized)
+            .DistinctBy(entry => entry.File, StringComparer.Ordinal)
+            .ToList();
+        if (neutralized.Count > 0)
         {
+            var renderedFiles = digest.Rendered.Select(entry => entry.File).ToHashSet(StringComparer.Ordinal);
+            var surfaced = neutralized.Where(entry => renderedFiles.Contains(entry.File)).ToList();
             _logger.LogWarning(
-                "Prior knowledge: cleared metadata on {NeutralizedCount} Knowledge Base {Plural} whose title, "
-                    + "tags or scope carried a link resolving outside {KnowledgeBaseDir}; the {Pronoun} kept "
-                    + "and still surfaced: {NeutralizedEntries}",
-                digest.Neutralized.Count,
-                digest.Neutralized.Count == 1 ? "entry" : "entries",
+                "Prior knowledge: the knowledge agent wrote a link resolving outside {KnowledgeBaseDir} into "
+                    + "the title, tags or scope of {NeutralizedCount} Knowledge Base {Plural}; the metadata "
+                    + "was cleared before ranking. This reports what extraction wrote, not what was "
+                    + "delivered: {NeutralizedEntries}. Of {Pronoun}, {SurfacedCount} reached the reviewer: "
+                    + "{SurfacedEntries}",
                 knowledgeBaseDir,
-                digest.Neutralized.Count == 1 ? "entry was" : "entries were",
+                neutralized.Count,
+                neutralized.Count == 1 ? "entry" : "entries",
                 KnowledgeDigest.DescribePaths(
-                    digest.Neutralized.Select(entry => entry.File), MaxKnowledgeLogChars));
+                    neutralized.Select(entry => entry.File), MaxKnowledgeLogChars),
+                neutralized.Count == 1 ? "it" : "those",
+                surfaced.Count,
+                surfaced.Count == 0
+                    ? "(none)"
+                    : KnowledgeDigest.DescribePaths(
+                        surfaced.Select(entry => entry.File), MaxKnowledgeLogChars));
         }
 
         return digest.Text;

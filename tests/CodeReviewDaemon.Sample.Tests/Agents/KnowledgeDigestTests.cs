@@ -813,6 +813,83 @@ public class KnowledgeDigestTests
         partition.Refused.Should().BeEmpty();
     }
 
+    [Fact]
+    public void SanitizeBeforeSelect_SurfacesKnowledgeThatAnEscapingTagWouldHaveOutranked()
+    {
+        // Ranking on metadata that is about to be DELETED is its own crowding-out, distinct from the
+        // containment one above: these 24 entries are contained, so the partition keeps them, and their only
+        // match for "runner" is a tag that Render will strip before the reviewer ever sees it. Scored raw,
+        // they take every slot on the strength of that tag and push out the one entry that genuinely matched
+        // - so the delivered set does not contain the relevance that justified selecting it.
+        var entries = Enumerable
+            .Range(0, 24)
+            .Select(i => Entry(
+                $"system/decoy-{i}.md",
+                $"Lesson {i}",
+                ["[runner](../../../etc/passwd)"],
+                updated: "2026-08-01"))
+            .Append(Entry("system/alpha.md", "Runner lesson", ["runner"], updated: "2026-01-01"))
+            .ToArray();
+
+        var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
+        var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
+        var selected = KnowledgeDigest.SelectRelevant(
+            sanitized.Entries, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+        var digest = KnowledgeDigest.Render(
+            selected, KbRoot, charBudget: 100_000, omitted: sanitized.Entries.Count - selected.Count);
+
+        digest
+            .Rendered.Should()
+            .Contain(
+                entry => entry.File == "system/alpha.md",
+                "the entry that really matched the changed path must not lose its slot to a tag that is deleted before delivery");
+        digest.Rendered.Should().HaveCount(24, "the decoys are cleaned and kept, not refused - only outranked");
+        sanitized
+            .Neutralized.Should()
+            .HaveCount(24)
+            .And.OnlyContain(
+                entry => entry.Tags.Any(tag => tag.Contains("etc/passwd", StringComparison.Ordinal)),
+                "the diagnostic carries the ORIGINAL entry, so it can still name what the extraction agent wrote");
+
+        // Cleaning must leave File alone, because File is the JOIN KEY the caller uses to say which
+        // neutralized entries actually reached the reviewer, and to fold the two sources of cleaning
+        // together. If cleaning rewrote it, that intersection would quietly come back empty and the warning
+        // would report "0 reached the reviewer" over a digest that surfaced all of them.
+        sanitized
+            .Entries.Select(entry => entry.File)
+            .Should()
+            .Equal(
+                partition.Usable.Select(entry => entry.File),
+                "a cleaned entry has to stay identifiable as the entry it was cleaned from");
+    }
+
+    [Fact]
+    public void Render_NeutralizedIsNotASubsetOfRendered_WhenTheBudgetCutsTheCleanedEntry()
+    {
+        // Neutralized is filled BEFORE the character budget is applied and Rendered after, so the two lists
+        // can disagree - which is correct, because what the extraction agent wrote is true whether or not
+        // there was room to print it. What is NOT correct is reading the first as the second: a caller that
+        // reports Neutralized as "kept and still surfaced" names an entry the reviewer never received, and a
+        // proof of delivery that can name undelivered entries proves nothing at all.
+        var alpha = Entry("system/alpha.md", "Alpha", ["a"]);
+        var cleaned = Entry(
+            $"system/{new string('c', 300)}.md",
+            "Read [the guide](../../../etc/passwd)",
+            ["b"]);
+
+        // Sized from a real render of the entry that must fit, so the budget cannot silently drift into
+        // "everything fits" or "nothing fits" - both of which would pass a weaker pair of assertions.
+        var roomForAlphaAlone = KnowledgeDigest.Render([alpha], KbRoot, charBudget: 100_000, omitted: 1);
+        var block = KnowledgeDigest.Render(
+            [alpha, cleaned], KbRoot, charBudget: roomForAlphaAlone.Text.Length + 50, omitted: 0);
+
+        block.Neutralized.Should().ContainSingle().Which.File.Should().Be(cleaned.File);
+        block.Rendered.Should().NotContain(entry => entry.File == cleaned.File);
+        block
+            .Rendered.Should()
+            .Contain(entry => entry.File == "system/alpha.md", "the entry that did fit still has to ship");
+    }
+
     // ---- Sweep: every OTHER model-authored string on a bounded surface ---------------------------
 
     [Fact]
