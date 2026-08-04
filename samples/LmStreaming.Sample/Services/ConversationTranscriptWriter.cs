@@ -1077,10 +1077,13 @@ public sealed class ConversationTranscriptWriter
     ///     the name this code reasons about and the name the kernel opens are different names.
     ///     </para>
     ///     <para>
-    ///     Every OTHER consumer of this listing compares a name for EQUALITY against one it already holds
-    ///     (<c>FileBrowserController</c>, four call sites), so a traversing name there never matches
-    ///     anything. This is the only consumer that adopts a name it did not compute, which is why the
-    ///     check belongs here rather than in the browser.
+    ///     <c>FileBrowserController</c> lists the same way at five call sites. Four of them compare a name
+    ///     for EQUALITY against one they already hold, so a traversing name there never matches anything.
+    ///     The fifth does not: it projects every entry into a DTO for DISPLAY. That is a different risk
+    ///     class — a name that is rendered rather than one that is spliced into a path — and it is not what
+    ///     this predicate is for. What matters here is that this is the only consumer that ADDRESSES the
+    ///     filesystem with a name it did not compute, which is why the check belongs in this projection
+    ///     rather than in the browser.
     ///     </para>
     /// </remarks>
     private static bool IsAddressableName(SandboxDirectoryEntry entry) =>
