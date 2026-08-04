@@ -328,5 +328,6 @@ public sealed class AgentOwnedThreadRouteTests
             new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
-            new SubAgentScanCoverageCache());
+            new SubAgentScanCoverageCache(),
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
 }

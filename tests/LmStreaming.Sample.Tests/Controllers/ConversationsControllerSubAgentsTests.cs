@@ -53,7 +53,8 @@ public sealed class ConversationsControllerSubAgentsTests
             workflowRunRegistry,
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
-            cache);
+            cache,
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
     }
 
     private static MultiTurnAgentPool CreateFakeAgentPool()

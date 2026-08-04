@@ -1,0 +1,893 @@
+using System.Collections.Immutable;
+using System.Text;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.Sandbox;
+using LmStreaming.Sample.Services;
+using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Logging;
+
+namespace LmStreaming.Sample.Tests.Services;
+
+/// <summary>
+/// Tests for <see cref="ConversationTranscriptWriter"/> — the workspace transcript mirror (#251), driven
+/// entirely against <see cref="FakeFileBrowser"/> so there is no gateway and no container in the loop.
+/// </summary>
+/// <remarks>
+/// <para>
+/// These assert the <b>exact bytes appended</b> and the <b>exact argv of every command</b>, not a
+/// paraphrase of either. The mirror's whole value is that a reader can dedupe on <c>uid</c> and chain on
+/// <c>parent_uid</c>; both properties are byte-level, so an assertion that only counts calls would pass
+/// while the file on disk was wrong.
+/// </para>
+/// <para>
+/// Every failure mode is forced rather than assumed: a non-zero splice, a non-zero <c>mv</c>, a resolve
+/// that throws, a credential conflict, and rows that never settle. The invariant each of those locks is
+/// the same one — <b>duplicate on retry, never silent loss</b>.
+/// </para>
+/// </remarks>
+public sealed class ConversationTranscriptWriterTests
+{
+    private const string ThreadId = "conv-1";
+    private const string WorkspaceId = "ws-1";
+    private const string Title = "Design Review";
+    private const string RetitledTo = "Shipping Plan";
+    private const string GitignorePath = ".conversations/.gitignore";
+
+    /// <summary>
+    /// The splice script, duplicated here ON PURPOSE. It is the feature's only shell call site, so its
+    /// text is a contract: the middle line is the newline weld that stops a torn tail from fusing two
+    /// records, and the <c>$1</c>/<c>$2</c>/<c>$3</c> parameters are what keep a user-authored title
+    /// inert. A test that read the constant back out of the production type could not notice either one
+    /// being edited away.
+    /// </summary>
+    private const string ExpectedSpliceScript =
+        "mkdir -p \"$1\" || exit 1\n"
+        + "if [ -s \"$3\" ] && [ -n \"$(tail -c1 \"$3\")\" ]; then printf '\\n' >> \"$3\" || exit 1; fi\n"
+        + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
+
+    private static readonly string ShortThreadId = WorkspaceTranscriptLine.ShortId(ThreadId);
+
+    private static readonly string TempPath =
+        $"{ConversationTranscriptWriter.TempDirectory}/{ShortThreadId}{ConversationTranscriptWriter.TempExtension}";
+
+    // ---------------------------------------------------------------- helpers
+
+    private static string MainPath(string? title) =>
+        $"{ConversationTranscriptWriter.TranscriptDirectory}/"
+        + $"{WorkspaceTranscriptLine.MainFileLeaf(title, ShortThreadId)}{ConversationTranscriptWriter.TranscriptExtension}";
+
+    private static string AgentsDirectory(string? title) =>
+        $"{ConversationTranscriptWriter.TranscriptDirectory}/"
+        + $"{WorkspaceTranscriptLine.MainFileLeaf(title, ShortThreadId)}{ConversationTranscriptWriter.AgentsDirectorySuffix}";
+
+    private static string AgentPath(string? title, string agentId, string? agentName) =>
+        $"{AgentsDirectory(title)}/"
+        + $"{WorkspaceTranscriptLine.AgentFileLeaf(agentName, WorkspaceTranscriptLine.ShortId(agentId))}"
+        + ConversationTranscriptWriter.TranscriptExtension;
+
+    private static ConversationTranscriptWriter CreateWriter(
+        IConversationStore store,
+        FakeFileBrowser browser,
+        ILogger<ConversationTranscriptWriter>? logger = null,
+        int maxSubAgentFilesPerFlush = ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush) =>
+        new(
+            ThreadId,
+            store,
+            browser,
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance),
+            logger ?? NullLogger<ConversationTranscriptWriter>.Instance,
+            // Zero, so the stability probe's second read happens immediately: the tests drive settling
+            // through the store double, never through elapsed time.
+            TimeSpan.Zero,
+            maxSubAgentFilesPerFlush
+        );
+
+    private static Task SeedConversationAsync(
+        IConversationStore store,
+        string? title = Title,
+        string? workspaceId = WorkspaceId)
+    {
+        var properties = ImmutableDictionary.CreateBuilder<string, object>(StringComparer.Ordinal);
+        if (workspaceId is not null)
+        {
+            properties[MultiTurnAgentPool.WorkspacePropertyKey] = workspaceId;
+        }
+
+        if (title is not null)
+        {
+            properties["title"] = title;
+        }
+
+        return store.SaveMetadataAsync(
+            ThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = ThreadId,
+                LastUpdated = 0,
+                Properties = properties.ToImmutable(),
+            }
+        );
+    }
+
+    /// <summary>Seeds one persisted sub-agent thread stamped as this conversation's child.</summary>
+    private static async Task SeedSubAgentAsync(
+        IConversationStore store,
+        string agentId,
+        string? name,
+        params PersistedMessage[] messages)
+    {
+        var childThreadId = SubAgentProvenance.ThreadIdPrefix + agentId;
+        await store.SaveMetadataAsync(
+            childThreadId,
+            new ThreadMetadata
+            {
+                ThreadId = childThreadId,
+                LastUpdated = 0,
+                Properties = SubAgentProvenance.Build(
+                    ThreadId,
+                    new SubAgentSnapshot(
+                        agentId,
+                        Name: name,
+                        TemplateName: "worker",
+                        Task: "do the thing",
+                        Status: SubAgentStatus.Completed,
+                        ThreadId: childThreadId,
+                        LastActivityUtc: DateTimeOffset.UnixEpoch,
+                        TerminalAtUtc: DateTimeOffset.UnixEpoch
+                    )
+                ),
+            }
+        );
+
+        await store.AppendMessagesAsync(childThreadId, messages);
+    }
+
+    private static PersistedMessage Msg(
+        string id,
+        long timestamp,
+        string role = "Assistant",
+        string threadId = ThreadId,
+        string runId = "run-1",
+        string messageType = "TextMessage",
+        string? messageJson = null) =>
+        new()
+        {
+            Id = id,
+            ThreadId = threadId,
+            RunId = runId,
+            GenerationId = runId,
+            Timestamp = timestamp,
+            MessageType = messageType,
+            Role = role,
+            // Deliberately not a shape TranscriptProjection can deserialize: Normalize passes an
+            // unreadable row through VERBATIM, so the expected bytes stay legible in the assertions.
+            MessageJson = messageJson ?? $"\"opaque-{id}\"",
+        };
+
+    /// <summary>
+    /// The bytes the writer is expected to append: the same projection it runs, serialized the same way,
+    /// minus the <paramref name="skip"/> lines a watermark already covers.
+    /// </summary>
+    private static string ExpectedAppend(
+        IReadOnlyList<PersistedMessage> all,
+        int skip = 0,
+        string? agent = null,
+        string? rootParentUid = null)
+    {
+        var lines = WorkspaceTranscriptLine.ChainMessages(
+            TranscriptProjection.Normalize(all, excludeReasoning: false),
+            agent,
+            rootParentUid
+        );
+
+        return string.Concat(lines.Skip(skip).Select(l => WorkspaceTranscriptLine.Serialize(l) + "\n"));
+    }
+
+    private static string Written(FakeFileBrowser browser, int index) =>
+        Encoding.UTF8.GetString(browser.Writes[index].Bytes);
+
+    private static IReadOnlyList<string> UidsIn(string payload) =>
+        [
+            .. payload
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => JsonSerializer.Deserialize<JsonElement>(line).GetProperty("uid").GetString()!),
+        ];
+
+    private static SandboxCommandResult Ok(string stdout = "") =>
+        new() { ExitCode = 0, StandardOutput = stdout, StandardError = "", OperationId = "op" };
+
+    private static SandboxCommandResult Fail(string stderr = "boom") =>
+        new() { ExitCode = 1, StandardOutput = "", StandardError = stderr, OperationId = "op" };
+
+    // ---------------------------------------------------------------- AC 1, 6
+
+    /// <summary>
+    /// AC 1 / AC 6. The first flush writes one line per persisted message, in store order, staged through
+    /// <c>.conversations/.tmp/{shortThreadId}.part</c> and spliced with the single shell call site. The
+    /// staging path is asserted because a leaked temp file (the <c>rm -f</c> never ran) must be a name no
+    /// <c>**/*.jsonl</c> scan can match.
+    /// </summary>
+    [Fact]
+    public async Task FirstFlush_WritesOneLinePerMessageInStoreOrder_ThroughTheTempPathAndOneShellCall()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2), Msg("m3", 3)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser();
+        var outcome = await CreateWriter(store, browser).FlushAsync();
+
+        _ = outcome.Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = ExpectedAppend(messages);
+        _ = payload.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(3);
+
+        _ = browser.Writes[0].Path.Should().Be(TempPath);
+        _ = Written(browser, 0).Should().Be(payload);
+        _ = browser.Writes
+            .Select(w => w.Path)
+            .Should()
+            .NotContain(p => p.EndsWith(ConversationTranscriptWriter.TranscriptExtension, StringComparison.Ordinal));
+
+        _ = browser.Commands.Should().HaveCount(2);
+        _ = browser.Commands[0].Arguments.Should().Equal("tail", "-n", "5", "--", MainPath(Title));
+        _ = browser.Commands[1].Arguments.Should()
+            .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(Title));
+        _ = browser.LastPersistedWorkspaceId.Should().Be(WorkspaceId);
+    }
+
+    // ---------------------------------------------------------------- AC 2, 3
+
+    /// <summary>
+    /// AC 2 / AC 3. A second flush appends ONLY the second run's bytes — the watermark is the last
+    /// appended <c>uid</c>, not a byte offset — and across both flushes the distinct <c>uid</c> count
+    /// equals the line count, which is the property a reader's dedupe relies on.
+    /// </summary>
+    [Fact]
+    public async Task SecondFlush_AppendsOnlyTheNewRun_AndEveryLineKeepsADistinctUid()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] first = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, first);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        PersistedMessage[] second = [Msg("m3", 3, "User", runId: "run-2"), Msg("m4", 4, runId: "run-2")];
+        await store.AppendMessagesAsync(ThreadId, second);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        PersistedMessage[] all = [.. first, .. second];
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(first));
+        _ = Written(browser, 2).Should().Be(ExpectedAppend(all, skip: 2));
+
+        // No second tail: the watermark survived in process, keyed by thread.
+        _ = browser.Commands.Select(c => c.Arguments[0]).Should().Equal("tail", "sh", "sh");
+
+        var file = Written(browser, 0) + Written(browser, 2);
+        var uids = UidsIn(file);
+        _ = uids.Should().HaveCount(4);
+        _ = uids.Distinct(StringComparer.Ordinal).Should().HaveCount(4);
+    }
+
+    // ---------------------------------------------------------------- AC 4
+
+    /// <summary>
+    /// AC 4. A cold start (crash resume) recovers its watermark from <c>tail -n 5</c> and appends only the
+    /// suffix. The window is five lines, not one, precisely so a run killed mid-splice — whose last line
+    /// is torn — still resolves to the last INTACT record instead of re-appending the whole history.
+    /// A GET is never issued: these files reach tens of megabytes.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_RecoversTheWatermarkFromTheTailWindow_EvenWithATornLastLine()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2), Msg("m3", 3)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // What a previous process left on disk: m1, m2, then a half-written m3.
+        var onDisk = ExpectedAppend(messages, skip: 0);
+        var intact = string.Concat(onDisk.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Take(2)
+            .Select(l => l + "\n"));
+        var torn = onDisk.Split('\n', StringSplitOptions.RemoveEmptyEntries)[2][..20];
+
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command => command.Arguments[0] == "tail" ? Ok(intact + torn) : Ok(),
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        _ = browser.Commands[0].Arguments.Should().Equal("tail", "-n", "5", "--", MainPath(Title));
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
+        _ = browser.ReadCalls.Should().Be(0);
+    }
+
+    // ---------------------------------------------------------------- AC 5
+
+    /// <summary>
+    /// AC 5. A non-zero splice leaves the watermark unadvanced, so the next flush re-appends the same
+    /// suffix. The failure direction is duplicate-on-retry: an advanced watermark would have dropped
+    /// those rows permanently.
+    /// </summary>
+    [Fact]
+    public async Task FailedSplice_LeavesTheWatermarkUnadvanced_SoTheNextFlushDuplicatesRatherThanTruncates()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2), Msg("m3", 3)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser { ExecResult = Fail("no space left on device") };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Writes.Should().HaveCount(1);
+
+        browser.ExecResult = Ok();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var payload = ExpectedAppend(messages);
+        _ = Written(browser, 0).Should().Be(payload);
+        _ = Written(browser, 1).Should().Be(payload);
+        _ = browser.Writes[2].Path.Should().Be(GitignorePath);
+    }
+
+    // ---------------------------------------------------------------- AC 8
+
+    /// <summary>
+    /// AC 8. <c>.conversations/.gitignore</c> is written exactly once, on the FIRST SUCCESSFUL flush — not
+    /// on every flush, and not before anything succeeded (a conversation that never produced a transcript
+    /// leaves no directory behind). A workspace is frequently a git checkout and an agent frequently runs
+    /// <c>git add -A</c>.
+    /// </summary>
+    [Fact]
+    public async Task Gitignore_IsWrittenOnceOnTheFirstSuccessfulFlush()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = await writer.FlushAsync();
+
+        await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+        _ = await writer.FlushAsync();
+
+        var gitignores = browser.Writes.Where(w => w.Path == GitignorePath).ToList();
+        _ = gitignores.Should().HaveCount(1);
+        _ = Encoding.UTF8.GetString(gitignores[0].Bytes).Should().Be("*\n");
+    }
+
+    // ---------------------------------------------------------------- AC 7, 12
+
+    /// <summary>
+    /// AC 7 / AC 12. The fan-out writes one file per sub-agent: a null display name pins
+    /// <c>agent-{shortAgentId}</c>, and two sub-agents sharing a display name still land in DISTINCT files
+    /// because the short id comes from the agent id. Each file's first line hangs off the main file's
+    /// watermark, so a reader that concatenates the whole set still resolves one chain and still sees each
+    /// message exactly once.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentFanOut_NamesFilesDistinctly_AndRootsEachFileInTheMainFile()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] main = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, main);
+
+        PersistedMessage[] nameless = [Msg("n1", 10, threadId: "subagent-nameless")];
+        PersistedMessage[] firstReviewer = [Msg("r1a", 20, threadId: "subagent-r1")];
+        PersistedMessage[] secondReviewer = [Msg("r2a", 30, threadId: "subagent-r2")];
+        await SeedSubAgentAsync(store, "nameless", null, nameless);
+        await SeedSubAgentAsync(store, "r1", "reviewer", firstReviewer);
+        await SeedSubAgentAsync(store, "r2", "reviewer", secondReviewer);
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var rootUid = WorkspaceTranscriptLine.DeriveUid("m2");
+        var splices = browser.Commands.Where(c => c.Arguments[0] == "sh").ToList();
+        _ = splices.Select(c => c.Arguments[6]).Should().Equal(
+            MainPath(Title),
+            AgentPath(Title, "nameless", null),
+            AgentPath(Title, "r1", "reviewer"),
+            AgentPath(Title, "r2", "reviewer")
+        );
+        _ = AgentPath(Title, "nameless", null).Should()
+            .EndWith($"/agent-{WorkspaceTranscriptLine.ShortId("nameless")}.jsonl");
+        _ = AgentPath(Title, "r1", "reviewer").Should().NotBe(AgentPath(Title, "r2", "reviewer"));
+
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(main));
+        _ = Written(browser, 1).Should().Be(ExpectedAppend(nameless, rootParentUid: rootUid));
+        _ = Written(browser, 2).Should().Be(ExpectedAppend(firstReviewer, agent: "reviewer", rootParentUid: rootUid));
+        _ = Written(browser, 3).Should().Be(ExpectedAppend(secondReviewer, agent: "reviewer", rootParentUid: rootUid));
+
+        // AC 12: two (here four) files present, and every uid still occurs exactly once across them.
+        var uids = UidsIn(string.Concat(Enumerable.Range(0, 4).Select(i => Written(browser, i))));
+        _ = uids.Should().HaveCount(5);
+        _ = uids.Distinct(StringComparer.Ordinal).Should().HaveCount(5);
+    }
+
+    /// <summary>
+    /// The fan-out is STRICTLY SEQUENTIAL, and this is a hard requirement rather than a style preference:
+    /// every file in a conversation is staged through ONE temp path, so two overlapping writes would PUT
+    /// over each other's bytes and <c>cat</c> the survivor into both destinations. Each splice is asserted
+    /// to observe exactly its own staged write and no other file's — an interleaved (or
+    /// <c>Task.WhenAll</c>-ed) fan-out could not produce this sequence.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentFanOut_StagesAndSplicesOneFileAtATime()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+        await SeedSubAgentAsync(store, "b2", "beta", Msg("b2a", 20, threadId: "subagent-b2"));
+
+        var browser = new FakeFileBrowser();
+        var stagedWhenSpliced = new List<int>();
+        browser.ExecuteHandler = command =>
+        {
+            if (command.Arguments[0] == "sh")
+            {
+                stagedWhenSpliced.Add(browser.Writes.Count);
+            }
+
+            return Ok();
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // 1, 2, 3 — each splice sees its own PUT and nothing further. Any overlap shows up as a splice
+        // observing a later file's staged bytes already sitting in the shared slot.
+        _ = stagedWhenSpliced.Should().Equal(1, 2, 3);
+        _ = browser.Writes.Take(3).Select(w => w.Path).Should().AllBe(TempPath);
+    }
+
+    /// <summary>
+    /// The fan-out is bounded per flush and advances round-robin, so a conversation with many descendants
+    /// is covered across successive flushes instead of holding the store's process-wide read semaphore for
+    /// every descendant at one turn boundary. A truncated pass reports <c>Deferred</c> so another flush
+    /// follows.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentFanOut_IsBoundedPerFlush_AndCoversTheRestOnTheNextOne()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+        await SeedSubAgentAsync(store, "b2", "beta", Msg("b2a", 20, threadId: "subagent-b2"));
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser, maxSubAgentFilesPerFlush: 1);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(AgentPath(Title, "b2", "beta"));
+
+        // And it TERMINATES. Deferred is gated on a pass having mirrored something, so the first capped
+        // pass that finds its slice already current stops asking for another flush — a caller that
+        // re-schedules on Deferred would otherwise spin forever on any conversation above the cap.
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
+        _ = browser.Commands.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A sub-agent that finishes AFTER its parent's turn ended never publishes the conversation's
+    /// <c>RunCompletedMessage</c>, so a mirror listening only for run completion would never write its
+    /// file. <see cref="ConversationTranscriptWriter.NoteSubAgentActivity"/> is that second trigger — and
+    /// it is also the only safe caller of the descendant cache's refresh, which costs a full store scan.
+    /// </summary>
+    [Fact]
+    public async Task NoteSubAgentActivity_IsWhatMakesALaterSpawnVisibleToTheFanOut()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = await writer.FlushAsync();
+
+        await SeedSubAgentAsync(store, "late", "latecomer", Msg("l1", 10, threadId: "subagent-late"));
+        await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+
+        browser.Commands.Clear();
+        _ = await writer.FlushAsync();
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title));
+
+        writer.NoteSubAgentActivity();
+        browser.Commands.Clear();
+        _ = await writer.FlushAsync();
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(AgentPath(Title, "late", "latecomer"));
+    }
+
+    // ---------------------------------------------------------------- AC 10, 11
+
+    /// <summary>
+    /// AC 10. A retitle reaches the mirror only through <c>ThreadMetadata</c> — the UI's
+    /// <c>PUT {threadId}/metadata</c> never touches the message stream — so the leaf is recomputed at the
+    /// top of every flush and the rename is issued BEFORE anything is appended. Without that ordering the
+    /// first flush after a retitle creates a second file and re-appends the entire history.
+    /// </summary>
+    [Fact]
+    public async Task Retitle_MovesTheFileAndTheAgentsDirectory_BeforeAppendingIntoTheMovedFile()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        await SeedConversationAsync(store, RetitledTo);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m2", 2)]);
+
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        _ = browser.Commands.Should().HaveCount(3);
+        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
+        _ = browser.Commands[1].Arguments.Should()
+            .Equal("mv", "--", AgentsDirectory(Title), AgentsDirectory(RetitledTo));
+        _ = browser.Commands[2].Arguments.Should()
+            .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(RetitledTo));
+    }
+
+    /// <summary>
+    /// AC 11. A failed <c>mv</c> is not fatal: the old path is still complete and readable, so this flush
+    /// keeps writing to it and the rename is retried next time. The watermark is keyed by THREAD, never by
+    /// path, so nothing is re-appended when the move finally lands.
+    /// </summary>
+    [Fact]
+    public async Task FailedRename_KeepsWritingToTheOldPath_AndRetriesOnTheNextFlush()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser);
+        _ = await writer.FlushAsync();
+
+        browser.ExecuteHandler = command => command.Arguments[0] == "mv" ? Fail("device busy") : Ok();
+        await SeedConversationAsync(store, RetitledTo);
+        PersistedMessage[] all = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, [all[1]]);
+
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
+        _ = browser.Commands[1].Arguments[6].Should().Be(MainPath(Title));
+        _ = Written(browser, 2).Should().Be(ExpectedAppend(all, skip: 1));
+
+        browser.ExecuteHandler = null;
+        PersistedMessage[] everything = [.. all, Msg("m3", 3)];
+        await store.AppendMessagesAsync(ThreadId, [everything[2]]);
+
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
+        _ = browser.Commands[1].Arguments[6].Should().Be(MainPath(RetitledTo));
+        _ = Written(browser, 3).Should().Be(ExpectedAppend(everything, skip: 2));
+    }
+
+    // ---------------------------------------------------------------- AC 19
+
+    /// <summary>
+    /// AC 19. The workspace mirror carries FULL fidelity, reasoning included. It is the one transcript
+    /// read that is not cross-agent — the rows go into the conversation's own workspace — so the
+    /// reasoning filter every other reader gets is deliberately not applied here.
+    /// </summary>
+    [Fact]
+    public async Task Flush_KeepsReasoningRowsInFull()
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+            WriteIndented = false,
+            Converters = { new IMessageJsonConverter() },
+        };
+        var reasoning = new ReasoningMessage { Reasoning = "weigh option A against option B", Role = Role.Assistant };
+
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages =
+        [
+            Msg("m1", 1, "User"),
+            Msg(
+                "m2",
+                2,
+                messageType: nameof(ReasoningMessage),
+                messageJson: JsonSerializer.Serialize<IMessage>(reasoning, options)
+            ),
+        ];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser();
+        _ = await CreateWriter(store, browser).FlushAsync();
+
+        var lines = Written(browser, 0).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        _ = lines.Should().HaveCount(2);
+
+        var line = JsonSerializer.Deserialize<JsonElement>(lines[1]);
+        _ = line.GetProperty("message_type").GetString().Should().Be(nameof(ReasoningMessage));
+
+        var round = JsonSerializer.Deserialize<IMessage>(line.GetProperty("message_json").GetString()!, options);
+        _ = round.Should().BeOfType<ReasoningMessage>()
+            .Which.Reasoning.Should().Be("weigh option A against option B");
+    }
+
+    // ---------------------------------------------------------------- AC 23, 24
+
+    /// <summary>
+    /// AC 23. No sandbox session is the ordinary state of a non-sandbox conversation, not a fault: the
+    /// flush returns quietly with one debug line, writes nothing, and issues no command.
+    /// </summary>
+    [Fact]
+    public async Task NoSession_WritesNothingAndReportsNoError()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser
+        {
+            Resolution = new SandboxSessionResolution(SandboxSessionResolutionOutcome.NoSession, null, null, null),
+        };
+        var logger = new CapturingLogger<ConversationTranscriptWriter>();
+
+        _ = (await CreateWriter(store, browser, logger).FlushAsync()).Should().Be(TranscriptFlushOutcome.Unavailable);
+
+        _ = browser.Writes.Should().BeEmpty();
+        _ = browser.Commands.Should().BeEmpty();
+        _ = logger.Entries.Should().ContainSingle().Which.Level.Should().Be(LogLevel.Debug);
+    }
+
+    /// <summary>
+    /// A conversation with no workspace bound never even reaches the gateway — the metadata read alone
+    /// settles it. Same quiet debug outcome.
+    /// </summary>
+    [Fact]
+    public async Task NoWorkspaceBound_NeverResolvesASession()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store, workspaceId: null);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var browser = new FakeFileBrowser();
+        var logger = new CapturingLogger<ConversationTranscriptWriter>();
+
+        _ = (await CreateWriter(store, browser, logger).FlushAsync()).Should().Be(TranscriptFlushOutcome.Unavailable);
+
+        _ = browser.LastPersistedWorkspaceId.Should().BeNull();
+        _ = browser.Writes.Should().BeEmpty();
+        _ = logger.Entries.Should().ContainSingle().Which.Level.Should().Be(LogLevel.Debug);
+    }
+
+    /// <summary>
+    /// AC 24. A resolve that throws, and a session owned by another identity, each report exactly ONE
+    /// warning and leave the run untouched — the mirror never propagates. Once the binding is usable
+    /// again the next flush writes the full history it had deferred.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnusableSession_WarnsOnce_ThenWritesAfterRebind(bool resolveThrows)
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser();
+        if (resolveThrows)
+        {
+            browser.ResolveThrows = new SandboxException(SandboxErrorKind.Protocol, "gateway said no");
+        }
+        else
+        {
+            browser.Resolution = new SandboxSessionResolution(
+                SandboxSessionResolutionOutcome.CredentialConflict,
+                null,
+                "other-app",
+                "app"
+            );
+        }
+
+        var logger = new CapturingLogger<ConversationTranscriptWriter>();
+        var writer = CreateWriter(store, browser, logger);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Unavailable);
+        _ = browser.Writes.Should().BeEmpty();
+        _ = logger.Entries.Where(e => e.Level == LogLevel.Warning).Should().ContainSingle();
+
+        browser.ResolveThrows = null;
+        browser.Resolution = new SandboxSessionResolution(
+            SandboxSessionResolutionOutcome.Resolved,
+            FakeFileBrowser.LiveSession,
+            "app",
+            null
+        );
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
+    }
+
+    // ---------------------------------------------------------------- read until stable
+
+    /// <summary>
+    /// The blocker this pipeline exists around. <c>MultiTurnAgentBase.AddToHistory</c> persists on a
+    /// discarded, unawaited task and <c>CompleteRunAsync</c> publishes run completion without joining
+    /// those tasks, so at trigger time a turn's final assistant and reasoning rows are commonly still in
+    /// flight. Rows that never settle mean the flush is SKIPPED with its watermark unadvanced — appending
+    /// the truncated list would also land the late row at the file tail next flush, giving it a
+    /// <c>parent_uid</c> pointing at a row it did not follow.
+    /// </summary>
+    [Fact]
+    public async Task RowsThatNeverSettle_DeferTheFlushWithoutWritingAnything()
+    {
+        var inner = new InMemoryConversationStore();
+        await SeedConversationAsync(inner);
+        await inner.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        var late = 0;
+        var store = new ScriptedLoadStore(inner)
+        {
+            // One more row lands between every pair of reads — the pathological form of the real race.
+            BeforeLoad = (threadId, _) => inner.AppendMessagesAsync(threadId, [Msg($"late-{++late}", 100 + late)]),
+        };
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+
+        _ = browser.Writes.Should().BeEmpty();
+        _ = browser.Commands.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The other half of the same guard: rows that settle on a RE-read are written in full. A probe that
+    /// gave up after one disagreement would truncate the turn it was triggered by.
+    /// </summary>
+    [Fact]
+    public async Task RowsThatSettleOnARetry_AreWrittenInFull()
+    {
+        var inner = new InMemoryConversationStore();
+        await SeedConversationAsync(inner);
+        PersistedMessage[] committed = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await inner.AppendMessagesAsync(ThreadId, [committed[0]]);
+
+        var store = new ScriptedLoadStore(inner)
+        {
+            // The in-flight assistant row lands during the first read and then stops changing.
+            BeforeLoad = (threadId, call) => call == 1
+                ? inner.AppendMessagesAsync(threadId, [committed[1]])
+                : Task.CompletedTask,
+        };
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(committed));
+    }
+
+    // ---------------------------------------------------------------- shell safety
+
+    /// <summary>
+    /// The security invariant, stated as a test. <c>ExecuteWorkspaceCommandAsync</c> is a native argv
+    /// vector with NO implicit shell, so the one place a shell is invoked must carry a compile-time
+    /// constant script: the file leaf is derived from a user-authored title, and interpolating it into the
+    /// script text would make <c>$(…)</c> in a title executable. <c>--</c> on the pure-argv calls stops
+    /// option parsing, but it is the positional parameters that make the title inert.
+    /// </summary>
+    [Fact]
+    public async Task EveryShellCall_UsesTheConstantScript_AndPassesTheTitleDerivedPathAsAPositionalParameter()
+    {
+        const string Hostile = "$(touch /tmp/pwned); rm -rf ~";
+
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store, Hostile);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        var leaf = WorkspaceTranscriptLine.MainFileLeaf(Hostile, ShortThreadId);
+        _ = leaf.Should().Be($"touch-tmp-pwned-rm-rf-{ShortThreadId}");
+
+        var shell = browser.Commands.Where(c => c.Arguments[0] == "sh").ToList();
+        _ = shell.Should().HaveCount(2);
+        foreach (var command in shell)
+        {
+            _ = command.Arguments[1].Should().Be("-c");
+            _ = command.Arguments[2].Should().Be(ExpectedSpliceScript);
+            _ = command.Arguments[3].Should().Be("sh");
+            _ = command.Arguments[6].Should().Contain(leaf);
+        }
+
+        // The script never grows a dynamic fragment, and the pure-argv calls keep their `--`.
+        _ = ExpectedSpliceScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
+        _ = browser.Commands.Where(c => c.Arguments[0] is "tail" or "mv")
+            .Should().OnlyContain(c => c.Arguments.Contains("--"));
+    }
+
+    // ---------------------------------------------------------------- doubles
+
+    /// <summary>
+    /// <see cref="IConversationStore"/> decorator that lets a test mutate the store BETWEEN the stability
+    /// probe's reads. That race is otherwise timing-dependent, and the writer is constructed with a zero
+    /// settle delay, so this is what keeps the read-until-stable tests deterministic instead of sleeping.
+    /// </summary>
+    private sealed class ScriptedLoadStore(IConversationStore inner) : IConversationStore
+    {
+        private readonly Dictionary<string, int> _loads = new(StringComparer.Ordinal);
+
+        /// <summary>Runs before each load, with the thread and that thread's 1-based read count.</summary>
+        public Func<string, int, Task>? BeforeLoad { get; init; }
+
+        public async Task<IReadOnlyList<PersistedMessage>> LoadMessagesAsync(
+            string threadId,
+            CancellationToken ct = default)
+        {
+            _ = _loads.TryGetValue(threadId, out var count);
+            _loads[threadId] = ++count;
+
+            if (BeforeLoad is not null)
+            {
+                await BeforeLoad(threadId, count);
+            }
+
+            return await inner.LoadMessagesAsync(threadId, ct);
+        }
+
+        public Task AppendMessagesAsync(
+            string threadId,
+            IReadOnlyList<PersistedMessage> messages,
+            CancellationToken ct = default) => inner.AppendMessagesAsync(threadId, messages, ct);
+
+        public Task ReplaceMessageAsync(
+            string threadId,
+            PersistedMessage replacement,
+            CancellationToken ct = default) => inner.ReplaceMessageAsync(threadId, replacement, ct);
+
+        public Task SaveMetadataAsync(
+            string threadId,
+            ThreadMetadata metadata,
+            CancellationToken ct = default) => inner.SaveMetadataAsync(threadId, metadata, ct);
+
+        public Task<ThreadMetadata?> LoadMetadataAsync(string threadId, CancellationToken ct = default) =>
+            inner.LoadMetadataAsync(threadId, ct);
+
+        public Task UpdateMetadataAsync(
+            string threadId,
+            Func<ThreadMetadata?, ThreadMetadata> update,
+            CancellationToken ct = default) => inner.UpdateMetadataAsync(threadId, update, ct);
+
+        public Task DeleteThreadAsync(string threadId, CancellationToken ct = default) =>
+            inner.DeleteThreadAsync(threadId, ct);
+
+        public Task<IReadOnlyList<ThreadMetadata>> ListThreadsAsync(
+            int limit = 50,
+            int offset = 0,
+            CancellationToken ct = default) => inner.ListThreadsAsync(limit, offset, ct);
+    }
+}

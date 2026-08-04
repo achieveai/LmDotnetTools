@@ -9,7 +9,7 @@ Turn the current workspace into a deterministic, structured inventory. Follow th
 
 ## Procedure
 
-1. **Enumerate files.** Use `Glob` with pattern `**/*` from the workspace root. Ignore noise directories: `node_modules`, `.git`, `target`, `bin`, `obj`, `dist`, `.venv`, `__pycache__`. Collect the relative path of every regular file.
+1. **Enumerate files.** Use `Glob` with pattern `**/*` from the workspace root. Ignore noise directories: `node_modules`, `.git`, `target`, `bin`, `obj`, `dist`, `.venv`, `__pycache__`, `.conversations`. Collect the relative path of every regular file. (`.conversations` holds this conversation's own message transcript — counting or summarizing it would fold your own output back into the inventory.)
 
 2. **Group by extension.** For each file, take its lowercase extension (or `"(none)"` when it has none). Count files per extension and, where cheap, sum their sizes. Use `Bash` (e.g. `ls -l`, `du`, `wc`) only for read-only size/line measurements when needed.
 

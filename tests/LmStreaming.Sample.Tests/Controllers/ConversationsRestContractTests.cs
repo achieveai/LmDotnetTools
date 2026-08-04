@@ -236,7 +236,8 @@ public class ConversationsRestContractTests
             new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
-            new SubAgentScanCoverageCache());
+            new SubAgentScanCoverageCache(),
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
     }
 
     private static IChatModeStore ModeStoreResolvingSystemModes()

@@ -648,7 +648,8 @@ public sealed class AgentTranscriptAccessTests
             workflowRunRegistry,
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
-            scanCoverageCache ?? new SubAgentScanCoverageCache());
+            scanCoverageCache ?? new SubAgentScanCoverageCache(),
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
 
     private static MultiTurnAgentPool CreateFakeAgentPool() =>
         new(

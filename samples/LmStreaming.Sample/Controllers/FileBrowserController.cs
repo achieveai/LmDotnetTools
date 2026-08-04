@@ -156,6 +156,13 @@ public sealed class FileBrowserController(
             }
 
             var name = LastComponent(target.ServerPath);
+            // Machine-owned bookkeeping directories are excluded BEFORE the allowlist: a conversation's own
+            // `.conversations/*.jsonl` transcript is allowlisted by extension and must not be readable here.
+            if (FilePreviewPolicy.IsUnderDotDirectory(target.ServerPath))
+            {
+                return Ok(new PreviewResultDto(false, "excluded", null, null));
+            }
+
             // Server-authoritative allowlist decides eligibility BEFORE any read.
             if (!FilePreviewPolicy.IsPreviewable(name))
             {

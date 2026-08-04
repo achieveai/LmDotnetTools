@@ -32,7 +32,7 @@ public sealed record NoSessionStateDto(string State, string? WorkspaceId)
     public static NoSessionStateDto For(string? workspaceId) => new(StateValue, workspaceId);
 }
 
-/// <summary>A text-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file).</summary>
+/// <summary>A text-preview result. When <see cref="Previewable"/> is false, <see cref="Reason"/> explains why (binary/too_large/not_utf8/not_a_file/excluded).</summary>
 public sealed record PreviewResultDto(bool Previewable, string? Reason, string? Text, int? LineCount);
 
 /// <summary>The per-file upload outcome (one file per request). <see cref="Name"/> echoes the relative path when the upload carried one, otherwise the base file name.</summary>
