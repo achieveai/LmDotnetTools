@@ -1454,10 +1454,12 @@ public sealed class ConversationTranscriptWriterTests
     /// directory out with it.
     /// </para>
     /// <para>
-    /// Every OTHER consumer of this listing compares a name for EQUALITY against one it already holds
-    /// (<c>FileBrowserController</c>, four call sites), so a traversing name there simply never matches.
-    /// This is the only consumer that adopts a name it did not compute — which is why the gap exists here
-    /// and only here.
+    /// <c>FileBrowserController</c> lists the same way at five call sites. Four of them compare a name for
+    /// EQUALITY against one they already hold, so a traversing name there simply never matches. The fifth
+    /// projects every entry into a DTO for display and compares nothing — a rendered name rather than an
+    /// addressed one, which is a different risk class and not what this test covers. This remains the only
+    /// consumer that ADDRESSES the filesystem with a name it did not compute, which is why the gap exists
+    /// here and only here.
     /// </para>
     /// </remarks>
     [Fact]
