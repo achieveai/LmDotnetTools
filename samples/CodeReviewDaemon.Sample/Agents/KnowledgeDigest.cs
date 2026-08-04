@@ -529,10 +529,17 @@ internal static class KnowledgeDigest
         {
             // The suffix is reserved against the largest count it could report, so admitting the elision can
             // never be the thing that overruns the budget.
+            //
+            // A path that will not fit is SKIPPED, not stopped at, for the same reason as both render loops:
+            // whether it fits is a fact about that path's own length, not about the room left. It matters
+            // most on this line of the three - this joiner exists precisely because "file" is model-authored
+            // and can be absurd, and the refusal line is reached by the malformed entries likeliest to carry
+            // an absurd one. Stopping there would let a single 5k path reduce the whole line to "(+N more)",
+            // costing the operator the names of every other refused entry: the ones they can act on.
             var separator = listed == 0 ? string.Empty : ", ";
             if (builder.Length + separator.Length + path.Length + MoreSuffix(all.Count).Length > charBudget)
             {
-                break;
+                continue;
             }
 
             _ = builder.Append(separator).Append(path);

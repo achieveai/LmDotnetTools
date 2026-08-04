@@ -785,7 +785,21 @@ public class KnowledgeDigestTests
         var described = KnowledgeDigest.DescribePaths([new string('x', 5_000), "system/beta.md"], charBudget: 60);
 
         described.Length.Should().BeLessThanOrEqualTo(60);
-        described.Should().Contain("2 more");
+        described.Should().Contain("1 more");
+    }
+
+    [Fact]
+    public void DescribePaths_OversizedPathDoesNotSuppressTheNamesOfTheOthers()
+    {
+        // The same shape as both render loops: a path that will not fit is a fact about THAT path, not a
+        // signal that the line is full. It matters most here of all - this joiner exists because "file" is
+        // model-authored and can be absurd, and the refusal line is reached by exactly the malformed
+        // entries likeliest to carry an absurd one. Under a stop-at-the-first-oversized rule that single
+        // entry costs the operator the names of every other refused entry alongside it, which are the ones
+        // they can actually act on.
+        var described = KnowledgeDigest.DescribePaths([new string('x', 5_000), "system/beta.md"], charBudget: 60);
+
+        described.Should().Contain("system/beta.md");
     }
 
     // ---- Symmetry: the fallback owes every guarantee the ranked path makes ----------------------
