@@ -853,6 +853,123 @@ public class KnowledgeDigestTests
         partition.Refused.Should().BeEmpty();
     }
 
+    // ---- Duplicate index records must not consume retrieval slots ------------------------------------
+
+    [Fact]
+    public void DeduplicateBeforeSelect_SurfacesKnowledgeThatRepeatedRecordsWouldHaveCrowdedOut()
+    {
+        // A merge that concatenated _index.jsonl with itself is an anticipated broken input - it is the very
+        // shape KnowledgeIndex.MaxIndexRecords documents. Identical paths score identically, so the copies
+        // sort adjacent and take consecutive slots: 20 distinct entries duplicated fill all 24 slots with 12
+        // files, and 8 usable entries the reviewer needed are dropped for records it already has.
+        var store = Enumerable.Range(0, 20)
+            .Select(i => Entry($"system/entry-{i:D2}.md", $"Runner lesson {i}", ["runner"]))
+            .ToArray();
+        var entries = store.Concat(store).ToArray();
+
+        var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
+        var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
+        var deduplicated = KnowledgeDigest.Deduplicate(sanitized.Entries, KbRoot);
+        var selected = KnowledgeDigest.SelectRelevant(
+            deduplicated.Entries, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+
+        // Assert what SHOULD be there: every distinct entry survives, including the tail the duplicates ate.
+        selected.Select(entry => entry.File).Should().OnlyHaveUniqueItems();
+        selected.Should().HaveCount(20);
+        selected.Select(entry => entry.File).Should().Contain("system/entry-19.md");
+        deduplicated.Collapsed.Should().HaveCount(20, "every collapsed record must still be reportable");
+        deduplicated.Conflicting.Should().BeEmpty("identical copies are repetition, not a torn index");
+    }
+
+    [Fact]
+    public void Deduplicate_KeysOnTheResolvedPathSoASpelledDetourIsStillTheSameEntry()
+    {
+        // Keyed on the raw "file" string, 'system/../system/alpha.md' and 'system/alpha.md' stay distinct
+        // and the reviewer is handed the same entry twice under two spellings - the duplicate this exists to
+        // remove, wearing the one disguise an LLM-authored path most easily puts on.
+        var entries = new[]
+        {
+            Entry("system/alpha.md", "Alpha", ["a"]),
+            Entry("system/../system/alpha.md", "Alpha", ["a"]),
+            Entry("system/beta.md", "Beta", ["b"]),
+        };
+
+        var deduplicated = KnowledgeDigest.Deduplicate(entries, KbRoot);
+
+        deduplicated.Entries.Select(entry => entry.File).Should().Equal("system/alpha.md", "system/beta.md");
+        deduplicated.Collapsed.Should().ContainSingle().Which.File.Should().Be("system/../system/alpha.md");
+    }
+
+    [Fact]
+    public void Deduplicate_KeepsTheNewestRecordAndReportsConflictingCopiesAsATornIndex()
+    {
+        // Two records for one path that DISAGREE are not repetition - that is a torn or half-merged index,
+        // and the operator needs to know, because whichever copy loses is knowledge the reviewer will not see.
+        var entries = new[]
+        {
+            Entry("system/alpha.md", "Stale title", ["a"], updated: "2026-01-01"),
+            Entry("system/alpha.md", "Current title", ["a"], updated: "2026-08-01"),
+        };
+
+        var deduplicated = KnowledgeDigest.Deduplicate(entries, KbRoot);
+
+        deduplicated.Entries.Should().ContainSingle().Which.Title.Should().Be("Current title");
+        deduplicated.Conflicting.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Fact]
+    public void Deduplicate_AStoreWithoutRepeatsIsHandedBackUntouched()
+    {
+        // The partner pin. Collapsing anything here - or reordering - would silently shrink a healthy store,
+        // and the ranking below depends on the order it is given.
+        var entries = new[]
+        {
+            Entry("system/alpha.md", "Alpha", ["a"]),
+            Entry("system/beta.md", "Beta", ["b"]),
+            Entry("testing/gamma.md", "Gamma", ["c"], scope: "testing"),
+        };
+
+        var deduplicated = KnowledgeDigest.Deduplicate(entries, KbRoot);
+
+        deduplicated.Entries.Should().Equal(entries);
+        deduplicated.Collapsed.Should().BeEmpty();
+        deduplicated.Conflicting.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_ListsARepeatedEntryOnceAndDoesNotPromiseItAgain()
+    {
+        // The neighbour route into the same prompt, and the same broken input: a _toc.md concatenated with
+        // itself spends the character budget listing entries the reviewer already has. The footer arithmetic
+        // has to move with it - counting a duplicate as "1 more entry in _toc.md" routes the agent back to
+        // the line it just read.
+        var toc = string.Join(
+            "\n",
+            Enumerable.Range(0, 3).Select(i => $"- [Entry {i}](system/entry-{i}.md)"));
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc + "\n" + toc, KbRoot, charBudget: 10_000);
+
+        block.Listed.Should().Be(3);
+        block.Duplicates.Should().Be(3);
+        block.Dropped.Should().Be(0, "a duplicate is not an entry waiting in _toc.md");
+        block.Text.Should().Contain("system/entry-0.md");
+        (block.Text.Split("(system/entry-0.md)").Length - 1).Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_ATableWithoutRepeatsKeepsEveryLine()
+    {
+        // Partner pin for the neighbour route: nothing is collapsed out of a healthy table of contents.
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n- [Beta](system/beta.md)";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Listed.Should().Be(2);
+        block.Duplicates.Should().Be(0);
+        block.Text.Should().Contain("- [Alpha](system/alpha.md)");
+        block.Text.Should().Contain("- [Beta](system/beta.md)");
+    }
+
     [Fact]
     public void SanitizeBeforeSelect_SurfacesKnowledgeThatAnEscapingTagWouldHaveOutranked()
     {
@@ -1671,6 +1788,58 @@ public class KnowledgeDigestTests
         block.Text.Should().NotContain("etc/passwd");
         block.Text.Should().Contain("system/alpha.md", "a contained entry must survive its neighbour's refusal");
         block.Refused.Should().Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesAReferenceDefinitionWhoseLabelSpansTwoLines()
+    {
+        // CommonMark lets a link label contain a newline, so this is one ordinary definition and one ordinary
+        // shortcut reference to it. Every check ran per line and each line looked like prose: "[foo" has no
+        // "]" to find, "bar]: ..." does not begin with "[", and neither carries "][". Both halves reached an
+        // agent that reads CommonMark properly, which is the exact failure the per-line gate was added for.
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [foo\nbar] for more.\n\n[foo\nbar]: ../../../etc/passwd\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().NotContain("[foo", "half a reference is still live once the other half arrives");
+        block.Text.Should().Contain("system/alpha.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Render_ClearsATitleWhoseReferenceLabelSpansTwoLines()
+    {
+        // The neighbour route into the same prompt. A title is not one line by construction - _index.jsonl is
+        // JSON and "\n" is an ordinary character inside a string - so the same two-line definition arrives
+        // here, and RenderEntry interpolates the value as it stands.
+        var entries = new[] { Entry("system/alpha.md", "Runner rules\n\n[foo\nbar]: ../../../etc/passwd", ["runner"]) };
+
+        var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 10_000, omitted: 0);
+
+        digest.Text.Should().NotContain("etc/passwd");
+        digest.Text.Should().Contain("system/alpha.md", "the entry itself is sound; only its title was cleared");
+        digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Theory]
+    [InlineData("- [Alpha](system/alpha.md)")]
+    [InlineData("- [Array [0] lookup](system/alpha.md)")]
+    [InlineData("> - [Alpha](system/alpha.md)")]
+    [InlineData("- [Alpha\\[](system/alpha.md)")]
+    [InlineData("- [Alpha](<system/a](alpha.md>)")]
+    public void RenderTableOfContents_KeepsAnEntryWhoseBracketsBalanceOnItsOwnLine(string entry)
+    {
+        // The over-refusal pin for the rule above. "A label may continue past this line" is a coarse test,
+        // and refusing every line carrying a bracket would have been coarser still and would have emptied the
+        // block - every entry in the file is "- [Title](path)". The last case is the one that forced the
+        // "](" exemption: a destination may contain a "]" of its own, and reading that as an orphaned closer
+        // refused a link the containment check had already cleared.
+        var block = KnowledgeDigest.RenderTableOfContents(
+            "# Knowledge Base\n\n" + entry + "\n", KbRoot, charBudget: 10_000);
+
+        block.Text.Should().Contain("alpha.md");
+        block.Refused.Should().BeEmpty();
     }
 
     [Theory]

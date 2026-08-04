@@ -230,6 +230,102 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
+    /// Collapses entries that name the SAME Knowledge Base file down to one record each, keyed on the
+    /// canonical path <see cref="TryResolveEntryPath"/> produces rather than on the raw
+    /// <see cref="KnowledgeEntryMeta.File"/> string — otherwise <c>a/../b.md</c> and <c>b.md</c> stay
+    /// distinct and the duplicate survives wearing the one disguise a model-authored path most easily puts
+    /// on. Run AFTER containment and sanitization and BEFORE the retrieval cap.
+    /// <para>
+    /// Not a tidiness pass. <c>_index.jsonl</c> is append-structured and written by an LLM with file tools,
+    /// and "the file was concatenated with itself" is a shape the parser already anticipates
+    /// (<see cref="KnowledgeIndex.MaxIndexRecords"/>). Identical paths score identically, so the copies sort
+    /// adjacent and take consecutive slots: a doubled 20-entry index fills all 24 retrieval slots with 12
+    /// files and drops 8 distinct lessons the reviewer needed, while the block reports a full digest. That is
+    /// a correctness failure wearing a green badge, not a size problem.
+    /// </para>
+    /// <para>
+    /// The newest record wins, ties going to the first seen, and winners keep their first-appearance order
+    /// because the ranking below is stable and a reshuffle here would move entries for no stated reason.
+    /// <see cref="KnowledgeDeduplication.Collapsed"/> carries every discarded record, and
+    /// <see cref="KnowledgeDeduplication.Conflicting"/> the kept record for each path whose copies
+    /// DISAGREED — repetition is merely a doubled index, but disagreement means a torn or half-merged one,
+    /// where whichever copy loses is knowledge the reviewer silently will not see.
+    /// </para>
+    /// An entry whose path does not resolve is keyed on its raw <c>File</c> instead of being dropped:
+    /// containment upstream owns that refusal, and inventing a second, quieter one here would delete an
+    /// entry with nothing reporting that it went.
+    /// </summary>
+    public static KnowledgeDeduplication Deduplicate(
+        IReadOnlyList<KnowledgeEntryMeta> entries, string knowledgeBaseRoot)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
+
+        if (entries.Count == 0)
+        {
+            return new KnowledgeDeduplication(entries, [], []);
+        }
+
+        var winners = new Dictionary<string, KnowledgeEntryMeta>(StringComparer.Ordinal);
+        var order = new List<string>();
+        var collapsed = new List<KnowledgeEntryMeta>();
+        var conflicted = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var entry in entries)
+        {
+            var key = TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var resolved)
+                ? resolved
+                : entry.File ?? string.Empty;
+
+            if (!winners.TryGetValue(key, out var kept))
+            {
+                winners.Add(key, entry);
+                order.Add(key);
+                continue;
+            }
+
+            if (!SaysTheSameThing(kept, entry))
+            {
+                _ = conflicted.Add(key);
+            }
+
+            // Newest wins; a tie leaves the incumbent in place, so a doubled index keeps the copy that was
+            // read first and the result does not depend on which half of the concatenation it came from.
+            if (string.CompareOrdinal(entry.Updated, kept.Updated) > 0)
+            {
+                winners[key] = entry;
+                collapsed.Add(kept);
+                continue;
+            }
+
+            collapsed.Add(entry);
+        }
+
+        if (collapsed.Count == 0)
+        {
+            return new KnowledgeDeduplication(entries, [], []);
+        }
+
+        return new KnowledgeDeduplication(
+            [.. order.Select(key => winners[key])],
+            collapsed,
+            [.. conflicted.Select(key => winners[key])]);
+    }
+
+    /// <summary>
+    /// Whether two records for one path carry the same metadata. Compared field by field because
+    /// <see cref="KnowledgeEntryMeta"/> holds its tags in arrays, and record equality over an array is
+    /// reference equality — every record read back from <c>_index.jsonl</c> would then "disagree" with every
+    /// other, and a warning that fires on every duplicate says nothing about the one that matters.
+    /// </summary>
+    private static bool SaysTheSameThing(KnowledgeEntryMeta left, KnowledgeEntryMeta right) =>
+        string.Equals(left.Title, right.Title, StringComparison.Ordinal)
+        && string.Equals(left.Scope, right.Scope, StringComparison.Ordinal)
+        && string.Equals(left.Updated, right.Updated, StringComparison.Ordinal)
+        && left.Tags.SequenceEqual(right.Tags, StringComparer.Ordinal)
+        && left.SourcePrs.SequenceEqual(right.SourcePrs, StringComparer.Ordinal);
+
+    /// <summary>
     /// Renders <paramref name="entries"/> as the prior-knowledge block, resolving each entry's KB-relative
     /// <see cref="KnowledgeEntryMeta.File"/> against <paramref name="knowledgeBaseRoot"/> into an absolute
     /// path the agent can Read directly. Every entry is resolved BEFORE the budget is applied, so an entry
@@ -437,7 +533,7 @@ internal static class KnowledgeDigest
 
         if (string.IsNullOrWhiteSpace(tableOfContents))
         {
-            return new KnowledgeTocBlock(string.Empty, 0, 0, false, []);
+            return new KnowledgeTocBlock(string.Empty, 0, 0, false, [], 0);
         }
 
         var root = knowledgeBaseRoot.Replace('\\', '/').TrimEnd('/');
@@ -476,6 +572,14 @@ internal static class KnowledgeDigest
         // entries at all - subtract either and the dropped count goes negative. Every bad link is still
         // reported; that is what the operator needs and it is a different question from the arithmetic.
         var refusedLines = 0;
+
+        // Entry lines already listed, by the canonical path their link resolves to - the SAME key the ranked
+        // route deduplicates on, because the two routes carry the same store into the same prompt and a
+        // guarantee that holds on only one of them is the recurring defect on this path. A _toc.md merged
+        // badly repeats its entries verbatim, and here every repeat also spends characters out of a budget
+        // the honest entries then fail to fit inside.
+        var listedFiles = new HashSet<string>(StringComparer.Ordinal);
+        var duplicates = 0;
 
         // Truncation is tracked on its OWN flag, not inferred from the entry count. A torn or hand-edited
         // _toc.md - which is precisely the state that sends us down this fallback - can contain no
@@ -534,6 +638,23 @@ internal static class KnowledgeDigest
                     continue;
                 }
 
+                // Judged after containment and before the budget, in that order and for the same reasons the
+                // ranked route uses: a refused line is not evidence its file was listed, and a duplicate must
+                // not be allowed to spend room a first sighting still needs.
+                string? entryFile = null;
+                if (IsTocEntry(line)
+                    && links.Count > 0
+                    && TryResolveEntryPath(root, links[0].Destination, out var entryPath))
+                {
+                    if (listedFiles.Contains(entryPath))
+                    {
+                        duplicates++;
+                        continue;
+                    }
+
+                    entryFile = entryPath;
+                }
+
                 var text = FitTocLine(line, charBudget - builder.Length - reserve, links);
                 if (text is null)
                 {
@@ -551,6 +672,15 @@ internal static class KnowledgeDigest
                 if (IsTocEntry(line))
                 {
                     listed++;
+
+                    // Recorded only once the line is in the block. Marking it above would let a first
+                    // sighting that the budget cut still silence its own copy, and the file would then be
+                    // neither listed nor dropped - present in the count of what the reviewer received, absent
+                    // from the block, and absent from the footer that promises a route back to it.
+                    if (entryFile is not null)
+                    {
+                        _ = listedFiles.Add(entryFile);
+                    }
                 }
             }
         }
@@ -561,18 +691,19 @@ internal static class KnowledgeDigest
 
         // A refused entry is a different fact from one that did not fit, so it is subtracted from the total
         // rather than counted as dropped: a footer promising "1 more entry" in _toc.md would route the agent
-        // straight back to the link just refused.
-        var dropped = total - listed - refusedLines;
+        // straight back to the link just refused. A duplicate is subtracted for the same reason - the file it
+        // names is already in the block above, so counting it would promise a route to a line already read.
+        var dropped = total - listed - refusedLines - duplicates;
         if (builder.Length == 0)
         {
-            return new KnowledgeTocBlock(string.Empty, 0, dropped, true, refused);
+            return new KnowledgeTocBlock(string.Empty, 0, dropped, true, refused, duplicates);
         }
 
         var closing = dropped > 0 ? Footer(dropped, knowledgeBaseRoot)
             : truncated ? TruncatedNotice(knowledgeBaseRoot)
             : string.Empty;
         return new KnowledgeTocBlock(
-            builder.Append(closing).ToString(), listed, dropped, truncated, refused);
+            builder.Append(closing).ToString(), listed, dropped, truncated, refused, duplicates);
     }
 
     /// <summary>
@@ -608,6 +739,25 @@ internal static class KnowledgeDigest
         // bullet would empty the block; what makes a definition a definition is the ":" after its label.
         foreach (var line in text.Split('\n'))
         {
+            // A label that does not open and close on this line. CommonMark lets a link label span lines, so
+            // "[foo\nbar]: ../../../etc/passwd" is a perfectly ordinary definition and "[foo\nbar]" is the
+            // shortcut reference that resolves to it - while every check written per line looked straight
+            // past both halves. Line one has no "]" to find, line two does not begin with "[", and neither
+            // carries "][". The definition and its use were printed verbatim to an agent that reads
+            // CommonMark properly, which is the whole failure this gate exists to prevent, spelled across two
+            // lines instead of one.
+            //
+            // Balance, not reassembly. Joining the lines back up and re-running the rules would mean deciding
+            // where a label really ends - continuation rules, blank lines, block boundaries - which is the
+            // parser this is documented never to become, written for the input we trust least. A "[" left
+            // open when the line ends, or a "]" that closes nothing, is enough to say "a label may continue
+            // past this line" without saying where it goes. Our own generator emits balanced lines, so the
+            // refusal costs no real retrieval.
+            if (ALabelMayContinuePastThisLine(line))
+            {
+                return true;
+            }
+
             var trimmed = StripBlockContainerMarkers(line);
             if (trimmed.IsEmpty || trimmed[0] != '[')
             {
@@ -626,6 +776,47 @@ internal static class KnowledgeDigest
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Whether a link label on this line may continue onto the next: a <c>[</c> still open when the line
+    /// ends, or a <c>]</c> that closes nothing and does not open an inline destination. Escaped brackets are
+    /// skipped, matching <see cref="IndexOfUnescaped"/> — a label may legitimately contain <c>\[</c>.
+    /// <para>
+    /// The <c>](</c> exemption is what keeps the rule from eating ordinary entries. A destination may contain
+    /// a <c>]</c> of its own — <c>[title](&lt;system/a](b.md&gt;)</c> is one link, not a broken label — and
+    /// FitTocLine already has a pin standing on exactly that line. A closer followed by anything else is
+    /// evidence the opener was on an earlier line, which is the one thing a per-line reading cannot
+    /// otherwise see.
+    /// </para>
+    /// </summary>
+    private static bool ALabelMayContinuePastThisLine(ReadOnlySpan<char> line)
+    {
+        var depth = 0;
+        for (var scan = 0; scan < line.Length; scan++)
+        {
+            if (line[scan] == '\\')
+            {
+                scan++;
+            }
+            else if (line[scan] == '[')
+            {
+                depth++;
+            }
+            else if (line[scan] == ']')
+            {
+                if (depth > 0)
+                {
+                    depth--;
+                }
+                else if (scan + 1 >= line.Length || line[scan + 1] != '(')
+                {
+                    return true; // Closes a label opened on an earlier line.
+                }
+            }
+        }
+
+        return depth > 0;
     }
 
     /// <summary>
@@ -1577,10 +1768,24 @@ internal sealed record KnowledgeDigestBlock(
 /// file that was read - once the block is budgeted, those two numbers stop being the same, and a log that
 /// reports the read is the same silent-failure shape the ranked digest's proof-of-use line was added to fix.
 /// <see cref="Truncated"/> is tracked separately because a table of contents with no recognisable entry
-/// lines can be cut without <see cref="Dropped"/> ever moving off zero.
+/// lines can be cut without <see cref="Dropped"/> ever moving off zero. <see cref="Duplicates"/> counts entry
+/// lines pointing at a file already listed above them, which are neither listed nor dropped: they were
+/// removed for the same reason as on the ranked route, and counting one as "1 more entry in _toc.md" would
+/// route the agent back to the line it just read.
 /// </summary>
 internal sealed record KnowledgeTocBlock(
-    string Text, int Listed, int Dropped, bool Truncated, IReadOnlyList<string> Refused);
+    string Text, int Listed, int Dropped, bool Truncated, IReadOnlyList<string> Refused, int Duplicates);
+
+/// <summary>
+/// Knowledge Base entries with records naming the same file collapsed to one apiece, plus what was
+/// collapsed away. <see cref="Collapsed"/> and <see cref="Conflicting"/> are carried rather than counted
+/// because the two say different things to an operator: repetition means an index that was merged badly,
+/// disagreement means one that is torn, and only the second is a reason to go and look at the file.
+/// </summary>
+internal sealed record KnowledgeDeduplication(
+    IReadOnlyList<KnowledgeEntryMeta> Entries,
+    IReadOnlyList<KnowledgeEntryMeta> Collapsed,
+    IReadOnlyList<KnowledgeEntryMeta> Conflicting);
 
 /// <summary>
 /// Knowledge Base entries split by whether their path resolves inside the Knowledge Base root.

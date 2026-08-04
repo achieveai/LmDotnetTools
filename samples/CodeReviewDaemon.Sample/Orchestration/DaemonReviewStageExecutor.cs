@@ -1596,7 +1596,53 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             tocBlock.Dropped,
             tocBlock.Truncated);
         LogRefusedKnowledgePaths(tocBlock.Refused, knowledgeBaseDir);
+        if (tocBlock.Duplicates > 0)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: {DuplicateCount} _toc.md {Plural} pointed at a file already listed above "
+                    + "and {WereWas} left out. The table of contents is regenerated wholesale, so repeated "
+                    + "entries indicate a merged or torn file rather than a large Knowledge Base.",
+                tocBlock.Duplicates,
+                tocBlock.Duplicates == 1 ? "entry" : "entries",
+                tocBlock.Duplicates == 1 ? "was" : "were");
+        }
+
         return $"{tocBlock.Text}\n{reviewInput}";
+    }
+
+    /// <summary>
+    /// Warns about <c>_index.jsonl</c> records that named a file another record already named. Split in two
+    /// on purpose: repetition is a merge artefact and costs only retrieval slots, while records that DISAGREE
+    /// mean a torn index, where whichever copy lost is knowledge the reviewer will not see and nothing else
+    /// would say so.
+    /// </summary>
+    private void LogCollapsedKnowledgeDuplicates(KnowledgeDeduplication deduplicated)
+    {
+        if (deduplicated.Collapsed.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Prior knowledge: collapsed {CollapsedCount} duplicate _index.jsonl {Plural} before ranking. "
+                + "Left in, identical paths score identically and take consecutive retrieval slots, so the "
+                + "cap fills with copies and distinct entries are dropped: {CollapsedEntries}",
+            deduplicated.Collapsed.Count,
+            deduplicated.Collapsed.Count == 1 ? "record" : "records",
+            KnowledgeDigest.DescribePaths(
+                deduplicated.Collapsed.Select(entry => entry.File), MaxKnowledgeLogChars));
+
+        if (deduplicated.Conflicting.Count > 0)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: {ConflictCount} of those {Plural} metadata that DISAGREED with the copy "
+                    + "kept, which is a torn index rather than a repeated one — the newest record won and "
+                    + "the rest of what was written for these paths is gone: {ConflictingEntries}",
+                deduplicated.Conflicting.Count,
+                deduplicated.Conflicting.Count == 1 ? "path carried" : "paths carried",
+                KnowledgeDigest.DescribePaths(
+                    deduplicated.Conflicting.Select(entry => entry.File), MaxKnowledgeLogChars));
+        }
     }
 
     /// <summary>
@@ -1707,10 +1753,22 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // entry, exactly as it did inside Render; it only moves the scoring onto fields that will still exist
         // when the reviewer reads them.
         var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, knowledgeBaseDir);
+
+        // Duplicates go BEFORE the cap for the same reason containment does, and they are the cheapest way to
+        // lose the whole feature: identical paths score identically, so the copies sort adjacent and take
+        // consecutive slots. A doubled index fills every slot with half the store while the log below reports
+        // a full digest.
+        var deduplicated = KnowledgeDigest.Deduplicate(sanitized.Entries, knowledgeBaseDir);
         var selected = KnowledgeDigest.SelectRelevant(
-            sanitized.Entries, ranked, repo.RepoName, MaxKnowledgeEntries);
+            deduplicated.Entries, ranked, repo.RepoName, MaxKnowledgeEntries);
+
+        // Counted off the DEDUPLICATED set: the footer tells the agent how many more entries are waiting in
+        // _toc.md, and a count that still includes the collapsed copies promises a route back to entries it
+        // has already been given.
         var digest = KnowledgeDigest.Render(
-            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, sanitized.Entries.Count - selected.Count);
+            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, deduplicated.Entries.Count - selected.Count);
+
+        LogCollapsedKnowledgeDuplicates(deduplicated);
 
         // Report the RENDERED entries, never the selected ones: the character budget can cut the tail off
         // the block, and a log line naming entries the reviewer never received would make a partial
