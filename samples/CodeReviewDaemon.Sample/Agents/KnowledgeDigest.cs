@@ -258,7 +258,8 @@ internal static class KnowledgeDigest
         var rejected = new List<KnowledgeEntryMeta>();
         foreach (var entry in entries)
         {
-            if (TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var absolute))
+            if (TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var absolute)
+                && !MetadataCarriesAnEscapingLink(entry, knowledgeBaseRoot))
             {
                 resolved.Add((entry, absolute));
             }
@@ -408,9 +409,11 @@ internal static class KnowledgeDigest
         var truncated = false;
         var refused = new List<string>();
 
-        // Refused LINES, not refused links: one line can carry more than one escaping destination, and the
-        // total below counts entry lines. Reporting every bad link is what the operator needs; subtracting
-        // every bad link is what would drive the dropped count negative.
+        // Refused ENTRY LINES, not refused links: the total below counts entry lines, so only a refusal that
+        // removes one of those may be subtracted from it. One line can carry more than one escaping
+        // destination, and containment now runs on prose and other-shaped lines that were never counted as
+        // entries at all - subtract either and the dropped count goes negative. Every bad link is still
+        // reported; that is what the operator needs and it is a different question from the arithmetic.
         var refusedLines = 0;
 
         // Truncation is tracked on its OWN flag, not inferred from the entry count. A torn or hand-edited
@@ -436,7 +439,11 @@ internal static class KnowledgeDigest
                 if (escapes.Count > 0)
                 {
                     refused.AddRange(escapes);
-                    refusedLines++;
+                    if (IsTocEntry(line))
+                    {
+                        refusedLines++;
+                    }
+
                     continue;
                 }
 
@@ -538,12 +545,18 @@ internal static class KnowledgeDigest
     private readonly record struct TocLink(string Destination, int Marker);
 
     /// <summary>
-    /// Every link destination on a <c>_toc.md</c> entry line, normalized, in source order. Empty when the
-    /// line is not an entry (a heading, blank or prose line carries no path and is not containment-checked).
+    /// Every link destination on a <c>_toc.md</c> line, normalized, in source order.
     /// <para>
     /// Every one, not the last one. The previous reading took <c>LastIndexOf("](")</c>, so a line carrying
     /// two links had one of them checked and both of them rendered — the escape only had to not be written
     /// last. The check was right both times it was defeated; what reached it was not.
+    /// </para>
+    /// <para>
+    /// Every LINE, too. This was once gated on <see cref="IsTocEntry"/>, which recognises the single shape
+    /// our own generator emits, on the premise that anything else is a heading or prose and carries no path.
+    /// That premise is false — <c>See [notes](../../secrets.md).</c> is prose and carries one — and beside
+    /// the point for an indented entry, a <c>*</c> bullet or an ordered list, which are the same entry in
+    /// ordinary Markdown clothing. The renderer prints every line that fits, so every line is parsed.
     /// </para>
     /// <para>
     /// This is the only place the syntax is read. Callers get the offsets back rather than re-deriving them,
@@ -553,11 +566,6 @@ internal static class KnowledgeDigest
     /// </summary>
     private static IReadOnlyList<TocLink> TocLinks(string line)
     {
-        if (!IsTocEntry(line))
-        {
-            return [];
-        }
-
         var links = new List<TocLink>();
         var at = 0;
         while (true)
@@ -635,13 +643,14 @@ internal static class KnowledgeDigest
             return line + "\n";
         }
 
-        // Only a single-link line can be shortened safely. The title cut is anchored on the link's opening
-        // "](", so on a two-link line everything between the first link and the last is swallowed as title
-        // text and the render comes back as "- [First entry's title (truncated)](second entry's link)": a
-        // label naming one entry over a link pointing at another. Misattributed knowledge is worse than
-        // absent knowledge, and the entry is counted as dropped with a route to the full _toc.md either way,
-        // so such a line fits whole or not at all.
-        if (links.Count != 1)
+        // Only a single-link line in OUR entry shape can be shortened. The cut writes "- [" back on the front
+        // and slices the title from index 3, so on any other line it would invent an entry out of the middle
+        // of a sentence. And on a two-link line the anchor swallows everything between the first link and the
+        // last as title text, rendering "- [First entry's title (truncated)](second entry's link)": a label
+        // naming one entry over a link pointing at another. Misattributed knowledge is worse than absent
+        // knowledge, and either line is counted as dropped with a route to the full _toc.md, so it fits whole
+        // or not at all.
+        if (links.Count != 1 || !IsTocEntry(line))
         {
             return null;
         }
@@ -749,6 +758,27 @@ internal static class KnowledgeDigest
     private static string Footer(int missing, string knowledgeBaseRoot) =>
         $"\n{missing} more entr{(missing == 1 ? "y is" : "ies are")} not listed here; the full list is in "
         + $"{Join(knowledgeBaseRoot, "_toc.md")}.\n";
+
+    /// <summary>
+    /// Whether any link in an entry's model-authored metadata resolves outside
+    /// <paramref name="knowledgeBaseRoot"/>.
+    /// <para>
+    /// <see cref="KnowledgeEntryMeta.File"/> is not the only field of an entry that reaches the reviewer.
+    /// Title, tags and scope come from the same knowledge-extraction agent, are rendered into the block
+    /// verbatim by <see cref="RenderEntry"/>, and a Markdown link inside one of them resolves exactly like a
+    /// link anywhere else — so checking only the field the path is built from left the other three carrying
+    /// whatever they liked. Same rule, whole entry, and the same verdict the <c>_toc.md</c> route gives an
+    /// escaping line: refuse it entire rather than scrub part of it, and report it through
+    /// <see cref="KnowledgeDigestBlock.Rejected"/> where refusals are already counted and logged.
+    /// </para>
+    /// </summary>
+    private static bool MetadataCarriesAnEscapingLink(KnowledgeEntryMeta entry, string knowledgeBaseRoot) =>
+        MetadataFields(entry)
+            .Any(field => TocLinks(field).Any(
+                link => !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot)));
+
+    private static IEnumerable<string> MetadataFields(KnowledgeEntryMeta entry) =>
+        new[] { entry.Title, entry.Scope }.Concat(entry.Tags).Where(field => !string.IsNullOrEmpty(field));
 
     /// <summary>
     /// Renders one entry within <paramref name="maxLength"/>, or an empty string when not even a truncated

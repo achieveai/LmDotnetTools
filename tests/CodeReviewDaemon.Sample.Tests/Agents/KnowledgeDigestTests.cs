@@ -333,6 +333,39 @@ public class KnowledgeDigestTests
                 + "not there reads exactly like a Knowledge Base that happens to be empty");
     }
 
+    [Theory]
+    [InlineData("see [x](../../../etc/passwd) for context")]
+    [InlineData("plain [x](</etc/passwd>)")]
+    public void Render_RejectsAnEntryWhoseTitleCarriesAnEscapingLink(string title)
+    {
+        // Same shape as the _toc.md gate, on the PRIMARY route: containment was applied to entry.File and to
+        // nothing else, while Title, tags and scope are written by the same knowledge-extraction agent and
+        // are rendered into the block verbatim. A link in a title resolves for the reviewer exactly like a
+        // link anywhere else, so the check has to see the whole rendered entry, not just the field we happen
+        // to build the path from. Refused whole, matching the verdict the fallback route gives.
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", title, ["a"]), Entry("system/beta.md", "Beta", ["b"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0);
+
+        digest.Text.Should().NotContain("/etc/passwd");
+        digest.Text.Should().Contain("system/beta.md", "a clean entry must survive its neighbour's refusal");
+        digest.Rejected.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_KeepsAnEntryWhoseTitleCarriesAContainedLink()
+    {
+        // Containment, not a ban on Markdown in titles - the same distinction the path check already draws.
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", "see [x](system/notes.md)", ["a"])], KbRoot, charBudget: 10_000,
+            omitted: 0);
+
+        digest.Rejected.Should().BeEmpty();
+        digest.Text.Should().Contain("system/notes.md");
+    }
+
     [Fact]
     public void Render_KeepsAnEntryWhoseDotDotStaysInsideTheRoot()
     {
@@ -1103,5 +1136,59 @@ public class KnowledgeDigestTests
         block.Listed.Should().Be(1);
         block.Dropped.Should().Be(1);
         block.Truncated.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("  - [x](../../../etc/passwd)")]
+    [InlineData("* [x](../../../etc/passwd)")]
+    [InlineData("1. [x](../../../etc/passwd)")]
+    [InlineData("See [notes](../../../etc/passwd).")]
+    public void RenderTableOfContents_RefusesAnEscapingLinkOnALineThatIsNotOurOwnEntryShape(string line)
+    {
+        // Containment was gated on IsTocEntry, which recognises the one shape OUR generator emits: a line
+        // starting with exactly "- [". Every other line was rendered verbatim without ever being parsed. An
+        // indented entry, a "*" bullet, an ordered list and a link in prose are all ordinary Markdown - the
+        // agent resolves them the same way - so the gate excused from the check precisely the lines this
+        // degraded route exists to handle, a torn or hand-edited _toc.md.
+        var toc = $"# Knowledge Base\n\n{line}\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("../../../etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain("../../../etc/passwd");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusingANonEntryLineLeavesTheEntryCountsAlone()
+    {
+        // The refusal counter is subtracted from a total that counts ENTRY lines, so a non-entry refusal must
+        // not move it - "1 entry, 1 listed, 1 refused" reports minus one dropped. Checked because this
+        // arithmetic has already gone negative once, when one line could carry two refused links.
+        var toc = "# Knowledge Base\n\nSee [notes](../../../etc/passwd).\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Listed.Should().Be(1);
+        block.Dropped.Should().Be(0);
+        block.Refused.Should().Contain("../../../etc/passwd");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_DoesNotRewriteAProseLineIntoAnEntryToMakeItFit()
+    {
+        // The title cut writes "- [" back on the front and slices from index 3, so it is only meaningful on a
+        // line that HAS that prefix. Now that non-entry lines are parsed for links too, a long prose line
+        // carrying one safe link reaches the cut, and applying it there would invent an entry that the
+        // _toc.md never contained - out of the middle of a sentence.
+        var toc = "# Knowledge Base\n\nSee " + new string('w', 400) + " [notes](system/ok.md) for more.\n"
+            + "- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
+
+        block.Text.Should().NotContain(" (truncated)", "a prose line has no title to cut");
+        block.Text.Should().Contain("system/beta.md", "the entry after the dropped line must still be surfaced");
+        block.Listed.Should().Be(1);
     }
 }
