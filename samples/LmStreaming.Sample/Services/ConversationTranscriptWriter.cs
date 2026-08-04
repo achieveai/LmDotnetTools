@@ -25,8 +25,9 @@ public enum TranscriptFlushOutcome
     Written,
 
     /// <summary>
-    ///     Work remains: a read never settled, a gateway call failed, or the sub-agent fan-out was capped.
-    ///     The watermarks involved are unadvanced, so a later flush repeats the work. <b>Re-schedule.</b>
+    ///     Work remains: a read never settled, a gateway call failed, the sub-agent fan-out was capped, or
+    ///     the containment <c>.gitignore</c> is not yet on disk. The watermarks involved are unadvanced, so
+    ///     a later flush repeats the work. <b>Re-schedule.</b>
     /// </summary>
     Deferred,
 
@@ -172,6 +173,15 @@ public sealed class ConversationTranscriptWriter
 
     private string? _leaf;
     private bool _gitignoreWritten;
+
+    /// <summary>
+    ///     Whether this conversation has a transcript in the workspace at all — set when an append lands
+    ///     and when the cold-start probe finds an existing file. Distinct from
+    ///     <see cref="_gitignoreWritten"/> and from "this flush wrote something": see
+    ///     <see cref="ContainAsync"/> for why conflating the three is what leaves the ignore file missing.
+    /// </summary>
+    private bool _transcriptExists;
+
     private bool _agentsDirectoryTouched;
     private int _subAgentCursor;
     private int _sawSubAgentActivity;
@@ -289,20 +299,62 @@ public sealed class ConversationTranscriptWriter
             ct
         ).ConfigureAwait(false);
 
-        var wrote = mainResult == AppendResult.Appended;
-        var deferred = mainResult == AppendResult.Failed;
+        if (mainResult == AppendResult.Failed)
+        {
+            // The fan-out is SKIPPED, not merely reported alongside a failed main append. A sub-agent
+            // file's first line anchors to the main file's watermark, and RootParentUidFor pins whatever
+            // it reads the first time it is asked — permanently, for the life of this writer. Running the
+            // fan-out here would mint that anchor from a watermark this failed append left unadvanced, so
+            // on a FIRST flush every sub-agent file would be pinned to null and the two files would never
+            // be one lineage again. No later flush revisits a pinned anchor. Deferring costs one repeated
+            // pass; a wrong anchor is not recoverable.
+            return await ContainAsync(sessionId, TranscriptFlushOutcome.Deferred, ct).ConfigureAwait(false);
+        }
 
+        var wrote = mainResult == AppendResult.Appended;
         var (agentsWrote, agentsDeferred) = await FlushSubAgentsAsync(sessionId, leaf, ct).ConfigureAwait(false);
         wrote = wrote || agentsWrote;
 
-        if (wrote)
+        return await ContainAsync(
+            sessionId,
+            agentsDeferred ? TranscriptFlushOutcome.Deferred
+                : wrote ? TranscriptFlushOutcome.Written
+                : TranscriptFlushOutcome.UpToDate,
+            ct
+        ).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    ///     Makes sure this conversation's transcript directory is contained by a <c>.gitignore</c> before
+    ///     the flush reports <paramref name="outcome"/>, downgrading to
+    ///     <see cref="TranscriptFlushOutcome.Deferred"/> when it is not.
+    /// </summary>
+    /// <remarks>
+    ///     <b>Containment is tracked separately from message progress, and this is the highest-consequence
+    ///     rule in the type.</b> The obvious shape — write the ignore file only on a flush that appended
+    ///     something — fails in both directions at once: the attempt is skipped on every flush that finds
+    ///     nothing new (so a transcript written by an earlier process, or one whose only appending flush
+    ///     already happened, is never covered), and a failed attempt changes nothing about the flush's
+    ///     result (so the ONE trigger that could retry it is a future flush that also appends, which for a
+    ///     finished conversation never comes). Both leave the file permanently absent, and this
+    ///     <c>.gitignore</c> is the entire opt-out for the feature: without it the next <c>git add -A</c>
+    ///     an agent runs in that workspace publishes every conversation's unredacted reasoning off-machine,
+    ///     irrecoverably. So: attempt it whenever a transcript exists and the file is not known to be
+    ///     present, and treat failure as work still pending.
+    /// </remarks>
+    private async Task<TranscriptFlushOutcome> ContainAsync(
+        string sessionId,
+        TranscriptFlushOutcome outcome,
+        CancellationToken ct)
+    {
+        if (!_transcriptExists || _gitignoreWritten)
         {
-            await EnsureGitignoreAsync(sessionId, ct).ConfigureAwait(false);
+            return outcome;
         }
 
-        return (deferred || agentsDeferred) ? TranscriptFlushOutcome.Deferred
-            : wrote ? TranscriptFlushOutcome.Written
-            : TranscriptFlushOutcome.UpToDate;
+        return await EnsureGitignoreAsync(sessionId, ct).ConfigureAwait(false)
+            ? outcome
+            : TranscriptFlushOutcome.Deferred;
     }
 
     // -------- Step 1: session --------
@@ -428,8 +480,9 @@ public sealed class ConversationTranscriptWriter
     // -------- Step 4: retitle --------
 
     /// <summary>
-    ///     Notices a title change and renames the conversation's file (and, when this writer has written
-    ///     any, its sub-agent directory) before anything is appended this flush.
+    ///     Notices a title change and renames the conversation's file (and, when there is one, its
+    ///     sub-agent directory) before anything is appended this flush — including a title change that
+    ///     happened while this process was not running.
     /// </summary>
     /// <remarks>
     ///     <para>
@@ -438,12 +491,21 @@ public sealed class ConversationTranscriptWriter
     ///     retries next time.
     ///     </para>
     ///     <para>
-    ///     The directory move is attempted only after the file move succeeded and only when this writer has
-    ///     actually written a sub-agent file. A conversation with no sub-agents has no directory to move,
-    ///     and issuing the <c>mv</c> anyway would fail every time and wedge the rename. If the directory
-    ///     move does fail, the in-memory sub-agent watermarks describe files that did not move, so they are
-    ///     dropped: the directory is rebuilt in full under the new name (duplicate rows, which dedupe on
-    ///     <c>uid</c>) rather than silently resuming past rows the new files do not contain.
+    ///     The directory move is attempted only after the file move succeeded and only when there is a
+    ///     directory to move. A conversation with no sub-agents has none, and issuing the <c>mv</c> anyway
+    ///     would fail every time and wedge the rename. If the directory move does fail, the in-memory
+    ///     sub-agent watermarks describe files that did not move, so they are dropped: the directory is
+    ///     rebuilt in full under the new name (duplicate rows, which dedupe on <c>uid</c>) rather than
+    ///     silently resuming past rows the new files do not contain.
+    ///     </para>
+    ///     <para>
+    ///     <b>Cold start is a retitle too.</b> A title edited while the host was down is invisible to this
+    ///     writer's in-memory state, so simply adopting the computed leaf produced a SECOND transcript for
+    ///     the same conversation — the old file frozen at its last row under the old slug, the new one
+    ///     starting the history again from zero, plus an orphaned <c>_agents/</c> directory beside the
+    ///     wrong name. The short id in the leaf is what makes the old file findable: it is stable across
+    ///     any number of retitles, so a directory listing identifies the conversation's own file under
+    ///     whatever slug it was last named, and the same move path adopts it.
     ///     </para>
     /// </remarks>
     private async Task ApplyRetitleAsync(string sessionId, ThreadMetadata? metadata, CancellationToken ct)
@@ -451,9 +513,7 @@ public sealed class ConversationTranscriptWriter
         var leaf = WorkspaceTranscriptLine.MainFileLeaf(ReadTitle(metadata), _shortThreadId);
         if (_leaf is null)
         {
-            // Cold start: nothing to rename. A title changed while this process was down is recovered by
-            // the watermark probe against the new path, which finds no file and appends everything.
-            _leaf = leaf;
+            _leaf = await AdoptExistingLeafAsync(sessionId, leaf, ct).ConfigureAwait(false) ?? leaf;
             return;
         }
 
@@ -462,31 +522,114 @@ public sealed class ConversationTranscriptWriter
             return;
         }
 
-        var previous = _leaf;
-        var moved = await TryMoveAsync(
-            sessionId,
-            $"{TranscriptDirectory}/{previous}{TranscriptExtension}",
-            $"{TranscriptDirectory}/{leaf}{TranscriptExtension}",
-            ct
-        ).ConfigureAwait(false);
-
-        if (!moved)
+        if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false))
         {
-            return;
+            _leaf = leaf;
+        }
+    }
+
+    /// <summary>
+    ///     On cold start, finds this conversation's existing transcript under a DIFFERENT slug and renames
+    ///     it (and its sub-agent directory) onto <paramref name="leaf"/>. Reports the leaf actually in
+    ///     force afterwards, or null when there was nothing to adopt.
+    /// </summary>
+    /// <remarks>
+    ///     A listing failure, an unreadable directory, or a move that does not take are all answered the
+    ///     same way: keep using the file that is there. Reporting the stale leaf rather than the new one
+    ///     is what stops a failed adoption from splitting the transcript in two anyway — appending to the
+    ///     old name is always preferable to starting a second file.
+    /// </remarks>
+    private async Task<string?> AdoptExistingLeafAsync(string sessionId, string leaf, CancellationToken ct)
+    {
+        IReadOnlyList<SandboxDirectoryEntry> entries;
+        try
+        {
+            entries = await _fileBrowser
+                .ListWorkspaceDirectoryAsync(sessionId, TranscriptDirectory, ct)
+                .ConfigureAwait(false);
+        }
+        catch (SandboxException ex)
+        {
+            _logger.LogDebug(ex, "Listing {Directory} for thread {ThreadId} failed", TranscriptDirectory, ThreadId);
+            return null;
         }
 
-        if (_agentsDirectoryTouched
+        var stale = entries
+            .Where(entry => entry.Type == SandboxEntryType.File && !entry.NameLossy)
+            .Select(entry => entry.Name)
+            .Where(name => name.EndsWith(TranscriptExtension, StringComparison.Ordinal))
+            .Select(name => name[..^TranscriptExtension.Length])
+            .FirstOrDefault(stem => IsThisConversation(stem) && !string.Equals(stem, leaf, StringComparison.Ordinal));
+
+        // The flag means "there is a sub-agent directory a later retitle has to move", which until now
+        // only a write in THIS process could set. A restart forgot it, so the first retitle after one
+        // moved the file and left the directory orphaned under the old name — the same defect as the file
+        // itself, one level down. The listing is the answer for both.
+        var subject = stale ?? leaf;
+        _agentsDirectoryTouched =
+            _agentsDirectoryTouched
+            || entries.Any(entry =>
+                entry.Type == SandboxEntryType.Directory
+                && !entry.NameLossy
+                && string.Equals(entry.Name, subject + AgentsDirectorySuffix, StringComparison.Ordinal));
+
+        if (stale is null)
+        {
+            return null;
+        }
+
+        _transcriptExists = true;
+        _logger.LogInformation(
+            "Adopting the transcript of thread {ThreadId} left under {Stale} as {Leaf}",
+            ThreadId,
+            stale,
+            leaf);
+
+        return await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false)
+            ? leaf
+            : stale;
+    }
+
+    /// <summary>
+    ///     Whether a file stem is this conversation's own — i.e. carries its short id in the position
+    ///     <see cref="WorkspaceTranscriptLine.MainFileLeaf"/> puts it, either as the whole stem (the title
+    ///     slugged to nothing) or after the separator.
+    /// </summary>
+    private bool IsThisConversation(string stem) =>
+        string.Equals(stem, _shortThreadId, StringComparison.Ordinal)
+        || stem.EndsWith($"-{_shortThreadId}", StringComparison.Ordinal);
+
+    /// <summary>Renames one transcript file and, when asked, its sibling sub-agent directory.</summary>
+    /// <returns>Whether the FILE moved — the only condition under which the new leaf may be adopted.</returns>
+    private async Task<bool> MoveLeafAsync(
+        string sessionId,
+        string from,
+        string to,
+        bool moveAgents,
+        CancellationToken ct)
+    {
+        if (!await TryMoveAsync(
+                sessionId,
+                $"{TranscriptDirectory}/{from}{TranscriptExtension}",
+                $"{TranscriptDirectory}/{to}{TranscriptExtension}",
+                ct
+            ).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        if (moveAgents
             && !await TryMoveAsync(
                 sessionId,
-                $"{TranscriptDirectory}/{previous}{AgentsDirectorySuffix}",
-                $"{TranscriptDirectory}/{leaf}{AgentsDirectorySuffix}",
+                $"{TranscriptDirectory}/{from}{AgentsDirectorySuffix}",
+                $"{TranscriptDirectory}/{to}{AgentsDirectorySuffix}",
                 ct
             ).ConfigureAwait(false))
         {
             DropSubAgentState();
         }
 
-        _leaf = leaf;
+        return true;
     }
 
     private void DropSubAgentState()
@@ -574,12 +717,16 @@ public sealed class ConversationTranscriptWriter
 
         _subAgentCursor = agents.Count == 0 ? 0 : (_subAgentCursor + take) % agents.Count;
 
-        // A capped pass asks for a follow-up only when it actually mirrored something. Reporting Deferred
-        // purely because descendants outnumber the cap would be true on EVERY flush forever, and a caller
-        // that re-schedules on Deferred would then spin: the cursor keeps moving but the condition never
-        // clears. Gating on progress converges — the first pass that finds its slice already up to date
-        // ends the chain.
-        return (wrote, deferred || (capped && wrote));
+        // A capped pass asks for a follow-up whether or not it mirrored anything, because "this slice
+        // wrote nothing" says nothing at all about the descendants OUTSIDE the slice — and the one that
+        // changed is exactly as likely to be out there. Gating on progress looked convergent and was
+        // instead a way to stop one step short: the pass that found its own slice up to date ended the
+        // chain, leaving the changed descendant beyond the cap unwritten until some later trigger
+        // happened to come along. What terminates the chain is the mirror's bounded retry budget
+        // (WorkspaceTranscriptMirror.MaxDeferredRetries), which is reset at each turn boundary — so a
+        // large fan-out is covered a slice per attempt and paced, rather than either spinning or being
+        // silently truncated.
+        return (wrote, deferred || capped);
     }
 
     /// <summary>
@@ -662,6 +809,7 @@ public sealed class ConversationTranscriptWriter
         }
 
         _watermarks[watermarkKey] = lines[^1].Uid;
+        _transcriptExists = true;
         return AppendResult.Appended;
     }
 
@@ -684,6 +832,7 @@ public sealed class ConversationTranscriptWriter
         if (!_watermarks.TryGetValue(watermarkKey, out var watermark))
         {
             var (hadContent, recovered) = await RecoverWatermarkAsync(sessionId, path, ct).ConfigureAwait(false);
+            _transcriptExists = _transcriptExists || hadContent;
             if (recovered is null)
             {
                 if (hadContent)
@@ -781,20 +930,21 @@ public sealed class ConversationTranscriptWriter
     // -------- Step 8: containment --------
 
     /// <summary>
-    ///     Writes <c>.conversations/.gitignore</c> containing <c>*</c>, once per conversation, on the first
-    ///     successful flush.
+    ///     Writes <c>.conversations/.gitignore</c> containing <c>*</c>, once per conversation. Reports
+    ///     whether the file is now known to be present.
     /// </summary>
     /// <remarks>
     ///     A workspace is frequently a git checkout and an agent frequently runs <c>git add -A</c>. Without
     ///     this, the first such commit publishes this conversation's and its siblings' unredacted reasoning
-    ///     off-machine, irrecoverably. Written after the first successful append rather than before, so a
-    ///     conversation that never produced a transcript leaves no directory behind.
+    ///     off-machine, irrecoverably. It is written only once a transcript exists, so a conversation that
+    ///     never produced one leaves no directory behind — see <see cref="ContainAsync"/>, which owns that
+    ///     condition and the retry that a <c>false</c> here earns.
     /// </remarks>
-    private async Task EnsureGitignoreAsync(string sessionId, CancellationToken ct)
+    private async Task<bool> EnsureGitignoreAsync(string sessionId, CancellationToken ct)
     {
         if (_gitignoreWritten)
         {
-            return;
+            return true;
         }
 
         try
@@ -808,12 +958,15 @@ public sealed class ConversationTranscriptWriter
                 )
                 .ConfigureAwait(false);
             _gitignoreWritten = true;
+            return true;
         }
         catch (SandboxException ex)
         {
-            // Retried on the next flush. The transcript itself is already written; refusing to keep the
-            // rows because their ignore file failed would be the wrong trade.
+            // Retried on the next flush, and the flush reports Deferred so there IS a next one. The rows
+            // themselves stay written: refusing to keep them because their ignore file failed would be the
+            // wrong trade, and the watermark is what guarantees the retry is a no-op for them.
             _logger.LogWarning(ex, "Writing the transcript .gitignore for thread {ThreadId} failed", ThreadId);
+            return false;
         }
     }
 

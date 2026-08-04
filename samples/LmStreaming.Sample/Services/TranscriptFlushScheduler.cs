@@ -68,6 +68,25 @@ public sealed class TranscriptFlushScheduler : IDisposable
     private readonly object _gate = new();
     private readonly HashSet<string> _pending = new(StringComparer.Ordinal);
     private Task _drain = Task.CompletedTask;
+
+    /// <summary>
+    ///     Whether a drain loop is live, tracked explicitly under <see cref="_gate"/> rather than inferred
+    ///     from <c>_drain.IsCompleted</c>.
+    /// </summary>
+    /// <remarks>
+    ///     <b>This flag is the fix for a lost wakeup, not a convenience.</b> <see cref="DrainAsync"/>
+    ///     decides to stop from INSIDE the lock, but the <see cref="Task"/> it returns only transitions to
+    ///     completed after the lock is released and the state machine unwinds. In that window a concurrent
+    ///     <see cref="Schedule"/> takes the gate, adds its key, observes <c>_drain.IsCompleted == false</c>
+    ///     and starts nothing — while the loop it assumed was running has already committed to exiting and
+    ///     will never look at the pending set again. That key then waits for an unrelated future
+    ///     <c>Schedule</c>, which for a conversation whose last turn just ended never comes: the transcript
+    ///     silently stops at the previous turn. Setting and clearing the flag at the same two points
+    ///     INSIDE the lock closes the window, because the decision to exit and the publication of that
+    ///     decision become one atomic step.
+    /// </remarks>
+    private bool _draining;
+
     private bool _disposed;
 
     /// <summary>Creates a scheduler that drains pending keys through <paramref name="flush" />.</summary>
@@ -115,8 +134,9 @@ public sealed class TranscriptFlushScheduler : IDisposable
             }
 
             _ = _pending.Add(key);
-            if (_drain.IsCompleted)
+            if (!_draining)
             {
+                _draining = true;
                 _drain = DrainAsync();
             }
         }
@@ -141,6 +161,9 @@ public sealed class TranscriptFlushScheduler : IDisposable
             {
                 if (_disposed || _pending.Count == 0)
                 {
+                    // Cleared HERE, under the same lock that made the decision — see _draining. Any
+                    // Schedule that reaches the gate after this point starts a fresh loop.
+                    _draining = false;
                     return;
                 }
 
@@ -156,6 +179,11 @@ public sealed class TranscriptFlushScheduler : IDisposable
             {
                 // Shutdown cancelled this flush. Not an error, and not worth reporting: the accepted gap is
                 // that a run interrupted mid-flight is flushed by the next completed run instead.
+                lock (_gate)
+                {
+                    _draining = false;
+                }
+
                 return;
             }
             catch (Exception ex)

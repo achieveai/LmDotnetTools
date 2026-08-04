@@ -66,8 +66,30 @@ public sealed record WorkspaceTranscriptLine
     /// <summary>Length in characters of a derived <see cref="Uid"/>.</summary>
     public const int UidLength = 8;
 
-    /// <summary>Length in characters of a short id used inside a file leaf.</summary>
-    public const int ShortIdLength = 4;
+    /// <summary>
+    ///     Length in characters of a short id used inside a file leaf — 50 bits of hash, base32.
+    /// </summary>
+    /// <remarks>
+    ///     <b>A file leaf's short id is an identity, not a display abbreviation, so it is sized for
+    ///     collision resistance rather than for looks.</b> Two conversations whose titles slug the same
+    ///     (the common case: "Untitled", "Code review", the empty slug) differ only by this suffix, so a
+    ///     collision does not produce two similar names — it produces ONE file that both conversations
+    ///     append to, interleaved, each one's watermark rewinding the other's, and no downstream reader can
+    ///     separate them again. At 4 characters (20 bits) that is a ~3% chance across 256 same-slug files
+    ///     in one workspace and a coin flip by ~1200, which is well inside what a long-lived agent
+    ///     workspace accumulates. Ten characters (50 bits) puts the same 256-file workspace at ~3e-11.
+    ///     <para>
+    ///     Deliberately NOT the same value as <see cref="UidLength"/>. A uid is scoped to one file and one
+    ///     conversation's rows; this is scoped to every conversation that ever wrote into a workspace, so
+    ///     they carry different collision domains and must be tuned separately.
+    ///     </para>
+    ///     <para>
+    ///     The cost is 6 characters of leaf. With <see cref="MaxSlugLength"/> at 80 the longest leaf is
+    ///     80 + 1 + 10 = 91 characters plus <c>.jsonl</c> or <c>_agents</c> — still far inside the 255-byte
+    ///     path-component cap.
+    ///     </para>
+    /// </remarks>
+    public const int ShortIdLength = 10;
 
     /// <summary>Leaf pinned for a sub-agent whose display name is null or slugs to nothing.</summary>
     public const string UnnamedAgentLeafPrefix = "agent";
@@ -324,8 +346,13 @@ public sealed record WorkspaceTranscriptLine
     /// <summary>
     ///     Derives the short id a file leaf carries. Hashed rather than prefix-sliced because ids in this
     ///     sample share prefixes (<c>subagent-</c>) and may contain characters a filename cannot, so a
-    ///     prefix would be neither unique nor legal.
+    ///     prefix would be neither legal nor discriminating.
     /// </summary>
+    /// <remarks>
+    ///     A truncated hash is collision-RESISTANT, not collision-free; <see cref="ShortIdLength"/> is what
+    ///     sets the margin, and its remarks state the numbers. Nothing downstream may treat this value as
+    ///     an injective encoding of <paramref name="id"/>.
+    /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="id"/> is null.</exception>
     public static string ShortId(string id)
     {
@@ -335,7 +362,9 @@ public sealed record WorkspaceTranscriptLine
 
     /// <summary>
     ///     Main transcript file leaf (no extension): <c>{slug(title)}-{shortThreadId}</c>. The short-id
-    ///     suffix is what guarantees a non-empty, unique leaf even when the title slugs to nothing.
+    ///     suffix is what keeps the leaf non-empty when the title slugs to nothing, and what separates two
+    ///     conversations whose titles slug identically — to within <see cref="ShortIdLength"/>'s collision
+    ///     margin, which is the only thing standing between them and one interleaved file.
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="shortThreadId"/> is blank.</exception>
     public static string MainFileLeaf(string? title, string shortThreadId)
@@ -349,7 +378,8 @@ public sealed record WorkspaceTranscriptLine
     /// <summary>
     ///     Sub-agent transcript file leaf (no extension): <c>{slug(name)}-{shortAgentId}</c>, pinned to
     ///     <c>agent-{shortAgentId}</c> when the name is null or slugs to nothing. Two sub-agents sharing a
-    ///     display name still get distinct leaves, because the short id comes from the agent id.
+    ///     display name still get distinct leaves, because the short id comes from the agent id — again to
+    ///     within <see cref="ShortIdLength"/>'s margin.
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="shortAgentId"/> is blank.</exception>
     public static string AgentFileLeaf(string? agentName, string shortAgentId)

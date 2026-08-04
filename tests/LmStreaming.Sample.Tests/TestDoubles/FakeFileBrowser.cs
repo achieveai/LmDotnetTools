@@ -33,6 +33,14 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     public byte[] FileBytes { get; set; } = [];
     public Exception? ReadThrows { get; set; }
     public Exception? WriteThrows { get; set; }
+
+    /// <summary>
+    /// Per-path write failure selector: returns the exception the write to that relative path should
+    /// fail with, or null to let it through. <see cref="WriteThrows"/> fails EVERY path, which cannot
+    /// express the case the containment tests need — the transcript itself is written and only
+    /// <c>.conversations/.gitignore</c> fails.
+    /// </summary>
+    public Func<string, Exception?>? WriteFailure { get; set; }
     public SandboxCommandResult ExecResult { get; set; } = new() { ExitCode = 0, StandardOutput = "", StandardError = "", OperationId = "op" };
 
     /// <summary>
@@ -67,6 +75,11 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
         if (WriteThrows is not null)
         {
             return Task.FromException(WriteThrows);
+        }
+
+        if (WriteFailure?.Invoke(relativePath) is { } failure)
+        {
+            return Task.FromException(failure);
         }
 
         Writes.Add((relativePath, bytes));

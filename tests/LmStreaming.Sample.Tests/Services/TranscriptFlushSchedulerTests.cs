@@ -107,6 +107,67 @@ public sealed class TranscriptFlushSchedulerTests
     }
 
     /// <summary>
+    /// The lost wakeup. The drain decides to stop from INSIDE the lock, but the <see cref="Task"/> it
+    /// returns only transitions to completed once that lock is released and the state machine unwinds. A
+    /// <c>Schedule</c> landing in that window adds its key, infers "a drain is already running" from an
+    /// incomplete task, and starts nothing — while the loop it trusted has already stopped looking at the
+    /// pending set. The key then waits for an unrelated future <c>Schedule</c>, which for a conversation
+    /// whose last turn just ended never comes: the transcript silently ends one turn early.
+    /// </summary>
+    /// <remarks>
+    /// The window is nanoseconds wide, so it is CONTENDED FOR rather than waited on. The test thread spins
+    /// on the flush counter — it never sleeps and never awaits, so it is not at the mercy of a thread-pool
+    /// wake-up — and issues the next <c>Schedule</c> the instant a flush is recorded, which is the same
+    /// instant the drain starts heading for its exit check. Each round is an independent attempt and one
+    /// lost key is enough to fail, so the loop stops at the first key that misses the bound. Nothing here
+    /// can fail spuriously: with the wakeup published under the lock, EVERY scheduled key is flushed.
+    /// </remarks>
+    [Fact]
+    public void KeyScheduledAsTheDrainIsExiting_IsNotLost()
+    {
+        const int Rounds = 2000;
+        string[] keys = [.. Enumerable.Range(0, Rounds).Select(i => $"k{i}")];
+
+        var flushes = 0;
+        using var scheduler = new TranscriptFlushScheduler(
+            (_, _) =>
+            {
+                _ = Interlocked.Increment(ref flushes);
+                return Task.CompletedTask;
+            }
+        );
+
+        var lost = -1;
+        var elapsed = new Stopwatch();
+        for (var round = 0; round < Rounds && lost < 0; round++)
+        {
+            scheduler.Schedule(keys[round]);
+
+            // SpinWait spins outright before it starts yielding: tight enough to reach the gate inside the
+            // window, and still safe on a single-core agent because it does eventually yield.
+            var spin = new SpinWait();
+            elapsed.Restart();
+            while (Volatile.Read(ref flushes) <= round)
+            {
+                if (elapsed.Elapsed > FailureTimeout)
+                {
+                    lost = round;
+                    break;
+                }
+
+                spin.SpinOnce();
+            }
+        }
+
+        lost.Should()
+            .Be(
+                -1,
+                "a key scheduled while the drain was exiting must still be flushed — the drain's decision to "
+                    + "stop and the publication of that decision have to be one atomic step"
+            );
+    }
+
+    /// <summary>
     /// The reason pending work is a SET and not one <c>bool</c> slot: with a single slot, scheduling
     /// conversation B while conversation A's flush is in flight silently consumes A's re-arm, so A's newest
     /// turn never reaches disk.

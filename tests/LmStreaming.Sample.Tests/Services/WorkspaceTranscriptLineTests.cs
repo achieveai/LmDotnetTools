@@ -379,6 +379,25 @@ public sealed class WorkspaceTranscriptLineTests
         shortId.Should().NotBe(WorkspaceTranscriptLine.ShortId(SubAgentProvenance.ThreadIdPrefix + "child-2"));
     }
 
+    /// <summary>
+    /// A short id is an IDENTITY, so it has to be sized against the birthday bound rather than for looks.
+    /// Conversations whose titles slug the same — "Untitled", "Code review", any title that slugs to
+    /// nothing — differ only by this suffix, so a collision does not produce two similar file names: it
+    /// produces ONE file that both conversations append to, interleaved, each one's watermark rewinding
+    /// the other's, with no way for a reader to separate them again. Twenty thousand ids is well inside
+    /// what a long-lived agent workspace accumulates, and the corpus is fixed, so this is a deterministic
+    /// statement about the current width and not a sampled one.
+    /// </summary>
+    [Fact]
+    public void ShortId_DoesNotCollide_AcrossAWorkspacesWorthOfConversations()
+    {
+        string[] ids = [.. Enumerable.Range(0, 20_000).Select(i => $"conv-{i}")];
+
+        var shortIds = ids.Select(WorkspaceTranscriptLine.ShortId).ToList();
+
+        shortIds.Distinct(StringComparer.Ordinal).Should().HaveCount(ids.Length);
+    }
+
     // ---- AC 22: state lines are constructible and distinguishable by type ------------------------
 
     [Theory]

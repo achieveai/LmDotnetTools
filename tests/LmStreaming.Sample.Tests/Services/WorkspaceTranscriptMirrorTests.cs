@@ -1,6 +1,8 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
+using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.TestDoubles;
 using Microsoft.Extensions.DependencyInjection;
@@ -107,7 +109,65 @@ public sealed class WorkspaceTranscriptMirrorTests
             CancellationToken ct = default) => inner.ListThreadsAsync(limit, offset, ct);
     }
 
+    /// <summary>
+    /// Forwards everything to a real <see cref="PublishingAgent"/> and records the managed thread that
+    /// pulls the FIRST <c>MoveNextAsync</c> of the output enumeration.
+    /// </summary>
+    /// <remarks>
+    /// That pull is the moment <c>MultiTurnAgentBase.SubscribeAsync</c> registers the subscriber under
+    /// its replay lock — the iterator's prologue runs synchronously, on whichever thread pulls it — so
+    /// the recorded id answers "was the subscription live before <c>Attach</c> returned?" without
+    /// depending on any timing. A subclass could not observe this: <see cref="PublishingAgent"/> is
+    /// sealed and <c>SubscribeAsync</c> is not virtual, so the probe has to be a decorator.
+    /// </remarks>
+    private sealed class SubscriptionProbeAgent(PublishingAgent inner) : IMultiTurnAgent
+    {
+        private int _subscribeThreadId;
+
+        /// <summary>Zero until something has started enumerating.</summary>
+        public int SubscribeThreadId => Volatile.Read(ref _subscribeThreadId);
+
+        public string? CurrentRunId => inner.CurrentRunId;
+
+        public string ThreadId => inner.ThreadId;
+
+        public bool IsRunning => inner.IsRunning;
+
+        public async IAsyncEnumerable<IMessage> SubscribeAsync(
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            Volatile.Write(ref _subscribeThreadId, Environment.CurrentManagedThreadId);
+
+            await foreach (var message in inner.SubscribeAsync(ct).ConfigureAwait(false))
+            {
+                yield return message;
+            }
+        }
+
+        public ValueTask<SendReceipt> SendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) => inner.SendAsync(messages, inputId, parentRunId, ct);
+
+        public ValueTask<SendReceipt?> TrySendAsync(
+            List<IMessage> messages,
+            string? inputId = null,
+            string? parentRunId = null,
+            CancellationToken ct = default) => inner.TrySendAsync(messages, inputId, parentRunId, ct);
+
+        public IAsyncEnumerable<IMessage> ExecuteRunAsync(UserInput userInput, CancellationToken ct = default) =>
+            inner.ExecuteRunAsync(userInput, ct);
+
+        public Task RunAsync(CancellationToken ct = default) => inner.RunAsync(ct);
+
+        public Task StopAsync(TimeSpan? timeout = null) => inner.StopAsync(timeout);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
     // ---------------------------------------------------------------- helpers
+
 
     private static WorkspaceTranscriptMirror CreateMirror(
         IConversationStore store,
@@ -216,9 +276,12 @@ public sealed class WorkspaceTranscriptMirrorTests
 
     /// <summary>
     /// Publishes run-completions until the mirror has flushed at least <paramref name="flushes"/> times.
-    /// Republishing is what makes attachment deterministic: <see cref="WorkspaceTranscriptMirror.Attach"/>
-    /// starts its pump on a worker, so the first publish can legitimately land before the subscription
-    /// exists — and a flush is idempotent, so an extra one changes nothing but the count.
+    /// A flush is idempotent, so an extra one changes nothing but the count — which is what lets a test
+    /// ask for "at least N flushes have happened" as a barrier without knowing how many publishes that
+    /// takes. It is NOT a workaround for a racy attachment: since
+    /// <see cref="WorkspaceTranscriptMirror.Attach"/> registers the subscription before it returns, one
+    /// publish is enough, and
+    /// <see cref="Attach_RegistersTheSubscription_BeforeItReturns"/> is the test that holds it to that.
     /// </summary>
     private static async Task PublishUntilFlushedAsync(PublishingAgent agent, FlushCountingStore store, int flushes)
     {
@@ -276,6 +339,48 @@ public sealed class WorkspaceTranscriptMirrorTests
         browser.Commands.Any(c => c.Arguments.Count == 7 && string.Equals(c.Arguments[6], path, StringComparison.Ordinal));
 
     // ---------------------------------------------------------------- tests
+
+    /// <summary>
+    /// <b>Attachment must be complete when <c>Attach</c> returns</b>, not merely requested. The
+    /// subscription is registered by the first <c>MoveNextAsync</c> of the agent's output enumeration,
+    /// and <c>MultiTurnAgentBase</c> runs that prologue synchronously under its replay lock — so pulling
+    /// it on the caller's thread is what closes the window. Handing the whole pump to a worker instead
+    /// lets <c>Attach</c> return first, and a completion published in that window is lost outright: the
+    /// agent's replay buffer is OPENED by a run assignment and CLOSED by the run completion, so a
+    /// completion that arrives before the subscriber exists is neither delivered live nor replayed. For a
+    /// conversation that runs once and stops — the common shape of a one-shot task — the transcript is
+    /// then never written at all.
+    /// </summary>
+    [Fact]
+    public async Task Attach_RegistersTheSubscription_BeforeItReturns()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        PersistedMessage[] only = [Msg("m1", 1)];
+        await store.AppendMessagesAsync(ThreadId, only);
+
+        var browser = new FakeFileBrowser();
+        await using var inner = new PublishingAgent(ThreadId);
+        var agent = new SubscriptionProbeAgent(inner);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        var caller = Environment.CurrentManagedThreadId;
+        mirror.Attach(agent);
+
+        // Zero would mean nothing has enumerated yet; a pool thread's id would mean the registration was
+        // merely queued. Task.Run never inlines onto the caller, so only pulling it directly can match.
+        _ = agent.SubscribeThreadId.Should().Be(
+            caller,
+            "Attach must pull the first MoveNextAsync itself, so the subscription exists before it returns");
+
+        // The consequence, end to end: ONE completion — published exactly once, never in a retry loop —
+        // is enough to get this conversation's rows into its workspace.
+        await inner.PublishAsync(RunCompleted());
+        await WaitForAsync(
+            () => SplicedInto(browser, MainPath),
+            "A single run completion published after Attach returned never reached the mirror.");
+        _ = LastPayload(browser).Should().Be(ExpectedAppend(only));
+    }
 
     /// <summary>
     /// The whole composition, end to end: an attached agent's run completion drives a flush that appends
@@ -391,6 +496,13 @@ public sealed class WorkspaceTranscriptMirrorTests
     /// the only evidence is the completion notification it pushes back. Matching solely on the spawn call
     /// would leave that child with no file at all, behind a fully green suite.
     /// </summary>
+    /// <remarks>
+    /// <b>This test used to publish a run completion after the notification and therefore proved
+    /// nothing.</b> Noticing a notification and SCHEDULING A FLUSH for it are two different steps, and
+    /// only the second one writes a file; the trailing completion supplied that second step itself, so the
+    /// test passed while the notification path was inert. There is deliberately no completion here — a
+    /// background child finishing after its parent's last turn is exactly the case where none is coming.
+    /// </remarks>
     [Fact]
     public async Task Attach_RefreshesTheDescendantGraph_WhenACompletionNotificationIsObserved()
     {
@@ -409,14 +521,13 @@ public sealed class WorkspaceTranscriptMirrorTests
         _ = await SettleAsync(store);
         await SeedSubAgentAsync(store, "agent-2", "reviewer");
 
-        // No spawn call — this process only ever sees the notification.
+        // No spawn call and NO run completion — the notification has to carry this on its own.
         await agent.PublishAsync(new NotifyMessage { NotifyKind = NotifyKinds.SubAgentCompletion });
-        await agent.PublishAsync(RunCompleted());
 
         var expected = $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("reviewer", WorkspaceTranscriptLine.ShortId("agent-2"))}{ConversationTranscriptWriter.TranscriptExtension}";
         await WaitForAsync(
             () => SplicedInto(browser, expected),
-            "The sub-agent transcript was never written, so the completion notification did not refresh the graph.");
+            "The sub-agent transcript was never written, so the completion notification did not schedule a flush.");
     }
 
     /// <summary>
@@ -463,6 +574,100 @@ public sealed class WorkspaceTranscriptMirrorTests
         // reach the mirror.
         var before = store.FlushCount;
         await PublishUntilFlushedAsync(agent, store, before + 1);
+    }
+
+    /// <summary>
+    /// Recovering the subscription is only half of recovery. Everything published during the gap was
+    /// DROPPED — including, in general, the run completion that would have triggered a flush — so a
+    /// re-subscribe that does not also schedule one leaves the conversation stalled until some unrelated
+    /// later turn happens to arrive. For the common case (the drop happens on the burst of the final
+    /// turn) no later turn ever comes and the transcript silently ends one turn early.
+    /// </summary>
+    /// <remarks>
+    /// Nothing published here after the baseline can schedule a flush on its own — deltas are
+    /// deliberately not a trigger (see
+    /// <see cref="Attach_SchedulesNoFlush_ForMessagesInsideATurn"/>) — so the counter moving at all is
+    /// attributable to the recovery path and to nothing else.
+    /// </remarks>
+    [Fact]
+    public async Task Attach_SchedulesAFlush_AfterRecoveringADroppedSubscription()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
+
+        var browser = new FakeFileBrowser();
+        await using var agent = new PublishingAgent(ThreadId, outputChannelCapacity: 1);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+        await PublishUntilFlushedAsync(agent, store, 1);
+        var baseline = await SettleAsync(store);
+
+        var deadline = DateTime.UtcNow + Deadline;
+        while (mirror.ResubscribeCount == 0)
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException("A burst into a capacity-1 channel never forced a drop.");
+            }
+
+            for (var i = 0; i < 64; i++)
+            {
+                await agent.PublishAsync(new TextMessage { Text = "delta", Role = Role.Assistant });
+            }
+        }
+
+        await WaitForAsync(
+            () => store.FlushCount > baseline,
+            "Re-subscribing after a drop never scheduled a flush, so whatever was published during the gap stays unmirrored.");
+    }
+
+    /// <summary>
+    /// A <c>Deferred</c> flush asks to be rescheduled, and that request must be BOUNDED. A workspace whose
+    /// writes are failing defers every time, so an unconditional re-schedule is a self-feeding loop: the
+    /// drain is a SINGLE loop shared by every conversation, so one permanently-broken conversation spins
+    /// it at full speed and every other conversation's flush queues behind it. The bound is what makes the
+    /// retry terminate.
+    /// </summary>
+    /// <remarks>
+    /// The bound is a COUNT, with no delay attached, and that is deliberate: a backoff delay inside the
+    /// flush would run on that same shared drain loop and stall every other conversation, and a detached
+    /// timer is exactly the background machinery this feature is not meant to grow. The budget is per
+    /// turn, not per conversation — the second half of this test — so a transient outage cannot silence a
+    /// conversation permanently.
+    /// </remarks>
+    [Fact]
+    public async Task Attach_StopsReschedulingADeferredFlush_AfterABoundedNumberOfAttempts()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
+
+        // Every splice fails, so every flush defers with its watermark unadvanced and asks for another.
+        var browser = new FakeFileBrowser
+        {
+            ExecResult = new SandboxCommandResult
+            {
+                ExitCode = 1,
+                StandardOutput = "",
+                StandardError = "no space left on device",
+                OperationId = "op",
+            },
+        };
+        await using var agent = new PublishingAgent(ThreadId);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+        await agent.PublishAsync(RunCompleted());
+
+        // The turn's own flush, then exactly MaxDeferredRetries more. Unbounded, the mirror never goes
+        // quiet at all and this settles into a timeout instead of a count.
+        var expected = 1 + WorkspaceTranscriptMirror.MaxDeferredRetries;
+        _ = (await SettleAsync(store)).Should().Be(expected);
+
+        await agent.PublishAsync(RunCompleted());
+        _ = (await SettleAsync(store)).Should().Be(2 * expected);
     }
 
     /// <summary>

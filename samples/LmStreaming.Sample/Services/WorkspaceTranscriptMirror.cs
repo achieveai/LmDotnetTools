@@ -50,6 +50,24 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     /// </summary>
     public static readonly TimeSpan DefaultResubscribeDelay = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>
+    ///     How many consecutive <see cref="TranscriptFlushOutcome.Deferred"/> results one conversation may
+    ///     re-schedule on before the mirror stops chasing it until something new happens.
+    /// </summary>
+    /// <remarks>
+    ///     <b>The bound is what makes the retry chain terminate at all.</b> <c>Deferred</c> is reported for
+    ///     three quite different reasons — a read that never settled, a gateway call that failed, and a
+    ///     sub-agent fan-out capped by <c>MaxSubAgentFilesPerFlush</c> — and the first two do not
+    ///     self-terminate: a workspace whose gateway is refusing writes, or a conversation being written to
+    ///     faster than its rows settle, defers every attempt forever. An unbounded re-schedule against that
+    ///     is a hot loop on the single drain thread that also starves every OTHER conversation's flush.
+    ///     Four attempts per trigger (the original plus <see cref="MaxDeferredRetries"/>) covers the
+    ///     ordinary capped fan-out — the default cap is 8 files, so 32 descendants — and the budget resets
+    ///     at every turn boundary and on every attempt that is not deferred, so a conversation that is
+    ///     merely large is never permanently abandoned, only paced.
+    /// </remarks>
+    public const int MaxDeferredRetries = 3;
+
     /// <summary>One conversation's live subscription: the agent instance it is bound to, and the token
     /// that ends it. The instance is load-bearing — see <see cref="PumpAsync"/>'s drop detection.</summary>
     private sealed record Subscription(IMultiTurnAgent Agent, CancellationTokenSource Cancellation);
@@ -72,6 +90,13 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     /// </summary>
     private readonly ConcurrentDictionary<string, ConversationTranscriptWriter> _writers =
         new(StringComparer.Ordinal);
+
+    /// <summary>
+    ///     Consecutive deferred flushes per conversation, against <see cref="MaxDeferredRetries"/>. Reset
+    ///     whenever a flush is not deferred and at every turn boundary, so the budget bounds one stuck
+    ///     chain rather than the conversation's lifetime.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, int> _deferredAttempts = new(StringComparer.Ordinal);
 
     /// <summary>Guards <see cref="_subscriptions"/> and <see cref="_disposed"/>. Never held across
     /// cancellation or I/O — see <see cref="Attach"/>.</summary>
@@ -184,7 +209,55 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         // Outside the lock: Cancel() runs its registrations inline, and one of those resumes a pump that
         // may call straight back into this type.
         Cancel(replaced);
-        _ = Task.Run(() => PumpAsync(subscription));
+        StartPump(subscription);
+    }
+
+    /// <summary>
+    ///     Establishes the subscription <b>on the calling thread</b>, then hands the already-running
+    ///     enumerator to a worker that consumes it.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>The registration must happen-before <see cref="Attach"/> returns.</b>
+    ///     <c>MultiTurnAgentBase.SubscribeAsync</c> is an async iterator that adds the subscriber to the
+    ///     fan-out under the agent's replay lock in its synchronous prologue — that is, inside the FIRST
+    ///     <c>MoveNextAsync()</c>, on whichever thread calls it. Starting the whole pump with
+    ///     <c>Task.Run</c> therefore let <c>Attach</c> return before the subscriber existed, and everything
+    ///     published in that window went to nobody. That window is not theoretical: the sample attaches
+    ///     from the pool's agent factory, on the same request that then starts the run, so a short
+    ///     conversation could complete its ONLY run before the worker was scheduled — no turn boundary was
+    ///     ever observed, no flush was ever scheduled, and the conversation ended with no transcript at
+    ///     all rather than with a stale one.
+    ///     </para>
+    ///     <para>
+    ///     Only the registration is synchronous. <c>MoveNextAsync</c> is started, not awaited: its
+    ///     continuation and every message after it run on the worker, so no message handling and no
+    ///     gateway I/O ever reaches the caller. And it cannot throw into the pool's factory — a failure to
+    ///     subscribe is logged and leaves this conversation unmirrored, like every other failure here.
+    ///     </para>
+    /// </remarks>
+    private void StartPump(Subscription subscription)
+    {
+        var agent = subscription.Agent;
+        var ct = subscription.Cancellation.Token;
+
+        IAsyncEnumerator<IMessage> enumerator;
+        ValueTask<bool> pending;
+        try
+        {
+            enumerator = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+            pending = enumerator.MoveNextAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Subscribing the transcript mirror to thread {ThreadId} failed",
+                agent.ThreadId);
+            return;
+        }
+
+        _ = Task.Run(() => PumpAsync(subscription, enumerator, pending));
     }
 
     /// <summary>
@@ -200,6 +273,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         }
 
         _ = _writers.TryRemove(threadId, out _);
+        _ = _deferredAttempts.TryRemove(threadId, out _);
 
         Subscription? removed;
         lock (_gate)
@@ -235,6 +309,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         }
 
         _writers.Clear();
+        _deferredAttempts.Clear();
         _scheduler.Dispose();
     }
 
@@ -286,34 +361,19 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     dropped from a conversation that is still live" from an ordinary teardown.
     ///     </para>
     /// </remarks>
-    private async Task PumpAsync(Subscription subscription)
+    private async Task PumpAsync(
+        Subscription subscription,
+        IAsyncEnumerator<IMessage> enumerator,
+        ValueTask<bool> pending)
     {
         var agent = subscription.Agent;
         var threadId = agent.ThreadId;
         var ct = subscription.Cancellation.Token;
 
-        while (!ct.IsCancellationRequested)
+        while (true)
         {
-            try
-            {
-                await foreach (var message in agent.SubscribeAsync(ct).ConfigureAwait(false))
-                {
-                    Observe(threadId, message);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                // Best-effort, like every other path in this feature: a faulted stream ends the mirror for
-                // this conversation rather than looping on a failure that is not going to clear.
-                _logger.LogWarning(ex, "Transcript subscription for thread {ThreadId} faulted", threadId);
-                return;
-            }
-
-            if (ct.IsCancellationRequested
+            if (await ConsumeAsync(threadId, enumerator, pending).ConfigureAwait(false)
+                || ct.IsCancellationRequested
                 || _agentLookup(threadId) is not { } current
                 || !ReferenceEquals(current, agent))
             {
@@ -330,10 +390,70 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
             try
             {
                 await Task.Delay(_resubscribeDelay, ct).ConfigureAwait(false);
+                enumerator = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+                pending = enumerator.MoveNextAsync();
             }
             catch (OperationCanceledException)
             {
                 return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Re-subscribing the transcript mirror to thread {ThreadId} failed", threadId);
+                return;
+            }
+
+            // The gap between the drop and this re-subscription is EXACTLY where a turn boundary goes
+            // unobserved: the channel filled, so the messages that overflowed it — the run completion
+            // among them — reached no subscriber, and nothing will republish them. The recovery the log
+            // line above promises ("the next flush re-reads the whole thread") only holds if a flush
+            // actually happens, and without this line the only thing that can trigger one is a LATER turn
+            // that may never come. Scheduling here is free when nothing changed: a flush with no new rows
+            // is UpToDate and issues no gateway write.
+            _scheduler.Schedule(threadId);
+        }
+    }
+
+    /// <summary>
+    ///     Drains one subscription's enumerator to its end, applying every message. Reports whether it
+    ///     ended in a FAULT — a normal end is what both a silent drop and an ordinary teardown look like,
+    ///     and telling those two apart is the caller's job.
+    /// </summary>
+    private async Task<bool> ConsumeAsync(
+        string threadId,
+        IAsyncEnumerator<IMessage> enumerator,
+        ValueTask<bool> pending)
+    {
+        try
+        {
+            while (await pending.ConfigureAwait(false))
+            {
+                Observe(threadId, enumerator.Current);
+                pending = enumerator.MoveNextAsync();
+            }
+
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Best-effort, like every other path in this feature: a faulted stream ends the mirror for
+            // this conversation rather than looping on a failure that is not going to clear.
+            _logger.LogWarning(ex, "Transcript subscription for thread {ThreadId} faulted", threadId);
+            return true;
+        }
+        finally
+        {
+            try
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Disposing the transcript subscription for thread {ThreadId} threw", threadId);
             }
         }
     }
@@ -341,15 +461,29 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     /// <summary>Applies one observed message to this conversation's mirror state.</summary>
     private void Observe(string threadId, IMessage message)
     {
-        if (IsSubAgentActivity(message) && _writers.TryGetValue(threadId, out var writer))
+        var subAgentActivity = IsSubAgentActivity(message);
+        if (subAgentActivity && _writers.TryGetValue(threadId, out var writer))
         {
             writer.NoteSubAgentActivity();
         }
 
         if (message is RunCompletedMessage)
         {
-            // The turn boundary, and the ONLY flush trigger. Non-blocking by contract, so no gateway
-            // latency ever reaches this loop.
+            // The turn boundary. Also the point the deferred-retry budget resets: whatever made the last
+            // chain give up, a new turn is new evidence and earns a fresh set of attempts.
+            _ = _deferredAttempts.TryRemove(threadId, out _);
+            _scheduler.Schedule(threadId);
+            return;
+        }
+
+        if (subAgentActivity)
+        {
+            // The SECOND trigger, and the only one a background child produces. Noting the activity is not
+            // enough on its own: NoteSubAgentActivity only arms the next flush's descendant rescan, and if
+            // that flush never happens the arming does nothing. A sub-agent that finishes after its
+            // parent's last turn publishes no RunCompletedMessage and nothing follows it, so a mirror that
+            // scheduled only on run completion left that child's transcript unwritten forever — for the
+            // whole life of the conversation, not until the next turn.
             _scheduler.Schedule(threadId);
         }
     }
@@ -397,8 +531,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     /// <summary>
     ///     The scheduler's drain callback: resolves the conversation's writer and flushes it. A key whose
     ///     writer has since been evicted is a no-op, and a <see cref="TranscriptFlushOutcome.Deferred"/>
-    ///     result asks for exactly one more attempt (the writer's own capping is what makes that chain
-    ///     terminate rather than spin).
+    ///     result asks for another attempt — up to <see cref="MaxDeferredRetries"/> consecutive ones, which
+    ///     is what stops a permanently-deferring conversation from spinning the drain loop.
     /// </summary>
     private async Task FlushAsync(string threadId, CancellationToken ct)
     {
@@ -407,9 +541,24 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
             return;
         }
 
-        if (await writer.FlushAsync(ct).ConfigureAwait(false) == TranscriptFlushOutcome.Deferred)
+        if (await writer.FlushAsync(ct).ConfigureAwait(false) != TranscriptFlushOutcome.Deferred)
         {
-            _scheduler.Schedule(threadId);
+            _ = _deferredAttempts.TryRemove(threadId, out _);
+            return;
         }
+
+        var attempt = _deferredAttempts.AddOrUpdate(threadId, 1, (_, previous) => previous + 1);
+        if (attempt > MaxDeferredRetries)
+        {
+            _logger.LogWarning(
+                "Transcript flush for thread {ThreadId} deferred {Attempts} times in a row; giving up until "
+                    + "the next turn or sub-agent update. Nothing is lost — every watermark involved is "
+                    + "unadvanced, so the next flush repeats the work.",
+                threadId,
+                attempt);
+            return;
+        }
+
+        _scheduler.Schedule(threadId);
     }
 }

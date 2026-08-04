@@ -366,6 +366,45 @@ public sealed class ConversationTranscriptWriterTests
         _ = Encoding.UTF8.GetString(gitignores[0].Bytes).Should().Be("*\n");
     }
 
+    /// <summary>
+    /// The containment file is the entire opt-out for the feature, so "we tried once and it did not work"
+    /// is not an acceptable resting state: the transcript is on disk, unignored, and the next
+    /// <c>git add -A</c> an agent runs in that workspace publishes the conversation's unredacted reasoning
+    /// off-machine. Two things have to be true for the retry to exist at all — the flush that failed must
+    /// report work still pending, and a later flush must attempt the write even though it appends NOTHING.
+    /// Tying the attempt to "this flush wrote rows" fails the second: for a conversation whose only
+    /// appending flush already happened, the trigger never comes again.
+    /// </summary>
+    [Fact]
+    public async Task Gitignore_IsRetriedOnAFlushThatAppendsNothing_AfterItsFirstWriteFails()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        // ONLY the containment file fails. The rows themselves land — which is exactly the combination
+        // that makes the gap invisible: a complete transcript sitting in a git checkout with nothing
+        // covering it.
+        var browser = new FakeFileBrowser
+        {
+            WriteFailure = path =>
+                path == GitignorePath ? new SandboxException(SandboxErrorKind.Protocol, "gateway said no") : null,
+        };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Writes.Select(w => w.Path).Should().NotContain(GitignorePath);
+
+        // The next flush has nothing whatsoever to append — and must still write the file.
+        browser.WriteFailure = null;
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
+        _ = browser.Writes.Should().ContainSingle(w => w.Path == GitignorePath);
+
+        // Deferring for containment must not re-appear as duplicated rows: the watermark advanced with the
+        // successful splice, so exactly one staged payload was ever written.
+        _ = browser.Writes.Where(w => w.Path == TempPath).Should().ContainSingle();
+    }
+
     // ---------------------------------------------------------------- AC 7, 12
 
     /// <summary>
@@ -414,6 +453,51 @@ public sealed class ConversationTranscriptWriterTests
         var uids = UidsIn(string.Concat(Enumerable.Range(0, 4).Select(i => Written(browser, i))));
         _ = uids.Should().HaveCount(5);
         _ = uids.Distinct(StringComparer.Ordinal).Should().HaveCount(5);
+    }
+
+    /// <summary>
+    /// A FAILED main append must skip the fan-out entirely, and this is the one failure in the pipeline
+    /// that is not recoverable by retrying. Every sub-agent file's first line hangs off the main file's
+    /// watermark, and that anchor is resolved once and then PINNED for the life of the writer — no later
+    /// flush revisits a file that already has a first line. Running the fan-out beside a failed append
+    /// mints those anchors from a watermark the failure left unadvanced, so on a first flush every
+    /// descendant file is pinned to null and the conversation's files are never one lineage again.
+    /// Deferring costs one repeated pass; a wrong anchor costs the chain permanently.
+    /// </summary>
+    [Fact]
+    public async Task FailedMainAppend_SkipsTheFanOut_SoNoSubAgentFileIsRootedInANullAnchor()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] main = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, main);
+        PersistedMessage[] child = [Msg("a1a", 10, threadId: "subagent-a1")];
+        await SeedSubAgentAsync(store, "a1", "alpha", child);
+
+        // Only the MAIN file's splice fails; a sub-agent splice would succeed if one were attempted, which
+        // is what makes the wrong-anchor write reachable rather than hypothetical.
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command =>
+                command.Arguments[0] == "sh" && command.Arguments[6] == MainPath(Title)
+                    ? Fail("no space left on device")
+                    : Ok(),
+        };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title));
+
+        browser.ExecuteHandler = null;
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The child's first line chains off the main file's real tail — a row that genuinely exists in the
+        // main file — instead of off nothing.
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title), MainPath(Title), AgentPath(Title, "a1", "alpha"));
+        _ = Written(browser, 2).Should()
+            .Be(ExpectedAppend(child, agent: "alpha", rootParentUid: WorkspaceTranscriptLine.DeriveUid("m2")));
     }
 
     /// <summary>
@@ -479,12 +563,50 @@ public sealed class ConversationTranscriptWriterTests
         _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
             .Should().Equal(AgentPath(Title, "b2", "beta"));
 
-        // And it TERMINATES. Deferred is gated on a pass having mirrored something, so the first capped
-        // pass that finds its slice already current stops asking for another flush — a caller that
-        // re-schedules on Deferred would otherwise spin forever on any conversation above the cap.
+        // A capped pass keeps asking, whether or not its own slice had anything to write: "this slice is
+        // current" says nothing about the descendants outside it. What terminates the chain is the caller's
+        // bounded retry budget (WorkspaceTranscriptMirror.MaxDeferredRetries), reset at each turn boundary
+        // — so a large fan-out is paced a slice per attempt instead of either spinning or stopping one step
+        // short of the descendant that actually changed.
         browser.Commands.Clear();
-        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
         _ = browser.Commands.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The consequence of the rule above, at the only scale where it is visible: the descendant that
+    /// changed is OUTSIDE the current slice. Ending the chain on the first capped pass whose own slice was
+    /// already current stops exactly one step short of it — the pass that would have covered it never runs,
+    /// and the sub-agent's rows sit unmirrored until some unrelated later trigger happens along. There is
+    /// no ordering that avoids this: the cursor cannot know which descendant moved without reading it.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentFanOut_KeepsAskingWhileCapped_SoAChangeBeyondTheSliceIsStillMirrored()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+        await SeedSubAgentAsync(store, "b2", "beta", Msg("b2a", 20, threadId: "subagent-b2"));
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser, maxSubAgentFilesPerFlush: 1);
+
+        // Two passes bring both descendants current and return the cursor to the first one.
+        _ = await writer.FlushAsync();
+        _ = await writer.FlushAsync();
+
+        // Only the descendant the NEXT slice will not look at moves.
+        await store.AppendMessagesAsync("subagent-b2", [Msg("b2b", 21, threadId: "subagent-b2")]);
+
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Should().BeEmpty();
+
+        browser.Commands.Clear();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(AgentPath(Title, "b2", "beta"));
     }
 
     /// <summary>
@@ -589,6 +711,58 @@ public sealed class ConversationTranscriptWriterTests
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands[1].Arguments[6].Should().Be(MainPath(RetitledTo));
         _ = Written(browser, 3).Should().Be(ExpectedAppend(everything, skip: 2));
+    }
+
+    /// <summary>
+    /// A retitle that happens while nothing is mirroring — the host restarts, or the conversation is
+    /// evicted and later re-attached — reaches a writer that has no idea what its file used to be called.
+    /// Adopting the CURRENT title outright leaves the transcript already on disk unseen, and the
+    /// conversation ends up SPLIT: the old file frozen at its last row under the old slug, a second file
+    /// restarting the history from zero, and the old <c>_agents/</c> directory orphaned beside the wrong
+    /// name. The short id in the leaf is what makes this recoverable — it identifies the conversation
+    /// independently of the title, across any number of retitles — so a cold writer looks for its own file
+    /// before it creates one.
+    /// </summary>
+    [Fact]
+    public async Task ColdStartAfterARetitle_AdoptsTheExistingFile_InsteadOfStartingASecondTranscript()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+
+        // What a previous process left in the workspace, under the title in force when it ran. This writer
+        // is brand new: its only route to that name is the listing.
+        var stale = WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId);
+        var browser = new FakeFileBrowser();
+        browser.Listings[ConversationTranscriptWriter.TranscriptDirectory] =
+        [
+            new SandboxDirectoryEntry(
+                $"{stale}{ConversationTranscriptWriter.TranscriptExtension}",
+                SandboxEntryType.File,
+                128,
+                NameLossy: false
+            ),
+            new SandboxDirectoryEntry(
+                $"{stale}{ConversationTranscriptWriter.AgentsDirectorySuffix}",
+                SandboxEntryType.Directory,
+                null,
+                NameLossy: false
+            ),
+        ];
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // Adopted by the same move the warm path uses, and BEFORE the tail that recovers the watermark —
+        // otherwise the watermark is read from a file this flush is about to stop writing to.
+        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(RetitledTo), MainPath(Title));
+        _ = browser.Commands[1].Arguments.Should()
+            .Equal("mv", "--", AgentsDirectory(RetitledTo), AgentsDirectory(Title));
+        _ = browser.Commands[2].Arguments.Should().Equal("tail", "-n", "5", "--", MainPath(Title));
+
+        // One transcript, and the sub-agent file lands under it rather than beside the abandoned name.
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
     }
 
     // ---------------------------------------------------------------- AC 19
