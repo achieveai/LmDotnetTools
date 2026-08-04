@@ -641,18 +641,34 @@ internal static class KnowledgeDigest
                 // Judged after containment and before the budget, in that order and for the same reasons the
                 // ranked route uses: a refused line is not evidence its file was listed, and a duplicate must
                 // not be allowed to spend room a first sighting still needs.
-                string? entryFile = null;
-                if (IsTocEntry(line)
-                    && links.Count > 0
-                    && TryResolveEntryPath(root, links[0].Destination, out var entryPath))
+                //
+                // Decided over EVERY file the line names, not over its first one. Keying on links[0] and
+                // acting by dropping the whole line discarded "- [Alpha again](system/alpha.md) see also
+                // [Beta](system/beta.md)" entirely once alpha was listed: beta reached the reviewer from
+                // nowhere else, and counting the line as a duplicate rather than as dropped meant the footer
+                // promised no route to it either - gone from the block and from both sides of the ledger. A
+                // line is not a file, which is the reasoning that moved the marking below the budget check
+                // one scope out. So a line is redundant only when every file it names is already in the
+                // block, and it is kept WHOLE when it names a new one rather than edited down to the new
+                // part: rewriting a model-authored line is how FitTocLine came to misattribute a title to
+                // another entry's link, and one repeated destination costs a duplicated path where the edit
+                // risks a wrong one.
+                var entryFiles = new List<string>();
+                if (IsTocEntry(line))
                 {
-                    if (listedFiles.Contains(entryPath))
+                    foreach (var link in links)
+                    {
+                        if (TryResolveEntryPath(root, link.Destination, out var entryPath))
+                        {
+                            entryFiles.Add(entryPath);
+                        }
+                    }
+
+                    if (entryFiles.Count > 0 && entryFiles.All(listedFiles.Contains))
                     {
                         duplicates++;
                         continue;
                     }
-
-                    entryFile = entryPath;
                 }
 
                 var text = FitTocLine(line, charBudget - builder.Length - reserve, links);
@@ -677,7 +693,12 @@ internal static class KnowledgeDigest
                     // sighting that the budget cut still silence its own copy, and the file would then be
                     // neither listed nor dropped - present in the count of what the reviewer received, absent
                     // from the block, and absent from the footer that promises a route back to it.
-                    if (entryFile is not null)
+                    //
+                    // Every file the line named, for the same reason the check above reads them all: marking
+                    // only the first left the file behind a second link rendered but unmarked, so the next
+                    // line naming it was rendered again - the doubled table spending budget on a path the
+                    // reviewer already had.
+                    foreach (var entryFile in entryFiles)
                     {
                         _ = listedFiles.Add(entryFile);
                     }
@@ -1769,9 +1790,11 @@ internal sealed record KnowledgeDigestBlock(
 /// reports the read is the same silent-failure shape the ranked digest's proof-of-use line was added to fix.
 /// <see cref="Truncated"/> is tracked separately because a table of contents with no recognisable entry
 /// lines can be cut without <see cref="Dropped"/> ever moving off zero. <see cref="Duplicates"/> counts entry
-/// lines pointing at a file already listed above them, which are neither listed nor dropped: they were
-/// removed for the same reason as on the ranked route, and counting one as "1 more entry in _toc.md" would
-/// route the agent back to the line it just read.
+/// lines every one of whose files is already listed above them, which are neither listed nor dropped: they
+/// were removed for the same reason as on the ranked route, and counting one as "1 more entry in _toc.md"
+/// would route the agent back to the line it just read. Every one, because a line that also names a file
+/// nothing else lists is not a repeat, and dropping it lost that file out of the block and out of both
+/// counts at once.
 /// </summary>
 internal sealed record KnowledgeTocBlock(
     string Text, int Listed, int Dropped, bool Truncated, IReadOnlyList<string> Refused, int Duplicates);

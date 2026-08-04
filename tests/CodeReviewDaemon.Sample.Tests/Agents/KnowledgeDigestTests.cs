@@ -971,6 +971,61 @@ public class KnowledgeDigestTests
     }
 
     [Fact]
+    public void RenderTableOfContents_KeepsADistinctLinkOnALineWhoseFirstLinkIsARepeat()
+    {
+        // Duplication was judged on links[0] and acted on by dropping the whole LINE, so a line whose first
+        // link repeats an entry already listed took every other link on it down as well. Beta reaches the
+        // reviewer from nowhere else, and because the line was counted as a duplicate rather than dropped,
+        // the footer promised no route to it either: absent from the block AND from both sides of the ledger.
+        // A line is not a file - the same reasoning that moved the "listed" marking below the budget check,
+        // one scope out.
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n"
+            + "- [Alpha again](system/alpha.md) see also [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().Contain("system/beta.md", "a distinct entry cannot be collapsed away by its neighbour on the same line");
+        block.Listed.Should().Be(2);
+        block.Duplicates.Should().Be(0, "the line carried a file that was not already in the block");
+        block.Dropped.Should().Be(0);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_CollapsesALineOnlyWhenEveryFileItNamesIsAlreadyListed()
+    {
+        // The over-correction pin. Keeping every line that carries any repeat at all would restore the
+        // crowding-out this dedup exists to end, so a line still collapses - just on the whole set of files
+        // it names rather than on its first one.
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n- [Beta](system/beta.md)\n"
+            + "- [Alpha again](system/alpha.md) and [Beta again](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Listed.Should().Be(2);
+        block.Duplicates.Should().Be(1);
+        block.Dropped.Should().Be(0, "a duplicate is not an entry waiting in _toc.md");
+        (block.Text.Split("(system/alpha.md)").Length - 1).Should().Be(1);
+        (block.Text.Split("(system/beta.md)").Length - 1).Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_MarksEveryFileAListedLineNamesNotOnlyTheFirst()
+    {
+        // The marking half of the same defect: a rendered line recorded only links[0], so the file named by
+        // its second link was rendered but never marked as listed, and the next line naming it was rendered
+        // a second time - the doubled table spending budget on a path the reviewer already had.
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md) see also [Beta](system/beta.md)\n"
+            + "- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Listed.Should().Be(1);
+        block.Duplicates.Should().Be(1);
+        block.Dropped.Should().Be(0);
+        (block.Text.Split("(system/beta.md)").Length - 1).Should().Be(1);
+    }
+
+    [Fact]
     public void SanitizeBeforeSelect_SurfacesKnowledgeThatAnEscapingTagWouldHaveOutranked()
     {
         // Ranking on metadata that is about to be DELETED is its own crowding-out, distinct from the
