@@ -1141,7 +1141,7 @@ internal static class KnowledgeDigest
     /// </summary>
     private static string RenderEntry(KnowledgeEntryMeta entry, string absolutePath, int maxLength)
     {
-        var title = string.IsNullOrWhiteSpace(entry.Title) ? entry.File : entry.Title;
+        var title = EffectiveTitle(entry);
         var tags = entry.Tags.Count == 0 ? "(none)" : string.Join(", ", entry.Tags);
         var scope = string.IsNullOrWhiteSpace(entry.Scope) ? "(unscoped)" : entry.Scope;
 
@@ -1387,11 +1387,27 @@ internal static class KnowledgeDigest
         score += TagWeight * tagTokens.Count(pathTokens.Contains);
 
         var titleTokens = new HashSet<string>(StringComparer.Ordinal);
-        AddTokens(entry.Title, titleTokens);
+        AddTokens(EffectiveTitle(entry), titleTokens);
         titleTokens.ExceptWith(tagTokens); // A word already counted as a tag must not be paid for twice.
 
         return score + titleTokens.Count(pathTokens.Contains);
     }
+
+    /// <summary>
+    /// The title the reviewer will actually read: the stored <see cref="KnowledgeEntryMeta.Title"/> when it
+    /// says anything, and the file path when it does not.
+    /// <para>
+    /// Named once and shared, because the scorer and the renderer disagreeing about it is a defect that
+    /// cannot be seen from either side. A title cleared for carrying an escaping link is not deleted, it is
+    /// SUBSTITUTED - so an entry delivered as <c>system/runner.md</c> scored zero on a changed path named
+    /// <c>Runner.cs</c>, lost its slot to entries matching nothing, and the block still went out carrying the
+    /// token that would have ranked it. Selection has to score the string the block will print, and the way
+    /// to keep that true through the next edit is for there to be one expression rather than two that agree
+    /// today.
+    /// </para>
+    /// </summary>
+    private static string EffectiveTitle(KnowledgeEntryMeta entry) =>
+        string.IsNullOrWhiteSpace(entry.Title) ? entry.File : entry.Title;
 
     /// <summary>
     /// Adds the lowercased, de-noised tokens of <paramref name="text"/> to <paramref name="sink"/>: split

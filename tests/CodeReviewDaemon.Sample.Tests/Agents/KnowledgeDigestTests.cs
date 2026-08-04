@@ -898,6 +898,93 @@ public class KnowledgeDigestTests
     }
 
     [Fact]
+    public void SelectRelevant_ScoresTheTitleTheReviewerWillActuallyRead()
+    {
+        // Round 11's finding one level down, and it survived that fix because the field is not deleted here,
+        // it is SUBSTITUTED: a title cleared for carrying an escaping link renders as the file path, which is
+        // exactly where this entry's "runner" match lives. Scoring the stored title gives it zero, so 24
+        // newer entries that match nothing take every slot on recency alone - while the block the reviewer
+        // receives names "system/runner.md", carrying the very token that would have ranked it.
+        //
+        // The invariant, not the patch: the scorer and the renderer must read an entry through the SAME
+        // expression. Anything else re-opens as soon as one of them changes.
+        var entries = Enumerable
+            .Range(0, 24)
+            .Select(i => Entry($"system/decoy-{i}.md", $"Lesson {i}", ["unrelated"], updated: "2026-08-01"))
+            .Append(
+                Entry(
+                    "system/runner.md",
+                    "see [x](../../../etc/passwd) notes",
+                    ["kb"],
+                    updated: "2026-01-01"))
+            .ToArray();
+
+        var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
+        var sanitized = KnowledgeDigest.SanitizeMetadata(partition.Usable, KbRoot);
+        var selected = KnowledgeDigest.SelectRelevant(
+            sanitized.Entries, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+
+        selected
+            .Should()
+            .Contain(
+                entry => entry.File == "system/runner.md",
+                "the entry is delivered under a title that matches the changed path, so it has to be ranked on that title");
+        selected.Should().HaveCount(24);
+    }
+
+    [Fact]
+    public void SelectRelevant_ScoresAPathOnlyWhereThePathIsWhatGetsRendered()
+    {
+        // The other half of the same expression, and the reason it is "effective title" rather than "title
+        // and path": the path is scored only when it IS the rendered title. Tokenizing File unconditionally
+        // would be the easy over-correction - it makes the test above pass too - and it hands every entry the
+        // tokens of its own directory and filename, which the reviewer never reads as that entry's subject.
+        //
+        // Discriminating on purpose: the decoy's PATH carries "blank" while its title does not, and it is the
+        // newer of the two. Score the path regardless and the decoy ties and wins on recency; score what is
+        // rendered and it scores nothing at all.
+        var entries = new[]
+        {
+            Entry("system/blank-notes.md", "Unrelated lesson", ["kb"], updated: "2026-08-01"),
+            Entry("system/other.md", "Blank lesson", ["kb"], updated: "2026-01-01"),
+        };
+
+        var selected = KnowledgeDigest.SelectRelevant(
+            entries, ["src/Blank.cs"], "LmDotnetTools", maxEntries: 1);
+
+        selected
+            .Should()
+            .ContainSingle()
+            .Which.File.Should()
+            .Be(
+                "system/other.md",
+                "a titled entry is ranked on its title; its path is not a second set of tokens the reviewer never sees as its subject");
+    }
+
+    [Fact]
+    public void SelectRelevant_ScoresTheFileOfABlankTitledEntry()
+    {
+        // And the fallback direction, so "score what is rendered" is pinned from both sides: a blank title
+        // renders as the path, so the path is what this entry is ranked on.
+        var entries = new[]
+        {
+            Entry("system/lesson.md", "Unrelated lesson", ["kb"], updated: "2026-08-01"),
+            Entry("system/blank.md", "  ", ["kb"], updated: "2026-01-01"),
+        };
+
+        var selected = KnowledgeDigest.SelectRelevant(
+            entries, ["src/Blank.cs"], "LmDotnetTools", maxEntries: 1);
+
+        selected
+            .Should()
+            .ContainSingle()
+            .Which.File.Should()
+            .Be(
+                "system/blank.md",
+                "the blank-title entry is delivered under its path, so its path is what selected it");
+    }
+
+    [Fact]
     public void Render_NeutralizedIsNotASubsetOfRendered_WhenTheBudgetCutsTheCleanedEntry()
     {
         // Neutralized is filled BEFORE the character budget is applied and Rendered after, so the two lists
