@@ -87,12 +87,13 @@ internal static class KnowledgeDigest
     /// text the review persists is capped, so on a large PR its later <c>diff --git</c> headers are simply
     /// gone and <see cref="ExtractChangedPaths"/> cannot see the files changed last — the name-only listing
     /// stays orders of magnitude smaller and survives the same cap intact. A trailing truncation marker (if
-    /// even this listing was capped) is dropped rather than ranked against. Returns empty for blank input,
-    /// which lets the caller fall back to the diff headers for artifacts written before this existed.
+    /// even this listing was capped) is dropped rather than ranked against. Returns empty for absent or
+    /// empty input, which lets the caller fall back to the diff headers for artifacts written before this
+    /// existed — but NOT for whitespace, which names a real file (see the per-line rule below).
     /// </summary>
     public static IReadOnlyList<string> ParseChangedPaths(string? nameOnlyListing)
     {
-        if (string.IsNullOrWhiteSpace(nameOnlyListing))
+        if (string.IsNullOrEmpty(nameOnlyListing))
         {
             return [];
         }
@@ -170,7 +171,9 @@ internal static class KnowledgeDigest
     /// <summary>
     /// Renders <paramref name="entries"/> as the prior-knowledge block, resolving each entry's KB-relative
     /// <see cref="KnowledgeEntryMeta.File"/> against <paramref name="knowledgeBaseRoot"/> into an absolute
-    /// path the agent can Read directly. Entries are appended while the block fits in
+    /// path the agent can Read directly. Every entry is resolved BEFORE the budget is applied, so an entry
+    /// that escapes the Knowledge Base is refused whether or not it would have fitted. Entries are then
+    /// appended while the block fits in
     /// <paramref name="charBudget"/>; whatever does not fit, plus the <paramref name="omitted"/> entries
     /// the ranking already dropped, is reported in a footer that points at <c>_toc.md</c> so nothing
     /// disappears silently. Returns an empty <see cref="KnowledgeDigestBlock.Text"/> when there is nothing
@@ -197,17 +200,29 @@ internal static class KnowledgeDigest
                 omitted > 0 ? Header() + Footer(omitted, knowledgeBaseRoot) : string.Empty, [], []);
         }
 
-        var builder = new StringBuilder(Header());
-        var rendered = new List<KnowledgeEntryMeta>(entries.Count);
+        // EVERY entry is resolved before ANY of them is rendered. Folding the check into the render loop
+        // would leave the entries past the budget cut unexamined, and budget pressure is the normal case,
+        // not a corner - so an escaping entry sitting beyond the cut would never reach Rejected, would
+        // never be warned about, and would still be counted below as an entry the agent can go and fetch
+        // from _toc.md. That is precisely the silent disappearance the rejection reporting exists to stop.
+        var resolved = new List<(KnowledgeEntryMeta Entry, string Path)>(entries.Count);
         var rejected = new List<KnowledgeEntryMeta>();
         foreach (var entry in entries)
         {
-            if (!TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var absolute))
+            if (TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var absolute))
+            {
+                resolved.Add((entry, absolute));
+            }
+            else
             {
                 rejected.Add(entry);
-                continue;
             }
+        }
 
+        var builder = new StringBuilder(Header());
+        var rendered = new List<KnowledgeEntryMeta>(resolved.Count);
+        foreach (var (entry, absolute) in resolved)
+        {
             var line = RenderEntry(entry, absolute);
             if (rendered.Count > 0 && builder.Length + line.Length > charBudget)
             {
@@ -218,10 +233,10 @@ internal static class KnowledgeDigest
             rendered.Add(entry);
         }
 
-        // Rejected entries are deliberately NOT counted as missing: the footer's promise is that whatever
-        // did not fit is reachable through _toc.md, and pointing the agent at an entry we just refused to
-        // resolve would be an invitation to go and find the very thing that was refused.
-        var missing = omitted + (entries.Count - rendered.Count - rejected.Count);
+        // Counted off the RESOLVED pool, so a rejected entry is neither rendered nor missing. The footer's
+        // promise is that whatever did not fit is reachable through _toc.md, and pointing the agent at an
+        // entry we just refused to resolve would be an invitation to go and find the very thing refused.
+        var missing = omitted + (resolved.Count - rendered.Count);
         if (rendered.Count == 0)
         {
             // Every entry was refused. A header with no paths beneath it reads exactly like a Knowledge

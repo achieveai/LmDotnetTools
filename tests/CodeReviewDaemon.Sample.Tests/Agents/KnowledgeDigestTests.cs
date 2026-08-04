@@ -94,9 +94,13 @@ public class KnowledgeDigestTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("   ")]
+    [InlineData("\n")]
+    [InlineData("\r\n\n")]
     public void ParseChangedPaths_Blank_ReturnsEmpty(string? nameOnly)
     {
+        // "Blank" is absent or empty, NOT whitespace: a whitespace-only listing names a real file. The
+        // bare-terminator cases are here so the emptiness rule stays asserted for the input that genuinely
+        // carries no path.
         KnowledgeDigest.ParseChangedPaths(nameOnly).Should().BeEmpty();
     }
 
@@ -115,6 +119,17 @@ public class KnowledgeDigestTests
     public void ParseChangedPaths_WhitespaceOnlyLineIsTheFilenameItIsNotEmptiness()
     {
         KnowledgeDigest.ParseChangedPaths("  \nsrc/A.cs\n").Should().Equal("  ", "src/A.cs");
+    }
+
+    [Theory]
+    [InlineData("  ")]
+    [InlineData("  \n")]
+    public void ParseChangedPaths_AListingOfNothingButASpaceNamedFileIsThatFile(string nameOnly)
+    {
+        // The same rule as the line above, applied to the whole input. A PR that touches exactly one
+        // space-named file produces a listing that is entirely whitespace, so a whitespace guard on the
+        // input discards the one file it was meant to report — and the per-line rule never runs at all.
+        KnowledgeDigest.ParseChangedPaths(nameOnly).Should().Equal("  ");
     }
 
     // ---- Ranking -------------------------------------------------------------------------------
@@ -343,6 +358,42 @@ public class KnowledgeDigestTests
 
         digest.Rendered.Should().ContainSingle();
         digest.Text.Should().NotContain("more entr");
+    }
+
+    [Fact]
+    public void Render_ValidatesEntriesThatSitBeyondTheCharacterBudgetToo()
+    {
+        // Budget pressure is the NORMAL case, not a corner — a live run renders 8013 of an 8192-char
+        // budget. If validation happens lazily inside the render loop, an escaping entry past the cut is
+        // never examined: it never reaches Rejected, nothing warns about it, and the footer counts it as
+        // an entry the agent can go and fetch from _toc.md. That is the silent disappearance the rejection
+        // logging exists to prevent, reintroduced on the common path.
+        var entries = Enumerable.Range(0, 40)
+            .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
+            .Append(Entry("../../etc/passwd", "Poisoned", ["tag"]))
+            .ToArray();
+
+        var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 900, omitted: 0);
+
+        digest.Rendered.Count.Should().BeLessThan(entries.Length, "the budget must have cut the list short");
+        digest.Rejected.Should().ContainSingle().Which.File.Should().Be("../../etc/passwd");
+    }
+
+    [Fact]
+    public void Render_RejectedEntryPastTheBudgetIsStillKeptOutOfTheFootersCount()
+    {
+        var sound = Enumerable.Range(0, 40)
+            .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
+            .ToArray();
+        var entries = sound.Append(Entry("../../etc/passwd", "Poisoned", ["tag"])).ToArray();
+
+        var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 900, omitted: 0);
+
+        // Exactly the sound entries that did not fit — the rejected one is neither rendered nor promised,
+        // and must not be double-counted as both refused and merely-omitted.
+        var reported = int.Parse(
+            System.Text.RegularExpressions.Regex.Match(digest.Text, @"(\d+) more entr").Groups[1].Value);
+        reported.Should().Be(sound.Length - digest.Rendered.Count);
     }
 
     // ---- RenderTableOfContents ------------------------------------------------------------------
