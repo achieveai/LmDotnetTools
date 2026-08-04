@@ -91,8 +91,25 @@ internal static class KnowledgeDigest
     /// empty input, which lets the caller fall back to the diff headers for artifacts written before this
     /// existed — but NOT for whitespace, which names a real file (see the per-line rule below).
     /// </summary>
-    public static IReadOnlyList<string> ParseChangedPaths(string? nameOnlyListing)
+    public static IReadOnlyList<string> ParseChangedPaths(string? nameOnlyListing) =>
+        ParseChangedPaths(nameOnlyListing, out _);
+
+    /// <summary>
+    /// As <see cref="ParseChangedPaths(string?)"/>, additionally reporting whether the listing carried the
+    /// truncation marker.
+    /// <para>
+    /// A truncated listing is a PARTIAL answer that looks like a complete one. It is non-empty, so the
+    /// caller's "fell back to the diff headers when empty" route never fires, and every file past the cut is
+    /// ranked against nothing while the log reports a healthy path count. The caller cannot recover from
+    /// what it is never told about, so the fact travels with the paths rather than being re-derived from the
+    /// marker somewhere else — one rule, in one place.
+    /// </para>
+    /// Note this says the listing was cut, NOT that a record was damaged: <see cref="SandboxLimits"/> cuts
+    /// on a line boundary, so the records in front of the marker are whole.
+    /// </summary>
+    public static IReadOnlyList<string> ParseChangedPaths(string? nameOnlyListing, out bool truncated)
     {
+        truncated = false;
         if (string.IsNullOrEmpty(nameOnlyListing))
         {
             return [];
@@ -113,6 +130,7 @@ internal static class KnowledgeDigest
             // does not depend on how the producer happened to space it.
             if (raw.Length == 0 || raw.Trim().StartsWith(markerHead, StringComparison.Ordinal))
             {
+                truncated |= raw.Trim().StartsWith(markerHead, StringComparison.Ordinal);
                 continue;
             }
 
@@ -314,7 +332,7 @@ internal static class KnowledgeDigest
 
         if (string.IsNullOrWhiteSpace(tableOfContents))
         {
-            return new KnowledgeTocBlock(string.Empty, 0, 0, false);
+            return new KnowledgeTocBlock(string.Empty, 0, 0, false, []);
         }
 
         var root = knowledgeBaseRoot.Replace('\\', '/').TrimEnd('/');
@@ -345,6 +363,7 @@ internal static class KnowledgeDigest
         var builder = new StringBuilder();
         var listed = 0;
         var truncated = false;
+        var refused = new List<string>();
 
         // Truncation is tracked on its OWN flag, not inferred from the entry count. A torn or hand-edited
         // _toc.md - which is precisely the state that sends us down this fallback - can contain no
@@ -355,6 +374,19 @@ internal static class KnowledgeDigest
             _ = builder.Append(header);
             foreach (var line in lines)
             {
+                // Containment applies here for the same reason it applies to the ranked path, and with the
+                // SAME rule rather than a second one written for this side: the _toc.md is written by the
+                // knowledge agent, and this fallback runs exactly when that file is torn or hand-edited. A
+                // link that resolves outside the Knowledge Base presents something that is not knowledge as
+                // though it were, with nothing in the block for the reviewer to tell the difference by - and
+                // the degraded route was the one still doing it.
+                var link = TocLink(line);
+                if (link is not null && !IsLinkTheAgentCanSafelyJoin(link, root))
+                {
+                    refused.Add(link);
+                    continue;
+                }
+
                 var text = FitTocLine(line, charBudget - builder.Length - reserve);
                 if (text is null)
                 {
@@ -374,16 +406,53 @@ internal static class KnowledgeDigest
             truncated = true;
         }
 
-        var dropped = total - listed;
+        // A refused entry is a different fact from one that did not fit, so it is subtracted from the total
+        // rather than counted as dropped: a footer promising "1 more entry" in _toc.md would route the agent
+        // straight back to the link just refused.
+        var dropped = total - listed - refused.Count;
         if (builder.Length == 0)
         {
-            return new KnowledgeTocBlock(string.Empty, 0, dropped, true);
+            return new KnowledgeTocBlock(string.Empty, 0, dropped, true, refused);
         }
 
         var closing = dropped > 0 ? Footer(dropped, knowledgeBaseRoot)
             : truncated ? TruncatedNotice(knowledgeBaseRoot)
             : string.Empty;
-        return new KnowledgeTocBlock(builder.Append(closing).ToString(), listed, dropped, truncated);
+        return new KnowledgeTocBlock(
+            builder.Append(closing).ToString(), listed, dropped, truncated, refused);
+    }
+
+    /// <summary>
+    /// Whether a <c>_toc.md</c> link lands inside the Knowledge Base once the agent resolves it the way the
+    /// block's header tells it to.
+    /// <para>
+    /// Uses <see cref="TryResolveEntryPath"/> so traversal is judged by ONE rule shared with the ranked path,
+    /// plus one condition the ranked path does not need. <see cref="Render"/> hands the agent a path it has
+    /// already joined onto the root, which makes a leading slash harmless — it lands under the root either
+    /// way. This fallback prints the link VERBATIM and asks the agent to do the join itself, and an agent
+    /// handed <c>/etc/passwd</c> will read it as already absolute and open it. The link is rejected here not
+    /// because the rule differs but because on this path nothing performs the join that made it safe.
+    /// </para>
+    /// </summary>
+    private static bool IsLinkTheAgentCanSafelyJoin(string link, string knowledgeBaseRoot) =>
+        !link.StartsWith('/')
+        && !link.StartsWith('\\')
+        && TryResolveEntryPath(knowledgeBaseRoot, link, out _);
+
+    /// <summary>
+    /// The link target of a <c>_toc.md</c> entry line, or <c>null</c> when the line is not an entry (a
+    /// heading, blank or prose line carries no path and is not containment-checked).
+    /// </summary>
+    private static string? TocLink(string line)
+    {
+        if (!IsTocEntry(line))
+        {
+            return null;
+        }
+
+        var open = line.LastIndexOf("](", StringComparison.Ordinal) + "](".Length;
+        var close = line.LastIndexOf(')');
+        return close > open ? line[open..close] : null;
     }
 
     /// <summary>
@@ -822,7 +891,8 @@ internal sealed record KnowledgeDigestBlock(
 /// <see cref="Truncated"/> is tracked separately because a table of contents with no recognisable entry
 /// lines can be cut without <see cref="Dropped"/> ever moving off zero.
 /// </summary>
-internal sealed record KnowledgeTocBlock(string Text, int Listed, int Dropped, bool Truncated);
+internal sealed record KnowledgeTocBlock(
+    string Text, int Listed, int Dropped, bool Truncated, IReadOnlyList<string> Refused);
 
 /// <summary>
 /// Knowledge Base entries split by whether their path resolves inside the Knowledge Base root.

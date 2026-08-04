@@ -91,6 +91,26 @@ public class KnowledgeDigestTests
         KnowledgeDigest.ParseChangedPaths(nameOnly).Should().Equal("src/A.cs");
     }
 
+    [Fact]
+    public void ParseChangedPaths_ReportsTruncationSoTheCallerCanStillReachTheDiffHeaders()
+    {
+        // A truncated listing is a PARTIAL answer that looks like a complete one: it is non-empty, so the
+        // "fell back to the diff headers when empty" route never fires and the files past the cut are ranked
+        // against nothing. The caller cannot recover what it is never told about.
+        _ = KnowledgeDigest.ParseChangedPaths("src/A.cs\n" + SandboxLimits.TruncationMarker, out var truncated);
+
+        truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ParseChangedPaths_UntruncatedListing_ReportsNoTruncationAndKeepsEveryRecord()
+    {
+        var paths = KnowledgeDigest.ParseChangedPaths("src/A.cs\nsrc/B.cs", out var truncated);
+
+        truncated.Should().BeFalse();
+        paths.Should().Equal("src/A.cs", "src/B.cs");
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -744,5 +764,61 @@ public class KnowledgeDigestTests
 
         described.Length.Should().BeLessThanOrEqualTo(60);
         described.Should().Contain("2 more");
+    }
+
+    // ---- Symmetry: the fallback owes every guarantee the ranked path makes ----------------------
+
+    [Theory]
+    [InlineData("../../outside.md")]
+    [InlineData("/etc/passwd")]
+    [InlineData("..\\..\\outside.md")]
+    [InlineData("system/../../../outside.md")]
+    public void RenderTableOfContents_RefusesLinksThatEscapeTheKnowledgeBase(string link)
+    {
+        // The ranked path has been containment-checked since round 2; the fallback appended whatever the ToC
+        // said. A torn or hand-edited _toc.md is exactly what sends us down this path, so the degraded route
+        // was the one still pointing the reviewer outside the Knowledge Base.
+        var toc = $"# Knowledge Base\n\n- [Alpha]({link})\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain(link);
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_ReportsRefusedLinksSoTheyReachTheSameWarning()
+    {
+        var toc = "# Knowledge Base\n\n- [Alpha](../../outside.md)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Refused.Should().Equal("../../outside.md");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusalIsNotCountedAsBudgetDrop()
+    {
+        // Honest counts, same as the ranked path: an entry refused for escaping is a different fact from an
+        // entry that did not fit, and a footer promising "1 more entry" in _toc.md would route the agent
+        // straight back to the link we just refused.
+        var toc = "# Knowledge Base\n\n- [Alpha](../../outside.md)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Dropped.Should().Be(0);
+        block.Truncated.Should().BeFalse();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_ContainedLinksAreNotRefused()
+    {
+        var toc = "# Knowledge Base\n\n## system\n\n- [Alpha](system/alpha.md)\n- [Beta](system/nested/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Refused.Should().BeEmpty();
+        block.Listed.Should().Be(2);
     }
 }

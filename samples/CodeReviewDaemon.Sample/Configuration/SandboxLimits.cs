@@ -36,6 +36,16 @@ internal sealed class SandboxLimits
             return value;
         }
 
-        return value[..max] + TruncationMarker;
+        // The cut lands between lines, never inside one. Command output here is line-oriented — the
+        // changed-path listing is literally one record per line — and a cut that halves the last record
+        // leaves a stump in front of the marker that reads exactly like a complete path. Every consumer
+        // downstream then treats it as one: KnowledgeDigest.ParseChangedPaths keeps it, the ranking matches
+        // against a file git never reported, and because the result is still non-empty nothing signals that
+        // anything went wrong. A whole line is the smallest unit a reader of this output can trust.
+        //
+        // One enormous line (a minified file inside a diff) has no boundary to fall back to, so the hard cut
+        // stands rather than discarding the entire payload.
+        var boundary = value.LastIndexOf('\n', max - 1);
+        return (boundary >= 0 ? value[..boundary] : value[..max]) + TruncationMarker;
     }
 }

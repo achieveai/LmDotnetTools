@@ -1588,7 +1588,30 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             tocBlock.Text.Length,
             tocBlock.Dropped,
             tocBlock.Truncated);
+        LogRefusedKnowledgePaths(tocBlock.Refused, knowledgeBaseDir);
         return $"{tocBlock.Text}\n{reviewInput}";
+    }
+
+    /// <summary>
+    /// Warns about Knowledge Base paths that do not resolve inside the Knowledge Base, for the ranked path
+    /// and the <c>_toc.md</c> fallback alike. Shared so the two report identically: a refusal that reads
+    /// differently depending on which route found it is a refusal an operator has to learn twice, and the
+    /// fallback is the route a torn Knowledge Base actually takes.
+    /// </summary>
+    private void LogRefusedKnowledgePaths(IReadOnlyList<string> refused, string knowledgeBaseDir)
+    {
+        if (refused.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Prior knowledge: refused {RefusedCount} Knowledge Base {Plural} whose path does not resolve "
+                + "inside {KnowledgeBaseDir}: {RefusedEntries}",
+            refused.Count,
+            refused.Count == 1 ? "entry" : "entries",
+            knowledgeBaseDir,
+            KnowledgeDigest.DescribePaths(refused, MaxKnowledgeLogChars));
     }
 
     /// <summary>
@@ -1609,10 +1632,26 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Rank off the lossless changed-path listing; the diff headers are only a fallback for artifacts
         // written before that listing was persisted, and they under-report on exactly the large PRs where
         // the ranking matters most, because the diff they live in was capped.
-        var ranked = KnowledgeDigest.ParseChangedPaths(changedPaths);
+        var ranked = KnowledgeDigest.ParseChangedPaths(changedPaths, out var listingTruncated);
         if (ranked.Count == 0)
         {
             ranked = KnowledgeDigest.ExtractChangedPaths(diff);
+        }
+        else if (listingTruncated)
+        {
+            // A capped listing is non-empty, so the "empty means fall back" route above never fires and the
+            // files past the cut rank against nothing while the count logged below looks healthy. The diff
+            // headers are UNIONED in rather than substituted: they are the weaker source (they live in a
+            // payload that was capped harder), so replacing a partial listing with them would lose more than
+            // it recovered. Whatever either source can still name gets ranked.
+            var recovered = ranked.Concat(KnowledgeDigest.ExtractChangedPaths(diff)).Distinct(StringComparer.Ordinal);
+            var union = recovered.ToList();
+            _logger.LogWarning(
+                "Prior knowledge: the changed-path listing was truncated; ranking against {ListedCount} listed "
+                    + "paths plus the diff headers ({UnionCount} distinct).",
+                ranked.Count,
+                union.Count);
+            ranked = union;
         }
 
         // Containment is decided BEFORE the cap, so the cap counts entries the agent can actually use.
@@ -1645,16 +1684,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // disappears from the digest is indistinguishable from one the Knowledge Base never had. Both
         // sources are reported: the pre-cap partition, and anything Render refuses on its own recheck.
         var refused = partition.Refused.Concat(digest.Rejected).Select(entry => entry.File).Distinct().ToList();
-        if (refused.Count > 0)
-        {
-            _logger.LogWarning(
-                "Prior knowledge: refused {RefusedCount} Knowledge Base {Plural} whose path does not resolve "
-                    + "inside {KnowledgeBaseDir}: {RefusedEntries}",
-                refused.Count,
-                refused.Count == 1 ? "entry" : "entries",
-                knowledgeBaseDir,
-                KnowledgeDigest.DescribePaths(refused, MaxKnowledgeLogChars));
-        }
+        LogRefusedKnowledgePaths(refused, knowledgeBaseDir);
 
         return digest.Text;
     }
