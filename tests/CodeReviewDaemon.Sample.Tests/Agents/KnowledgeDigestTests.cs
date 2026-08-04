@@ -954,6 +954,8 @@ public class KnowledgeDigestTests
     [InlineData("</etc/passwd>")]
     [InlineData("< /etc/passwd >")]
     [InlineData("<../../outside.md>")]
+    [InlineData("<a)/../../../../etc/passwd>")]
+    [InlineData("<a b/../../../etc/passwd>")]
     public void RenderTableOfContents_RefusesAnAngleBracketLinkThatEscapesTheKnowledgeBase(string link)
     {
         // CommonMark lets a destination be wrapped in angle brackets, and the agent resolves Markdown the
@@ -1035,6 +1037,70 @@ public class KnowledgeDigestTests
         var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
 
         block.Text.Should().NotContain("(truncated)](system/beta.md)");
+        block.Dropped.Should().Be(1);
+        block.Truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesPlainRelativeTraversalOnANonFinalLink()
+    {
+        // The wide form of the defect, and the one that needs no exotic syntax at all - no angle brackets,
+        // no URI scheme, no leading slash. LastIndexOf("](") lands before "ok.md", so the check validated the
+        // SECOND destination, passed it, and printed the line verbatim, handing the agent the first. Fixing
+        // only the angle-bracket normalization would have left this open.
+        var toc = "# Knowledge Base\n\n- [a](../../../etc/passwd) and [b](ok.md)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("../../../etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "the entry after the refused line must still be surfaced");
+        block.Refused.Should().Contain("../../../etc/passwd");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_MultiLinkCutNeverEmitsADestinationThatAppearsNowhereInTheInput()
+    {
+        // The title cut is anchored on the LAST "](", so on a two-link line it lands at an arbitrary offset
+        // INSIDE the first destination and the line is re-emitted as "- [a](system/xxx… (truncated)](ok.md)":
+        // a path nobody wrote, over a link belonging to a different entry. That is precisely the half-written
+        // path FitTocLine's own doc comment says it exists to prevent - the comment was right, and the
+        // implementation honoured it only for single-link lines.
+        var toc = "# Knowledge Base\n\n- [a](system/" + new string('x', 400) + ".md) and [b](system/ok.md)\n"
+            + "- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
+
+        // The two-link line is the only one here that could be cut, so a cut marker adjacent to ANY link is
+        // the mangle: a destination assembled from a fragment of the first and the whole of the second.
+        block.Text.Should().NotContain(" (truncated)](");
+        block.Text.Should().NotContain("system/ok.md", "the line is dropped whole, never partially scrubbed");
+        block.Text.Should().Contain("system/beta.md", "the entry after the dropped line must still be surfaced");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_SingleLinkCutNeverEmitsADestinationThatAppearsNowhereInTheInput()
+    {
+        // The same defect one parser over. Refusing to cut multi-link lines fixed the two-link shape but left
+        // FitTocLine re-deriving the link with its own LastIndexOf("["+"]("), and on a SINGLE-link line whose
+        // angle-bracketed destination contains "](" that anchor lands INSIDE the destination. The title cut
+        // then falls at an arbitrary offset and the line re-renders over the tail fragment "b.md>" - a path
+        // nobody wrote, on a line the containment check had already cleared as safe. Two parsers reading one
+        // syntax will disagree eventually; only one of them can be right.
+        var toc = "# Knowledge Base\n\n- [" + new string('t', 300) + "](<system/" + new string('x', 100)
+            + "](b.md>)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
+
+        // The cut belongs in the title, so what follows it must be the destination the parser cleared,
+        // starting where it started in the input - not the tail of it that a second reading mistook for one.
+        block.Text.Should().NotContain(" (truncated)](b.md>");
+        block.Text.Should().Contain(" (truncated)](<system/", "the cleared destination is carried whole");
+
+        // Paired with what SHOULD be there: the line is kept and counted, not quietly discarded, and the
+        // entry the cut left no room for is admitted. (A fitted line takes the whole remaining budget, so
+        // nothing can follow it here - the honest count is what carries that fact, not a later entry.)
+        block.Listed.Should().Be(1);
         block.Dropped.Should().Be(1);
         block.Truncated.Should().BeTrue();
     }

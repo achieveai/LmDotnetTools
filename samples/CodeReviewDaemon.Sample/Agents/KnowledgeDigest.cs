@@ -429,7 +429,10 @@ internal static class KnowledgeDigest
                 // though it were, with nothing in the block for the reviewer to tell the difference by - and
                 // the degraded route was the one still doing it.
                 var links = TocLinks(line);
-                var escapes = links.Where(link => !IsLinkTheAgentCanSafelyJoin(link, root)).ToList();
+                var escapes = links
+                    .Where(link => !IsLinkTheAgentCanSafelyJoin(link.Destination, root))
+                    .Select(link => link.Destination)
+                    .ToList();
                 if (escapes.Count > 0)
                 {
                     refused.AddRange(escapes);
@@ -437,7 +440,7 @@ internal static class KnowledgeDigest
                     continue;
                 }
 
-                var text = FitTocLine(line, charBudget - builder.Length - reserve, links.Count);
+                var text = FitTocLine(line, charBudget - builder.Length - reserve, links);
                 if (text is null)
                 {
                     // Skipped rather than stopped at, for the same reason as the ranked path above: a null
@@ -529,6 +532,12 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
+    /// One Markdown link found on a <c>_toc.md</c> line: the destination an agent would resolve, and the
+    /// offset of the <c>](</c> that opened it, so no later caller has to go looking for it a second time.
+    /// </summary>
+    private readonly record struct TocLink(string Destination, int Marker);
+
+    /// <summary>
     /// Every link destination on a <c>_toc.md</c> entry line, normalized, in source order. Empty when the
     /// line is not an entry (a heading, blank or prose line carries no path and is not containment-checked).
     /// <para>
@@ -536,47 +545,67 @@ internal static class KnowledgeDigest
     /// two links had one of them checked and both of them rendered — the escape only had to not be written
     /// last. The check was right both times it was defeated; what reached it was not.
     /// </para>
+    /// <para>
+    /// This is the only place the syntax is read. Callers get the offsets back rather than re-deriving them,
+    /// because a second parser over the same syntax is a second set of assumptions to be wrong about, and
+    /// this one has already been wrong twice.
+    /// </para>
     /// </summary>
-    private static IReadOnlyList<string> TocLinks(string line)
+    private static IReadOnlyList<TocLink> TocLinks(string line)
     {
         if (!IsTocEntry(line))
         {
             return [];
         }
 
-        var links = new List<string>();
+        var links = new List<TocLink>();
         var at = 0;
         while (true)
         {
-            var open = line.IndexOf("](", at, StringComparison.Ordinal);
-            if (open < 0)
+            var marker = line.IndexOf("](", at, StringComparison.Ordinal);
+            if (marker < 0)
             {
                 break;
             }
 
-            open += "](".Length;
-            var close = line.IndexOf(')', open);
-            if (close < 0)
+            var open = marker + "](".Length;
+
+            // Which form the destination is in has to be settled BEFORE deciding where it ends, because the
+            // two forms end on different characters. Cutting at the first ")" and unwrapping whatever that
+            // produced is the same defect one layer down: "<a)/../../../../etc/passwd>" cuts to "<a", which
+            // unwraps to the contained name "a" and is ACCEPTED, while an agent resolving CommonMark reads
+            // the whole angle-bracketed path and walks out of the store. Inside <...> a ")" is an ordinary
+            // character; bare, it terminates — which is exactly where CommonMark's own parser stops.
+            var angle = open < line.Length && line[open] == '<' ? line.IndexOf('>', open + 1) : -1;
+            var close = line.IndexOf(')', angle < 0 ? open : angle + 1);
+            if (close < 0 && angle < 0)
             {
                 break;
             }
 
-            links.Add(NormalizeLinkDestination(line[open..close]));
-            at = close + 1;
+            links.Add(
+                new TocLink(
+                    NormalizeLinkDestination(angle < 0 ? line[open..close] : line[open..(angle + 1)]), marker));
+            at = (close < 0 ? angle : close) + 1;
         }
 
         return links;
     }
 
     /// <summary>
-    /// The destination an agent resolving Markdown normally would act on, from the raw text between
-    /// <c>](</c> and <c>)</c>.
+    /// The destination an agent resolving Markdown normally would act on, from the raw destination text the
+    /// caller delimited — angle brackets included, when it is in that form.
     /// <para>
     /// CommonMark permits the destination to be wrapped in angle brackets, and a bare destination to be
     /// followed by a title. Neither form was being unwrapped, so <c>&lt;/etc/passwd&gt;</c> reached the
     /// containment rule beginning with <c>&lt;</c> rather than <c>/</c> and the leading-slash rejection —
     /// added the round before for exactly this target — never fired. Validating the text as written rather
     /// than as resolved is the defect; this is where it is repaired, once, for every caller.
+    /// </para>
+    /// <para>
+    /// The two forms are mutually exclusive here, deliberately: only a BARE destination is split at
+    /// whitespace, because inside angle brackets a space belongs to the path. Splitting there would validate
+    /// a short prefix of a path the agent follows whole.
     /// </para>
     /// </summary>
     private static string NormalizeLinkDestination(string destination)
@@ -599,30 +628,29 @@ internal static class KnowledgeDigest
     /// reason the line is worth carrying, and a half-written path is worse than an absent one because the
     /// agent will try to open it.
     /// </summary>
-    private static string? FitTocLine(string line, int room, int linkCount)
+    private static string? FitTocLine(string line, int room, IReadOnlyList<TocLink> links)
     {
         if (line.Length + 1 <= room)
         {
             return line + "\n";
         }
 
-        // Only a single-link line can be shortened safely. The title cut is anchored on the LAST "](", so on
-        // a two-link line everything between the first link and the last is swallowed as title text and the
-        // render comes back as "- [First entry's title (truncated)](second entry's link)": a label naming one
-        // entry over a link pointing at another. Misattributed knowledge is worse than absent knowledge, and
-        // the entry is counted as dropped with a route to the full _toc.md either way, so such a line fits
-        // whole or not at all.
-        if (linkCount != 1)
+        // Only a single-link line can be shortened safely. The title cut is anchored on the link's opening
+        // "](", so on a two-link line everything between the first link and the last is swallowed as title
+        // text and the render comes back as "- [First entry's title (truncated)](second entry's link)": a
+        // label naming one entry over a link pointing at another. Misattributed knowledge is worse than
+        // absent knowledge, and the entry is counted as dropped with a route to the full _toc.md either way,
+        // so such a line fits whole or not at all.
+        if (links.Count != 1)
         {
             return null;
         }
 
-        var link = line.LastIndexOf("](", StringComparison.Ordinal);
-        if (!IsTocEntry(line) || link < 0)
-        {
-            return null;
-        }
-
+        // The anchor comes from the parser that read the line, not from a fresh LastIndexOf("](") here. That
+        // second reading agreed with the first only while no destination contained "](" itself: given
+        // "- [t](<system/xxx](b.md>)" - one link, contained, cleared - it landed INSIDE the destination and
+        // cut the line down over the fragment "b.md>", a path belonging to no entry at all.
+        var link = links[0].Marker;
         var suffix = line[link..];
         var titleRoom = room - "- [".Length - suffix.Length - TruncationMarker.Length - 1;
         if (titleRoom < 0)
