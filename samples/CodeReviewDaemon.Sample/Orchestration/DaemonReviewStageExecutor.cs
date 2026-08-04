@@ -1277,7 +1277,8 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
-        reviewInput = await PrependPriorKnowledgeAsync(reviewInput, run.Id, context.StoreRoot, cancellationToken)
+        reviewInput = await PrependPriorKnowledgeAsync(
+                reviewInput, run.Id, context.StoreRoot, repo, context.Diff, cancellationToken)
             .ConfigureAwait(false);
         reviewInput = await PrependRepoGuidanceAsync(reviewInput, run.Id, cancellationToken)
             .ConfigureAwait(false);
@@ -1427,16 +1428,42 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         (name.StartsWith("PR_Context_", StringComparison.Ordinal) || name.StartsWith("PR_Findings_", StringComparison.Ordinal))
         && name.EndsWith(".md", StringComparison.Ordinal);
 
+    /// <summary>Cap on Knowledge Base entries listed in the prior-knowledge digest. The KB grows without
+    /// bound while the review's context window does not, so the ranking decides which entries are worth a
+    /// slot rather than letting the newest extraction crowd out the input.</summary>
+    private const int MaxKnowledgeEntries = 24;
+
+    /// <summary>Character cap on the rendered digest, a second bound for when entry titles run long.</summary>
+    private const int MaxKnowledgeDigestChars = 8 * 1024;
+
     /// <summary>
-    /// Best-effort prepends the store's Knowledge Base table of contents to the review input so the review
-    /// agent starts with the durable knowledge distilled from past PRs (design §3). Only a cross-repo
-    /// store-mode run carries a Knowledge Base — it lives at the store root (<c>&lt;StoreRoot&gt;/KnowledgeBase/</c>),
-    /// so the single-repo path (null <paramref name="storeRoot"/>) is unchanged. A missing <c>_toc.md</c> —
-    /// the common case before any knowledge has been extracted — silently leaves the input untouched (it must
-    /// never fail the review, design §6); the review prompt still directs the agent to consult the KB itself.
+    /// Best-effort prepends prior Knowledge Base knowledge to the review input so the review agent starts
+    /// with the durable lessons distilled from past PRs (design §3).
+    /// <para>
+    /// Preferred source is <c>KnowledgeBase/_index.jsonl</c>: its per-entry metadata lets
+    /// <see cref="KnowledgeDigest"/> rank entries against the files <paramref name="diff"/> touches and hand
+    /// the agent an <b>exact absolute path</b> per entry. That matters because the agent cannot find these
+    /// files itself — a root-level Grep in the tool-assisted checkout can return empty even when the file
+    /// exists — and because a sub-agent only ever sees what the parent copies into its brief. When the index
+    /// is absent or unreadable we fall back to <c>_toc.md</c> (titles and links only), which is strictly
+    /// weaker but better than nothing.
+    /// </para>
+    /// <para>
+    /// KNOWN LIMITATION (accepted): the Knowledge Base lives at the store root
+    /// (<c>&lt;StoreRoot&gt;/KnowledgeBase/</c>), so prior knowledge reaches <b>cross-repo store-mode runs
+    /// only</b>. A single-repo run (null <paramref name="storeRoot"/>) reviews with no prior knowledge at
+    /// all, by design and not by accident.
+    /// </para>
+    /// Every failure degrades to "no prior knowledge": a missing KB — the common case before any extraction
+    /// has run — leaves the input untouched, because this must never fail the review (design §6).
     /// </summary>
     private async Task<string> PrependPriorKnowledgeAsync(
-        string reviewInput, long runId, string? storeRoot, CancellationToken cancellationToken)
+        string reviewInput,
+        long runId,
+        string? storeRoot,
+        RepoIdentity repo,
+        string? diff,
+        CancellationToken cancellationToken)
     {
         // A pooled review reads KnowledgeBase/_toc.md HOST-side from its leased slot's store checkout — the same
         // host filesystem + store root CommitPooledNotesAsync writes notes back through. The class-field
@@ -1462,28 +1489,84 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return reviewInput;
         }
 
-        var tocPath = PosixJoin(root, "KnowledgeBase/_toc.md");
-        string? toc;
+        var knowledgeBaseDir = PosixJoin(root, "KnowledgeBase");
+        var index = await TryReadKnowledgeFileAsync(
+            fileSystem, PosixJoin(knowledgeBaseDir, "_index.jsonl"), cancellationToken).ConfigureAwait(false);
+
+        var digest = BuildKnowledgeDigest(index, knowledgeBaseDir, repo, diff);
+        if (digest.Length > 0)
+        {
+            return $"{digest}\n{reviewInput}";
+        }
+
+        // No usable index (never extracted, or a torn file): fall back to the table of contents. Titles and
+        // links only — the agent gets no tags, no scope and no absolute paths — but it beats reviewing blind.
+        var toc = await TryReadKnowledgeFileAsync(
+            fileSystem, PosixJoin(knowledgeBaseDir, "_toc.md"), cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(toc))
+        {
+            _logger.LogInformation(
+                "No usable Knowledge Base at {KnowledgeBaseDir}; reviewing without prior knowledge.",
+                knowledgeBaseDir);
+            return reviewInput;
+        }
+
+        _logger.LogInformation(
+            "Knowledge Base index unavailable; falling back to _toc.md ({Length} chars) for prior knowledge.",
+            toc.Length);
+        return $"## Prior knowledge (KnowledgeBase/_toc.md)\n\n{toc}\n\n{reviewInput}";
+    }
+
+    /// <summary>
+    /// Renders the ranked prior-knowledge block from a raw <c>_index.jsonl</c>, or an empty string when the
+    /// index yields no entries. Logs exactly WHICH entries were surfaced: without that line a silent
+    /// retrieval failure and a healthy review are indistinguishable in the daemon's logs, which is how this
+    /// step went unnoticed as a no-op before.
+    /// </summary>
+    private string BuildKnowledgeDigest(string? index, string knowledgeBaseDir, RepoIdentity repo, string? diff)
+    {
+        var entries = KnowledgeIndex.ParseIndex(index);
+        if (entries.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var changedPaths = KnowledgeDigest.ExtractChangedPaths(diff);
+        var selected = KnowledgeDigest.SelectRelevant(
+            entries, changedPaths, repo.RepoName, MaxKnowledgeEntries);
+        var digest = KnowledgeDigest.Render(
+            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, entries.Count - selected.Count);
+
+        _logger.LogInformation(
+            "Prior knowledge: surfaced {SurfacedCount} of {TotalCount} Knowledge Base entries ({DigestLength} chars) "
+                + "ranked against {ChangedPathCount} changed paths for scope '{RepoScope}': {SurfacedEntries}",
+            selected.Count,
+            entries.Count,
+            digest.Length,
+            changedPaths.Count,
+            repo.RepoName,
+            string.Join(", ", selected.Select(entry => entry.File)));
+
+        return digest;
+    }
+
+    /// <summary>
+    /// Reads one Knowledge Base file, returning <c>null</c> for both "absent" and "unreadable". The read can
+    /// THROW as well as return null — a gateway hiccup, a stale session — and design §6 says prior knowledge
+    /// must never fail the review, so every fault degrades to "no prior knowledge" here.
+    /// </summary>
+    private async Task<string?> TryReadKnowledgeFileAsync(
+        ISandboxFileSystem fileSystem, string path, CancellationToken cancellationToken)
+    {
         try
         {
-            toc = await fileSystem.ReadFileAsync(tocPath, cancellationToken).ConfigureAwait(false);
+            return await fileSystem.ReadFileAsync(path, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // A missing _toc.md returns null (handled below); but the read itself can THROW — e.g. a gateway
-            // hiccup or a stale session. Design §6 says the KB prepend must NEVER fail the review, so degrade to
-            // "no prior knowledge" and go on.
-            _logger.LogWarning(ex, "Reading KnowledgeBase/_toc.md failed; proceeding without prior knowledge.");
-            return reviewInput;
+            _logger.LogWarning(ex, "Reading {KnowledgeFilePath} failed; proceeding without it.", path);
+            return null;
         }
-
-        if (string.IsNullOrWhiteSpace(toc))
-        {
-            return reviewInput;
-        }
-
-        _logger.LogInformation("Prepending KnowledgeBase/_toc.md ({Length} chars) to the review input.", toc.Length);
-        return $"## Prior knowledge (KnowledgeBase/_toc.md)\n\n{toc}\n\n{reviewInput}";
     }
 
     /// <summary>The reviewed repo's own root guidance files, in read-first order: project conventions

@@ -123,6 +123,101 @@ internal static class KnowledgeIndex
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Reads <c>_index.jsonl</c> back into its entries — the inverse of <see cref="RenderIndex"/> — so a
+    /// consumer can filter the Knowledge Base on <see cref="KnowledgeEntryMeta.Tags"/>/
+    /// <see cref="KnowledgeEntryMeta.Scope"/> without opening every entry file.
+    /// <para>
+    /// Deliberately TOLERANT: a blank line, a line that is not JSON, or a line carrying no <c>file</c> key
+    /// is skipped rather than thrown on. The index is a regenerated derivative — one torn line (a crash
+    /// mid-write, a hand edit) must never blind a whole review to the entries around it. Missing optional
+    /// keys default to empty, matching <see cref="ParseFrontmatter"/>.
+    /// </para>
+    /// Order is preserved as-read, which for a <see cref="RenderIndex"/> output is already sorted by file.
+    /// </summary>
+    public static IReadOnlyList<KnowledgeEntryMeta> ParseIndex(string? indexJsonl)
+    {
+        if (string.IsNullOrWhiteSpace(indexJsonl))
+        {
+            return [];
+        }
+
+        var entries = new List<KnowledgeEntryMeta>();
+        var lines = indexJsonl.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            KnowledgeEntryMeta? entry;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                entry = ReadEntry(document.RootElement);
+            }
+            catch (JsonException)
+            {
+                continue; // A torn or hand-mangled line costs only itself.
+            }
+
+            if (entry is not null)
+            {
+                entries.Add(entry);
+            }
+        }
+
+        return entries;
+    }
+
+    /// <summary>Reads one index object, or <c>null</c> when it carries no usable <c>file</c> path (an entry
+    /// with no path cannot be Read by the agent, so surfacing it would only waste prompt budget).</summary>
+    private static KnowledgeEntryMeta? ReadEntry(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("file", out var fileElement)
+            || fileElement.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var file = fileElement.GetString();
+        return string.IsNullOrWhiteSpace(file)
+            ? null
+            : new KnowledgeEntryMeta(
+                file,
+                ReadString(root, "title"),
+                ReadStringArray(root, "tags"),
+                ReadString(root, "scope"),
+                ReadStringArray(root, "sourcePrs"),
+                ReadString(root, "updated"));
+    }
+
+    private static string ReadString(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? string.Empty
+            : string.Empty;
+
+    private static IReadOnlyList<string> ReadStringArray(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var items = new List<string>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } text)
+            {
+                items.Add(text);
+            }
+        }
+
+        return items;
+    }
+
     private static string RenderLine(KnowledgeEntryMeta entry)
     {
         using var stream = new MemoryStream();

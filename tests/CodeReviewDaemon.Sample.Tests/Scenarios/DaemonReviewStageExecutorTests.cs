@@ -371,6 +371,47 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_prepends_a_ranked_knowledge_digest_with_absolute_paths_when_the_store_has_an_index()
+    {
+        using var fixture = Fixture.GitHub(
+            LoggerFactory,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        // _index.jsonl carries tags/scope per entry, so it — not the title-only _toc.md — is what lets the
+        // reviewer (and the sub-agents it dispatches) match a lesson to the files this PR changes.
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null","boundaries"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n"
+                + """{"file":"system/pagination.md","title":"Filter before paging","tags":["pagination"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}"""
+                + "\n");
+        fixture.FileSystem.Seed("/workspace/store/KnowledgeBase/_toc.md", "# Knowledge Base\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain("## Prior knowledge (Knowledge Base)");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/null-guard.md",
+            "the agent cannot Grep the KB open, so it must be handed the exact absolute path");
+        text.Should().Contain("tags: null, boundaries", "metadata is what lets a lesson be matched to a dimension");
+        text.Should().Contain("sub-agent", "the parent is told to copy matching paths into each sub-agent's brief");
+        text.Should().NotContain(
+            "Prior knowledge (KnowledgeBase/_toc.md)",
+            "with an index present the weaker title-only ToC block must not be used");
+    }
+
+    [Fact]
     public async Task Reviewed_prepends_the_knowledge_base_toc_when_the_store_has_one()
     {
         using var fixture = Fixture.GitHub(
@@ -384,8 +425,8 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
             "/workspace/store/.gitmodules",
             "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
         fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
-        // The store carries prior knowledge distilled from past PRs; the review must start with its table
-        // of contents so the reviewer factors it in (design §3).
+        // The store carries prior knowledge distilled from past PRs; with no _index.jsonl to rank (a KB
+        // written before the index existed) the review must still start with its table of contents (design §3).
         fixture.FileSystem.Seed(
             "/workspace/store/KnowledgeBase/_toc.md",
             "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");

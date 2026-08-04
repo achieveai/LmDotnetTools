@@ -70,4 +70,64 @@ public class KnowledgeIndexTests
         second.RootElement.GetProperty("file").GetString().Should().Be("system/beta.md");
         second.RootElement.GetProperty("title").GetString().Should().Be("Beta");
     }
+
+    [Fact]
+    public void ParseIndex_RoundTripsRenderIndex()
+    {
+        var entries = new[]
+        {
+            new KnowledgeEntryMeta("system/alpha.md", "Alpha", ["t2", "t3"], "system", ["pr/1"], "2026-07-05"),
+            new KnowledgeEntryMeta("Repo/beta.md", "Beta", ["t1"], "Repo", ["pr/2"], "2026-07-06"),
+        };
+
+        var parsed = KnowledgeIndex.ParseIndex(KnowledgeIndex.RenderIndex(entries));
+
+        // RenderIndex sorts by File ordinal, so "Repo/beta.md" precedes "system/alpha.md".
+        parsed.Should().HaveCount(2);
+        parsed[0].Should().BeEquivalentTo(entries[1]);
+        parsed[1].Should().BeEquivalentTo(entries[0]);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   \n  \n")]
+    public void ParseIndex_NullOrBlank_ReturnsEmpty(string? jsonl)
+    {
+        KnowledgeIndex.ParseIndex(jsonl).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ParseIndex_SkipsMalformedAndFilelessLinesInsteadOfThrowing()
+    {
+        // A torn/partial line and a line with no "file" key must not cost us the healthy entries around
+        // them: the index is regenerated best-effort, and one bad line must never blind a whole review.
+        var jsonl = string.Join(
+            '\n',
+            """{"file":"system/good1.md","title":"Good 1","tags":["a"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}""",
+            """{"file":"system/torn.md","title":"Torn""",
+            "not json at all",
+            """{"title":"No file key","tags":[],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}""",
+            "",
+            """{"file":"system/good2.md","title":"Good 2","tags":["b","c"],"scope":"system","sourcePrs":["pr/9"],"updated":"2026-07-06"}""");
+
+        var parsed = KnowledgeIndex.ParseIndex(jsonl);
+
+        parsed.Select(e => e.File).Should().Equal("system/good1.md", "system/good2.md");
+        parsed[1].Tags.Should().Equal("b", "c");
+        parsed[1].SourcePrs.Should().Equal("pr/9");
+    }
+
+    [Fact]
+    public void ParseIndex_MissingOptionalKeys_DefaultToEmptyRatherThanNull()
+    {
+        var parsed = KnowledgeIndex.ParseIndex("""{"file":"system/bare.md"}""");
+
+        var entry = parsed.Should().ContainSingle().Subject;
+        entry.Title.Should().BeEmpty();
+        entry.Scope.Should().BeEmpty();
+        entry.Updated.Should().BeEmpty();
+        entry.Tags.Should().BeEmpty();
+        entry.SourcePrs.Should().BeEmpty();
+    }
 }
