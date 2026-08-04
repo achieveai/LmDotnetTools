@@ -28,7 +28,7 @@ namespace CodeReviewDaemon.Sample.Workspace.Sandbox;
 /// </para>
 /// <para>
 /// <b>Ownership.</b> The adapter builds its <see cref="SandboxClient"/> lazily on first use over a
-/// dedicated (owned) <see cref="System.Net.Http.HttpClient"/>, so constructing an adapter does no
+/// dedicated (owned) <see cref="HttpClient"/>, so constructing an adapter does no
 /// gateway work and validates no credential — mirroring the old orchestrator's lazy connect and
 /// keeping the provisioner's construct-per-session path inert. <see cref="DisposeAsync"/> releases only
 /// that local transport; it NEVER deletes the remote sandbox session (remote lifecycle stays with the
@@ -139,17 +139,19 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
         );
     }
 
-    public async Task<string?> ReadFileAsync(string path, CancellationToken cancellationToken)
+    public async Task<SandboxFileRead> ReadFileAsync(string path, long maxBytes, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var client = await EnsureClientAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await client
-                .ReadTextFileAsync(_sessionId, ToWorkspaceRelativePath(path), cancellationToken)
-                .ConfigureAwait(false);
+            return SandboxFileRead.Of(
+                await client
+                    .ReadTextFileAsync(_sessionId, ToWorkspaceRelativePath(path), maxBytes, cancellationToken)
+                    .ConfigureAwait(false));
         }
         catch (SandboxException ex) when (ex.IsDefiniteMissingPath)
         {
@@ -157,7 +159,16 @@ internal sealed class SandboxSessionAdapter : ISandboxCommandRunner, ISandboxFil
             // session/mount (session_not_found / mount_not_found) OR a code-less 404 (ambiguous — the
             // direct API also 404s an evicted session) is NOT degradable — it propagates so the caller
             // sees a real error, not an empty read.
-            return null;
+            return SandboxFileRead.Missing;
+        }
+        catch (SandboxException ex) when (ex.IsDirectReadCapExceeded)
+        {
+            // The SDK's own guard, mapped to the interface's refusal rather than left as an exception. The
+            // flag is checked instead of the message because the message is a sentence and the condition is
+            // a fact; and it is caught HERE rather than by the knowledge readers because their catch turns
+            // every failure into "no prior knowledge", which is the one thing an over-size store must not
+            // look like.
+            return SandboxFileRead.Refused;
         }
     }
 

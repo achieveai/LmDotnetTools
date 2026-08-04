@@ -89,10 +89,25 @@ internal sealed class SubmoduleInitializer
         }
 
         var levelDir = JoinPath(repoRoot, relativeDir);
-        var gitmodules = await _fileSystem
-            .ReadFileAsync(JoinPath(levelDir, ".gitmodules"), cancellationToken)
+        var gitmodulesPath = JoinPath(levelDir, ".gitmodules");
+        var read = await _fileSystem
+            .ReadFileAsync(gitmodulesPath, SandboxReadLimits.RepositoryFileBytes, cancellationToken)
             .ConfigureAwait(false);
-        if (gitmodules is null)
+        if (read.TooLarge)
+        {
+            // Refused, and SAID so rather than falling into the "no submodules declared" branch below. The
+            // two outcomes look identical from here and mean opposite things: one level has nothing to
+            // descend into, the other has something we declined to read, and every submodule under it goes
+            // uninitialized either way. Only the log can tell an operator which happened.
+            _logger.LogWarning(
+                "'.gitmodules' at '{Path}' exceeds the {Limit}-byte read limit; not descending into any "
+                    + "submodule declared there.",
+                gitmodulesPath,
+                SandboxReadLimits.RepositoryFileBytes);
+            return;
+        }
+
+        if (read.Content is not { } gitmodules)
         {
             return; // No submodules declared at this level.
         }

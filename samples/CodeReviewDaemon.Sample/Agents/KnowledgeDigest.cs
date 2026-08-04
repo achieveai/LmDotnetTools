@@ -728,6 +728,42 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
+    /// The block to render when every Knowledge Base listing was REFUSED for size, so the reviewer receives no
+    /// prior knowledge from a store that has some.
+    /// <para>
+    /// Under <see cref="Heading"/>, and that is the whole point of it existing. The review prompt teaches the
+    /// absence of that heading as "this repository has no Knowledge Base", so staying silent here would not
+    /// merely withhold the knowledge — it would state, in the one channel the agent has been taught to read,
+    /// something false about the store. A log line says this to an operator who is not in the loop; only the
+    /// input says it to the reviewer, which is the only party that acts on it.
+    /// </para>
+    /// </summary>
+    /// <param name="refusedPaths">Agent-facing paths of the listings that were refused (at least one).</param>
+    /// <param name="knowledgeBaseRoot">The Knowledge Base root as the AGENT resolves it.</param>
+    /// <param name="maxBytes">The ceiling the listings exceeded.</param>
+    public static string RenderRefusedListings(
+        IEnumerable<string> refusedPaths, string knowledgeBaseRoot, long maxBytes)
+    {
+        ArgumentNullException.ThrowIfNull(refusedPaths);
+        ArgumentException.ThrowIfNullOrWhiteSpace(knowledgeBaseRoot);
+
+        var paths = refusedPaths.Where(path => !string.IsNullOrWhiteSpace(path)).ToList();
+        if (paths.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return $"{Heading}\n\n"
+            + $"This repository HAS a Knowledge Base and none of it could be loaded for this review: "
+            + $"{string.Join(" and ", paths)} exceeded the {maxBytes:N0}-byte limit this daemon reads listings "
+            + "with, and were refused whole rather than read in part — half a listing ends mid-record and would "
+            + "name entries that do not exist.\n\n"
+            + "Do NOT read this as \"there are no prior lessons\". Entries exist under "
+            + $"{knowledgeBaseRoot.TrimEnd('/')}/ and are unread here; if the rest of your input names one, you "
+            + "may open that file yourself. Otherwise review without prior knowledge, and say that you did.\n";
+    }
+
+    /// <summary>
     /// Whether text carries either half of a CommonMark reference-style link: <c>[text][label]</c>, or the
     /// <c>[label]: destination</c> definition that resolves one.
     /// <para>

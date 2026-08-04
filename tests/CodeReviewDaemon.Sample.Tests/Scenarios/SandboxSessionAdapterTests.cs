@@ -14,7 +14,8 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// through a real <c>SandboxClient</c> over a <see cref="ScriptedSandboxGateway"/> that speaks the SDK's
 /// public wire protocol, and pin every observable contract the daemon depends on: the real captured exit
 /// code and stdout/stderr, the PR #121 H4 output cap, the per-command timeout surfacing as a
-/// <see cref="TimeoutException"/>, read-missing → <c>null</c>, write-failure → <see cref="IOException"/>,
+/// <see cref="TimeoutException"/>, read-missing → <see cref="SandboxFileRead.Missing"/>, read-over-ceiling →
+/// <see cref="SandboxFileRead.Refused"/>, write-failure → <see cref="IOException"/>,
 /// and list-missing → empty (dotfiles and NUL-embedded names preserved).
 /// </summary>
 public sealed class SandboxSessionAdapterTests
@@ -99,9 +100,10 @@ public sealed class SandboxSessionAdapterTests
         var gateway = new ScriptedSandboxGateway { ReadBytes = Encoding.UTF8.GetBytes("knowledge\n") };
         await using var adapter = CreateAdapter(gateway);
 
-        var content = await adapter.ReadFileAsync("/workspace/reviewbot/_toc.md", CancellationToken.None);
+        var read = await adapter.ReadFileAsync("/workspace/reviewbot/_toc.md", 1024, CancellationToken.None);
 
-        content.Should().Be("knowledge\n");
+        read.Content.Should().Be("knowledge\n");
+        read.TooLarge.Should().BeFalse();
     }
 
     [Fact]
@@ -110,20 +112,51 @@ public sealed class SandboxSessionAdapterTests
         var gateway = new ScriptedSandboxGateway { ReadBytes = [] };
         await using var adapter = CreateAdapter(gateway);
 
-        var content = await adapter.ReadFileAsync("/workspace/reviewbot/empty.md", CancellationToken.None);
+        var read = await adapter.ReadFileAsync("/workspace/reviewbot/empty.md", 1024, CancellationToken.None);
 
-        content.Should().Be(string.Empty);
+        read.Content.Should().Be(string.Empty);
     }
 
     [Fact]
-    public async Task ReadFileAsync_returns_null_when_the_file_is_missing()
+    public async Task ReadFileAsync_returns_missing_when_the_file_is_missing()
     {
         var gateway = new ScriptedSandboxGateway { ReadMissing = true };
         await using var adapter = CreateAdapter(gateway);
 
-        var content = await adapter.ReadFileAsync("/workspace/reviewbot/absent.md", CancellationToken.None);
+        var read = await adapter.ReadFileAsync("/workspace/reviewbot/absent.md", 1024, CancellationToken.None);
 
-        content.Should().BeNull();
+        read.Should().Be(SandboxFileRead.Missing);
+        read.Exists.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ReadFileAsync_refuses_a_file_larger_than_the_callers_ceiling()
+    {
+        // The SDK's own cap raises SandboxException(Protocol, IsDirectReadCapExceeded); the adapter maps it
+        // to a VALUE. Left as an exception it would be swallowed by the knowledge readers' catch-all and
+        // arrive as "no prior knowledge" — an over-size Knowledge Base is the one thing that must not look
+        // like an empty one. This is the sandbox half of the guarantee HostFileSystem makes host-side.
+        var gateway = new ScriptedSandboxGateway { ReadBytes = Encoding.UTF8.GetBytes(new string('x', 4096)) };
+        await using var adapter = CreateAdapter(gateway);
+
+        var read = await adapter.ReadFileAsync("/workspace/reviewbot/_index.jsonl", 1024, CancellationToken.None);
+
+        read.Should().Be(SandboxFileRead.Refused);
+        read.Content.Should().BeNull();
+        read.Exists.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ReadFileAsync_reads_a_file_exactly_at_the_ceiling()
+    {
+        // Inclusive, matching HostFileSystem. The two routes read the same store in pooled and non-pooled
+        // mode, so a boundary that disagrees means the same file is knowledge on one and silence on the other.
+        var gateway = new ScriptedSandboxGateway { ReadBytes = Encoding.UTF8.GetBytes(new string('x', 1024)) };
+        await using var adapter = CreateAdapter(gateway);
+
+        var read = await adapter.ReadFileAsync("/workspace/reviewbot/_index.jsonl", 1024, CancellationToken.None);
+
+        read.Content.Should().HaveLength(1024);
     }
 
     [Fact]
@@ -131,11 +164,11 @@ public sealed class SandboxSessionAdapterTests
     {
         // An evicted session collapses to SandboxErrorKind.NotFound just like a missing path, but its
         // error_code is session_not_found — the adapter must surface it as an error, NOT silently degrade
-        // it to a missing file (null). Only a genuinely missing PATH degrades.
+        // it to a missing file. Only a genuinely missing PATH degrades.
         var gateway = new ScriptedSandboxGateway { SessionEvicted = true };
         await using var adapter = CreateAdapter(gateway);
 
-        var act = () => adapter.ReadFileAsync("/workspace/reviewbot/_toc.md", CancellationToken.None);
+        var act = () => adapter.ReadFileAsync("/workspace/reviewbot/_toc.md", 1024, CancellationToken.None);
 
         var exception = await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
         exception.Which.ErrorCode.Should().Be("session_not_found");
@@ -145,11 +178,11 @@ public sealed class SandboxSessionAdapterTests
     public async Task ReadFileAsync_rethrows_on_a_bare_404_without_error_code()
     {
         // A code-less 404 is AMBIGUOUS — the direct API also 404s an evicted session — so it is NOT a
-        // definitive missing path. The adapter must surface it as a real error, not degrade to null.
+        // definitive missing path. The adapter must surface it as a real error, not degrade to missing.
         var gateway = new ScriptedSandboxGateway { BareNotFound = true };
         await using var adapter = CreateAdapter(gateway);
 
-        var act = () => adapter.ReadFileAsync("/workspace/reviewbot/legacy.md", CancellationToken.None);
+        var act = () => adapter.ReadFileAsync("/workspace/reviewbot/legacy.md", 1024, CancellationToken.None);
 
         var exception = await act.Should().ThrowAsync<AchieveAi.LmDotnetTools.Sandbox.SandboxException>();
         exception.Which.Kind.Should().Be(AchieveAi.LmDotnetTools.Sandbox.SandboxErrorKind.NotFound);

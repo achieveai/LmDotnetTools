@@ -9,7 +9,8 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Tests.Transfer;
 
 /// <summary>
 /// Wire-level tests for the direct files/directories API (ADR 0031 / issue #119) that
-/// <see cref="SandboxClient.ReadTextFileAsync"/>, <see cref="SandboxClient.WriteTextFileAsync"/>, and
+/// <see cref="SandboxClient.ReadTextFileAsync(string, string, CancellationToken)"/>,
+/// <see cref="SandboxClient.WriteTextFileAsync"/>, and
 /// <see cref="SandboxClient.ListDirectoryAsync"/> now speak, driven through the in-memory
 /// <see cref="FakeGatewayHandler"/>. Each test proves a genuine wire outcome — exact byte round-tripping,
 /// error-code mapping, cursor-paginated listing — rather than how often a collaborator was called.

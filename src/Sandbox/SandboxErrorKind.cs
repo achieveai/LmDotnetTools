@@ -49,7 +49,8 @@ public enum SandboxErrorKind
 
     /// <summary>
     /// Content the gateway delivered exact-byte failed the SDK's strict decode. Raised by
-    /// <see cref="SandboxClient.ReadTextFileAsync"/> and <see cref="SandboxClient.ExecuteAsync"/> when a
+    /// <see cref="SandboxClient.ReadTextFileAsync(string, string, CancellationToken)"/> and
+    /// <see cref="SandboxClient.ExecuteAsync"/> when a
     /// file's bytes or a command's captured stdout/stderr are not valid UTF-8 — the SDK surfaces text
     /// only, so it refuses to substitute U+FFFD replacement characters. The gateway (not the SDK) now
     /// owns byte-exactness and atomicity, so there is no length/digest reassembly check left here.

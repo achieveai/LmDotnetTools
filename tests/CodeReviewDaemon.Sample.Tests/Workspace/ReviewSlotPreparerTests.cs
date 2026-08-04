@@ -91,6 +91,33 @@ public sealed class ReviewSlotPreparerTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureStoreAsync_SdkPreparer_ReusesAStoreWhoseMarkerIsTooLargeToRead()
+    {
+        // The marker read is bounded, and this is a PRESENCE check. Reading the ceiling as "unmarked" would
+        // `rm -rf` and re-clone a store that was never unowned — the most expensive way possible to react to
+        // a file we simply declined to load.
+        var slot = CreateSlot();
+        var runner = new FakeSandboxCommandRunner();
+        var fileSystem = SeedGitmodules(slot.StorePath)
+            .Seed(
+                $"{slot.StorePath}/{ReviewSlotPreparer.SdkOwnershipMarkerFile}",
+                new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1));
+        var preparer = new ReviewSlotPreparer(
+            new GitRunner(runner),
+            fileSystem,
+            "ado",
+            NullLoggerFactory.Instance,
+            requireSdkOwnershipMarker: true);
+
+        await preparer.EnsureStoreAsync(slot.StorePath, StoreUrl, CancellationToken.None);
+
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.StartsWith("rm -rf --", StringComparison.Ordinal));
+        runner.Commands.Select(c => string.Join(' ', c.Argv)).Should().NotContain(
+            command => command.Contains(" clone ", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task RecloneStoreAsync_HostPreparer_DeletesTheStoreWithHostFilesystemApis()
     {
         // The host-backed pooled preparer owns a store on the DAEMON HOST, so removing a corrupt one through

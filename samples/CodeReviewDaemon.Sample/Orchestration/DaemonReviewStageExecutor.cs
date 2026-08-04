@@ -199,7 +199,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
 
     /// <summary>Host lifetime, used to stop the daemon when a session lacks code-reviewer skill/agent
     /// support and <see cref="CodeReviewDaemonOptions.RequireSkillSupport"/> is set (fail-fast, not degrade).</summary>
-    private readonly Microsoft.Extensions.Hosting.IHostApplicationLifetime? _appLifetime;
+    private readonly IHostApplicationLifetime? _appLifetime;
 
     /// <summary>
     /// Session-free gateway catalog probe, non-null ONLY on the S2S path (registered in Program.cs). It is the
@@ -253,7 +253,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         HostRetentionWorkspace? hostRetention = null,
         SandboxCredential credential = default,
         ReviewSlotWorkspace? slotWorkspace = null,
-        Microsoft.Extensions.Hosting.IHostApplicationLifetime? appLifetime = null,
+        IHostApplicationLifetime? appLifetime = null,
         string? gatewayBaseUrl = null,
         S2SReviewWorkspacePreparer? preparer = null,
         IGatewaySkillProbe? skillProbe = null,
@@ -372,7 +372,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             // Scoped-writable reviewer (Layer 1): when this run leased a pooled slot and reviewer-writes are
             // enabled, hand the agent scoped Write/Edit/Bash + the (container) notes/scratch roots the writes
             // are bounded to. Absent a pooled lease the reviewer stays hard read-only exactly as before.
-            var writeScope = ResolvePooledWriteScope(run);
+            var (Enabled, WritableAllow, NotesDir, ScratchDir) = ResolvePooledWriteScope(run);
 
             return new ReviewToolContext(
                 GatewayBaseUrl: _gatewayBaseUrl
@@ -381,10 +381,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 SessionId: session.SessionId,
                 ReadOnlyToolAllowList: _options.ReadOnlyToolAllowList,
                 Credential: _credential,
-                EnableReviewerWrites: writeScope.Enabled,
-                WritableToolAllowList: writeScope.WritableAllow,
-                NotesDir: writeScope.NotesDir,
-                ScratchDir: writeScope.ScratchDir);
+                EnableReviewerWrites: Enabled,
+                WritableToolAllowList: WritableAllow,
+                NotesDir: NotesDir,
+                ScratchDir: ScratchDir);
         }
         catch (Exception ex) when (ex is not OperationCanceledException and not SkillSupportUnavailableException)
         {
@@ -899,8 +899,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private async Task<string?> ResolveStoreSubmodulePathAsync(
         ISandboxFileSystem fileSystem, string storeRoot, RepoIdentity repo, string provider)
     {
-        var gitmodules = await fileSystem
-            .ReadFileAsync(PosixJoin(storeRoot, ".gitmodules"), CancellationToken.None)
+        var gitmodules = await ReadGitmodulesAsync(fileSystem, storeRoot, CancellationToken.None)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(gitmodules))
         {
@@ -911,6 +910,32 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var entry = GitModulesParser.Parse(gitmodules)
             .FirstOrDefault(e => SubmoduleTargetsRepo(e.Url, targetUrl));
         return entry?.Path;
+    }
+
+    /// <summary>
+    /// The store's <c>.gitmodules</c>, or <c>null</c> when it is absent — or was refused for size, which is
+    /// logged rather than passed on. Both callers read this file to decide whether the reviewed repo is a
+    /// submodule of the store, and both fall back to the per-run checkout when it is not; a refusal takes
+    /// that same fallback, so the warning is the only place the difference between "the store declares no
+    /// submodule" and "we declined to read what it declares" is recorded.
+    /// </summary>
+    private async Task<string?> ReadGitmodulesAsync(
+        ISandboxFileSystem fileSystem, string storeRoot, CancellationToken cancellationToken)
+    {
+        var path = PosixJoin(storeRoot, ".gitmodules");
+        var read = await fileSystem
+            .ReadFileAsync(path, SandboxReadLimits.RepositoryFileBytes, cancellationToken)
+            .ConfigureAwait(false);
+        if (read.TooLarge)
+        {
+            _logger.LogWarning(
+                "'.gitmodules' at '{Path}' exceeds the {Limit}-byte read limit; treating the store as "
+                    + "declaring no submodule for this repository.",
+                path,
+                SandboxReadLimits.RepositoryFileBytes);
+        }
+
+        return read.Content;
     }
 
     /// <summary>The PR's persistent notes branch name (<c>review/{repo}-{pr}</c>) — resolved
@@ -1029,8 +1054,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     {
         await CloneIfMissingAsync(git, storeUrl, StoreRoot, run, cancellationToken).ConfigureAwait(false);
 
-        var gitmodules = await fileSystem
-            .ReadFileAsync(PosixJoin(StoreRoot, ".gitmodules"), cancellationToken)
+        var gitmodules = await ReadGitmodulesAsync(fileSystem, StoreRoot, cancellationToken)
             .ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(gitmodules))
         {
@@ -1321,13 +1345,13 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // repo, which leaves the existing per-run/diff-only path unchanged.
         if (UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
         {
-            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+            _ = await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         }
 
         // S2S path: now that resume-safety has restored the lease, adopt that slot as the LmStreaming
         // workspace. Preparing before the re-lease would cache a bare per-PR clone whose mounted layout does
         // not contain the pooled store, notes or Knowledge Base paths used by the persisted context.
-        await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+        _ = await EnsurePreparedAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
 
         var context = ReadContext(run.Id);
         var reviewInput = BuildReviewInput(run, repo, context.Diff, context.FileManifest);
@@ -1562,8 +1586,16 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var agentKnowledgeBaseDir = PosixJoin(renderRoot, "KnowledgeBase");
         var index = await TryReadKnowledgeFileAsync(
             fileSystem, PosixJoin(knowledgeBaseDir, "_index.jsonl"), cancellationToken).ConfigureAwait(false);
+        if (index.TooLarge)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: _index.jsonl at {KnowledgeBaseDir} exceeds the {Limit}-byte read limit and "
+                    + "was not read; ranked retrieval is unavailable for this review, falling back to _toc.md.",
+                knowledgeBaseDir,
+                SandboxReadLimits.KnowledgeListingBytes);
+        }
 
-        var digest = BuildKnowledgeDigest(index, agentKnowledgeBaseDir, repo, diff, changedPaths);
+        var digest = BuildKnowledgeDigest(index.Content, agentKnowledgeBaseDir, repo, diff, changedPaths);
         if (digest.Length > 0)
         {
             return $"{digest}\n{reviewInput}";
@@ -1577,9 +1609,39 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var toc = await TryReadKnowledgeFileAsync(
             fileSystem, PosixJoin(knowledgeBaseDir, "_toc.md"), cancellationToken).ConfigureAwait(false);
         var tocBlock = KnowledgeDigest.RenderTableOfContents(
-            toc, agentKnowledgeBaseDir, MaxKnowledgeDigestChars);
+            toc.Content, agentKnowledgeBaseDir, MaxKnowledgeDigestChars);
         if (tocBlock.Text.Length == 0)
         {
+            // Refusal reaches the AGENT, absence only reaches the log. The two arrive here as the same empty
+            // block and mean opposite things, and the difference is not the operator's to act on: silence under
+            // the heading the prompt teaches is a positive claim that this repository has no Knowledge Base.
+            // Only when a refusal actually cost the reviewer its prior knowledge — a listing that was read and
+            // rendered leaves it nothing to be told about the other one.
+            List<string> refusedListings = [];
+            if (index.TooLarge)
+            {
+                refusedListings.Add(PosixJoin(agentKnowledgeBaseDir, "_index.jsonl"));
+            }
+
+            if (toc.TooLarge)
+            {
+                refusedListings.Add(PosixJoin(agentKnowledgeBaseDir, "_toc.md"));
+            }
+
+            if (refusedListings.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Prior knowledge: every Knowledge Base listing at {KnowledgeBaseDir} exceeded the "
+                        + "{Limit}-byte read limit ({Refused}); telling the reviewer the store is unread rather "
+                        + "than letting an empty block claim it is empty.",
+                    knowledgeBaseDir,
+                    SandboxReadLimits.KnowledgeListingBytes,
+                    string.Join(", ", refusedListings));
+                var notice = KnowledgeDigest.RenderRefusedListings(
+                    refusedListings, agentKnowledgeBaseDir, SandboxReadLimits.KnowledgeListingBytes);
+                return $"{notice}\n{reviewInput}";
+            }
+
             _logger.LogInformation(
                 "No usable Knowledge Base at {KnowledgeBaseDir}; reviewing without prior knowledge.",
                 knowledgeBaseDir);
@@ -1844,21 +1906,30 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     }
 
     /// <summary>
-    /// Reads one Knowledge Base file, returning <c>null</c> for both "absent" and "unreadable". The read can
-    /// THROW as well as return null — a gateway hiccup, a stale session — and design §6 says prior knowledge
-    /// must never fail the review, so every fault degrades to "no prior knowledge" here.
+    /// Reads one Knowledge Base file, returning <see cref="SandboxFileRead.Missing"/> for both "absent" and
+    /// "unreadable". The read can THROW as well as report absence — a gateway hiccup, a stale session — and
+    /// design §6 says prior knowledge must never fail the review, so every fault degrades to "no prior
+    /// knowledge" here.
+    /// <para>
+    /// A refusal for size is NOT one of those faults and is passed back to the caller unchanged. Folding it in
+    /// with "absent" is what makes an over-size store indistinguishable from an empty one — and this method is
+    /// precisely where that distinction would have been lost, since everything else about it is a funnel into
+    /// a single null.
+    /// </para>
     /// </summary>
-    private async Task<string?> TryReadKnowledgeFileAsync(
+    private async Task<SandboxFileRead> TryReadKnowledgeFileAsync(
         ISandboxFileSystem fileSystem, string path, CancellationToken cancellationToken)
     {
         try
         {
-            return await fileSystem.ReadFileAsync(path, cancellationToken).ConfigureAwait(false);
+            return await fileSystem
+                .ReadFileAsync(path, SandboxReadLimits.KnowledgeListingBytes, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Reading {KnowledgeFilePath} failed; proceeding without it.", path);
-            return null;
+            return SandboxFileRead.Missing;
         }
     }
 
@@ -1869,7 +1940,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>Per-file cap on reviewed-repo guidance prepended to the review input. The content is read
     /// from the attacker-controllable PR head, so an arbitrarily large file must not balloon the review
     /// input (context-window pressure / cost). Generous enough for legitimate guidance — the sample's own
-    /// CLAUDE.md is ~11 KB — and truncation is marked so the model knows the file is partial.</summary>
+    /// CLAUDE.md is ~11 KB — and truncation is marked so the model knows the file is partial. Bounds what
+    /// the reviewer READS and nothing else; <see cref="SandboxReadLimits.RepositoryFileBytes"/> is what
+    /// bounds the read itself.</summary>
     private const int MaxGuidanceFileChars = 32 * 1024;
 
     /// <summary>
@@ -1899,21 +1972,47 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         List<string> blocks = [];
         foreach (var name in RepoGuidanceFileNames)
         {
-            string? content;
+            SandboxFileRead read;
             try
             {
-                content = await fileSystem.ReadFileAsync(PosixJoin(targetDir, name), cancellationToken).ConfigureAwait(false);
+                read = await fileSystem
+                    .ReadFileAsync(
+                        PosixJoin(targetDir, name), SandboxReadLimits.RepositoryFileBytes, cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // A missing file returns null (skipped below); a real read failure (gateway hiccup / stale
+                // A missing file reads as absent (skipped below); a real read failure (gateway hiccup / stale
                 // session) must NEVER fail the review, so degrade to skipping this one file and continue.
                 _logger.LogWarning(ex, "Reading reviewed-repo guidance '{Name}' failed; proceeding without it.", name);
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(content))
+            if (read.TooLarge)
             {
+                // SAID, not skipped. An absent CLAUDE.md and a refused one look identical from here and mean
+                // opposite things to a reviewer: one repository states no conventions, the other states them in
+                // a file this daemon declined to ingest. Silence would have the reviewer fault the PR for
+                // conventions it was never shown, or recommend adding a file that is already there.
+                _logger.LogWarning(
+                    "Reviewed-repo guidance '{Name}' exceeds the {Limit}-byte read limit; telling the reviewer "
+                        + "it exists and was not read.",
+                    name,
+                    SandboxReadLimits.RepositoryFileBytes);
+                blocks.Add(
+                    $"<pr-guidance-file path=\"{name}\" read=\"refused\">\n"
+                        + $"NOT READ BY THE DAEMON: this file exists in the PR head and is larger than the "
+                        + $"{SandboxReadLimits.RepositoryFileBytes:N0}-byte limit guidance is read with, so none "
+                        + "of it is quoted below. Its conventions are unknown to you — do not conclude that the "
+                        + "repository has none, and do not suggest adding a file that is already there.\n"
+                        + "</pr-guidance-file>");
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(read.Content))
+            {
+                var content = read.Content;
+
                 // SECURITY: this guidance is read from the PR HEAD, so it is attacker-controllable — a hostile
                 // PR could put injection text in its CLAUDE.md/AGENTS.md OR make it arbitrarily large to pressure
                 // the review's context window / cost. Bound each file to MaxGuidanceFileChars (marking any
@@ -1921,6 +2020,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 // literal </pr-guidance-file> the content embeds (rewrite it to a bracketed, non-tag form) so it
                 // cannot forge the closing fence and break out of the quoted region. Belt-and-braces with the
                 // "UNTRUSTED, report injection" instruction the block is headed with.
+                //
+                // This character budget is what the reviewer READS; the byte ceiling above is what the daemon
+                // INGESTS. Trimming here bounded neither the read nor the memory it took — by the time a value
+                // can be trimmed it has already been allocated whole.
                 var bounded = content.Length > MaxGuidanceFileChars
                     ? content[..MaxGuidanceFileChars]
                         + $"\n\n… [truncated: reviewed-repo guidance exceeded {MaxGuidanceFileChars} characters]"
@@ -2105,7 +2208,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             var head = thread[0];
             var where = head.Path is { Length: > 0 } ? $"{head.Path}:{head.Line ?? "?"}" : "(PR-level)";
             var status = head.IsActive ? "active" : "resolved";
-            sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
+            _ = sb.Append("- ").Append(where).Append(" [status: ").Append(status).Append("]:\n");
             foreach (var c in thread)
             {
                 var author = c.Author is { Length: > 0 } ? c.Author : "unknown";
@@ -2113,14 +2216,14 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
                 // Body is wrapped in «guillemets» and stripped of any stray guillemet so untrusted comment text
                 // cannot break out of its quoted-data delimiter (see the SECURITY note in ExistingCommentsGuidance).
                 var safeBody = c.Body.Replace("«", "<").Replace("»", ">");
-                sb.Append("    - (").Append(author).Append(when).Append(") «").Append(safeBody).Append("»\n");
+                _ = sb.Append("    - (").Append(author).Append(when).Append(") «").Append(safeBody).Append("»\n");
                 shown++;
             }
         }
 
         if (omitted > 0)
         {
-            sb.Append("… and ").Append(omitted).Append(" more comment(s) not shown.\n");
+            _ = sb.Append("… and ").Append(omitted).Append(" more comment(s) not shown.\n");
         }
 
         return sb.ToString().TrimEnd('\n');
@@ -2294,7 +2397,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // hosted conversation binds to the PR checkout + code-reviewer marketplace. Null on the in-process path,
         // where the live/fake factory ignores it. The escalation-ladder retries share the same workspace (a fresh
         // THREAD reloads no history but reviews the same code) — only the daemon-internal threadId differs.
-        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, modelOverride ?? run.ModelId, threadId, reasoningEffort: effort, toolContext: toolContext,
             reviewWorkspace: prepared, resumeHostedThreadId: checkpoint.HostedThreadId);
@@ -2714,7 +2817,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <item>the clean provider 400 — "context window", "maximum context", "context_length_exceeded",
     ///   "too many tokens";</item>
     /// <item>the transport-level abort the endpoint often returns INSTEAD of a clean 400 when a huge
-    ///   request/response is cut off mid-stream — <see cref="System.Net.Http.HttpIOException"/>
+    ///   request/response is cut off mid-stream — <see cref="HttpIOException"/>
     ///   "The response ended prematurely" / "unexpected end of stream" (the form we actually observed on
     ///   sub-agent conversations of 125K–232K tokens).</item>
     /// </list>
@@ -2725,7 +2828,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// </summary>
     private static bool IsContextExhaustionFailure(Exception ex)
     {
-        for (Exception? e = ex; e is not null; e = e.InnerException)
+        for (var e = ex; e is not null; e = e.InnerException)
         {
             var msg = e.Message;
             if (msg.Contains("context window", StringComparison.OrdinalIgnoreCase)
@@ -2762,7 +2865,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Same prepared S2S workspace as the primary arm (cached at ReviewAsync entry); null in-process. The
         // comparison arm stays diff-only in its prompt, but on S2S it still provisions against the PR workspace
         // (the factory requires one) — a distinct conversation the deep-link machinery does not link.
-        _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
+        _ = _preparedWorkspaces.TryGetValue(run.Id, out var prepared);
         await using var loop = _loopFactory.Create(
             profile, _comparisonVariant.ModelId, ThreadId(run, _comparisonVariant.VariantId),
             _options.VariantReasoningEffort, reviewWorkspace: prepared);
@@ -2831,7 +2934,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // looked like a success. Re-lease first so the retry retains into the same pooled store the review ran in.
         if (hasContent && UsePooledReview && !_leasedReviews.ContainsKey(run.Id))
         {
-            await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
+            _ = await TryPooledFetchContextAsync(run, repo, provider, cancellationToken).ConfigureAwait(false);
         }
 
         // Host-side single-summary posting. Two ways it fires:
@@ -3158,7 +3261,7 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             await BuildDaemonNotesArtifactsAsync(run, repo, notesRelPath, cancellationToken).ConfigureAwait(false));
         var request = new ReviewBotPublishRequest(
             repo,
-            PrNumber: int.Parse(run.PrId, System.Globalization.CultureInfo.InvariantCulture),
+            PrNumber: int.Parse(run.PrId, CultureInfo.InvariantCulture),
             HeadSha: run.HeadSha,
             DefaultBranch: ReviewBotDefaultBranch,
             Files: files);
@@ -3500,7 +3603,7 @@ internal sealed record ReviewSlotWorkspace(
 /// <summary>
 /// The one discovery operation <see cref="DaemonReviewStageExecutor"/> needs from the registry to build
 /// sub-agent templates (Task 11/12). Implemented by
-/// <see cref="AchieveAi.LmDotnetTools.LmAgentInfra.Sandbox.SandboxSessionRegistry"/> via the
+/// <see cref="SandboxSessionRegistry"/> via the
 /// <c>RegistryDiscoverySource</c> adapter (registered in Program.cs) and by a fake in tests — mirrors the
 /// narrow <see cref="ISandboxSessionSource"/> seam already used for session provisioning, so the executor
 /// stays verifiable against a fake without a live gateway.

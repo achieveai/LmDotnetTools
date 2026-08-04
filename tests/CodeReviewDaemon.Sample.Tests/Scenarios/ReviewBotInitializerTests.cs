@@ -90,7 +90,29 @@ public sealed class ReviewBotInitializerTests : LoggingTestBase
         runner.Commands.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Counts_an_over_size_file_as_present_rather_than_reporting_the_repo_malformed()
+    {
+        // These reads are bounded, and this is a PRESENCE check: a file too big to read is still a file that
+        // is there. Reading "absent" off the ceiling would report a healthy repo as half-seeded — and the
+        // Malformed path is the one an operator repairs by hand, over a store that never needed repairing.
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        SeedAll(fs);
+        fs.Files[$"{RepoRoot}/KnowledgeBase/_toc.md"] =
+            new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1);
+
+        var result = await CreateInitializer(runner, fs)
+            .InitializeAsync(RepoRoot, DefaultBranch, CancellationToken.None);
+
+        result.Outcome.Should().Be(ReviewBotInitOutcome.AlreadySeeded);
+        result.MissingPaths.Should().BeEmpty();
+        fs.Writes.Should().BeEmpty("a seeded repo must not be re-seeded over a file we merely could not read");
+        runner.Commands.Should().BeEmpty();
+    }
+
     private static void SeedAll(FakeSandboxFileSystem fs)
+
     {
         fs.Files[$"{RepoRoot}/README.md"] = "# ReviewBot";
         fs.Files[$"{RepoRoot}/PRs/.gitkeep"] = string.Empty;

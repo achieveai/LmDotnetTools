@@ -68,7 +68,39 @@ public class HostGitCommandRunnerTests : IDisposable
 
         await fs.WriteFileAsync(path, "hello", default);
 
-        (await fs.ReadFileAsync(path, default)).Should().Be("hello");
-        (await fs.ReadFileAsync(Path.Combine(_dir, "missing.txt"), default)).Should().BeNull();
+        (await fs.ReadFileAsync(path, SandboxReadLimits.RepositoryFileBytes, default))
+            .Content.Should().Be("hello");
+        (await fs.ReadFileAsync(Path.Combine(_dir, "missing.txt"), SandboxReadLimits.RepositoryFileBytes, default))
+            .Should().Be(SandboxFileRead.Missing);
+    }
+
+    [Fact]
+    public async Task HostFileSystem_RefusesAFileLargerThanTheCallersCeiling()
+    {
+        var fs = new HostFileSystem();
+        var path = Path.Combine(_dir, "big.txt");
+        await fs.WriteFileAsync(path, new string('x', 4096), default);
+
+        var read = await fs.ReadFileAsync(path, 1024, default);
+
+        // Refused, and distinguishable from absent: a caller that cannot tell them apart re-seeds a store,
+        // or tells a reviewer the Knowledge Base is empty, over the top of a file that is right there.
+        read.Should().Be(SandboxFileRead.Refused);
+        read.Content.Should().BeNull();
+        read.Exists.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task HostFileSystem_ReadsAFileExactlyAtTheCeiling()
+    {
+        // The boundary is inclusive: maxBytes is what the caller agreed to read, not one less. An
+        // off-by-one here refuses legitimate files and is invisible until a store reaches a round number.
+        var fs = new HostFileSystem();
+        var path = Path.Combine(_dir, "exact.txt");
+        await fs.WriteFileAsync(path, new string('x', 1024), default);
+
+        var read = await fs.ReadFileAsync(path, 1024, default);
+
+        read.Content.Should().HaveLength(1024);
     }
 }

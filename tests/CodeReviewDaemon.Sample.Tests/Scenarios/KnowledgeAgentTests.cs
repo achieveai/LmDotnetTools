@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using CodeReviewDaemon.Sample.Workspace.Sandbox;
 using Microsoft.Extensions.Logging;
 using Xunit.Abstractions;
 
@@ -101,7 +102,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         InputText(agent.ReceivedInputs[1]).Should().Contain("## SCOPE:");
 
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        result!.EntryFileName.Should().Be("system/notes-branch-lifecycle.md");
+        result.EntryFileName.Should().Be("system/notes-branch-lifecycle.md");
         fs.Files.Should().ContainKey(KbDir + "/system/notes-branch-lifecycle.md");
     }
 
@@ -279,7 +280,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         // The traversal UPDATES is refused and the create falls back to the safe scope+slug INSIDE the KB;
         // the planted escape file is never touched, and every write stays under KnowledgeBase/.
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        result!.EntryFileName.Should().Be("system/innocent-looking.md");
+        result.EntryFileName.Should().Be("system/innocent-looking.md");
         fs.Files[escapePath].Should().Be("#!/bin/sh\necho pwned");
         fs.Writes.Should().OnlyContain(path => path.StartsWith(KbDir + "/", StringComparison.Ordinal));
     }
@@ -302,7 +303,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
 
         // The bookkeeping UPDATES is refused; the create falls back to the safe scope+slug path instead.
         result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
-        result!.EntryFileName.Should().Be("system/not-the-toc.md");
+        result.EntryFileName.Should().Be("system/not-the-toc.md");
         fs.Files[KbDir + "/_toc.md"].Should().NotContain("title:");
         fs.Files[KbDir + "/_toc.md"].Should().Contain("- [Not The Toc](system/not-the-toc.md)");
     }
@@ -322,7 +323,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result!.EntryFileName.Should().Be("acme-widgets/repo-rule.md");
+        result.EntryFileName.Should().Be("acme-widgets/repo-rule.md");
         // The one-level regen walk indexes the single-segment scope entry into BOTH bookkeeping files.
         fs.Files[KbDir + "/_index.jsonl"].Should().Contain("\"file\":\"acme-widgets/repo-rule.md\"");
         fs.Files[KbDir + "/_toc.md"].Should().Contain("- [Repo Rule](acme-widgets/repo-rule.md)");
@@ -515,7 +516,103 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         logger.CountAtLevel(LogLevel.Warning, "PARTIAL").Should().Be(0);
     }
 
+    // ---- The reads themselves are bounded, and a refusal never reads as an absence ------------------
+
+    /// <summary>Content one byte past <paramref name="limit"/> — the smallest input the read must refuse.</summary>
+    private static string OverLimit(long limit) => new('x', (int)limit + 1);
+
+    [Fact]
+    public async Task TryExtractAsync_tells_the_agent_the_listing_was_unread_rather_than_rendering_an_empty_store()
+    {
+        // The char cap above bounds PARSING; this bounds INGESTION. When the file never arrives at all, the
+        // "(empty)" rendering reserved for a missing file would tell the agent the Knowledge Base is empty at
+        // the moment it is largest — the same duplicate-manufacturing lie, told louder.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/_index.jsonl"] = OverLimit(SandboxReadLimits.KnowledgeListingBytes);
+        var logger = new CapturingLogger<KnowledgeAgent>();
+        var agent = AgentReturning("NO_KNOWLEDGE");
+
+        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
+        var listing = Section(sent, "## Existing Knowledge Base index (_index.jsonl)\n");
+        listing.Should().Contain(
+            "could NOT be read",
+            "the agent has to know the silence below it is an unread store, not an empty one");
+        listing.Should().Contain("The store is not empty; it is unread.");
+        listing.Should().NotContain(
+            "(empty)",
+            "'(empty)' is the MISSING-file rendering; reusing it for a refusal is the lie this exists to stop");
+        sent.Should().NotContain("xxxxxxxxxx", "the refused bytes must not reach the prompt");
+
+        logger.CountAtLevel(LogLevel.Warning, "_index.jsonl").Should().Be(
+            1, "operators are the only ones who can trim the listing at the source");
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_refuses_to_overwrite_an_entry_it_could_not_read()
+    {
+        // The write below an ## UPDATES is a whole-file OVERWRITE, and the merge read is the only thing that
+        // carries the entry's title, tags and sourcePrs into it. Treating an unreadable entry as an absent one
+        // would not skip a merge — it would replace a durable entry with one distilled without ever seeing it.
+        var fs = new FakeSandboxFileSystem();
+        var entryPath = KbDir + "/system/x.md";
+        fs.Files[entryPath] = OverLimit(SandboxReadLimits.KnowledgeEntryBytes);
+        var logger = new CapturingLogger<KnowledgeAgent>();
+        var agent = AgentReturning(
+            "## SCOPE: system\n"
+            + "## TITLE: X Invariant\n"
+            + "## UPDATES: system/x.md\n\n"
+            + "refined body with more detail");
+
+        var result = await Knowledge(agent, fs, logger).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(
+            KnowledgeExtractionOutcome.Failed,
+            "a run that cannot read its target has not declined — it is retryable once the entry is trimmed");
+        fs.Files[entryPath].Should().Be(
+            OverLimit(SandboxReadLimits.KnowledgeEntryBytes), "the entry we could not read is left untouched");
+        fs.Writes.Should().BeEmpty(
+            "not even the regen may run: it would rewrite both listings off a store we failed halfway through");
+        logger.CountAtLevel(LogLevel.Error, "refusing").Should().Be(
+            1, "destroying a durable entry is the failure this refuses, and it is an operator-visible one");
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_regenerates_listings_that_still_name_an_entry_it_could_not_read()
+    {
+        // The regen REPLACES both listings, and the reviewer reads _toc.md as the set of entries that exist.
+        // Dropping an unreadable entry here would not merely fail to index it — it would delete the only route
+        // anything has to a file still sitting in the store, and the next extraction would duplicate it.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/system/huge-lesson.md"] = OverLimit(SandboxReadLimits.KnowledgeEntryBytes);
+        var logger = new CapturingLogger<KnowledgeAgent>();
+        var agent = AgentReturning(
+            "## SCOPE: system\n"
+            + "## TITLE: Null Checks\n\n"
+            + "Always null-check external inputs before dereferencing them.");
+
+        var result = await Knowledge(agent, fs, logger).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        fs.Files[KbDir + "/_toc.md"].Should().Contain(
+            "(system/huge-lesson.md)", "the link still resolves, and it is the only route left to that file");
+        fs.Files[KbDir + "/_index.jsonl"].Should().Contain("\"file\":\"system/huge-lesson.md\"");
+        fs.Files[KbDir + "/_toc.md"].Should().Contain(
+            "too large to index",
+            "listed under a path-derived title is honest about what is unknown; a fabricated one is not");
+        fs.Files[KbDir + "/_toc.md"].Should().Contain(
+            "(system/null-checks.md)", "the entry this run wrote is listed beside it as usual");
+        fs.Files[KbDir + "/_index.jsonl"].Should().NotContain(
+            "xxxxxxxxxx", "the refused bytes are not read, so nothing from them can leak into a listing");
+        logger.CountAtLevel(LogLevel.Warning, "huge-lesson.md").Should().Be(1);
+    }
+
     private static FakeMultiTurnAgent AgentReturning(string text) => new(RunId, Assistant(text));
+
 
     private static TextMessage Assistant(string text) =>
         new() { Text = text, Role = Role.Assistant, RunId = RunId };

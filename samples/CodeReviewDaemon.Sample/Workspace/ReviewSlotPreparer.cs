@@ -96,8 +96,13 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
                 return;
             }
 
+            // A PRESENCE check on the marker, so an over-size one still counts as owned: the alternative is
+            // re-cloning a store that was never unowned.
             var markerPath = PosixJoin(storeRoot, SdkOwnershipMarkerFile);
-            if (await _fileSystem.ReadFileAsync(markerPath, cancellationToken).ConfigureAwait(false) is not null)
+            var marker = await _fileSystem
+                .ReadFileAsync(markerPath, SandboxReadLimits.RepositoryFileBytes, cancellationToken)
+                .ConfigureAwait(false);
+            if (marker.Exists)
             {
                 return;
             }
@@ -327,7 +332,7 @@ internal sealed class ReviewSlotPreparer : IReviewSlotPreparer
     private static void ClearHostScratch(string scratchRoot)
     {
         DeleteHostDirectory(scratchRoot);
-        Directory.CreateDirectory(scratchRoot);
+        _ = Directory.CreateDirectory(scratchRoot);
     }
 
     /// <summary>

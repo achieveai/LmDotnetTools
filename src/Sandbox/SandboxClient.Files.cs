@@ -39,14 +39,53 @@ public sealed partial class SandboxClient
     }
 
     /// <summary>
+    /// Reads a workspace file as UTF-8 text, refusing to buffer more than <paramref name="maxBytes"/> — the
+    /// bounded counterpart to <see cref="ReadTextFileAsync(string, string, CancellationToken)"/> for a caller
+    /// whose own budget is far below the 64&#160;MiB direct-read ceiling.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Additive: the unbounded overload is unchanged, and this one adds no second decode or download rule —
+    /// it forwards to the same <see cref="ReadFileBytesAsync"/> pipeline so path normalization, mount
+    /// resolution and the capped download continue to live in ONE place.
+    /// </para>
+    /// <para>
+    /// Refused, never truncated. The gateway's files API has no range read, so a prefix cannot be requested;
+    /// what an over-cap read yields is a <see cref="SandboxException"/> with
+    /// <see cref="SandboxException.IsDirectReadCapExceeded"/> set, which a caller can map to "too large"
+    /// without parsing message text. That is deliberate for the text overload in particular: a prefix of a
+    /// UTF-8 document is a document with its last record, link or fence cut in half, and a caller that cannot
+    /// tell it apart from a whole one will use it as though it were whole.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="SandboxException">
+    /// As <see cref="ReadTextFileAsync(string, string, CancellationToken)"/>, plus
+    /// <see cref="SandboxErrorKind.Protocol"/> with <see cref="SandboxException.IsDirectReadCapExceeded"/>
+    /// when the body declares or streams past <paramref name="maxBytes"/>.
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
+    public async Task<string> ReadTextFileAsync(
+        string sessionId,
+        string path,
+        long maxBytes,
+        CancellationToken ct = default
+    )
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+        var bytes = await ReadFileBytesAsync(sessionId, path, maxBytes, ct).ConfigureAwait(false);
+        return DecodeFileUtf8OrThrow(bytes, "file");
+    }
+
+    /// <summary>
     /// Reads a workspace file's exact current bytes via the gateway's direct files API — the binary-safe,
-    /// no-decode counterpart to <see cref="ReadTextFileAsync"/>. Returns the raw bytes without any UTF-8
-    /// decode, so a caller can download an arbitrary (possibly binary) file, or read a bounded prefix for a
-    /// text preview by passing a tighter <paramref name="maxBytes"/>.
+    /// no-decode counterpart to <see cref="ReadTextFileAsync(string, string, CancellationToken)"/>. Returns
+    /// the raw bytes without any UTF-8 decode, so a caller can download an arbitrary (possibly binary) file,
+    /// or read a bounded prefix for a text preview by passing a tighter <paramref name="maxBytes"/>.
     /// </summary>
     /// <remarks>
     /// <paramref name="path"/> is a workspace-relative POSIX path validated exactly like
-    /// <see cref="ReadTextFileAsync"/> (the workspace root is rejected). <paramref name="maxBytes"/> caps
+    /// <see cref="ReadTextFileAsync(string, string, CancellationToken)"/> (the workspace root is rejected).
+    /// <paramref name="maxBytes"/> caps
     /// how many bytes will be buffered: <c>null</c> uses the default 64&#160;MiB direct-read ceiling, and a
     /// supplied value is additionally clamped to that ceiling so it can only ever be TIGHTER. A body that
     /// declares or streams past the effective cap is refused with <see cref="SandboxErrorKind.Protocol"/>
@@ -138,7 +177,8 @@ public sealed partial class SandboxClient
     /// </summary>
     /// <remarks>
     /// <paramref name="path"/> is a workspace-relative POSIX path, validated exactly like
-    /// <see cref="ReadTextFileAsync"/> (the workspace root is rejected — it cannot name a file).
+    /// <see cref="ReadTextFileAsync(string, string, CancellationToken)"/> (the workspace root is rejected — it
+    /// cannot name a file).
     /// </remarks>
     /// <exception cref="SandboxException">
     /// The gateway reported a different byte count than was sent (<see cref="SandboxErrorKind.Protocol"/>);

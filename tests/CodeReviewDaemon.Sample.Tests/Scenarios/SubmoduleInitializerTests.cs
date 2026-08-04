@@ -49,14 +49,15 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
 
     private SubmoduleInitializer CreateInitializer(
         ISandboxCommandRunner runner,
-        ISandboxFileSystem fileSystem
+        ISandboxFileSystem fileSystem,
+        ILogger<SubmoduleInitializer>? logger = null
     ) =>
         new(
             new GitRunner(runner),
             fileSystem,
             CreatePolicy(),
             "github",
-            LoggerFactory.CreateLogger<SubmoduleInitializer>());
+            logger ?? LoggerFactory.CreateLogger<SubmoduleInitializer>());
 
     // An ADO allow-list keyed to the MODERN dev.azure.com host+path (as BuildStoreSubmoduleAllowList emits):
     // the reviewed repo's own first-party submodules LibProfiler + "Microsoft%20Orleans". SecretLib is a
@@ -264,5 +265,28 @@ public sealed class SubmoduleInitializerTests : LoggingTestBase
 
         outcome.InitializedPaths.Should().BeEmpty();
         outcome.Denied.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Says_so_when_gitmodules_is_too_large_to_read_instead_of_reporting_no_submodules()
+    {
+        // The walk is bounded, and a refused `.gitmodules` produces the SAME empty outcome as a level with
+        // no submodules at all — while meaning the opposite: everything declared there goes uninitialized
+        // and the review proceeds over a partial checkout. The log is the only thing that can tell them
+        // apart, so silence here is the failure, not the empty result.
+        var runner = new FakeSandboxCommandRunner();
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[RepoRoot + "/.gitmodules"] =
+            new string('x', (int)SandboxReadLimits.RepositoryFileBytes + 1);
+        var logger = new CapturingLogger<SubmoduleInitializer>();
+
+        var outcome = await CreateInitializer(runner, fs, logger)
+            .InitializeAsync(RepoRoot, RepoRemote, CancellationToken.None);
+
+        outcome.InitializedPaths.Should().BeEmpty();
+        outcome.Denied.Should().BeEmpty();
+        logger.CountAtLevel(LogLevel.Warning, ".gitmodules").Should().Be(
+            1, "an operator cannot otherwise distinguish a refused level from one with nothing to descend into");
+        runner.Commands.Should().BeEmpty("nothing was parsed, so nothing may be initialized off it");
     }
 }
