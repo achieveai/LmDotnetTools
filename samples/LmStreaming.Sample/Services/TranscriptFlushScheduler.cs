@@ -21,8 +21,9 @@ namespace LmStreaming.Sample.Services;
 ///     </para>
 ///     <list type="number">
 ///         <item>
-///             A <see cref="HashSet{T}" /> of pending keys rather than one <c>bool _pending</c> slot. A single
-///             slot silently drops conversation A's pending flush the moment conversation B schedules.
+///             A <b>set of pending keys plus a FIFO queue</b> rather than one <c>bool _pending</c> slot. A
+///             single slot silently drops conversation A's pending flush the moment conversation B
+///             schedules. See <see cref="_order" /> for why the set alone is not enough.
 ///         </item>
 ///         <item>
 ///             <b>Failures are caught per key and the loop continues.</b> The original's catch re-arms the
@@ -66,7 +67,30 @@ public sealed class TranscriptFlushScheduler : IDisposable
     private readonly TimeSpan _shutdownDrainTimeout;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly object _gate = new();
+
+    /// <summary>
+    ///     Membership of the pending set, used purely to COALESCE: a key already waiting earns no second
+    ///     queue slot. Drain order is <see cref="_order" />'s, never this set's.
+    /// </summary>
     private readonly HashSet<string> _pending = new(StringComparer.Ordinal);
+
+    /// <summary>
+    ///     The drain order, oldest first. A re-scheduled key goes to the TAIL.
+    /// </summary>
+    /// <remarks>
+    ///     <b>This queue is a starvation fix, not a tidier spelling of the set.</b> Draining with
+    ///     <c>_pending.First()</c> takes whichever key occupies the lowest <see cref="HashSet{T}" /> slot, and
+    ///     that is not the oldest key — it is an artifact of the set's free list. A key is REMOVED from the
+    ///     set while its flush runs, and <see cref="HashSet{T}" /> hands the slot that frees up to the next
+    ///     insertion; a flush that re-schedules its own key (the mirror does exactly this, on both
+    ///     <c>Progressing</c> and <c>Deferred</c>) therefore lands back in the slot it just vacated and is
+    ///     picked again ahead of a key that has been waiting in a higher slot the whole time. It is
+    ///     deterministic, not a race: with A and B both pending, A wins every round. One conversation's large
+    ///     descendant sweep then delays every other conversation for as many gateway calls as it takes, and a
+    ///     continuously-deferring conversation delays them without end.
+    /// </remarks>
+    private readonly Queue<string> _order = new();
+
     private Task _drain = Task.CompletedTask;
 
     /// <summary>
@@ -118,7 +142,8 @@ public sealed class TranscriptFlushScheduler : IDisposable
     ///     Requests a flush of <paramref name="key" />. <b>Strictly non-blocking</b> and fire-and-forget: it
     ///     takes a short lock and returns, doing no I/O on the caller's thread. Repeat calls for the same key
     ///     coalesce — while a key's flush is in flight the key is already out of the pending set, so a
-    ///     re-schedule re-adds it and earns exactly one more flush rather than being lost or duplicated.
+    ///     re-schedule re-adds it (at the BACK of the queue) and earns exactly one more flush rather than
+    ///     being lost or duplicated.
     ///     A no-op after <see cref="Dispose" /> (the mirror is best-effort; shutdown must not throw into a
     ///     message-subscriber loop).
     /// </summary>
@@ -133,7 +158,13 @@ public sealed class TranscriptFlushScheduler : IDisposable
                 return;
             }
 
-            _ = _pending.Add(key);
+            // Add is the coalescing gate: only a key that was NOT already pending is queued, so the two
+            // structures cannot drift apart and one key never occupies two queue slots.
+            if (_pending.Add(key))
+            {
+                _order.Enqueue(key);
+            }
+
             if (!_draining)
             {
                 _draining = true;
@@ -159,7 +190,7 @@ public sealed class TranscriptFlushScheduler : IDisposable
             string key;
             lock (_gate)
             {
-                if (_disposed || _pending.Count == 0)
+                if (_disposed || _order.Count == 0)
                 {
                     // Cleared HERE, under the same lock that made the decision — see _draining. Any
                     // Schedule that reaches the gate after this point starts a fresh loop.
@@ -167,7 +198,7 @@ public sealed class TranscriptFlushScheduler : IDisposable
                     return;
                 }
 
-                key = _pending.First();
+                key = _order.Dequeue();
                 _ = _pending.Remove(key);
             }
 
@@ -224,6 +255,7 @@ public sealed class TranscriptFlushScheduler : IDisposable
 
             _disposed = true;
             _pending.Clear();
+            _order.Clear();
             drain = _drain;
         }
 
