@@ -1564,8 +1564,9 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Base to look for, so a separately-labelled fallback block would be read as noise and skipped.
         var toc = await TryReadKnowledgeFileAsync(
             fileSystem, PosixJoin(knowledgeBaseDir, "_toc.md"), cancellationToken).ConfigureAwait(false);
-        var tocBlock = KnowledgeDigest.RenderTableOfContents(toc, agentKnowledgeBaseDir);
-        if (tocBlock.Length == 0)
+        var tocBlock = KnowledgeDigest.RenderTableOfContents(
+            toc, agentKnowledgeBaseDir, MaxKnowledgeDigestChars);
+        if (tocBlock.Text.Length == 0)
         {
             _logger.LogInformation(
                 "No usable Knowledge Base at {KnowledgeBaseDir}; reviewing without prior knowledge.",
@@ -1573,10 +1574,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return reviewInput;
         }
 
+        // Counts of what the reviewer RECEIVED, not the size of the file that was read: the fallback is
+        // budgeted like the ranked block, so those parted ways.
         _logger.LogInformation(
-            "Knowledge Base index unavailable; falling back to _toc.md ({Length} chars) for prior knowledge.",
-            toc!.Length);
-        return $"{tocBlock}\n{reviewInput}";
+            "Knowledge Base index unavailable; falling back to _toc.md for prior knowledge: listed {Listed} "
+                + "entries ({Length} chars), {Dropped} beyond the budget.",
+            tocBlock.Listed,
+            tocBlock.Text.Length,
+            tocBlock.Dropped);
+        return $"{tocBlock.Text}\n{reviewInput}";
     }
 
     /// <summary>

@@ -402,7 +402,7 @@ public class KnowledgeDigestTests
     public void RenderTableOfContents_UsesTheCanonicalHeadingAndTheTocsAbsolutePath()
     {
         var block = KnowledgeDigest.RenderTableOfContents(
-            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n", KbRoot);
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\n", KbRoot, charBudget: 10_000).Text;
 
         block.Should().StartWith(
             "## Prior knowledge (Knowledge Base)",
@@ -420,6 +420,72 @@ public class KnowledgeDigestTests
     [InlineData("   \n")]
     public void RenderTableOfContents_Blank_ReturnsEmptySoTheCallerLeavesInputUntouched(string? toc)
     {
-        KnowledgeDigest.RenderTableOfContents(toc, KbRoot).Should().BeEmpty();
+        KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000).Text.Should().BeEmpty();
+    }
+
+    // ---- RenderTableOfContents: budget ----------------------------------------------------------
+
+    /// <summary>A table of contents shaped like the one the KB regenerates: header, scope, link lines.</summary>
+    private static string BigToc(int entries) =>
+        "# Knowledge Base\n\n## system\n\n"
+        + string.Concat(
+            Enumerable.Range(0, entries).Select(
+                i => $"- [A durable lesson about something number {i}](system/lesson-number-{i}.md)\n"));
+
+    [Fact]
+    public void RenderTableOfContents_HonoursTheSameBudgetAsTheRankedDigest()
+    {
+        // The fallback is the DEGRADED path — taken when the index is missing or torn — so leaving it
+        // unbounded means the one prior-knowledge block with no cap is the one rendered after something has
+        // already gone wrong. The live _toc.md is 4548 bytes over 28 entries and the KB only grows.
+        var block = KnowledgeDigest.RenderTableOfContents(BigToc(200), KbRoot, charBudget: 2_000);
+
+        block.Text.Length.Should().BeLessThanOrEqualTo(2_000);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_CutsBetweenEntriesNeverMidLink()
+    {
+        // A half-written link is worse than an absent one: the agent will try to open it, and the path it
+        // reads will be a prefix of a real path rather than a real path.
+        var block = KnowledgeDigest.RenderTableOfContents(BigToc(200), KbRoot, charBudget: 2_000);
+
+        foreach (var line in block.Text.Split('\n').Where(l => l.StartsWith("- [", StringComparison.Ordinal)))
+        {
+            line.Should().EndWith(".md)", "every listed entry must be a complete, openable link");
+        }
+    }
+
+    [Fact]
+    public void RenderTableOfContents_KeepsTheFootersPromiseWhenItTruncates()
+    {
+        var block = KnowledgeDigest.RenderTableOfContents(BigToc(200), KbRoot, charBudget: 2_000);
+
+        block.Listed.Should().BeGreaterThan(0).And.BeLessThan(200);
+        block.Dropped.Should().Be(200 - block.Listed);
+        block.Text.Should().Contain($"{block.Dropped} more entr");
+        block.Text.Should().Contain("_toc.md", "the agent still needs a route to what was cut");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_UnderBudget_ListsEverythingAndPromisesNothingMore()
+    {
+        var block = KnowledgeDigest.RenderTableOfContents(BigToc(3), KbRoot, charBudget: 10_000);
+
+        block.Listed.Should().Be(3);
+        block.Dropped.Should().Be(0);
+        block.Text.Should().NotContain("more entr");
+        block.Text.Should().Contain("system/lesson-number-2.md");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_ReportsWhatItListedNotWhatItRead()
+    {
+        // The caller logs this instead of the raw file size. A log that reports what was READ rather than
+        // what was DELIVERED is the same silent-failure shape the ranked digest's proof-of-use line fixed.
+        var block = KnowledgeDigest.RenderTableOfContents(BigToc(200), KbRoot, charBudget: 2_000);
+
+        block.Text.Split('\n').Count(l => l.StartsWith("- [", StringComparison.Ordinal))
+            .Should().Be(block.Listed);
     }
 }
