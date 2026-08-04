@@ -93,14 +93,20 @@ internal sealed class KnowledgeAgent
     /// giving it the PR's accumulated <paramref name="notesInput"/> plus the existing index/ToC so it can
     /// update a related entry rather than duplicate it. The agent applies the <b>durable-knowledge gate</b>:
     /// when it replies with the <see cref="NoKnowledgeSentinel"/> (the common case — "not every PR
-    /// contributes"), this returns <c>null</c> and writes nothing. Otherwise it parses the agent's header
+    /// contributes"), this returns <see cref="KnowledgeExtractionOutcome.Declined"/> and writes nothing.
+    /// Otherwise it parses the agent's header
     /// markers (<c>## SCOPE/TITLE/TAGS/UPDATES</c>), resolves create-vs-update against
     /// <paramref name="repoRoot"/>, injects daemon-owned YAML frontmatter deterministically
     /// (<c>updated</c> = <paramref name="todayUtc"/>, <c>sourcePrs</c> merges the existing set with
     /// <paramref name="sourcePrRef"/>), writes the layered entry, then regenerates <c>_index.jsonl</c> and
     /// <c>_toc.md</c> from the entries actually present.
+    /// <para>
+    /// A reply that still carries no usable markers after the one corrective turn is
+    /// <see cref="KnowledgeExtractionOutcome.Failed"/>, <b>not</b> a decline: it is a lost extraction the
+    /// caller should retry, and conflating the two is what made every failure permanent (defect D5).
+    /// </para>
     /// </summary>
-    public async Task<KnowledgeWriteResult?> TryExtractAsync(
+    public async Task<KnowledgeExtractionResult> TryExtractAsync(
         string repoRoot,
         string notesInput,
         string sourcePrRef,
@@ -128,7 +134,7 @@ internal sealed class KnowledgeAgent
                 "Knowledge run {RunId} produced no durable knowledge (gate); Knowledge Base left unchanged.",
                 collected.RunId
             );
-            return null;
+            return KnowledgeExtractionResult.Declined(collected.RunId);
         }
 
         var parsed = ParseEntry(text);
@@ -165,7 +171,7 @@ internal sealed class KnowledgeAgent
                         + "Knowledge Base left unchanged.",
                     collected.RunId
                 );
-                return null;
+                return KnowledgeExtractionResult.Declined(collected.RunId);
             }
 
             parsed = ParseEntry(text);
@@ -181,7 +187,7 @@ internal sealed class KnowledgeAgent
                 collected.RunId,
                 Preview(text)
             );
-            return null;
+            return KnowledgeExtractionResult.Failed(collected.RunId);
         }
 
         var targetPath = JoinPath(knowledgeBaseDir, targetRelPath);
@@ -206,7 +212,7 @@ internal sealed class KnowledgeAgent
             targetRelPath
         );
 
-        return new KnowledgeWriteResult(targetRelPath, collected.RunId);
+        return KnowledgeExtractionResult.Wrote(targetRelPath, collected.RunId);
     }
 
     /// <summary>
@@ -714,8 +720,39 @@ internal sealed class KnowledgeAgent
         $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }
 
-/// <summary>The Knowledge Base entry that was written and the agent run id that produced it.</summary>
-internal sealed record KnowledgeWriteResult(string EntryFileName, string? RunId);
+/// <summary>How an extraction attempt ended. The distinction is load-bearing: only <see cref="Failed"/>
+/// is worth retrying, and the caller cannot tell the two non-writing outcomes apart without it.</summary>
+internal enum KnowledgeExtractionOutcome
+{
+    /// <summary>An entry was written to the Knowledge Base.</summary>
+    Wrote,
+
+    /// <summary>The agent legitimately declined — the PR carried no durable knowledge. Not a failure.</summary>
+    Declined,
+
+    /// <summary>The attempt failed (unusable reply, or the write/commit/push did not land). Retryable.</summary>
+    Failed,
+}
+
+/// <summary>
+/// The outcome of an extraction attempt, plus — when it wrote — the Knowledge Base entry and the agent
+/// run id that produced it.
+/// </summary>
+internal sealed record KnowledgeExtractionResult(
+    KnowledgeExtractionOutcome Outcome,
+    string? EntryFileName = null,
+    string? RunId = null
+)
+{
+    public static KnowledgeExtractionResult Declined(string? runId) =>
+        new(KnowledgeExtractionOutcome.Declined, RunId: runId);
+
+    public static KnowledgeExtractionResult Failed(string? runId = null) =>
+        new(KnowledgeExtractionOutcome.Failed, RunId: runId);
+
+    public static KnowledgeExtractionResult Wrote(string entryFileName, string? runId) =>
+        new(KnowledgeExtractionOutcome.Wrote, entryFileName, runId);
+}
 
 /// <summary>
 /// The header markers the extraction agent emits — <c>Scope</c>, <c>Title</c>, <c>Tags</c>, an optional

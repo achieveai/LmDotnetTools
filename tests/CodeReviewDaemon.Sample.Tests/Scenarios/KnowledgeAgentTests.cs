@@ -31,7 +31,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     private const string Today = "2026-07-06";
 
     [Fact]
-    public async Task TryExtractAsync_returns_null_and_writes_nothing_when_the_gate_fires()
+    public async Task TryExtractAsync_declines_and_writes_nothing_when_the_gate_fires()
     {
         var fs = new FakeSandboxFileSystem();
         // Seed the index/ToC so we can prove the gate leaves them untouched.
@@ -42,7 +42,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().BeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
         fs.Writes.Should().BeEmpty();
         fs.Files[KbDir + "/_index.jsonl"].Should().Be("seeded-index");
         fs.Files[KbDir + "/_toc.md"].Should().Be("seeded-toc");
@@ -99,7 +99,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         agent.ReceivedInputs.Should().HaveCount(2);
         InputText(agent.ReceivedInputs[1]).Should().Contain("## SCOPE:");
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/notes-branch-lifecycle.md");
         fs.Files.Should().ContainKey(KbDir + "/system/notes-branch-lifecycle.md");
     }
@@ -115,7 +115,8 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().BeNull();
+        // Reaching NO_KNOWLEDGE on the second turn is a decline, not a failure — nothing here is retryable.
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
         fs.Writes.Should().BeEmpty();
         agent.ReceivedInputs.Should().HaveCount(2);
     }
@@ -132,7 +133,9 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().BeNull();
+        // An unusable reply is a LOST extraction, not a decline: the caller must be able to retry it on a
+        // later sweep rather than merge the notes away as if the PR had taught nothing (defect D5).
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
         agent.ReceivedInputs.Should().HaveCount(2);
     }
@@ -150,7 +153,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/null-checks.md");
         result.RunId.Should().Be(RunId);
 
@@ -198,7 +201,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/x.md");
 
         // The existing entry is rewritten in place — no near-duplicate second file.
@@ -234,7 +237,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // A "../../" scope must escape NOTHING: the write is refused outright (gate), not redirected.
-        result.Should().BeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
         fs.Files.Keys.Should().NotContain(key => !key.StartsWith(KbDir + "/", StringComparison.Ordinal));
     }
@@ -252,7 +255,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // Scope must be ONE ref-safe segment; a scope carrying a path separator is refused, not split.
-        result.Should().BeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
     }
 
@@ -274,7 +277,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
 
         // The traversal UPDATES is refused and the create falls back to the safe scope+slug INSIDE the KB;
         // the planted escape file is never touched, and every write stays under KnowledgeBase/.
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/innocent-looking.md");
         fs.Files[escapePath].Should().Be("#!/bin/sh\necho pwned");
         fs.Writes.Should().OnlyContain(path => path.StartsWith(KbDir + "/", StringComparison.Ordinal));
@@ -297,7 +300,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // The bookkeeping UPDATES is refused; the create falls back to the safe scope+slug path instead.
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/not-the-toc.md");
         fs.Files[KbDir + "/_toc.md"].Should().NotContain("title:");
         fs.Files[KbDir + "/_toc.md"].Should().Contain("- [Not The Toc](system/not-the-toc.md)");
@@ -340,7 +343,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/null-checks.md");
         var entryPath = KbDir + "/system/null-checks.md";
         var meta = KnowledgeIndex.ParseFrontmatter("system/null-checks.md", fs.Files[entryPath]);
@@ -367,7 +370,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/marker-syntax-guide.md");
         var entryPath = KbDir + "/system/marker-syntax-guide.md";
         var meta = KnowledgeIndex.ParseFrontmatter("system/marker-syntax-guide.md", fs.Files[entryPath]);
@@ -396,7 +399,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be(
             "mcqdbdev/new-lesson.md", "the new entry reuses the existing scope directory's case");
         fs.Files.Should().ContainKey(KbDir + "/mcqdbdev/new-lesson.md");

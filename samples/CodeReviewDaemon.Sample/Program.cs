@@ -652,7 +652,7 @@ if (daemonOptions.EnableToolAssistedReview
         // can read the existing KnowledgeBase/ before deciding whether this PR taught anything durable.
         var s2sPreparer = sp.GetService<S2SReviewWorkspacePreparer>();
         var sweeperLeaf = Path.GetFileName(sweeperRepoRoot.TrimEnd('/', '\\'));
-        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null;
+        Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null;
         if (daemonOptions.EnableKnowledgeAgent)
         {
             // The committer wraps the gated extraction with the git plumbing that carries its write into the
