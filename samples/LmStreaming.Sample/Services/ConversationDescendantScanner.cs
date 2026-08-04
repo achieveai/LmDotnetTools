@@ -24,9 +24,9 @@ namespace LmStreaming.Sample.Services;
 ///         <see cref="FileConversationStore.ListThreadsAsync"/> has no offset index: every call enumerates
 ///         EVERY thread directory, deserializes every <c>metadata.json</c> (falling back to deserializing
 ///         a whole <c>messages.json</c> when metadata is missing), sorts the lot, and only then applies
-///         <c>Skip(offset).Take(limit)</c>. A paged scan therefore costs pages × TotalThreadsInStore file
-///         reads, all serialized behind that store's single process-wide semaphore — so an uncached scan
-///         on every transcript flush would stall every other conversation in the host, not just this one.
+///         <c>Skip(offset).Take(limit)</c>. A scan therefore costs TotalThreadsInStore file reads, all
+///         serialized behind that store's single process-wide semaphore — so an uncached scan on every
+///         transcript flush would stall every other conversation in the host, not just this one.
 ///     </para>
 ///     <para>
 ///         <b>Why this does NOT reuse <see cref="SubAgentScanCoverageCache"/>.</b> That cache answers a
@@ -66,11 +66,10 @@ public sealed class ConversationDescendantScanner
     public const int DefaultCapacity = WorkflowRunRegistry.DefaultMaxPersistedEntriesPerConversation;
 
     /// <summary>
-    ///     Page size and total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
-    ///     no property index, so rebuilding the roster means scanning thread metadata; the cap bounds the
-    ///     work on a long-lived store and truncation is logged rather than silently swallowed.
+    ///     Total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has no property
+    ///     index, so rebuilding the roster means scanning thread metadata; the cap bounds the work on a
+    ///     long-lived store and truncation is logged rather than silently swallowed.
     /// </summary>
-    private const int SubAgentScanPageSize = 200;
     private const int SubAgentScanMaxThreads = 2000;
 
     /// <summary>
@@ -315,42 +314,46 @@ public sealed class ConversationDescendantScanner
     ///     node, satisfying the "one bounded scan per request" requirement even for the recursive,
     ///     arbitrary-depth graph.
     /// </summary>
+    /// <remarks>
+    ///     <b>One call, deliberately — not a paging loop.</b> Offset pagination over this store is unsound
+    ///     here, and not only in theory: <see cref="IConversationStore.ListThreadsAsync"/> is CONTRACTUALLY
+    ///     "ordered by last updated descending", so every implementation sorts on a column that the live
+    ///     conversations being scanned are mutating underneath the scan. A thread touched between page N
+    ///     and page N+1 moves toward the front and pushes an unread neighbour backwards across the offset
+    ///     boundary, where the next page's offset skips it for good — and the roster that skip corrupts is
+    ///     then CACHED, so one sub-agent silently loses its transcript for the life of the entry. A single
+    ///     call has no boundary to shift across. Asking for one more than the cap is what keeps the
+    ///     truncation warning honest, since a full page is otherwise indistinguishable from a truncated
+    ///     one. It is also cheaper on the store this class is most afraid of: per the note above,
+    ///     <see cref="FileConversationStore"/> re-enumerates EVERY thread directory per call, so paging
+    ///     multiplied that cost by the page count for no benefit.
+    /// </remarks>
     private async Task<IReadOnlyList<SubAgentSummary>> ScanAllPersistedSubAgentNodesAsync(
         string requestingThreadId,
         CancellationToken ct)
     {
+        var threads = await _store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct) ?? [];
+
+        var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();
-        var scanned = 0;
-
-        while (scanned < SubAgentScanMaxThreads)
+        for (var i = 0; i < scanned; i++)
         {
-            var page = await _store.ListThreadsAsync(SubAgentScanPageSize, scanned, ct) ?? [];
-            if (page.Count == 0)
+            var node = SubAgentProvenance.TryProject(threads[i]);
+            if (node is not null)
             {
-                return found;
-            }
-
-            scanned += page.Count;
-            foreach (var metadata in page)
-            {
-                var node = SubAgentProvenance.TryProject(metadata);
-                if (node is not null)
-                {
-                    found.Add(node);
-                }
-            }
-
-            if (page.Count < SubAgentScanPageSize)
-            {
-                return found;
+                found.Add(node);
             }
         }
 
-        _logger.LogWarning(
-            "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
-                + "children persisted beyond that point are not listed.",
-            requestingThreadId,
-            SubAgentScanMaxThreads);
+        if (threads.Count > SubAgentScanMaxThreads)
+        {
+            _logger.LogWarning(
+                "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
+                    + "children persisted beyond that point are not listed.",
+                requestingThreadId,
+                SubAgentScanMaxThreads);
+        }
+
         return found;
     }
 }

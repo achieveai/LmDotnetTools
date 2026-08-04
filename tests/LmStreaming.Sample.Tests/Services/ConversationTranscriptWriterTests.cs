@@ -36,31 +36,60 @@ public sealed class ConversationTranscriptWriterTests
     private const string GitignorePath = ".conversations/.gitignore";
 
     /// <summary>
-    /// The splice script, duplicated here ON PURPOSE. It is the feature's only shell call site, so its
-    /// text is a contract: the middle line is the newline weld that stops a torn tail from fusing two
-    /// records, and the <c>$1</c>/<c>$2</c>/<c>$3</c> parameters are what keep a user-authored title
-    /// inert. A test that read the constant back out of the production type could not notice either one
-    /// being edited away.
+    /// The <c>guard</c> preamble every script opens with, duplicated here ON PURPOSE alongside the scripts
+    /// that use it. Its text is a contract: <c>[ -L ]</c> is the only test that does not follow a link, the
+    /// ANCESTOR walk is what catches a redirected <c>.conversations</c> whose leaf does not exist yet, and
+    /// <c>return</c> rather than <c>exit</c> is what lets the caller attach exit <c>44</c> to the failure —
+    /// an <c>exit</c> inside a function would end the script with the function's own status. The trailing
+    /// <c>return 0</c> is equally load-bearing: without it a safe path reports the failed <c>[ -L ]</c>.
+    /// </summary>
+    private const string ExpectedGuardPreamble =
+        "guard() { p=\"$1\"; while [ -n \"$p\" ] && [ \"$p\" != \".\" ] && [ \"$p\" != \"/\" ]; do "
+        + "if [ -L \"$p\" ]; then return 1; fi; p=$(dirname \"$p\"); done; return 0; }\n";
+
+    /// <summary>
+    /// The splice script, duplicated here ON PURPOSE. It is the feature's only shell call site that writes,
+    /// so its text is a contract: the middle line is the newline weld that stops a torn tail from fusing two
+    /// records, the <c>$1</c>/<c>$2</c>/<c>$3</c> parameters are what keep a user-authored title
+    /// inert, and ALL THREE are guarded before anything runs — the destination because <c>&gt;&gt;</c>
+    /// follows links, the directory because <c>mkdir -p</c> silently accepts a symlinked one, and the
+    /// staged file because <c>cat</c> would read through a link into some other file. A test that read the
+    /// constant back out of the production type could not notice any of them being edited away.
     /// </summary>
     private const string ExpectedSpliceScript =
-        "mkdir -p \"$1\" || exit 1\n"
+        ExpectedGuardPreamble
+        + "guard \"$1\" || exit 44\n"
+        + "guard \"$2\" || exit 44\n"
+        + "guard \"$3\" || exit 44\n"
+        + "mkdir -p \"$1\" || exit 1\n"
         + "if [ -s \"$3\" ] && [ -n \"$(tail -c1 \"$3\")\" ]; then printf '\\n' >> \"$3\" || exit 1; fi\n"
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
 
     /// <summary>
-    /// The cold-start watermark probe, duplicated for the same reason. Its text is a contract three times
-    /// over: the <c>[ -e ]</c> test is what makes "there is no transcript" an answer the script GIVES rather
-    /// than one the caller infers from a generic <c>tail</c> failure; exit <c>42</c> is the private code that
+    /// The cold-start watermark probe, duplicated for the same reason. Its text is a contract four times
+    /// over: the guard runs FIRST because <c>[ -e ]</c> and <c>tail</c> both report on a link's target, so
+    /// a redirected destination would otherwise be probed as though it were the transcript; the <c>[ -e ]</c>
+    /// test is what makes "there is no transcript" an answer the script GIVES rather than one the caller
+    /// infers from a generic <c>tail</c> failure; exit <c>42</c> is the private code that
     /// carries that answer back — a value neither <c>tail</c> (0/1) nor <c>sh</c> (126/127, 128+signal)
     /// produces, so it cannot be minted by an accident; and <c>cut -c "1-$3"</c> is what bounds the output,
     /// without which a single multi-megabyte row makes the probe itself unanswerable. Exit <c>43</c> carries
     /// the one fact truncation destroys — whether the file ends mid-record.
     /// </summary>
     private const string ExpectedProbeScript =
-        "[ -e \"$1\" ] || exit 42\n"
+        ExpectedGuardPreamble
+        + "guard \"$1\" || exit 44\n"
+        + "[ -e \"$1\" ] || exit 42\n"
         + "tail -n \"$2\" -- \"$1\" | cut -c \"1-$3\" || exit 1\n"
         + "end=$(tail -c1 -- \"$1\") || exit 1\n"
         + "[ -z \"$end\" ] || exit 43\n";
+
+    /// <summary>
+    /// The standalone guard, for the two writes that reach the workspace without a shell — the staged
+    /// payload and the containment file, both PUT directly by the gateway. Duplicated for the same reason:
+    /// nothing else would notice if these writes stopped being checked.
+    /// </summary>
+    private const string ExpectedGuardScript = ExpectedGuardPreamble + "guard \"$1\" || exit 44\n";
 
     private static readonly string ShortThreadId = WorkspaceTranscriptLine.ShortId(ThreadId);
 
@@ -281,11 +310,21 @@ public sealed class ConversationTranscriptWriterTests
         Msg(id, timestamp, messageJson: "\"" + new string('x', megabytes * 1024 * 1024) + "\"");
 
     /// <summary>
-    /// Selects the watermark probe out of a flush's commands. The splice is the call carrying the staged
-    /// temp file; every other shell call in a flush is the probe.
+    /// Classifies a flush's shell calls BY SCRIPT rather than by the arguments that follow it. The earlier
+    /// "does the argv mention the temp path" test stopped being a classifier the moment the temp path got
+    /// a guard call of its own — the guard mentions it too, with a different arity, so the old predicate
+    /// answered true and the assertion behind it read a parameter that was not there.
     /// </summary>
-    private static bool IsSplice(SandboxCommand command) =>
-        command.Arguments.Contains(TempPath, StringComparer.Ordinal);
+    private static bool IsSplice(SandboxCommand command) => RunsScript(command, ExpectedSpliceScript);
+
+    /// <inheritdoc cref="IsSplice"/>
+    private static bool IsProbe(SandboxCommand command) => RunsScript(command, ExpectedProbeScript);
+
+    /// <inheritdoc cref="IsSplice"/>
+    private static bool IsGuard(SandboxCommand command) => RunsScript(command, ExpectedGuardScript);
+
+    private static bool RunsScript(SandboxCommand command, string script) =>
+        command.Arguments.Count > 2 && string.Equals(command.Arguments[2], script, StringComparison.Ordinal);
 
     // ---------------------------------------------------------------- AC 1, 6
 
@@ -318,10 +357,15 @@ public sealed class ConversationTranscriptWriterTests
             .Should()
             .NotContain(p => p.EndsWith(ConversationTranscriptWriter.TranscriptExtension, StringComparison.Ordinal));
 
-        _ = browser.Commands.Should().HaveCount(2);
-        _ = browser.Commands[0].Arguments.Should()
-            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
+        // Four calls, in this order and no other: check the ignore file's own path is not redirected,
+        // probe the destination, check the staging path is not redirected, splice. Each guard sits ahead
+        // of a write the gateway PUTs, which no script can check because no script has run yet.
+        _ = browser.Commands.Should().HaveCount(4);
+        _ = browser.Commands[0].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", GitignorePath);
         _ = browser.Commands[1].Arguments.Should()
+            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
+        _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", TempPath);
+        _ = browser.Commands[3].Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(Title));
         _ = browser.LastPersistedWorkspaceId.Should().Be(WorkspaceId);
     }
@@ -353,9 +397,18 @@ public sealed class ConversationTranscriptWriterTests
         _ = Written(browser, 0).Should().Be(ExpectedAppend(first));
         _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 2));
 
-        // No second probe: the watermark survived in process, keyed by thread.
+        // No second probe: the watermark survived in process, keyed by thread. Nor a second containment
+        // guard: the ignore file is written once per writer. The staging guard DOES run again — it is per
+        // flush, not per writer, because a symlink can be planted between two flushes.
         _ = browser.Commands.Select(c => c.Arguments[2]).Should()
-            .Equal(ExpectedProbeScript, ExpectedSpliceScript, ExpectedSpliceScript);
+            .Equal(
+                ExpectedGuardScript,
+                ExpectedProbeScript,
+                ExpectedGuardScript,
+                ExpectedSpliceScript,
+                ExpectedGuardScript,
+                ExpectedSpliceScript
+            );
 
         var file = Written(browser, 0) + Written(browser, 1);
         var uids = UidsIn(file);
@@ -388,12 +441,12 @@ public sealed class ConversationTranscriptWriterTests
 
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => IsSplice(command) ? Ok() : Partial(intact + torn),
+            ExecuteHandler = command => IsProbe(command) ? Partial(intact + torn) : Ok(),
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        _ = browser.Commands[0].Arguments.Should()
+        _ = browser.Commands[1].Arguments.Should()
             .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
         _ = browser.ReadCalls.Should().Be(0);
@@ -428,7 +481,7 @@ public sealed class ConversationTranscriptWriterTests
         {
             ExecuteHandler = command =>
             {
-                if (IsSplice(command))
+                if (!IsProbe(command))
                 {
                     return Ok();
                 }
@@ -485,7 +538,7 @@ public sealed class ConversationTranscriptWriterTests
 
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(truncated),
+            ExecuteHandler = command => IsProbe(command) ? Ok(truncated) : Ok(),
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
@@ -515,7 +568,7 @@ public sealed class ConversationTranscriptWriterTests
 
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => IsSplice(command) ? Ok() : SimulateProbe(command, onDisk),
+            ExecuteHandler = command => IsProbe(command) ? SimulateProbe(command, onDisk) : Ok(),
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
@@ -555,7 +608,7 @@ public sealed class ConversationTranscriptWriterTests
         _ = browser.Commands.Where(IsSplice).Should().BeEmpty();
 
         // And once the gateway answers, the SAME writer appends the history exactly once.
-        browser.ExecuteHandler = command => IsSplice(command) ? Ok() : Missing();
+        browser.ExecuteHandler = command => IsProbe(command) ? Missing() : Ok();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Writes.Where(w => w.Path == TempPath).Should().ContainSingle();
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
@@ -580,7 +633,7 @@ public sealed class ConversationTranscriptWriterTests
         var existing = ExpectedAppend(messages);
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => IsSplice(command) ? Ok() : Fail("tail: cannot open: Permission denied"),
+            ExecuteHandler = command => IsProbe(command) ? Fail("tail: cannot open: Permission denied") : Ok(),
         };
         var writer = CreateWriter(store, browser);
 
@@ -589,7 +642,7 @@ public sealed class ConversationTranscriptWriterTests
 
         // Once the probe can read the file it finds the watermark on its last line, and there is nothing
         // left to append — which is exactly what the duplicating path would have destroyed.
-        browser.ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(existing);
+        browser.ExecuteHandler = command => IsProbe(command) ? Ok(existing) : Ok();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
         _ = browser.Writes.Where(w => w.Path == TempPath).Should().BeEmpty();
     }
@@ -610,7 +663,7 @@ public sealed class ConversationTranscriptWriterTests
 
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => IsSplice(command) ? Ok() : Missing(),
+            ExecuteHandler = command => IsProbe(command) ? Missing() : Ok(),
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
@@ -705,7 +758,7 @@ public sealed class ConversationTranscriptWriterTests
         var existing = ExpectedAppend(messages);
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(existing),
+            ExecuteHandler = command => IsProbe(command) ? Ok(existing) : Ok(),
             WriteFailure = path =>
                 path == GitignorePath ? new SandboxException(SandboxErrorKind.Protocol, "gateway said no") : null,
         };
@@ -745,19 +798,56 @@ public sealed class ConversationTranscriptWriterTests
         var writer = CreateWriter(store, browser);
 
         // Nothing staged, nothing spliced: the rows stay in the store, where they are already contained.
+        // The only shell call that runs is the guard ahead of the ignore file's own write, which reads
+        // nothing and writes nothing — it is not a transcript byte, and it is why this is not BeEmpty.
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
         _ = browser.Writes.Should().BeEmpty();
-        _ = browser.Commands.Should().BeEmpty();
+        _ = browser.Commands.Should().OnlyContain(c => IsGuard(c));
 
         // And a failure that is never followed by a successful flush still leaves nothing exposed — this is
         // the resting state of a conversation whose last turn has already happened.
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
         _ = browser.Writes.Should().BeEmpty();
-        _ = browser.Commands.Should().BeEmpty();
+        _ = browser.Commands.Should().OnlyContain(c => IsGuard(c));
 
         browser.WriteFailure = null;
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Writes[0].Path.Should().Be(GitignorePath);
+        _ = browser.Writes[1].Path.Should().Be(TempPath);
+    }
+
+    /// <summary>
+    /// The same guarantee for the flush that reaches the workspace WITHOUT the main conversation putting a
+    /// single byte there. A root with no stable rows and no known transcript answers "no" to both halves of
+    /// the flush-level containment condition, so that check is skipped; its own append then returns
+    /// <c>UpToDate</c> rather than <c>Failed</c>, so the guard that skips the fan-out on a failed main
+    /// append does not fire either. Both of the flush's brakes are keyed to the MAIN conversation, and the
+    /// bytes at stake belong to a DESCENDANT — which is why containment is enforced inside the one append
+    /// path every transcript byte passes through, main file and sub-agent file alike, instead of at a call
+    /// site that has to remember. A sub-agent's reasoning is no less publishable than the root's.
+    /// </summary>
+    [Fact]
+    public async Task Gitignore_IsWrittenBeforeAnyTranscriptByte_WhenOnlyADescendantHasRows()
+    {
+        var store = new InMemoryConversationStore();
+        // Deliberately no rows on the root: this conversation's own history is empty (or entirely
+        // unsettled) while a child it spawned has already finished and persisted its own.
+        await SeedConversationAsync(store);
+        PersistedMessage[] child = [Msg("a1a", 10, threadId: "subagent-a1")];
+        await SeedSubAgentAsync(store, "a1", "alpha", child);
+
+        var browser = new FakeFileBrowser();
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // The descendant's transcript really did reach the workspace, so the ordering assertion below is
+        // about a flush that wrote something rather than one that happened to do nothing.
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
+            .Should().Equal(AgentPath(Title, "a1", "alpha"));
+
+        _ = browser.Writes[0].Path.Should().Be(
+            GitignorePath,
+            "a descendant's transcript is as exposed as the root's — containment must precede the first "
+                + "byte of EITHER, and the root contributed none of them here");
         _ = browser.Writes[1].Path.Should().Be(TempPath);
     }
 
@@ -1141,11 +1231,12 @@ public sealed class ConversationTranscriptWriterTests
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        _ = browser.Commands.Should().HaveCount(3);
+        _ = browser.Commands.Should().HaveCount(4);
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands[1].Arguments.Should()
             .Equal("mv", "--", AgentsDirectory(Title), AgentsDirectory(RetitledTo));
-        _ = browser.Commands[2].Arguments.Should()
+        _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", TempPath);
+        _ = browser.Commands[3].Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(RetitledTo));
     }
 
@@ -1173,7 +1264,7 @@ public sealed class ConversationTranscriptWriterTests
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
-        _ = browser.Commands[1].Arguments[6].Should().Be(MainPath(Title));
+        _ = browser.Commands.Single(IsSplice).Arguments[6].Should().Be(MainPath(Title));
         _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 1));
 
         browser.ExecuteHandler = null;
@@ -1183,7 +1274,7 @@ public sealed class ConversationTranscriptWriterTests
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
-        _ = browser.Commands[1].Arguments[6].Should().Be(MainPath(RetitledTo));
+        _ = browser.Commands.Single(IsSplice).Arguments[6].Should().Be(MainPath(RetitledTo));
         _ = Written(browser, 2).Should().Be(ExpectedAppend(everything, skip: 2));
     }
 
@@ -1228,11 +1319,13 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         // Adopted by the same move the warm path uses, and BEFORE the tail that recovers the watermark —
-        // otherwise the watermark is read from a file this flush is about to stop writing to.
+        // otherwise the watermark is read from a file this flush is about to stop writing to. The call
+        // between them is the guard ahead of the ignore file's write, which reads and writes nothing.
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(RetitledTo), MainPath(Title));
         _ = browser.Commands[1].Arguments.Should()
             .Equal("mv", "--", AgentsDirectory(RetitledTo), AgentsDirectory(Title));
-        _ = browser.Commands[2].Arguments.Should()
+        _ = browser.Commands[2].Arguments.Should().Equal("sh", "-c", ExpectedGuardScript, "sh", GitignorePath);
+        _ = browser.Commands[3].Arguments.Should()
             .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
 
         // One transcript, and the sub-agent file lands under it rather than beside the abandoned name.
@@ -1515,11 +1608,11 @@ public sealed class ConversationTranscriptWriterTests
 
     /// <summary>
     /// The security invariant, stated as a test. <c>ExecuteWorkspaceCommandAsync</c> is a native argv
-    /// vector with NO implicit shell, so every place a shell IS invoked — the splice that writes and the
-    /// watermark probe that reads — must carry a compile-time constant script: the file leaf is derived
-    /// from a user-authored title, and interpolating it into the script text would make <c>$(…)</c> in a
-    /// title executable. <c>--</c> on the pure-argv calls stops option parsing, but it is the positional
-    /// parameters that make the title inert.
+    /// vector with NO implicit shell, so every place a shell IS invoked — the splice that writes, the
+    /// watermark probe that reads, and the path guard that does neither — must carry a compile-time
+    /// constant script: the file leaf is derived from a user-authored title, and interpolating it into the
+    /// script text would make <c>$(…)</c> in a title executable. <c>--</c> on the pure-argv calls stops
+    /// option parsing, but it is the positional parameters that make the title inert.
     /// </summary>
     [Fact]
     public async Task EveryShellCall_UsesTheConstantScript_AndPassesTheTitleDerivedPathAsAPositionalParameter()
@@ -1542,13 +1635,15 @@ public sealed class ConversationTranscriptWriterTests
         _ = splices.Should().HaveCount(2);
         _ = shell.Should().HaveCountGreaterThan(
             splices.Count,
-            "the watermark probe is the other shell call site and is covered by this invariant too"
+            "the watermark probe and the path guard are the other shell call sites and are covered by this "
+                + "invariant too"
         );
 
         foreach (var command in shell)
         {
             _ = command.Arguments[1].Should().Be("-c");
-            _ = command.Arguments[2].Should().BeOneOf(ExpectedProbeScript, ExpectedSpliceScript);
+            _ = command.Arguments[2].Should()
+                .BeOneOf(ExpectedProbeScript, ExpectedSpliceScript, ExpectedGuardScript);
             _ = command.Arguments[3].Should().Be("sh");
 
             // Whatever the call touches reaches `sh` as a positional parameter, never as script text.
@@ -1561,9 +1656,10 @@ public sealed class ConversationTranscriptWriterTests
             _ = splice.Arguments[6].Should().Contain(leaf);
         }
 
-        // Neither script ever grows a dynamic fragment, and the pure-argv calls keep their `--`.
+        // No script ever grows a dynamic fragment, and the pure-argv calls keep their `--`.
         _ = ExpectedSpliceScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
         _ = ExpectedProbeScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
+        _ = ExpectedGuardScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
         // Every shell call is covered by the loop above; what is left is the pure-argv calls, and none of
         // them may omit `--`. (Stated as "no call omits it" so the invariant does not change meaning when
         // a flow happens not to move anything.)

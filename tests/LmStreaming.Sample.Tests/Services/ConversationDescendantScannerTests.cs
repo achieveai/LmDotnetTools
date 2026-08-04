@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using LmStreaming.Sample.Services;
 using LmStreaming.Sample.Tests.Agents;
 using LmStreaming.Sample.Tests.TestDoubles;
+using Microsoft.Extensions.Logging;
 
 namespace LmStreaming.Sample.Tests.Services;
 
@@ -13,12 +14,17 @@ namespace LmStreaming.Sample.Tests.Services;
 /// </summary>
 public sealed class ConversationDescendantScannerTests
 {
-    private static ConversationDescendantScanner CreateScanner(IConversationStore store, int? capacity = null) =>
+    private static ConversationDescendantScanner CreateScanner(
+        IConversationStore store,
+        int? capacity = null,
+        ILogger<ConversationDescendantScanner>? logger = null) =>
         capacity is null
-            ? new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance)
+            ? new ConversationDescendantScanner(
+                store,
+                logger ?? NullLogger<ConversationDescendantScanner>.Instance)
             : new ConversationDescendantScanner(
                 store,
-                NullLogger<ConversationDescendantScanner>.Instance,
+                logger ?? NullLogger<ConversationDescendantScanner>.Instance,
                 capacity.Value);
 
     /// <summary>Seeds one persisted sub-agent thread stamped as <paramref name="parentThreadId"/>'s child.</summary>
@@ -428,6 +434,107 @@ public sealed class ConversationDescendantScannerTests
         var callsBefore = counting.ListThreadsCallCount;
         _ = await scanner.GetOrScanAsync("root-2");
         counting.ListThreadsCallCount.Should().BeGreaterThan(callsBefore);
+    }
+
+    /// <summary>
+    /// A conversation touched WHILE the scan is running must not be able to hide a sibling from the
+    /// roster. <see cref="IConversationStore.ListThreadsAsync"/> is contractually "ordered by last updated
+    /// descending", so an offset-paged scan sorts on a column the live system is mutating underneath it:
+    /// a thread that moves toward the front pushes an unread neighbour backwards across the offset
+    /// boundary, and the next page's offset steps straight over it. What makes it more than a lost read is
+    /// that the result is CACHED — the skipped sub-agent stays missing for the life of the entry, so its
+    /// transcript is never mirrored.
+    /// </summary>
+    [Fact]
+    public async Task ScanAsync_ListsEveryChild_WhenAThreadIsTouchedWhileTheScanIsRunning()
+    {
+        const string root = "thread-drift-root";
+        // More children than the pre-fix 200-row page, so the scan has a page boundary at all.
+        const int childCount = 250;
+        // A child that a paged scan has NOT read yet when the touch happens (it sorts into page 2).
+        const string touched = "subagent-010";
+
+        var store = new InMemoryConversationStore();
+        await store.SaveMetadataAsync(root, new ThreadMetadata { ThreadId = root, LastUpdated = 0 });
+        for (var i = 0; i < childCount; i++)
+        {
+            var childThreadId = $"subagent-{i:D3}";
+            await store.SaveMetadataAsync(
+                childThreadId,
+                new ThreadMetadata
+                {
+                    ThreadId = childThreadId,
+                    // Distinct stamps so "ordered by last updated descending" is unambiguous.
+                    LastUpdated = i + 1,
+                    Properties = SubAgentProvenance.Build(
+                        root,
+                        new SubAgentSnapshot(
+                            childThreadId,
+                            Name: childThreadId,
+                            TemplateName: "worker",
+                            Task: $"task for {childThreadId}",
+                            Status: SubAgentStatus.Completed,
+                            ThreadId: childThreadId,
+                            LastActivityUtc: DateTimeOffset.UtcNow,
+                            TerminalAtUtc: DateTimeOffset.UtcNow)),
+                });
+        }
+
+        var nodes = await CreateScanner(new TouchingConversationStore(store, touched)).ScanAsync(root);
+
+        nodes.Select(n => n.ThreadId)
+            .Should()
+            .Contain(
+                touched,
+                "a child that was merely touched mid-scan must still be listed — the roster this scan "
+                    + "produces is cached, so anything it skips stays skipped");
+        nodes.Should().HaveCount(childCount);
+    }
+
+    /// <summary>
+    /// The scan is bounded, so a store that outgrows the bound must say so: the roster it returns is
+    /// cached, and a descendant persisted past the cap is not merely absent from one response but absent
+    /// for the life of the entry. Truncation is what the scan asks for one row MORE than the cap to
+    /// detect — a page filled exactly to the cap is otherwise indistinguishable from a complete read.
+    /// </summary>
+    [Fact]
+    public async Task ScanAsync_WarnsWhenTheStoreHoldsMoreThreadsThanTheCap()
+    {
+        const int scanCap = 2000;
+        var logger = new CapturingLogger<ConversationDescendantScanner>();
+        var store = new InMemoryConversationStore();
+        for (var i = 0; i <= scanCap; i++)
+        {
+            var id = $"thread-cap-{i}";
+            await store.SaveMetadataAsync(id, new ThreadMetadata { ThreadId = id, LastUpdated = i });
+        }
+
+        _ = await CreateScanner(store, logger: logger).ScanAsync("thread-cap-0");
+
+        logger.Entries.Should().Contain(
+            e => e.Level == LogLevel.Warning
+                && e.Message.Contains(scanCap.ToString(), StringComparison.Ordinal),
+            "hitting the scan cap must be observable, not a silent truncation");
+    }
+
+    /// <summary>The other side of that boundary: a store read IN FULL must not raise a false alarm.</summary>
+    [Fact]
+    public async Task ScanAsync_DoesNotWarnWhenTheStoreHoldsExactlyTheCap()
+    {
+        const int scanCap = 2000;
+        var logger = new CapturingLogger<ConversationDescendantScanner>();
+        var store = new InMemoryConversationStore();
+        for (var i = 0; i < scanCap; i++)
+        {
+            var id = $"thread-cap-{i}";
+            await store.SaveMetadataAsync(id, new ThreadMetadata { ThreadId = id, LastUpdated = i });
+        }
+
+        _ = await CreateScanner(store, logger: logger).ScanAsync("thread-cap-0");
+
+        logger.Entries.Should().NotContain(
+            e => e.Level == LogLevel.Warning && e.Message.Contains("cap", StringComparison.Ordinal),
+            "the store was read in full, so there is nothing to warn about");
     }
 
     [Fact]

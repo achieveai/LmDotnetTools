@@ -365,11 +365,10 @@ public sealed class AgentHierarchyService(
         };
 
     /// <summary>
-    ///     Page size and total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
+    ///     Total cap for the persisted sub-agent scan. <see cref="IConversationStore"/> has
     ///     no property index, so rebuilding a persisted child roster means scanning thread metadata; the
     ///     cap bounds the work on a long-lived store rather than scanning it unboundedly per request.
     /// </summary>
-    private const int SubAgentScanPageSize = 200;
     private const int SubAgentScanMaxThreads = 2000;
 
     /// <summary>
@@ -405,42 +404,45 @@ public sealed class AgentHierarchyService(
     ///     (<c>ConversationsController.BuildDescendantTreeAsync</c>), the flat listing never needs the
     ///     whole persisted graph, just this one conversation's own children.
     /// </summary>
+    /// <remarks>
+    ///     <b>One call, deliberately — not a paging loop.</b>
+    ///     <see cref="IConversationStore.ListThreadsAsync"/> is contractually "ordered by last updated
+    ///     descending", so paging with a growing offset sorts on a column the live conversations being
+    ///     scanned are mutating: a thread touched between two pages moves toward the front and pushes an
+    ///     unread neighbour back across the offset boundary, where the next page skips it. The roster that
+    ///     loses is then recorded in <see cref="SubAgentScanCoverageCache"/>, which holds its entries for
+    ///     the process lifetime — so the skip outlives the scan that caused it. A single call has no
+    ///     boundary to shift across; one more than the cap is requested so a full result stays
+    ///     distinguishable from a truncated one. Kept identical to
+    ///     <c>ConversationDescendantScanner.ScanAllPersistedSubAgentNodesAsync</c> on purpose: same store,
+    ///     same hazard, and fixing one of the pair alone is how the other one gets forgotten.
+    /// </remarks>
     private async Task<IReadOnlyList<SubAgentSummary>> ScanPersistedSubAgentChildrenAsync(
         string threadId,
         CancellationToken ct)
     {
+        var threads = await store.ListThreadsAsync(SubAgentScanMaxThreads + 1, 0, ct) ?? [];
+
+        var scanned = Math.Min(threads.Count, SubAgentScanMaxThreads);
         var found = new List<SubAgentSummary>();
-        var scanned = 0;
-
-        while (scanned < SubAgentScanMaxThreads)
+        for (var i = 0; i < scanned; i++)
         {
-            var page = await store.ListThreadsAsync(SubAgentScanPageSize, scanned, ct) ?? [];
-            if (page.Count == 0)
+            var node = SubAgentProvenance.TryProject(threads[i], threadId);
+            if (node is not null)
             {
-                return found;
-            }
-
-            scanned += page.Count;
-            foreach (var metadata in page)
-            {
-                var node = SubAgentProvenance.TryProject(metadata, threadId);
-                if (node is not null)
-                {
-                    found.Add(node);
-                }
-            }
-
-            if (page.Count < SubAgentScanPageSize)
-            {
-                return found;
+                found.Add(node);
             }
         }
 
-        logger.LogWarning(
-            "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
-                + "children persisted beyond that point are not listed.",
-            threadId,
-            SubAgentScanMaxThreads);
+        if (threads.Count > SubAgentScanMaxThreads)
+        {
+            logger.LogWarning(
+                "Sub-agent scan for {ThreadId} stopped at the {MaxThreads}-thread cap; "
+                    + "children persisted beyond that point are not listed.",
+                threadId,
+                SubAgentScanMaxThreads);
+        }
+
         return found;
     }
 }

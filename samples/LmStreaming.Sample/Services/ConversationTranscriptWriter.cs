@@ -69,15 +69,21 @@ public enum TranscriptFlushOutcome
 ///     append costs bytes, whereas a skipped append costs the record itself.
 ///     </para>
 ///     <para>
-///     <b>Writes go through exactly one shell call site</b> (<see cref="AppendScript"/>); the only other
-///     shell invocation is <see cref="WatermarkProbeScript"/>, which reads and writes nothing.
-///     <c>ExecuteWorkspaceCommandAsync</c> is a native argv vector with no implicit shell, so a shell is
-///     invoked explicitly. Both script texts are fixed at compile time and <i>no dynamic value is ever
-///     interpolated into either</i>: the destination directory, the temp file and the destination file
-///     arrive as positional parameters <c>$1</c>/<c>$2</c>/<c>$3</c>. That matters because the file leaf is
-///     derived from a user-authored conversation title. <c>--</c> on the pure-argv calls stops option
-///     parsing, which is worth having, but it is the positional parameters — not <c>--</c> — that make a
-///     title containing <c>$(…)</c> or whitespace inert.
+///     <b>Writes go through exactly one shell call site</b> (<see cref="AppendScript"/>); the other two
+///     shell invocations, <see cref="WatermarkProbeScript"/> and <see cref="PathGuardScript"/>, read and
+///     write nothing. <c>ExecuteWorkspaceCommandAsync</c> is a native argv vector with no implicit shell,
+///     so a shell is invoked explicitly. All three script texts are fixed at compile time and <i>no
+///     dynamic value is ever interpolated into any of them</i>: the destination directory, the temp file
+///     and the destination file arrive as positional parameters <c>$1</c>/<c>$2</c>/<c>$3</c>. That
+///     matters because the file leaf is derived from a user-authored conversation title. <c>--</c> on the
+///     pure-argv calls stops option parsing, which is worth having, but it is the positional parameters —
+///     not <c>--</c> — that make a title containing <c>$(…)</c> or whitespace inert.
+///     </para>
+///     <para>
+///     <b>No path is written to before it has been checked for redirection.</b> Every script guards its
+///     own path parameters, and the two writes that bypass the shell entirely — the staged payload and the
+///     <c>.gitignore</c>, both PUT by the gateway — are guarded by <see cref="IsPathSafeAsync"/> first. A
+///     redirected path is refused and left alone, never unlinked; see <see cref="UnsafePathExitCode"/>.
 ///     </para>
 ///     <para>
 ///     <b>Concurrency:</b> <see cref="FlushAsync"/> is not re-entrant and must not be called concurrently
@@ -136,6 +142,32 @@ public sealed class ConversationTranscriptWriter
     public const int WatermarkPartialExitCode = 43;
 
     /// <summary>
+    ///     Exit code every script reports when a path it was handed — or any directory on the way to it —
+    ///     is a SYMLINK, so the write would land somewhere other than where it reads like it lands. Chosen
+    ///     on the same grounds as <see cref="WatermarkMissingExitCode"/>: outside every code the scripts'
+    ///     own commands can mint.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     Not a theoretical hazard. The workspace is shared with the agents working in it, and the
+    ///     transcript's file name is derived from the conversation TITLE, so it is guessable long before it
+    ///     exists. An agent that drops a symlink at that name redirects the whole unredacted transcript to
+    ///     wherever the link points — a tracked source file, say, which is precisely what the
+    ///     <c>.gitignore</c> beside the transcript exists to keep it away from. Every shell primitive here
+    ///     follows links silently: <c>&gt;&gt;</c> writes through, <c>mkdir -p</c> on a symlinked directory
+    ///     succeeds with nothing to do, and <c>[ -e ]</c> and <c>tail</c> report on the target.
+    ///     </para>
+    ///     <para>
+    ///     <b>A redirected path is REFUSED, never repaired.</b> Unlinking it and writing a fresh file would
+    ///     destroy whatever it pointed at — the very file the refusal exists to protect — and this code
+    ///     cannot tell a hostile link from a deliberate one. So it treats the destination as indeterminate
+    ///     and defers, exactly as it does for a probe it could not read. Deferring costs a repeated flush;
+    ///     there is no undo for having overwritten someone's source file.
+    ///     </para>
+    /// </remarks>
+    public const int UnsafePathExitCode = 44;
+
+    /// <summary>
     ///     How many leading characters of each windowed line the probe returns. This is what bounds the
     ///     probe's output, and bounding it is not an optimisation.
     /// </summary>
@@ -183,6 +215,55 @@ public sealed class ConversationTranscriptWriter
     private const string TitlePropertyKey = "title";
 
     /// <summary>
+    ///     Defines the <c>guard</c> shell function every script opens with: it walks a path and each of its
+    ///     ancestor directories and fails if ANY of them is a symlink. Prepended, never interpolated into.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     Walking the ancestors is the half that is easy to leave out and impossible to do without. A
+    ///     symlinked <c>.conversations</c> redirects every file beneath it — the transcripts and the
+    ///     <c>.gitignore</c> that is supposed to be covering them — while the leaf itself tests perfectly
+    ///     clean, because at that point the leaf does not exist yet. <c>mkdir -p</c> reports success on a
+    ///     symlinked directory precisely because there is nothing left for it to create.
+    ///     </para>
+    ///     <para>
+    ///     <c>return</c>, not <c>exit</c>: an <c>exit</c> inside a function ends the whole script, so the
+    ///     caller could not attach <see cref="UnsafePathExitCode"/> to the failure. The trailing
+    ///     <c>return 0</c> is likewise load-bearing — without it the function's status is that of the last
+    ///     <c>[ -L ]</c> it ran, which is 1 for every safe path.
+    ///     </para>
+    ///     <para>
+    ///     This narrows the window rather than closing it: a link planted between the guard and the write
+    ///     is still followed. Closing it needs <c>O_NOFOLLOW</c>, which neither the gateway's file PUT nor
+    ///     a POSIX shell redirection exposes. The residue is a race an attacker must win against a
+    ///     millisecond; what it replaces is a symlink that could be planted at leisure, days ahead, and
+    ///     would be followed with certainty.
+    ///     </para>
+    /// </remarks>
+    private const string PathGuardPreamble =
+        "guard() { p=\"$1\"; while [ -n \"$p\" ] && [ \"$p\" != \".\" ] && [ \"$p\" != \"/\" ]; do "
+        + "if [ -L \"$p\" ]; then return 1; fi; p=$(dirname \"$p\"); done; return 0; }\n";
+
+    /// <summary>
+    ///     One guard invocation for the given positional parameter, reporting
+    ///     <see cref="UnsafePathExitCode"/>. A method rather than three literals so the exit code cannot
+    ///     drift between the parameters.
+    /// </summary>
+    private static string GuardLine(string parameter) =>
+        "guard \""
+        + parameter
+        + "\" || exit "
+        + UnsafePathExitCode.ToString(CultureInfo.InvariantCulture)
+        + "\n";
+
+    /// <summary>
+    ///     The guard on its own, for the two writes that reach the workspace WITHOUT a shell — the staged
+    ///     payload and the <c>.gitignore</c>, both of which the gateway PUTs directly. <c>$1</c> is the
+    ///     path. Reads nothing, writes nothing. See <see cref="IsPathSafeAsync"/>.
+    /// </summary>
+    private static readonly string PathGuardScript = PathGuardPreamble + GuardLine("$1");
+
+    /// <summary>
     ///     THE one shell call site that writes. Built from concatenated literals rather than a raw string
     ///     literal so the line endings are LF regardless of how this source file is checked out — a script
     ///     carrying CR bytes fails inside the container in ways that are tedious to diagnose.
@@ -200,9 +281,21 @@ public sealed class ConversationTranscriptWriter
     ///     <c>.part</c> file per conversation — a name no <c>**/*.jsonl</c> scan matches, in a directory a
     ///     <c>.gitignore</c> already covers.
     ///     </para>
+    ///     <para>
+    ///     All three parameters are guarded, not just the destination. <c>$3</c> is the obvious one —
+    ///     <c>&gt;&gt;</c> writes straight through a link. <c>$1</c> catches the redirected directory that
+    ///     <c>mkdir -p</c> would silently accept, which is how a sub-agent's whole transcript leaves
+    ///     through a symlinked <c>_agents</c> folder. <c>$2</c> is guarded because <c>cat</c> reads through
+    ///     a link too, and a staged payload that is really a pointer at some other file would splice that
+    ///     file's contents into the transcript. See <see cref="UnsafePathExitCode"/>.
+    ///     </para>
     /// </remarks>
-    private const string AppendScript =
-        "mkdir -p \"$1\" || exit 1\n"
+    private static readonly string AppendScript =
+        PathGuardPreamble
+        + GuardLine("$1")
+        + GuardLine("$2")
+        + GuardLine("$3")
+        + "mkdir -p \"$1\" || exit 1\n"
         + "if [ -s \"$3\" ] && [ -n \"$(tail -c1 \"$3\")\" ]; then printf '\\n' >> \"$3\" || exit 1; fi\n"
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
 
@@ -248,9 +341,18 @@ public sealed class ConversationTranscriptWriter
     ///     title-derived path arrives as a positional parameter for the same inertness reason. Both exit
     ///     codes are spliced in from their constants rather than typed twice, so they cannot drift.
     ///     </para>
+    ///     <para>
+    ///     The guard runs first because <c>[ -e ]</c> and <c>tail</c> both report on a link's TARGET. A
+    ///     redirected destination would otherwise be probed as though it were the transcript, and the
+    ///     watermark read out of some unrelated file would decide how much of the history to append into
+    ///     it. Reporting <see cref="UnsafePathExitCode"/> lands in the same "indeterminate" branch as any
+    ///     other unexpected status, which is the correct reading: nothing about that path is known.
+    ///     </para>
     /// </remarks>
     private static readonly string WatermarkProbeScript =
-        "[ -e \"$1\" ] || exit "
+        PathGuardPreamble
+        + GuardLine("$1")
+        + "[ -e \"$1\" ] || exit "
         + WatermarkMissingExitCode.ToString(CultureInfo.InvariantCulture)
         + "\n"
         + "tail -n \"$2\" -- \"$1\" | cut -c \"1-$3\" || exit 1\n"
@@ -310,6 +412,14 @@ public sealed class ConversationTranscriptWriter
     ///     transcript an earlier process left behind.
     /// </summary>
     private bool _transcriptExists;
+
+    /// <summary>
+    ///     Whether THIS flush has already checked that the staging path is not redirected. Per flush
+    ///     rather than per writer: the path never varies within one flush, so re-checking it for each of
+    ///     the sub-agent files would buy nothing, while remembering the answer for the writer's whole life
+    ///     would miss a link planted between flushes. See <see cref="IsPathSafeAsync"/>.
+    /// </summary>
+    private bool _tempPathGuarded;
 
     private bool _agentsDirectoryTouched;
     private int _subAgentCursor;
@@ -414,6 +524,8 @@ public sealed class ConversationTranscriptWriter
 
     private async Task<TranscriptFlushOutcome> FlushCoreAsync(CancellationToken ct)
     {
+        _tempPathGuarded = false;
+
         // Metadata carries BOTH values the flush needs — the workspace binding for step 1 and the title
         // for the retitle check — so it is read once here rather than twice at the two points of use.
         var metadata = await _store.LoadMetadataAsync(ThreadId, ct).ConfigureAwait(false);
@@ -443,7 +555,9 @@ public sealed class ConversationTranscriptWriter
 
         var lines = WorkspaceTranscriptLine.ChainMessages(messages);
 
-        // Containment BEFORE the first transcript byte. See EnsureContainedAsync.
+        // Containment, first line. The load-bearing one is inside AppendAsync, which every byte of every
+        // file goes through; this one additionally covers a transcript an earlier process left behind,
+        // which may never be appended to at all. See EnsureContainedAsync.
         if ((lines.Count > 0 || _transcriptExists) && !await EnsureContainedAsync(sessionId, ct).ConfigureAwait(false))
         {
             return TranscriptFlushOutcome.Deferred;
@@ -506,10 +620,25 @@ public sealed class ConversationTranscriptWriter
     ///     later flush arriving, and for a conversation whose last turn has happened none ever does.
     ///     </para>
     ///     <para>
-    ///     Callers gate on <c>lines.Count > 0 || _transcriptExists</c> so a conversation that never
-    ///     produces a transcript leaves no directory behind. That gate cannot be wrong in the unsafe
-    ///     direction: rows in hand means an append is about to happen, and no rows plus no known transcript
-    ///     means there is nothing in the workspace to cover.
+    ///     <b>The load-bearing call is inside <c>AppendAsync</c></b> — the one path every transcript byte
+    ///     passes through, main file and sub-agent file alike — so the rule holds by construction rather
+    ///     than by each call site remembering it. Enforcing it only at the top of the flush was not enough,
+    ///     and the gap was not merely a narrow race: both of the flush's brakes are keyed to the MAIN
+    ///     conversation, while the bytes at stake can belong to a DESCENDANT. A root with no stable rows
+    ///     and no known transcript answers "no" to <c>lines.Count > 0 || _transcriptExists</c> and so skips
+    ///     the check; its own append then reports <c>UpToDate</c> rather than <c>Failed</c>, so the guard
+    ///     that skips the fan-out on a failed main append does not fire either; and the fan-out writes
+    ///     sub-agent transcripts into an uncovered directory. A sub-agent's reasoning is no less
+    ///     publishable than the root's.
+    ///     </para>
+    ///     <para>
+    ///     The flush-level check is KEPT, as a first line rather than the only one, because it still covers
+    ///     what an append cannot: a transcript an EARLIER process left in the workspace, which this writer
+    ///     may adopt with nothing further to append and therefore never append to at all. Its
+    ///     <c>lines.Count > 0 || _transcriptExists</c> condition cannot be wrong in the unsafe direction —
+    ///     rows in hand means an append is about to happen, and no rows plus no known transcript means
+    ///     there is nothing of this conversation's own in the workspace to cover — and gating on it is what
+    ///     keeps a conversation that never produces a transcript from leaving a directory behind.
     ///     </para>
     /// </remarks>
     private async Task<bool> EnsureContainedAsync(string sessionId, CancellationToken ct) =>
@@ -1049,10 +1178,33 @@ public sealed class ConversationTranscriptWriter
             return AppendResult.UpToDate;
         }
 
+        // Containment BEFORE the first transcript byte, enforced HERE because this is the one path every
+        // byte of every file passes through — the main transcript and each sub-agent file alike. See
+        // EnsureContainedAsync. Below this line the workspace is written to; the staged payload lands
+        // inside the very directory the ignore file covers, so it is a transcript byte like any other.
+        if (!await EnsureContainedAsync(sessionId, ct).ConfigureAwait(false))
+        {
+            return AppendResult.Failed;
+        }
+
         var payload = new StringBuilder();
         for (var i = start; i < lines.Count; i++)
         {
             _ = payload.Append(WorkspaceTranscriptLine.Serialize(lines[i])).Append('\n');
+        }
+
+        // The staging path is guarded for the same reason the destination is, and it cannot be guarded by
+        // AppendScript: the payload is PUT here BEFORE any script runs. Its name is no less guessable than
+        // the transcript's — a compile-time directory plus a hash of the thread id — and the bytes it
+        // carries are the same unredacted rows. Once per flush, because the path does not vary within one.
+        if (!_tempPathGuarded)
+        {
+            if (!await IsPathSafeAsync(sessionId, _tempPath, ct).ConfigureAwait(false))
+            {
+                return AppendResult.Failed;
+            }
+
+            _tempPathGuarded = true;
         }
 
         try
@@ -1299,11 +1451,20 @@ public sealed class ConversationTranscriptWriter
     ///     whether the file is now known to be present.
     /// </summary>
     /// <remarks>
+    ///     <para>
     ///     A workspace is frequently a git checkout and an agent frequently runs <c>git add -A</c>. Without
     ///     this, the first such commit publishes this conversation's and its siblings' unredacted reasoning
     ///     off-machine, irrecoverably. It is written BEFORE the first transcript byte and skipped entirely
     ///     for a conversation that will not produce a transcript, so no directory is left behind — see
     ///     <see cref="EnsureContainedAsync"/>, which owns that condition and what a <c>false</c> here costs.
+    ///     </para>
+    ///     <para>
+    ///     The path is guarded first, and a redirected one fails containment outright. This write is the
+    ///     one that DESTROYS rather than leaks: it is a PUT of <c>*</c>, so through a symlink it replaces
+    ///     the target's entire contents with a single character. Refusing also covers every transcript
+    ///     byte behind it at no extra cost, because the ignore path shares all its ancestors with them —
+    ///     a redirected <c>.conversations</c> is caught here, before anything is staged.
+    ///     </para>
     /// </remarks>
     private async Task<bool> EnsureGitignoreAsync(string sessionId, CancellationToken ct)
     {
@@ -1312,15 +1473,16 @@ public sealed class ConversationTranscriptWriter
             return true;
         }
 
+        var path = $"{TranscriptDirectory}/.{GitignoreName}";
+        if (!await IsPathSafeAsync(sessionId, path, ct).ConfigureAwait(false))
+        {
+            return false;
+        }
+
         try
         {
             await _fileBrowser
-                .WriteWorkspaceFileBytesAsync(
-                    sessionId,
-                    $"{TranscriptDirectory}/.{GitignoreName}",
-                    Encoding.UTF8.GetBytes("*\n"),
-                    ct
-                )
+                .WriteWorkspaceFileBytesAsync(sessionId, path, Encoding.UTF8.GetBytes("*\n"), ct)
                 .ConfigureAwait(false);
             _gitignoreWritten = true;
             return true;
@@ -1336,6 +1498,49 @@ public sealed class ConversationTranscriptWriter
     }
 
     // -------- Gateway helpers --------
+
+    /// <summary>
+    ///     Reports whether <paramref name="path"/> and every directory on the way to it are ordinary,
+    ///     un-redirected entries. <b>False means write nothing there</b> — it covers "this is a symlink"
+    ///     and "this could not be checked" alike, and both are reasons to leave the workspace untouched.
+    /// </summary>
+    /// <remarks>
+    ///     Only the two writes that reach the workspace WITHOUT a shell need this — the staged payload and
+    ///     the <c>.gitignore</c>. Everything the shell writes carries its guard inside the same script it
+    ///     writes with, which is both cheaper (no extra round trip) and tighter (no gap between the check
+    ///     and the write). See <see cref="UnsafePathExitCode"/> for why the answer is refusal rather than
+    ///     repair.
+    /// </remarks>
+    private async Task<bool> IsPathSafeAsync(string sessionId, string path, CancellationToken ct)
+    {
+        var guarded = await RunAsync(sessionId, ["sh", "-c", PathGuardScript, "sh", path], ct)
+            .ConfigureAwait(false);
+
+        if (guarded is { ExitCode: 0 })
+        {
+            return true;
+        }
+
+        if (guarded is { ExitCode: UnsafePathExitCode })
+        {
+            _logger.LogWarning(
+                "Transcript path {Path} for thread {ThreadId} is a symlink, or lies under one. Refusing to "
+                    + "write through it: the bytes would land outside the directory the .gitignore covers. "
+                    + "The link is left exactly as it is — removing it would destroy whatever it points at.",
+                path,
+                ThreadId
+            );
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Transcript path guard for {Path} failed with exit {ExitCode}: {Error}",
+            path,
+            guarded?.ExitCode ?? -1,
+            guarded?.StandardError ?? "(no result)"
+        );
+        return false;
+    }
 
     private async Task<bool> TryMoveAsync(string sessionId, string from, string to, CancellationToken ct)
     {
