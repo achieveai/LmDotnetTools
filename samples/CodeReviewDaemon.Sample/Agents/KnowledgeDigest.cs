@@ -251,7 +251,13 @@ internal static class KnowledgeDigest
                 var line = RenderEntry(entry, absolute, charBudget - builder.Length - reserve);
                 if (line.Length == 0)
                 {
-                    break;
+                    // Skip this entry, do NOT stop. An empty render is a fact about THIS entry - its path
+                    // alone could not fit - and not a signal that the budget is spent, because the room an
+                    // entry needs is dominated by its own model-authored path length. One oversized path
+                    // ranked above the rest therefore used to discard every entry behind it, leaving the
+                    // agent a header and a _toc.md pointer: knowledge-blind, which is the outcome this
+                    // whole feature exists to prevent, reachable through a single "file" value.
+                    continue;
                 }
 
                 _ = builder.Append(line);
@@ -390,8 +396,14 @@ internal static class KnowledgeDigest
                 var text = FitTocLine(line, charBudget - builder.Length - reserve);
                 if (text is null)
                 {
+                    // Skipped rather than stopped at, for the same reason as the ranked path above: a null
+                    // here is a fact about THIS line, not about the remaining room. A non-entry line has no
+                    // link to shorten so it fails outright, and an entry fails once its "](link)" suffix
+                    // alone exceeds the room - both while a short entry two lines later would fit easily.
+                    // The cut is still admitted; it is reported by the flag and by the dropped count, which
+                    // is what keeps a block with holes in it honest about having them.
                     truncated = true;
-                    break;
+                    continue;
                 }
 
                 _ = builder.Append(text);

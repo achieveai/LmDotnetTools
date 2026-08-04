@@ -720,6 +720,28 @@ public class KnowledgeDigestTests
         digest.Text.Length.Should().BeLessThanOrEqualTo(2_000);
         digest.Text.Should().NotContain("deeply-nested-segment/deeply-nested-segment");
         digest.Rendered.Should().NotContain(entry => entry.Title == "A");
+
+        // The entry AFTER the oversized one must still be surfaced. Asserting only that "A" is absent was
+        // the hole in this test: absence holds whether the renderer skips the entry or stops dead at it,
+        // so the assertion passed for two rounds while the loop was throwing away every later entry.
+        digest.Rendered.Should().ContainSingle(entry => entry.Title == "Beta");
+    }
+
+    [Fact]
+    public void Render_SkippedOversizedEntryIsCountedAsMissingRatherThanRendered()
+    {
+        // The skipped entry has to be reachable, and the footer is the only thing that says so. It is
+        // counted off the resolved pool, so skipping needs no separate bookkeeping - this test is what
+        // says so rather than an assumption that it does.
+        var entries = new[]
+        {
+            Entry("system/" + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200)) + "a.md", "A", ["a"]),
+            Entry("system/beta.md", "Beta", ["b"]),
+        };
+
+        var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 2_000, omitted: 0);
+
+        digest.Text.Should().Contain("1 more entry is not listed here");
     }
 
     [Fact]
@@ -820,5 +842,55 @@ public class KnowledgeDigestTests
 
         block.Refused.Should().BeEmpty();
         block.Listed.Should().Be(2);
+    }
+
+    // ---- The fallback's line loop, for the same reason as the ranked one -------------------------
+
+    [Fact]
+    public void RenderTableOfContents_EntryWithAnOversizedLinkDoesNotSuppressTheEntriesAfterIt()
+    {
+        // FitTocLine returning null is NOT a "the budget is exhausted" signal - it is a fact about THIS
+        // line. An entry whose "](link)" suffix alone exceeds the room fails it while the next entry, a
+        // few dozen characters long, would fit with room to spare. Stopping at the first such line hands
+        // the agent a header and nothing else, which is the knowledge-blind outcome this feature exists
+        // to prevent, reached through one model-authored link.
+        var toc = "# Knowledge Base\n\n- [A](system/"
+            + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200))
+            + "a.md)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 3_000);
+
+        block.Text.Length.Should().BeLessThanOrEqualTo(3_000);
+        block.Text.Should().NotContain("deeply-nested-segment/deeply-nested-segment");
+        block.Text.Should().Contain("system/beta.md");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_OversizedProseLineDoesNotSuppressTheEntriesAfterIt()
+    {
+        // The other way a line can be unrenderable without the budget being spent: a non-entry line too
+        // long to fit has no link to shorten, so it fails outright. This fallback runs precisely when
+        // _toc.md is torn or hand-edited, which is exactly where a stray oversized line comes from.
+        var toc = "# Knowledge Base\n\n" + new string('x', 5_000) + "\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 3_000);
+
+        block.Text.Length.Should().BeLessThanOrEqualTo(3_000);
+        block.Text.Should().Contain("system/beta.md");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_SkippedLineIsCountedAsDroppedAndAdmitsTheCut()
+    {
+        var toc = "# Knowledge Base\n\n- [A](system/"
+            + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200))
+            + "a.md)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 3_000);
+
+        block.Dropped.Should().Be(1);
+        block.Truncated.Should().BeTrue();
     }
 }
