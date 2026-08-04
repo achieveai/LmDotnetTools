@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using CodeReviewDaemon.Sample.Configuration;
 
@@ -492,6 +493,32 @@ internal static class KnowledgeDigest
                 // link that resolves outside the Knowledge Base presents something that is not knowledge as
                 // though it were, with nothing in the block for the reviewer to tell the difference by - and
                 // the degraded route was the one still doing it.
+                // A reference-style link is refused BEFORE the scan, because the scan cannot see it. Every
+                // check below keys on "](", and "See [a][outside]" has none — nor does the "[outside]:
+                // ../../../etc/passwd" that gives it a destination. The scan returns zero links, the escape
+                // filter finds nothing to object to, and both lines are printed verbatim to an agent that
+                // resolves them properly. That is the "nothing to check reads as clean input" failure once
+                // more, and failing closed on undelimitable destinations does not reach it: nothing here is
+                // undelimitable, there is simply nothing to delimit.
+                //
+                // Refused rather than supported. This route is the DEGRADED one — it runs when _index.jsonl
+                // is missing or torn — and its whole contract is that a link is printed verbatim for the
+                // agent to join itself. Resolving a reference to its definition would mean implementing the
+                // half of CommonMark that binds them, on the path we trust least, to render a form our own
+                // generator never emits. Both halves go, because either one alone still hands the agent a
+                // live reference. Reported raw, since the destination and the label live on different lines
+                // and neither half is a link we could name on its own.
+                if (CarriesAReferenceStyleLink(line))
+                {
+                    refused.Add(line.Trim());
+                    if (IsTocEntry(line))
+                    {
+                        refusedLines++;
+                    }
+
+                    continue;
+                }
+
                 var links = TocLinks(line);
                 var escapes = links
                     .Where(link => !link.Delimited || !IsLinkTheAgentCanSafelyJoin(link.Destination, root))
@@ -550,6 +577,48 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
+    /// Whether text carries either half of a CommonMark reference-style link: <c>[text][label]</c>, or the
+    /// <c>[label]: destination</c> definition that resolves one.
+    /// <para>
+    /// Deliberately coarse, because it is a REFUSAL gate and never a parser. A false positive costs one
+    /// refused <c>_toc.md</c> line - in a block that already reports everything it drops - or one cleared
+    /// metadata value that falls back to a blank; a false negative hands the agent a live link nothing else
+    /// on either path will look at. A title that genuinely contains <c>][</c> is cleared and counted; that is
+    /// the cheaper mistake by a wide margin.
+    /// </para>
+    /// </summary>
+    private static bool CarriesAReferenceStyleLink(string text)
+    {
+        if (text.Contains("][", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // A link reference definition: "[label]:" at the start of a line, the only place CommonMark
+        // recognises one. The destination that follows is what a label elsewhere resolves to. EVERY line is
+        // examined rather than only the first, because a metadata value is not one line by construction:
+        // _index.jsonl is JSON, "\n" is an ordinary character inside a JSON string, and RenderEntry
+        // interpolates the value as it stands - so a title can put a definition at the start of a rendered
+        // line. On the _toc.md route the input is already split and the loop simply runs once.
+        foreach (var line in text.Split('\n'))
+        {
+            var trimmed = line.AsSpan().TrimStart();
+            if (trimmed.IsEmpty || trimmed[0] != '[')
+            {
+                continue;
+            }
+
+            var close = trimmed.IndexOf(']');
+            if (close > 0 && close + 1 < trimmed.Length && trimmed[close + 1] == ':')
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Whether a <c>_toc.md</c> link lands inside the Knowledge Base once the agent resolves it the way the
     /// block's header tells it to.
     /// <para>
@@ -565,17 +634,25 @@ internal static class KnowledgeDigest
     /// that resolve inside the root. It is not a path at all, and an agent handed one follows it as written.
     /// The scheme test also catches a Windows drive letter, which is absolute by another spelling.
     /// <para>
-    /// Judged on BOTH readings of the text, because a backslash is genuinely ambiguous here and we do not
+    /// Judged on EVERY reading of the text, because the spelling is genuinely ambiguous here and we do not
     /// control which reader the agent is. To CommonMark <c>x\)/../../secrets.md</c> is one path containing a
     /// <c>)</c>; to a Windows path resolver <c>..\..\outside.md</c> is traversal. Resolve the escapes and the
     /// second becomes the harmless <c>....\outside.md</c>; leave them and the first is judged as a name
     /// ending in a separator. Neither reading is wrong, so the link has to be safe under both — an ambiguity
     /// that can be read two ways is not licence to pick the reading that lets it through.
     /// </para>
+    /// <para>
+    /// A third reading, for the same reason: CommonMark decodes character references inside a destination, so
+    /// <c>&amp;#x2F;etc/passwd</c> is <c>/etc/passwd</c> to the agent and an ordinary contained relative path
+    /// to every test above — no leading slash, no colon so no scheme, joins inside the root. Decoding is a
+    /// spelling change, not a new rule, and it is applied here rather than at extraction so the refusal can
+    /// still report what the file actually said.
+    /// </para>
     /// </summary>
     private static bool IsLinkTheAgentCanSafelyJoin(string link, string knowledgeBaseRoot) =>
         IsResolvedLinkSafeToJoin(link, knowledgeBaseRoot)
-        && IsResolvedLinkSafeToJoin(Unescape(link), knowledgeBaseRoot);
+        && IsResolvedLinkSafeToJoin(Unescape(link), knowledgeBaseRoot)
+        && IsResolvedLinkSafeToJoin(WebUtility.HtmlDecode(link), knowledgeBaseRoot);
 
     /// <summary>One reading of a link destination, judged by the shared containment rule.</summary>
     private static bool IsResolvedLinkSafeToJoin(string link, string knowledgeBaseRoot) =>
@@ -1035,10 +1112,21 @@ internal static class KnowledgeDigest
         };
     }
 
+    /// <summary>
+    /// Whether a metadata value carries a link the agent must not be handed. The same two questions the
+    /// <c>_toc.md</c> gate asks - is it a reference we refuse to resolve, and does its destination stay
+    /// inside the Knowledge Base - only the verdict differs, per <see cref="ClearEscapingMetadata"/>.
+    /// <para>
+    /// A reference-style link counts as escaping whether or not its definition points somewhere harmless,
+    /// because deciding that would mean resolving it, and this side of the file resolves nothing. Clearing
+    /// a decorative title that happened to use one costs a hint; carrying it costs the guarantee.
+    /// </para>
+    /// </summary>
     private static bool CarriesAnEscapingLink(string? field, string knowledgeBaseRoot) =>
         !string.IsNullOrEmpty(field)
-        && TocLinks(field).Any(
-            link => !link.Delimited || !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot));
+        && (CarriesAReferenceStyleLink(field)
+            || TocLinks(field).Any(
+                link => !link.Delimited || !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot)));
 
     /// <summary>
     /// Renders one entry within <paramref name="maxLength"/>, or an empty string when not even a truncated
@@ -1100,7 +1188,8 @@ internal static class KnowledgeDigest
     /// something safe - a rewritten path would still be offered to the agent as knowledge. A backslash
     /// separates here too, since <see cref="Join"/> normalizes it and an escape spelled with backslashes
     /// escapes just as one spelled with slashes does. A LEADING slash is not an escape: <see cref="Join"/>
-    /// already contains it, so it lands harmlessly under the root.
+    /// already contains it, so it lands harmlessly under the root. Containment is required of the decoded
+    /// spelling too, for the reason given at the check itself.
     /// </summary>
     private static bool TryResolveEntryPath(string knowledgeBaseRoot, string? file, out string absolutePath)
     {
@@ -1110,6 +1199,33 @@ internal static class KnowledgeDigest
             return false;
         }
 
+        // Containment is required of the DECODED spelling as well, because a separator written as a character
+        // reference is invisible to the split below: "..&#x2F;..&#x2F;etc/passwd" contains no literal "/"
+        // until its last segment, so it reduces to one ordinary directory name and resolves happily inside
+        // the root - and the agent handed that absolute path decodes it to <root>/../../etc/passwd. Joining
+        // onto the root is what makes a LEADING slash harmless here; it does nothing about a separator the
+        // reader will produce and we never saw. Checked here rather than only at the link rule because this
+        // is the one containment rule both routes share, and "file" reaches it without passing that rule.
+        //
+        // The raw spelling is what gets emitted, so the agent is handed the path the index actually names.
+        // Both spellings having been cleared, either reading of it lands inside the Knowledge Base.
+        var decoded = WebUtility.HtmlDecode(file);
+        if (!string.Equals(decoded, file, StringComparison.Ordinal)
+            && !TryReduceEntryPath(knowledgeBaseRoot, decoded, out _))
+        {
+            return false;
+        }
+
+        return TryReduceEntryPath(knowledgeBaseRoot, file, out absolutePath);
+    }
+
+    /// <summary>
+    /// One spelling of an entry path, reduced against the root: <c>.</c> and empty segments dropped,
+    /// <c>..</c> popped, and a pop past the root refused.
+    /// </summary>
+    private static bool TryReduceEntryPath(string knowledgeBaseRoot, string file, out string absolutePath)
+    {
+        absolutePath = string.Empty;
         var segments = new List<string>();
         foreach (var segment in file.Replace('\\', '/').Split('/'))
         {

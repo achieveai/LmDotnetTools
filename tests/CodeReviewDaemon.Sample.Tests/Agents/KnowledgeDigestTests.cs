@@ -317,6 +317,12 @@ public class KnowledgeDigestTests
     [InlineData("..\\..\\secrets.md")]
     [InlineData("system/../../outside.md")]
     [InlineData("..")]
+    // The ranked route resolves "file" itself rather than going through the link rule, so the character
+    // reference has to be read here too. "..&#x2F;..&#x2F;etc/passwd" contains no literal "/" outside the
+    // last segment, so the split sees ONE ordinary segment, the path reduces to something contained, and the
+    // agent is handed an absolute path that decodes to <root>/../../etc/passwd. Joining onto the root is
+    // what makes a leading slash harmless here; it does nothing about a separator spelled as an entity.
+    [InlineData("..&#x2F;..&#x2F;etc/passwd")]
     public void Render_RejectsAnEntryWhosePathLeavesTheKnowledgeBaseRoot(string file)
     {
         // The entries rendered here are read back from _index.jsonl ON DISK in the store, and the store's
@@ -379,6 +385,34 @@ public class KnowledgeDigestTests
             omitted: 0);
 
         digest.Text.Should().NotContain("/etc/passwd");
+        digest.Text.Should().Contain("system/beta.md", "a clean entry must survive its neighbour's scrub");
+        digest.Text.Should().Contain(
+            "- system/alpha.md", "a cleared title falls back to the file path, as a blank one already did");
+        digest.Rendered.Should().HaveCount(2);
+        digest.Rejected.Should().BeEmpty();
+        digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_ClearsATitleThatCarriesAReferenceStyleLinkAndItsDefinition()
+    {
+        // The same syntax the _toc.md gate now refuses, arriving by the PRIMARY route. Every metadata check
+        // runs through TocLinks, which keys on "](", and a reference-style link contains none - so a title
+        // holding both halves is carried into the block verbatim. A title is not line-anchored, but nothing
+        // strips newlines out of one either: _index.jsonl is JSON, "\n" is an ordinary character in a JSON
+        // string, and RenderEntry interpolates the value as it stands. So one field can put a definition at
+        // the start of a rendered line and a reference above it, and the agent resolves the pair itself.
+        var digest = KnowledgeDigest.Render(
+            [
+                Entry("system/alpha.md", "See [a][outside]\n\n[outside]: ../../../etc/passwd", ["a"]),
+                Entry("system/beta.md", "Beta", ["b"]),
+            ],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0);
+
+        digest.Text.Should().NotContain("/etc/passwd");
+        digest.Text.Should().NotContain("[outside]", "half a reference is still a live link once the other half arrives");
         digest.Text.Should().Contain("system/beta.md", "a clean entry must survive its neighbour's scrub");
         digest.Text.Should().Contain(
             "- system/alpha.md", "a cleared title falls back to the file path, as a blank one already did");
@@ -1442,5 +1476,45 @@ public class KnowledgeDigestTests
                 "../../../etc/passwd",
                 "the refusal has to name the part that could not be delimited, not the innocent-looking prefix"
             );
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesAReferenceStyleLinkAndItsDefinition()
+    {
+        // A reference-style link carries no "](" at all, so the scanner that keys on it returns ZERO links
+        // and the line sails through as clean input - the same "nothing to check reads as nothing wrong"
+        // state the undelimited-destination rule closed, reached by a form the scanner cannot see rather
+        // than by one it gave up on. Failing closed on the undelimitable does not help here: nothing is
+        // undelimitable, there is simply nothing to delimit. The destination lives on the DEFINITION line,
+        // so both halves have to be refused - either one alone still hands the agent a working link.
+        var toc =
+            "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [a][outside] for more.\n\n[outside]: ../../../etc/passwd\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().NotContain("[a][outside]", "the half that names the reference is no use on its own, and it is what the agent follows");
+        block.Text.Should().Contain("system/alpha.md", "a contained entry must survive its neighbour's refusal");
+        block
+            .Refused.Should()
+            .HaveCount(2, "both the reference and the definition that gives it a destination are refused, and each is reported")
+            .And.Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesADestinationThatOnlyEscapesOnceCharacterReferencesAreDecoded()
+    {
+        // A third reading of the same destination, alongside raw and unescaped. "&#x2F;etc/passwd" does not
+        // start with "/", carries no colon so no scheme, and joins inside the root - accepted under both
+        // existing readings. CommonMark decodes character references in destinations, so the agent that
+        // resolves this link properly reads "/etc/passwd" and opens it. Same shape as the backslash: the
+        // text has more than one reading and we do not control which one the consumer applies.
+        var toc = "# Knowledge Base\n\n- [a](&#x2F;etc/passwd)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().ContainSingle().Which.Should().Contain("etc/passwd");
     }
 }
