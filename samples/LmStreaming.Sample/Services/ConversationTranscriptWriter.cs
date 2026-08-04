@@ -12,9 +12,13 @@ namespace LmStreaming.Sample.Services;
 /// <summary>What one <see cref="ConversationTranscriptWriter.FlushAsync"/> attempt achieved.</summary>
 /// <remarks>
 ///     The mirror is best-effort, so this is advisory rather than a status code: its only real consumer
-///     decision is "should I schedule another flush?", and only <see cref="Deferred"/> answers yes.
-///     <see cref="Unavailable"/> deliberately does NOT ask for a re-schedule — a conversation with no
-///     sandbox session would otherwise spin the drain loop forever.
+///     decision is "should I schedule another flush?", and two members answer yes —
+///     <see cref="Deferred"/> and <see cref="Progressing"/>. They are kept DISTINCT because the caller
+///     bounds them differently: a deferral means something FAILED and must be retried a bounded number of
+///     times, whereas progress means the pass did what it could and a continuation is owed. Folding the
+///     second into the first makes an orderly continuation spend a failure budget, which caps how far a
+///     single trigger can ever get. <see cref="Unavailable"/> deliberately does NOT ask for a re-schedule
+///     — a conversation with no sandbox session would otherwise spin the drain loop forever.
 /// </remarks>
 public enum TranscriptFlushOutcome
 {
@@ -25,9 +29,9 @@ public enum TranscriptFlushOutcome
     Written,
 
     /// <summary>
-    ///     Work remains: a read never settled, a gateway call failed, the sub-agent fan-out was capped, or
-    ///     the containment <c>.gitignore</c> is not yet on disk. The watermarks involved are unadvanced, so
-    ///     a later flush repeats the work. <b>Re-schedule.</b>
+    ///     Something FAILED: a read never settled, a gateway call failed, or the containment
+    ///     <c>.gitignore</c> could not be written. The watermarks involved are unadvanced, so a later flush
+    ///     repeats the work. <b>Re-schedule, bounded.</b>
     /// </summary>
     Deferred,
 
@@ -36,6 +40,18 @@ public enum TranscriptFlushOutcome
     ///     conflict, gateway unreachable). Nothing was written and nothing is pending.
     /// </summary>
     Unavailable,
+
+    /// <summary>
+    ///     Nothing failed, and the pass stopped short of the work it knows about: the sub-agent fan-out is
+    ///     bounded per flush and descendants outside this slice have not been visited yet.
+    ///     <b>Re-schedule, and do NOT count it as a failed attempt.</b> This terminates on its own — each
+    ///     pass covers at least one descendant it has not covered before, over a finite roster.
+    /// </summary>
+    /// <remarks>
+    ///     Appended at the END of the enum on purpose: the existing members keep their numeric values, so
+    ///     anything that persisted or compared one is unaffected.
+    /// </remarks>
+    Progressing,
 }
 
 /// <summary>
@@ -171,20 +187,29 @@ public sealed class ConversationTranscriptWriter
     /// <summary>Files already warned about, so the "appending everything" warning stays a one-off.</summary>
     private readonly HashSet<string> _fullAppendWarned = new(StringComparer.Ordinal);
 
+    /// <summary>
+    ///     The descendants the CURRENT coverage sweep has already visited. A capped fan-out asks for a
+    ///     follow-up only while some descendant is missing from this set, which is what makes the chain of
+    ///     continuations terminate without spending the caller's failure budget.
+    /// </summary>
+    private readonly HashSet<string> _sweptAgents = new(StringComparer.Ordinal);
+
     private string? _leaf;
     private bool _gitignoreWritten;
 
     /// <summary>
     ///     Whether this conversation has a transcript in the workspace at all — set when an append lands
     ///     and when the cold-start probe finds an existing file. Distinct from
-    ///     <see cref="_gitignoreWritten"/> and from "this flush wrote something": see
-    ///     <see cref="ContainAsync"/> for why conflating the three is what leaves the ignore file missing.
+    ///     <see cref="_gitignoreWritten"/> and from "this flush wrote something": it is what lets
+    ///     <see cref="EnsureContainedAsync"/> be attempted on a flush that appends nothing, for a
+    ///     transcript an earlier process left behind.
     /// </summary>
     private bool _transcriptExists;
 
     private bool _agentsDirectoryTouched;
     private int _subAgentCursor;
     private int _sawSubAgentActivity;
+    private int _sweepRestartRequested;
 
     /// <summary>Creates the writer for one conversation.</summary>
     /// <param name="threadId">The conversation's thread id.</param>
@@ -242,6 +267,22 @@ public sealed class ConversationTranscriptWriter
     public void NoteSubAgentActivity() => Interlocked.Exchange(ref _sawSubAgentActivity, 1);
 
     /// <summary>
+    ///     Records that an independent external trigger arrived (a completed run, a sub-agent
+    ///     notification, a recovered subscription), so the next flush starts a FRESH coverage sweep of the
+    ///     descendant roster rather than continuing the one the previous trigger left half-finished.
+    /// </summary>
+    /// <remarks>
+    ///     Deliberately separate from <see cref="NoteSubAgentActivity"/>. A sweep restart is cheap — it
+    ///     clears a set — whereas noting sub-agent activity forces the descendant scanner's full store
+    ///     scan, which must stay rare. Every trigger owes a fresh sweep; only sub-agent evidence owes a
+    ///     rescan. Restarting on an external trigger rather than whenever a sweep completes is also what
+    ///     stops the writer alternating forever between "sweep finished" and "sweep restarted" on a
+    ///     conversation where nothing is happening. Cheap and thread-safe: callable straight from the
+    ///     message-subscriber hot path.
+    /// </remarks>
+    public void NoteExternalTrigger() => Interlocked.Exchange(ref _sweepRestartRequested, 1);
+
+    /// <summary>
     ///     Mirrors everything this conversation has persisted since the last successful flush. Never
     ///     throws: a failure is logged, the affected watermark is left unadvanced, and the outcome says
     ///     whether the caller should schedule another attempt.
@@ -285,11 +326,24 @@ public sealed class ConversationTranscriptWriter
         }
 
         // Step 4, and it must stay ahead of every append in this drain: a retitle that is noticed only
-        // after the append leaves a second file holding a duplicate of the entire history.
-        await ApplyRetitleAsync(sessionId, metadata, ct).ConfigureAwait(false);
+        // after the append leaves a second file holding a duplicate of the entire history. It reports
+        // false when the workspace could not be INSPECTED, which is not the same as finding nothing —
+        // see AdoptExistingLeafAsync.
+        if (!await ApplyRetitleAsync(sessionId, metadata, ct).ConfigureAwait(false))
+        {
+            return TranscriptFlushOutcome.Deferred;
+        }
+
         var leaf = _leaf!;
 
         var lines = WorkspaceTranscriptLine.ChainMessages(messages);
+
+        // Containment BEFORE the first transcript byte. See EnsureContainedAsync.
+        if ((lines.Count > 0 || _transcriptExists) && !await EnsureContainedAsync(sessionId, ct).ConfigureAwait(false))
+        {
+            return TranscriptFlushOutcome.Deferred;
+        }
+
         var mainResult = await AppendAsync(
             sessionId,
             TranscriptDirectory,
@@ -308,54 +362,53 @@ public sealed class ConversationTranscriptWriter
             // on a FIRST flush every sub-agent file would be pinned to null and the two files would never
             // be one lineage again. No later flush revisits a pinned anchor. Deferring costs one repeated
             // pass; a wrong anchor is not recoverable.
-            return await ContainAsync(sessionId, TranscriptFlushOutcome.Deferred, ct).ConfigureAwait(false);
+            return TranscriptFlushOutcome.Deferred;
         }
 
         var wrote = mainResult == AppendResult.Appended;
-        var (agentsWrote, agentsDeferred) = await FlushSubAgentsAsync(sessionId, leaf, ct).ConfigureAwait(false);
+        var (agentsWrote, agentsDeferred, agentsProgressing) =
+            await FlushSubAgentsAsync(sessionId, leaf, ct).ConfigureAwait(false);
         wrote = wrote || agentsWrote;
 
-        return await ContainAsync(
-            sessionId,
-            agentsDeferred ? TranscriptFlushOutcome.Deferred
-                : wrote ? TranscriptFlushOutcome.Written
-                : TranscriptFlushOutcome.UpToDate,
-            ct
-        ).ConfigureAwait(false);
+        // Deferred outranks Progressing: a failure has to be retried under a bound whether or not the
+        // sweep also has ground left to cover, and the continuation the sweep wants comes for free with
+        // the retry. Progressing outranks Written/UpToDate — both of those tell the caller to stop.
+        return agentsDeferred ? TranscriptFlushOutcome.Deferred
+            : agentsProgressing ? TranscriptFlushOutcome.Progressing
+            : wrote ? TranscriptFlushOutcome.Written
+            : TranscriptFlushOutcome.UpToDate;
     }
 
     /// <summary>
-    ///     Makes sure this conversation's transcript directory is contained by a <c>.gitignore</c> before
-    ///     the flush reports <paramref name="outcome"/>, downgrading to
-    ///     <see cref="TranscriptFlushOutcome.Deferred"/> when it is not.
+    ///     Makes sure this conversation's transcript directory is covered by a <c>.gitignore</c>, reporting
+    ///     false when it is not. <b>Every caller must treat false as "write nothing".</b>
     /// </summary>
     /// <remarks>
-    ///     <b>Containment is tracked separately from message progress, and this is the highest-consequence
-    ///     rule in the type.</b> The obvious shape — write the ignore file only on a flush that appended
-    ///     something — fails in both directions at once: the attempt is skipped on every flush that finds
-    ///     nothing new (so a transcript written by an earlier process, or one whose only appending flush
-    ///     already happened, is never covered), and a failed attempt changes nothing about the flush's
-    ///     result (so the ONE trigger that could retry it is a future flush that also appends, which for a
-    ///     finished conversation never comes). Both leave the file permanently absent, and this
-    ///     <c>.gitignore</c> is the entire opt-out for the feature: without it the next <c>git add -A</c>
-    ///     an agent runs in that workspace publishes every conversation's unredacted reasoning off-machine,
-    ///     irrecoverably. So: attempt it whenever a transcript exists and the file is not known to be
-    ///     present, and treat failure as work still pending.
+    ///     <para>
+    ///     <b>Containment is established BEFORE any transcript byte reaches the workspace, and this is the
+    ///     highest-consequence rule in the type.</b> This <c>.gitignore</c> is the entire opt-out for the
+    ///     feature: without it the next <c>git add -A</c> an agent runs in that workspace publishes the
+    ///     conversation's unredacted reasoning off-machine, irrecoverably. Ordering it first makes
+    ///     "transcript on disk, uncovered" a state the writer cannot be left in — not by a failed write,
+    ///     not by an exhausted retry budget, not by a process that exits between the two calls. A
+    ///     conversation that never gets its ignore file simply never gets a transcript either, which is
+    ///     the safe side of the trade.
+    ///     </para>
+    ///     <para>
+    ///     Writing it AFTERWARDS cannot be repaired by retrying harder, and that is why the ordering
+    ///     rather than the retry is the fix. The append advances the watermark on success, so by the time
+    ///     a failed containment is discovered the bytes are already there; the retry then depends on a
+    ///     later flush arriving, and for a conversation whose last turn has happened none ever does.
+    ///     </para>
+    ///     <para>
+    ///     Callers gate on <c>lines.Count > 0 || _transcriptExists</c> so a conversation that never
+    ///     produces a transcript leaves no directory behind. That gate cannot be wrong in the unsafe
+    ///     direction: rows in hand means an append is about to happen, and no rows plus no known transcript
+    ///     means there is nothing in the workspace to cover.
+    ///     </para>
     /// </remarks>
-    private async Task<TranscriptFlushOutcome> ContainAsync(
-        string sessionId,
-        TranscriptFlushOutcome outcome,
-        CancellationToken ct)
-    {
-        if (!_transcriptExists || _gitignoreWritten)
-        {
-            return outcome;
-        }
-
-        return await EnsureGitignoreAsync(sessionId, ct).ConfigureAwait(false)
-            ? outcome
-            : TranscriptFlushOutcome.Deferred;
-    }
+    private async Task<bool> EnsureContainedAsync(string sessionId, CancellationToken ct) =>
+        _gitignoreWritten || await EnsureGitignoreAsync(sessionId, ct).ConfigureAwait(false);
 
     // -------- Step 1: session --------
 
@@ -508,38 +561,65 @@ public sealed class ConversationTranscriptWriter
     ///     whatever slug it was last named, and the same move path adopts it.
     ///     </para>
     /// </remarks>
-    private async Task ApplyRetitleAsync(string sessionId, ThreadMetadata? metadata, CancellationToken ct)
+    private async Task<bool> ApplyRetitleAsync(string sessionId, ThreadMetadata? metadata, CancellationToken ct)
     {
         var leaf = WorkspaceTranscriptLine.MainFileLeaf(ReadTitle(metadata), _shortThreadId);
         if (_leaf is null)
         {
-            _leaf = await AdoptExistingLeafAsync(sessionId, leaf, ct).ConfigureAwait(false) ?? leaf;
-            return;
+            var (listed, adopted) = await AdoptExistingLeafAsync(sessionId, leaf, ct).ConfigureAwait(false);
+            if (!listed)
+            {
+                return false;
+            }
+
+            _leaf = adopted ?? leaf;
+            return true;
         }
 
         if (string.Equals(_leaf, leaf, StringComparison.Ordinal))
         {
-            return;
+            return true;
         }
 
         if (await MoveLeafAsync(sessionId, _leaf, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false))
         {
             _leaf = leaf;
         }
+
+        return true;
     }
 
     /// <summary>
     ///     On cold start, finds this conversation's existing transcript under a DIFFERENT slug and renames
-    ///     it (and its sub-agent directory) onto <paramref name="leaf"/>. Reports the leaf actually in
-    ///     force afterwards, or null when there was nothing to adopt.
+    ///     it (and its sub-agent directory) onto <paramref name="leaf"/>.
     /// </summary>
+    /// <returns>
+    ///     <c>Listed</c> is whether the workspace could be inspected at all; when it is false the caller
+    ///     must abandon the flush without writing anything. <c>Leaf</c> is the leaf actually in force
+    ///     afterwards, or null when the listing succeeded and there was nothing to adopt.
+    /// </returns>
     /// <remarks>
-    ///     A listing failure, an unreadable directory, or a move that does not take are all answered the
-    ///     same way: keep using the file that is there. Reporting the stale leaf rather than the new one
-    ///     is what stops a failed adoption from splitting the transcript in two anyway — appending to the
-    ///     old name is always preferable to starting a second file.
+    ///     <para>
+    ///     <b>"The directory holds nothing" and "the directory could not be listed" must be answered
+    ///     differently, and only the first is a definite miss.</b> Treating a transport, protocol or
+    ///     session failure as an absence makes the writer adopt the computed leaf and append the entire
+    ///     history into a SECOND file — the split-transcript defect this method exists to prevent, except
+    ///     triggered by a momentary gateway fault instead of a real absence, and unrecoverable afterwards
+    ///     because the second file IS the computed leaf from then on, so adoption never runs again. Only
+    ///     <see cref="SandboxException.IsDefiniteMissingPath"/> means "nothing there"; anything else defers
+    ///     the whole flush, which costs one repeated pass. This follows the discrimination established at
+    ///     <c>SandboxClient.Files.cs</c> and in the daemon's session adapter.
+    ///     </para>
+    ///     <para>
+    ///     A move that does not take is a different matter and is still absorbed: reporting the stale leaf
+    ///     rather than the new one keeps the writer appending to the file that is there, which is always
+    ///     preferable to starting a second one.
+    ///     </para>
     /// </remarks>
-    private async Task<string?> AdoptExistingLeafAsync(string sessionId, string leaf, CancellationToken ct)
+    private async Task<(bool Listed, string? Leaf)> AdoptExistingLeafAsync(
+        string sessionId,
+        string leaf,
+        CancellationToken ct)
     {
         IReadOnlyList<SandboxDirectoryEntry> entries;
         try
@@ -548,10 +628,16 @@ public sealed class ConversationTranscriptWriter
                 .ListWorkspaceDirectoryAsync(sessionId, TranscriptDirectory, ct)
                 .ConfigureAwait(false);
         }
+        catch (SandboxException ex) when (ex.IsDefiniteMissingPath)
+        {
+            // The ordinary first flush of a workspace that has never held a transcript.
+            _logger.LogDebug(ex, "No {Directory} yet for thread {ThreadId}", TranscriptDirectory, ThreadId);
+            return (true, null);
+        }
         catch (SandboxException ex)
         {
             _logger.LogDebug(ex, "Listing {Directory} for thread {ThreadId} failed", TranscriptDirectory, ThreadId);
-            return null;
+            return (false, null);
         }
 
         var stale = entries
@@ -575,7 +661,7 @@ public sealed class ConversationTranscriptWriter
 
         if (stale is null)
         {
-            return null;
+            return (true, null);
         }
 
         _transcriptExists = true;
@@ -585,9 +671,11 @@ public sealed class ConversationTranscriptWriter
             stale,
             leaf);
 
-        return await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false)
-            ? leaf
-            : stale;
+        return (
+            true,
+            await MoveLeafAsync(sessionId, stale, leaf, _agentsDirectoryTouched, ct).ConfigureAwait(false)
+                ? leaf
+                : stale);
     }
 
     /// <summary>
@@ -660,10 +748,21 @@ public sealed class ConversationTranscriptWriter
     ///     <b>Bounded per flush</b> for the same reason: a conversation with dozens of descendants would
     ///     otherwise hold that store semaphore for dozens of full-thread reads at every turn boundary. The
     ///     window advances round-robin so a large fan-out is covered across successive flushes instead of
-    ///     starving its tail, and a truncated pass reports <c>deferred</c> so another flush follows.
+    ///     starving its tail, and a truncated pass reports <c>progressing</c> so another flush follows.
+    ///     </para>
+    ///     <para>
+    ///     <b>The continuation is sized by COVERAGE, not by a retry budget.</b> A capped pass has to keep
+    ///     asking — "this slice wrote nothing" says nothing about the descendants OUTSIDE it, and the one
+    ///     that changed is exactly as likely to be out there — but asking under the caller's FAILURE budget
+    ///     caps the roster a single trigger can ever reach at (budget + 1) x cap, silently truncating
+    ///     anything larger. So the sweep tracks which descendants it has visited since the last external
+    ///     trigger and keeps asking only while some remain. That terminates on its own: each pass visits at
+    ///     least one descendant it has not visited before, over a finite roster. A descendant is marked
+    ///     visited whether or not its own read succeeded — a failed read reports <c>deferred</c>, which is
+    ///     what the failure budget is actually for.
     ///     </para>
     /// </remarks>
-    private async Task<(bool Wrote, bool Deferred)> FlushSubAgentsAsync(
+    private async Task<(bool Wrote, bool Deferred, bool Progressing)> FlushSubAgentsAsync(
         string sessionId,
         string leaf,
         CancellationToken ct)
@@ -673,14 +772,18 @@ public sealed class ConversationTranscriptWriter
             _descendants.NoteAgentActivity(ThreadId);
         }
 
+        if (Interlocked.Exchange(ref _sweepRestartRequested, 0) == 1)
+        {
+            _sweptAgents.Clear();
+        }
+
         IReadOnlyList<SubAgentSummary> agents = await _descendants.GetOrScanAsync(ThreadId, ct).ConfigureAwait(false);
         if (agents.Count == 0)
         {
-            return (false, false);
+            return (false, false, false);
         }
 
         var take = Math.Min(agents.Count, _maxSubAgentFilesPerFlush);
-        var capped = take < agents.Count;
         var deferred = false;
         var wrote = false;
         var directory = $"{TranscriptDirectory}/{leaf}{AgentsDirectorySuffix}";
@@ -688,6 +791,8 @@ public sealed class ConversationTranscriptWriter
         for (var i = 0; i < take; i++)
         {
             var agent = agents[(_subAgentCursor + i) % agents.Count];
+            _ = _sweptAgents.Add(agent.ThreadId);
+
             var messages = await ReadStableAsync(agent.ThreadId, ct).ConfigureAwait(false);
             if (messages is null)
             {
@@ -715,18 +820,10 @@ public sealed class ConversationTranscriptWriter
             }
         }
 
-        _subAgentCursor = agents.Count == 0 ? 0 : (_subAgentCursor + take) % agents.Count;
+        _subAgentCursor = (_subAgentCursor + take) % agents.Count;
 
-        // A capped pass asks for a follow-up whether or not it mirrored anything, because "this slice
-        // wrote nothing" says nothing at all about the descendants OUTSIDE the slice — and the one that
-        // changed is exactly as likely to be out there. Gating on progress looked convergent and was
-        // instead a way to stop one step short: the pass that found its own slice up to date ended the
-        // chain, leaving the changed descendant beyond the cap unwritten until some later trigger
-        // happened to come along. What terminates the chain is the mirror's bounded retry budget
-        // (WorkspaceTranscriptMirror.MaxDeferredRetries), which is reset at each turn boundary — so a
-        // large fan-out is covered a slice per attempt and paced, rather than either spinning or being
-        // silently truncated.
-        return (wrote, deferred || capped);
+        var progressing = agents.Any(agent => !_sweptAgents.Contains(agent.ThreadId));
+        return (wrote, deferred, progressing);
     }
 
     /// <summary>
@@ -936,9 +1033,9 @@ public sealed class ConversationTranscriptWriter
     /// <remarks>
     ///     A workspace is frequently a git checkout and an agent frequently runs <c>git add -A</c>. Without
     ///     this, the first such commit publishes this conversation's and its siblings' unredacted reasoning
-    ///     off-machine, irrecoverably. It is written only once a transcript exists, so a conversation that
-    ///     never produced one leaves no directory behind — see <see cref="ContainAsync"/>, which owns that
-    ///     condition and the retry that a <c>false</c> here earns.
+    ///     off-machine, irrecoverably. It is written BEFORE the first transcript byte and skipped entirely
+    ///     for a conversation that will not produce a transcript, so no directory is left behind — see
+    ///     <see cref="EnsureContainedAsync"/>, which owns that condition and what a <c>false</c> here costs.
     /// </remarks>
     private async Task<bool> EnsureGitignoreAsync(string sessionId, CancellationToken ct)
     {

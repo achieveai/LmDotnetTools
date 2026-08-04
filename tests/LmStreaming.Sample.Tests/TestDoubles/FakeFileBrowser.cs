@@ -32,6 +32,14 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
     public Dictionary<string, IReadOnlyList<SandboxDirectoryEntry>> Listings { get; } = new(StringComparer.Ordinal);
     public byte[] FileBytes { get; set; } = [];
     public Exception? ReadThrows { get; set; }
+
+    /// <summary>
+    /// Makes every directory listing fail. A listing that fails is NOT the same as one that comes back
+    /// empty — an empty <see cref="Listings"/> entry says "the directory holds nothing", whereas this says
+    /// "the gateway could not tell you" — and the transcript writer's adoption path has to answer the two
+    /// differently, so the double has to be able to express both.
+    /// </summary>
+    public Exception? ListThrows { get; set; }
     public Exception? WriteThrows { get; set; }
 
     /// <summary>
@@ -59,10 +67,17 @@ internal sealed class FakeFileBrowser : IWorkspaceFileBrowser
         return ResolveThrows is not null ? Task.FromException<SandboxSessionResolution>(ResolveThrows) : Task.FromResult(Resolution);
     }
 
-    public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(string sessionId, string relativePath, CancellationToken ct = default) =>
-        Listings.TryGetValue(relativePath, out var entries)
+    public Task<IReadOnlyList<SandboxDirectoryEntry>> ListWorkspaceDirectoryAsync(string sessionId, string relativePath, CancellationToken ct = default)
+    {
+        if (ListThrows is not null)
+        {
+            return Task.FromException<IReadOnlyList<SandboxDirectoryEntry>>(ListThrows);
+        }
+
+        return Listings.TryGetValue(relativePath, out var entries)
             ? Task.FromResult(entries)
             : Task.FromResult<IReadOnlyList<SandboxDirectoryEntry>>([]);
+    }
 
     public Task<byte[]> ReadWorkspaceFileBytesAsync(string sessionId, string relativePath, long? maxBytes, CancellationToken ct = default)
     {

@@ -671,6 +671,82 @@ public sealed class WorkspaceTranscriptMirrorTests
     }
 
     /// <summary>
+    /// The budget is per TRIGGER, and a run completion is not the only trigger. A background sub-agent that
+    /// finishes after its parent's last turn arrives as a notification and nothing else — if that path
+    /// leaves an exhausted budget in place, the child gets one single attempt at a workspace that was
+    /// failing a moment ago, and its transcript is then abandoned with no further trigger coming. Every
+    /// independent external trigger starts a fresh generation of retries.
+    /// </summary>
+    [Fact]
+    public async Task Attach_ResetsTheRetryBudget_WhenASubAgentNotificationArrivesAfterItWasSpent()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
+
+        var browser = new FakeFileBrowser
+        {
+            ExecResult = new SandboxCommandResult
+            {
+                ExitCode = 1,
+                StandardOutput = "",
+                StandardError = "no space left on device",
+                OperationId = "op",
+            },
+        };
+        await using var agent = new PublishingAgent(ThreadId);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+        await agent.PublishAsync(RunCompleted());
+
+        var expected = 1 + WorkspaceTranscriptMirror.MaxDeferredRetries;
+        _ = (await SettleAsync(store)).Should().Be(expected);
+
+        // A different trigger entirely — and it is owed the same budget the run completion got.
+        await agent.PublishAsync(new NotifyMessage { NotifyKind = NotifyKinds.SubAgentCompletion });
+        _ = (await SettleAsync(store)).Should().Be(2 * expected);
+    }
+
+    /// <summary>
+    /// The fan-out is capped per flush, and a capped pass is PROGRESS rather than failure. Counting it
+    /// against the bounded retry budget puts a hard ceiling on how many descendants one trigger can ever
+    /// reach — <c>MaxDeferredRetries</c> plus one passes times the per-flush cap — and a conversation whose
+    /// roster is larger than that ceiling leaves its tail unmirrored, with no error anywhere and no further
+    /// trigger coming once the run has completed.
+    /// </summary>
+    [Fact]
+    public async Task Attach_MirrorsEveryDescendant_WhenTheRosterOutrunsTheRetryBudget()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
+
+        // One more than (1 + MaxDeferredRetries) passes of the default cap can reach.
+        var roster = ((1 + WorkspaceTranscriptMirror.MaxDeferredRetries)
+            * ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush) + 1;
+        for (var i = 0; i < roster; i++)
+        {
+            await SeedSubAgentAsync(store, $"agent-{i:D2}", $"worker{i:D2}");
+        }
+
+        var browser = new FakeFileBrowser();
+        await using var agent = new PublishingAgent(ThreadId);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+        await agent.PublishAsync(RunCompleted());
+
+        var expectedPaths = Enumerable.Range(0, roster).Select(i =>
+            $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf($"worker{i:D2}", WorkspaceTranscriptLine.ShortId($"agent-{i:D2}"))}{ConversationTranscriptWriter.TranscriptExtension}")
+            .ToList();
+
+        await WaitForAsync(
+            () => expectedPaths.All(p => SplicedInto(browser, p)),
+            "The tail of the descendant roster was never mirrored: the capped fan-out spent the retry budget before it got there.");
+    }
+
+    /// <summary>
     /// A mode switch builds a REPLACEMENT agent for the same threadId. The subscription must move to it,
     /// and the writer must NOT be rebuilt — a fresh writer has no watermark, so it would re-append the
     /// conversation's entire history under the same uids.

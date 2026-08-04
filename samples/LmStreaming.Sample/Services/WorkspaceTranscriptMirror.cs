@@ -55,16 +55,23 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     re-schedule on before the mirror stops chasing it until something new happens.
     /// </summary>
     /// <remarks>
-    ///     <b>The bound is what makes the retry chain terminate at all.</b> <c>Deferred</c> is reported for
-    ///     three quite different reasons — a read that never settled, a gateway call that failed, and a
-    ///     sub-agent fan-out capped by <c>MaxSubAgentFilesPerFlush</c> — and the first two do not
-    ///     self-terminate: a workspace whose gateway is refusing writes, or a conversation being written to
+    ///     <para>
+    ///     <b>The bound is what makes the retry chain terminate at all.</b> <c>Deferred</c> means something
+    ///     FAILED — a read that never settled, or a gateway call that did not land — and neither
+    ///     self-terminates: a workspace whose gateway is refusing writes, or a conversation being written to
     ///     faster than its rows settle, defers every attempt forever. An unbounded re-schedule against that
     ///     is a hot loop on the single drain thread that also starves every OTHER conversation's flush.
-    ///     Four attempts per trigger (the original plus <see cref="MaxDeferredRetries"/>) covers the
-    ///     ordinary capped fan-out — the default cap is 8 files, so 32 descendants — and the budget resets
-    ///     at every turn boundary and on every attempt that is not deferred, so a conversation that is
-    ///     merely large is never permanently abandoned, only paced.
+    ///     </para>
+    ///     <para>
+    ///     <b>This budget covers failures and NOTHING else.</b> An orderly continuation — the sub-agent
+    ///     fan-out being capped per flush — reports <see cref="TranscriptFlushOutcome.Progressing"/>
+    ///     instead, and is re-scheduled without touching the budget. Charging progress to a failure budget
+    ///     puts a hard ceiling of (this + 1) x the per-flush cap on how many descendants a single trigger
+    ///     can ever reach, and silently strands the tail of any roster larger than that; the writer's own
+    ///     coverage sweep is what terminates the progressing chain instead. The budget is per TRIGGER —
+    ///     reset by every independent external trigger, not only by a completed run — so a transient outage
+    ///     cannot silence a conversation permanently.
+    ///     </para>
     /// </remarks>
     public const int MaxDeferredRetries = 3;
 
@@ -409,8 +416,10 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
             // line above promises ("the next flush re-reads the whole thread") only holds if a flush
             // actually happens, and without this line the only thing that can trigger one is a LATER turn
             // that may never come. Scheduling here is free when nothing changed: a flush with no new rows
-            // is UpToDate and issues no gateway write.
-            _scheduler.Schedule(threadId);
+            // is UpToDate and issues no gateway write. It is a fresh generation of work like any other
+            // trigger — the drop is new evidence, and inheriting a spent budget from before it would give
+            // the recovery a single pass.
+            ScheduleFreshAttempt(threadId);
         }
     }
 
@@ -469,10 +478,8 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
 
         if (message is RunCompletedMessage)
         {
-            // The turn boundary. Also the point the deferred-retry budget resets: whatever made the last
-            // chain give up, a new turn is new evidence and earns a fresh set of attempts.
-            _ = _deferredAttempts.TryRemove(threadId, out _);
-            _scheduler.Schedule(threadId);
+            // The turn boundary.
+            ScheduleFreshAttempt(threadId);
             return;
         }
 
@@ -484,8 +491,30 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
             // parent's last turn publishes no RunCompletedMessage and nothing follows it, so a mirror that
             // scheduled only on run completion left that child's transcript unwritten forever — for the
             // whole life of the conversation, not until the next turn.
-            _scheduler.Schedule(threadId);
+            ScheduleFreshAttempt(threadId);
         }
+    }
+
+    /// <summary>
+    ///     Schedules a flush of <paramref name="threadId"/> as a NEW generation of work: the bounded
+    ///     deferred-retry budget is released and the writer's descendant coverage sweep starts over.
+    /// </summary>
+    /// <remarks>
+    ///     <b>Every independent external trigger goes through here, not just the turn boundary.</b> The
+    ///     budget and the sweep are both scoped to "one trigger's worth of attempts", so a trigger that
+    ///     inherits an exhausted budget gets a single pass and is then abandoned — and the trigger most
+    ///     likely to inherit one is the least recoverable, a background sub-agent completing after its
+    ///     parent's last turn, because nothing follows it to try again.
+    /// </remarks>
+    private void ScheduleFreshAttempt(string threadId)
+    {
+        _ = _deferredAttempts.TryRemove(threadId, out _);
+        if (_writers.TryGetValue(threadId, out var writer))
+        {
+            writer.NoteExternalTrigger();
+        }
+
+        _scheduler.Schedule(threadId);
     }
 
     /// <summary>
@@ -530,10 +559,18 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
 
     /// <summary>
     ///     The scheduler's drain callback: resolves the conversation's writer and flushes it. A key whose
-    ///     writer has since been evicted is a no-op, and a <see cref="TranscriptFlushOutcome.Deferred"/>
-    ///     result asks for another attempt — up to <see cref="MaxDeferredRetries"/> consecutive ones, which
-    ///     is what stops a permanently-deferring conversation from spinning the drain loop.
+    ///     writer has since been evicted is a no-op.
     /// </summary>
+    /// <remarks>
+    ///     Two outcomes ask for another attempt and they are budgeted differently.
+    ///     <see cref="TranscriptFlushOutcome.Deferred"/> means something FAILED and is retried at most
+    ///     <see cref="MaxDeferredRetries"/> consecutive times, which is what stops a permanently-deferring
+    ///     conversation from spinning the drain loop. <see cref="TranscriptFlushOutcome.Progressing"/>
+    ///     means the pass stopped short of work it knows about — the capped sub-agent fan-out — and is
+    ///     re-scheduled WITHOUT spending the failure budget; it terminates on the writer's own coverage
+    ///     sweep instead. It does not reset the budget either: a conversation that alternates between
+    ///     failing and progressing must still be bounded.
+    /// </remarks>
     private async Task FlushAsync(string threadId, CancellationToken ct)
     {
         if (!_writers.TryGetValue(threadId, out var writer))
@@ -541,7 +578,14 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
             return;
         }
 
-        if (await writer.FlushAsync(ct).ConfigureAwait(false) != TranscriptFlushOutcome.Deferred)
+        var outcome = await writer.FlushAsync(ct).ConfigureAwait(false);
+        if (outcome == TranscriptFlushOutcome.Progressing)
+        {
+            _scheduler.Schedule(threadId);
+            return;
+        }
+
+        if (outcome != TranscriptFlushOutcome.Deferred)
         {
             _ = _deferredAttempts.TryRemove(threadId, out _);
             return;
@@ -552,8 +596,10 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         {
             _logger.LogWarning(
                 "Transcript flush for thread {ThreadId} deferred {Attempts} times in a row; giving up until "
-                    + "the next turn or sub-agent update. Nothing is lost — every watermark involved is "
-                    + "unadvanced, so the next flush repeats the work.",
+                    + "the next turn or sub-agent update. No transcript rows were lost — a deferral leaves "
+                    + "the watermark of whatever it failed to write unadvanced, and the persisted "
+                    + "conversation itself is untouched — but this conversation's workspace copy now stops "
+                    + "short until something triggers it again.",
                 threadId,
                 attempt);
             return;

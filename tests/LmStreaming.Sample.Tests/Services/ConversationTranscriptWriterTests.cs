@@ -184,8 +184,14 @@ public sealed class ConversationTranscriptWriterTests
         return string.Concat(lines.Skip(skip).Select(l => WorkspaceTranscriptLine.Serialize(l) + "\n"));
     }
 
+    /// <summary>
+    /// The bytes of the i-th STAGED transcript payload. Selected by path rather than by absolute position
+    /// in <see cref="FakeFileBrowser.Writes"/> because the writer also PUTs the containment
+    /// <c>.gitignore</c>, ahead of the first append — a positional index would then be counting two
+    /// different kinds of write and would shift the moment containment moved.
+    /// </summary>
     private static string Written(FakeFileBrowser browser, int index) =>
-        Encoding.UTF8.GetString(browser.Writes[index].Bytes);
+        Encoding.UTF8.GetString(browser.Writes.Where(w => w.Path == TempPath).ElementAt(index).Bytes);
 
     private static IReadOnlyList<string> UidsIn(string payload) =>
         [
@@ -224,7 +230,7 @@ public sealed class ConversationTranscriptWriterTests
         var payload = ExpectedAppend(messages);
         _ = payload.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(3);
 
-        _ = browser.Writes[0].Path.Should().Be(TempPath);
+        _ = browser.Writes.Select(w => w.Path).Should().Equal(GitignorePath, TempPath);
         _ = Written(browser, 0).Should().Be(payload);
         _ = browser.Writes
             .Select(w => w.Path)
@@ -263,12 +269,12 @@ public sealed class ConversationTranscriptWriterTests
 
         PersistedMessage[] all = [.. first, .. second];
         _ = Written(browser, 0).Should().Be(ExpectedAppend(first));
-        _ = Written(browser, 2).Should().Be(ExpectedAppend(all, skip: 2));
+        _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 2));
 
         // No second tail: the watermark survived in process, keyed by thread.
         _ = browser.Commands.Select(c => c.Arguments[0]).Should().Equal("tail", "sh", "sh");
 
-        var file = Written(browser, 0) + Written(browser, 2);
+        var file = Written(browser, 0) + Written(browser, 1);
         var uids = UidsIn(file);
         _ = uids.Should().HaveCount(4);
         _ = uids.Distinct(StringComparer.Ordinal).Should().HaveCount(4);
@@ -328,7 +334,7 @@ public sealed class ConversationTranscriptWriterTests
         var writer = CreateWriter(store, browser);
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
-        _ = browser.Writes.Should().HaveCount(1);
+        _ = browser.Writes.Where(w => w.Path == TempPath).Should().ContainSingle();
 
         browser.ExecResult = Ok();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
@@ -336,7 +342,10 @@ public sealed class ConversationTranscriptWriterTests
         var payload = ExpectedAppend(messages);
         _ = Written(browser, 0).Should().Be(payload);
         _ = Written(browser, 1).Should().Be(payload);
-        _ = browser.Writes[2].Path.Should().Be(GitignorePath);
+
+        // Containment came first and was not repeated: the failure was the splice, not the ignore file.
+        _ = browser.Writes[0].Path.Should().Be(GitignorePath);
+        _ = browser.Writes.Where(w => w.Path == GitignorePath).Should().ContainSingle();
     }
 
     // ---------------------------------------------------------------- AC 8
@@ -370,21 +379,56 @@ public sealed class ConversationTranscriptWriterTests
     /// The containment file is the entire opt-out for the feature, so "we tried once and it did not work"
     /// is not an acceptable resting state: the transcript is on disk, unignored, and the next
     /// <c>git add -A</c> an agent runs in that workspace publishes the conversation's unredacted reasoning
-    /// off-machine. Two things have to be true for the retry to exist at all — the flush that failed must
-    /// report work still pending, and a later flush must attempt the write even though it appends NOTHING.
-    /// Tying the attempt to "this flush wrote rows" fails the second: for a conversation whose only
-    /// appending flush already happened, the trigger never comes again.
+    /// off-machine. Ordering containment ahead of the append covers everything this process writes — but
+    /// not a transcript an EARLIER process left behind, which is on disk before this writer exists and may
+    /// have nothing further to append. So the attempt must also be made on a flush that appends NOTHING;
+    /// tying it to "this flush wrote rows" leaves that file uncovered forever.
     /// </summary>
     [Fact]
-    public async Task Gitignore_IsRetriedOnAFlushThatAppendsNothing_AfterItsFirstWriteFails()
+    public async Task Gitignore_IsWrittenOnAFlushThatAppendsNothing_ForATranscriptAnEarlierProcessLeft()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // Cold writer over a workspace whose transcript is already complete: the tail already ends at the
+        // last row, so no flush this writer ever runs has anything to append.
+        var existing = ExpectedAppend(messages);
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command => command.Arguments[0] == "tail" ? Ok(existing) : Ok(),
+            WriteFailure = path =>
+                path == GitignorePath ? new SandboxException(SandboxErrorKind.Protocol, "gateway said no") : null,
+        };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Writes.Should().BeEmpty();
+
+        browser.WriteFailure = null;
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
+        _ = browser.Writes.Should().ContainSingle(w => w.Path == GitignorePath);
+
+        // And nothing was appended on either pass — the rows were already there.
+        _ = browser.Writes.Where(w => w.Path == TempPath).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Retrying containment is not enough on its own, because a retry budget can run out and a finished
+    /// conversation produces no further trigger. The ordering is what makes the guarantee unconditional:
+    /// containment is established BEFORE the first transcript byte reaches the workspace, so "reasoning on
+    /// disk with nothing covering it" is not a state the writer can be left in — not by a failed write, not
+    /// by an exhausted budget, not by a process that exits between the two calls. A conversation that never
+    /// gets its <c>.gitignore</c> written simply never gets a transcript either, which is the safe side.
+    /// </summary>
+    [Fact]
+    public async Task Gitignore_IsWrittenBeforeAnyTranscriptByte_SoAFailedContainmentLeavesNothingExposed()
     {
         var store = new InMemoryConversationStore();
         await SeedConversationAsync(store);
         await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
 
-        // ONLY the containment file fails. The rows themselves land — which is exactly the combination
-        // that makes the gap invisible: a complete transcript sitting in a git checkout with nothing
-        // covering it.
         var browser = new FakeFileBrowser
         {
             WriteFailure = path =>
@@ -392,17 +436,21 @@ public sealed class ConversationTranscriptWriterTests
         };
         var writer = CreateWriter(store, browser);
 
+        // Nothing staged, nothing spliced: the rows stay in the store, where they are already contained.
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
-        _ = browser.Writes.Select(w => w.Path).Should().NotContain(GitignorePath);
+        _ = browser.Writes.Should().BeEmpty();
+        _ = browser.Commands.Should().BeEmpty();
 
-        // The next flush has nothing whatsoever to append — and must still write the file.
+        // And a failure that is never followed by a successful flush still leaves nothing exposed — this is
+        // the resting state of a conversation whose last turn has already happened.
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Writes.Should().BeEmpty();
+        _ = browser.Commands.Should().BeEmpty();
+
         browser.WriteFailure = null;
-        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
-        _ = browser.Writes.Should().ContainSingle(w => w.Path == GitignorePath);
-
-        // Deferring for containment must not re-appear as duplicated rows: the watermark advanced with the
-        // successful splice, so exactly one staged payload was ever written.
-        _ = browser.Writes.Where(w => w.Path == TempPath).Should().ContainSingle();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Writes[0].Path.Should().Be(GitignorePath);
+        _ = browser.Writes[1].Path.Should().Be(TempPath);
     }
 
     // ---------------------------------------------------------------- AC 7, 12
@@ -522,7 +570,9 @@ public sealed class ConversationTranscriptWriterTests
         {
             if (command.Arguments[0] == "sh")
             {
-                stagedWhenSpliced.Add(browser.Writes.Count);
+                // Counted over STAGED writes only: the containment .gitignore is PUT ahead of the first
+                // append and is not a staged payload, so counting every write would just measure it.
+                stagedWhenSpliced.Add(browser.Writes.Count(w => w.Path == TempPath));
             }
 
             return Ok();
@@ -533,14 +583,14 @@ public sealed class ConversationTranscriptWriterTests
         // 1, 2, 3 — each splice sees its own PUT and nothing further. Any overlap shows up as a splice
         // observing a later file's staged bytes already sitting in the shared slot.
         _ = stagedWhenSpliced.Should().Equal(1, 2, 3);
-        _ = browser.Writes.Take(3).Select(w => w.Path).Should().AllBe(TempPath);
+        _ = browser.Writes.Skip(1).Take(3).Select(w => w.Path).Should().AllBe(TempPath);
     }
 
     /// <summary>
     /// The fan-out is bounded per flush and advances round-robin, so a conversation with many descendants
     /// is covered across successive flushes instead of holding the store's process-wide read semaphore for
-    /// every descendant at one turn boundary. A truncated pass reports <c>Deferred</c> so another flush
-    /// follows.
+    /// every descendant at one turn boundary. A truncated pass reports <c>Progressing</c> so another flush
+    /// follows — and once the sweep has covered everything, it stops asking.
     /// </summary>
     [Fact]
     public async Task SubAgentFanOut_IsBoundedPerFlush_AndCoversTheRestOnTheNextOne()
@@ -554,31 +604,29 @@ public sealed class ConversationTranscriptWriterTests
         var browser = new FakeFileBrowser();
         var writer = CreateWriter(store, browser, maxSubAgentFilesPerFlush: 1);
 
-        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Progressing);
         _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
 
         browser.Commands.Clear();
-        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
             .Should().Equal(AgentPath(Title, "b2", "beta"));
 
-        // A capped pass keeps asking, whether or not its own slice had anything to write: "this slice is
-        // current" says nothing about the descendants outside it. What terminates the chain is the caller's
-        // bounded retry budget (WorkspaceTranscriptMirror.MaxDeferredRetries), reset at each turn boundary
-        // — so a large fan-out is paced a slice per attempt instead of either spinning or stopping one step
-        // short of the descendant that actually changed.
+        // The sweep has now visited every descendant, so the writer stops asking. Reporting Deferred here
+        // instead — as a capped pass once did — would spend the caller's FAILURE budget on a conversation
+        // where nothing failed, capping how far any single trigger can ever reach into a large roster.
         browser.Commands.Clear();
-        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
         _ = browser.Commands.Should().BeEmpty();
     }
 
     /// <summary>
-    /// The consequence of the rule above, at the only scale where it is visible: the descendant that
-    /// changed is OUTSIDE the current slice. Ending the chain on the first capped pass whose own slice was
-    /// already current stops exactly one step short of it — the pass that would have covered it never runs,
-    /// and the sub-agent's rows sit unmirrored until some unrelated later trigger happens along. There is
-    /// no ordering that avoids this: the cursor cannot know which descendant moved without reading it.
+    /// The reason a capped pass keeps asking at all: the descendant that changed is OUTSIDE the current
+    /// slice, and "this slice is current" says nothing about the ones beyond it. Stopping on the first
+    /// capped pass whose own slice was already current ends one step short — the pass that would have
+    /// covered the changed descendant never runs. There is no ordering that avoids this: the cursor cannot
+    /// know which descendant moved without reading it.
     /// </summary>
     [Fact]
     public async Task SubAgentFanOut_KeepsAskingWhileCapped_SoAChangeBeyondTheSliceIsStillMirrored()
@@ -596,17 +644,50 @@ public sealed class ConversationTranscriptWriterTests
         _ = await writer.FlushAsync();
         _ = await writer.FlushAsync();
 
-        // Only the descendant the NEXT slice will not look at moves.
+        // Only the descendant the NEXT slice will not look at moves. In production that change IS an
+        // external trigger — the mirror observes the child's completion notification — and the trigger is
+        // what starts the fresh sweep this scenario depends on.
         await store.AppendMessagesAsync("subagent-b2", [Msg("b2b", 21, threadId: "subagent-b2")]);
+        writer.NoteExternalTrigger();
 
         browser.Commands.Clear();
-        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Progressing);
         _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Should().BeEmpty();
 
         browser.Commands.Clear();
-        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
             .Should().Equal(AgentPath(Title, "b2", "beta"));
+    }
+
+    /// <summary>
+    /// The chain has to END. "Keep asking while capped" with no notion of coverage asks forever — every
+    /// pass over a roster larger than the cap is a capped pass, so the writer requests a follow-up on a
+    /// conversation that is completely mirrored and quiet, and the only thing that stops it is the caller
+    /// burning a failure budget that exists for failures. Once a sweep has visited every descendant the
+    /// writer is done asking, and it does not start over until an external trigger says something moved.
+    /// </summary>
+    [Fact]
+    public async Task SubAgentFanOut_StopsAskingOnceEveryDescendantHasBeenCovered()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+        await SeedSubAgentAsync(store, "b2", "beta", Msg("b2a", 20, threadId: "subagent-b2"));
+        await SeedSubAgentAsync(store, "c3", "gamma", Msg("c3a", 30, threadId: "subagent-c3"));
+
+        var browser = new FakeFileBrowser();
+        var writer = CreateWriter(store, browser, maxSubAgentFilesPerFlush: 1);
+
+        // While descendants remain unvisited the pass is still making progress and asks for a follow-up.
+        _ = (await writer.FlushAsync()).Should().NotBe(TranscriptFlushOutcome.UpToDate);
+        _ = (await writer.FlushAsync()).Should().NotBe(TranscriptFlushOutcome.UpToDate);
+
+        // The third pass completes the sweep, and the fourth has nothing left to ask about. Neither may
+        // report Deferred: nothing failed, and Deferred is what spends the caller's failure budget.
+        _ = (await writer.FlushAsync()).Should().NotBe(TranscriptFlushOutcome.Deferred);
+        _ = (await writer.FlushAsync()).Should().NotBe(TranscriptFlushOutcome.Deferred);
     }
 
     /// <summary>
@@ -700,7 +781,7 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands[1].Arguments[6].Should().Be(MainPath(Title));
-        _ = Written(browser, 2).Should().Be(ExpectedAppend(all, skip: 1));
+        _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 1));
 
         browser.ExecuteHandler = null;
         PersistedMessage[] everything = [.. all, Msg("m3", 3)];
@@ -710,7 +791,7 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(Title), MainPath(RetitledTo));
         _ = browser.Commands[1].Arguments[6].Should().Be(MainPath(RetitledTo));
-        _ = Written(browser, 3).Should().Be(ExpectedAppend(everything, skip: 2));
+        _ = Written(browser, 2).Should().Be(ExpectedAppend(everything, skip: 2));
     }
 
     /// <summary>
@@ -763,6 +844,79 @@ public sealed class ConversationTranscriptWriterTests
         // One transcript, and the sub-agent file lands under it rather than beside the abandoned name.
         _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+    }
+
+    /// <summary>
+    /// The listing is the cold writer's ONLY route to the file it already owns, so a listing that FAILS and
+    /// a directory that is genuinely empty cannot be answered the same way. Treating a transport or
+    /// protocol failure as "nothing to adopt" recreates the split transcript above — the old file frozen
+    /// under its old slug, a second one restarting the history from zero — except now it is triggered by a
+    /// momentary gateway fault rather than by a real absence, and the adoption path never runs again
+    /// because the second file IS the computed leaf from then on. A failure defers instead: nothing is
+    /// appended, nothing is renamed, and the next flush asks again.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_DefersWhenTheDirectoryListingFails_InsteadOfAdoptingASecondTranscript()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+
+        // The conversation's transcript IS in the workspace, under the slug in force when it was written.
+        var stale = WorkspaceTranscriptLine.MainFileLeaf(RetitledTo, ShortThreadId);
+        var browser = new FakeFileBrowser
+        {
+            ListThrows = new SandboxException(SandboxErrorKind.Protocol, "gateway said no"),
+        };
+        browser.Listings[ConversationTranscriptWriter.TranscriptDirectory] =
+        [
+            new SandboxDirectoryEntry(
+                $"{stale}{ConversationTranscriptWriter.TranscriptExtension}",
+                SandboxEntryType.File,
+                128,
+                NameLossy: false
+            ),
+        ];
+
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Writes.Should().BeEmpty();
+        _ = browser.Commands.Should().BeEmpty();
+
+        // And once the gateway answers, the SAME writer adopts the file that was there all along.
+        browser.ListThrows = null;
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(RetitledTo), MainPath(Title));
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title));
+    }
+
+    /// <summary>
+    /// The other side of that discrimination, and the reason it has to be narrow: a workspace that has
+    /// never held a transcript answers the listing with a DEFINITE miss, and that is the ordinary
+    /// first-flush case rather than a fault. Deferring on it would leave every brand-new conversation
+    /// spinning its retry budget and never writing a first line.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_TreatsADefinitelyMissingDirectoryAsNothingToAdopt()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User")];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser
+        {
+            ListThrows = new SandboxException(SandboxErrorKind.NotFound, "no such path")
+            {
+                ErrorCode = "path_not_found",
+            },
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title));
     }
 
     // ---------------------------------------------------------------- AC 19
