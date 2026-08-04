@@ -82,6 +82,10 @@ internal sealed class GitHubPrProvider : IPrProvider
                         // last activity) with created_at as the fallback.
                         CreatedAt = ParseTimestamp(pr, "created_at"),
                         UpdatedAt = ParseTimestamp(pr, "updated_at"),
+                        // Who OPENED the PR — addresses the per-developer feedback record. Left null when
+                        // the payload omits it (deleted account, or a shape we didn't expect) so the daemon
+                        // skips the record rather than addressing it to a placeholder.
+                        Author = LoginOf(pr, "user"),
                     });
 
                     if (string.CompareOrdinal(updatedAt, highWaterMark) > 0)
@@ -210,5 +214,20 @@ internal sealed class GitHubPrProvider : IPrProvider
         && DateTimeOffset.TryParse(
             value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
             ? parsed
+            : null;
+
+    /// <summary>
+    /// Reads <c>&lt;property&gt;.login</c> from a PR payload, or null when the object or the login is
+    /// absent, non-string, or blank. GitHub omits the user object for a deleted account, so every layer
+    /// below must already tolerate a null author — this returns null rather than a placeholder string so
+    /// that tolerance is exercised instead of bypassed.
+    /// </summary>
+    private static string? LoginOf(JsonElement pr, string property) =>
+        pr.TryGetProperty(property, out var user)
+        && user.ValueKind is JsonValueKind.Object
+        && user.TryGetProperty("login", out var login)
+        && login.ValueKind is JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(login.GetString())
+            ? login.GetString()
             : null;
 }

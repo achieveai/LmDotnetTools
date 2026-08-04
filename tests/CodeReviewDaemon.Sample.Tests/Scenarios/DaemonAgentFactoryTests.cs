@@ -497,4 +497,39 @@ public sealed class DaemonAgentFactoryTests
         prompt.Should().MatchRegex("(?i)frontmatter"); // the model must NOT write frontmatter
         prompt.Should().MatchRegex("(?i)durable");
     }
+
+    [Fact]
+    public void CreateReviewFeedbackExtractionProfile_carries_the_gate_and_record_contract()
+    {
+        // The per-developer record's sibling of the test above. It also proves the prompt KEY resolves:
+        // GetPrompt is a runtime dictionary lookup that throws KeyNotFoundException on a bad name, so a
+        // green build says nothing about whether `review-feedback-extraction` is actually in the YAML.
+        var profile = DaemonAgentFactory.CreateReviewFeedbackExtractionProfile();
+
+        profile.Id.Should().Be(DaemonAgentFactory.ReviewFeedbackExtractionProfileId);
+        profile.EnabledBuiltInTools.Should().BeEmpty();
+        profile.EnabledTools.Should().BeNull();
+
+        var prompt = profile.SystemPrompt;
+        prompt.Should().Contain("NO_FEEDBACK"); // the decline sentinel
+        prompt.Should().Contain("## PATTERNS"); // the record header the daemon parses
+        prompt.Should().Contain("- **Seen in:**"); // the per-pattern shape
+        prompt.Should().Contain("- **How to avoid it:**");
+        prompt.Should().MatchRegex("(?i)frontmatter"); // the model must NOT write frontmatter
+
+        // On the S2S path this prompt is only an APPENDIX to the host's workspace-agent MODE prompt,
+        // which mandates tool use and an action summary. The appendix loses unless it opens by
+        // overriding it — the defect that made every August 2026 extraction run write nothing.
+        prompt.Should().MatchRegex("(?i)do NOT use tools");
+        prompt.Trim().Should().StartWith("This turn is a DATA EXTRACTION turn");
+
+        // Only recorded when raised in one round and FIXED in a later one — the owner's explicit focus.
+        prompt.Should().MatchRegex("(?i)fixed");
+
+        // Unlike knowledge-extraction, the output path is derived by the daemon from the provider's PR
+        // author, so the model supplies NO path component. Asserting the markers are absent pins that:
+        // they live in the same YAML file one key above, so a copy-paste of that block would fire here.
+        prompt.Should().NotContain("## SCOPE:");
+        prompt.Should().NotContain("## UPDATES:");
+    }
 }

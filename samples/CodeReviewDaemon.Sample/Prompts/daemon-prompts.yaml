@@ -425,3 +425,72 @@ knowledge-extraction:
     Do NOT write YAML frontmatter — the daemon deterministically injects title, tags, scope,
     sourcePrs, and updated. Do not attempt to post comments, push commits, or otherwise act on the
     repository — the daemon owns all writes.
+
+# Maintains one record per PR AUTHOR of the mistakes they repeat, so a future review of their work can
+# check their known patterns first. Kept separate from `knowledge-extraction` because the two answer
+# different questions: that one asks "what should EVERY future review know?", this one asks "what does
+# THIS developer keep getting wrong?" — and a lesson can be durable for one and noise for the other.
+#
+# Shares knowledge-extraction v1.1's hard-won shape, for the same reasons: on the S2S path this prompt
+# is only an APPENDIX to the host's `workspace-agent` MODE prompt, which mandates tool use, task memory
+# and an action summary. The mode prompt wins unless this one opens by overriding it and pins the FIRST
+# line of the reply, which is why every August 2026 extraction run silently wrote nothing.
+#
+# Unlike knowledge-extraction there are no SCOPE/UPDATES markers: the output path is
+# `developers/<slug(author)>.reviewfeedbacks.md`, derived by the daemon from the provider's PR author.
+# The model never names a file, which removes the model-supplied-path traversal class outright.
+review-feedback-extraction:
+  v1.0: |
+    This turn is a DATA EXTRACTION turn, not a workspace task. It overrides any workspace, mode, or
+    sandbox instructions you were given: do NOT use tools, do NOT read/write/create/edit files, do NOT
+    record task memory, and do NOT summarize actions you took. Everything you need is in the message.
+
+    You read ONE pull request's accumulated review notes — every round of them — and maintain a running
+    record of the mistakes the developer who opened it REPEATS, so future reviews of their work can
+    check their known patterns first.
+
+    WHAT COUNTS
+
+    Record something ONLY when the notes show a finding that was RAISED in one round and then FIXED in
+    a later one. The fix is the developer's own confirmation that the finding was real. Findings that
+    were disputed, declined, explained away, or simply never addressed are NOT evidence of a mistake —
+    ignore them completely, however serious they sound.
+
+    A pattern is a HABIT worth warning about next time, written as the CLASS of error rather than the
+    incident: "drops the CancellationToken when calling async APIs", not "missed the token on line 42
+    of Foo.cs". One-off slips — a typo, a stale rebase, a build break — are not habits.
+
+    You are given this developer's EXISTING record. If a finding in this PR is another instance of a
+    pattern already recorded, UPDATE that pattern: add this PR to its evidence and sharpen the
+    description. Do not append a near-duplicate beside it.
+
+    WHEN THERE IS NOTHING
+
+    Most PRs add nothing to this record — no finding was both raised and fixed, or the fixes were
+    one-offs. Reply with exactly:
+
+    NO_FEEDBACK
+
+    and nothing else. That is a correct and expected answer — prefer it over prose.
+
+    OUTPUT
+
+    The FIRST line of your reply must be exactly `NO_FEEDBACK` or `## PATTERNS`. Anything else — a
+    greeting, an action summary, a review verdict, a question — means nothing gets written.
+
+    After `## PATTERNS`, emit the developer's COMPLETE updated record: every pattern you are keeping
+    from the existing record, revised or unchanged, plus any new one. What you emit REPLACES the
+    record, so a pattern you leave out is deleted. Use this shape for each one:
+
+    ### <short name for the class of error>
+    - **Seen in:** <comma-separated PR refs, oldest first>
+    - **What happens:** <one or two sentences, in the general case>
+    - **How to avoid it:** <the concrete check they can apply before pushing>
+
+    Write about the work, never the person. Describe the error class and the fix; do not comment on
+    competence, effort, care, or intent, and do not count or grade. This record is committed to the
+    repository under the developer's name and is written to be read by them.
+
+    Do NOT write YAML frontmatter — the daemon deterministically injects the developer, sourcePrs and
+    updated fields. Do NOT name or choose the output file; the daemon owns the path. Do not attempt to
+    post comments, push commits, or otherwise act on the repository — the daemon owns all writes.

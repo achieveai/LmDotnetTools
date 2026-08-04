@@ -96,7 +96,11 @@ internal sealed class AdoPrProvider : IPrProvider
                         pr.TryGetProperty("sourceRefName", out var srn) && srn.ValueKind is JsonValueKind.String
                             ? srn.GetString()
                             : null,
-                        pr.GetProperty("status").GetString()));
+                        pr.GetProperty("status").GetString(),
+                        // Who OPENED the PR. ADO's uniqueName is normally an email address; it is only
+                        // carried as an opaque identity string here, and the consumer is responsible for
+                        // reducing it to a safe, confined file name.
+                        UniqueNameOf(pr, "createdBy")));
                 }
 
                 // Phase 2: resolve each PR's recency signal. ADO's PR list has no last-activity field, so a PR
@@ -126,6 +130,7 @@ internal sealed class AdoPrProvider : IPrProvider
                         // so the filter keeps it; UpdatedAt = last push, resolved only for PRs before the window.
                         CreatedAt = recencyCreatedAt,
                         UpdatedAt = updatedAt,
+                        Author = raw.Author,
                     });
 
                     if (raw.PrId > highWaterMark)
@@ -181,10 +186,37 @@ internal sealed class AdoPrProvider : IPrProvider
             ? parsed
             : null;
 
+    /// <summary>
+    /// Reads <c>&lt;property&gt;.uniqueName</c> from an ADO PR payload, falling back to
+    /// <c>displayName</c>, or null when neither is a usable string. Unlike a GitHub login this value is
+    /// typically an email address and is NOT constrained to filename-safe characters, so it is returned
+    /// verbatim and left for the consumer to slug and confine.
+    /// </summary>
+    private static string? UniqueNameOf(JsonElement pr, string property)
+    {
+        if (!pr.TryGetProperty(property, out var identity) || identity.ValueKind is not JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var field in (ReadOnlySpan<string>)["uniqueName", "displayName"])
+        {
+            if (identity.TryGetProperty(field, out var value)
+                && value.ValueKind is JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(value.GetString()))
+            {
+                return value.GetString();
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Raw per-PR metadata materialized from one ADO PR-list page, before the async recency
     /// resolution (a <see cref="JsonElement"/> can't outlive its document).</summary>
     private sealed record RawAdoPr(
-        long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status);
+        long PrId, string HeadSha, string BaseSha, DateTimeOffset? CreatedAt, string? SourceRefName, string? Status,
+        string? Author);
 
     /// <summary>
     /// Resolves each PR's recency signal (<c>UpdatedAt</c>, <c>CreatedAt</c>) for

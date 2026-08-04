@@ -100,4 +100,17 @@ internal sealed record PullRequestDescriptor
     /// <see cref="CreatedAt"/>. Null when the provider gives no date.
     /// </summary>
     public DateTimeOffset? UpdatedAt { get; init; }
+
+    /// <summary>
+    /// The identity that OPENED the pull request (GitHub <c>user.login</c>, ADO
+    /// <c>createdBy.uniqueName</c>), used to address the per-developer review-feedback record. This is
+    /// deliberately the PR author and not the author of any individual commit or comment: the record
+    /// answers "what does the person who submitted this work keep getting wrong?".
+    /// <para>
+    /// Optional, and null whenever the provider payload omits it. A null author is not an error — it
+    /// simply means no feedback record is addressable for this PR, and the daemon writes nothing rather
+    /// than inventing a placeholder identity. Callers must never substitute a commenter or a bot here.
+    /// </para>
+    /// </summary>
+    public string? Author { get; init; }
 }

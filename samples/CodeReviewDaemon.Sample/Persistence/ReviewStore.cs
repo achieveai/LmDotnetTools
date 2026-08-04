@@ -162,12 +162,12 @@ internal sealed class ReviewStore : IDisposable
                 repo_id, pr_id, head_sha, base_sha, trigger_watermark, review_kind, variant_id, mode,
                 merge_sha, model_provider, model_id, prompt_template_hash, policy_bundle_version,
                 feature_flag_snapshot, stage, workflow_status, pr_lifecycle_state,
-                is_fork_pr, is_target_repo_public, created_at, updated_at)
+                is_fork_pr, is_target_repo_public, pr_author, created_at, updated_at)
             VALUES (
                 $repoId, $prId, $head, $base, $watermark, $kind, $variant, $mode,
                 $merge, $modelProvider, $modelId, $promptHash, $policyVersion,
                 $flags, $stage, $workflow, $prState,
-                $isForkPr, $isTargetRepoPublic, $now, $now);
+                $isForkPr, $isTargetRepoPublic, $prAuthor, $now, $now);
             """;
         _ = insert.Parameters.AddWithValue("$repoId", run.RepoId);
         _ = insert.Parameters.AddWithValue("$prId", run.PrId);
@@ -188,6 +188,7 @@ internal sealed class ReviewStore : IDisposable
         _ = insert.Parameters.AddWithValue("$prState", run.PrLifecycleState.ToString());
         _ = insert.Parameters.AddWithValue("$isForkPr", run.IsForkPr);
         _ = insert.Parameters.AddWithValue("$isTargetRepoPublic", run.IsTargetRepoPublic);
+        _ = insert.Parameters.AddWithValue("$prAuthor", (object?)run.PrAuthor ?? DBNull.Value);
         _ = insert.Parameters.AddWithValue("$now", now);
         _ = insert.ExecuteNonQuery();
 
@@ -302,10 +303,16 @@ internal sealed class ReviewStore : IDisposable
     private const string PrimaryVariantId = "primary";
 
     /// <summary>
-    /// Returns one row per PR that has at least one <c>review_run</c> (DISTINCT over the reviewed
+    /// Returns one row per PR that has at least one <c>review_run</c> (grouped over the reviewed
     /// (repo, pr) pairs — multiple runs, variants, or head shas for the same PR collapse to a single
     /// row). Consumed by the PR-lifecycle sweeper to enumerate the PRs it must re-poll for close/merge
     /// transitions; the caller derives the per-PR branch name itself.
+    /// <para>
+    /// Grouped rather than <c>DISTINCT</c> because of <c>pr_author</c>: a PR reviewed both before and
+    /// after the author column existed has runs with and without it, and a DISTINCT over the author
+    /// would emit that PR twice — sweeping it twice and, worse, once with the author erased.
+    /// <c>MAX</c> ignores NULLs, so a known author always beats an unknown one.
+    /// </para>
     /// </summary>
     /// <remarks>
     /// Keeps its <c>Async</c> signature (the sweeper awaits it) but runs synchronously under the store's
@@ -321,9 +328,11 @@ internal sealed class ReviewStore : IDisposable
         using var gate = _gate.EnterScope();
         using var command = _connection.CreateCommand();
         command.CommandText = """
-            SELECT DISTINCT r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id, rr.pr_id
+            SELECT r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id, rr.pr_id,
+                   MAX(rr.pr_author) AS pr_author
             FROM review_run rr
-            JOIN repo r ON r.id = rr.repo_id;
+            JOIN repo r ON r.id = rr.repo_id
+            GROUP BY r.provider, r.org_or_owner, r.project, r.repo_name, r.repo_stable_id, rr.pr_id;
             """;
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -336,7 +345,11 @@ internal sealed class ReviewStore : IDisposable
                 RepoName = reader.GetString(reader.GetOrdinal("repo_name")),
                 RepoStableId = GetNullableString(reader, "repo_stable_id"),
             };
-            results.Add(new ReviewedPrRow(repo, repo.Provider, reader.GetString(reader.GetOrdinal("pr_id"))));
+            results.Add(new ReviewedPrRow(
+                repo,
+                repo.Provider,
+                reader.GetString(reader.GetOrdinal("pr_id")),
+                GetNullableString(reader, "pr_author")));
         }
 
         return Task.FromResult<IReadOnlyList<ReviewedPrRow>>(results);
@@ -694,6 +707,7 @@ internal sealed class ReviewStore : IDisposable
         PrLifecycleState = Enum.Parse<PrLifecycleState>(reader.GetString(reader.GetOrdinal("pr_lifecycle_state"))),
         IsForkPr = reader.GetBoolean(reader.GetOrdinal("is_fork_pr")),
         IsTargetRepoPublic = reader.GetBoolean(reader.GetOrdinal("is_target_repo_public")),
+        PrAuthor = GetNullableString(reader, "pr_author"),
     };
 
     private static OutboxEntry MapOutbox(SqliteDataReader reader) => new()
@@ -730,8 +744,10 @@ internal sealed class ReviewStore : IDisposable
 /// A PR that has been reviewed at least once, as enumerated by <see cref="ReviewStore.ListReviewedPrsAsync"/>
 /// for the PR-lifecycle sweeper. Carries the repo <paramref name="Repo"/> and its <paramref name="Provider"/>
 /// (the provider to poll) plus the external <paramref name="PrId"/>; the caller derives any branch name.
+/// <paramref name="Author"/> is the identity that opened the PR, or null when no run recorded one —
+/// the at-close feedback extraction writes nothing rather than guessing.
 /// </summary>
-internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string PrId);
+internal sealed record ReviewedPrRow(RepoIdentity Repo, string Provider, string PrId, string? Author = null);
 
 /// <summary>
 /// The re-review context for a PR, as computed by <see cref="ReviewStore.GetPriorReviewSummary"/>:

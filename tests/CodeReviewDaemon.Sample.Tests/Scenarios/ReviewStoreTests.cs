@@ -286,6 +286,49 @@ public sealed class ReviewStoreTests
         reviewed.Should().BeEmpty();
     }
 
+    // ── pr_author (per-developer review feedback) ─────────────────────────────────────────────────
+
+    [Fact]
+    public void The_pr_author_round_trips_and_stays_null_when_unknown()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        var withAuthor = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrAuthor = "octocat" });
+        var withoutAuthor = store.CreateOrGetReviewRun(
+            SampleRun(repoId) with { PrId = "200", HeadSha = "sha-x", PrAuthor = null });
+
+        store.GetReviewRun(withAuthor.Id)!.PrAuthor.Should().Be("octocat");
+
+        // Unknown must reload as null, not as "" or a placeholder: null is the single value every
+        // consumer reads as "no feedback record is addressable for this PR".
+        store.GetReviewRun(withoutAuthor.Id)!.PrAuthor.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ListReviewedPrsAsync_keeps_one_row_per_pr_and_prefers_the_known_author()
+    {
+        using var db = new TempSqliteDatabase();
+        using var store = new ReviewStore(db.ConnectionString);
+        var repoId = store.EnsureRepo(SampleRepo());
+
+        // The realistic shape after this feature ships: PR 118 was first reviewed before the author was
+        // recorded, then reviewed again after. A DISTINCT over pr_author would emit PR 118 TWICE — the
+        // sweeper would sweep it twice, and one of those rows would have erased the author.
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-1", PrAuthor = null });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "118", HeadSha = "sha-2", PrAuthor = "octocat" });
+        _ = store.CreateOrGetReviewRun(SampleRun(repoId) with { PrId = "200", HeadSha = "sha-3", PrAuthor = null });
+
+        var reviewed = await store.ListReviewedPrsAsync(CancellationToken.None);
+
+        reviewed.Should().HaveCount(2, "runs for the same PR collapse to one row even when only some carry an author");
+        reviewed.Single(r => r.PrId == "118").Author.Should().Be(
+            "octocat", "a recorded author must win over a run that predates the column");
+        reviewed.Single(r => r.PrId == "200").Author.Should().BeNull(
+            "a PR no run recorded an author for stays unknown rather than borrowing another PR's");
+    }
+
     // ── §12 opaque cursor resync tolerance ────────────────────────────────────────────────────────
 
     private const int CurrentCursorVersion = 1;

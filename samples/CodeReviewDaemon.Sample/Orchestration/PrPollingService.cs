@@ -166,6 +166,9 @@ internal sealed class PrPollingService : BackgroundService
                 Stage = ReviewStage.Discovered,
                 WorkflowStatus = WorkflowStatus.Pending,
                 PrLifecycleState = pr.LifecycleState,
+                // Captured now, while the PR is still open and the poll payload is in hand: the at-close
+                // feedback extraction runs much later, against a PR that may already be closed.
+                PrAuthor = pr.Author,
             };
 
             // Per-PR isolation: one poison PR must not abort the rest of the target's PRs. The
