@@ -244,7 +244,7 @@ public class KnowledgeDigestTests
 
         var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 900, omitted: 0);
 
-        digest.Text.Length.Should().BeLessThan(1200, "the budget must actually bound the output");
+        digest.Text.Length.Should().BeLessThanOrEqualTo(900, "the budget must actually bound the output");
         digest.Text.Should().MatchRegex(@"\d+ more entr");
         digest.Text.Should().Contain("_toc.md", "the agent needs a route to the entries that did not fit");
     }
@@ -487,5 +487,262 @@ public class KnowledgeDigestTests
 
         block.Text.Split('\n').Count(l => l.StartsWith("- [", StringComparison.Ordinal))
             .Should().Be(block.Listed);
+    }
+
+    // ---- Both renderers: the budget is a HARD bound on model-authored content --------------------
+    //
+    // Titles, tags and scopes are written by the knowledge-extraction agent, and both renderers put them
+    // into the block verbatim. An unbounded string from an LLM landing in a budgeted block means the block
+    // is only nominally budgeted: it crowds the actual PR out of the reviewer's context window, which is
+    // the failure the budget exists to prevent. Where metadata cannot fit, the metadata gives way and the
+    // PATH stays whole - a truncated title is cosmetic, a truncated path is a link the agent cannot open.
+
+    private const string LongTitle = // 20k of model-authored title, well past the 8 KiB production budget
+        "A lesson whose title the extraction agent never learned to keep short ";
+
+    [Fact]
+    public void Render_OversizedFirstTitleStillRespectsTheBudget()
+    {
+        var title = string.Concat(Enumerable.Repeat(LongTitle, 300));
+
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", title, ["tag"])], KbRoot, charBudget: 2_000, omitted: 0);
+
+        digest.Text.Length.Should().BeLessThanOrEqualTo(2_000);
+    }
+
+    [Fact]
+    public void Render_TruncatesTheTitleButKeepsTheExactPathIntact()
+    {
+        // The path is the load-bearing part of this whole feature: it is the one thing the parent copies
+        // into a sub-agent's brief, and the sub-agent has no way to repair a path that arrives cut short.
+        var title = string.Concat(Enumerable.Repeat(LongTitle, 300));
+
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", title, ["tag"])], KbRoot, charBudget: 2_000, omitted: 0);
+
+        digest.Text.Should().Contain($"{KbRoot}/system/alpha.md");
+        digest.Rendered.Should().ContainSingle("a huge title must cost the title, not the entry");
+    }
+
+    [Fact]
+    public void Render_OversizedTagsAndScopeStillRespectTheBudget()
+    {
+        var entry = new KnowledgeEntryMeta(
+            "system/alpha.md",
+            "Alpha",
+            [.. Enumerable.Range(0, 2_000).Select(i => $"a-tag-the-agent-invented-{i}")],
+            string.Concat(Enumerable.Repeat("scope-", 2_000)),
+            [],
+            "2026-07-01");
+
+        var digest = KnowledgeDigest.Render([entry], KbRoot, charBudget: 2_000, omitted: 0);
+
+        digest.Text.Length.Should().BeLessThanOrEqualTo(2_000);
+        digest.Text.Should().Contain($"{KbRoot}/system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_BudgetTooSmallForEvenTheHeader_EmitsNothingRatherThanOverrun()
+    {
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 40, omitted: 0);
+
+        digest.Text.Length.Should().BeLessThanOrEqualTo(40);
+    }
+
+    [Fact]
+    public void Render_FooterIsInsideTheBudgetNotAddedAfterIt()
+    {
+        // The footer is appended once the entries are in. Unreserved, it is an unchecked append onto a
+        // block already sitting at the limit - the same shape as the entry that skips the check.
+        var entries = Enumerable.Range(0, 40)
+            .Select(i => Entry($"system/entry-number-{i}.md", $"A reasonably long lesson title {i}", ["tag"]))
+            .ToArray();
+
+        foreach (var budget in new[] { 300, 500, 900, 1_500 })
+        {
+            KnowledgeDigest.Render(entries, KbRoot, budget, omitted: 0)
+                .Text.Length.Should().BeLessThanOrEqualTo(budget, "budget {0} must bound the block", budget);
+        }
+    }
+
+    [Fact]
+    public void RenderTableOfContents_WithNoRecognisableEntriesIsStillBounded()
+    {
+        // THE regression this pass exists for. A torn or hand-edited _toc.md has no "- [Title](path)" lines,
+        // so an entry-counted truncation gate never fires and the whole file is appended unbounded - on the
+        // degraded path, which is the only path this renderer is ever used on.
+        var junk = string.Concat(Enumerable.Repeat("this line is not a table of contents entry at all\n", 500));
+
+        var block = KnowledgeDigest.RenderTableOfContents(junk, KbRoot, charBudget: 2_000);
+
+        block.Text.Length.Should().BeLessThanOrEqualTo(2_000);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_WithNoRecognisableEntriesReportsThatItTruncated()
+    {
+        // Listed = 0, Dropped = 0 while silently discarding most of the file is a proof-of-delivery line
+        // that lies. Truncation must be observable even when nothing countable was truncated.
+        var junk = string.Concat(Enumerable.Repeat("this line is not a table of contents entry at all\n", 500));
+
+        var block = KnowledgeDigest.RenderTableOfContents(junk, KbRoot, charBudget: 2_000);
+
+        block.Truncated.Should().BeTrue();
+        block.Text.Should().Contain("_toc.md", "the agent still needs a route to what was cut");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_UnderBudget_ReportsNoTruncation()
+    {
+        KnowledgeDigest.RenderTableOfContents(BigToc(3), KbRoot, charBudget: 10_000)
+            .Truncated.Should().BeFalse();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_OversizedSingleEntryIsStillBounded()
+    {
+        var toc = "# Knowledge Base\n\n- [" + string.Concat(Enumerable.Repeat(LongTitle, 300))
+            + "](system/alpha.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 2_000);
+
+        block.Text.Length.Should().BeLessThanOrEqualTo(2_000);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_OversizedSingleEntryKeepsItsLinkOpenable()
+    {
+        // Same rule as the ranked path: the title gives way, the link does not. A ToC line is only useful
+        // because of what is inside its parentheses.
+        var toc = "# Knowledge Base\n\n- [" + string.Concat(Enumerable.Repeat(LongTitle, 300))
+            + "](system/alpha.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 2_000);
+
+        block.Text.Should().Contain("](system/alpha.md)");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_BudgetTooSmallForEvenTheHeader_EmitsNothingRatherThanOverrun()
+    {
+        KnowledgeDigest.RenderTableOfContents(BigToc(5), KbRoot, charBudget: 40)
+            .Text.Length.Should().BeLessThanOrEqualTo(40);
+    }
+
+    // ---- Containment is applied BEFORE the entry cap --------------------------------------------
+
+    [Fact]
+    public void PartitionByContainment_SeparatesUsableEntriesFromEscapingOnes()
+    {
+        var entries = Enumerable.Range(0, 24)
+            .Select(i => Entry($"../../etc/passwd-{i}", $"Poisoned {i}", ["runner"]))
+            .Append(Entry("system/alpha.md", "Sound lesson about the runner", ["runner"]))
+            .ToArray();
+
+        var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
+
+        partition.Usable.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+        partition.Refused.Should().HaveCount(24, "every refusal must still be reportable");
+    }
+
+    [Fact]
+    public void PartitionBeforeSelect_SurfacesKnowledgeThatEscapingEntriesWouldHaveCrowdedOut()
+    {
+        // Capping at MaxKnowledgeEntries BEFORE containment lets invalid high-ranked entries eat every
+        // retrieval slot: 24 escaping entries ahead of good knowledge surface NOTHING, which is exactly the
+        // knowledge-blind review issue #255 exists to prevent - reached through the containment check that
+        // was added to make retrieval safer. The cap has to count entries the agent can actually use.
+        var entries = Enumerable.Range(0, 24)
+            .Select(i => Entry($"../../etc/passwd-{i}", $"Runner lesson {i}", ["runner"], updated: "2026-08-01"))
+            .Append(Entry("system/alpha.md", "Runner lesson", ["runner"], updated: "2026-01-01"))
+            .ToArray();
+
+        var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
+        var selected = KnowledgeDigest.SelectRelevant(
+            partition.Usable, ["src/Runner.cs"], "LmDotnetTools", maxEntries: 24);
+        var digest = KnowledgeDigest.Render(
+            selected, KbRoot, charBudget: 10_000, omitted: partition.Usable.Count - selected.Count);
+
+        digest.Rendered.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+        digest.Text.Should().Contain($"{KbRoot}/system/alpha.md");
+    }
+
+    [Fact]
+    public void PartitionByContainment_NoEscapes_KeepsEveryEntryAndRefusesNothing()
+    {
+        var entries = new[] { Entry("system/alpha.md", "Alpha", ["a"]), Entry("system/beta.md", "Beta", ["b"]) };
+
+        var partition = KnowledgeDigest.PartitionByContainment(entries, KbRoot);
+
+        partition.Usable.Should().HaveCount(2);
+        partition.Refused.Should().BeEmpty();
+    }
+
+    // ---- Sweep: every OTHER model-authored string on a bounded surface ---------------------------
+
+    [Fact]
+    public void Render_OversizedPathDropsTheEntryRatherThanTruncatingIt()
+    {
+        // "file" is model-authored too, and it is the one field truncation must never touch: a cut path is
+        // not a lesser version of the path, it is a path to nothing. So an entry whose path alone cannot fit
+        // is dropped and counted, never emitted half-written.
+        var entries = new[]
+        {
+            Entry("system/" + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200)) + "a.md", "A", ["a"]),
+            Entry("system/beta.md", "Beta", ["b"]),
+        };
+
+        var digest = KnowledgeDigest.Render(entries, KbRoot, charBudget: 2_000, omitted: 0);
+
+        digest.Text.Length.Should().BeLessThanOrEqualTo(2_000);
+        digest.Text.Should().NotContain("deeply-nested-segment/deeply-nested-segment");
+        digest.Rendered.Should().NotContain(entry => entry.Title == "A");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_OversizedLinkDropsTheLineRatherThanBreakingIt()
+    {
+        var toc = "# Knowledge Base\n\n- [A](system/"
+            + string.Concat(Enumerable.Repeat("deeply-nested-segment/", 200)) + "a.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 2_000);
+
+        block.Text.Length.Should().BeLessThanOrEqualTo(2_000);
+        block.Text.Should().NotContain("deeply-nested-segment/deeply-nested-segment");
+        block.Truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public void DescribePaths_BoundsTheModelAuthoredPathListAndSaysHowManyItLeftOut()
+    {
+        // The digest is bounded, but the log lines that report which entries were surfaced and which were
+        // refused join the SAME model-authored paths verbatim. A single 20k "file" value therefore writes a
+        // 20 KiB line into the daemon's JSONL for every review that ranks it - and the refusal line is
+        // reached precisely by the malformed entries most likely to carry one.
+        var paths = Enumerable.Range(0, 50).Select(i => new string('x', 500) + i).ToArray();
+
+        var described = KnowledgeDigest.DescribePaths(paths, charBudget: 400);
+
+        described.Length.Should().BeLessThanOrEqualTo(400);
+        described.Should().Contain("more");
+    }
+
+    [Fact]
+    public void DescribePaths_UnderBudget_ListsEveryPathAndAddsNoSuffix()
+    {
+        KnowledgeDigest.DescribePaths(["system/alpha.md", "system/beta.md"], charBudget: 400)
+            .Should().Be("system/alpha.md, system/beta.md");
+    }
+
+    [Fact]
+    public void DescribePaths_FirstPathAloneOverBudget_StillReportsWithinTheBudget()
+    {
+        var described = KnowledgeDigest.DescribePaths([new string('x', 5_000), "system/beta.md"], charBudget: 60);
+
+        described.Length.Should().BeLessThanOrEqualTo(60);
+        described.Should().Contain("2 more");
     }
 }

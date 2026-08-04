@@ -194,12 +194,6 @@ internal static class KnowledgeDigest
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
 
-        if (entries.Count == 0)
-        {
-            return new KnowledgeDigestBlock(
-                omitted > 0 ? Header() + Footer(omitted, knowledgeBaseRoot) : string.Empty, [], []);
-        }
-
         // EVERY entry is resolved before ANY of them is rendered. Folding the check into the render loop
         // would leave the entries past the budget cut unexamined, and budget pressure is the normal case,
         // not a corner - so an escaping entry sitting beyond the cut would never reach Rejected, would
@@ -219,18 +213,32 @@ internal static class KnowledgeDigest
             }
         }
 
-        var builder = new StringBuilder(Header());
+        // Space for the footer is reserved before anything is written, against the largest count it could
+        // ever report, so the promise of a route to what did not fit can never be the thing that overruns
+        // the budget. Appending it afterwards would make it the one unchecked write in the method.
+        var header = Header();
+        var reserve = Footer(omitted + resolved.Count, knowledgeBaseRoot).Length;
+        var builder = new StringBuilder();
         var rendered = new List<KnowledgeEntryMeta>(resolved.Count);
-        foreach (var (entry, absolute) in resolved)
-        {
-            var line = RenderEntry(entry, absolute);
-            if (rendered.Count > 0 && builder.Length + line.Length > charBudget)
-            {
-                break; // Always list at least one entry, even under an implausibly small budget.
-            }
 
-            _ = builder.Append(line);
-            rendered.Add(entry);
+        // The header is an append like any other and is checked like one. There is no "at least one entry"
+        // exemption anywhere in this loop: an entry allowed to skip the check is an entry that can carry an
+        // unbounded model-authored title straight past the budget, which is how a nominal 8 KiB block ends
+        // up crowding the PR itself out of the reviewer's context window.
+        if (header.Length + reserve <= charBudget)
+        {
+            _ = builder.Append(header);
+            foreach (var (entry, absolute) in resolved)
+            {
+                var line = RenderEntry(entry, absolute, charBudget - builder.Length - reserve);
+                if (line.Length == 0)
+                {
+                    break;
+                }
+
+                _ = builder.Append(line);
+                rendered.Add(entry);
+            }
         }
 
         // Counted off the RESOLVED pool, so a rejected entry is neither rendered nor missing. The footer's
@@ -239,17 +247,48 @@ internal static class KnowledgeDigest
         var missing = omitted + (resolved.Count - rendered.Count);
         if (rendered.Count == 0)
         {
-            // Every entry was refused. A header with no paths beneath it reads exactly like a Knowledge
-            // Base that happens to be empty, so say nothing at all and let the caller leave the review
-            // input untouched; the refusals travel back through Rejected, which is where they get logged.
+            // Nothing survived - every entry was refused, or the budget could not hold even one. A header
+            // with no paths beneath it reads exactly like a Knowledge Base that happens to be empty, so say
+            // nothing at all unless there is a count worth reporting, and let the caller leave the review
+            // input untouched; refusals travel back through Rejected, which is where they get logged.
             return new KnowledgeDigestBlock(
-                missing > 0 ? Header() + Footer(missing, knowledgeBaseRoot) : string.Empty, [], rejected);
+                builder.Length > 0 && missing > 0 ? header + Footer(missing, knowledgeBaseRoot) : string.Empty,
+                [],
+                rejected);
         }
 
         return new KnowledgeDigestBlock(
             builder.Append(missing > 0 ? Footer(missing, knowledgeBaseRoot) : string.Empty).ToString(),
             rendered,
             rejected);
+    }
+
+    /// <summary>
+    /// Splits <paramref name="entries"/> into those whose <see cref="KnowledgeEntryMeta.File"/> resolves
+    /// inside <paramref name="knowledgeBaseRoot"/> and those that escape it.
+    /// <para>
+    /// Exists so containment can be decided BEFORE the entry cap is applied. The index is written by the
+    /// knowledge-extraction agent, so escaping entries are entries an LLM produced — and if the cap is taken
+    /// off the raw list, enough of them ranked highly enough will consume every retrieval slot and push
+    /// sound knowledge out entirely. The review then proceeds knowledge-blind, which is the exact outcome
+    /// this feature exists to prevent, reached through the containment check added to make it safer. The cap
+    /// has to count entries the agent can actually use.
+    /// </para>
+    /// </summary>
+    public static KnowledgeContainmentPartition PartitionByContainment(
+        IReadOnlyList<KnowledgeEntryMeta> entries, string knowledgeBaseRoot)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ArgumentNullException.ThrowIfNull(knowledgeBaseRoot);
+
+        var usable = new List<KnowledgeEntryMeta>(entries.Count);
+        var refused = new List<KnowledgeEntryMeta>();
+        foreach (var entry in entries)
+        {
+            (TryResolveEntryPath(knowledgeBaseRoot, entry.File, out _) ? usable : refused).Add(entry);
+        }
+
+        return new KnowledgeContainmentPartition(usable, refused);
     }
 
     /// <summary>
@@ -275,11 +314,11 @@ internal static class KnowledgeDigest
 
         if (string.IsNullOrWhiteSpace(tableOfContents))
         {
-            return new KnowledgeTocBlock(string.Empty, 0, 0);
+            return new KnowledgeTocBlock(string.Empty, 0, 0, false);
         }
 
         var root = knowledgeBaseRoot.Replace('\\', '/').TrimEnd('/');
-        var builder = new StringBuilder($"""
+        var header = $"""
             {Heading}
 
             Durable lessons from earlier reviews. The ranked index was unavailable, so this is the Knowledge
@@ -291,38 +330,138 @@ internal static class KnowledgeDigest
             review with no prior knowledge at all.
 
 
-            """);
+            """;
 
         var lines = tableOfContents
             .Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').TrimEnd('\n').Split('\n');
         var total = lines.Count(IsTocEntry);
 
-        // Room for the footer is reserved up front, computed against the largest number it could ever
-        // report, so the promise of a route to the dropped entries can never itself be what overruns the
-        // budget. Every real footer is at most this long: fewer entries dropped is never more digits.
-        var reserve = Footer(total, knowledgeBaseRoot).Length;
-        var listed = 0;
-        foreach (var line in lines)
-        {
-            var text = line + "\n";
-            if (listed > 0 && builder.Length + text.Length + reserve > charBudget)
-            {
-                break; // Always list at least one entry, even under an implausibly small budget.
-            }
+        // Room for the closing note is reserved up front, against whichever of the two forms is longer and
+        // against the largest count the footer could report, so the promise of a route to what was cut can
+        // never itself be what overruns the budget.
+        var reserve = Math.Max(
+            total > 0 ? Footer(total, knowledgeBaseRoot).Length : 0, TruncatedNotice(knowledgeBaseRoot).Length);
 
-            _ = builder.Append(text);
-            if (IsTocEntry(line))
+        var builder = new StringBuilder();
+        var listed = 0;
+        var truncated = false;
+
+        // Truncation is tracked on its OWN flag, not inferred from the entry count. A torn or hand-edited
+        // _toc.md - which is precisely the state that sends us down this fallback - can contain no
+        // "- [Title](path)" lines at all, and a gate that only fires once an entry has been listed would
+        // then never fire, appending the whole file unbounded while reporting nothing was dropped.
+        if (header.Length + reserve <= charBudget)
+        {
+            _ = builder.Append(header);
+            foreach (var line in lines)
             {
-                listed++;
+                var text = FitTocLine(line, charBudget - builder.Length - reserve);
+                if (text is null)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                _ = builder.Append(text);
+                if (IsTocEntry(line))
+                {
+                    listed++;
+                }
             }
+        }
+        else
+        {
+            truncated = true;
         }
 
         var dropped = total - listed;
-        return new KnowledgeTocBlock(
-            builder.Append(dropped > 0 ? Footer(dropped, knowledgeBaseRoot) : string.Empty).ToString(),
-            listed,
-            dropped);
+        if (builder.Length == 0)
+        {
+            return new KnowledgeTocBlock(string.Empty, 0, dropped, true);
+        }
+
+        var closing = dropped > 0 ? Footer(dropped, knowledgeBaseRoot)
+            : truncated ? TruncatedNotice(knowledgeBaseRoot)
+            : string.Empty;
+        return new KnowledgeTocBlock(builder.Append(closing).ToString(), listed, dropped, truncated);
     }
+
+    /// <summary>
+    /// A <c>_toc.md</c> line rendered to fit <paramref name="room"/>, or <c>null</c> when it cannot fit at
+    /// all. An entry line whose title is too long is rewritten with the title cut and the
+    /// <c>](path)</c> link kept whole — the title is model-authored and cosmetic, the link is the only
+    /// reason the line is worth carrying, and a half-written path is worse than an absent one because the
+    /// agent will try to open it.
+    /// </summary>
+    private static string? FitTocLine(string line, int room)
+    {
+        if (line.Length + 1 <= room)
+        {
+            return line + "\n";
+        }
+
+        var link = line.LastIndexOf("](", StringComparison.Ordinal);
+        if (!IsTocEntry(line) || link < 0)
+        {
+            return null;
+        }
+
+        var suffix = line[link..];
+        var titleRoom = room - "- [".Length - suffix.Length - TruncationMarker.Length - 1;
+        if (titleRoom < 0)
+        {
+            return null;
+        }
+
+        var title = line["- [".Length..link];
+        return $"- [{title[..Math.Min(titleRoom, title.Length)]}{TruncationMarker}{suffix}\n";
+    }
+
+    /// <summary>
+    /// Says the block was cut when entries alone cannot say it — a table of contents with no recognisable
+    /// entry lines still has to admit that the reviewer did not receive all of it.
+    /// </summary>
+    private static string TruncatedNotice(string knowledgeBaseRoot) =>
+        $"\nThis table of contents was truncated to fit; the full list is in "
+        + $"{Join(knowledgeBaseRoot, "_toc.md")}.\n";
+
+    /// <summary>
+    /// Joins Knowledge Base entry paths for a log line, bounded by <paramref name="charBudget"/> and
+    /// reporting how many it left out.
+    /// <para>
+    /// The digest itself is budgeted, but the "surfaced"/"refused" log lines quote the SAME model-authored
+    /// <see cref="KnowledgeEntryMeta.File"/> values, and a joined list has no bound of its own — one absurd
+    /// entry writes its whole length into the daemon's JSONL on every review that ranks it, and the refusal
+    /// line is reached by exactly the malformed entries most likely to carry one. Paths are dropped whole
+    /// rather than cut, for the same reason they are in the digest: half a path names nothing, and an
+    /// operator reading the log would take it for a real one.
+    /// </para>
+    /// </summary>
+    public static string DescribePaths(IEnumerable<string> paths, int charBudget)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+
+        var all = paths.ToList();
+        var builder = new StringBuilder();
+        var listed = 0;
+        foreach (var path in all)
+        {
+            // The suffix is reserved against the largest count it could report, so admitting the elision can
+            // never be the thing that overruns the budget.
+            var separator = listed == 0 ? string.Empty : ", ";
+            if (builder.Length + separator.Length + path.Length + MoreSuffix(all.Count).Length > charBudget)
+            {
+                break;
+            }
+
+            _ = builder.Append(separator).Append(path);
+            listed++;
+        }
+
+        return listed == all.Count ? builder.ToString() : builder.Append(MoreSuffix(all.Count - listed)).ToString();
+    }
+
+    private static string MoreSuffix(int remaining) => $" … (+{remaining} more)";
 
     /// <summary>
     /// Whether a <c>_toc.md</c> line is an entry rather than structure. The ToC is generated by
@@ -359,14 +498,49 @@ internal static class KnowledgeDigest
         $"\n{missing} more entr{(missing == 1 ? "y is" : "ies are")} not listed here; the full list is in "
         + $"{Join(knowledgeBaseRoot, "_toc.md")}.\n";
 
-    private static string RenderEntry(KnowledgeEntryMeta entry, string absolutePath)
+    /// <summary>
+    /// Renders one entry within <paramref name="maxLength"/>, or an empty string when not even a truncated
+    /// form fits.
+    /// <para>
+    /// Title, tags and scope all come from the knowledge-extraction agent and are unbounded; the absolute
+    /// path is computed here and is the one part of the line the reviewer acts on. So when the line does not
+    /// fit, the METADATA gives way and the path is kept whole: a cut title costs the agent a hint about
+    /// what the entry is, while a cut path costs it the entry itself and hands it something that looks
+    /// openable and is not.
+    /// </para>
+    /// </summary>
+    private static string RenderEntry(KnowledgeEntryMeta entry, string absolutePath, int maxLength)
     {
         var title = string.IsNullOrWhiteSpace(entry.Title) ? entry.File : entry.Title;
         var tags = entry.Tags.Count == 0 ? "(none)" : string.Join(", ", entry.Tags);
         var scope = string.IsNullOrWhiteSpace(entry.Scope) ? "(unscoped)" : entry.Scope;
 
-        return $"- {title}\n  tags: {tags} | scope: {scope}\n  {absolutePath}\n";
+        var pathLine = $"  {absolutePath}\n";
+        var metadata = $"- {title}\n  tags: {tags} | scope: {scope}\n";
+        if (metadata.Length + pathLine.Length <= maxLength)
+        {
+            return metadata + pathLine;
+        }
+
+        // The marker and the newline that closes the cut line are part of what has to fit, so they are
+        // subtracted before the metadata is measured rather than appended on top of a full block.
+        var room = maxLength - pathLine.Length - TruncationMarker.Length - 1;
+        return room < MinimumMetadataChars
+            ? string.Empty
+            : $"{metadata[..room]}{TruncationMarker}\n{pathLine}";
     }
+
+    /// <summary>
+    /// Marks metadata this renderer cut. Deliberately parenthesised rather than bracketed so it stays
+    /// harmless inside a Markdown link's title text in <see cref="FitTocLine"/>.
+    /// </summary>
+    private const string TruncationMarker = " (truncated)";
+
+    /// <summary>
+    /// Below this there is no point rendering an entry at all: the line would be a bullet, a fragment of a
+    /// title and a path, which tells the agent less than leaving the entry out and counting it in the footer.
+    /// </summary>
+    private const int MinimumMetadataChars = 8;
 
     /// <summary>
     /// Resolves an entry's KB-relative <see cref="KnowledgeEntryMeta.File"/> against the Knowledge Base
@@ -645,5 +819,17 @@ internal sealed record KnowledgeDigestBlock(
 /// <see cref="Dropped"/> exist so the caller can log what the reviewer RECEIVED rather than the size of the
 /// file that was read - once the block is budgeted, those two numbers stop being the same, and a log that
 /// reports the read is the same silent-failure shape the ranked digest's proof-of-use line was added to fix.
+/// <see cref="Truncated"/> is tracked separately because a table of contents with no recognisable entry
+/// lines can be cut without <see cref="Dropped"/> ever moving off zero.
 /// </summary>
-internal sealed record KnowledgeTocBlock(string Text, int Listed, int Dropped);
+internal sealed record KnowledgeTocBlock(string Text, int Listed, int Dropped, bool Truncated);
+
+/// <summary>
+/// Knowledge Base entries split by whether their path resolves inside the Knowledge Base root.
+/// <see cref="Refused"/> is carried rather than discarded because an entry that simply vanishes is
+/// indistinguishable from one the Knowledge Base never held, and these were written by an LLM with file
+/// tools - the refusal is the interesting signal, not the omission.
+/// </summary>
+internal sealed record KnowledgeContainmentPartition(
+    IReadOnlyList<KnowledgeEntryMeta> Usable,
+    IReadOnlyList<KnowledgeEntryMeta> Refused);

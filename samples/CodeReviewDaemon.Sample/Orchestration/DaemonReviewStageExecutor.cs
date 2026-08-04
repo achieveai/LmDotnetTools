@@ -1483,6 +1483,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     /// <summary>Character cap on the rendered digest, a second bound for when entry titles run long.</summary>
     private const int MaxKnowledgeDigestChars = 8 * 1024;
 
+    /// <summary>Character cap on the entry paths quoted in the two prior-knowledge log lines. Those paths are
+    /// model-authored, so without a bound one absurd <c>"file"</c> value writes its whole length into the
+    /// daemon's JSONL on every review that ranks it.</summary>
+    private const int MaxKnowledgeLogChars = 2 * 1024;
+
     /// <summary>
     /// Best-effort prepends prior Knowledge Base knowledge to the review input so the review agent starts
     /// with the durable lessons distilled from past PRs (design §3).
@@ -1578,10 +1583,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // budgeted like the ranked block, so those parted ways.
         _logger.LogInformation(
             "Knowledge Base index unavailable; falling back to _toc.md for prior knowledge: listed {Listed} "
-                + "entries ({Length} chars), {Dropped} beyond the budget.",
+                + "entries ({Length} chars), {Dropped} beyond the budget, truncated: {Truncated}.",
             tocBlock.Listed,
             tocBlock.Text.Length,
-            tocBlock.Dropped);
+            tocBlock.Dropped,
+            tocBlock.Truncated);
         return $"{tocBlock.Text}\n{reviewInput}";
     }
 
@@ -1609,10 +1615,15 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ranked = KnowledgeDigest.ExtractChangedPaths(diff);
         }
 
+        // Containment is decided BEFORE the cap, so the cap counts entries the agent can actually use.
+        // Taken the other way round, escaping entries that happen to rank well consume retrieval slots and
+        // the sound knowledge behind them is never reached - enough of them and the review runs with no
+        // prior knowledge at all, which is the outcome this whole feature exists to prevent.
+        var partition = KnowledgeDigest.PartitionByContainment(entries, knowledgeBaseDir);
         var selected = KnowledgeDigest.SelectRelevant(
-            entries, ranked, repo.RepoName, MaxKnowledgeEntries);
+            partition.Usable, ranked, repo.RepoName, MaxKnowledgeEntries);
         var digest = KnowledgeDigest.Render(
-            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, entries.Count - selected.Count);
+            selected, knowledgeBaseDir, MaxKnowledgeDigestChars, partition.Usable.Count - selected.Count);
 
         // Report the RENDERED entries, never the selected ones: the character budget can cut the tail off
         // the block, and a log line naming entries the reviewer never received would make a partial
@@ -1625,21 +1636,24 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             digest.Text.Length,
             ranked.Count,
             repo.RepoName,
-            string.Join(", ", digest.Rendered.Select(entry => entry.File)));
+            KnowledgeDigest.DescribePaths(
+                digest.Rendered.Select(entry => entry.File), MaxKnowledgeLogChars));
 
         // Refusals are logged as loudly as the surfaces. An index entry whose path does not resolve inside
         // KnowledgeBase/ was written by the knowledge agent, so it is either a defect in extraction or an
         // attempt to point the reviewer at something that is not knowledge; either way, an entry that just
-        // disappears from the digest is indistinguishable from one the Knowledge Base never had.
-        if (digest.Rejected.Count > 0)
+        // disappears from the digest is indistinguishable from one the Knowledge Base never had. Both
+        // sources are reported: the pre-cap partition, and anything Render refuses on its own recheck.
+        var refused = partition.Refused.Concat(digest.Rejected).Select(entry => entry.File).Distinct().ToList();
+        if (refused.Count > 0)
         {
             _logger.LogWarning(
                 "Prior knowledge: refused {RefusedCount} Knowledge Base {Plural} whose path does not resolve "
                     + "inside {KnowledgeBaseDir}: {RefusedEntries}",
-                digest.Rejected.Count,
-                digest.Rejected.Count == 1 ? "entry" : "entries",
+                refused.Count,
+                refused.Count == 1 ? "entry" : "entries",
                 knowledgeBaseDir,
-                string.Join(", ", digest.Rejected.Select(entry => entry.File)));
+                KnowledgeDigest.DescribePaths(refused, MaxKnowledgeLogChars));
         }
 
         return digest.Text;
