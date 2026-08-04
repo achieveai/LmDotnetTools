@@ -255,6 +255,13 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     gateway I/O ever reaches the caller. And it cannot throw into the pool's factory — a failure to
     ///     subscribe is logged and leaves this conversation unmirrored, like every other failure here.
     ///     </para>
+    ///     <para>
+    ///     <b>The <c>catch</c> below is the narrow door, not the usual one.</b> It only fires for a
+    ///     subscription that throws SYNCHRONOUSLY, which the production agent does not: its
+    ///     <c>SubscribeAsync</c> is an async iterator, so its prologue's failures come back as a faulted
+    ///     <c>ValueTask</c> and are handled where they surface, in <see cref="PumpAsync"/>. Both doors have
+    ///     to undo the registration, which is why they share <see cref="Retire"/>.
+    ///     </para>
     /// </remarks>
     private void StartPump(Subscription subscription)
     {
@@ -296,36 +303,23 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     rest of its life rather than for one attempt.
     ///     </para>
     ///     <para>
-    ///     <b>Removed by reference, never by key.</b> A concurrent <see cref="Attach"/> — a mode switch is
-    ///     the ordinary case — may already have replaced this mapping with a live successor's; deleting the
-    ///     key would then cancel nothing but silently unregister the subscription that is actually working.
-    ///     </para>
-    ///     <para>
     ///     <b>Nothing here may throw or block.</b> <see cref="Attach"/> runs inside the pool's agent
     ///     factory. The enumerator — which exists when <c>MoveNextAsync</c> is what threw, and holds that
     ///     subscriber's channel registration until it is disposed — is therefore drained off-thread through
-    ///     a path that swallows its own faults.
+    ///     a path that swallows its own faults. It is disposed HERE and nowhere else: no pump ever ran for
+    ///     this subscription, so <see cref="ConsumeAsync"/>'s <c>finally</c> never claimed it.
     ///     </para>
     /// </remarks>
     private void AbandonFailedSubscription(Subscription subscription, IAsyncEnumerator<IMessage>? enumerator)
     {
-        var threadId = subscription.Agent.ThreadId;
-
-        lock (_gate)
-        {
-            if (_subscriptions.TryGetValue(threadId, out var current)
-                && ReferenceEquals(current, subscription))
-            {
-                _ = _subscriptions.Remove(threadId);
-            }
-        }
-
-        Cancel(subscription);
+        Retire(subscription);
 
         if (enumerator is null)
         {
             return;
         }
+
+        var threadId = subscription.Agent.ThreadId;
 
         _ = Task.Run(async () =>
         {
@@ -341,6 +335,42 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                     threadId);
             }
         });
+    }
+
+    /// <summary>
+    ///     Ends one subscription's life in this mirror: drops its registration and cancels its token.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>Removed by reference, never by key.</b> A concurrent <see cref="Attach"/> — a mode switch is
+    ///     the ordinary case — may already have replaced this mapping with a live successor's; deleting the
+    ///     key would then cancel nothing but silently unregister the subscription that is actually working.
+    ///     The pool makes that the NORMAL ordering rather than a narrow race:
+    ///     <c>MultiTurnAgentPool.SwapAgentUnderLockAsync</c> builds the replacement through the agent
+    ///     factory — which is where <see cref="Attach"/> is called from — and publishes it into its own map
+    ///     only afterwards, so by the time anything can observe the new agent, the new mapping is already
+    ///     in place.
+    ///     </para>
+    ///     <para>
+    ///     <b>Disposes nothing.</b> Every enumerator is owned by whoever created it:
+    ///     <see cref="ConsumeAsync"/>'s <c>finally</c> for a subscription that got as far as a pump, and
+    ///     <see cref="AbandonFailedSubscription"/> for one that never did.
+    ///     </para>
+    /// </remarks>
+    private void Retire(Subscription subscription)
+    {
+        var threadId = subscription.Agent.ThreadId;
+
+        lock (_gate)
+        {
+            if (_subscriptions.TryGetValue(threadId, out var current)
+                && ReferenceEquals(current, subscription))
+            {
+                _ = _subscriptions.Remove(threadId);
+            }
+        }
+
+        Cancel(subscription);
     }
 
     /// <summary>
@@ -445,6 +475,29 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     Reference equality on the agent, not on the threadId, is therefore what separates "we were
     ///     dropped from a conversation that is still live" from an ordinary teardown.
     ///     </para>
+    ///     <para>
+    ///     <b>Every exit retires the subscription.</b> A pump that has returned is draining nothing, so a
+    ///     registration left behind turns <see cref="Attach"/>'s idempotent early return — which compares
+    ///     the agent INSTANCE — from "mirroring ended for this conversation" into "this conversation can
+    ///     never be mirrored again, not even by an explicit re-attach". The exit that reaches this in
+    ///     production is a FAULT, and it does not arrive through <see cref="StartPump"/>'s <c>try</c>:
+    ///     <c>MultiTurnAgentBase.SubscribeAsync</c> is an async iterator, so a throw in its prologue —
+    ///     where it creates the channel and joins the fan-out under the replay lock — is captured by the
+    ///     compiler-generated state machine into a FAULTED <c>ValueTask</c> returned by the first
+    ///     <c>MoveNextAsync</c> rather than thrown out of it, and surfaces here instead.
+    ///     </para>
+    ///     <para>
+    ///     Retiring in a <c>finally</c> rather than on the faulting return is deliberate.
+    ///     <see cref="ConsumeAsync"/> reports fault and cancellation as one <c>bool</c>, so singling the
+    ///     fault out would mean widening that contract for no behavioural gain — on the three exits that
+    ///     were already safe, <see cref="Retire"/> is a provable no-op. Cancellation is only ever ours to
+    ///     request and every requester (<see cref="Evict"/>, <see cref="Dispose"/>, <see cref="Attach"/>'s
+    ///     replacement) fixes the mapping first; an agent gone from the pool takes <see cref="Evict"/> with
+    ///     it, since the pool removes the entry before raising <c>ThreadRemoved</c>; and a REPLACED agent's
+    ///     successor has already overwritten the mapping, which the reference comparison leaves alone. The
+    ///     <c>finally</c> additionally covers an exit by EXCEPTION — <see cref="_agentLookup"/> is injected
+    ///     code and this task's fault is discarded by its caller — which no return-site fix can see.
+    ///     </para>
     /// </remarks>
     private async Task PumpAsync(
         Subscription subscription,
@@ -455,59 +508,66 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         var threadId = agent.ThreadId;
         var ct = subscription.Cancellation.Token;
 
-        while (true)
+        try
         {
-            if (await ConsumeAsync(threadId, enumerator, pending).ConfigureAwait(false)
-                || ct.IsCancellationRequested
-                || _agentLookup(threadId) is not { } current
-                || !ReferenceEquals(current, agent))
+            while (true)
             {
-                return;
-            }
+                if (await ConsumeAsync(threadId, enumerator, pending).ConfigureAwait(false)
+                    || ct.IsCancellationRequested
+                    || _agentLookup(threadId) is not { } current
+                    || !ReferenceEquals(current, agent))
+                {
+                    return;
+                }
 
-            _ = Interlocked.Increment(ref _resubscribeCount);
-            _logger.LogWarning(
-                "Transcript subscription for thread {ThreadId} was dropped (its output channel filled); "
-                    + "re-subscribing. Turns published during the gap are still recovered — the writer's "
-                    + "watermark is cumulative and the next flush re-reads the whole thread.",
-                threadId);
+                _ = Interlocked.Increment(ref _resubscribeCount);
+                _logger.LogWarning(
+                    "Transcript subscription for thread {ThreadId} was dropped (its output channel filled); "
+                        + "re-subscribing. Turns published during the gap are still recovered — the writer's "
+                        + "watermark is cumulative and the next flush re-reads the whole thread.",
+                    threadId);
 
-            try
-            {
-                await Task.Delay(_resubscribeDelay, ct).ConfigureAwait(false);
-                enumerator = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
-                pending = enumerator.MoveNextAsync();
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Re-subscribing the transcript mirror to thread {ThreadId} failed", threadId);
-                return;
-            }
+                try
+                {
+                    await Task.Delay(_resubscribeDelay, ct).ConfigureAwait(false);
+                    enumerator = agent.SubscribeAsync(ct).GetAsyncEnumerator(ct);
+                    pending = enumerator.MoveNextAsync();
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Re-subscribing the transcript mirror to thread {ThreadId} failed", threadId);
+                    return;
+                }
 
-            // The gap between the drop and this re-subscription is EXACTLY where a turn boundary goes
-            // unobserved: the channel filled, so the messages that overflowed it — the run completion
-            // among them — reached no subscriber, and nothing will republish them. The recovery the log
-            // line above promises ("the next flush re-reads the whole thread") only holds if a flush
-            // actually happens, and without this line the only thing that can trigger one is a LATER turn
-            // that may never come. Scheduling here is free when nothing changed: a flush with no new rows
-            // is UpToDate and issues no gateway write. It is a fresh generation of work like any other
-            // trigger — the drop is new evidence, and inheriting a spent budget from before it would give
-            // the recovery a single pass.
-            //
-            // It also forces a DESCENDANT RESCAN, which the other two triggers deliberately do not. What
-            // was lost here is unknown by definition, and a spawn call or completion notification is
-            // exactly the kind of message that can have been among it. If an earlier flush cached a roster
-            // taken before a child was persisted, and that child's only announcement went down with the
-            // channel, the cache is stale with nothing left to invalidate it and the child is never
-            // mirrored at all. The other two call sites are the opposite case: they run because a message
-            // ARRIVED, so the message itself is the signal — sub-agent activity already arms a rescan
-            // through NoteSubAgentActivity, and a run completion is not evidence about descendants.
-            ScheduleFreshAttempt(threadId, forceDescendantRescan: true);
+                // The gap between the drop and this re-subscription is EXACTLY where a turn boundary goes
+                // unobserved: the channel filled, so the messages that overflowed it — the run completion
+                // among them — reached no subscriber, and nothing will republish them. The recovery the log
+                // line above promises ("the next flush re-reads the whole thread") only holds if a flush
+                // actually happens, and without this line the only thing that can trigger one is a LATER turn
+                // that may never come. Scheduling here is free when nothing changed: a flush with no new rows
+                // is UpToDate and issues no gateway write. It is a fresh generation of work like any other
+                // trigger — the drop is new evidence, and inheriting a spent budget from before it would give
+                // the recovery a single pass.
+                //
+                // It also forces a DESCENDANT RESCAN, which the other two triggers deliberately do not. What
+                // was lost here is unknown by definition, and a spawn call or completion notification is
+                // exactly the kind of message that can have been among it. If an earlier flush cached a roster
+                // taken before a child was persisted, and that child's only announcement went down with the
+                // channel, the cache is stale with nothing left to invalidate it and the child is never
+                // mirrored at all. The other two call sites are the opposite case: they run because a message
+                // ARRIVED, so the message itself is the signal — sub-agent activity already arms a rescan
+                // through NoteSubAgentActivity, and a run completion is not evidence about descendants.
+                ScheduleFreshAttempt(threadId, forceDescendantRescan: true);
 
+            }
+        }
+        finally
+        {
+            Retire(subscription);
         }
     }
 
