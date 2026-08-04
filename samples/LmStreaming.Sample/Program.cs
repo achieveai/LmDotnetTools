@@ -717,8 +717,67 @@ try
                 .LogWarning("Web tools disabled (invalid configuration): {Errors}", string.Join("; ", webToolsErrors));
         }
 
-        var pool = new MultiTurnAgentPool(
+        // Best-effort disposal of an agent's owned resources (MCP clients) on a construction failure.
+        // Shared by the branch that builds them and by the mirror-attach wrapper below, so both failure
+        // paths dispose identically instead of one of them quietly leaking.
+        static void DisposeOwnedResources(IReadOnlyList<IAsyncDisposable>? ownedResources)
+        {
+            if (ownedResources == null)
+            {
+                return;
+            }
+
+            foreach (var resource in ownedResources)
+            {
+                try
+                {
+                    resource.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                catch
+                { /* ignore cleanup errors */
+                }
+            }
+        }
+
+        // Start mirroring every conversation's messages into its workspace (#251).
+        //
+        // THIS WRAPPER IS THE ATTACH POINT, and it is a wrapper rather than a call inside the factory
+        // on purpose. The factory below has seven construction branches, each ending in its own
+        // `return`; an attach placed in one of them is invisible to the other six. That is exactly how
+        // the CLI-backed providers (codex, claude, copilot and their three mocks) shipped unmirrored —
+        // they return before reaching the attach, so their workspace conversations produced neither a
+        // root transcript nor descendant files even though those loops all support SubscribeAsync.
+        // Wrapping makes it structural: there is now exactly one place a result can leave this factory,
+        // so an eighth provider cannot repeat the bug.
+        //
+        // Attaching here still happens after construction and before the agent is handed to the pool,
+        // so no turn boundary can be missed. A mode switch builds a replacement agent for the same
+        // threadId and re-attaches through this same path; the mirror swaps the subscription and keeps
+        // the writer.
+        Func<MultiTurnAgentPool.AgentCreationContext, MultiTurnAgentPool.AgentCreationResult> AttachingToMirror(
+            Func<MultiTurnAgentPool.AgentCreationContext, MultiTurnAgentPool.AgentCreationResult> build
+        ) =>
             context =>
+            {
+                var result = build(context);
+                try
+                {
+                    transcriptMirror.Attach(result.Agent);
+                }
+                catch
+                {
+                    // The construction branches dispose what they own when they throw; once one has
+                    // returned, this wrapper is the only thing standing between a failed attach and a
+                    // leaked MCP client, so it takes over that duty.
+                    DisposeOwnedResources(result.OwnedResources);
+                    throw;
+                }
+
+                return result;
+            };
+
+        var pool = new MultiTurnAgentPool(
+            AttachingToMirror(context =>
             {
                 var threadId = context.ThreadId;
                 var mode = context.Mode;
@@ -1791,34 +1850,16 @@ subAgentFactory,
                         collaboration: rootCollaboration
                     );
 
-                    // Start mirroring this conversation's messages into its workspace (#251). Attached
-                    // after construction and before the agent is handed to the pool, so no turn boundary
-                    // can be missed. A mode switch builds a replacement agent for the same threadId and
-                    // re-attaches here; the mirror swaps the subscription and keeps the writer.
-                    transcriptMirror.Attach(agent);
-
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
                 }
                 catch
                 {
                     // Dispose owned resources (MCP clients) if agent construction fails
-                    if (ownedResources != null)
-                    {
-                        foreach (var resource in ownedResources)
-                        {
-                            try
-                            {
-                                resource.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                            }
-                            catch
-                            { /* ignore cleanup errors */
-                            }
-                        }
-                    }
+                    DisposeOwnedResources(ownedResources);
 
                     throw;
                 }
-            },
+            }),
             providerRegistry: providerRegistry,
             conversationStore: conversationStore,
             logger: loggerFactory.CreateLogger<MultiTurnAgentPool>(),
