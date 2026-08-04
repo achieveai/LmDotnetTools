@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Orchestration;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -45,7 +46,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
         Func<ReviewedPr, CancellationToken, Task<PrLifecycle>> getPrLifecycleAsync,
         ReviewBranchManager branchManager,
         bool mergeNotesBranchOnClose,
-        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null
+        Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null
     ) =>
         new(
             _ => Task.FromResult(reviewedPrs),
@@ -171,7 +172,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
                 // MergeToDefaultAsync's first git op is `fetch origin`; an empty command log here proves
                 // extraction ran BEFORE the merge (design §1 — extract before the notes branch merges).
                 runnerCommandCountAtInvocation = runner.Commands.Count;
-                return Task.CompletedTask;
+                return Task.FromResult(KnowledgeExtractionOutcome.Wrote);
             });
 
         await sweeper.SweepAsync(CancellationToken.None);
@@ -198,7 +199,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
             extractKnowledgeAsync: (p, _) =>
             {
                 invoked.Add(p.PrId);
-                return Task.CompletedTask;
+                return Task.FromResult(KnowledgeExtractionOutcome.Wrote);
             });
 
         await sweeper.SweepAsync(CancellationToken.None);
@@ -207,7 +208,7 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task Sweep_still_merges_when_knowledge_extraction_throws()
+    public async Task Sweep_defers_the_merge_when_knowledge_extraction_throws()
     {
         var runner = new FakeSandboxCommandRunner();
         var pr = Pr("45", "review/widgets-45");
@@ -220,8 +221,93 @@ public sealed class PrLifecycleSweeperTests : LoggingTestBase
 
         var act = () => sweeper.SweepAsync(CancellationToken.None);
 
-        // Extraction failure is logged and swallowed — it must never block the merge/delete (design §6).
+        // The throw is contained — it must never abort the sweep (design §6) — but it IS a failure, so the
+        // notes branch is held back for a retry instead of being merged and deleted with nothing extracted.
         await act.Should().NotThrowAsync();
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
+    }
+
+    [Fact]
+    public async Task Sweep_leaves_the_notes_branch_intact_when_knowledge_extraction_fails_so_the_next_sweep_retries()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("46", "review/widgets-46");
+        var lifecycleLookups = 0;
+        var attempts = 0;
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) =>
+            {
+                lifecycleLookups++;
+                return Task.FromResult(PrLifecycle.Merged);
+            },
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true,
+            extractKnowledgeAsync: (_, _) =>
+            {
+                attempts++;
+                return Task.FromResult(KnowledgeExtractionOutcome.Failed);
+            });
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(
+            a => a.Contains($"merge --ff-only origin/{pr.Branch}"),
+            "merging deletes the notes branch, which would make this failed extraction permanent (defect D5)");
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        lifecycleLookups.Should().Be(2, "a deferred PR is not cached as terminally resolved");
+        attempts.Should().Be(2, "the next sweep retries the extraction");
+    }
+
+    [Fact]
+    public async Task Sweep_merges_anyway_once_knowledge_extraction_has_exhausted_its_retries()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("47", "review/widgets-47");
+        var attempts = 0;
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) => Task.FromResult(PrLifecycle.Merged),
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true,
+            extractKnowledgeAsync: (_, _) =>
+            {
+                attempts++;
+                return Task.FromResult(KnowledgeExtractionOutcome.Failed);
+            });
+
+        // Three sweeps: two deferrals, then the cap is reached and the lifecycle proceeds regardless —
+        // extraction bounds the delay, it never blocks the lifecycle outright (design §6).
+        await sweeper.SweepAsync(CancellationToken.None);
+        await sweeper.SweepAsync(CancellationToken.None);
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        attempts.Should().Be(3, "extraction is retried up to the cap, then given up on");
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
+        commands.Count(a => a.Contains($"push origin {DefaultBranch}"))
+            .Should().Be(1, "the merge happens exactly once, on the sweep that hit the cap");
+    }
+
+    [Fact]
+    public async Task Sweep_merges_immediately_when_knowledge_extraction_declines()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var pr = Pr("49", "review/widgets-49");
+        var sweeper = CreateSweeper(
+            [pr],
+            (_, _) => Task.FromResult(PrLifecycle.Merged),
+            CreateBranchManager(runner),
+            mergeNotesBranchOnClose: true,
+            // "This PR carried no durable knowledge" is a valid outcome, not a failure — nothing to retry.
+            extractKnowledgeAsync: (_, _) => Task.FromResult(KnowledgeExtractionOutcome.Declined));
+
+        await sweeper.SweepAsync(CancellationToken.None);
+
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().Contain(a => a.Contains($"merge --ff-only origin/{pr.Branch}"));
         commands.Should().Contain(a => a.Contains($"push origin {DefaultBranch}"));

@@ -11,8 +11,9 @@ namespace CodeReviewDaemon.Sample.Agents;
 /// subsequent <see cref="ReviewBranchManager.MergeToDefaultAsync"/> (a merge of <c>origin/&lt;branch&gt;</c>)
 /// carries the new/updated entry into the default branch. Without this the write stays uncommitted in the
 /// sweeper worktree and is dropped by the merge's fresh checkout (and can dirty the tree so a later sweep
-/// stalls). Best-effort by contract: any git or agent failure is logged and swallowed — extraction must
-/// NEVER block the PR lifecycle (design §6).
+/// stalls). Never throws by contract: any git or agent failure is logged and reported as
+/// <see cref="KnowledgeExtractionOutcome.Failed"/> — extraction must NEVER block the PR lifecycle
+/// (design §6), but the caller needs to know it failed to give it a bounded retry.
 /// </summary>
 internal sealed class KnowledgeExtractionCommitter
 {
@@ -41,16 +42,21 @@ internal sealed class KnowledgeExtractionCommitter
     /// Checks the notes branch out, runs <paramref name="extractAsync"/> (the gated
     /// <see cref="KnowledgeAgent.TryExtractAsync"/> call), and — when it returns a write — commits and pushes
     /// <c>KnowledgeBase/</c> onto <paramref name="branch"/> with a <c>kb: extract from &lt;sourcePrRef&gt;</c>
-    /// message. A gate result of <c>null</c> commits nothing (the checkout is left clean). Never throws for a
-    /// git/agent/extraction/IO failure — every step is checked and, on failure, logged and swallowed
-    /// (design §6); it does still validate its own arguments (throws <see cref="ArgumentException"/>/
+    /// message. A gate decline commits nothing (the checkout is left clean). Never throws for a
+    /// git/agent/extraction/IO failure — every step is checked and, on failure, logged and reported as
+    /// <see cref="KnowledgeExtractionOutcome.Failed"/> rather than propagated (design §6); it does still
+    /// validate its own arguments (throws <see cref="ArgumentException"/>/
     /// <see cref="ArgumentNullException"/> on a null/blank input, which is a programmer error, not a
     /// runtime condition).
+    /// <para>
+    /// The returned outcome is what lets <see cref="Orchestration.PrLifecycleSweeper"/> hold the notes
+    /// branch back for a retry instead of merging and deleting it over a failure.
+    /// </para>
     /// </summary>
-    public async Task RunAsync(
+    public async Task<KnowledgeExtractionOutcome> RunAsync(
         string branch,
         string sourcePrRef,
-        Func<CancellationToken, Task<KnowledgeWriteResult?>> extractAsync,
+        Func<CancellationToken, Task<KnowledgeExtractionResult>> extractAsync,
         CancellationToken cancellationToken
     )
     {
@@ -67,8 +73,8 @@ internal sealed class KnowledgeExtractionCommitter
             // The notes branch is deleted once MergeToDefaultAsync folds it into the default branch, so a later
             // sweep that re-lists an already-merged PR (the in-memory _terminallyResolved set forgets on restart)
             // finds origin/<branch> gone. A blind `checkout -B` then fails with a scary "not a commit" fatal that
-            // reads like a real error. Probe first and treat a missing branch as the expected no-op it is — the
-            // KB write for this PR already landed on the default branch on the earlier successful sweep.
+            // reads like a real error. Probe first and treat a missing branch as the expected no-op it is —
+            // there is no branch left to extract from, and no retry could bring one back.
             var branchExists = await _git
                 .RunAsync(["rev-parse", "--verify", "--quiet", $"origin/{branch}"], _repoRoot, cancellationToken)
                 .ConfigureAwait(false);
@@ -78,7 +84,7 @@ internal sealed class KnowledgeExtractionCommitter
                     "Knowledge extraction for {SourcePr}: notes branch '{Branch}' no longer exists on origin "
                         + "(already merged on an earlier sweep); nothing to extract.",
                     sourcePrRef, branch);
-                return;
+                return KnowledgeExtractionOutcome.Declined;
             }
 
             var checkedOut = await _git
@@ -92,14 +98,15 @@ internal sealed class KnowledgeExtractionCommitter
                 _logger.LogWarning(
                     "Knowledge extraction commit for {SourcePr} could not check '{Branch}' out ({Stderr}); skipping.",
                     sourcePrRef, branch, checkedOut.Stderr);
-                return;
+                return KnowledgeExtractionOutcome.Failed;
             }
 
             var written = await extractAsync(cancellationToken).ConfigureAwait(false);
-            if (written is null)
+            if (written.Outcome != KnowledgeExtractionOutcome.Wrote)
             {
-                // Gate fired — nothing durable was written, so there is nothing to commit or push.
-                return;
+                // Either the gate fired (nothing durable to commit) or the run failed outright. Commit
+                // nothing either way, and pass the distinction up so only the failure is retried.
+                return written.Outcome;
             }
 
             // Stage ONLY KnowledgeBase/ (the entry + regenerated _index.jsonl/_toc.md); commit and push onto
@@ -109,9 +116,9 @@ internal sealed class KnowledgeExtractionCommitter
             if (!added.Succeeded)
             {
                 _logger.LogWarning(
-                    "Knowledge extraction commit for {SourcePr} on '{Branch}' could not stage {Dir} ({Stderr}); the entry is lost.",
+                    "Knowledge extraction commit for {SourcePr} on '{Branch}' could not stage {Dir} ({Stderr}); retrying on a later sweep.",
                     sourcePrRef, branch, KnowledgeBaseDir, added.Stderr);
-                return;
+                return KnowledgeExtractionOutcome.Failed;
             }
 
             var committed = await _git
@@ -120,9 +127,9 @@ internal sealed class KnowledgeExtractionCommitter
             if (!committed.Succeeded)
             {
                 _logger.LogWarning(
-                    "Knowledge extraction commit for {SourcePr} on '{Branch}' failed to commit ({Stderr}); the entry is lost.",
+                    "Knowledge extraction commit for {SourcePr} on '{Branch}' failed to commit ({Stderr}); retrying on a later sweep.",
                     sourcePrRef, branch, committed.Stderr);
-                return;
+                return KnowledgeExtractionOutcome.Failed;
             }
 
             var pushed = await TryPushWithRebaseAsync(branch, cancellationToken).ConfigureAwait(false);
@@ -132,21 +139,23 @@ internal sealed class KnowledgeExtractionCommitter
                 // as success: the sweeper's later merge would fetch origin/<branch> WITHOUT this commit and
                 // silently drop the entry while logging that it was carried.
                 _logger.LogWarning(
-                    "Knowledge extraction commit for {SourcePr} could not push '{Branch}' after {Attempts} attempts; the entry is lost.",
+                    "Knowledge extraction commit for {SourcePr} could not push '{Branch}' after {Attempts} attempts; retrying on a later sweep.",
                     sourcePrRef, branch, MaxPushAttempts);
-                return;
+                return KnowledgeExtractionOutcome.Failed;
             }
 
             _logger.LogInformation(
                 "Knowledge extraction for {SourcePr} committed to notes branch '{Branch}' for the sweeper merge.",
                 sourcePrRef, branch);
+            return KnowledgeExtractionOutcome.Wrote;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
                 ex,
-                "Knowledge extraction commit for {SourcePr} on '{Branch}' failed; the merge proceeds without it.",
+                "Knowledge extraction commit for {SourcePr} on '{Branch}' failed; it will be retried on a later sweep.",
                 sourcePrRef, branch);
+            return KnowledgeExtractionOutcome.Failed;
         }
     }
 

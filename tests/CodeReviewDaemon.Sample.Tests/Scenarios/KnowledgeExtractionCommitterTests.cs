@@ -39,7 +39,7 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         await committer.RunAsync(
             Branch,
             SourcePrRef,
-            _ => Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1")),
+            _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
             CancellationToken.None);
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
@@ -52,19 +52,43 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
     }
 
     [Fact]
-    public async Task RunAsync_commits_nothing_when_the_extraction_gate_returns_null()
+    public async Task RunAsync_commits_nothing_when_the_extraction_gate_declines()
     {
         var runner = new FakeSandboxCommandRunner();
         var committer = CreateCommitter(runner);
 
-        await committer.RunAsync(
-            Branch, SourcePrRef, _ => Task.FromResult<KnowledgeWriteResult?>(null), CancellationToken.None);
+        var outcome = await committer.RunAsync(
+            Branch,
+            SourcePrRef,
+            _ => Task.FromResult(KnowledgeExtractionResult.Declined("run-1")),
+            CancellationToken.None);
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         // The gate wrote nothing durable, so there is nothing to stage, commit, or push.
         commands.Should().NotContain(a => a.Contains("add -- KnowledgeBase"));
         commands.Should().NotContain(a => a.Contains("commit -m"));
         commands.Should().NotContain(a => a.Contains($"push origin {Branch}"));
+        // A decline is a valid answer, not a failure: the sweeper must merge, not retry.
+        outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
+    }
+
+    [Fact]
+    public async Task RunAsync_reports_a_declined_extraction_as_failed_when_the_agent_could_not_produce_one()
+    {
+        var runner = new FakeSandboxCommandRunner();
+        var committer = CreateCommitter(runner);
+
+        var outcome = await committer.RunAsync(
+            Branch,
+            SourcePrRef,
+            _ => Task.FromResult(KnowledgeExtractionResult.Failed("run-1")),
+            CancellationToken.None);
+
+        // Nothing is committed either way, but the sweeper must be able to tell this apart from a decline —
+        // conflating the two is what made every extraction failure permanent (defect D5).
+        var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
+        commands.Should().NotContain(a => a.Contains("commit -m"));
+        outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
     }
 
     [Fact]
@@ -72,18 +96,20 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
     {
         var runner = new FakeSandboxCommandRunner();
         var committer = CreateCommitter(runner);
+        KnowledgeExtractionOutcome outcome = default;
 
-        var act = () => committer.RunAsync(
+        var act = async () => outcome = await committer.RunAsync(
             Branch,
             SourcePrRef,
             _ => throw new InvalidOperationException("simulated extraction failure"),
             CancellationToken.None);
 
         // Extraction failure must never block the lifecycle (design §6) — it is logged and swallowed, and
-        // no commit is made.
+        // no commit is made — but it IS reported as a failure so the sweeper can retry it.
         await act.Should().NotThrowAsync();
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
         commands.Should().NotContain(a => a.Contains("commit -m"));
+        outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
     }
 
     // ---- Finding 1: git exit codes must be checked (no false success, bounded push retry) -----------
@@ -102,7 +128,7 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         await committer.RunAsync(
             Branch,
             SourcePrRef,
-            _ => Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1")),
+            _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
             CancellationToken.None);
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();
@@ -126,7 +152,7 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         var act = () => committer.RunAsync(
             Branch,
             SourcePrRef,
-            _ => Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1")),
+            _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
             CancellationToken.None);
 
         // A push that is rejected forever must never throw and — crucially — must never be reported as a
@@ -155,7 +181,7 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
             _ =>
             {
                 extractCalled = true;
-                return Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1"));
+                return Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1"));
             },
             CancellationToken.None);
 
@@ -182,7 +208,7 @@ public sealed class KnowledgeExtractionCommitterTests : LoggingTestBase
         await committer.RunAsync(
             Branch,
             SourcePrRef,
-            _ => Task.FromResult<KnowledgeWriteResult?>(new KnowledgeWriteResult("system/x.md", "run-1")),
+            _ => Task.FromResult(KnowledgeExtractionResult.Wrote("system/x.md", "run-1")),
             CancellationToken.None);
 
         var commands = runner.Commands.Select(c => string.Join(' ', c.Argv)).ToList();

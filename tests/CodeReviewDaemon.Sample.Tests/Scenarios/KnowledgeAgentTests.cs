@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
@@ -30,7 +31,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     private const string Today = "2026-07-06";
 
     [Fact]
-    public async Task TryExtractAsync_returns_null_and_writes_nothing_when_the_gate_fires()
+    public async Task TryExtractAsync_declines_and_writes_nothing_when_the_gate_fires()
     {
         var fs = new FakeSandboxFileSystem();
         // Seed the index/ToC so we can prove the gate leaves them untouched.
@@ -41,10 +42,102 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().BeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
         fs.Writes.Should().BeEmpty();
         fs.Files[KbDir + "/_index.jsonl"].Should().Be("seeded-index");
         fs.Files[KbDir + "/_toc.md"].Should().Be("seeded-toc");
+    }
+
+    // ---- The hosted-mode contract: extraction runs inside a workspace-agent conversation ------------
+
+    /// <summary>
+    /// The exact reply shape observed live on both daemons: on the S2S path the extraction turn is a hosted
+    /// conversation whose mode prompt tells the model to use sandbox tools, keep task memory, and "summarize
+    /// what you changed when done" — instructions that outrank the extraction profile riding as a system-prompt
+    /// appendix. Every August run answered like this, so every August run wrote nothing.
+    /// </summary>
+    private const string WorkspaceAgentStyleReply =
+        "I reviewed the notes and preserved the existing review unchanged. "
+        + "I also created workspace task memory at `Memory/tasks/review-mcqdbdev-11251.md`. "
+        + "Existing unrelated workspace modifications were left untouched.";
+
+    [Fact]
+    public async Task TryExtractAsync_restates_the_output_contract_in_the_user_turn()
+    {
+        // The profile prompt is only an APPENDIX to the host's workspace-agent mode prompt, and it loses.
+        // The user turn is the last thing the model reads, so the contract has to be there too — otherwise
+        // the reply is a conversational action summary and the extraction silently writes nothing.
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning("NO_KNOWLEDGE");
+
+        _ = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
+        sent.Should().Contain("distill these notes");
+        sent.Should().Contain("NO_KNOWLEDGE");
+        sent.Should().Contain("## SCOPE:");
+        sent.Should().Contain(
+            "Do not use tools", "the mode prompt mandates tool use for all operations; this turn must not");
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_nudges_once_when_the_reply_ignores_the_contract_then_writes_the_entry()
+    {
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning(WorkspaceAgentStyleReply)
+            .ThenReplies(Assistant(
+                "## SCOPE: system\n"
+                + "## TITLE: Notes Branch Lifecycle\n"
+                + "## TAGS: daemon, notes\n\n"
+                + "Delete the notes branch only after the extraction pass has run."));
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        // The salvage is a SAME-THREAD second turn, not a fresh run: the model keeps the notes it already read.
+        agent.ReceivedInputs.Should().HaveCount(2);
+        InputText(agent.ReceivedInputs[1]).Should().Contain("## SCOPE:");
+
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
+        result!.EntryFileName.Should().Be("system/notes-branch-lifecycle.md");
+        fs.Files.Should().ContainKey(KbDir + "/system/notes-branch-lifecycle.md");
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_gates_quietly_when_the_nudged_reply_declines()
+    {
+        // PR #249's whole input was "No new findings since the last review." — NO_KNOWLEDGE is the correct
+        // answer there, and reaching it on the second turn is a success, not a failure.
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning(WorkspaceAgentStyleReply).ThenReplies(Assistant("NO_KNOWLEDGE"));
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        // Reaching NO_KNOWLEDGE on the second turn is a decline, not a failure — nothing here is retryable.
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Declined);
+        fs.Writes.Should().BeEmpty();
+        agent.ReceivedInputs.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_nudges_at_most_once_and_writes_nothing_when_the_reply_still_does_not_conform()
+    {
+        // Bounded salvage: one corrective turn, then give up. A retry loop against a model locked into the
+        // wrong mode would burn the review budget without ever conforming.
+        var fs = new FakeSandboxFileSystem();
+        var agent = AgentReturning(WorkspaceAgentStyleReply).ThenReplies(Assistant(
+            "What would you like me to do next — post the review comments or prepare a fix?"));
+
+        var result = await Knowledge(agent, fs).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        // An unusable reply is a LOST extraction, not a decline: the caller must be able to retry it on a
+        // later sweep rather than merge the notes away as if the PR had taught nothing (defect D5).
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
+        fs.Writes.Should().BeEmpty();
+        agent.ReceivedInputs.Should().HaveCount(2);
     }
 
     [Fact]
@@ -60,7 +153,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/null-checks.md");
         result.RunId.Should().Be(RunId);
 
@@ -108,7 +201,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", "github/o-r/99", Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/x.md");
 
         // The existing entry is rewritten in place — no near-duplicate second file.
@@ -144,7 +237,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // A "../../" scope must escape NOTHING: the write is refused outright (gate), not redirected.
-        result.Should().BeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
         fs.Files.Keys.Should().NotContain(key => !key.StartsWith(KbDir + "/", StringComparison.Ordinal));
     }
@@ -162,7 +255,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // Scope must be ONE ref-safe segment; a scope carrying a path separator is refused, not split.
-        result.Should().BeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Failed);
         fs.Writes.Should().BeEmpty();
     }
 
@@ -184,7 +277,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
 
         // The traversal UPDATES is refused and the create falls back to the safe scope+slug INSIDE the KB;
         // the planted escape file is never touched, and every write stays under KnowledgeBase/.
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/innocent-looking.md");
         fs.Files[escapePath].Should().Be("#!/bin/sh\necho pwned");
         fs.Writes.Should().OnlyContain(path => path.StartsWith(KbDir + "/", StringComparison.Ordinal));
@@ -207,7 +300,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
         // The bookkeeping UPDATES is refused; the create falls back to the safe scope+slug path instead.
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/not-the-toc.md");
         fs.Files[KbDir + "/_toc.md"].Should().NotContain("title:");
         fs.Files[KbDir + "/_toc.md"].Should().Contain("- [Not The Toc](system/not-the-toc.md)");
@@ -250,7 +343,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/null-checks.md");
         var entryPath = KbDir + "/system/null-checks.md";
         var meta = KnowledgeIndex.ParseFrontmatter("system/null-checks.md", fs.Files[entryPath]);
@@ -277,7 +370,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be("system/marker-syntax-guide.md");
         var entryPath = KbDir + "/system/marker-syntax-guide.md";
         var meta = KnowledgeIndex.ParseFrontmatter("system/marker-syntax-guide.md", fs.Files[entryPath]);
@@ -306,7 +399,7 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         var result = await Knowledge(agent, fs).TryExtractAsync(
             RepoRoot, "notes", SourcePr, Today, CancellationToken.None);
 
-        result.Should().NotBeNull();
+        result.Outcome.Should().Be(KnowledgeExtractionOutcome.Wrote);
         result!.EntryFileName.Should().Be(
             "mcqdbdev/new-lesson.md", "the new entry reuses the existing scope directory's case");
         fs.Files.Should().ContainKey(KbDir + "/mcqdbdev/new-lesson.md");
@@ -317,8 +410,14 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         meta!.Scope.Should().Be("mcqdbdev");
     }
 
-    private static FakeMultiTurnAgent AgentReturning(string text) =>
-        new(RunId, new TextMessage { Text = text, Role = Role.Assistant, RunId = RunId });
+    private static FakeMultiTurnAgent AgentReturning(string text) => new(RunId, Assistant(text));
+
+    private static TextMessage Assistant(string text) =>
+        new() { Text = text, Role = Role.Assistant, RunId = RunId };
+
+    /// <summary>The prose the daemon actually sent on a turn (the agent's single user message).</summary>
+    private static string InputText(UserInput input) =>
+        string.Join("\n", input.Messages.OfType<TextMessage>().Select(message => message.Text));
 
     private KnowledgeAgent Knowledge(FakeMultiTurnAgent agent, FakeSandboxFileSystem fs) =>
         new(agent, fs, LoggerFactory.CreateLogger<KnowledgeAgent>());

@@ -1,4 +1,5 @@
 using System.Globalization;
+using CodeReviewDaemon.Sample.Agents;
 using CodeReviewDaemon.Sample.Persistence;
 using CodeReviewDaemon.Sample.Persistence.Models;
 using CodeReviewDaemon.Sample.Workspace.Git;
@@ -92,8 +93,22 @@ internal sealed class PrLifecycleSweeper
     /// default branch, so the same merge carries the new/updated entry into <c>main</c>. Wired in
     /// <c>Program.cs</c> only when <c>EnableKnowledgeAgent</c> is set; <c>null</c> leaves the sweep unchanged.
     /// Runs on the Merged path only — never on Open/Abandoned — and its failure never blocks the lifecycle.
+    /// <para>
+    /// The returned <see cref="KnowledgeExtractionOutcome"/> is what makes a failed extraction recoverable: the
+    /// merge deletes the notes branch, so merging over a failure destroys the only input a retry could use.
+    /// </para>
     /// </summary>
-    private readonly Func<ReviewedPr, CancellationToken, Task>? _extractKnowledgeAsync;
+    private readonly Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? _extractKnowledgeAsync;
+
+    /// <summary>
+    /// How many sweeps may defer a merged PR's merge waiting for its knowledge extraction to succeed. Extraction
+    /// must never block the lifecycle outright (design §6), so the delay is bounded: once a PR has burned this
+    /// many attempts the sweep merges anyway and the extraction is lost — loudly, not silently.
+    /// </summary>
+    private const int MaxExtractionAttempts = 3;
+
+    /// <summary>Extraction attempts spent per notes branch. Not persisted; a restart restarts the budget.</summary>
+    private readonly Dictionary<string, int> _extractionAttempts = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Notes branches this daemon lifetime has already resolved to a terminal lifecycle (merged-and-swept, or
@@ -112,7 +127,7 @@ internal sealed class PrLifecycleSweeper
         string defaultBranch,
         bool mergeNotesBranchOnClose,
         ILogger<PrLifecycleSweeper> logger,
-        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null
+        Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null
     )
     {
         _listReviewedPrsAsync = listReviewedPrsAsync ?? throw new ArgumentNullException(nameof(listReviewedPrsAsync));
@@ -194,7 +209,8 @@ internal sealed class PrLifecycleSweeper
     /// <summary>
     /// Resolves a merged PR's notes branch (KB extraction, then merge-to-default). Returns <c>true</c> when the
     /// branch reached a terminal state — merged, already gone, or intentionally left because merge-on-close is
-    /// disabled — and <c>false</c> only when the merge push failed and should be retried on the next sweep.
+    /// disabled — and <c>false</c> when the merge should be retried on the next sweep, either because the merge
+    /// push failed or because knowledge extraction failed and still has attempts left.
     /// </summary>
     private async Task<bool> ResolveMergedAsync(ReviewedPr pr, CancellationToken cancellationToken)
     {
@@ -210,22 +226,12 @@ internal sealed class PrLifecycleSweeper
 
         // Layer-2 (design §1): distill durable knowledge from the PR's accumulated notes BEFORE the notes
         // branch merges into the default branch, so the same merge carries the new/updated entry into main.
-        // Extraction failure (agent error, IO) is logged and swallowed — it must NEVER block the merge/delete
-        // (design §6: a capability gap degrades, never fails the lifecycle).
-        if (_extractKnowledgeAsync is not null)
+        if (_extractKnowledgeAsync is not null && !await TryExtractKnowledgeAsync(pr, cancellationToken).ConfigureAwait(false))
         {
-            try
-            {
-                await _extractKnowledgeAsync(pr, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "PR-lifecycle sweep knowledge extraction failed for merged {Provider} PR {PrId}; the merge proceeds.",
-                    pr.Provider,
-                    pr.PrId);
-            }
+            // Extraction failed with attempts left. Returning false leaves the branch uncached AND unmerged, so
+            // the next sweep retries against notes that still exist — merging here would delete the only input
+            // a retry could use and make the failure permanent (defect D5).
+            return false;
         }
 
         var merged = await _branchManager
@@ -238,6 +244,66 @@ internal sealed class PrLifecycleSweeper
             pr.PrId,
             _defaultBranch,
             merged);
+        if (merged)
+        {
+            _extractionAttempts.Remove(pr.Branch);
+        }
+
         return merged;
+    }
+
+    /// <summary>
+    /// Runs one knowledge-extraction attempt for <paramref name="pr"/>. Returns <c>true</c> when the merge may
+    /// proceed — the extraction wrote an entry, legitimately declined, or has now burned every attempt — and
+    /// <c>false</c> when it failed with attempts left and the caller should defer the merge for a retry.
+    /// Extraction never throws out of here: a capability gap degrades the lifecycle, never fails it (design §6).
+    /// </summary>
+    private async Task<bool> TryExtractKnowledgeAsync(ReviewedPr pr, CancellationToken cancellationToken)
+    {
+        KnowledgeExtractionOutcome outcome;
+        try
+        {
+            outcome = await _extractKnowledgeAsync!(pr, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "PR-lifecycle sweep knowledge extraction threw for merged {Provider} PR {PrId}.",
+                pr.Provider,
+                pr.PrId);
+            outcome = KnowledgeExtractionOutcome.Failed;
+        }
+
+        if (outcome != KnowledgeExtractionOutcome.Failed)
+        {
+            return true;
+        }
+
+        var attempts = _extractionAttempts.GetValueOrDefault(pr.Branch) + 1;
+        _extractionAttempts[pr.Branch] = attempts;
+        if (attempts < MaxExtractionAttempts)
+        {
+            _logger.LogWarning(
+                "PR-lifecycle sweep knowledge extraction failed for merged {Provider} PR {PrId} "
+                    + "(attempt {Attempt} of {MaxAttempts}); holding notes branch '{Branch}' back for a retry.",
+                pr.Provider,
+                pr.PrId,
+                attempts,
+                MaxExtractionAttempts,
+                pr.Branch);
+            return false;
+        }
+
+        // The delay extraction may impose on the lifecycle is bounded (design §6). Say so loudly: this is the
+        // one path where knowledge is genuinely lost, and it must not look like an ordinary merge.
+        _logger.LogWarning(
+            "PR-lifecycle sweep knowledge extraction failed for merged {Provider} PR {PrId} on all "
+                + "{MaxAttempts} attempts; merging notes branch '{Branch}' anyway — this PR's knowledge is lost.",
+            pr.Provider,
+            pr.PrId,
+            MaxExtractionAttempts,
+            pr.Branch);
+        return true;
     }
 }

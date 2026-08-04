@@ -315,8 +315,17 @@ builder.Services.AddSingleton(sp => new LmStreamingS2SClient(
 // Completion-source seam for the recursive review completion barrier: reads the review host's versioned
 // recursive sub-agent tree over the same S2S client. IMPORTANT — the review host (LmStreaming.Sample) must
 // be deployed with the recursive `?recursive=true` endpoint BEFORE the daemon barrier is enabled.
-builder.Services.AddSingleton<IReviewSubAgentCompletionSource>(sp =>
+//
+// The same object is also the daemon's read half of the agent directory (IReviewAgentTranscriptSource):
+// once the barrier hands back a settled roster, the notes artifacts fetch each named agent's transcript to
+// write per-reviewer findings files. Registered concrete-first so both interfaces share ONE instance —
+// two factory registrations would silently give the barrier and the artifact builder separate objects.
+builder.Services.AddSingleton(sp =>
     new S2SReviewSubAgentCompletionSource(sp.GetRequiredService<LmStreamingS2SClient>()));
+builder.Services.AddSingleton<IReviewSubAgentCompletionSource>(sp =>
+    sp.GetRequiredService<S2SReviewSubAgentCompletionSource>());
+builder.Services.AddSingleton<IReviewAgentTranscriptSource>(sp =>
+    sp.GetRequiredService<S2SReviewSubAgentCompletionSource>());
 
 // Host-side workspace preparer: clones the PR checkout under the shared WORKSPACE_BASE_PATH and ensures
 // the LmStreaming workspace points at that leaf. Uses the SAME host-backed GitRunner the pooled path uses
@@ -643,7 +652,7 @@ if (daemonOptions.EnableToolAssistedReview
         // can read the existing KnowledgeBase/ before deciding whether this PR taught anything durable.
         var s2sPreparer = sp.GetService<S2SReviewWorkspacePreparer>();
         var sweeperLeaf = Path.GetFileName(sweeperRepoRoot.TrimEnd('/', '\\'));
-        Func<ReviewedPr, CancellationToken, Task>? extractKnowledgeAsync = null;
+        Func<ReviewedPr, CancellationToken, Task<KnowledgeExtractionOutcome>>? extractKnowledgeAsync = null;
         if (daemonOptions.EnableKnowledgeAgent)
         {
             // The committer wraps the gated extraction with the git plumbing that carries its write into the

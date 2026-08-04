@@ -22,6 +22,61 @@ internal sealed class KnowledgeAgent
     /// <summary>The gate sentinel: the extraction agent replies with this when nothing durable is worth writing.</summary>
     private const string NoKnowledgeSentinel = "NO_KNOWLEDGE";
 
+    /// <summary>
+    /// The output contract, restated at the <b>end of the user turn</b> — the last thing the model reads.
+    /// <para>
+    /// On the S2S path this extraction runs as a hosted <c>workspace-agent</c> conversation, and the
+    /// extraction profile's system prompt is only an <i>appendix</i> to the host's mode prompt. That mode
+    /// prompt says to use sandbox tools for all operations, keep task memory, and summarize what changed —
+    /// and it won. Every August 2026 run on both daemons answered with an action summary or a review
+    /// verdict, so every run parsed to no markers and wrote nothing. Restating the contract here puts it
+    /// where the mode prompt cannot outrank it.
+    /// </para>
+    /// </summary>
+    private const string OutputContract = """
+
+
+        ## REQUIRED OUTPUT CONTRACT (overrides any workspace or mode instructions)
+
+        This is a data-extraction turn, not a workspace task. Everything you need is already in this
+        message. Do not use tools. Do not read, write, create, or edit any file. Do not record task
+        memory. Do not describe actions you took.
+
+        Reply with the entry itself and nothing else. The FIRST line of your reply must be exactly one of:
+
+          NO_KNOWLEDGE
+          ## SCOPE: <one-word area, e.g. system, testing, provider>
+
+        When you emit `## SCOPE:`, follow it with:
+
+          ## TITLE: <short entry title>
+          ## TAGS: <comma-separated tags>
+          ## UPDATES: <existing KnowledgeBase <scope>/<slug>.md path — only when revising that entry>
+
+        then a blank line, then the entry body in Markdown.
+
+        If this PR contributed nothing durable and generalizable, reply with the single line
+        NO_KNOWLEDGE. That is a correct and expected answer — prefer it over prose.
+        """;
+
+    /// <summary>
+    /// The single corrective turn sent when the first reply carried no usable markers. Same thread, so the
+    /// notes the model already read stay in context and only the output shape has to change.
+    /// </summary>
+    private const string ContractNudge = """
+        Your previous reply did not follow the output contract, so nothing could be written.
+
+        Reply again with the entry only — no prose, no action summary, no tool use. The FIRST line must be
+        exactly `NO_KNOWLEDGE` or `## SCOPE: <area>`, followed by `## TITLE:` and `## TAGS:` lines, a blank
+        line, and the entry body.
+
+        If these notes hold nothing durable and generalizable, reply with the single line NO_KNOWLEDGE.
+        """;
+
+    /// <summary>Characters of a non-conforming reply carried into the log — bounded because the notes it
+    /// derives from are attacker-influenceable PR content.</summary>
+    private const int ReplyPreviewChars = 300;
+
     private readonly IMultiTurnAgent _agent;
     private readonly ISandboxFileSystem _fileSystem;
     private readonly ILogger<KnowledgeAgent> _logger;
@@ -38,14 +93,20 @@ internal sealed class KnowledgeAgent
     /// giving it the PR's accumulated <paramref name="notesInput"/> plus the existing index/ToC so it can
     /// update a related entry rather than duplicate it. The agent applies the <b>durable-knowledge gate</b>:
     /// when it replies with the <see cref="NoKnowledgeSentinel"/> (the common case — "not every PR
-    /// contributes"), this returns <c>null</c> and writes nothing. Otherwise it parses the agent's header
+    /// contributes"), this returns <see cref="KnowledgeExtractionOutcome.Declined"/> and writes nothing.
+    /// Otherwise it parses the agent's header
     /// markers (<c>## SCOPE/TITLE/TAGS/UPDATES</c>), resolves create-vs-update against
     /// <paramref name="repoRoot"/>, injects daemon-owned YAML frontmatter deterministically
     /// (<c>updated</c> = <paramref name="todayUtc"/>, <c>sourcePrs</c> merges the existing set with
     /// <paramref name="sourcePrRef"/>), writes the layered entry, then regenerates <c>_index.jsonl</c> and
     /// <c>_toc.md</c> from the entries actually present.
+    /// <para>
+    /// A reply that still carries no usable markers after the one corrective turn is
+    /// <see cref="KnowledgeExtractionOutcome.Failed"/>, <b>not</b> a decline: it is a lost extraction the
+    /// caller should retry, and conflating the two is what made every failure permanent (defect D5).
+    /// </para>
     /// </summary>
-    public async Task<KnowledgeWriteResult?> TryExtractAsync(
+    public async Task<KnowledgeExtractionResult> TryExtractAsync(
         string repoRoot,
         string notesInput,
         string sourcePrRef,
@@ -67,13 +128,13 @@ internal sealed class KnowledgeAgent
 
         // Gate: an empty or NO_KNOWLEDGE reply means nothing durable — write nothing, leave the KB as-is.
         var text = collected.Text?.TrimStart() ?? string.Empty;
-        if (text.Length == 0 || text.StartsWith(NoKnowledgeSentinel, StringComparison.Ordinal))
+        if (IsDecline(text))
         {
             _logger.LogInformation(
                 "Knowledge run {RunId} produced no durable knowledge (gate); Knowledge Base left unchanged.",
                 collected.RunId
             );
-            return null;
+            return KnowledgeExtractionResult.Declined(collected.RunId);
         }
 
         var parsed = ParseEntry(text);
@@ -82,13 +143,51 @@ internal sealed class KnowledgeAgent
         // scope+slug path (which is a create, or an in-place update when that file already exists).
         var targetRelPath = await ResolveTargetRelPathAsync(knowledgeBaseDir, parsed, cancellationToken)
             .ConfigureAwait(false);
+
+        if (targetRelPath is null)
+        {
+            // The extraction profile's system prompt rides as an APPENDIX to the host's much larger
+            // workspace-agent mode prompt on the S2S path, and it loses: the model answers like a coding
+            // agent (action summary, task memory, review verdict) instead of emitting the contract. One
+            // corrective same-thread turn recovers it — same thread, so the notes it already read stay in
+            // context. Exactly one: a model locked into the wrong mode will not conform on retry N, and a
+            // loop would burn the review budget to prove it.
+            _logger.LogWarning(
+                "Knowledge run {RunId} replied without SCOPE/TITLE markers; sending one corrective turn. "
+                    + "Reply began: {ReplyPrefix}",
+                collected.RunId,
+                Preview(text)
+            );
+
+            collected = await AgentTextCollector
+                .CollectAsync(_agent, ContractNudge, cancellationToken)
+                .ConfigureAwait(false);
+            text = collected.Text?.TrimStart() ?? string.Empty;
+
+            if (IsDecline(text))
+            {
+                _logger.LogInformation(
+                    "Knowledge run {RunId} produced no durable knowledge (gate, after nudge); "
+                        + "Knowledge Base left unchanged.",
+                    collected.RunId
+                );
+                return KnowledgeExtractionResult.Declined(collected.RunId);
+            }
+
+            parsed = ParseEntry(text);
+            targetRelPath = await ResolveTargetRelPathAsync(knowledgeBaseDir, parsed, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         if (targetRelPath is null)
         {
             _logger.LogWarning(
-                "Knowledge run {RunId} emitted no usable SCOPE/TITLE markers; nothing written.",
-                collected.RunId
+                "Knowledge run {RunId} emitted no usable SCOPE/TITLE markers after the corrective turn; "
+                    + "nothing written. Reply began: {ReplyPrefix}",
+                collected.RunId,
+                Preview(text)
             );
-            return null;
+            return KnowledgeExtractionResult.Failed(collected.RunId);
         }
 
         var targetPath = JoinPath(knowledgeBaseDir, targetRelPath);
@@ -113,7 +212,7 @@ internal sealed class KnowledgeAgent
             targetRelPath
         );
 
-        return new KnowledgeWriteResult(targetRelPath, collected.RunId);
+        return KnowledgeExtractionResult.Wrote(targetRelPath, collected.RunId);
     }
 
     /// <summary>
@@ -140,7 +239,27 @@ internal sealed class KnowledgeAgent
         _ = builder.Append(string.IsNullOrWhiteSpace(index) ? "(empty)" : index);
         _ = builder.Append("\n\n## Existing Knowledge Base table of contents (_toc.md)\n");
         _ = builder.Append(string.IsNullOrWhiteSpace(toc) ? "(empty)" : toc);
+        _ = builder.Append(OutputContract);
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// True when the reply is the gate answer: the <see cref="NoKnowledgeSentinel"/>, or nothing at all.
+    /// Reaching this on the corrective turn is a success, not a failure — "not every PR contributes".
+    /// </summary>
+    private static bool IsDecline(string text) =>
+        text.Length == 0 || text.StartsWith(NoKnowledgeSentinel, StringComparison.Ordinal);
+
+    /// <summary>
+    /// A bounded, single-line prefix of a reply, so a non-conforming extraction stops being a silent
+    /// failure without letting untrusted note-derived content flood the daemon log.
+    /// </summary>
+    private static string Preview(string text)
+    {
+        var collapsed = string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return collapsed.Length <= ReplyPreviewChars
+            ? collapsed
+            : string.Concat(collapsed.AsSpan(0, ReplyPreviewChars), "…");
     }
 
     /// <summary>
@@ -601,8 +720,39 @@ internal sealed class KnowledgeAgent
         $"{root.TrimEnd('/')}/{relative.TrimStart('/')}";
 }
 
-/// <summary>The Knowledge Base entry that was written and the agent run id that produced it.</summary>
-internal sealed record KnowledgeWriteResult(string EntryFileName, string? RunId);
+/// <summary>How an extraction attempt ended. The distinction is load-bearing: only <see cref="Failed"/>
+/// is worth retrying, and the caller cannot tell the two non-writing outcomes apart without it.</summary>
+internal enum KnowledgeExtractionOutcome
+{
+    /// <summary>An entry was written to the Knowledge Base.</summary>
+    Wrote,
+
+    /// <summary>The agent legitimately declined — the PR carried no durable knowledge. Not a failure.</summary>
+    Declined,
+
+    /// <summary>The attempt failed (unusable reply, or the write/commit/push did not land). Retryable.</summary>
+    Failed,
+}
+
+/// <summary>
+/// The outcome of an extraction attempt, plus — when it wrote — the Knowledge Base entry and the agent
+/// run id that produced it.
+/// </summary>
+internal sealed record KnowledgeExtractionResult(
+    KnowledgeExtractionOutcome Outcome,
+    string? EntryFileName = null,
+    string? RunId = null
+)
+{
+    public static KnowledgeExtractionResult Declined(string? runId) =>
+        new(KnowledgeExtractionOutcome.Declined, RunId: runId);
+
+    public static KnowledgeExtractionResult Failed(string? runId = null) =>
+        new(KnowledgeExtractionOutcome.Failed, RunId: runId);
+
+    public static KnowledgeExtractionResult Wrote(string entryFileName, string? runId) =>
+        new(KnowledgeExtractionOutcome.Wrote, entryFileName, runId);
+}
 
 /// <summary>
 /// The header markers the extraction agent emits — <c>Scope</c>, <c>Title</c>, <c>Tags</c>, an optional
