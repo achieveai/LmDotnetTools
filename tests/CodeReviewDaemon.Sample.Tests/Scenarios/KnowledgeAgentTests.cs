@@ -1,3 +1,4 @@
+using System.Globalization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmMultiTurn.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
@@ -410,6 +411,110 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
         meta!.Scope.Should().Be("mcqdbdev");
     }
 
+    // ---- The existing-store listings the extraction prompt carries are bounded, and say when they are --
+
+    /// <summary>One index record, sized like a real one so the listings below grow the way a real store does.</summary>
+    private static string IndexRecord(int ordinal)
+    {
+        var id = ordinal.ToString("D4", CultureInfo.InvariantCulture);
+        return "{\"file\":\"system/entry-" + id + ".md\",\"title\":\"Entry " + id
+            + "\",\"tags\":[\"padding\",\"listing\"],\"scope\":\"system\",\"updated\":\"2026-07-06\"}";
+    }
+
+    /// <summary>The part of the extraction prompt under <paramref name="heading"/>, up to the next section.</summary>
+    private static string Section(string prompt, string heading)
+    {
+        var start = prompt.IndexOf(heading, StringComparison.Ordinal);
+        start.Should().BeGreaterThanOrEqualTo(0, "the prompt must carry the '{0}' section", heading);
+        start += heading.Length;
+        var end = prompt.IndexOf("\n\n## ", start, StringComparison.Ordinal);
+        return end < 0 ? prompt[start..] : prompt[start..end];
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_tells_the_agent_when_the_existing_index_did_not_fit_in_the_prompt()
+    {
+        // The agent reads this listing SPECIFICALLY to update a related entry instead of duplicating one. A
+        // listing that quietly loses its tail therefore does not merely shrink a prompt — it manufactures
+        // duplicate Knowledge Base entries, because the agent still believes it has seen the whole store.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/_index.jsonl"] =
+            string.Join("\n", Enumerable.Range(0, 400).Select(IndexRecord));
+        var logger = new CapturingLogger<KnowledgeAgent>();
+        var agent = AgentReturning("NO_KNOWLEDGE");
+
+        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
+        var listing = Section(sent, "## Existing Knowledge Base index (_index.jsonl)\n");
+        listing.Should().Contain(
+            "This listing is PARTIAL",
+            "the cap has to be visible to the AGENT, not only to our logs — the log cannot stop a duplicate");
+        listing.Should().Contain(
+            "not in this list",
+            "the agent must be told the one inference it must not draw from a shortened listing");
+
+        // What SURVIVED still has to be usable: whole records, in order, starting at the top of the store.
+        var shown = listing[..listing.IndexOf("**This listing is PARTIAL", StringComparison.Ordinal)].Trim();
+        shown.Should().Contain(IndexRecord(0), "the surviving head of the listing must still be readable");
+        shown.Split('\n').Should().OnlyContain(
+            line => line.EndsWith('}'),
+            "cutting mid-record would hand the agent a torn entry it could misread as a real one");
+        sent.Should().NotContain("system/entry-0399.md", "the tail is what did not fit");
+
+        logger.CountAtLevel(LogLevel.Warning, "_index.jsonl").Should().Be(
+            1, "operators need to know the store outgrew the prompt even though the agent was told too");
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_tells_the_agent_when_the_existing_toc_did_not_fit_in_the_prompt()
+    {
+        // The ToC is the index's neighbour route into the same prompt: an unbounded one costs the same and
+        // hides the same entries, so it carries the same guarantee.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/_toc.md"] = string.Join(
+            "\n",
+            Enumerable.Range(0, 400).Select(i =>
+                "- [Entry " + i.ToString("D4", CultureInfo.InvariantCulture) + "](system/entry-"
+                + i.ToString("D4", CultureInfo.InvariantCulture) + ".md) — padding padding padding padding"));
+        var logger = new CapturingLogger<KnowledgeAgent>();
+        var agent = AgentReturning("NO_KNOWLEDGE");
+
+        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
+        var listing = Section(sent, "## Existing Knowledge Base table of contents (_toc.md)\n");
+        listing.Should().Contain("This listing is PARTIAL");
+        listing.Should().Contain("(system/entry-0000.md)", "the surviving head must still be readable");
+        sent.Should().NotContain("system/entry-0399.md");
+        logger.CountAtLevel(LogLevel.Warning, "_toc.md").Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TryExtractAsync_does_not_claim_a_partial_listing_for_a_store_that_fits()
+    {
+        // The partner pin. A warning that fires on every healthy store is a warning the agent learns to
+        // ignore, which costs us the one case it exists for.
+        var fs = new FakeSandboxFileSystem();
+        fs.Files[KbDir + "/_index.jsonl"] = string.Join("\n", Enumerable.Range(0, 12).Select(IndexRecord));
+        fs.Files[KbDir + "/_toc.md"] = "# Knowledge Base\n\n- [Entry 0000](system/entry-0000.md)";
+        var logger = new CapturingLogger<KnowledgeAgent>();
+        var agent = AgentReturning("NO_KNOWLEDGE");
+
+        _ = await Knowledge(agent, fs, logger).TryExtractAsync(
+            RepoRoot, "distill these notes", SourcePr, Today, CancellationToken.None);
+
+        var sent = InputText(agent.ReceivedInputs.Should().ContainSingle().Subject);
+        sent.Should().NotContain("This listing is PARTIAL");
+        // And a store that fits is carried WHOLE — the cap must not shave a listing that never needed it.
+        sent.Should().Contain(IndexRecord(0));
+        sent.Should().Contain(IndexRecord(11));
+        sent.Should().Contain("# Knowledge Base\n\n- [Entry 0000](system/entry-0000.md)");
+        logger.CountAtLevel(LogLevel.Warning, "PARTIAL").Should().Be(0);
+    }
+
     private static FakeMultiTurnAgent AgentReturning(string text) => new(RunId, Assistant(text));
 
     private static TextMessage Assistant(string text) =>
@@ -419,6 +524,9 @@ public sealed class KnowledgeAgentTests : LoggingTestBase
     private static string InputText(UserInput input) =>
         string.Join("\n", input.Messages.OfType<TextMessage>().Select(message => message.Text));
 
-    private KnowledgeAgent Knowledge(FakeMultiTurnAgent agent, FakeSandboxFileSystem fs) =>
-        new(agent, fs, LoggerFactory.CreateLogger<KnowledgeAgent>());
+    private KnowledgeAgent Knowledge(
+        FakeMultiTurnAgent agent,
+        FakeSandboxFileSystem fs,
+        ILogger<KnowledgeAgent>? logger = null
+    ) => new(agent, fs, logger ?? LoggerFactory.CreateLogger<KnowledgeAgent>());
 }

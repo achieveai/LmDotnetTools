@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmMultiTurn;
 using CodeReviewDaemon.Sample.Workspace.Sandbox;
@@ -218,7 +219,8 @@ internal sealed class KnowledgeAgent
     /// <summary>
     /// Assembles the extraction agent's input: the PR notes followed by the existing <c>_index.jsonl</c>
     /// and <c>_toc.md</c> (best-effort; missing files render as <c>(empty)</c>) so the agent can update a
-    /// related entry instead of duplicating one.
+    /// related entry instead of duplicating one. Each listing is bounded by
+    /// <see cref="AppendExistingListing"/>, which announces a shortened listing to the agent.
     /// </summary>
     private async Task<string> BuildExtractionInputAsync(
         string knowledgeBaseDir,
@@ -235,12 +237,103 @@ internal sealed class KnowledgeAgent
 
         var builder = new StringBuilder();
         _ = builder.Append(notesInput ?? string.Empty);
-        _ = builder.Append("\n\n## Existing Knowledge Base index (_index.jsonl)\n");
-        _ = builder.Append(string.IsNullOrWhiteSpace(index) ? "(empty)" : index);
-        _ = builder.Append("\n\n## Existing Knowledge Base table of contents (_toc.md)\n");
-        _ = builder.Append(string.IsNullOrWhiteSpace(toc) ? "(empty)" : toc);
+        AppendExistingListing(builder, "index (" + IndexFileName + ")", IndexFileName, index);
+        AppendExistingListing(builder, "table of contents (" + TocFileName + ")", TocFileName, toc);
         _ = builder.Append(OutputContract);
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Characters of one existing-store listing carried into the extraction prompt. The store grows with
+    /// every merged PR, so an unbounded listing eventually crowds out the notes it is meant to help
+    /// distill — and the notes are the payload.
+    /// <para>
+    /// <see cref="KnowledgeIndex.MaxIndexRecords"/> deliberately does <b>not</b> transfer here: that ceiling
+    /// bounds the cost of <i>parsing</i> the index, and at a few hundred characters a record it still admits
+    /// a listing far larger than any prompt should carry. Nothing is parsed on this path, so the budget that
+    /// matters is the one the model is charged for.
+    /// </para>
+    /// </summary>
+    private const int MaxExistingListingChars = 16 * 1024;
+
+    /// <summary>
+    /// Appends one existing-store listing under its heading, shortened at a line boundary to
+    /// <see cref="MaxExistingListingChars"/>.
+    /// <para>
+    /// A shortened listing is announced <b>in the prompt</b>, not merely in our logs, and that is the point
+    /// of the cap rather than a nicety. The agent reads these listings specifically to update a related
+    /// entry instead of writing a second one, so a listing that quietly loses its tail does not just shrink
+    /// a prompt — it manufactures duplicate Knowledge Base entries, because the agent goes on believing it
+    /// has seen the whole store. A silent cap is therefore worse than no cap at all. Told that it is looking
+    /// at part of the store, the agent can stop reading "not in this list" as "does not exist"; the log line
+    /// below can tell us, but it cannot tell the only party in a position to avoid the duplicate.
+    /// </para>
+    /// </summary>
+    private void AppendExistingListing(StringBuilder builder, string heading, string fileName, string? content)
+    {
+        _ = builder.Append("\n\n## Existing Knowledge Base ").Append(heading).Append('\n');
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            _ = builder.Append("(empty)");
+            return;
+        }
+
+        if (content.Length <= MaxExistingListingChars)
+        {
+            _ = builder.Append(content);
+            return;
+        }
+
+        // Cut at a line boundary: half an index record reads like a whole one, and an agent that believes
+        // 'system/foo' exists because it saw a torn 'system/foo-bar' has been misled rather than shortened.
+        // With no boundary inside the budget there is no whole line to show, so show none and say so.
+        var cut = content.LastIndexOf('\n', MaxExistingListingChars - 1);
+        var kept = cut > 0 ? content[..cut] : string.Empty;
+        var dropped = CountLines(content) - CountLines(kept);
+
+        _ = builder.Append(kept);
+        _ = builder.Append(
+            "\n\n**This listing is PARTIAL — it did not fit, and "
+        );
+        _ = builder.Append(dropped.ToString(CultureInfo.InvariantCulture));
+        _ = builder.Append(
+            " further lines are not shown.** Entries you cannot see here may already exist, so absence "
+                + "from the part above is NOT evidence that a topic is uncovered: do not treat \"not in "
+                + "this list\" as \"does not exist\"."
+        );
+
+        _logger.LogWarning(
+            "Knowledge extraction: the existing {FileName} is {TotalChars} characters, so the extraction "
+                + "prompt carries the first {KeptChars} and tells the agent that {DroppedLines} lines are "
+                + "missing. The agent will not read absence as proof of absence, but a store listing this "
+                + "long makes duplicate entries likelier and the listing should be trimmed at the source.",
+            fileName,
+            content.Length,
+            kept.Length,
+            dropped
+        );
+    }
+
+    /// <summary>Lines in <paramref name="text"/>, where a trailing newline ends the last line rather than
+    /// starting an empty one.</summary>
+    private static int CountLines(ReadOnlySpan<char> text)
+    {
+        if (text.IsEmpty)
+        {
+            return 0;
+        }
+
+        var lines = 1;
+        foreach (var character in text)
+        {
+            if (character == '\n')
+            {
+                lines++;
+            }
+        }
+
+        return text[^1] == '\n' ? lines - 1 : lines;
     }
 
     /// <summary>
