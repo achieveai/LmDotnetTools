@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text;
 using CodeReviewDaemon.Sample.Configuration;
 
@@ -600,15 +599,26 @@ internal static class KnowledgeDigest
         // _index.jsonl is JSON, "\n" is an ordinary character inside a JSON string, and RenderEntry
         // interpolates the value as it stands - so a title can put a definition at the start of a rendered
         // line. On the _toc.md route the input is already split and the loop simply runs once.
+        //
+        // "Start of a line" means after any block-container markers, not after the indentation alone.
+        // TrimStart left a ">" or a bullet in front, so the first character was not "[" and the line was
+        // never examined - while CommonMark reads a definition inside a block quote or a list item exactly
+        // as it reads one at column zero. The markers are STRIPPED rather than treated as evidence, because
+        // "- [Alpha](system/alpha.md)" is every ordinary entry in the file and refusing lines for wearing a
+        // bullet would empty the block; what makes a definition a definition is the ":" after its label.
         foreach (var line in text.Split('\n'))
         {
-            var trimmed = line.AsSpan().TrimStart();
+            var trimmed = StripBlockContainerMarkers(line);
             if (trimmed.IsEmpty || trimmed[0] != '[')
             {
                 continue;
             }
 
-            var close = trimmed.IndexOf(']');
+            // The label's closing bracket is the first UNESCAPED one: a label may contain "\]", and reading
+            // the escaped bracket as the end of the label made "[foo\]]: ../../../etc/passwd" look like
+            // prose, because the character after it is "]" rather than ":". The shortcut reference that
+            // resolves to it carries no "][" either, so neither half of this gate fired on either line.
+            var close = IndexOfUnescaped(trimmed, ']', 1);
             if (close > 0 && close + 1 < trimmed.Length && trimmed[close + 1] == ':')
             {
                 return true;
@@ -616,6 +626,47 @@ internal static class KnowledgeDigest
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// A line with its leading indentation and any block-container markers removed: block quotes
+    /// (<c>&gt;</c>), bullet list items (<c>-</c>, <c>*</c>, <c>+</c>) and ordered list items
+    /// (<c>1.</c>, <c>1)</c>), in any nesting.
+    /// </summary>
+    private static ReadOnlySpan<char> StripBlockContainerMarkers(ReadOnlySpan<char> line)
+    {
+        var text = line.TrimStart();
+        while (true)
+        {
+            if (!text.IsEmpty && text[0] == '>')
+            {
+                text = text[1..].TrimStart();
+                continue;
+            }
+
+            if (text.Length > 1 && text[0] is '-' or '*' or '+' && (text[1] == ' ' || text[1] == '\t'))
+            {
+                text = text[2..].TrimStart();
+                continue;
+            }
+
+            var digits = 0;
+            while (digits < text.Length && char.IsAsciiDigit(text[digits]))
+            {
+                digits++;
+            }
+
+            if (digits > 0
+                && digits + 1 < text.Length
+                && text[digits] is '.' or ')'
+                && (text[digits + 1] == ' ' || text[digits + 1] == '\t'))
+            {
+                text = text[(digits + 2)..].TrimStart();
+                continue;
+            }
+
+            return text;
+        }
     }
 
     /// <summary>
@@ -642,17 +693,24 @@ internal static class KnowledgeDigest
     /// that can be read two ways is not licence to pick the reading that lets it through.
     /// </para>
     /// <para>
-    /// A third reading, for the same reason: CommonMark decodes character references inside a destination, so
-    /// <c>&amp;#x2F;etc/passwd</c> is <c>/etc/passwd</c> to the agent and an ordinary contained relative path
-    /// to every test above — no leading slash, no colon so no scheme, joins inside the root. Decoding is a
-    /// spelling change, not a new rule, and it is applied here rather than at extraction so the refusal can
-    /// still report what the file actually said.
+    /// Two REFUSALS stand in front of those readings, for forms we decline to interpret at all rather than
+    /// try to read correctly. An ampersand may be a character reference, which CommonMark resolves inside a
+    /// destination — <c>&amp;sol;etc/passwd</c> is <c>/etc/passwd</c> to the agent and an ordinary contained
+    /// relative path to every test below. We decode none of them and refuse all of them; the reasoning is at
+    /// <see cref="TryResolveEntryPath"/>, which is where the rule lives so that both routes reach it. An
+    /// angle bracket INSIDE an extracted destination is refused for the neighbouring reason: an angle-
+    /// delimited destination may not contain an unescaped <c>&lt;</c>, so a destination that still carries
+    /// one is not a destination to any conformant reader — <c>&lt;system/ok.md&lt;[b](../../../etc/passwd)&gt;</c>
+    /// parses as no outer link at all and renders the NESTED link on its own. The brackets that delimit a
+    /// destination are unwrapped before this point, so what is left is the inside; rewriting the extent scan
+    /// that produced it belongs to the conformant-parser work, and refusing its output does not.
     /// </para>
     /// </summary>
     private static bool IsLinkTheAgentCanSafelyJoin(string link, string knowledgeBaseRoot) =>
-        IsResolvedLinkSafeToJoin(link, knowledgeBaseRoot)
-        && IsResolvedLinkSafeToJoin(Unescape(link), knowledgeBaseRoot)
-        && IsResolvedLinkSafeToJoin(WebUtility.HtmlDecode(link), knowledgeBaseRoot);
+        !link.Contains('<', StringComparison.Ordinal)
+        && !link.Contains('>', StringComparison.Ordinal)
+        && IsResolvedLinkSafeToJoin(link, knowledgeBaseRoot)
+        && IsResolvedLinkSafeToJoin(Unescape(link), knowledgeBaseRoot);
 
     /// <summary>One reading of a link destination, judged by the shared containment rule.</summary>
     private static bool IsResolvedLinkSafeToJoin(string link, string knowledgeBaseRoot) =>
@@ -762,6 +820,21 @@ internal static class KnowledgeDigest
                 break;
             }
 
+            // A BARE destination cannot contain whitespace, so what follows a space inside one is either a
+            // title or nothing a Markdown reader can parse - and only the second case ever reaches an agent.
+            // "[a](system/ok.md [b](../../../etc/passwd))" has no valid title after "system/ok.md": a title
+            // is quoted or parenthesised and "[b](...)" is neither, so the OUTER link does not parse and the
+            // nested one renders on its own. Splitting at the space validated "system/ok.md" and handed the
+            // agent a line whose only real link was the one we never looked at. Refused rather than split,
+            // and reported whole, so the log names the part that matters. A title is refused along with it;
+            // our generator emits none, and #258 owns reading them properly.
+            var raw = line[open..textEnd].Trim();
+            if (raw.Length > 0 && raw[0] != '<' && raw.AsSpan().IndexOfAny(' ', '\t') >= 0)
+            {
+                links.Add(new TocLink(raw, marker, false));
+                break;
+            }
+
             links.Add(new TocLink(NormalizeLinkDestination(line[open..textEnd]), marker, true));
             at = next;
         }
@@ -854,7 +927,7 @@ internal static class KnowledgeDigest
     /// The first <paramref name="target"/> at or after <paramref name="from"/> that is not backslash-escaped,
     /// or <c>-1</c>.
     /// </summary>
-    private static int IndexOfUnescaped(string text, char target, int from)
+    private static int IndexOfUnescaped(ReadOnlySpan<char> text, char target, int from)
     {
         for (var scan = from; scan < text.Length; scan++)
         {
@@ -1188,8 +1261,8 @@ internal static class KnowledgeDigest
     /// something safe - a rewritten path would still be offered to the agent as knowledge. A backslash
     /// separates here too, since <see cref="Join"/> normalizes it and an escape spelled with backslashes
     /// escapes just as one spelled with slashes does. A LEADING slash is not an escape: <see cref="Join"/>
-    /// already contains it, so it lands harmlessly under the root. Containment is required of the decoded
-    /// spelling too, for the reason given at the check itself.
+    /// already contains it, so it lands harmlessly under the root. A path carrying an ampersand is refused
+    /// outright, for the reason given at the check itself.
     /// </summary>
     private static bool TryResolveEntryPath(string knowledgeBaseRoot, string? file, out string absolutePath)
     {
@@ -1199,33 +1272,26 @@ internal static class KnowledgeDigest
             return false;
         }
 
-        // Containment is required of the DECODED spelling as well, because a separator written as a character
-        // reference is invisible to the split below: "..&#x2F;..&#x2F;etc/passwd" contains no literal "/"
-        // until its last segment, so it reduces to one ordinary directory name and resolves happily inside
-        // the root - and the agent handed that absolute path decodes it to <root>/../../etc/passwd. Joining
-        // onto the root is what makes a LEADING slash harmless here; it does nothing about a separator the
-        // reader will produce and we never saw. Checked here rather than only at the link rule because this
-        // is the one containment rule both routes share, and "file" reaches it without passing that rule.
+        // Refused, not decoded, and refused on ANY ampersand rather than on the entities we happen to know.
+        // A separator written as a character reference is invisible to the split below: "..&#x2F;..&#x2F;etc"
+        // contains no literal "/" until its last segment, so it reduces to one ordinary directory name and
+        // resolves happily inside the root, while the agent handed that path reads the separators and walks
+        // out of the store. The previous reading decoded the value and required containment of the result -
+        // which closed the numeric spelling and left "..&sol;..&sol;etc" wide open, because
+        // WebUtility.HtmlDecode implements a PRE-HTML5 entity table and a GFM reader implements HTML5.
         //
-        // The raw spelling is what gets emitted, so the agent is handed the path the index actually names.
-        // Both spellings having been cleared, either reading of it lands inside the Knowledge Base.
-        var decoded = WebUtility.HtmlDecode(file);
-        if (!string.Equals(decoded, file, StringComparison.Ordinal)
-            && !TryReduceEntryPath(knowledgeBaseRoot, decoded, out _))
+        // So the rule is not "decode better". Assembling our own table would be the same mistake a second
+        // time: we would again be asserting which entity set the reader implements, over a list of thousands
+        // of names that does not stay still, on a value written by an LLM. We do not need to SUPPORT
+        // character references; we need to not be fooled by one. Our own generator never emits an ampersand
+        // in a path, so refusing every one of them costs no real retrieval and is strictly stronger than any
+        // decoding, including a correct decoding. Checked here because this is the one containment rule both
+        // routes share, and "file" reaches it without passing the link rule.
+        if (file.Contains('&', StringComparison.Ordinal))
         {
             return false;
         }
 
-        return TryReduceEntryPath(knowledgeBaseRoot, file, out absolutePath);
-    }
-
-    /// <summary>
-    /// One spelling of an entry path, reduced against the root: <c>.</c> and empty segments dropped,
-    /// <c>..</c> popped, and a pop past the root refused.
-    /// </summary>
-    private static bool TryReduceEntryPath(string knowledgeBaseRoot, string file, out string absolutePath)
-    {
-        absolutePath = string.Empty;
         var segments = new List<string>();
         foreach (var segment in file.Replace('\\', '/').Split('/'))
         {

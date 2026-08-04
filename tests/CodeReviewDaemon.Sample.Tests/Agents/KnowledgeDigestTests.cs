@@ -323,6 +323,12 @@ public class KnowledgeDigestTests
     // agent is handed an absolute path that decodes to <root>/../../etc/passwd. Joining onto the root is
     // what makes a leading slash harmless here; it does nothing about a separator spelled as an entity.
     [InlineData("..&#x2F;..&#x2F;etc/passwd")]
+    // And the NAMED spelling of the same separator, which is the reason the rule is now a refusal rather
+    // than a decode. WebUtility.HtmlDecode implements a pre-HTML5 table: it resolves "&#x2F;" and leaves
+    // "&sol;" exactly as written, while a GFM reader resolves both. Reading the decoded spelling therefore
+    // closed one half of the hole and left the other open - we picked an entity set once and picked wrong.
+    [InlineData("..&sol;..&sol;etc/passwd")]
+    [InlineData("..&bsol;..&bsol;secrets.md")]
     public void Render_RejectsAnEntryWhosePathLeavesTheKnowledgeBaseRoot(string file)
     {
         // The entries rendered here are read back from _index.jsonl ON DISK in the store, and the store's
@@ -1603,5 +1609,193 @@ public class KnowledgeDigestTests
         block.Text.Should().NotContain("etc/passwd");
         block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
         block.Refused.Should().ContainSingle().Which.Should().Contain("etc/passwd");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesADestinationSpelledWithANamedCharacterReference()
+    {
+        // The decoded reading closed "&#x2F;" and left "&sol;" wide open: WebUtility.HtmlDecode implements a
+        // pre-HTML5 entity table, so it resolves the numeric spelling and returns the named one untouched,
+        // while a GFM reader resolves both. Every test above then agrees the destination is an ordinary
+        // contained relative path. The remedy is not a better table - assembling one is a fresh instance of
+        // the bug, since we would be picking an entity set a second time - it is refusing the ampersand.
+        var toc = "# Knowledge Base\n\n- [a](&sol;etc/passwd)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().ContainSingle().Which.Should().Contain("&sol;etc/passwd",
+            "the refusal reports the destination as the file spells it, entity and all");
+    }
+
+    [Fact]
+    public void Render_ClearsATitleWhoseDestinationIsSpelledWithANamedCharacterReference()
+    {
+        // The same spelling on the neighbour route, because a rule that reaches one of them is half a rule.
+        var entries = new[] { Entry("system/alpha.md", "See [x](&sol;etc/passwd)", ["auth"]) };
+
+        var block = KnowledgeDigest.Render(entries, KbRoot, charBudget: 10_000, omitted: 0);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md", "the entry is kept");
+        block.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_KeepsATitleWhoseTextMerelyContainsAnAmpersand()
+    {
+        // The over-refusal pin for the gate above, and the reason it is worth writing: the ampersand rule
+        // belongs to DESTINATIONS and paths, not to prose. "Auth & Sessions" is an ordinary lesson title
+        // that an extraction agent will write sooner or later, and clearing it would cost real retrieval to
+        // buy nothing - there is no destination here for an entity to be a separator in.
+        var entries = new[] { Entry("system/alpha.md", "Auth & Sessions", ["auth"]) };
+
+        var block = KnowledgeDigest.Render(entries, KbRoot, charBudget: 10_000, omitted: 0);
+
+        block.Text.Should().Contain("Auth & Sessions", "a title is text, and text may contain an ampersand");
+        block.Neutralized.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesAReferenceDefinitionWhoseLabelEscapesItsBracket()
+    {
+        // The definition test stops at the first "]" it finds, and a label may CONTAIN an escaped one. In
+        // "[foo\]]: dest" the first "]" is the escaped one, so the character after it is "]" rather than ":"
+        // and the line reads as ordinary prose. The label is used in shortcut form, which carries no "][",
+        // so neither half of the gate fires and both lines are printed to an agent that resolves them.
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [foo\\]] for more.\n\n[foo\\]]: ../../../etc/passwd\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/alpha.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("> [outside]: ../../../etc/passwd")]
+    [InlineData("- [outside]: ../../../etc/passwd")]
+    [InlineData("  > - [outside]: ../../../etc/passwd")]
+    public void RenderTableOfContents_RefusesAReferenceDefinitionInsideABlockContainer(string definition)
+    {
+        // TrimStart removes indentation and nothing else, so a block-quote marker or a list bullet in front
+        // of the definition means the first character is not "[" and the line is never examined. CommonMark
+        // recognises a definition inside either container, and the shortcut reference that resolves to it
+        // carries no "][" - so the whole reference survives on a line that merely looks like prose to us.
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md)\nSee [outside] for more.\n\n" + definition + "\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/alpha.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RenderTableOfContents_KeepsAContainedLinkInsideABlockContainer()
+    {
+        // The over-refusal pin for the rule above. Refusing every line where a container marker precedes a
+        // "[" was the cheaper remedy on offer and it would have cost this line, which is an ordinary entry
+        // wearing block-quote clothing. The markers are stripped before the definition test, not treated as
+        // evidence: what makes a definition dangerous is the ":" after the label, not the bullet in front.
+        var toc = "# Knowledge Base\n\n> - [Alpha](system/alpha.md)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().Contain("system/alpha.md", "a contained link is a contained link in any container");
+        block.Text.Should().Contain("system/beta.md");
+        block.Refused.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesADestinationCarryingANestedLink()
+    {
+        // An angle-delimited destination may not contain an unescaped "<", so to a CommonMark reader this
+        // is not one link at all: the outer link fails to parse and the NESTED "[b](../../../etc/passwd)"
+        // renders on its own. Our scan closes the destination at the ">" near the end, unwraps it, and the
+        // result reduces to a contained path - the ".." inside it cancel a segment that came from the same
+        // destination. Fixed by refusing an extracted destination that still carries an angle bracket,
+        // which is a point check over what the scan produced and leaves the extent logic to #258.
+        var toc =
+            "# Knowledge Base\n\n- [a](<system/ok.md<[b](../../../etc/passwd)>)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RenderTableOfContents_KeepsAnAngleDelimitedDestinationThatIsContained()
+    {
+        // The over-refusal pin for the rule above: the angle brackets that DELIMIT a destination are not
+        // the defect, an angle bracket INSIDE one is. Refusing every line carrying a "<" was the coarser
+        // remedy available, and it would drop this line - a form our own generator does not emit but one
+        // the degraded route is meant to carry when a human wrote it.
+        var toc = "# Knowledge Base\n\n- [Alpha](<system/alpha.md>)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().Contain("system/alpha.md");
+        block.Listed.Should().Be(2);
+        block.Refused.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesABareDestinationFollowedByASecondLink()
+    {
+        // Found by sweeping the inner-"<" axis one form over rather than by report. A bare destination is
+        // split at the first space on the premise that what follows is a CommonMark title - but a title is
+        // quoted or parenthesised, and "[b](...)" is neither, so the outer link does not parse and the
+        // second link renders exactly as in the nested case above. We validated "system/ok.md" and handed
+        // the agent a line whose only real link is the one we never looked at.
+        var toc =
+            "# Knowledge Base\n\n- [a](system/ok.md [b](../../../etc/passwd))\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain(refused => refused.Contains("etc/passwd", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Render_ClearsATitleWhoseReferenceLabelEscapesItsBracket()
+    {
+        // The escaped-label spelling on the metadata route. A title is not one line by construction - it
+        // comes out of JSON, where "\n" is an ordinary character - so it can place a definition of its own.
+        var entries = new[]
+        {
+            Entry("system/alpha.md", "See [foo\\]]\n\n[foo\\]]: ../../../etc/passwd", ["auth"]),
+        };
+
+        var block = KnowledgeDigest.Render(entries, KbRoot, charBudget: 10_000, omitted: 0);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md", "the entry is kept");
+        block.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Theory]
+    [InlineData("- [Alpha](system/alpha.md \"A title\")")]
+    [InlineData("- [Alpha](<system/alpha.md> \"A title\")")]
+    public void RenderTableOfContents_RefusesAContainedLinkCarryingATitle(string line)
+    {
+        // A KNOWN LIMITATION pinned deliberately, and the one still open under #258 after this change: a
+        // CommonMark title is valid syntax on a contained link, and both spellings of it are refused here -
+        // the bare form because a bare destination cannot contain whitespace, the angle form because the ")"
+        // no longer follows the ">". Fail-CLOSED, so it costs precision rather than containment: the line is
+        // dropped and reported, never rendered. Our own generator emits no titles, so nothing real is lost
+        // today; this pin exists so that reading titles properly is a visible change to a stated behaviour
+        // rather than a silent one, and so #258 can be checked against the code instead of believed.
+        var toc = "# Knowledge Base\n\n" + line + "\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("system/alpha.md", "the title makes the link unreadable to us");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().ContainSingle();
     }
 }
