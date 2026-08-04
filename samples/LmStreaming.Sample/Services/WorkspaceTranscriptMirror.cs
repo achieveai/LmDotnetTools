@@ -539,6 +539,11 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                 }
                 catch (Exception ex)
                 {
+                    // Near-unreachable for the shape the production agent has: SubscribeAsync is an async
+                    // iterator, so a failure to re-subscribe does not throw out of these two lines — it comes
+                    // back as a faulted ValueTask and re-enters through ConsumeAsync above. This return is
+                    // covered for free by the finally, not handled separately; it is written out only so the
+                    // next reader does not have to re-derive that it is safe.
                     _logger.LogWarning(ex, "Re-subscribing the transcript mirror to thread {ThreadId} failed", threadId);
                     return;
                 }
