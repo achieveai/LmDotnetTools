@@ -91,6 +91,37 @@ public enum TranscriptFlushOutcome
 ///     left alone, never unlinked; see <see cref="UnsafePathExitCode"/>.
 ///     </para>
 ///     <para>
+///     <b>The filesystem surface is a closed set of six calls</b>, listed here so the next reader can check
+///     coverage by enumeration rather than by searching. Three successive review rounds each fixed one
+///     surface and left another, because nobody had written down how many there were.
+///     <list type="table">
+///         <item>
+///             <description><see cref="AdoptExistingLeafAsync"/> — lists the directory. The only one that is
+///             deliberately unguarded; see the rejection recorded on that method.</description>
+///         </item>
+///         <item>
+///             <description><see cref="AppendAsync"/> — PUTs the staged payload. Guarded by
+///             <see cref="IsPathSafeAsync"/> per append.</description>
+///         </item>
+///         <item>
+///             <description><see cref="AppendAsync"/> — runs <see cref="AppendScript"/>. Guards its three
+///             path parameters in-script.</description>
+///         </item>
+///         <item>
+///             <description><see cref="RecoverWatermarkAsync"/> — runs <see cref="WatermarkProbeScript"/>.
+///             Guards in-script.</description>
+///         </item>
+///         <item>
+///             <description><see cref="EnsureGitignoreAsync"/> — PUTs the <c>.gitignore</c>. Guarded by
+///             <see cref="IsPathSafeAsync"/>.</description>
+///         </item>
+///         <item>
+///             <description><see cref="TryMoveAsync"/> — runs <see cref="MoveScript"/>. Guards both operands
+///             in-script and additionally refuses a destination that resolves to a directory.</description>
+///         </item>
+///     </list>
+///     </para>
+///     <para>
 ///     <b>Concurrency:</b> <see cref="FlushAsync"/> is not re-entrant and must not be called concurrently
 ///     with itself for the same conversation. <see cref="TranscriptFlushScheduler"/> guarantees that (a
 ///     single drain loop). The sub-agent fan-out inside one flush is likewise strictly sequential; see
@@ -920,6 +951,17 @@ public sealed class ConversationTranscriptWriter
     ///     A move that does not take is a different matter and is still absorbed: reporting the stale leaf
     ///     rather than the new one keeps the writer appending to the file that is there, which is always
     ///     preferable to starting a second one.
+    ///     </para>
+    ///     <para>
+    ///     <b>Deliberately unguarded, and the reason is the guards downstream — not the listing.</b> A
+    ///     redirected <c>.conversations</c> makes this listing return attacker-chosen entries, and one of
+    ///     them can be adopted as the leaf. That is contained rather than trusted: the adopted stem must
+    ///     satisfy <see cref="IsThisConversation"/>, so it carries this conversation's own short id; it is
+    ///     used only as the source operand of <see cref="MoveScript"/>, which guards <i>both</i> operands,
+    ///     so a planted symlink is refused at the rename rather than followed; and every write that could
+    ///     follow is guarded at its own call site. A directory entry name cannot contain a separator, so an
+    ///     entry cannot widen the path it is spliced into. What an attacker gets is a mirror that refuses
+    ///     and defers — an availability cost, not a disclosure.
     ///     </para>
     /// </remarks>
     private async Task<(bool Listed, string? Leaf)> AdoptExistingLeafAsync(
