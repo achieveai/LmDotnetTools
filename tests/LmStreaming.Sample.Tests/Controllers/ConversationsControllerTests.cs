@@ -42,7 +42,8 @@ public class ConversationsControllerTests
             new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
-            new SubAgentScanCoverageCache());
+            new SubAgentScanCoverageCache(),
+            new ConversationDescendantScanner(store, NullLogger<ConversationDescendantScanner>.Instance));
     }
 
     /// <summary>Resolves any real system mode id (default mode, math-helper, etc.) — for tests that

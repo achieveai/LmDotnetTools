@@ -9,7 +9,7 @@ Turn an unfamiliar repository into a deterministic, structured manifest. Follow 
 
 ## Procedure
 
-1. **List the tree.** Run `Bash: ls` at the workspace root, then `Glob **/*` (cap depth ~3). Ignore `node_modules`, `target`, `.git`, `bin`, `obj`, `dist`, and `.venv`. Note the top-level directories.
+1. **List the tree.** Run `Bash: ls` at the workspace root, then `Glob **/*` (cap depth ~3). Ignore `node_modules`, `target`, `.git`, `bin`, `obj`, `dist`, `.venv`, and `.conversations`. Note the top-level directories. (`.conversations` holds this conversation's own message transcript, not repository content — it says nothing about what the project is.)
 
 2. **Detect languages & manifests.** Look for `package.json` (JS/TS), `*.csproj`/`*.sln` (C#), `Cargo.toml` (Rust), `pyproject.toml`/`requirements.txt` (Python), `go.mod` (Go), `pom.xml`/`build.gradle` (JVM). Each manifest implies a language and a toolchain.
 

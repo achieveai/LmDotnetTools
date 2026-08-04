@@ -4,7 +4,8 @@ namespace LmStreaming.Sample.FileBrowser;
 /// The single, centralized, server-side allowlist that decides whether a workspace file is eligible for
 /// inline text preview (WI #195). The server is authoritative — the client only renders whatever the
 /// preview endpoint returns. Eligibility is by file extension (or a small set of well-known extension-less
-/// names); a non-listed file is treated as binary and offered as download-only.
+/// names); a non-listed file is treated as binary and offered as download-only. A file under a
+/// dot-directory is excluded outright, ahead of the allowlist — see <see cref="IsUnderDotDirectory"/>.
 /// </summary>
 public static class FilePreviewPolicy
 {
@@ -44,5 +45,33 @@ public static class FilePreviewPolicy
         }
 
         return PreviewableExactNames.Contains(name);
+    }
+
+    /// <summary>
+    /// True when any DIRECTORY component of <paramref name="serverPath"/> is a dot-directory — the file lives
+    /// under machine-owned bookkeeping such as <c>.conversations/</c> or <c>.git/</c> rather than under content
+    /// a person put there. Such a file is never previewable, whatever its extension: the workspace transcript
+    /// mirror (#251) writes every message of a conversation into <c>.conversations/*.jsonl</c>, and
+    /// <c>.jsonl</c> is on the allowlist, so without this an agent previewing its own workspace reads its own
+    /// transcript back. The FINAL component is deliberately not considered — a dot-FILE such as
+    /// <c>.gitignore</c> stays previewable, which is why this is not folded into <see cref="IsPreviewable"/>.
+    /// </summary>
+    public static bool IsUnderDotDirectory(string serverPath)
+    {
+        if (string.IsNullOrEmpty(serverPath))
+        {
+            return false;
+        }
+
+        var components = serverPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < components.Length - 1; i++)
+        {
+            if (components[i].StartsWith('.'))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

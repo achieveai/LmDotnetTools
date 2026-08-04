@@ -202,6 +202,28 @@ try
     _ = builder.Services.AddSingleton(sp => new SubAgentScanCoverageCache(
         sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
 
+    // Per-root memory of the persisted DESCENDANT graph (issue #251) — a different question from the
+    // direct-child roster above, and deliberately a different cache; see ConversationDescendantScanner's
+    // remarks for why reusing SubAgentScanCoverageCache here would be a correctness bug.
+    _ = builder.Services.AddSingleton(sp => new ConversationDescendantScanner(
+        sp.GetRequiredService<IConversationStore>(),
+        sp.GetRequiredService<ILogger<ConversationDescendantScanner>>(),
+        sp.GetRequiredService<AgentCollaborationHostOptions>().MaxPersistedHierarchyEntries));
+
+    // Mirror every conversation into its own workspace as JSONL (issue #251). Always on: a conversation
+    // with no workspace bound resolves no sandbox session, so its flush is a no-op and costs nothing.
+    // The pool is reached through a lookup delegate rather than injected — the pool's own registration
+    // resolves this singleton, so a direct dependency would close a DI construction cycle. The delegate
+    // only runs when a subscription ends, long after both singletons exist.
+    _ = builder.Services.AddSingleton(sp => new WorkspaceTranscriptMirror(
+        threadId => sp.GetRequiredService<MultiTurnAgentPool>().TryGet(threadId, out var agent)
+            ? agent
+            : null,
+        sp.GetRequiredService<IConversationStore>(),
+        sp.GetRequiredService<IWorkspaceFileBrowser>(),
+        sp.GetRequiredService<ConversationDescendantScanner>(),
+        sp.GetRequiredService<ILoggerFactory>()));
+
     // Mock provider host: eagerly-started in-process Kestrel app that the *-mock providers
     // point at. Singleton-as-IHostedService so it boots in Host.StartAsync; the registry
     // dependency below reads its IsRunning flag for availability gating.
@@ -660,6 +682,10 @@ try
         var mockHostLifetime = sp.GetRequiredService<MockProviderHostLifetime>();
         var sandboxRegistryForCleanup = sp.GetRequiredService<SandboxSessionRegistry>();
         var workflowRunRegistry = sp.GetRequiredService<WorkflowRunRegistry>();
+        var descendantScanner = sp.GetRequiredService<ConversationDescendantScanner>();
+        // Workspace transcript mirror (#251). Captured here so the per-thread factory below can attach
+        // each agent it builds; eviction is wired into the pool's ThreadRemoved handler further down.
+        var transcriptMirror = sp.GetRequiredService<WorkspaceTranscriptMirror>();
         // Lifecycle observation / tool approval (#227). Resolved once for the process — the bundle's
         // sequence allocator owns the producer epoch, and loops that share it share that epoch, which
         // is what lets a subscriber tell "producer restarted" from "events were lost". Handed to the
@@ -1765,6 +1791,12 @@ subAgentFactory,
                         collaboration: rootCollaboration
                     );
 
+                    // Start mirroring this conversation's messages into its workspace (#251). Attached
+                    // after construction and before the agent is handed to the pool, so no turn boundary
+                    // can be missed. A mode switch builds a replacement agent for the same threadId and
+                    // re-attaches here; the mirror swaps the subscription and keeps the writer.
+                    transcriptMirror.Attach(agent);
+
                     return new MultiTurnAgentPool.AgentCreationResult(agent, ownedResources) { StagedBinding = stagedBinding };
                 }
                 catch
@@ -1812,6 +1844,13 @@ subAgentFactory,
             // hand, so the cleanest contract is to ask the registry to scrub.
             sandboxRegistryForCleanup.UnregisterThreadFromAllSessions(threadId);
             workflowRunRegistry.Remove(threadId);
+            // Drop the remembered descendant graph too (#251): the pool is not a dependency of the
+            // scanner (that would be a construction cycle), so invalidation is wired here instead.
+            descendantScanner.Forget(threadId);
+            // Stop mirroring it as well (#251). This drops the in-memory writer and its subscription
+            // only — the transcript already in the workspace is RETAINED on purpose, since outliving
+            // the conversation is the whole point of writing it there.
+            transcriptMirror.Evict(threadId);
         };
 
         return pool;

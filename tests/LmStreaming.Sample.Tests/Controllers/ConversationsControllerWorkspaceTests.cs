@@ -77,7 +77,10 @@ public class ConversationsControllerWorkspaceTests
             new WorkflowRunRegistry(),
             NullLogger<ConversationsController>.Instance,
             NullLogger<AgentHierarchyService>.Instance,
-            new SubAgentScanCoverageCache());
+            new SubAgentScanCoverageCache(),
+            new ConversationDescendantScanner(
+                store.Object,
+                NullLogger<ConversationDescendantScanner>.Instance));
     }
 
     private static MultiTurnAgentPool CreatePool()

@@ -13,6 +13,13 @@ namespace LmStreaming.Sample.Services;
 ///     own <c>/messages</c> route, the cross-agent transcript endpoint, and the
 ///     <c>GetAgentTranscript</c> tool must apply the SAME normalization and the SAME exclusions. Split
 ///     across three call sites, one of them eventually forgets — and the thing it forgets is reasoning.
+///     <para>
+///     A fourth caller, the workspace transcript mirror (#251), passes <c>excludeReasoning: false</c>. It
+///     is NOT exempted from normalization — it is normalized like every other reader, and deliberately
+///     includes reasoning: the mirror writes the conversation's own full-fidelity record into its own
+///     workspace, which is the one read that is not cross-agent. See ADR
+///     <c>0011-workspace-transcript-files</c>.
+///     </para>
 /// </remarks>
 public static class TranscriptProjection
 {

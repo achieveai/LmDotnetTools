@@ -102,6 +102,70 @@ public sealed class AgentHierarchyServiceTests
         child.Template.Should().Be("worker");
     }
 
+    /// <summary>
+    /// The twin of
+    /// <c>ConversationDescendantScannerTests.ScanAsync_ListsEveryChild_WhenAThreadIsTouchedWhileTheScanIsRunning</c>,
+    /// against the flat cold-path scan. A child touched while the scan runs must still be listed:
+    /// <see cref="IConversationStore.ListThreadsAsync"/> orders by a MUTABLE column, so an offset-paged
+    /// scan lets a thread slide forward past an offset it has already stepped over. Here the loss is
+    /// permanent by construction — <see cref="SubAgentScanCoverageCache"/> records what the scan
+    /// recovered and keeps it for the process lifetime, so the skipped child is never reconsidered.
+    /// </summary>
+    [Fact]
+    public async Task BuildAsync_ListsEveryPersistedChild_WhenAThreadIsTouchedWhileTheScanIsRunning()
+    {
+        // More children than the pre-fix 200-row page, so the scan has a page boundary at all.
+        const int childCount = 250;
+        // A child that a paged scan has NOT read yet when the touch happens (it sorts into page 2).
+        const string touchedAgentId = "child-010";
+        var touchedThreadId = $"subagent-{touchedAgentId}";
+
+        var store = new InMemoryConversationStore();
+        for (var i = 0; i < childCount; i++)
+        {
+            var agentId = $"child-{i:D3}";
+            var childThreadId = $"subagent-{agentId}";
+            await store.SaveMetadataAsync(
+                childThreadId,
+                new ThreadMetadata
+                {
+                    ThreadId = childThreadId,
+                    // Distinct stamps so "ordered by last updated descending" is unambiguous.
+                    LastUpdated = i + 1,
+                    Properties = SubAgentProvenance.Build(
+                        RootThread,
+                        new SubAgentSnapshot(
+                            agentId,
+                            Name: agentId,
+                            TemplateName: "worker",
+                            Task: $"task for {agentId}",
+                            Status: SubAgentStatus.Completed,
+                            ThreadId: childThreadId,
+                            LastActivityUtc: DateTimeOffset.UtcNow,
+                            TerminalAtUtc: DateTimeOffset.UtcNow)),
+                });
+        }
+
+        // No live loop for RootThread, so the cold-path persisted scan is the only route to these children.
+        await using var pool = CreateFakeAgentPool();
+        var service = new AgentHierarchyService(
+            pool,
+            new WorkflowRunRegistry(),
+            new TouchingConversationStore(store, touchedThreadId),
+            NullLogger<AgentHierarchyService>.Instance,
+            new SubAgentScanCoverageCache());
+
+        var (rows, _, _) = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        rows.Select(r => r.AgentId)
+            .Should()
+            .Contain(
+                touchedAgentId,
+                "a child that was merely touched mid-scan must still be listed — what this scan recovers "
+                    + "is recorded in the coverage cache for the process lifetime, so a skip is permanent");
+        rows.Should().HaveCount(childCount);
+    }
+
     [Fact]
     public async Task BuildAsync_ForALiveNonMultiTurnAgentLoop_NeverCallsListThreadsAsync()
     {
@@ -224,14 +288,13 @@ public sealed class AgentHierarchyServiceTests
     [Fact]
     public async Task ScanPersistedSubAgentChildren_WarnsWhenTheThreadCapIsReached()
     {
-        // Seeds exactly as many threads as the scan's cap so every page comes back full (200) and the
-        // loop exhausts scanned == cap without a short final page ever triggering an early return —
-        // the one path that reaches the "stopped at the cap" warning rather than silently returning
-        // whatever it found. Without the warning an operator has no signal that the sub-agent listing
-        // for a very long-lived store became incomplete.
+        // Seeds ONE MORE thread than the scan's cap, which is exactly what truncation is: the scan asks for
+        // cap + 1 and gets it back full, so it knows a thread it will not look at exists. Without the
+        // warning an operator has no signal that the sub-agent listing for a very long-lived store became
+        // incomplete — and the incomplete roster is then cached for the process lifetime.
         const int scanCap = 2000;
         var store = new InMemoryConversationStore();
-        for (var i = 0; i < scanCap; i++)
+        for (var i = 0; i <= scanCap; i++)
         {
             var id = $"thread-cap-{i}";
             await store.SaveMetadataAsync(id, new ThreadMetadata { ThreadId = id, LastUpdated = i });
@@ -250,6 +313,32 @@ public sealed class AgentHierarchyServiceTests
                 && e.Message.Contains(RootThread, StringComparison.Ordinal)
                 && e.Message.Contains(scanCap.ToString(), StringComparison.Ordinal),
             "hitting the scan cap must be observable, not a silent truncation");
+    }
+
+    [Fact]
+    public async Task ScanPersistedSubAgentChildren_DoesNotWarnWhenTheStoreHoldsExactlyTheCap()
+    {
+        // The other side of the boundary, and the reason the scan asks for cap + 1 rather than cap: a store
+        // holding exactly the cap is read COMPLETELY, so warning about it would be a false alarm — and a
+        // truncation warning that fires when nothing was truncated is one an operator learns to ignore.
+        const int scanCap = 2000;
+        var store = new InMemoryConversationStore();
+        for (var i = 0; i < scanCap; i++)
+        {
+            var id = $"thread-cap-{i}";
+            await store.SaveMetadataAsync(id, new ThreadMetadata { ThreadId = id, LastUpdated = i });
+        }
+
+        await using var pool = CreateFakeAgentPool();
+        var logger = new CapturingLogger<AgentHierarchyService>();
+        var service = new AgentHierarchyService(
+            pool, new WorkflowRunRegistry(), store, logger, new SubAgentScanCoverageCache());
+
+        _ = await service.BuildAsync(RootThread, viewerAgentId: null, CancellationToken.None);
+
+        logger.Entries.Should().NotContain(
+            e => e.Level == LogLevel.Warning && e.Message.Contains("cap", StringComparison.Ordinal),
+            "the store was read in full, so there is nothing to warn about");
     }
 
     [Fact]

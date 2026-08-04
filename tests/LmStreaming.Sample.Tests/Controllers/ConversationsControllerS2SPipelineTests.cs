@@ -63,6 +63,9 @@ public sealed class ConversationsControllerS2SPipelineTests
                         _ = services.AddSingleton(TimeProvider.System);
                         _ = services.AddSingleton<LmStreaming.Sample.Services.WorkflowRunRegistry>();
                         _ = services.AddSingleton<SubAgentScanCoverageCache>();
+                        _ = services.AddSingleton(sp => new ConversationDescendantScanner(
+                            sp.GetRequiredService<IConversationStore>(),
+                            NullLogger<ConversationDescendantScanner>.Instance));
                         _ = services
                             .AddControllers()
                             .AddApplicationPart(typeof(ConversationsController).Assembly);

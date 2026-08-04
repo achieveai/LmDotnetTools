@@ -39,7 +39,7 @@ export interface NoSessionState {
 /** Result of the preview endpoint. `text` is present only when `previewable` is true. */
 export interface PreviewResult {
   previewable: boolean;
-  /** Why a file is not previewable, e.g. `binary` | `too_large` | `not_utf8` | `not_a_file`. */
+  /** Why a file is not previewable, e.g. `binary` | `too_large` | `not_utf8` | `not_a_file` | `excluded`. */
   reason?: string;
   text?: string;
   lineCount?: number;

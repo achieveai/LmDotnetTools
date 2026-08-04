@@ -53,3 +53,4 @@ What improved, what became more complex, and what future work this implies.
 * [0007 — Observe turns and context at the seam where the fact settles](0007-observe-at-the-settling-seam.md)
 * [0008 — Dispatch provider tool requests off the stdio read loop, bounded and refusing](0008-asynchronous-provider-tool-dispatch.md)
 * [0009 — Scope agent collaboration to a root-owned directory, and leave delivery with the owner](0009-hierarchy-wide-agent-collaboration.md)
+* [0011 — Mirror each conversation's transcript into its own workspace, readable by anyone who can reach the workspace](0011-workspace-transcript-files.md)
