@@ -637,8 +637,11 @@ internal static class KnowledgeDigest
             if (!TryEndOfDestination(line, open, out var textEnd, out var next))
             {
                 // Everything after an unreadable destination is unreadable too: we do not know whether the
-                // next "](" is a second link or part of this one, so we stop rather than guess.
-                links.Add(new TocLink(NormalizeLinkDestination(line[open..]), marker, false));
+                // next "](" is a second link or part of this one, so we stop rather than guess. Reported RAW
+                // rather than normalized, because normalizing means reading it as a form we just established
+                // it is not in: "<ok.md> [b](../../../etc/passwd" would be reported as the contained
+                // "ok.md", which is a refusal log naming the one part of the line that was fine.
+                links.Add(new TocLink(line[open..].TrimEnd(), marker, false));
                 break;
             }
 
@@ -677,17 +680,25 @@ internal static class KnowledgeDigest
                 return false;
             }
 
-            // The angle brackets delimit the DESTINATION; the link still has to close. Without the ")" this
-            // is not a link at all to any Markdown reader, and a line we cannot render as written is not a
-            // line we may render as read.
-            var closingParen = line.IndexOf(')', closingAngle + 1);
-            if (closingParen < 0)
+            // The angle brackets delimit the DESTINATION; the link still has to close, and the ")" that
+            // closes it is the NEXT thing after the ">" - not the next one anywhere on the line. Searching
+            // the remainder for it reads "](<ok.md> [b](../../../etc/passwd)" as ONE contained link and
+            // consumes the escaping second link along with it: the extent defect again, one form over.
+            // Without a ")" at all this is not a link to any Markdown reader, and a line we cannot render as
+            // written is not a line we may render as read.
+            var afterAngle = closingAngle + 1;
+            while (afterAngle < line.Length && (line[afterAngle] == ' ' || line[afterAngle] == '\t'))
+            {
+                afterAngle++;
+            }
+
+            if (afterAngle >= line.Length || line[afterAngle] != ')')
             {
                 return false;
             }
 
             textEnd = closingAngle + 1;
-            next = closingParen + 1;
+            next = afterAngle + 1;
             return true;
         }
 

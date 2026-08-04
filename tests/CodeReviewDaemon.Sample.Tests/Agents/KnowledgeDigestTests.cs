@@ -1342,4 +1342,28 @@ public class KnowledgeDigestTests
         block.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md", "the entry is kept");
         block.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
     }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesALineWhoseAngleDestinationDoesNotCloseItsLink()
+    {
+        // The ")" that closes an angle-delimited link is the NEXT thing after the ">", not the next one
+        // anywhere on the line. Searching the whole remainder for it read this line as ONE contained link to
+        // "system/ok.md" and consumed the escaping second link along with it - never parsed, never checked,
+        // printed verbatim to an agent that resolves Markdown properly and finds the link we missed.
+        var toc =
+            "# Knowledge Base\n\n- [a](<system/ok.md> [b](../../../etc/passwd)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block
+            .Refused.Should()
+            .ContainSingle()
+            .Which.Should()
+            .Contain(
+                "../../../etc/passwd",
+                "the refusal has to name the part that could not be delimited, not the innocent-looking prefix"
+            );
+    }
 }
