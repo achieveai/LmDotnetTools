@@ -32,6 +32,12 @@ internal static class KnowledgeDigest
     private const int MinTokenLength = 3;
 
     /// <summary>
+    /// The characters CommonMark lets a backslash escape. Anything else after a backslash is a literal
+    /// backslash, which on a link destination is far more likely to be a Windows path separator.
+    /// </summary>
+    private const string EscapableAsciiPunctuation = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+
+    /// <summary>
     /// Tokens that appear in nearly every path or title and would match everything equally, adding cost
     /// without adding ranking signal.
     /// </summary>
@@ -448,7 +454,7 @@ internal static class KnowledgeDigest
                 // the degraded route was the one still doing it.
                 var links = TocLinks(line);
                 var escapes = links
-                    .Where(link => !IsLinkTheAgentCanSafelyJoin(link.Destination, root))
+                    .Where(link => !link.Delimited || !IsLinkTheAgentCanSafelyJoin(link.Destination, root))
                     .Select(link => link.Destination)
                     .ToList();
                 if (escapes.Count > 0)
@@ -518,8 +524,21 @@ internal static class KnowledgeDigest
     /// splits on <c>/</c> and finds <c>https:</c> and <c>evil.example</c> to be perfectly ordinary segments
     /// that resolve inside the root. It is not a path at all, and an agent handed one follows it as written.
     /// The scheme test also catches a Windows drive letter, which is absolute by another spelling.
+    /// <para>
+    /// Judged on BOTH readings of the text, because a backslash is genuinely ambiguous here and we do not
+    /// control which reader the agent is. To CommonMark <c>x\)/../../secrets.md</c> is one path containing a
+    /// <c>)</c>; to a Windows path resolver <c>..\..\outside.md</c> is traversal. Resolve the escapes and the
+    /// second becomes the harmless <c>....\outside.md</c>; leave them and the first is judged as a name
+    /// ending in a separator. Neither reading is wrong, so the link has to be safe under both — an ambiguity
+    /// that can be read two ways is not licence to pick the reading that lets it through.
+    /// </para>
     /// </summary>
     private static bool IsLinkTheAgentCanSafelyJoin(string link, string knowledgeBaseRoot) =>
+        IsResolvedLinkSafeToJoin(link, knowledgeBaseRoot)
+        && IsResolvedLinkSafeToJoin(Unescape(link), knowledgeBaseRoot);
+
+    /// <summary>One reading of a link destination, judged by the shared containment rule.</summary>
+    private static bool IsResolvedLinkSafeToJoin(string link, string knowledgeBaseRoot) =>
         link.Length > 0
         && !link.StartsWith('/')
         && !link.StartsWith('\\')
@@ -554,10 +573,17 @@ internal static class KnowledgeDigest
     }
 
     /// <summary>
-    /// One Markdown link found on a <c>_toc.md</c> line: the destination an agent would resolve, and the
-    /// offset of the <c>](</c> that opened it, so no later caller has to go looking for it a second time.
+    /// One Markdown link found on a <c>_toc.md</c> line: the destination an agent would resolve, the offset
+    /// of the <c>](</c> that opened it, so no later caller has to go looking for it a second time, and
+    /// whether the destination could be delimited at all.
+    /// <para>
+    /// <see cref="Delimited"/> is <c>false</c> for a destination that is never closed. It is reported as a
+    /// link rather than dropped because dropping it is precisely the failure: a caller that sees no links
+    /// concludes there is nothing to check. An undelimited destination fails every containment rule by
+    /// construction — we cannot say where it ends, so we cannot say what the agent resolves.
+    /// </para>
     /// </summary>
-    private readonly record struct TocLink(string Destination, int Marker);
+    private readonly record struct TocLink(string Destination, int Marker, bool Delimited);
 
     /// <summary>
     /// Every link destination on a <c>_toc.md</c> line, normalized, in source order.
@@ -572,6 +598,13 @@ internal static class KnowledgeDigest
     /// That premise is false — <c>See [notes](../../secrets.md).</c> is prose and carries one — and beside
     /// the point for an indented entry, a <c>*</c> bullet or an ordered list, which are the same entry in
     /// ordinary Markdown clothing. The renderer prints every line that fits, so every line is parsed.
+    /// </para>
+    /// <para>
+    /// And every line yields a link or a refusal, never an empty list on syntax it could not read. A
+    /// destination that is never closed used to parse to NOTHING, and nothing is indistinguishable from a
+    /// clean line to every caller — so <c>- [a](../../../etc/passwd</c> was emitted verbatim without the
+    /// containment rule ever being consulted. A parse failure that reads as clean input defeats the rule
+    /// without ever reaching it.
     /// </para>
     /// <para>
     /// This is the only place the syntax is read. Callers get the offsets back rather than re-deriving them,
@@ -591,28 +624,123 @@ internal static class KnowledgeDigest
                 break;
             }
 
+            // CommonMark permits whitespace between the "](" and the destination, so the angle form is not
+            // always sitting at this offset. Reading the form off the first character after the marker made
+            // "]( <a)/../../../etc/passwd> )" look bare, which ends it at the first ")" - back to validating
+            // "<a" and unwrapping it to the contained name "a".
             var open = marker + "](".Length;
-
-            // Which form the destination is in has to be settled BEFORE deciding where it ends, because the
-            // two forms end on different characters. Cutting at the first ")" and unwrapping whatever that
-            // produced is the same defect one layer down: "<a)/../../../../etc/passwd>" cuts to "<a", which
-            // unwraps to the contained name "a" and is ACCEPTED, while an agent resolving CommonMark reads
-            // the whole angle-bracketed path and walks out of the store. Inside <...> a ")" is an ordinary
-            // character; bare, it terminates — which is exactly where CommonMark's own parser stops.
-            var angle = open < line.Length && line[open] == '<' ? line.IndexOf('>', open + 1) : -1;
-            var close = line.IndexOf(')', angle < 0 ? open : angle + 1);
-            if (close < 0 && angle < 0)
+            while (open < line.Length && (line[open] == ' ' || line[open] == '\t'))
             {
+                open++;
+            }
+
+            if (!TryEndOfDestination(line, open, out var textEnd, out var next))
+            {
+                // Everything after an unreadable destination is unreadable too: we do not know whether the
+                // next "](" is a second link or part of this one, so we stop rather than guess.
+                links.Add(new TocLink(NormalizeLinkDestination(line[open..]), marker, false));
                 break;
             }
 
-            links.Add(
-                new TocLink(
-                    NormalizeLinkDestination(angle < 0 ? line[open..close] : line[open..(angle + 1)]), marker));
-            at = (close < 0 ? angle : close) + 1;
+            links.Add(new TocLink(NormalizeLinkDestination(line[open..textEnd]), marker, true));
+            at = next;
         }
 
         return links;
+    }
+
+    /// <summary>
+    /// Where the destination beginning at <paramref name="open"/> ends (<paramref name="textEnd"/>,
+    /// exclusive) and where the link after it resumes (<paramref name="next"/>), or <c>false</c> when the
+    /// destination is never closed.
+    /// <para>
+    /// Which form the destination is in has to be settled BEFORE deciding where it ends, because the two
+    /// forms end on different characters. Cutting at the first <c>)</c> and unwrapping whatever that
+    /// produced is the containment defect one layer down: <c>&lt;a)/../../../etc/passwd&gt;</c> cuts to
+    /// <c>&lt;a</c>, which unwraps to the contained name <c>a</c> and is ACCEPTED, while an agent resolving
+    /// CommonMark reads the whole angle-bracketed path and walks out of the store. Inside <c>&lt;…&gt;</c> a
+    /// <c>)</c> is an ordinary character; bare, it terminates — but only when it is neither backslash-escaped
+    /// nor balancing a <c>(</c> opened inside the destination, both of which CommonMark keeps in the path.
+    /// Three separate ways for our end to land before the agent's, each leaving a contained prefix in front
+    /// of the rule and the whole path in front of the agent.
+    /// </para>
+    /// </summary>
+    private static bool TryEndOfDestination(string line, int open, out int textEnd, out int next)
+    {
+        textEnd = -1;
+        next = -1;
+        if (open < line.Length && line[open] == '<')
+        {
+            var closingAngle = IndexOfUnescaped(line, '>', open + 1);
+            if (closingAngle < 0)
+            {
+                return false;
+            }
+
+            // The angle brackets delimit the DESTINATION; the link still has to close. Without the ")" this
+            // is not a link at all to any Markdown reader, and a line we cannot render as written is not a
+            // line we may render as read.
+            var closingParen = line.IndexOf(')', closingAngle + 1);
+            if (closingParen < 0)
+            {
+                return false;
+            }
+
+            textEnd = closingAngle + 1;
+            next = closingParen + 1;
+            return true;
+        }
+
+        var depth = 0;
+        var scan = open;
+        for (; scan < line.Length; scan++)
+        {
+            var character = line[scan];
+            if (character == '\\')
+            {
+                scan++;
+                continue;
+            }
+
+            if (character == '(')
+            {
+                depth++;
+            }
+            else if (character == ')')
+            {
+                if (depth == 0)
+                {
+                    textEnd = scan;
+                    next = scan + 1;
+                    return true;
+                }
+
+                depth--;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The first <paramref name="target"/> at or after <paramref name="from"/> that is not backslash-escaped,
+    /// or <c>-1</c>.
+    /// </summary>
+    private static int IndexOfUnescaped(string text, char target, int from)
+    {
+        for (var scan = from; scan < text.Length; scan++)
+        {
+            if (text[scan] == '\\')
+            {
+                scan++;
+            }
+            else if (text[scan] == target)
+            {
+                return scan;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -630,18 +758,53 @@ internal static class KnowledgeDigest
     /// whitespace, because inside angle brackets a space belongs to the path. Splitting there would validate
     /// a short prefix of a path the agent follows whole.
     /// </para>
+    /// <para>
+    /// Backslash escapes are left in place. They are resolved where containment is decided, in
+    /// <see cref="IsLinkTheAgentCanSafelyJoin"/>, which needs BOTH readings — and the refusal report wants
+    /// the destination as the file spells it, so an operator can find the line.
+    /// </para>
     /// </summary>
     private static string NormalizeLinkDestination(string destination)
     {
         var text = destination.Trim();
         if (text.StartsWith('<'))
         {
-            var end = text.IndexOf('>');
+            var end = IndexOfUnescaped(text, '>', 1);
             return (end < 0 ? text[1..] : text[1..end]).Trim();
         }
 
         var space = text.IndexOfAny([' ', '\t']);
         return space < 0 ? text : text[..space];
+    }
+
+    /// <summary>
+    /// A destination with its CommonMark backslash escapes resolved: <c>x\)/../../secrets.md</c> is one path
+    /// containing a <c>)</c>, not a name ending in a backslash.
+    /// </summary>
+    private static string Unescape(string text)
+    {
+        if (!text.Contains('\\', StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var builder = new StringBuilder(text.Length);
+        for (var scan = 0; scan < text.Length; scan++)
+        {
+            // Only ASCII punctuation is escapable in CommonMark; a backslash before anything else is a
+            // literal backslash - and on this path it is very likely a Windows-style separator, which
+            // TryResolveEntryPath still has to see as one.
+            if (text[scan] == '\\'
+                && scan + 1 < text.Length
+                && EscapableAsciiPunctuation.Contains(text[scan + 1], StringComparison.Ordinal))
+            {
+                scan++;
+            }
+
+            _ = builder.Append(text[scan]);
+        }
+
+        return builder.ToString();
     }
 
     /// <summary>
@@ -823,7 +986,8 @@ internal static class KnowledgeDigest
 
     private static bool CarriesAnEscapingLink(string? field, string knowledgeBaseRoot) =>
         !string.IsNullOrEmpty(field)
-        && TocLinks(field).Any(link => !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot));
+        && TocLinks(field).Any(
+            link => !link.Delimited || !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot));
 
     /// <summary>
     /// Renders one entry within <paramref name="maxLength"/>, or an empty string when not even a truncated

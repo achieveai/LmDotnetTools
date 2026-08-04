@@ -1270,4 +1270,76 @@ public class KnowledgeDigestTests
         block.Text.Should().Contain("system/beta.md", "the entry after the dropped line must still be surfaced");
         block.Listed.Should().Be(1);
     }
+
+    [Theory]
+    [InlineData("- [a]( <x)/../../../../etc/passwd> )", "x)/../../../../etc/passwd")]
+    [InlineData(@"- [a](x\)/../../../../etc/passwd)", @"x\)/../../../../etc/passwd")]
+    [InlineData("- [a](x(y)/../../../../etc/passwd)", "x(y)/../../../../etc/passwd")]
+    [InlineData(@"- [a](.\./.\./.\./etc/passwd)", @".\./.\./.\./etc/passwd")]
+    public void RenderTableOfContents_EndsADestinationWhereCommonMarkEndsIt(string line, string destination)
+    {
+        // Three ways to make our reading of where the destination ENDS disagree with the agent's, each one
+        // leaving a contained prefix in front of the check and the whole escaping path in front of the agent.
+        // CommonMark permits whitespace after "](", so the angle form is not always at that offset; a "\)" is
+        // an escaped literal, not a terminator; and a bare destination may carry BALANCED parens, so the
+        // first ")" is not necessarily the last. Cutting at the first ")" validates "<x", "x\" and "x(y" -
+        // all three contained, all three a prefix of a path that walks out of the store.
+        //
+        // The fourth row is the same disagreement about the destination's CONTENT rather than its end, and it
+        // runs the other way: ".\./" is a literal ".." once the escape is resolved, while read verbatim - with
+        // the backslash taken for the Windows separator it also is - it is a harmless "./". Read either way
+        // alone and one of these two rows walks out; the rule has to hold under both.
+        var toc = $"# Knowledge Base\n\n{line}\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain(destination);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesALineWhoseDestinationIsNeverClosed()
+    {
+        // An unterminated destination parsed to ZERO links, and zero links read as "nothing to check" - so
+        // the line went out verbatim without the containment rule ever being consulted. That is the failure
+        // this whole route exists to prevent, arrived at through the parser instead of through the rule: an
+        // undelimitable destination is an UNRENDERABLE line, not a safe one.
+        var toc = "# Knowledge Base\n\n- [a](../../../etc/passwd\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain("../../../etc/passwd");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_RefusesALineWhoseContainedDestinationIsNeverClosed()
+    {
+        // Refused for being undelimitable, NOT for where the fragment appears to point: this destination
+        // reads as contained. We cannot know where it was meant to end, so we cannot know what the agent
+        // resolves - and "it looked fine as far as we got" is the reasoning that lost every earlier round.
+        var toc = "# Knowledge Base\n\n- [a](system/alpha.md\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("system/alpha.md");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Refused.Should().Contain("system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_ClearsATitleWhoseLinkDestinationIsNeverClosed()
+    {
+        // The metadata route reads links with the SAME parser, so it inherited the same fail-open: a title
+        // whose destination never closes parsed to zero links and was carried into the block verbatim.
+        var entries = new[] { Entry("system/alpha.md", "Read [the guide](../../../etc/passwd", ["auth"]) };
+
+        var block = KnowledgeDigest.Render(entries, KbRoot, charBudget: 10_000, omitted: 0);
+
+        block.Text.Should().NotContain("etc/passwd");
+        block.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md", "the entry is kept");
+        block.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
 }
