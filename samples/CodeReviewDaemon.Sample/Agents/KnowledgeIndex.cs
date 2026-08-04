@@ -135,26 +135,91 @@ internal static class KnowledgeIndex
     /// </para>
     /// Order is preserved as-read, which for a <see cref="RenderIndex"/> output is already sorted by file.
     /// </summary>
-    public static IReadOnlyList<KnowledgeEntryMeta> ParseIndex(string? indexJsonl)
+    public static IReadOnlyList<KnowledgeEntryMeta> ParseIndex(string? indexJsonl) =>
+        ParseIndex(indexJsonl, MaxIndexRecords, out _);
+
+    /// <summary>
+    /// Ceiling on <c>_index.jsonl</c> records EXAMINED by <see cref="ParseIndex(string?, int, out bool)"/>,
+    /// so the cost of reading the index is bounded by this constant rather than by the size of a file the
+    /// model writes.
+    /// <para>
+    /// The digest already caps what the reviewer is SHOWN — a count of entries and a character budget — and
+    /// that cap was mistaken for a bound on the work. It is not: every record in the file was parsed,
+    /// materialized, partitioned, sanitized, scored and sorted, and only then were the top few taken. So the
+    /// index was trusted for its SIZE by exactly the code that established it must not be trusted for its
+    /// CONTENT. One oversized <c>_index.jsonl</c> — a runaway extraction, a hand edit, a merge that
+    /// concatenated the file with itself — buys unbounded CPU and memory on every review of that store.
+    /// </para>
+    /// <para>
+    /// Counted over records EXAMINED rather than records KEPT, because a malformed line costs a parse
+    /// attempt whether or not it yields an entry: bounding only the kept ones leaves a file of a million
+    /// unparseable lines fully scanned, which is the same unbounded work wearing a different hat.
+    /// </para>
+    /// A real Knowledge Base is hundreds of entries; this is generous by more than an order of magnitude, so
+    /// reaching it means something is wrong with the file rather than rich with the store.
+    /// </summary>
+    public const int MaxIndexRecords = 5_000;
+
+    /// <summary>
+    /// Ceiling on the length of a single record. The record count alone does not bound the work, because one
+    /// line can be arbitrarily long on its own and <see cref="JsonDocument"/> would parse all of it; a
+    /// metadata record is a few hundred characters, so this is refused as malformed rather than truncated.
+    /// </summary>
+    private const int MaxIndexRecordChars = 64 * 1024;
+
+    /// <summary>
+    /// <see cref="ParseIndex(string?)"/> with the ceiling made explicit, reporting through
+    /// <paramref name="truncated"/> whether it was reached — a silently shortened index would make a
+    /// half-read Knowledge Base indistinguishable from a small one in the daemon's logs, which is the exact
+    /// blindness the retrieval logging exists to end.
+    /// </summary>
+    public static IReadOnlyList<KnowledgeEntryMeta> ParseIndex(
+        string? indexJsonl, int maxRecords, out bool truncated)
     {
-        if (string.IsNullOrWhiteSpace(indexJsonl))
+        truncated = false;
+        if (string.IsNullOrWhiteSpace(indexJsonl) || maxRecords <= 0)
         {
             return [];
         }
 
+        // Walked incrementally rather than split. The previous reading allocated two whole copies of the
+        // file (normalizing "\r\n" and then "\r") plus an array holding every line, before a single record
+        // had been judged worth keeping - so the peak cost was several times the file size no matter what
+        // the caps downstream said. Line endings are handled in the scan instead, where they cost nothing.
         var entries = new List<KnowledgeEntryMeta>();
-        var lines = indexJsonl.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
-        foreach (var line in lines)
+        var examined = 0;
+        var at = 0;
+        while (at < indexJsonl.Length)
         {
-            if (string.IsNullOrWhiteSpace(line))
+            var rest = indexJsonl.AsSpan(at);
+            var lineBreak = rest.IndexOfAny('\n', '\r');
+            var line = lineBreak < 0 ? rest : rest[..lineBreak];
+            var start = at;
+            at = lineBreak < 0
+                ? indexJsonl.Length
+                : at + lineBreak + (rest[lineBreak] == '\r' && lineBreak + 1 < rest.Length && rest[lineBreak + 1] == '\n' ? 2 : 1);
+
+            if (line.IsWhiteSpace())
             {
-                continue;
+                continue; // A blank line is not a record, so it neither costs a parse nor spends the budget.
+            }
+
+            if (examined == maxRecords)
+            {
+                truncated = true;
+                break;
+            }
+
+            examined++;
+            if (line.Length > MaxIndexRecordChars)
+            {
+                continue; // Too long to be a metadata record; refused for the same reason a torn line is.
             }
 
             KnowledgeEntryMeta? entry;
             try
             {
-                using var document = JsonDocument.Parse(line);
+                using var document = JsonDocument.Parse(indexJsonl.AsMemory(start, line.Length));
                 entry = ReadEntry(document.RootElement);
             }
             catch (JsonException)

@@ -1630,10 +1630,23 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
     private string BuildKnowledgeDigest(
         string? index, string knowledgeBaseDir, RepoIdentity repo, string? diff, string? changedPaths)
     {
-        var entries = KnowledgeIndex.ParseIndex(index);
+        var entries = KnowledgeIndex.ParseIndex(index, KnowledgeIndex.MaxIndexRecords, out var indexTruncated);
         if (entries.Count == 0)
         {
             return string.Empty;
+        }
+
+        if (indexTruncated)
+        {
+            // The digest's entry and character caps bound what the reviewer is SHOWN; they never bounded the
+            // reading. Now that they do, say so: an index long enough to hit the ceiling is a broken file,
+            // and the ranking below chose from a prefix of it rather than from the whole store.
+            _logger.LogWarning(
+                "Prior knowledge: _index.jsonl exceeds {MaxIndexRecords} records; ranking against the first "
+                    + "{ParsedCount} entries only. The index is regenerated wholesale, so a file this long "
+                    + "indicates a broken extraction rather than a large Knowledge Base.",
+                KnowledgeIndex.MaxIndexRecords,
+                entries.Count);
         }
 
         // Rank off the lossless changed-path listing; the diff headers are only a fallback for artifacts
