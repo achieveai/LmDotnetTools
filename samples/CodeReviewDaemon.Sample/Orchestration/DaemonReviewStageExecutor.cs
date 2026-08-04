@@ -1773,12 +1773,20 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Report the RENDERED entries, never the selected ones: the character budget can cut the tail off
         // the block, and a log line naming entries the reviewer never received would make a partial
         // retrieval indistinguishable from a complete one — the same blindness this line exists to end.
+        //
+        // The two counts deliberately count DIFFERENT things, so each names what it counts. The first is
+        // delivered entries (post-containment, post-dedup, post-budget); the second is the raw record count
+        // parsed out of _index.jsonl. Reading "20 of 40 entries" off a doubled index invites the conclusion
+        // that half the store was withheld, when 40 was never 40 entries. Swapping it for the deduplicated
+        // count would read cleanly and delete the only number that says the index was doubled — the collapse
+        // warning explains it, and this line is what makes the collapse visible in the first place.
         _logger.LogInformation(
-            "Prior knowledge: surfaced {SurfacedCount} of {TotalCount} Knowledge Base entries ({DigestLength} chars) "
-                + "ranked against {ChangedPathCount} changed paths for scope '{RepoScope}': {SurfacedEntries}",
+            "Prior knowledge: surfaced {SurfacedCount} Knowledge Base entries ({DigestLength} chars) from "
+                + "{ParsedRecordCount} _index.jsonl records, ranked against {ChangedPathCount} changed paths "
+                + "for scope '{RepoScope}': {SurfacedEntries}",
             digest.Rendered.Count,
-            entries.Count,
             digest.Text.Length,
+            entries.Count,
             ranked.Count,
             repo.RepoName,
             KnowledgeDigest.DescribePaths(

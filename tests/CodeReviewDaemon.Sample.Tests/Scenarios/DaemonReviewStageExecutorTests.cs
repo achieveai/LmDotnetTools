@@ -534,6 +534,55 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_counts_records_as_records_and_entries_as_entries_over_a_doubled_index()
+    {
+        // "surfaced 2 of 4 Knowledge Base entries" is defensible arithmetic and misleading English: 4 is the
+        // raw record count parsed out of _index.jsonl, not four entries, so an operator reading the line
+        // concludes half the store was withheld from the reviewer. Both numbers stay — swapping 4 for the
+        // deduplicated count would read cleanly and delete the only number that says the index was doubled —
+        // and each names what it counts, with the collapse warning alongside to explain the gap between them.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+
+        // Two distinct entries, each recorded twice — the merged-index shape, four records for two lessons.
+        const string NullGuard =
+            """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}""";
+        const string RetryPolicy =
+            """{"file":"system/retry-policy.md","title":"Retry policy","tags":["retry"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}""";
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            NullGuard + "\n" + RetryPolicy + "\n" + NullGuard + "\n" + RetryPolicy + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/null-guard.md",
+            "collapsing the repeats must not cost a distinct entry");
+        text.Should().Contain("/workspace/store/KnowledgeBase/system/retry-policy.md");
+
+        logs.Capturing.CountAtLevel(LogLevel.Information, "surfaced 2 Knowledge Base entries")
+            .Should().Be(1, "two entries reached the reviewer, and that is what the entry count must count");
+        logs.Capturing.CountAtLevel(LogLevel.Information, "from 4 _index.jsonl records")
+            .Should().Be(1, "the raw record count is the only signal that the index was doubled — it stays");
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "collapsed 2 duplicate _index.jsonl records")
+            .Should().Be(1, "the gap between 2 and 4 is only honest if something explains it");
+    }
+
+    [Fact]
     public async Task Reviewed_keeps_a_knowledge_entry_whose_title_links_outside_the_knowledge_base()
     {
         // End to end on the primary route: an extraction agent writes a title pointing at the repo's own
