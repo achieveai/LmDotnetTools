@@ -1211,7 +1211,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return string.Empty;
         }
 
-        return _options.Limits.CapArtifactPayload(nameOnly.Stdout.Trim());
+        // Trimmed of line terminators ONLY. git allows a filename to begin or end with a space and does not
+        // quote for one, so a blanket Trim() here would rewrite the first and last records into paths git
+        // never reported — and the ranking downstream would then fail to match the very files they name.
+        return _options.Limits.CapArtifactPayload(nameOnly.Stdout.Trim('\n', '\r'));
     }
 
     private static int ManifestFileCount(string manifest) =>
@@ -1617,6 +1620,21 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             ranked.Count,
             repo.RepoName,
             string.Join(", ", digest.Rendered.Select(entry => entry.File)));
+
+        // Refusals are logged as loudly as the surfaces. An index entry whose path does not resolve inside
+        // KnowledgeBase/ was written by the knowledge agent, so it is either a defect in extraction or an
+        // attempt to point the reviewer at something that is not knowledge; either way, an entry that just
+        // disappears from the digest is indistinguishable from one the Knowledge Base never had.
+        if (digest.Rejected.Count > 0)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: refused {RefusedCount} Knowledge Base {Plural} whose path does not resolve "
+                    + "inside {KnowledgeBaseDir}: {RefusedEntries}",
+                digest.Rejected.Count,
+                digest.Rejected.Count == 1 ? "entry" : "entries",
+                knowledgeBaseDir,
+                string.Join(", ", digest.Rejected.Select(entry => entry.File)));
+        }
 
         return digest.Text;
     }

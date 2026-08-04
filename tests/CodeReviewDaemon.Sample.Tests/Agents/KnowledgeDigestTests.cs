@@ -100,6 +100,23 @@ public class KnowledgeDigestTests
         KnowledgeDigest.ParseChangedPaths(nameOnly).Should().BeEmpty();
     }
 
+    [Fact]
+    public void ParseChangedPaths_KeepsLeadingAndTrailingSpacesThatArePartOfTheFilename()
+    {
+        // git permits spaces at either end of a filename and `diff --git --name-only` does NOT quote for
+        // them — quoting triggers on non-ASCII, control, quote and backslash bytes only. So " foo.cs"
+        // arrives bare, and trimming it yields a path that matches nothing git ever reported.
+        var nameOnly = " lead.cs\ntrail.cs \n";
+
+        KnowledgeDigest.ParseChangedPaths(nameOnly).Should().Equal(" lead.cs", "trail.cs ");
+    }
+
+    [Fact]
+    public void ParseChangedPaths_WhitespaceOnlyLineIsTheFilenameItIsNotEmptiness()
+    {
+        KnowledgeDigest.ParseChangedPaths("  \nsrc/A.cs\n").Should().Equal("  ", "src/A.cs");
+    }
+
     // ---- Ranking -------------------------------------------------------------------------------
 
     [Fact]
@@ -256,6 +273,76 @@ public class KnowledgeDigestTests
     public void Render_NoEntries_ReportsNothingAsRendered()
     {
         KnowledgeDigest.Render([], KbRoot, charBudget: 10_000, omitted: 3).Rendered.Should().BeEmpty();
+    }
+
+    // ---- Render: containment --------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("../../etc/passwd")]
+    [InlineData("..\\..\\secrets.md")]
+    [InlineData("system/../../outside.md")]
+    [InlineData("..")]
+    public void Render_RejectsAnEntryWhosePathLeavesTheKnowledgeBaseRoot(string file)
+    {
+        // The entries rendered here are read back from _index.jsonl ON DISK in the store, and the store's
+        // KnowledgeBase/ is written by the knowledge agent — an LLM with file-write tools. A '..' in a
+        // "file" value therefore reaches this renderer, and the absolute path it produces would point the
+        // reviewer at something that is not knowledge, with no way to tell. Reject it, do not rewrite it.
+        var digest = KnowledgeDigest.Render(
+            [Entry(file, "Poisoned", ["x"])], KbRoot, charBudget: 10_000, omitted: 0);
+
+        digest.Rendered.Should().BeEmpty("an entry that escapes the root must not be offered to the agent");
+        digest.Rejected.Should().ContainSingle().Which.File.Should().Be(file);
+        digest.Text.Should().BeEmpty(
+            "with every entry rejected there are no paths to offer, and a header promising paths that are "
+                + "not there reads exactly like a Knowledge Base that happens to be empty");
+    }
+
+    [Fact]
+    public void Render_KeepsAnEntryWhoseDotDotStaysInsideTheRoot()
+    {
+        // Containment, not a blanket ban on '..': this path canonicalizes back inside the KB.
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/../system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+
+        digest.Rejected.Should().BeEmpty();
+        digest.Text.Should().Contain("/workspace/store/KnowledgeBase/system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_ContainsALeadingSlashRatherThanReadingItAsAnAbsolutePath()
+    {
+        var digest = KnowledgeDigest.Render(
+            [Entry("/etc/passwd", "Contained", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+
+        digest.Rejected.Should().BeEmpty();
+        digest.Text.Should().Contain("/workspace/store/KnowledgeBase/etc/passwd");
+    }
+
+    [Fact]
+    public void Render_RejectsAnEntryThatNamesNoFileAtAll()
+    {
+        var digest = KnowledgeDigest.Render(
+            [Entry("./", "Nothing", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+
+        digest.Rendered.Should().BeEmpty();
+        digest.Rejected.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void Render_RejectedEntriesDoNotCountTowardTheFootersPromiseOfMoreEntries()
+    {
+        // The footer tells the agent the entries it did not get are listed in _toc.md. A rejected entry is
+        // one we deliberately refuse to route it to, so counting it there would be an invitation to go and
+        // find the very thing that was rejected.
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", "Alpha", ["a"]), Entry("../evil.md", "Evil", ["a"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0);
+
+        digest.Rendered.Should().ContainSingle();
+        digest.Text.Should().NotContain("more entr");
     }
 
     // ---- RenderTableOfContents ------------------------------------------------------------------

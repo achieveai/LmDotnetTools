@@ -103,13 +103,19 @@ internal static class KnowledgeDigest
 
         foreach (var raw in nameOnlyListing.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
         {
-            var line = raw.Trim();
-            if (line.Length == 0 || line.StartsWith(markerHead, StringComparison.Ordinal))
+            // Only the line terminator is stripped, and the split already did that. git permits a filename
+            // to begin or end with a space and does NOT quote for one - quoting triggers on non-ASCII,
+            // control, quote and backslash bytes only - so trimming here would rename the file into a path
+            // git never reported, and Unquote could not repair it because there was never a quoted form.
+            // Emptiness is therefore length, not whitespace: "  " is a legal (absurd) filename and survives
+            // as one. The truncation marker is still matched against the trimmed form so that detecting it
+            // does not depend on how the producer happened to space it.
+            if (raw.Length == 0 || raw.Trim().StartsWith(markerHead, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            var path = Unquote(line);
+            var path = Unquote(raw);
             if (path.Length > 0 && seen.Add(path))
             {
                 paths.Add(path);
@@ -188,14 +194,21 @@ internal static class KnowledgeDigest
         if (entries.Count == 0)
         {
             return new KnowledgeDigestBlock(
-                omitted > 0 ? Header() + Footer(omitted, knowledgeBaseRoot) : string.Empty, []);
+                omitted > 0 ? Header() + Footer(omitted, knowledgeBaseRoot) : string.Empty, [], []);
         }
 
         var builder = new StringBuilder(Header());
         var rendered = new List<KnowledgeEntryMeta>(entries.Count);
+        var rejected = new List<KnowledgeEntryMeta>();
         foreach (var entry in entries)
         {
-            var line = RenderEntry(entry, knowledgeBaseRoot);
+            if (!TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var absolute))
+            {
+                rejected.Add(entry);
+                continue;
+            }
+
+            var line = RenderEntry(entry, absolute);
             if (rendered.Count > 0 && builder.Length + line.Length > charBudget)
             {
                 break; // Always list at least one entry, even under an implausibly small budget.
@@ -205,10 +218,23 @@ internal static class KnowledgeDigest
             rendered.Add(entry);
         }
 
-        var missing = omitted + (entries.Count - rendered.Count);
+        // Rejected entries are deliberately NOT counted as missing: the footer's promise is that whatever
+        // did not fit is reachable through _toc.md, and pointing the agent at an entry we just refused to
+        // resolve would be an invitation to go and find the very thing that was refused.
+        var missing = omitted + (entries.Count - rendered.Count - rejected.Count);
+        if (rendered.Count == 0)
+        {
+            // Every entry was refused. A header with no paths beneath it reads exactly like a Knowledge
+            // Base that happens to be empty, so say nothing at all and let the caller leave the review
+            // input untouched; the refusals travel back through Rejected, which is where they get logged.
+            return new KnowledgeDigestBlock(
+                missing > 0 ? Header() + Footer(missing, knowledgeBaseRoot) : string.Empty, [], rejected);
+        }
+
         return new KnowledgeDigestBlock(
             builder.Append(missing > 0 ? Footer(missing, knowledgeBaseRoot) : string.Empty).ToString(),
-            rendered);
+            rendered,
+            rejected);
     }
 
     /// <summary>
@@ -270,13 +296,70 @@ internal static class KnowledgeDigest
         $"\n{missing} more entr{(missing == 1 ? "y is" : "ies are")} not listed here; the full list is in "
         + $"{Join(knowledgeBaseRoot, "_toc.md")}.\n";
 
-    private static string RenderEntry(KnowledgeEntryMeta entry, string knowledgeBaseRoot)
+    private static string RenderEntry(KnowledgeEntryMeta entry, string absolutePath)
     {
         var title = string.IsNullOrWhiteSpace(entry.Title) ? entry.File : entry.Title;
         var tags = entry.Tags.Count == 0 ? "(none)" : string.Join(", ", entry.Tags);
         var scope = string.IsNullOrWhiteSpace(entry.Scope) ? "(unscoped)" : entry.Scope;
 
-        return $"- {title}\n  tags: {tags} | scope: {scope}\n  {Join(knowledgeBaseRoot, entry.File)}\n";
+        return $"- {title}\n  tags: {tags} | scope: {scope}\n  {absolutePath}\n";
+    }
+
+    /// <summary>
+    /// Resolves an entry's KB-relative <see cref="KnowledgeEntryMeta.File"/> against the Knowledge Base
+    /// root, refusing anything whose canonical form lands outside it.
+    /// <para>
+    /// Worth the trouble because this value is NOT trusted input. During regeneration the index is built
+    /// from a directory listing, but the digest reads it back from <c>_index.jsonl</c> on disk in the
+    /// store, and the store's <c>KnowledgeBase/</c> is written by the knowledge agent - an LLM with
+    /// file-write tools. A hand-edited, torn or model-authored <c>"file"</c> value therefore reaches this
+    /// method, and an absolute path outside the Knowledge Base would present something that is not
+    /// knowledge as though it were, with nothing in the block for the reviewer to tell the difference by.
+    /// </para>
+    /// Containment, not a ban on <c>..</c>: segments are resolved, so a path that steps out and back in
+    /// is fine while one that pops past the root is refused outright rather than quietly rewritten into
+    /// something safe - a rewritten path would still be offered to the agent as knowledge. A backslash
+    /// separates here too, since <see cref="Join"/> normalizes it and an escape spelled with backslashes
+    /// escapes just as one spelled with slashes does. A LEADING slash is not an escape: <see cref="Join"/>
+    /// already contains it, so it lands harmlessly under the root.
+    /// </summary>
+    private static bool TryResolveEntryPath(string knowledgeBaseRoot, string? file, out string absolutePath)
+    {
+        absolutePath = string.Empty;
+        if (string.IsNullOrWhiteSpace(file))
+        {
+            return false;
+        }
+
+        var segments = new List<string>();
+        foreach (var segment in file.Replace('\\', '/').Split('/'))
+        {
+            if (segment.Length == 0 || segment == ".")
+            {
+                continue;
+            }
+
+            if (segment != "..")
+            {
+                segments.Add(segment);
+                continue;
+            }
+
+            if (segments.Count == 0)
+            {
+                return false; // Popped past the Knowledge Base root.
+            }
+
+            segments.RemoveAt(segments.Count - 1);
+        }
+
+        if (segments.Count == 0)
+        {
+            return false; // Names no file at all; the root itself is not an entry.
+        }
+
+        absolutePath = Join(knowledgeBaseRoot, string.Join('/', segments));
+        return true;
     }
 
     /// <summary>Joins a KB-relative entry path onto the root with forward slashes (the checkout the agent
@@ -483,8 +566,13 @@ internal static class KnowledgeDigest
 }
 
 /// <summary>
-/// The rendered prior-knowledge block: its <paramref name="Text"/>, and the entries that actually made it
-/// into that text after the character budget was applied. The two are reported together so a caller can
-/// log what the reviewer genuinely received rather than what was merely selected for it.
+/// The rendered prior-knowledge block: its <paramref name="Text"/>, the entries that actually made it into
+/// that text after the character budget was applied, and the entries refused because their path did not
+/// resolve inside the Knowledge Base. All three are reported together so the caller can log what the
+/// reviewer genuinely received AND what was withheld from it - a refusal nobody logs is indistinguishable
+/// from a Knowledge Base that never held the entry.
 /// </summary>
-internal sealed record KnowledgeDigestBlock(string Text, IReadOnlyList<KnowledgeEntryMeta> Rendered);
+internal sealed record KnowledgeDigestBlock(
+    string Text,
+    IReadOnlyList<KnowledgeEntryMeta> Rendered,
+    IReadOnlyList<KnowledgeEntryMeta> Rejected);

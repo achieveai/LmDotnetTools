@@ -57,6 +57,28 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task ContextReady_persists_changed_paths_with_filename_whitespace_intact()
+    {
+        // git allows a filename to begin or end with a space, and `diff --name-only` does not quote for
+        // plain spaces — quoting triggers on non-ASCII, control, quote and backslash bytes only. Trimming
+        // the listing therefore silently renames the first and last records into paths git never reported,
+        // and the ranking they feed can no longer match them.
+        using var fixture = Fixture.GitHub(LoggerFactory);
+        fixture.Runner.OnArgvContainsFirst(
+            "diff --name-only",
+            new SandboxCommandResult(0, "\n lead.cs\ntrail.cs \n", string.Empty));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+
+        var artifact = fixture.Store.GetArtifacts(run.Id).Should().ContainSingle().Subject;
+        var changedPaths = JsonDocument.Parse(artifact.Payload).RootElement
+            .GetProperty("ChangedPaths").GetString();
+
+        KnowledgeDigest.ParseChangedPaths(changedPaths).Should().Equal(" lead.cs", "trail.cs ");
+    }
+
+    [Fact]
     public async Task ContextReady_fetches_the_target_repo_and_diffs_the_target_checkout_not_reviewbot()
     {
         using var fixture = Fixture.GitHub(LoggerFactory);
@@ -464,6 +486,51 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
         text.IndexOf("system/z-kraken.md", StringComparison.Ordinal).Should().BeLessThan(
             text.IndexOf("system/a-widget.md", StringComparison.Ordinal),
             "the entry matching the truncated-away path must still be ranked on it");
+    }
+
+    [Fact]
+    public async Task Reviewed_refuses_a_knowledge_entry_whose_path_escapes_the_knowledge_base()
+    {
+        // _index.jsonl is written into the store by the knowledge agent — an LLM with file-write tools — and
+        // is read back here unvalidated. A '..' in a "file" value would hand the reviewer an absolute path
+        // outside KnowledgeBase/, i.e. something that is not knowledge presented as though it were, which
+        // the reviewer has no way to detect. The refusal has to be LOGGED, not silent: an entry that simply
+        // vanishes from the digest is indistinguishable from a Knowledge Base that never had it.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"../../../workspace/target/src/LmCore/Foo.cs","title":"Poisoned","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n"
+                + """{"file":"system/null-guard.md","title":"Null-guard boundaries","tags":["null"],"scope":"system","sourcePrs":[],"updated":"2026-07-04"}"""
+                + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/null-guard.md",
+            "the well-formed entry alongside it must still reach the reviewer");
+        text.Should().NotContain("Poisoned");
+        text.Should().NotContain(
+            "/workspace/target/src/LmCore/Foo.cs",
+            "the escaping entry must never be rendered as a path the agent is told to Read");
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "../../../workspace/target/src/LmCore/Foo.cs")
+            .Should().Be(1, "a refused entry has to be visible in the log the way the surfaced ones are");
     }
 
     [Fact]
