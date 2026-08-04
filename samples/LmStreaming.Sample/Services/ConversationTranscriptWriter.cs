@@ -123,6 +123,42 @@ public sealed class ConversationTranscriptWriter
     public const int WatermarkMissingExitCode = 42;
 
     /// <summary>
+    ///     Exit code <see cref="WatermarkProbeScript"/> reports when the window was read successfully but
+    ///     the destination's last byte is NOT a newline — it ends mid-record, so the final line of the
+    ///     window is torn and must not be adopted as a watermark. Chosen on the same grounds as
+    ///     <see cref="WatermarkMissingExitCode"/>: outside every code the probe's own commands can mint.
+    /// </summary>
+    /// <remarks>
+    ///     Tornness cannot be re-derived from the bytes any more, because the probe TRUNCATES each line to
+    ///     <see cref="WatermarkTailChars"/> characters — every line it returns looks torn. So the shell,
+    ///     which is the only party that can still see the whole file, answers the question directly.
+    /// </remarks>
+    public const int WatermarkPartialExitCode = 43;
+
+    /// <summary>
+    ///     How many leading characters of each windowed line the probe returns. This is what bounds the
+    ///     probe's output, and bounding it is not an optimisation.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     A single transcript line carries a whole message, and on this revision a tool result is stored
+    ///     inline, so one line reaches MEGABYTES. Returning five of those through the gateway's command
+    ///     channel exceeds its output cap; the SDK throws, <c>RunAsync</c> reports the transport fault as
+    ///     an indeterminate probe, and the flush defers. A cold start re-probes every time, so it defers
+    ///     again, and again, until the retry budget is spent — the transcript is then never mirrored at
+    ///     all. Capping per line makes the probe's output a small CONSTANT (<see cref="WatermarkTailLines"/>
+    ///     x this, plus newlines) no matter how large the file or its lines.
+    ///     </para>
+    ///     <para>
+    ///     The cap is safe because <c>WorkspaceTranscriptLine.Serialize</c> pins the key ORDER, writing
+    ///     <c>schema_version</c>, <c>type</c> and then <c>uid</c> — so the uid always ends within roughly
+    ///     the first 53 bytes of a line, whatever follows it. 256 leaves a wide margin for that layout to
+    ///     grow without anyone having to remember this constant exists.
+    ///     </para>
+    /// </remarks>
+    public const int WatermarkTailChars = 256;
+
+    /// <summary>
     ///     How many times a re-read may disagree with its predecessor before the flush gives up. See
     ///     <see cref="ReadStableAsync"/> for why reading twice is not optional.
     /// </summary>
@@ -171,8 +207,8 @@ public sealed class ConversationTranscriptWriter
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
 
     /// <summary>
-    ///     The cold-start watermark probe. <c>$1</c> destination file, <c>$2</c> trailing line count.
-    ///     Reads nothing and writes nothing.
+    ///     The cold-start watermark probe. <c>$1</c> destination file, <c>$2</c> trailing line count,
+    ///     <c>$3</c> per-line character cap. Reads nothing and writes nothing.
     /// </summary>
     /// <remarks>
     ///     <para>
@@ -186,22 +222,49 @@ public sealed class ConversationTranscriptWriter
     ///     status keeps its ordinary meaning — an indeterminate failure the caller must DEFER on.
     ///     </para>
     ///     <para>
-    ///     A race between the test and the <c>exec</c> is harmless in the direction that matters: a file
+    ///     <b><c>cut -c</c> is what keeps the probe's output a small constant</b> — see
+    ///     <see cref="WatermarkTailChars"/> for the wedge it prevents. It truncates per LINE, after
+    ///     <c>tail</c> has chosen the lines: a plain byte budget over the whole window
+    ///     (<c>tail -c</c>, or <c>head -c</c> downstream) is not equivalent, because one multi-megabyte
+    ///     line would swallow the entire budget and leave no uid to find. <c>cut</c> is POSIX and present
+    ///     in the sandbox image (<c>mcr.microsoft.com/dotnet/sdk:10.0-noble</c>, GNU coreutils).
+    ///     </para>
+    ///     <para>
+    ///     Truncating costs the ability to tell a torn last line from an intact one by parsing, so the
+    ///     LAST line answers that separately through <see cref="WatermarkPartialExitCode"/>, using the same
+    ///     <c>tail -c1</c> idiom <see cref="AppendScript"/> already welds newlines with. It is read AFTER
+    ///     the window on purpose: a concurrent append landing between the two reads can then only make the
+    ///     probe MORE conservative (an intact window reported partial re-appends one row the reader dedupes
+    ///     on uid), never less (a torn window reported intact would adopt a torn uid and lose rows).
+    ///     </para>
+    ///     <para>
+    ///     A race between the test and the window read is harmless in the direction that matters: a file
     ///     created in between makes <c>tail</c> succeed, and one deleted in between makes it exit 1, which
     ///     is read as indeterminate and defers. The reverse — a real absence read as a failure — costs one
     ///     repeated flush, never a duplicated transcript.
     ///     </para>
     ///     <para>
     ///     Built from concatenated literals for the same LF reason as <see cref="AppendScript"/>, and the
-    ///     title-derived path arrives as a positional parameter for the same inertness reason. The exit
-    ///     code is spliced in from the constant rather than typed twice, so the two cannot drift.
+    ///     title-derived path arrives as a positional parameter for the same inertness reason. Both exit
+    ///     codes are spliced in from their constants rather than typed twice, so they cannot drift.
     ///     </para>
     /// </remarks>
     private static readonly string WatermarkProbeScript =
         "[ -e \"$1\" ] || exit "
         + WatermarkMissingExitCode.ToString(CultureInfo.InvariantCulture)
         + "\n"
-        + "exec tail -n \"$2\" -- \"$1\"\n";
+        + "tail -n \"$2\" -- \"$1\" | cut -c \"1-$3\" || exit 1\n"
+        + "end=$(tail -c1 -- \"$1\") || exit 1\n"
+        + "[ -z \"$end\" ] || exit "
+        + WatermarkPartialExitCode.ToString(CultureInfo.InvariantCulture)
+        + "\n";
+
+    /// <summary>
+    ///     The one property <see cref="TryReadUid"/> looks for, as UTF-8 so the reader can compare it
+    ///     without materialising the name. Must match the key <c>WorkspaceTranscriptLine.Serialize</c>
+    ///     writes.
+    /// </summary>
+    private static ReadOnlySpan<byte> UidPropertyName => "uid"u8;
 
     private readonly IConversationStore _store;
     private readonly IWorkspaceFileBrowser _fileBrowser;
@@ -797,11 +860,40 @@ public sealed class ConversationTranscriptWriter
     ///     asking — "this slice wrote nothing" says nothing about the descendants OUTSIDE it, and the one
     ///     that changed is exactly as likely to be out there — but asking under the caller's FAILURE budget
     ///     caps the roster a single trigger can ever reach at (budget + 1) x cap, silently truncating
-    ///     anything larger. So the sweep tracks which descendants it has visited since the last external
-    ///     trigger and keeps asking only while some remain. That terminates on its own: each pass visits at
-    ///     least one descendant it has not visited before, over a finite roster. A descendant is marked
-    ///     visited whether or not its own read succeeded — a failed read reports <c>deferred</c>, which is
-    ///     what the failure budget is actually for.
+    ///     anything larger. So the sweep tracks which descendants it has COVERED since the last external
+    ///     trigger and keeps asking only while some remain.
+    ///     </para>
+    ///     <para>
+    ///     <b>A descendant counts as covered only once it has actually been processed</b> — appended, or
+    ///     read successfully and found to have nothing new. A descendant whose read or splice FAILED is
+    ///     left uncovered, so a later pass retries it. Marking it covered anyway loses it outright: with a
+    ///     roster larger than the cap, slice 1 could fail on descendant A and report <c>deferred</c>, the
+    ///     caller's retry could run slice 2, slice 2 could succeed, and A — already marked — would leave
+    ///     the sweep complete with A never mirrored and no further pass owed.
+    ///     </para>
+    ///     <para>
+    ///     <b>Termination.</b> <c>progressing</c> means only "unfailed ground is still uncovered": it
+    ///     excludes both the covered set and the descendants that failed in THIS pass, so a failure can
+    ///     never by itself keep the chain alive. The two ways a pass can end therefore both make progress
+    ///     against a finite bound:
+    ///     <list type="bullet">
+    ///     <item><description>
+    ///     If a pass fails on any descendant it reports <c>deferred</c>, and the caller charges that to its
+    ///     failure budget — at most <c>MaxDeferredRetries</c> of those exist per trigger.
+    ///     </description></item>
+    ///     <item><description>
+    ///     If a pass fails on none, every descendant in its window becomes covered. The window is
+    ///     <c>take</c> CONSECUTIVE slots and the cursor advances by exactly <c>take</c>, so successive
+    ///     windows tile the ring: any ceil(count / take) consecutive passes visit every descendant. So a
+    ///     run of failure-free passes covers the whole roster within ceil(count / take) passes, after which
+    ///     nothing is uncovered and <c>progressing</c> is false.
+    ///     </description></item>
+    ///     </list>
+    ///     A <c>progressing</c> pass costs no budget, but it cannot repeat indefinitely: within every
+    ///     ceil(count / take) passes the ring is fully visited, so either the roster becomes covered
+    ///     (chain ends) or a descendant fails again (budget charged). The chain is therefore bounded by
+    ///     (MaxDeferredRetries + 2) x ceil(count / take) passes, and a PERMANENTLY failing descendant ends
+    ///     it by exhausting the failure budget rather than by looping.
     ///     </para>
     /// </remarks>
     private async Task<(bool Wrote, bool Deferred, bool Progressing)> FlushSubAgentsAsync(
@@ -826,24 +918,28 @@ public sealed class ConversationTranscriptWriter
         }
 
         var take = Math.Min(agents.Count, _maxSubAgentFilesPerFlush);
-        var deferred = false;
         var wrote = false;
         var directory = $"{TranscriptDirectory}/{leaf}{AgentsDirectorySuffix}";
+
+        // Failures of THIS pass. They stay out of _sweptAgents so a later pass retries them, and out of
+        // the progressing test so they cannot keep the chain alive on their own. See the termination
+        // argument above.
+        var failed = new HashSet<string>(StringComparer.Ordinal);
 
         for (var i = 0; i < take; i++)
         {
             var agent = agents[(_subAgentCursor + i) % agents.Count];
-            _ = _sweptAgents.Add(agent.ThreadId);
 
             var messages = await ReadStableAsync(agent.ThreadId, ct).ConfigureAwait(false);
             if (messages is null)
             {
-                deferred = true;
+                _ = failed.Add(agent.ThreadId);
                 continue;
             }
 
             if (messages.Count == 0)
             {
+                _ = _sweptAgents.Add(agent.ThreadId);
                 continue;
             }
 
@@ -851,21 +947,26 @@ public sealed class ConversationTranscriptWriter
             var lines = WorkspaceTranscriptLine.ChainMessages(messages, agent.Name, RootParentUidFor(agent.ThreadId));
 
             var result = await AppendAsync(sessionId, directory, path, agent.ThreadId, lines, ct).ConfigureAwait(false);
+            if (result == AppendResult.Failed)
+            {
+                _ = failed.Add(agent.ThreadId);
+                continue;
+            }
+
+            _ = _sweptAgents.Add(agent.ThreadId);
             if (result == AppendResult.Appended)
             {
                 wrote = true;
                 _agentsDirectoryTouched = true;
             }
-            else if (result == AppendResult.Failed)
-            {
-                deferred = true;
-            }
         }
 
         _subAgentCursor = (_subAgentCursor + take) % agents.Count;
 
-        var progressing = agents.Any(agent => !_sweptAgents.Contains(agent.ThreadId));
-        return (wrote, deferred, progressing);
+        var progressing = agents.Any(agent =>
+            !_sweptAgents.Contains(agent.ThreadId) && !failed.Contains(agent.ThreadId)
+        );
+        return (wrote, failed.Count > 0, progressing);
     }
 
     /// <summary>
@@ -1047,7 +1148,9 @@ public sealed class ConversationTranscriptWriter
     ///     transcript, and these files reach tens of megabytes in practice — paying that once per process
     ///     per conversation to learn eight characters is not a micro-optimisation to skip. What the probe
     ///     must never do is answer an indeterminate failure the way it answers a genuine absence; see
-    ///     <see cref="WatermarkProbe"/> and <see cref="WatermarkProbeScript"/>.
+    ///     <see cref="WatermarkProbe"/> and <see cref="WatermarkProbeScript"/>. Its output is bounded per
+    ///     line, so an individual multi-megabyte row cannot make this call itself unanswerable — see
+    ///     <see cref="WatermarkTailChars"/>.
     /// </remarks>
     private async Task<WatermarkProbe> RecoverWatermarkAsync(
         string sessionId,
@@ -1063,6 +1166,7 @@ public sealed class ConversationTranscriptWriter
                 "sh",
                 path,
                 WatermarkTailLines.ToString(CultureInfo.InvariantCulture),
+                WatermarkTailChars.ToString(CultureInfo.InvariantCulture),
             ],
             ct
         ).ConfigureAwait(false);
@@ -1079,7 +1183,7 @@ public sealed class ConversationTranscriptWriter
             return WatermarkProbe.Absent;
         }
 
-        if (tailed.ExitCode != 0)
+        if (tailed.ExitCode is not (0 or WatermarkPartialExitCode))
         {
             _logger.LogWarning(
                 "Transcript watermark probe of {Path} failed with exit {ExitCode}: {Error}",
@@ -1091,7 +1195,21 @@ public sealed class ConversationTranscriptWriter
         }
 
         var window = tailed.StandardOutput.Split('\n');
-        for (var i = window.Length - 1; i >= 0; i--)
+
+        var last = window.Length - 1;
+        while (last >= 0 && window[last].Trim().Length == 0)
+        {
+            last--;
+        }
+
+        if (tailed.ExitCode == WatermarkPartialExitCode)
+        {
+            // The file ends mid-record, so the window's last line is the torn half of a row that was never
+            // fully written. Adopting its uid would silently skip the row it belongs to for good.
+            last--;
+        }
+
+        for (var i = last; i >= 0; i--)
         {
             if (TryReadUid(window[i]) is { } uid)
             {
@@ -1099,9 +1217,9 @@ public sealed class ConversationTranscriptWriter
             }
         }
 
-        // Exit 0 with nothing readable is still a DEFINITE answer: the file is there and holds no intact
-        // record — empty, or torn across its whole window. Only the second of those is worth a warning,
-        // which is what HadContent distinguishes.
+        // A readable window with nothing usable in it is still a DEFINITE answer: the file is there and
+        // holds no adoptable record — empty, or torn across its whole window. Only the second of those is
+        // worth a warning, which is what HadContent distinguishes.
         return new WatermarkProbe(
             Settled: true,
             HadContent: !string.IsNullOrWhiteSpace(tailed.StandardOutput),
@@ -1109,6 +1227,16 @@ public sealed class ConversationTranscriptWriter
         );
     }
 
+    /// <summary>
+    ///     Reads the <c>uid</c> out of one windowed line, which by construction may be only the LEADING
+    ///     <see cref="WatermarkTailChars"/> characters of the real row.
+    /// </summary>
+    /// <remarks>
+    ///     Hence <c>isFinalBlock: false</c> rather than <see cref="JsonDocument"/>: it tells the reader the
+    ///     buffer is a PREFIX, so a token cut off at the end means "no more data yet" — <c>Read</c> simply
+    ///     returns false — instead of a syntax error. A whole intact line parses through the same path
+    ///     unchanged, since a complete object is also a valid prefix of itself.
+    /// </remarks>
     private static string? TryReadUid(string line)
     {
         var trimmed = line.Trim();
@@ -1119,16 +1247,39 @@ public sealed class ConversationTranscriptWriter
 
         try
         {
-            using var document = JsonDocument.Parse(trimmed);
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("uid", out var uid)
-                && uid.ValueKind == JsonValueKind.String
-                ? uid.GetString()
-                : null;
+            var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(trimmed), isFinalBlock: false, state: default);
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            {
+                return null;
+            }
+
+            while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+            {
+                var isUid = reader.ValueTextEquals(UidPropertyName);
+                if (!reader.Read())
+                {
+                    return null;
+                }
+
+                if (isUid)
+                {
+                    return reader.TokenType == JsonTokenType.String ? reader.GetString() : null;
+                }
+
+                // TrySkip, not Skip: Skip THROWS on a value the prefix does not finish, which is the
+                // ordinary case here rather than an error.
+                if (reader.TokenType is JsonTokenType.StartObject or JsonTokenType.StartArray && !reader.TrySkip())
+                {
+                    return null;
+                }
+            }
+
+            return null;
         }
         catch (JsonException)
         {
-            // A torn line. Expected — it is the reason the probe reads a window instead of one line.
+            // A line torn BEFORE its uid, or one that was never JSON. Expected — it is the reason the
+            // probe reads a window instead of one line.
             return null;
         }
     }

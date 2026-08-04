@@ -99,11 +99,24 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
         new(StringComparer.Ordinal);
 
     /// <summary>
-    ///     Consecutive deferred flushes per conversation, against <see cref="MaxDeferredRetries"/>. Reset
-    ///     whenever a flush is not deferred and at every turn boundary, so the budget bounds one stuck
-    ///     chain rather than the conversation's lifetime.
+    ///     Consecutive deferred flushes per conversation, against <see cref="MaxDeferredRetries"/>, stamped
+    ///     with the generation that accrued them. Reset whenever a flush is not deferred and at every turn
+    ///     boundary, so the budget bounds one stuck chain rather than the conversation's lifetime.
     /// </summary>
-    private readonly ConcurrentDictionary<string, int> _deferredAttempts = new(StringComparer.Ordinal);
+    /// <remarks>
+    ///     The stamp exists because a flush is asynchronous and a trigger is not. <see cref="FlushAsync"/>
+    ///     can still be awaiting gateway I/O when a fresh trigger clears this counter on the subscriber
+    ///     thread; without the stamp, that older flush's <c>Deferred</c> outcome re-creates the counter at 1
+    ///     and the new generation silently starts one attempt down.
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, DeferredBudget> _deferredAttempts =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    ///     Monotonic generation per conversation, bumped by <see cref="ScheduleFreshAttempt"/>. Identifies
+    ///     which trigger's work a completing flush belongs to.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, int> _generations = new(StringComparer.Ordinal);
 
     /// <summary>Guards <see cref="_subscriptions"/> and <see cref="_disposed"/>. Never held across
     /// cancellation or I/O — see <see cref="Attach"/>.</summary>
@@ -281,6 +294,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
 
         _ = _writers.TryRemove(threadId, out _);
         _ = _deferredAttempts.TryRemove(threadId, out _);
+        _ = _generations.TryRemove(threadId, out _);
 
         Subscription? removed;
         lock (_gate)
@@ -317,6 +331,7 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
 
         _writers.Clear();
         _deferredAttempts.Clear();
+        _generations.Clear();
         _scheduler.Dispose();
     }
 
@@ -419,7 +434,17 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
             // is UpToDate and issues no gateway write. It is a fresh generation of work like any other
             // trigger — the drop is new evidence, and inheriting a spent budget from before it would give
             // the recovery a single pass.
-            ScheduleFreshAttempt(threadId);
+            //
+            // It also forces a DESCENDANT RESCAN, which the other two triggers deliberately do not. What
+            // was lost here is unknown by definition, and a spawn call or completion notification is
+            // exactly the kind of message that can have been among it. If an earlier flush cached a roster
+            // taken before a child was persisted, and that child's only announcement went down with the
+            // channel, the cache is stale with nothing left to invalidate it and the child is never
+            // mirrored at all. The other two call sites are the opposite case: they run because a message
+            // ARRIVED, so the message itself is the signal — sub-agent activity already arms a rescan
+            // through NoteSubAgentActivity, and a run completion is not evidence about descendants.
+            ScheduleFreshAttempt(threadId, forceDescendantRescan: true);
+
         }
     }
 
@@ -499,6 +524,12 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     Schedules a flush of <paramref name="threadId"/> as a NEW generation of work: the bounded
     ///     deferred-retry budget is released and the writer's descendant coverage sweep starts over.
     /// </summary>
+    /// <param name="threadId">The conversation to flush.</param>
+    /// <param name="forceDescendantRescan">
+    ///     Also invalidates the cached descendant roster, for a trigger that means messages were LOST
+    ///     rather than delivered. Only the drop-recovery path passes true; see its call site for why the
+    ///     other two must not.
+    /// </param>
     /// <remarks>
     ///     <b>Every independent external trigger goes through here, not just the turn boundary.</b> The
     ///     budget and the sweep are both scoped to "one trigger's worth of attempts", so a trigger that
@@ -506,12 +537,20 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     likely to inherit one is the least recoverable, a background sub-agent completing after its
     ///     parent's last turn, because nothing follows it to try again.
     /// </remarks>
-    private void ScheduleFreshAttempt(string threadId)
+    private void ScheduleFreshAttempt(string threadId, bool forceDescendantRescan = false)
     {
+        // Bump BEFORE clearing, so a flush still in flight for the old generation can already tell that
+        // its outcome is stale by the time it returns.
+        _ = _generations.AddOrUpdate(threadId, 1, (_, previous) => previous + 1);
         _ = _deferredAttempts.TryRemove(threadId, out _);
+
         if (_writers.TryGetValue(threadId, out var writer))
         {
             writer.NoteExternalTrigger();
+            if (forceDescendantRescan)
+            {
+                writer.NoteSubAgentActivity();
+            }
         }
 
         _scheduler.Schedule(threadId);
@@ -570,6 +609,13 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
     ///     re-scheduled WITHOUT spending the failure budget; it terminates on the writer's own coverage
     ///     sweep instead. It does not reset the budget either: a conversation that alternates between
     ///     failing and progressing must still be bounded.
+    ///     <para>
+    ///     All of that accounting is scoped to the GENERATION this flush started in. A fresh trigger can
+    ///     land while the flush below is awaiting gateway I/O, and that trigger has already released the
+    ///     budget and scheduled its own attempt; letting this one's outcome land afterwards would charge
+    ///     the new generation for the old one's failure. So a superseded outcome is dropped outright —
+    ///     including its re-schedule, which the new generation has already issued.
+    ///     </para>
     /// </remarks>
     private async Task FlushAsync(string threadId, CancellationToken ct)
     {
@@ -578,7 +624,14 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
             return;
         }
 
+        var generation = _generations.GetOrAdd(threadId, 0);
+
         var outcome = await writer.FlushAsync(ct).ConfigureAwait(false);
+        if (generation != _generations.GetOrAdd(threadId, 0))
+        {
+            return;
+        }
+
         if (outcome == TranscriptFlushOutcome.Progressing)
         {
             _scheduler.Schedule(threadId);
@@ -587,12 +640,30 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
 
         if (outcome != TranscriptFlushOutcome.Deferred)
         {
-            _ = _deferredAttempts.TryRemove(threadId, out _);
+            if (_deferredAttempts.TryGetValue(threadId, out var spent) && spent.Generation == generation)
+            {
+                _ = _deferredAttempts.TryRemove(new KeyValuePair<string, DeferredBudget>(threadId, spent));
+            }
+
             return;
         }
 
-        var attempt = _deferredAttempts.AddOrUpdate(threadId, 1, (_, previous) => previous + 1);
-        if (attempt > MaxDeferredRetries)
+        // A counter left by an older generation is REPLACED rather than added to. It can only exist if
+        // that generation's flush lost the race against the check above, and it is not this generation's
+        // budget to spend.
+        var budget = _deferredAttempts.AddOrUpdate(
+            threadId,
+            _ => new DeferredBudget(generation, 1),
+            (_, previous) =>
+                previous.Generation == generation
+                    ? previous with
+                    {
+                        Attempts = previous.Attempts + 1,
+                    }
+                    : new DeferredBudget(generation, 1)
+        );
+
+        if (budget.Attempts > MaxDeferredRetries)
         {
             _logger.LogWarning(
                 "Transcript flush for thread {ThreadId} deferred {Attempts} times in a row; giving up until "
@@ -601,10 +672,13 @@ public sealed class WorkspaceTranscriptMirror : IDisposable
                     + "conversation itself is untouched — but this conversation's workspace copy now stops "
                     + "short until something triggers it again.",
                 threadId,
-                attempt);
+                budget.Attempts);
             return;
         }
 
         _scheduler.Schedule(threadId);
     }
+
+    /// <summary>One conversation's consecutive-deferral count, and the generation that accrued it.</summary>
+    private readonly record struct DeferredBudget(int Generation, int Attempts);
 }

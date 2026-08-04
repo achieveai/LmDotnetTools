@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
@@ -47,15 +48,19 @@ public sealed class ConversationTranscriptWriterTests
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
 
     /// <summary>
-    /// The cold-start watermark probe, duplicated for the same reason. Its text is a contract twice over:
-    /// the <c>[ -e ]</c> test is what makes "there is no transcript" an answer the script GIVES rather than
-    /// one the caller infers from a generic <c>tail</c> failure, and exit <c>42</c> is the private code that
+    /// The cold-start watermark probe, duplicated for the same reason. Its text is a contract three times
+    /// over: the <c>[ -e ]</c> test is what makes "there is no transcript" an answer the script GIVES rather
+    /// than one the caller infers from a generic <c>tail</c> failure; exit <c>42</c> is the private code that
     /// carries that answer back — a value neither <c>tail</c> (0/1) nor <c>sh</c> (126/127, 128+signal)
-    /// produces, so it cannot be minted by an accident.
+    /// produces, so it cannot be minted by an accident; and <c>cut -c "1-$3"</c> is what bounds the output,
+    /// without which a single multi-megabyte row makes the probe itself unanswerable. Exit <c>43</c> carries
+    /// the one fact truncation destroys — whether the file ends mid-record.
     /// </summary>
     private const string ExpectedProbeScript =
         "[ -e \"$1\" ] || exit 42\n"
-        + "exec tail -n \"$2\" -- \"$1\"\n";
+        + "tail -n \"$2\" -- \"$1\" | cut -c \"1-$3\" || exit 1\n"
+        + "end=$(tail -c1 -- \"$1\") || exit 1\n"
+        + "[ -z \"$end\" ] || exit 43\n";
 
     private static readonly string ShortThreadId = WorkspaceTranscriptLine.ShortId(ThreadId);
 
@@ -228,6 +233,54 @@ public sealed class ConversationTranscriptWriterTests
         new() { ExitCode = 42, StandardOutput = "", StandardError = "", OperationId = "op" };
 
     /// <summary>
+    /// What the probe reports when the window was read but the destination's last byte is NOT a newline —
+    /// it ends mid-record, so the window's last line is the torn half of a row. The literal 43 is
+    /// duplicated for the same reason as 42: truncation makes every returned line LOOK torn, so this one
+    /// code is the only thing left that can tell a torn tail from an intact one.
+    /// </summary>
+    private static SandboxCommandResult Partial(string stdout) =>
+        new()
+        {
+            ExitCode = 43,
+            StandardOutput = stdout,
+            StandardError = "",
+            OperationId = "op",
+        };
+
+    /// <summary>
+    /// Runs the probe's SHELL semantics over a simulated <paramref name="onDisk"/> file, so the writer is
+    /// tested against what the script would really hand back rather than against a hand-written window.
+    /// </summary>
+    /// <remarks>
+    /// The per-line cut is applied only if the caller ASKED for it. That is the whole point: a shell told
+    /// no character cap returns the tail in full, so a transcript holding one multi-megabyte row hands back
+    /// megabytes — which is the wedge, and which a test that hard-codes a pre-truncated window cannot see.
+    /// </remarks>
+    private static SandboxCommandResult SimulateProbe(SandboxCommand command, string onDisk)
+    {
+        var tailLines = int.Parse(command.Arguments[5], CultureInfo.InvariantCulture);
+        var records = onDisk.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var window = records.Skip(Math.Max(0, records.Length - tailLines));
+
+        if (command.Arguments.Count > 6)
+        {
+            var maxChars = int.Parse(command.Arguments[6], CultureInfo.InvariantCulture);
+            window = window.Select(line => line.Length <= maxChars ? line : line[..maxChars]);
+        }
+
+        var stdout = string.Concat(window.Select(line => line + "\n"));
+        return onDisk.EndsWith('\n') ? Ok(stdout) : Partial(stdout);
+    }
+
+    /// <summary>A transcript row whose <c>message_json</c> alone is <paramref name="megabytes"/> long.</summary>
+    /// <remarks>
+    /// Not an exaggerated fixture: on this revision a tool result is stored inline on the row, so a single
+    /// file listing or a build log lands as one line of exactly this shape.
+    /// </remarks>
+    private static PersistedMessage HugeMsg(string id, long timestamp, int megabytes = 3) =>
+        Msg(id, timestamp, messageJson: "\"" + new string('x', megabytes * 1024 * 1024) + "\"");
+
+    /// <summary>
     /// Selects the watermark probe out of a flush's commands. The splice is the call carrying the staged
     /// temp file; every other shell call in a flush is the probe.
     /// </summary>
@@ -267,7 +320,7 @@ public sealed class ConversationTranscriptWriterTests
 
         _ = browser.Commands.Should().HaveCount(2);
         _ = browser.Commands[0].Arguments.Should()
-            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5");
+            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
         _ = browser.Commands[1].Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(Title));
         _ = browser.LastPersistedWorkspaceId.Should().Be(WorkspaceId);
@@ -335,15 +388,141 @@ public sealed class ConversationTranscriptWriterTests
 
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(intact + torn),
+            ExecuteHandler = command => IsSplice(command) ? Ok() : Partial(intact + torn),
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         _ = browser.Commands[0].Arguments.Should()
-            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5");
+            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
         _ = browser.ReadCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The probe's output must be a small CONSTANT, whatever the file holds. A transcript row carries a
+    /// whole message and on this revision a tool result is stored inline, so ONE line reaches megabytes;
+    /// five of those exceed the gateway's command-output cap, the SDK throws, and the writer reads the
+    /// transport fault as an indeterminate probe and defers. A cold start re-probes every time, so it
+    /// defers again until the retry budget is spent and the transcript is never mirrored at all. The fix
+    /// has to bound the probe without reading the file (a GET downloads tens of megabytes) and without
+    /// giving up the ability to find a uid, so the bound is per LINE rather than over the window: a byte
+    /// budget spent on one huge first line would leave nothing to read.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_CapsTheProbeOutputPerLine_SoOneMultiMegabyteRowCannotWedgeTheProbe()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), HugeMsg("m2", 2), Msg("m3", 3)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // What a previous process left on disk: m1 and the multi-megabyte m2, written whole.
+        var onDisk = string.Concat(
+            ExpectedAppend(messages).Split('\n', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(l => l + "\n")
+        );
+        _ = onDisk.Length.Should().BeGreaterThan(3 * 1024 * 1024);
+
+        var probeOutput = "";
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command =>
+            {
+                if (IsSplice(command))
+                {
+                    return Ok();
+                }
+
+                var result = SimulateProbe(command, onDisk);
+                probeOutput = result.StandardOutput;
+                return result;
+            },
+        };
+
+        var outcome = await CreateWriter(store, browser).FlushAsync();
+
+        // The bound itself, in bytes the gateway would have had to carry.
+        _ = probeOutput.Length.Should()
+            .BeLessThan(
+                4096,
+                "the probe's output has to be bounded by a constant, not by the size of the rows it reads"
+            );
+
+        // And the bound cost nothing: the watermark is still found and only the new row goes down.
+        _ = outcome.Should().Be(TranscriptFlushOutcome.Written);
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
+        _ = browser.ReadCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The other half of that bound: a TRUNCATED line still has to yield its watermark. It does because the
+    /// serializer pins the key order — <c>schema_version</c>, <c>type</c>, then <c>uid</c> — so the uid
+    /// survives inside the first few dozen characters of any row. Reading the window with a whole-document
+    /// parse throws that away: every truncated line fails to parse, the probe reports "no intact record",
+    /// and the writer starts from row one and re-appends the ENTIRE history onto a file that already holds
+    /// it — the exact duplication the probe exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_ReadsTheWatermarkOutOfATruncatedLine_InsteadOfReAppendingTheWholeHistory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), HugeMsg("m2", 2), Msg("m3", 3)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // The window exactly as `tail -n 5 | cut -c 1-256` returns it: every line cut to its prefix, so the
+        // last one — the watermark — is a fragment rather than a document.
+        var onDisk = string.Concat(
+            ExpectedAppend(messages).Split('\n', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(l => l + "\n")
+        );
+        var truncated = string.Concat(
+            onDisk
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => (line.Length <= 256 ? line : line[..256]) + "\n")
+        );
+        _ = truncated.Split('\n', StringSplitOptions.RemoveEmptyEntries)[1].Should()
+            .HaveLength(256, "the row the watermark sits on is the one that got cut");
+
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(truncated),
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
+    }
+
+    /// <summary>
+    /// Truncating every line costs the ability to tell a torn last line from an intact one by parsing it,
+    /// so the shell reports that separately through exit 43 — and the writer must act on it. Here the file
+    /// ends mid-record: the window's last line reads as a perfectly good row (its uid is inside the prefix
+    /// that survived) but the row it belongs to was never fully written. Adopting its uid as the watermark
+    /// would skip that row for good, which is a LOSS rather than the duplicate every other failure mode
+    /// degrades to.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_DropsATornFinalRecord_RatherThanAdoptingAWatermarkForARowThatWasNeverWritten()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2), HugeMsg("m3", 3)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // m1 and m2 landed; m3 is a multi-megabyte row whose splice was killed part way through, so the
+        // file ends with no trailing newline.
+        var lines = ExpectedAppend(messages).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var onDisk = lines[0] + "\n" + lines[1] + "\n" + lines[2][..(1024 * 1024)];
+
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command => IsSplice(command) ? Ok() : SimulateProbe(command, onDisk),
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // m3 goes down again in full. The alternative — treating the torn prefix as m3's watermark — would
+        // have appended nothing and left the transcript permanently missing that row.
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
     }
 
     /// <summary>
@@ -820,6 +999,91 @@ public sealed class ConversationTranscriptWriterTests
     }
 
     /// <summary>
+    /// A descendant whose splice FAILED has not been covered, and marking it covered anyway loses it
+    /// permanently. With a roster larger than the cap the loss is silent and complete: slice 1 fails on one
+    /// descendant and reports <c>Deferred</c>, the caller's retry runs slice 2, slice 2 succeeds — and
+    /// because the failed descendant was marked the moment it was PICKED rather than when it was written,
+    /// the sweep is now complete, the chain stops, and that descendant's transcript never exists. Nothing
+    /// reports an error: the flush that failed did say <c>Deferred</c>, and the retry it asked for did run.
+    /// </summary>
+    /// <remarks>
+    /// The failure here is transient and hits exactly ONE descendant ONCE, which is the realistic shape —
+    /// a single gateway hiccup — and it is also what makes the assertion unambiguous: every descendant is
+    /// writable by the time the sweep ends, so a missing file can only be a descendant the sweep decided it
+    /// had already handled.
+    /// </remarks>
+    [Fact]
+    public async Task SubAgentFanOut_RetriesADescendantWhoseSpliceFailed_EvenWhenALaterSliceSucceeds()
+    {
+        const int roster = 16;
+        const int cap = 8;
+
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        for (var i = 0; i < roster; i++)
+        {
+            var id = $"a{i:00}";
+            await SeedSubAgentAsync(store, id, $"agent-{i:00}", Msg($"{id}m", 10 + i, threadId: $"subagent-{id}"));
+        }
+
+        var browser = new FakeFileBrowser();
+        string? firstAgentPath = null;
+        var burned = false;
+        var spliced = new List<string>();
+        browser.ExecuteHandler = command =>
+        {
+            if (!IsSplice(command))
+            {
+                return Ok();
+            }
+
+            var destination = command.Arguments[6];
+            if (!destination.StartsWith(AgentsDirectory(Title), StringComparison.Ordinal))
+            {
+                spliced.Add(destination);
+                return Ok();
+            }
+
+            firstAgentPath ??= destination;
+
+            // The very first descendant the very first slice touches, and only that one, and only once.
+            if (!burned && string.Equals(destination, firstAgentPath, StringComparison.Ordinal))
+            {
+                burned = true;
+                return Fail();
+            }
+
+            spliced.Add(destination);
+            return Ok();
+        };
+
+        var writer = CreateWriter(store, browser, maxSubAgentFilesPerFlush: cap);
+
+        // Stands in for the mirror's drain: keep flushing while the writer asks for another pass. The bound
+        // is the termination claim — (MaxDeferredRetries + 2) x ceil(roster / cap) is 10 here — so a
+        // writer that never stops asking fails this as a hang-detector rather than looping forever.
+        var passes = 0;
+        while (passes++ < 10)
+        {
+            var outcome = await writer.FlushAsync();
+            if (outcome is not (TranscriptFlushOutcome.Deferred or TranscriptFlushOutcome.Progressing))
+            {
+                break;
+            }
+        }
+
+        _ = burned.Should().BeTrue("the scenario is only meaningful if a descendant's splice actually failed");
+        _ = spliced.Should().Contain(
+            firstAgentPath,
+            "the descendant whose splice failed in the first slice was never retried, so its transcript does not exist"
+        );
+
+        var expected = Enumerable.Range(0, roster).Select(i => AgentPath(Title, $"a{i:00}", $"agent-{i:00}"));
+        _ = spliced.Should().Contain(expected);
+    }
+
+    /// <summary>
     /// A sub-agent that finishes AFTER its parent's turn ended never publishes the conversation's
     /// <c>RunCompletedMessage</c>, so a mirror listening only for run completion would never write its
     /// file. <see cref="ConversationTranscriptWriter.NoteSubAgentActivity"/> is that second trigger — and
@@ -969,7 +1233,7 @@ public sealed class ConversationTranscriptWriterTests
         _ = browser.Commands[1].Arguments.Should()
             .Equal("mv", "--", AgentsDirectory(RetitledTo), AgentsDirectory(Title));
         _ = browser.Commands[2].Arguments.Should()
-            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5");
+            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5", "256");
 
         // One transcript, and the sub-agent file lands under it rather than beside the abandoned name.
         _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])

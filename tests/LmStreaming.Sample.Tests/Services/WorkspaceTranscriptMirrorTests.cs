@@ -335,8 +335,22 @@ public sealed class WorkspaceTranscriptMirrorTests
         return null;
     }
 
+    /// <summary>
+    /// Whether the flush spliced into <paramref name="path"/>. The splice is selected by the STAGED temp
+    /// file it consumes, not by argument count: the watermark probe now takes a per-line character cap as
+    /// a third positional, so it has the same arity as the splice and an arity test alone no longer tells
+    /// them apart.
+    /// </summary>
     private static bool SplicedInto(FakeFileBrowser browser, string path) =>
-        browser.Commands.Any(c => c.Arguments.Count == 7 && string.Equals(c.Arguments[6], path, StringComparison.Ordinal));
+        browser.Commands.Any(c =>
+            c.Arguments.Contains(TempPath, StringComparer.Ordinal)
+            && string.Equals(c.Arguments[^1], path, StringComparison.Ordinal));
+
+    private static SandboxCommandResult Ok() =>
+        new() { ExitCode = 0, StandardOutput = "", StandardError = "", OperationId = "op" };
+
+    private static SandboxCommandResult Fail() =>
+        new() { ExitCode = 1, StandardOutput = "", StandardError = "no space left on device", OperationId = "op" };
 
     // ---------------------------------------------------------------- tests
 
@@ -744,6 +758,193 @@ public sealed class WorkspaceTranscriptMirrorTests
         await WaitForAsync(
             () => expectedPaths.All(p => SplicedInto(browser, p)),
             "The tail of the descendant roster was never mirrored: the capped fan-out spent the retry budget before it got there.");
+    }
+
+    /// <summary>
+    /// A descendant whose splice keeps failing must be RETRIED across passes — and the retrying must still
+    /// END. These two are one test on purpose: the cheap way to guarantee termination is to mark every
+    /// descendant the sweep merely LOOKED at, which loses the failing one silently, and the cheap way to
+    /// guarantee the retry is to keep asking while anything is uncovered, which spins forever on a
+    /// descendant that can never be written. Only a version that does both passes here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Termination.</b> A pass that failed reports <c>Deferred</c> and is charged to
+    /// <see cref="WorkspaceTranscriptMirror.MaxDeferredRetries"/>; a pass that failed on nothing covers its
+    /// whole window, and successive windows tile the roster, so at most ceil(roster / cap) consecutive
+    /// passes can be failure-free before either everything is covered or the doomed descendant is picked
+    /// again and the budget is charged. Hence the bound asserted below. <see cref="SettleAsync"/> is the
+    /// real check: a chain that does not terminate never goes quiet, and this fails as a timeout.
+    /// </para>
+    /// <para>
+    /// The doomed descendant is whichever one the first slice reaches first, chosen that way rather than
+    /// by name so the test does not encode the scanner's ordering.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Attach_KeepsRetryingADescendantThatFails_AndStillStops()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
+
+        const int slices = 2;
+        var cap = ConversationTranscriptWriter.DefaultMaxSubAgentFilesPerFlush;
+        var roster = slices * cap;
+        for (var i = 0; i < roster; i++)
+        {
+            await SeedSubAgentAsync(store, $"agent-{i:D2}", $"worker{i:D2}");
+        }
+
+        var browser = new FakeFileBrowser();
+        string? doomed = null;
+        var attempts = 0;
+        browser.ExecuteHandler = command =>
+        {
+            var destination = command.Arguments[^1];
+            if (!command.Arguments.Contains(TempPath, StringComparer.Ordinal)
+                || !destination.StartsWith(AgentsDirectory, StringComparison.Ordinal))
+            {
+                return Ok();
+            }
+
+            doomed ??= destination;
+            if (!string.Equals(destination, doomed, StringComparison.Ordinal))
+            {
+                return Ok();
+            }
+
+            attempts++;
+            return Fail();
+        };
+
+        await using var agent = new PublishingAgent(ThreadId);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+        await agent.PublishAsync(RunCompleted());
+
+        var settled = await SettleAsync(store);
+
+        _ = attempts.Should().BeGreaterThan(
+            1,
+            "a descendant whose splice failed was never retried — the sweep marked it covered the moment it picked it, so the later slice's success ended the chain with that transcript missing"
+        );
+        _ = settled.Should().BeLessThanOrEqualTo(
+            (WorkspaceTranscriptMirror.MaxDeferredRetries + 2) * slices,
+            "the retry has to be bounded by the failure budget, not by the roster"
+        );
+    }
+
+    /// <summary>
+    /// Recovering a dropped subscription restarts coverage and the retry budget, but the descendant ROSTER
+    /// it restarts over is cached — and the cache is only ever invalidated by an announcement the mirror
+    /// OBSERVED. Everything published during the gap was dropped, which is precisely the case where the
+    /// announcement of a new sub-agent is the thing that went missing. So a child persisted while the
+    /// channel was down, and never mentioned again afterwards, is mirrored only if the recovery path forces
+    /// a rescan itself.
+    /// </summary>
+    /// <remarks>
+    /// Only the drop-recovery site forces it. The other two triggers fire because a message ARRIVED: a
+    /// sub-agent notification already arms a rescan through <c>NoteSubAgentActivity</c>, and a run
+    /// completion is not evidence about descendants at all — forcing a full store scan there would put one
+    /// on every turn boundary of every conversation, which is the cost the cache exists to avoid.
+    /// </remarks>
+    [Fact]
+    public async Task Attach_RescansTheDescendantRoster_AfterRecoveringADroppedSubscription()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
+
+        var browser = new FakeFileBrowser();
+        await using var agent = new PublishingAgent(ThreadId, outputChannelCapacity: 1);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+
+        // Two flushes, so the EMPTY descendant scan is certainly cached before the child exists.
+        await PublishUntilFlushedAsync(agent, store, 2);
+        _ = await SettleAsync(store);
+
+        // The child appears while the channel is about to go down, and NOTHING announces it afterwards.
+        await SeedSubAgentAsync(store, "agent-2", "reviewer");
+
+        var deadline = DateTime.UtcNow + Deadline;
+        while (mirror.ResubscribeCount == 0)
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException("A burst into a capacity-1 channel never forced a drop.");
+            }
+
+            for (var i = 0; i < 64; i++)
+            {
+                await agent.PublishAsync(new TextMessage { Text = "delta", Role = Role.Assistant });
+            }
+        }
+
+        var expected = $"{AgentsDirectory}/{WorkspaceTranscriptLine.AgentFileLeaf("reviewer", WorkspaceTranscriptLine.ShortId("agent-2"))}{ConversationTranscriptWriter.TranscriptExtension}";
+        await WaitForAsync(
+            () => SplicedInto(browser, expected),
+            "The sub-agent that appeared during the gap was never mirrored: recovery reused the roster cached before it existed."
+        );
+    }
+
+    /// <summary>
+    /// A fresh trigger clears the retry budget from the SUBSCRIBER thread, while a flush from the previous
+    /// generation can still be sitting inside a gateway call on the drain. If that older flush's
+    /// <c>Deferred</c> is counted when it finally returns, it lands in the new generation's budget and the
+    /// new trigger starts one attempt down — a workspace recovering from an outage then gets fewer retries
+    /// exactly when it needs them, and nothing anywhere reports that the budget was spent on a result the
+    /// caller had already given up on.
+    /// </summary>
+    [Fact]
+    public async Task Attach_IgnoresTheOutcomeOfASupersededFlush_SoItCannotSpendTheNewBudget()
+    {
+        var store = new FlushCountingStore(new InMemoryConversationStore());
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1)]);
+
+        // Every gateway call fails, so every flush defers and the budget is the only thing that stops it.
+        var browser = new FakeFileBrowser();
+        using var reached = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var gated = 0;
+        browser.ExecuteHandler = command =>
+        {
+            if (Interlocked.Exchange(ref gated, 1) == 0)
+            {
+                reached.Set();
+                _ = release.Wait(Deadline);
+            }
+
+            return Fail();
+        };
+
+        await using var agent = new PublishingAgent(ThreadId);
+        using var mirror = CreateMirror(store, browser, _ => agent);
+
+        mirror.Attach(agent);
+        await agent.PublishAsync(RunCompleted());
+
+        _ = reached.Wait(Deadline).Should().BeTrue("the first flush never reached the gateway, so nothing is in flight to supersede");
+
+        // A brand-new trigger, published while that first flush is still blocked in the sandbox call.
+        await agent.PublishAsync(RunCompleted());
+
+        // The subscriber hot path does no I/O — handling this is a lock and a set-add — so the same quiet
+        // window the settling helper trusts is far more than it needs. That the drain really is still
+        // parked is asserted, not assumed: nothing can have flushed a second time.
+        await Task.Delay(QuietWindow);
+        _ = store.FlushCount.Should().Be(1, "the gate did not hold, so there was no in-flight flush to supersede");
+
+        release.Set();
+
+        // The superseded flush, then the new generation's own full budget. Counting the superseded
+        // Deferred instead costs the new generation its first attempt and settles one lower.
+        var expected = 1 + 1 + WorkspaceTranscriptMirror.MaxDeferredRetries;
+        _ = (await SettleAsync(store)).Should().Be(expected);
     }
 
     /// <summary>
