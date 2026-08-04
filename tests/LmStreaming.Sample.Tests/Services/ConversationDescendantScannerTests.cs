@@ -296,6 +296,63 @@ public sealed class ConversationDescendantScannerTests
         counting.ListThreadsCallCount.Should().BeGreaterThan(callsAfterThree);
     }
 
+    /// <summary>
+    /// Pins the retention policy the class documents: LEAST RECENTLY USED, not insertion order. The two
+    /// differ exactly when an early root is still being used — under insertion order it is evicted anyway,
+    /// so the roots that are actually mirroring are the ones thrown out while an idle conversation that
+    /// merely happens to be newer survives, and the eviction lands where it costs the most. Losing an entry
+    /// only costs one extra scan, which is why this is worth an O(1) splice and not more.
+    /// </summary>
+    [Fact]
+    public async Task Cache_RenewsARootOnAccess_SoAnActiveEarlyRootOutlivesAnIdleLaterOne()
+    {
+        var store = new InMemoryConversationStore();
+        var counting = new CountingConversationStore(store);
+        var scanner = CreateScanner(counting, capacity: 2);
+
+        _ = await scanner.GetOrScanAsync("root-1");
+        _ = await scanner.GetOrScanAsync("root-2");
+
+        // root-1 is used again, which makes root-2 the least recently used of the two.
+        _ = await scanner.GetOrScanAsync("root-1");
+        _ = await scanner.GetOrScanAsync("root-3");
+        var callsAfterThree = counting.ListThreadsCallCount;
+
+        // The renewed root survived and serves from cache...
+        _ = await scanner.GetOrScanAsync("root-1");
+        counting.ListThreadsCallCount.Should().Be(callsAfterThree);
+
+        // ...and the one that went untouched longest is the one that had to be rescanned.
+        _ = await scanner.GetOrScanAsync("root-2");
+        counting.ListThreadsCallCount.Should().BeGreaterThan(callsAfterThree);
+    }
+
+    /// <summary>
+    /// The same renewal, applied consistently: reported agent activity is USE. It is the strongest possible
+    /// signal that a conversation is live — the caller only raises it when it actually saw an Agent tool
+    /// run — so a root that is spawning sub-agents right now must not be the next one evicted just because
+    /// its last read was a while ago. The invalidation still costs the next reader one scan; what it must
+    /// not cost is the slot itself.
+    /// </summary>
+    [Fact]
+    public async Task Cache_RenewsARootOnReportedActivity_SoALiveRootIsNotEvictedForAnIdleOne()
+    {
+        var store = new InMemoryConversationStore();
+        var counting = new CountingConversationStore(store);
+        var scanner = CreateScanner(counting, capacity: 2);
+
+        _ = await scanner.GetOrScanAsync("root-1");
+        _ = await scanner.GetOrScanAsync("root-2");
+
+        scanner.NoteAgentActivity("root-1");
+        _ = await scanner.GetOrScanAsync("root-3");
+
+        // root-1 was renewed by the activity report, so root-2 is the one that went.
+        var callsBefore = counting.ListThreadsCallCount;
+        _ = await scanner.GetOrScanAsync("root-2");
+        counting.ListThreadsCallCount.Should().BeGreaterThan(callsBefore);
+    }
+
     [Fact]
     public void Constructor_RejectsANonPositiveCapacity()
     {

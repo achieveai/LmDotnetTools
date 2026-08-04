@@ -52,9 +52,12 @@ namespace LmStreaming.Sample.Services;
 ///         construction graph can cycle back into it).
 ///     </para>
 ///     <para>
-///         <b>Bounded retention.</b> <see cref="_capacity"/> caps the number of distinct roots tracked;
-///         the oldest entry BY LAST WRITE is evicted first. Losing an entry only costs the next caller one
-///         extra scan — it does not lose data.
+///         <b>Bounded retention.</b> <see cref="_capacity"/> caps the number of distinct roots tracked and
+///         the LEAST RECENTLY USED entry is evicted first — every read, every write-back and every
+///         reported activity renews its root, so a conversation that is actively mirroring cannot be
+///         dropped ahead of an idle one that merely happens to have been created later. Losing an entry
+///         only costs the next caller one extra scan — it does not lose data — which is why the renewal is
+///         an O(1) list splice and nothing more elaborate.
 ///     </para>
 /// </remarks>
 public sealed class ConversationDescendantScanner
@@ -93,7 +96,7 @@ public sealed class ConversationDescendantScanner
     private readonly Dictionary<string, LinkedListNode<KeyValuePair<string, RootState>>> _byRoot = new(
         StringComparer.Ordinal
     );
-    private readonly LinkedList<KeyValuePair<string, RootState>> _writeOrder = new();
+    private readonly LinkedList<KeyValuePair<string, RootState>> _usageOrder = new();
 
     public ConversationDescendantScanner(
         IConversationStore store,
@@ -219,6 +222,11 @@ public sealed class ConversationDescendantScanner
             if (_byRoot.TryGetValue(rootThreadId, out var node))
             {
                 node.Value.Value.Version++;
+
+                // Activity is USE, and the strongest signal there is that this conversation is live: the
+                // caller only raises it when it actually saw an Agent tool run. Renewing keeps a root that
+                // is spawning sub-agents right now from being evicted ahead of an idle one.
+                Renew(node);
             }
         }
     }
@@ -235,32 +243,46 @@ public sealed class ConversationDescendantScanner
         {
             if (_byRoot.Remove(rootThreadId, out var node))
             {
-                _writeOrder.Remove(node);
+                _usageOrder.Remove(node);
             }
         }
     }
 
-    /// <summary>Returns the slot for <paramref name="rootThreadId"/>, creating (and bound-evicting) one
-    /// on first use. Callers must hold <see cref="_gate"/>.</summary>
+    /// <summary>Returns the slot for <paramref name="rootThreadId"/>, renewing it as most-recently-used and
+    /// creating (and bound-evicting) one on first use. Callers must hold <see cref="_gate"/>.</summary>
     private RootState GetOrAddState(string rootThreadId)
     {
         if (_byRoot.TryGetValue(rootThreadId, out var existing))
         {
+            Renew(existing);
             return existing.Value.Value;
         }
 
         var state = new RootState();
-        _byRoot[rootThreadId] = _writeOrder.AddLast(
+        _byRoot[rootThreadId] = _usageOrder.AddLast(
             new KeyValuePair<string, RootState>(rootThreadId, state));
 
         while (_byRoot.Count > _capacity)
         {
-            var oldest = _writeOrder.First!;
-            _writeOrder.RemoveFirst();
+            var oldest = _usageOrder.First!;
+            _usageOrder.RemoveFirst();
             _ = _byRoot.Remove(oldest.Value.Key);
         }
 
         return state;
+    }
+
+    /// <summary>Moves a resident slot to the most-recently-used end. Callers must hold
+    /// <see cref="_gate"/>.</summary>
+    /// <remarks>
+    ///     An unlink and a re-link of a node the caller already holds — O(1), no rehash and no copy — which
+    ///     is the whole reason the order is a linked list beside the dictionary rather than a timestamp
+    ///     someone has to sort.
+    /// </remarks>
+    private void Renew(LinkedListNode<KeyValuePair<string, RootState>> node)
+    {
+        _usageOrder.Remove(node);
+        _usageOrder.AddLast(node);
     }
 
     /// <summary>

@@ -46,6 +46,17 @@ public sealed class ConversationTranscriptWriterTests
         + "if [ -s \"$3\" ] && [ -n \"$(tail -c1 \"$3\")\" ]; then printf '\\n' >> \"$3\" || exit 1; fi\n"
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
 
+    /// <summary>
+    /// The cold-start watermark probe, duplicated for the same reason. Its text is a contract twice over:
+    /// the <c>[ -e ]</c> test is what makes "there is no transcript" an answer the script GIVES rather than
+    /// one the caller infers from a generic <c>tail</c> failure, and exit <c>42</c> is the private code that
+    /// carries that answer back — a value neither <c>tail</c> (0/1) nor <c>sh</c> (126/127, 128+signal)
+    /// produces, so it cannot be minted by an accident.
+    /// </summary>
+    private const string ExpectedProbeScript =
+        "[ -e \"$1\" ] || exit 42\n"
+        + "exec tail -n \"$2\" -- \"$1\"\n";
+
     private static readonly string ShortThreadId = WorkspaceTranscriptLine.ShortId(ThreadId);
 
     private static readonly string TempPath =
@@ -206,6 +217,23 @@ public sealed class ConversationTranscriptWriterTests
     private static SandboxCommandResult Fail(string stderr = "boom") =>
         new() { ExitCode = 1, StandardOutput = "", StandardError = stderr, OperationId = "op" };
 
+    /// <summary>
+    /// What the watermark probe reports when the destination is DEFINITELY not there. The literal 42 is
+    /// duplicated here on purpose, exactly like <see cref="ExpectedProbeScript"/>: that one code is the
+    /// whole discrimination between "no transcript yet" and "could not tell", and a test that read it back
+    /// off the production constant could not notice it drifting onto a value <c>tail</c> or <c>sh</c> also
+    /// produces.
+    /// </summary>
+    private static SandboxCommandResult Missing() =>
+        new() { ExitCode = 42, StandardOutput = "", StandardError = "", OperationId = "op" };
+
+    /// <summary>
+    /// Selects the watermark probe out of a flush's commands. The splice is the call carrying the staged
+    /// temp file; every other shell call in a flush is the probe.
+    /// </summary>
+    private static bool IsSplice(SandboxCommand command) =>
+        command.Arguments.Contains(TempPath, StringComparer.Ordinal);
+
     // ---------------------------------------------------------------- AC 1, 6
 
     /// <summary>
@@ -238,7 +266,8 @@ public sealed class ConversationTranscriptWriterTests
             .NotContain(p => p.EndsWith(ConversationTranscriptWriter.TranscriptExtension, StringComparison.Ordinal));
 
         _ = browser.Commands.Should().HaveCount(2);
-        _ = browser.Commands[0].Arguments.Should().Equal("tail", "-n", "5", "--", MainPath(Title));
+        _ = browser.Commands[0].Arguments.Should()
+            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5");
         _ = browser.Commands[1].Arguments.Should()
             .Equal("sh", "-c", ExpectedSpliceScript, "sh", ".conversations", TempPath, MainPath(Title));
         _ = browser.LastPersistedWorkspaceId.Should().Be(WorkspaceId);
@@ -271,8 +300,9 @@ public sealed class ConversationTranscriptWriterTests
         _ = Written(browser, 0).Should().Be(ExpectedAppend(first));
         _ = Written(browser, 1).Should().Be(ExpectedAppend(all, skip: 2));
 
-        // No second tail: the watermark survived in process, keyed by thread.
-        _ = browser.Commands.Select(c => c.Arguments[0]).Should().Equal("tail", "sh", "sh");
+        // No second probe: the watermark survived in process, keyed by thread.
+        _ = browser.Commands.Select(c => c.Arguments[2]).Should()
+            .Equal(ExpectedProbeScript, ExpectedSpliceScript, ExpectedSpliceScript);
 
         var file = Written(browser, 0) + Written(browser, 1);
         var uids = UidsIn(file);
@@ -305,14 +335,107 @@ public sealed class ConversationTranscriptWriterTests
 
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => command.Arguments[0] == "tail" ? Ok(intact + torn) : Ok(),
+            ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(intact + torn),
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
-        _ = browser.Commands[0].Arguments.Should().Equal("tail", "-n", "5", "--", MainPath(Title));
+        _ = browser.Commands[0].Arguments.Should()
+            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5");
         _ = Written(browser, 0).Should().Be(ExpectedAppend(messages, skip: 2));
         _ = browser.ReadCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The same discrimination the adoption path already makes, one step later. A probe that THREW says
+    /// nothing whatsoever about the destination, yet reading it as "there is no transcript" sends the start
+    /// index to zero and re-appends the ENTIRE persisted history onto a file that already holds it — a
+    /// conversation with ten thousand rows duplicates all ten thousand, once per cold writer, so a host
+    /// that restarts in a loop while the gateway is unwell multiplies the transcript indefinitely. A probe
+    /// that did not settle defers: nothing staged, nothing spliced, and the next flush asks again.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_DefersWhenTheWatermarkProbeThrows_InsteadOfReAppendingTheWholeHistory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = _ => throw new SandboxException(SandboxErrorKind.Protocol, "gateway said no"),
+        };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+
+        // Nothing was staged and the splice was never even attempted: the flush stopped at the probe.
+        _ = browser.Writes.Where(w => w.Path == TempPath).Should().BeEmpty();
+        _ = browser.Commands.Should().ContainSingle();
+        _ = browser.Commands.Where(IsSplice).Should().BeEmpty();
+
+        // And once the gateway answers, the SAME writer appends the history exactly once.
+        browser.ExecuteHandler = command => IsSplice(command) ? Ok() : Missing();
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = browser.Writes.Where(w => w.Path == TempPath).Should().ContainSingle();
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
+    }
+
+    /// <summary>
+    /// The exit code half of the same defect, and the reason the probe cannot be a bare <c>tail</c>. GNU
+    /// <c>tail</c> answers a missing file, an unreadable one and an I/O error with the SAME status 1, so
+    /// "no such file" is not something its exit code can tell you — and every wrong guess costs a full
+    /// duplicate of the transcript. Here the destination is present and complete, and the probe fails for a
+    /// reason that is not absence; the flush must add nothing at all rather than start again from row one.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_DefersWhenTheWatermarkProbeFails_InsteadOfDuplicatingTheWholeTranscript()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        // The workspace already holds every one of these rows.
+        var existing = ExpectedAppend(messages);
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command => IsSplice(command) ? Ok() : Fail("tail: cannot open: Permission denied"),
+        };
+        var writer = CreateWriter(store, browser);
+
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
+        _ = browser.Writes.Where(w => w.Path == TempPath).Should().BeEmpty();
+
+        // Once the probe can read the file it finds the watermark on its last line, and there is nothing
+        // left to append — which is exactly what the duplicating path would have destroyed.
+        browser.ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(existing);
+        _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.UpToDate);
+        _ = browser.Writes.Where(w => w.Path == TempPath).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The other side of that discrimination, and the reason it has to be narrow. A workspace that has
+    /// never held a transcript makes the probe report a DEFINITE absence, and that is the ordinary first
+    /// flush rather than a fault: the start index is zero and the whole history goes down. Deferring on it
+    /// would leave every brand-new conversation spinning its retry budget and never writing a first line.
+    /// </summary>
+    [Fact]
+    public async Task ColdStart_TreatsADefinitelyMissingTranscriptAsAFirstFlush_AndAppendsTheWholeHistory()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2)];
+        await store.AppendMessagesAsync(ThreadId, messages);
+
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command => IsSplice(command) ? Ok() : Missing(),
+        };
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+        _ = Written(browser, 0).Should().Be(ExpectedAppend(messages));
     }
 
     // ---------------------------------------------------------------- AC 5
@@ -330,12 +453,18 @@ public sealed class ConversationTranscriptWriterTests
         PersistedMessage[] messages = [Msg("m1", 1, "User"), Msg("m2", 2), Msg("m3", 3)];
         await store.AppendMessagesAsync(ThreadId, messages);
 
-        var browser = new FakeFileBrowser { ExecResult = Fail("no space left on device") };
+        // Only the splice fails: a failing PROBE is a different story (the destination could not be
+        // inspected at all), and it now defers before anything is staged, which would hide this case.
+        var browser = new FakeFileBrowser
+        {
+            ExecuteHandler = command => IsSplice(command) ? Fail("no space left on device") : Ok(),
+        };
         var writer = CreateWriter(store, browser);
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
         _ = browser.Writes.Where(w => w.Path == TempPath).Should().ContainSingle();
 
+        browser.ExecuteHandler = null;
         browser.ExecResult = Ok();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
@@ -397,7 +526,7 @@ public sealed class ConversationTranscriptWriterTests
         var existing = ExpectedAppend(messages);
         var browser = new FakeFileBrowser
         {
-            ExecuteHandler = command => command.Arguments[0] == "tail" ? Ok(existing) : Ok(),
+            ExecuteHandler = command => IsSplice(command) ? Ok() : Ok(existing),
             WriteFailure = path =>
                 path == GitignorePath ? new SandboxException(SandboxErrorKind.Protocol, "gateway said no") : null,
         };
@@ -481,7 +610,7 @@ public sealed class ConversationTranscriptWriterTests
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
 
         var rootUid = WorkspaceTranscriptLine.DeriveUid("m2");
-        var splices = browser.Commands.Where(c => c.Arguments[0] == "sh").ToList();
+        var splices = browser.Commands.Where(c => IsSplice(c)).ToList();
         _ = splices.Select(c => c.Arguments[6]).Should().Equal(
             MainPath(Title),
             AgentPath(Title, "nameless", null),
@@ -527,14 +656,14 @@ public sealed class ConversationTranscriptWriterTests
         var browser = new FakeFileBrowser
         {
             ExecuteHandler = command =>
-                command.Arguments[0] == "sh" && command.Arguments[6] == MainPath(Title)
+                IsSplice(command) && command.Arguments[6] == MainPath(Title)
                     ? Fail("no space left on device")
                     : Ok(),
         };
         var writer = CreateWriter(store, browser);
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Deferred);
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title));
 
         browser.ExecuteHandler = null;
@@ -542,7 +671,7 @@ public sealed class ConversationTranscriptWriterTests
 
         // The child's first line chains off the main file's real tail — a row that genuinely exists in the
         // main file — instead of off nothing.
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title), MainPath(Title), AgentPath(Title, "a1", "alpha"));
         _ = Written(browser, 2).Should()
             .Be(ExpectedAppend(child, agent: "alpha", rootParentUid: WorkspaceTranscriptLine.DeriveUid("m2")));
@@ -568,7 +697,7 @@ public sealed class ConversationTranscriptWriterTests
         var stagedWhenSpliced = new List<int>();
         browser.ExecuteHandler = command =>
         {
-            if (command.Arguments[0] == "sh")
+            if (IsSplice(command))
             {
                 // Counted over STAGED writes only: the containment .gitignore is PUT ahead of the first
                 // append and is not a staged payload, so counting every write would just measure it.
@@ -605,12 +734,12 @@ public sealed class ConversationTranscriptWriterTests
         var writer = CreateWriter(store, browser, maxSubAgentFilesPerFlush: 1);
 
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Progressing);
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(AgentPath(Title, "b2", "beta"));
 
         // The sweep has now visited every descendant, so the writer stops asking. Reporting Deferred here
@@ -652,11 +781,11 @@ public sealed class ConversationTranscriptWriterTests
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Progressing);
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Should().BeEmpty();
+        _ = browser.Commands.Where(c => IsSplice(c)).Should().BeEmpty();
 
         browser.Commands.Clear();
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(AgentPath(Title, "b2", "beta"));
     }
 
@@ -712,13 +841,13 @@ public sealed class ConversationTranscriptWriterTests
 
         browser.Commands.Clear();
         _ = await writer.FlushAsync();
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title));
 
         writer.NoteSubAgentActivity();
         browser.Commands.Clear();
         _ = await writer.FlushAsync();
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(AgentPath(Title, "late", "latecomer"));
     }
 
@@ -839,10 +968,11 @@ public sealed class ConversationTranscriptWriterTests
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(RetitledTo), MainPath(Title));
         _ = browser.Commands[1].Arguments.Should()
             .Equal("mv", "--", AgentsDirectory(RetitledTo), AgentsDirectory(Title));
-        _ = browser.Commands[2].Arguments.Should().Equal("tail", "-n", "5", "--", MainPath(Title));
+        _ = browser.Commands[2].Arguments.Should()
+            .Equal("sh", "-c", ExpectedProbeScript, "sh", MainPath(Title), "5");
 
         // One transcript, and the sub-agent file lands under it rather than beside the abandoned name.
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
     }
 
@@ -888,7 +1018,7 @@ public sealed class ConversationTranscriptWriterTests
         browser.ListThrows = null;
         _ = (await writer.FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
         _ = browser.Commands[0].Arguments.Should().Equal("mv", "--", MainPath(RetitledTo), MainPath(Title));
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title));
     }
 
@@ -915,7 +1045,7 @@ public sealed class ConversationTranscriptWriterTests
         };
 
         _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
-        _ = browser.Commands.Where(c => c.Arguments[0] == "sh").Select(c => c.Arguments[6])
+        _ = browser.Commands.Where(c => IsSplice(c)).Select(c => c.Arguments[6])
             .Should().Equal(MainPath(Title));
     }
 
@@ -1121,10 +1251,11 @@ public sealed class ConversationTranscriptWriterTests
 
     /// <summary>
     /// The security invariant, stated as a test. <c>ExecuteWorkspaceCommandAsync</c> is a native argv
-    /// vector with NO implicit shell, so the one place a shell is invoked must carry a compile-time
-    /// constant script: the file leaf is derived from a user-authored title, and interpolating it into the
-    /// script text would make <c>$(…)</c> in a title executable. <c>--</c> on the pure-argv calls stops
-    /// option parsing, but it is the positional parameters that make the title inert.
+    /// vector with NO implicit shell, so every place a shell IS invoked — the splice that writes and the
+    /// watermark probe that reads — must carry a compile-time constant script: the file leaf is derived
+    /// from a user-authored title, and interpolating it into the script text would make <c>$(…)</c> in a
+    /// title executable. <c>--</c> on the pure-argv calls stops option parsing, but it is the positional
+    /// parameters that make the title inert.
     /// </summary>
     [Fact]
     public async Task EveryShellCall_UsesTheConstantScript_AndPassesTheTitleDerivedPathAsAPositionalParameter()
@@ -1143,19 +1274,37 @@ public sealed class ConversationTranscriptWriterTests
         _ = leaf.Should().Be($"touch-tmp-pwned-rm-rf-{ShortThreadId}");
 
         var shell = browser.Commands.Where(c => c.Arguments[0] == "sh").ToList();
-        _ = shell.Should().HaveCount(2);
+        var splices = shell.Where(IsSplice).ToList();
+        _ = splices.Should().HaveCount(2);
+        _ = shell.Should().HaveCountGreaterThan(
+            splices.Count,
+            "the watermark probe is the other shell call site and is covered by this invariant too"
+        );
+
         foreach (var command in shell)
         {
             _ = command.Arguments[1].Should().Be("-c");
-            _ = command.Arguments[2].Should().Be(ExpectedSpliceScript);
+            _ = command.Arguments[2].Should().BeOneOf(ExpectedProbeScript, ExpectedSpliceScript);
             _ = command.Arguments[3].Should().Be("sh");
-            _ = command.Arguments[6].Should().Contain(leaf);
+
+            // Whatever the call touches reaches `sh` as a positional parameter, never as script text.
+            _ = command.Arguments[2].Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
+            _ = command.Arguments.Skip(4).Should().NotBeEmpty();
         }
 
-        // The script never grows a dynamic fragment, and the pure-argv calls keep their `--`.
+        foreach (var splice in splices)
+        {
+            _ = splice.Arguments[6].Should().Contain(leaf);
+        }
+
+        // Neither script ever grows a dynamic fragment, and the pure-argv calls keep their `--`.
         _ = ExpectedSpliceScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
-        _ = browser.Commands.Where(c => c.Arguments[0] is "tail" or "mv")
-            .Should().OnlyContain(c => c.Arguments.Contains("--"));
+        _ = ExpectedProbeScript.Should().NotContain(leaf).And.NotContain(Hostile).And.NotContain("touch");
+        // Every shell call is covered by the loop above; what is left is the pure-argv calls, and none of
+        // them may omit `--`. (Stated as "no call omits it" so the invariant does not change meaning when
+        // a flow happens not to move anything.)
+        _ = browser.Commands.Where(c => c.Arguments[0] != "sh")
+            .Should().NotContain(c => !c.Arguments.Contains("--"));
     }
 
     // ---------------------------------------------------------------- doubles

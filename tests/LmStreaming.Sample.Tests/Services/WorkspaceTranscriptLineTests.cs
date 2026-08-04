@@ -448,6 +448,37 @@ public sealed class WorkspaceTranscriptLineTests
         later.Uid.Should().NotBe(first.Uid);
     }
 
+    /// <summary>
+    /// A cleared value and an absent one are DIFFERENT lines — one serialises <c>"value": ""</c>, the other
+    /// <c>"value": null</c> — so they cannot share a uid. Both the watermark and every reader's dedupe key
+    /// off uid alone, so a collision here means the second of the two is treated as already written: the
+    /// state change is silently dropped and never appears in the mirror at all. Joining fields with a
+    /// separator does not save it, because null and empty both contribute nothing between the separators.
+    /// </summary>
+    [Fact]
+    public void StateLine_TellsAClearedValueApartFromAnAbsentOne()
+    {
+        var absent = WorkspaceTranscriptLine.ForState(ThreadId, "title", null, DateTimeOffset.UnixEpoch);
+        var cleared = WorkspaceTranscriptLine.ForState(ThreadId, "title", "", DateTimeOffset.UnixEpoch);
+
+        cleared.Uid.Should().NotBe(absent.Uid);
+    }
+
+    /// <summary>
+    /// The field encoding has to survive its own delimiter appearing inside a value. A conversation title
+    /// is user-authored and reaches this method verbatim, so "no caller would ever pass U+001F" is an
+    /// assumption about input the type does not control — and if it is wrong, two genuinely different state
+    /// changes fuse into one uid and one of them is dropped.
+    /// </summary>
+    [Fact]
+    public void StateLine_TellsValuesApartWhenOneContainsTheFieldDelimiter()
+    {
+        var split = WorkspaceTranscriptLine.ForState(ThreadId, "title", "a\u001fb", DateTimeOffset.UnixEpoch);
+        var shifted = WorkspaceTranscriptLine.ForState(ThreadId, "title\u001fa", "b", DateTimeOffset.UnixEpoch);
+
+        shifted.Uid.Should().NotBe(split.Uid);
+    }
+
     // ---- AC 16: parent_uid chains over a sequence -------------------------------------------------
 
     [Fact]

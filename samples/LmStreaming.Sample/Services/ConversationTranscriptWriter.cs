@@ -69,11 +69,12 @@ public enum TranscriptFlushOutcome
 ///     append costs bytes, whereas a skipped append costs the record itself.
 ///     </para>
 ///     <para>
-///     <b>Writes go through exactly one shell call site</b> (<see cref="AppendScript"/>).
+///     <b>Writes go through exactly one shell call site</b> (<see cref="AppendScript"/>); the only other
+///     shell invocation is <see cref="WatermarkProbeScript"/>, which reads and writes nothing.
 ///     <c>ExecuteWorkspaceCommandAsync</c> is a native argv vector with no implicit shell, so a shell is
-///     invoked explicitly. The script text is a compile-time constant and <i>no dynamic value is ever
-///     interpolated into it</i>: the destination directory, the temp file and the destination file arrive
-///     as positional parameters <c>$1</c>/<c>$2</c>/<c>$3</c>. That matters because the file leaf is
+///     invoked explicitly. Both script texts are fixed at compile time and <i>no dynamic value is ever
+///     interpolated into either</i>: the destination directory, the temp file and the destination file
+///     arrive as positional parameters <c>$1</c>/<c>$2</c>/<c>$3</c>. That matters because the file leaf is
 ///     derived from a user-authored conversation title. <c>--</c> on the pure-argv calls stops option
 ///     parsing, which is worth having, but it is the positional parameters — not <c>--</c> — that make a
 ///     title containing <c>$(…)</c> or whitespace inert.
@@ -114,6 +115,14 @@ public sealed class ConversationTranscriptWriter
     public const int WatermarkTailLines = 5;
 
     /// <summary>
+    ///     Exit code <see cref="WatermarkProbeScript"/> reports when the destination is DEFINITELY not
+    ///     there. Deliberately outside every code the probe's own commands can produce — <c>tail</c>
+    ///     answers 0 or 1, <c>sh</c> reserves 126 and 127, and a signalled child reports 128+n — so no
+    ///     failure can mint it by accident.
+    /// </summary>
+    public const int WatermarkMissingExitCode = 42;
+
+    /// <summary>
     ///     How many times a re-read may disagree with its predecessor before the flush gives up. See
     ///     <see cref="ReadStableAsync"/> for why reading twice is not optional.
     /// </summary>
@@ -138,9 +147,9 @@ public sealed class ConversationTranscriptWriter
     private const string TitlePropertyKey = "title";
 
     /// <summary>
-    ///     THE one shell call site. Built from concatenated literals rather than a raw string literal so
-    ///     the line endings are LF regardless of how this source file is checked out — a script carrying
-    ///     CR bytes fails inside the container in ways that are tedious to diagnose.
+    ///     THE one shell call site that writes. Built from concatenated literals rather than a raw string
+    ///     literal so the line endings are LF regardless of how this source file is checked out — a script
+    ///     carrying CR bytes fails inside the container in ways that are tedious to diagnose.
     /// </summary>
     /// <remarks>
     ///     <para><c>$1</c> destination directory, <c>$2</c> staged temp file, <c>$3</c> destination file.</para>
@@ -160,6 +169,39 @@ public sealed class ConversationTranscriptWriter
         "mkdir -p \"$1\" || exit 1\n"
         + "if [ -s \"$3\" ] && [ -n \"$(tail -c1 \"$3\")\" ]; then printf '\\n' >> \"$3\" || exit 1; fi\n"
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
+
+    /// <summary>
+    ///     The cold-start watermark probe. <c>$1</c> destination file, <c>$2</c> trailing line count.
+    ///     Reads nothing and writes nothing.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     The existence test is the entire point of running this through a shell instead of invoking
+    ///     <c>tail</c> directly. <c>tail</c> answers a missing file, an unreadable one and an I/O error with
+    ///     the SAME status 1, and its stderr wording is locale-dependent, so "there is no transcript" is not
+    ///     a conclusion its exit code can support. Guessing it wrong is expensive in one direction only:
+    ///     the caller reads "no transcript", starts from row zero and re-appends the ENTIRE history onto a
+    ///     file that already holds it. So the script decides existence itself with <c>[ -e ]</c> and
+    ///     reports that one answer through <see cref="WatermarkMissingExitCode"/>; every other non-zero
+    ///     status keeps its ordinary meaning — an indeterminate failure the caller must DEFER on.
+    ///     </para>
+    ///     <para>
+    ///     A race between the test and the <c>exec</c> is harmless in the direction that matters: a file
+    ///     created in between makes <c>tail</c> succeed, and one deleted in between makes it exit 1, which
+    ///     is read as indeterminate and defers. The reverse — a real absence read as a failure — costs one
+    ///     repeated flush, never a duplicated transcript.
+    ///     </para>
+    ///     <para>
+    ///     Built from concatenated literals for the same LF reason as <see cref="AppendScript"/>, and the
+    ///     title-derived path arrives as a positional parameter for the same inertness reason. The exit
+    ///     code is spliced in from the constant rather than typed twice, so the two cannot drift.
+    ///     </para>
+    /// </remarks>
+    private static readonly string WatermarkProbeScript =
+        "[ -e \"$1\" ] || exit "
+        + WatermarkMissingExitCode.ToString(CultureInfo.InvariantCulture)
+        + "\n"
+        + "exec tail -n \"$2\" -- \"$1\"\n";
 
     private readonly IConversationStore _store;
     private readonly IWorkspaceFileBrowser _fileBrowser;
@@ -853,6 +895,31 @@ public sealed class ConversationTranscriptWriter
         Failed,
     }
 
+    /// <summary>
+    ///     What a cold-start watermark probe established about the destination file.
+    /// </summary>
+    /// <param name="Settled">
+    ///     Whether the probe reached a DEFINITE answer. False means the destination could not be inspected
+    ///     — the call threw, or the probe exited non-zero for a reason that is not a definite absence — and
+    ///     the flush must then append nothing at all. The alternative reading, "there is no transcript",
+    ///     restarts the file from row zero and re-appends the whole persisted history onto one that already
+    ///     holds it, once per cold writer, so a host restarting in a loop multiplies it indefinitely.
+    /// </param>
+    /// <param name="HadContent">
+    ///     Whether the destination exists AND its tail window held bytes. False for a definite absence and
+    ///     for an empty file, both of which are the ordinary first flush rather than something to warn
+    ///     about.
+    /// </param>
+    /// <param name="Uid">The last intact <c>uid</c> in the tail window, when there was one.</param>
+    private readonly record struct WatermarkProbe(bool Settled, bool HadContent, string? Uid)
+    {
+        /// <summary>The destination could not be inspected. Nothing may be appended off the back of it.</summary>
+        public static WatermarkProbe Unsettled => new(Settled: false, HadContent: false, Uid: null);
+
+        /// <summary>The destination is definitely not there — the ordinary first flush.</summary>
+        public static WatermarkProbe Absent => new(Settled: true, HadContent: false, Uid: null);
+    }
+
     private async Task<AppendResult> AppendAsync(
         string sessionId,
         string directory,
@@ -866,7 +933,16 @@ public sealed class ConversationTranscriptWriter
             return AppendResult.UpToDate;
         }
 
-        var start = await ResolveStartIndexAsync(sessionId, path, watermarkKey, lines, ct).ConfigureAwait(false);
+        var resolved = await ResolveStartIndexAsync(sessionId, path, watermarkKey, lines, ct)
+            .ConfigureAwait(false);
+        if (resolved is not { } start)
+        {
+            // The destination could not be INSPECTED, which is not the same as finding nothing in it.
+            // Deferring costs one repeated pass; the alternative costs a duplicate of the whole history.
+            // This returns before anything is staged, so the flush leaves no bytes behind either.
+            return AppendResult.Failed;
+        }
+
         if (start >= lines.Count)
         {
             return AppendResult.UpToDate;
@@ -912,14 +988,17 @@ public sealed class ConversationTranscriptWriter
 
     /// <summary>
     ///     Step 5. Reports the index of the first line that still needs appending — the watermark's
-    ///     successor when the watermark is known and present, and otherwise zero.
+    ///     successor when the watermark is known and present, and otherwise zero. Null means the
+    ///     destination could not be INSPECTED and the caller must append nothing at all.
     /// </summary>
     /// <remarks>
-    ///     The fallback is ALWAYS "append everything". Every other candidate (append nothing, append the
-    ///     tail, guess by timestamp) trades a duplicate for a permanently missing record, and a duplicate
-    ///     is recoverable by any reader that groups on <c>uid</c>.
+    ///     The fallback, once the destination HAS been inspected, is ALWAYS "append everything". Every other
+    ///     candidate (append nothing, append the tail, guess by timestamp) trades a duplicate for a
+    ///     permanently missing record, and a duplicate is recoverable by any reader that groups on
+    ///     <c>uid</c>. An UNINSPECTED destination is the one case that is not a choice between those two:
+    ///     see <see cref="WatermarkProbe"/>.
     /// </remarks>
-    private async Task<int> ResolveStartIndexAsync(
+    private async Task<int?> ResolveStartIndexAsync(
         string sessionId,
         string path,
         string watermarkKey,
@@ -928,11 +1007,16 @@ public sealed class ConversationTranscriptWriter
     {
         if (!_watermarks.TryGetValue(watermarkKey, out var watermark))
         {
-            var (hadContent, recovered) = await RecoverWatermarkAsync(sessionId, path, ct).ConfigureAwait(false);
-            _transcriptExists = _transcriptExists || hadContent;
-            if (recovered is null)
+            var probe = await RecoverWatermarkAsync(sessionId, path, ct).ConfigureAwait(false);
+            if (!probe.Settled)
             {
-                if (hadContent)
+                return null;
+            }
+
+            _transcriptExists = _transcriptExists || probe.HadContent;
+            if (probe.Uid is null)
+            {
+                if (probe.HadContent)
                 {
                     WarnFullAppend(path, "its tail held no readable record");
                 }
@@ -940,7 +1024,7 @@ public sealed class ConversationTranscriptWriter
                 return 0;
             }
 
-            watermark = recovered;
+            watermark = probe.Uid;
         }
 
         for (var i = 0; i < lines.Count; i++)
@@ -961,23 +1045,49 @@ public sealed class ConversationTranscriptWriter
     /// <remarks>
     ///     <c>tail</c> rather than <c>ReadWorkspaceFileBytesAsync</c> on purpose: a GET downloads the WHOLE
     ///     transcript, and these files reach tens of megabytes in practice — paying that once per process
-    ///     per conversation to learn eight characters is not a micro-optimisation to skip.
+    ///     per conversation to learn eight characters is not a micro-optimisation to skip. What the probe
+    ///     must never do is answer an indeterminate failure the way it answers a genuine absence; see
+    ///     <see cref="WatermarkProbe"/> and <see cref="WatermarkProbeScript"/>.
     /// </remarks>
-    private async Task<(bool HadContent, string? Uid)> RecoverWatermarkAsync(
+    private async Task<WatermarkProbe> RecoverWatermarkAsync(
         string sessionId,
         string path,
         CancellationToken ct)
     {
         var tailed = await RunAsync(
             sessionId,
-            ["tail", "-n", WatermarkTailLines.ToString(CultureInfo.InvariantCulture), "--", path],
+            [
+                "sh",
+                "-c",
+                WatermarkProbeScript,
+                "sh",
+                path,
+                WatermarkTailLines.ToString(CultureInfo.InvariantCulture),
+            ],
             ct
         ).ConfigureAwait(false);
 
-        // A non-zero exit is overwhelmingly "no such file" — the ordinary first-flush case, not a fault.
-        if (tailed is not { ExitCode: 0 } || string.IsNullOrWhiteSpace(tailed.StandardOutput))
+        if (tailed is null)
         {
-            return (false, null);
+            // RunAsync answers null for a thrown SandboxException — a transport or gateway fault, which
+            // says nothing whatsoever about whether the file is there.
+            return WatermarkProbe.Unsettled;
+        }
+
+        if (tailed.ExitCode == WatermarkMissingExitCode)
+        {
+            return WatermarkProbe.Absent;
+        }
+
+        if (tailed.ExitCode != 0)
+        {
+            _logger.LogWarning(
+                "Transcript watermark probe of {Path} failed with exit {ExitCode}: {Error}",
+                path,
+                tailed.ExitCode,
+                tailed.StandardError
+            );
+            return WatermarkProbe.Unsettled;
         }
 
         var window = tailed.StandardOutput.Split('\n');
@@ -985,11 +1095,18 @@ public sealed class ConversationTranscriptWriter
         {
             if (TryReadUid(window[i]) is { } uid)
             {
-                return (true, uid);
+                return new WatermarkProbe(Settled: true, HadContent: true, Uid: uid);
             }
         }
 
-        return (true, null);
+        // Exit 0 with nothing readable is still a DEFINITE answer: the file is there and holds no intact
+        // record — empty, or torn across its whole window. Only the second of those is worth a warning,
+        // which is what HadContent distinguishes.
+        return new WatermarkProbe(
+            Settled: true,
+            HadContent: !string.IsNullOrWhiteSpace(tailed.StandardOutput),
+            Uid: null
+        );
     }
 
     private static string? TryReadUid(string line)

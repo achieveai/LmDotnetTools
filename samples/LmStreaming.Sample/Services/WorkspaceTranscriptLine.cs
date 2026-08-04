@@ -230,9 +230,13 @@ public sealed record WorkspaceTranscriptLine
         return new WorkspaceTranscriptLine
         {
             Type = StateLineType,
-            // U+001F (unit separator) cannot occur in a thread id, key or value that reached here from
-            // JSON-backed metadata, so the seed is unambiguous without escaping.
-            Uid = DeriveUid($"state\u001f{threadId}\u001f{key}\u001f{value}\u001f{millis}"),
+            Uid = DeriveUid(
+                "state"
+                + SeedField(threadId)
+                + SeedField(key)
+                + SeedField(value)
+                + SeedField(millis.ToString(CultureInfo.InvariantCulture))
+            ),
             ParentUid = parentUid,
             ThreadId = threadId,
             Timestamp = FormatTimestamp(millis),
@@ -240,6 +244,31 @@ public sealed record WorkspaceTranscriptLine
             Value = value,
         };
     }
+
+    /// <summary>
+    ///     Encodes one field into a uid seed as <c>{charCount}:{chars}</c>, or <c>~</c> when it is null.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     Length-prefixed rather than separator-joined, and the null marker is the point of it. A state
+    ///     line's <c>value</c> is nullable, and null and empty serialise to DIFFERENT lines
+    ///     (<c>"value": null</c> against <c>"value": ""</c>) — but interpolated into a joined seed both
+    ///     contribute nothing, so "the title was cleared" and "the title was removed" minted ONE uid for
+    ///     two lines. The uid is the whole identity here: the watermark and every reader's dedupe key off
+    ///     it alone, so the second of the two would be read as already written and dropped for good.
+    ///     </para>
+    ///     <para>
+    ///     What this guarantees, and only this: the field list is recoverable from the seed — a reader
+    ///     takes <c>~</c>, or a count and then exactly that many characters — so no field can absorb the
+    ///     next one's text or fake a boundary. That covers the case a delimiter cannot, a value CONTAINING
+    ///     the delimiter (a key/value split moved one character left no longer produces identical text).
+    ///     It claims nothing about collisions beyond that: equal seeds mean equal fields, and the uid is
+    ///     still a TRUNCATED hash of the seed, which is <see cref="UidLength"/>'s business rather than
+    ///     this method's.
+    ///     </para>
+    /// </remarks>
+    private static string SeedField(string? value) =>
+        value is null ? "~" : $"{value.Length.ToString(CultureInfo.InvariantCulture)}:{value}";
 
     /// <summary>
     ///     Projects a sequence of persisted rows into chained message lines: each line's
