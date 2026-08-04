@@ -227,7 +227,10 @@ internal static class KnowledgeDigest
     /// Renders <paramref name="entries"/> as the prior-knowledge block, resolving each entry's KB-relative
     /// <see cref="KnowledgeEntryMeta.File"/> against <paramref name="knowledgeBaseRoot"/> into an absolute
     /// path the agent can Read directly. Every entry is resolved BEFORE the budget is applied, so an entry
-    /// that escapes the Knowledge Base is refused whether or not it would have fitted. Entries are then
+    /// that escapes the Knowledge Base is refused whether or not it would have fitted. An entry whose path
+    /// is sound but whose title, tags or scope carry an escaping link is KEPT with that field cleared and
+    /// reported through <see cref="KnowledgeDigestBlock.Neutralized"/> — see
+    /// <see cref="ClearEscapingMetadata"/> for why the two cases end differently. Entries are then
     /// appended while the block fits in
     /// <paramref name="charBudget"/>; whatever does not fit, plus the <paramref name="omitted"/> entries
     /// the ranking already dropped, is reported in a footer that points at <c>_toc.md</c> so nothing
@@ -256,17 +259,27 @@ internal static class KnowledgeDigest
         // from _toc.md. That is precisely the silent disappearance the rejection reporting exists to stop.
         var resolved = new List<(KnowledgeEntryMeta Entry, string Path)>(entries.Count);
         var rejected = new List<KnowledgeEntryMeta>();
+        var neutralized = new List<KnowledgeEntryMeta>();
         foreach (var entry in entries)
         {
-            if (TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var absolute)
-                && !MetadataCarriesAnEscapingLink(entry, knowledgeBaseRoot))
-            {
-                resolved.Add((entry, absolute));
-            }
-            else
+            if (!TryResolveEntryPath(knowledgeBaseRoot, entry.File, out var absolute))
             {
                 rejected.Add(entry);
+                continue;
             }
+
+            // The path cleared, so the entry stays - but its OTHER fields are written by the same agent and
+            // are rendered verbatim, so they are cleaned rather than trusted. Reported whether or not this
+            // entry later fits the budget: unlike Rendered, this is not a claim about what the reviewer
+            // received, it is a defect report about what the extraction agent wrote, and that is true
+            // regardless of how much room was left by the time we got here.
+            var safe = ClearEscapingMetadata(entry, knowledgeBaseRoot);
+            if (!ReferenceEquals(safe, entry))
+            {
+                neutralized.Add(entry);
+            }
+
+            resolved.Add((safe, absolute));
         }
 
         // Space for the footer is reserved before anything is written, against the largest count it could
@@ -316,13 +329,15 @@ internal static class KnowledgeDigest
             return new KnowledgeDigestBlock(
                 builder.Length > 0 && missing > 0 ? header + Footer(missing, knowledgeBaseRoot) : string.Empty,
                 [],
-                rejected);
+                rejected,
+                neutralized);
         }
 
         return new KnowledgeDigestBlock(
             builder.Append(missing > 0 ? Footer(missing, knowledgeBaseRoot) : string.Empty).ToString(),
             rendered,
-            rejected);
+            rejected,
+            neutralized);
     }
 
     /// <summary>
@@ -760,25 +775,55 @@ internal static class KnowledgeDigest
         + $"{Join(knowledgeBaseRoot, "_toc.md")}.\n";
 
     /// <summary>
-    /// Whether any link in an entry's model-authored metadata resolves outside
-    /// <paramref name="knowledgeBaseRoot"/>.
+    /// The entry with any model-authored metadata field that carries a link escaping
+    /// <paramref name="knowledgeBaseRoot"/> cleared, or the entry itself when there is nothing to clear.
     /// <para>
     /// <see cref="KnowledgeEntryMeta.File"/> is not the only field of an entry that reaches the reviewer.
     /// Title, tags and scope come from the same knowledge-extraction agent, are rendered into the block
     /// verbatim by <see cref="RenderEntry"/>, and a Markdown link inside one of them resolves exactly like a
     /// link anywhere else — so checking only the field the path is built from left the other three carrying
-    /// whatever they liked. Same rule, whole entry, and the same verdict the <c>_toc.md</c> route gives an
-    /// escaping line: refuse it entire rather than scrub part of it, and report it through
-    /// <see cref="KnowledgeDigestBlock.Rejected"/> where refusals are already counted and logged.
+    /// whatever they liked. Same rule, whole entry.
+    /// </para>
+    /// <para>
+    /// The VERDICT is not the <c>_toc.md</c> route's, because the situations are not alike. There the link
+    /// IS the entry: strip it and nothing remains, so refusal is the only remedy available. Here the
+    /// load-bearing field is <c>File</c>, which the caller has already cleared, and the offending link sits
+    /// in decoration. Refusing the entry over it would delete sound knowledge for a title like
+    /// <c>Follow the [ADO onboarding guide](../../docs/ado.md) first</c> — well-intentioned, plausible, and
+    /// escaping only because a repository's own docs live outside the Knowledge Base. That is the
+    /// knowledge-blindness this feature exists to remove, reintroduced by the fix for it. An ugly title
+    /// beats a missing entry.
+    /// </para>
+    /// <para>
+    /// Whole VALUES are replaced, never edited within. Cutting inside a value is what produced this file's
+    /// two worst defects — half a path, and a title cut over someone else's link — because a fragment still
+    /// reads like the real thing. Nothing partial survives a wholesale replacement, and a cleared title or
+    /// scope lands on the blank-value fallback <see cref="RenderEntry"/> already had.
     /// </para>
     /// </summary>
-    private static bool MetadataCarriesAnEscapingLink(KnowledgeEntryMeta entry, string knowledgeBaseRoot) =>
-        MetadataFields(entry)
-            .Any(field => TocLinks(field).Any(
-                link => !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot)));
+    private static KnowledgeEntryMeta ClearEscapingMetadata(KnowledgeEntryMeta entry, string knowledgeBaseRoot)
+    {
+        var titleEscapes = CarriesAnEscapingLink(entry.Title, knowledgeBaseRoot);
+        var scopeEscapes = CarriesAnEscapingLink(entry.Scope, knowledgeBaseRoot);
+        var tags = entry.Tags.Where(tag => !CarriesAnEscapingLink(tag, knowledgeBaseRoot)).ToList();
+        if (!titleEscapes && !scopeEscapes && tags.Count == entry.Tags.Count)
+        {
+            // Returned by reference so the caller can tell "nothing to do" from "cleaned" without comparing
+            // fields a second time and getting a different answer than this method did.
+            return entry;
+        }
 
-    private static IEnumerable<string> MetadataFields(KnowledgeEntryMeta entry) =>
-        new[] { entry.Title, entry.Scope }.Concat(entry.Tags).Where(field => !string.IsNullOrEmpty(field));
+        return entry with
+        {
+            Title = titleEscapes ? string.Empty : entry.Title,
+            Scope = scopeEscapes ? string.Empty : entry.Scope,
+            Tags = tags,
+        };
+    }
+
+    private static bool CarriesAnEscapingLink(string? field, string knowledgeBaseRoot) =>
+        !string.IsNullOrEmpty(field)
+        && TocLinks(field).Any(link => !IsLinkTheAgentCanSafelyJoin(link.Destination, knowledgeBaseRoot));
 
     /// <summary>
     /// Renders one entry within <paramref name="maxLength"/>, or an empty string when not even a truncated
@@ -1086,15 +1131,24 @@ internal static class KnowledgeDigest
 
 /// <summary>
 /// The rendered prior-knowledge block: its <paramref name="Text"/>, the entries that actually made it into
-/// that text after the character budget was applied, and the entries refused because their path did not
-/// resolve inside the Knowledge Base. All three are reported together so the caller can log what the
-/// reviewer genuinely received AND what was withheld from it - a refusal nobody logs is indistinguishable
-/// from a Knowledge Base that never held the entry.
+/// that text after the character budget was applied, the entries refused because their path did not
+/// resolve inside the Knowledge Base, and the entries KEPT after a metadata field of theirs was cleared for
+/// carrying an escaping link. All four are reported together so the caller can log what the reviewer
+/// genuinely received AND what was withheld from it - a refusal nobody logs is indistinguishable from a
+/// Knowledge Base that never held the entry.
+/// <para>
+/// <paramref name="Neutralized"/> is separate from <paramref name="Rejected"/> because the entry was NOT
+/// rejected: it is in <paramref name="Rendered"/> too, path intact, and the reviewer can open it. What the
+/// operator needs to know is that the knowledge agent wrote a link into a title, tag or scope that pointed
+/// outside the Knowledge Base - a fact about extraction quality that would otherwise leave no trace at all,
+/// since the entry it happened to arrives looking perfectly healthy.
+/// </para>
 /// </summary>
 internal sealed record KnowledgeDigestBlock(
     string Text,
     IReadOnlyList<KnowledgeEntryMeta> Rendered,
-    IReadOnlyList<KnowledgeEntryMeta> Rejected);
+    IReadOnlyList<KnowledgeEntryMeta> Rejected,
+    IReadOnlyList<KnowledgeEntryMeta> Neutralized);
 
 /// <summary>
 /// The rendered <c>_toc.md</c> fallback block plus what it actually carried. <see cref="Listed"/> and

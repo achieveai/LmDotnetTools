@@ -1693,6 +1693,25 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         var refused = partition.Refused.Concat(digest.Rejected).Select(entry => entry.File).Distinct().ToList();
         LogRefusedKnowledgePaths(refused, knowledgeBaseDir);
 
+        // A cleaned entry is NOT a refused one - it is in the block, path intact, and the reviewer can open
+        // it - so it gets its own line rather than being folded into the refusals. It still has to have a
+        // line: the knowledge agent wrote a link pointing outside the Knowledge Base into a title, tag or
+        // scope, which is the same extraction defect the refusals report, and an entry that arrives looking
+        // perfectly healthy is exactly the one nobody would otherwise go and check.
+        if (digest.Neutralized.Count > 0)
+        {
+            _logger.LogWarning(
+                "Prior knowledge: cleared metadata on {NeutralizedCount} Knowledge Base {Plural} whose title, "
+                    + "tags or scope carried a link resolving outside {KnowledgeBaseDir}; the {Pronoun} kept "
+                    + "and still surfaced: {NeutralizedEntries}",
+                digest.Neutralized.Count,
+                digest.Neutralized.Count == 1 ? "entry" : "entries",
+                knowledgeBaseDir,
+                digest.Neutralized.Count == 1 ? "entry was" : "entries were",
+                KnowledgeDigest.DescribePaths(
+                    digest.Neutralized.Select(entry => entry.File), MaxKnowledgeLogChars));
+        }
+
         return digest.Text;
     }
 

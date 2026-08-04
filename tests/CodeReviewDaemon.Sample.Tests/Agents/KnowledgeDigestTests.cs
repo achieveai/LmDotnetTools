@@ -333,16 +333,45 @@ public class KnowledgeDigestTests
                 + "not there reads exactly like a Knowledge Base that happens to be empty");
     }
 
+    [Fact]
+    public void Render_KeepsAnEntryWhoseTitleLinksToASiblingDocAndClearsOnlyTheTitle()
+    {
+        // The case that decides the remedy, and it is not adversarial at all: an extraction agent doing its
+        // job writes a title pointing at the repo's own docs, which are OUTSIDE the Knowledge Base root
+        // because repo docs simply are. Refusing the entry for it would delete a sound lesson from the
+        // digest over a decoration - reintroducing the knowledge-blindness this feature exists to remove,
+        // on the primary route, triggered by a title. The link is what must not survive; the entry is what
+        // must. Only the LOAD-BEARING field has to be contained, and File was cleared separately.
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/ado.md", "Follow the [ADO onboarding guide](../../docs/ado.md) before first run", ["ado"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0);
+
+        digest.Text.Should().NotContain("../../docs/ado.md", "the escaping link must not reach the agent");
+        digest.Text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/ado.md",
+            "the entry itself is sound and must still be surfaced - that pairing is the whole argument");
+        digest.Rendered.Should().ContainSingle().Which.File.Should().Be("system/ado.md");
+        digest.Rejected.Should().BeEmpty();
+        digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/ado.md");
+    }
+
     [Theory]
     [InlineData("see [x](../../../etc/passwd) for context")]
     [InlineData("plain [x](</etc/passwd>)")]
-    public void Render_RejectsAnEntryWhoseTitleCarriesAnEscapingLink(string title)
+    public void Render_ClearsATitleThatCarriesAnEscapingLink(string title)
     {
         // Same shape as the _toc.md gate, on the PRIMARY route: containment was applied to entry.File and to
         // nothing else, while Title, tags and scope are written by the same knowledge-extraction agent and
         // are rendered into the block verbatim. A link in a title resolves for the reviewer exactly like a
-        // link anywhere else, so the check has to see the whole rendered entry, not just the field we happen
-        // to build the path from. Refused whole, matching the verdict the fallback route gives.
+        // link anywhere else, so the check has to see the whole rendered entry.
+        //
+        // The VERDICT differs from the fallback route's, though, because the situations differ. On a _toc.md
+        // line the link IS the entry - strip it and nothing is left, so refusal is the only remedy available.
+        // Here the link sits in decoration next to a File the agent can still open. Whole field, never part
+        // of one: replacing a value outright cannot emit the half-path or the misattributed title that
+        // editing INSIDE a value produced twice on the other route.
         var digest = KnowledgeDigest.Render(
             [Entry("system/alpha.md", title, ["a"]), Entry("system/beta.md", "Beta", ["b"])],
             KbRoot,
@@ -350,8 +379,58 @@ public class KnowledgeDigestTests
             omitted: 0);
 
         digest.Text.Should().NotContain("/etc/passwd");
-        digest.Text.Should().Contain("system/beta.md", "a clean entry must survive its neighbour's refusal");
-        digest.Rejected.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+        digest.Text.Should().Contain("system/beta.md", "a clean entry must survive its neighbour's scrub");
+        digest.Text.Should().Contain(
+            "- system/alpha.md", "a cleared title falls back to the file path, as a blank one already did");
+        digest.Rendered.Should().HaveCount(2);
+        digest.Rejected.Should().BeEmpty();
+        digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_DropsOnlyTheTagThatCarriesAnEscapingLinkAndKeepsTheRest()
+    {
+        // Per-VALUE, not per-entry and not per-character: the offending tag goes whole and its neighbours
+        // stay. A tag list is already a list of independent values, so there is nothing to fabricate by
+        // dropping one - unlike a cut inside a value, which is where this file's earlier defects lived.
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", "Alpha", ["safe", "see [x](../../../etc/passwd)", "also-safe"])],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0);
+
+        digest.Text.Should().NotContain("/etc/passwd");
+        digest.Text.Should().Contain("tags: safe, also-safe");
+        digest.Text.Should().Contain("Alpha", "an untouched title is not collateral of a bad tag");
+        digest.Rendered.Should().ContainSingle();
+        digest.Neutralized.Should().ContainSingle().Which.File.Should().Be("system/alpha.md");
+    }
+
+    [Fact]
+    public void Render_ClearsAScopeThatCarriesAnEscapingLink()
+    {
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", "Alpha", ["a"], scope: "see [x](/etc/passwd)")],
+            KbRoot,
+            charBudget: 10_000,
+            omitted: 0);
+
+        digest.Text.Should().NotContain("/etc/passwd");
+        digest.Text.Should().Contain("scope: (unscoped)", "a cleared scope takes the existing blank fallback");
+        digest.Rendered.Should().ContainSingle();
+        digest.Neutralized.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void Render_LeavesACleanEntryOutOfTheNeutralizedList()
+    {
+        // The counter has to mean something: if it fires on entries nothing was done to, an operator reading
+        // it learns nothing about extraction quality, which is the only reason it is reported.
+        var digest = KnowledgeDigest.Render(
+            [Entry("system/alpha.md", "Alpha", ["a"])], KbRoot, charBudget: 10_000, omitted: 0);
+
+        digest.Neutralized.Should().BeEmpty();
+        digest.Rendered.Should().ContainSingle();
     }
 
     [Fact]

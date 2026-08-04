@@ -534,6 +534,47 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_keeps_a_knowledge_entry_whose_title_links_outside_the_knowledge_base()
+    {
+        // End to end on the primary route: an extraction agent writes a title pointing at the repo's own
+        // docs, which live outside KnowledgeBase/ because repo docs do. The link must not reach the
+        // reviewer, and the entry must - refusing it would delete a sound lesson over a decoration, which
+        // is the knowledge-blindness this whole feature exists to remove. The scrub is logged for the same
+        // reason the refusal above is: the entry arrives looking healthy, so nothing else would ever say
+        // that the knowledge agent had written an escaping link into it.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            """{"file":"system/ado-onboarding.md","title":"Follow the [ADO guide](../../docs/ado.md) first","tags":["ado"],"scope":"system","sourcePrs":[],"updated":"2026-07-05"}"""
+                + "\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        var reviewAgent = fixture.Factory.CreatedAgents.Should().ContainSingle().Subject;
+        var text = reviewAgent.ReceivedInputs[0].Messages.OfType<TextMessage>().Single().Text;
+        text.Should().NotContain("../../docs/ado.md", "the escaping link must not reach the reviewer");
+        text.Should().Contain(
+            "/workspace/store/KnowledgeBase/system/ado-onboarding.md",
+            "the entry itself is sound and must still be handed over");
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "system/ado-onboarding.md")
+            .Should().Be(1, "a cleared field has to be as visible as a refusal, and countable");
+    }
+
+    [Fact]
     public async Task Reviewed_prepends_the_knowledge_base_toc_when_the_store_has_one()
     {
         using var fixture = Fixture.GitHub(
