@@ -907,4 +907,135 @@ public class KnowledgeDigestTests
         block.Dropped.Should().Be(1);
         block.Truncated.Should().BeTrue();
     }
+
+    // ---- Parsing what feeds the check, not just the check ---------------------------------------
+
+    [Fact]
+    public void ParseChangedPaths_DropsARecordTheCapHalvedRatherThanRankingAgainstIt()
+    {
+        // The generic output cap is character-exact, so on the sandbox path the cut can land inside a record
+        // and leave a stump in front of the marker. "src/VeryLongFileNa" reads exactly like a real path and
+        // is ranked against as one, silently, because the result is still non-empty. The marker opens with
+        // "\n", so a record that survived a clean cut is followed by an EMPTY line and one that was halved is
+        // not — that is the evidence, and it is available right here.
+        var nameOnly = "src/A.cs\nsrc/VeryLongFileNa" + SandboxLimits.TruncationMarker;
+
+        KnowledgeDigest.ParseChangedPaths(nameOnly, out var truncated).Should().Equal("src/A.cs");
+        truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ParseChangedPaths_KeepsTheRecordBeforeAMarkerTheListingCapPlacedOnALineBoundary()
+    {
+        // The other half of the pair, and the reason the listing keeps its own cap: when the producer cut on
+        // a boundary, the last record IS whole and dropping it would cost a file the reviewer needs.
+        var limits = new SandboxLimits { MaxArtifactPayloadChars = 16 };
+        var nameOnly = limits.CapRecordListing("src/A.cs\nsrc/VeryLongFileName.cs\n");
+
+        KnowledgeDigest.ParseChangedPaths(nameOnly, out var truncated).Should().Equal("src/A.cs");
+        truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ExtractChangedPaths_DropsAHalvedDiffHeaderRatherThanRankingAgainstIt()
+    {
+        // Same defect on the fallback route, which is reached exactly when the listing was unavailable. A
+        // header cut after its " b/" separator still parses: the left side is a real path and the right side
+        // is a stump, and both are added.
+        var diff = "diff --git a/src/A.cs b/src/A.cs\n@@ -1 +1 @@\n+x\ndiff --git a/src/Beta.cs b/src/Bet"
+            + SandboxLimits.TruncationMarker;
+
+        KnowledgeDigest.ExtractChangedPaths(diff).Should().Equal("src/A.cs");
+    }
+
+    // ---- The link check is only as good as the link it is handed --------------------------------
+
+    [Theory]
+    [InlineData("</etc/passwd>")]
+    [InlineData("< /etc/passwd >")]
+    [InlineData("<../../outside.md>")]
+    public void RenderTableOfContents_RefusesAnAngleBracketLinkThatEscapesTheKnowledgeBase(string link)
+    {
+        // CommonMark lets a destination be wrapped in angle brackets, and the agent resolves Markdown the
+        // standard way. The containment rule was correct; what reached it was "</etc/passwd>", which does not
+        // begin with "/" and so sailed past the leading-slash rejection added for exactly this case.
+        var toc = $"# Knowledge Base\n\n- [Alpha]({link})\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("/etc/passwd").And.NotContain("outside.md");
+        block.Text.Should().Contain("system/beta.md", "a contained entry must survive its neighbour's refusal");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_ReportsTheNormalizedDestinationItRefused()
+    {
+        var toc = "# Knowledge Base\n\n- [Alpha](</etc/passwd>)\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Refused.Should().Equal("/etc/passwd");
+    }
+
+    [Theory]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("https://evil.example/pwn.md")]
+    [InlineData("C:\\Windows\\System32\\drivers\\etc\\hosts")]
+    public void RenderTableOfContents_RefusesALinkThatIsNotARelativePathAtAll(string link)
+    {
+        // A URI is not a Knowledge Base entry, and TryResolveEntryPath cannot say so: it splits on "/", finds
+        // "https:" and "evil.example" to be ordinary segments, and reports the link contained. The line is
+        // then printed verbatim to an agent that will follow it as written.
+        var toc = $"# Knowledge Base\n\n- [Alpha]({link})\n- [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain(link);
+        block.Text.Should().Contain("system/beta.md");
+        block.Listed.Should().Be(1);
+    }
+
+    [Fact]
+    public void RenderTableOfContents_ChecksEveryLinkOnALineNotOnlyTheLast()
+    {
+        // LastIndexOf finds one link. A line carrying two validates the last and renders both, so the escape
+        // only has to not be written last.
+        var toc = "# Knowledge Base\n\n- [Alpha](/etc/passwd) see also [Beta](system/beta.md)\n"
+            + "- [Gamma](system/gamma.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Text.Should().NotContain("/etc/passwd");
+        block.Text.Should().Contain("system/gamma.md", "the refusal is about that line, not about the rest");
+        block.Refused.Should().Contain("/etc/passwd");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_TwoSafeLinksOnOneLineAreBothKept()
+    {
+        var toc = "# Knowledge Base\n\n- [Alpha](system/alpha.md) see also [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 10_000);
+
+        block.Refused.Should().BeEmpty();
+        block.Text.Should().Contain("system/alpha.md").And.Contain("system/beta.md");
+    }
+
+    [Fact]
+    public void RenderTableOfContents_DoesNotMisattributeALinkWhenAMultiLinkLineCannotFit()
+    {
+        // The title cut is anchored on the LAST "](", so on a two-link line everything between the first
+        // link and the last is treated as title text. The line comes back as "- [Alpha… (truncated)](beta)":
+        // a link labelled with one entry's title and pointing at a different entry. Misattributed knowledge
+        // is worse than absent knowledge, so a multi-link line fits whole or is dropped and counted.
+        var toc = "# Knowledge Base\n\n- [" + new string('A', 400)
+            + "](system/alpha.md) see also [Beta](system/beta.md)\n";
+
+        var block = KnowledgeDigest.RenderTableOfContents(toc, KbRoot, charBudget: 1_000);
+
+        block.Text.Should().NotContain("(truncated)](system/beta.md)");
+        block.Dropped.Should().Be(1);
+        block.Truncated.Should().BeTrue();
+    }
 }

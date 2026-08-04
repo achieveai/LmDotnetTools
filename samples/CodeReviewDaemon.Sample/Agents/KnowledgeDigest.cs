@@ -60,7 +60,7 @@ internal static class KnowledgeDigest
         var paths = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var raw in diff.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
+        foreach (var raw in SplitCappedLines(diff).Lines)
         {
             var line = raw.Trim();
             if (!line.StartsWith(Header, StringComparison.Ordinal))
@@ -104,8 +104,8 @@ internal static class KnowledgeDigest
     /// what it is never told about, so the fact travels with the paths rather than being re-derived from the
     /// marker somewhere else — one rule, in one place.
     /// </para>
-    /// Note this says the listing was cut, NOT that a record was damaged: <see cref="SandboxLimits"/> cuts
-    /// on a line boundary, so the records in front of the marker are whole.
+    /// Reports that the listing was cut AND drops the record the cut landed inside, so what survives is
+    /// whole either way — see <see cref="SplitCappedLines"/> for how the two cases are told apart.
     /// </summary>
     public static IReadOnlyList<string> ParseChangedPaths(string? nameOnlyListing, out bool truncated)
     {
@@ -117,20 +117,20 @@ internal static class KnowledgeDigest
 
         var paths = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var markerHead = SandboxLimits.TruncationMarker.TrimStart('\n');
 
-        foreach (var raw in nameOnlyListing.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
+        var (lines, wasCut) = SplitCappedLines(nameOnlyListing);
+        truncated = wasCut;
+
+        foreach (var raw in lines)
         {
             // Only the line terminator is stripped, and the split already did that. git permits a filename
             // to begin or end with a space and does NOT quote for one - quoting triggers on non-ASCII,
             // control, quote and backslash bytes only - so trimming here would rename the file into a path
             // git never reported, and Unquote could not repair it because there was never a quoted form.
             // Emptiness is therefore length, not whitespace: "  " is a legal (absurd) filename and survives
-            // as one. The truncation marker is still matched against the trimmed form so that detecting it
-            // does not depend on how the producer happened to space it.
-            if (raw.Length == 0 || raw.Trim().StartsWith(markerHead, StringComparison.Ordinal))
+            // as one.
+            if (raw.Length == 0)
             {
-                truncated |= raw.Trim().StartsWith(markerHead, StringComparison.Ordinal);
                 continue;
             }
 
@@ -142,6 +142,43 @@ internal static class KnowledgeDigest
         }
 
         return paths;
+    }
+
+    /// <summary>
+    /// Splits capped command output into lines, reporting whether it carried the truncation marker and
+    /// discarding both the marker and any record the cut landed inside.
+    /// <para>
+    /// Shared by both changed-path parsers because it is one rule, and because the rule is about the
+    /// PRODUCER's cut rather than about either format. Two caps reach this code:
+    /// <see cref="SandboxLimits.CapRecordListing"/> cuts between records and keeps the last one's newline,
+    /// while <see cref="SandboxLimits.CapOutput"/> is character-exact and can halve a record. The marker
+    /// opens with <c>\n</c>, so the first case leaves an EMPTY element in front of the marker and the second
+    /// leaves the stump — which is the whole of the evidence, and it is enough. A stump is dropped because it
+    /// reads exactly like a real path or a real <c>diff --git</c> header and would be ranked against as one,
+    /// silently, since the result is still non-empty.
+    /// </para>
+    /// The marker is matched against the trimmed form so that detecting it does not depend on how the
+    /// producer happened to space it.
+    /// </summary>
+    private static (IReadOnlyList<string> Lines, bool Truncated) SplitCappedLines(string text)
+    {
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
+        var markerHead = SandboxLimits.TruncationMarker.TrimStart('\n');
+        var marker = Array.FindIndex(
+            lines, line => line.Trim().StartsWith(markerHead, StringComparison.Ordinal));
+
+        if (marker < 0)
+        {
+            return (lines, false);
+        }
+
+        var kept = marker;
+        if (kept > 0 && lines[kept - 1].Length > 0)
+        {
+            kept--;
+        }
+
+        return (lines[..kept], true);
     }
 
     /// <summary>
@@ -371,6 +408,11 @@ internal static class KnowledgeDigest
         var truncated = false;
         var refused = new List<string>();
 
+        // Refused LINES, not refused links: one line can carry more than one escaping destination, and the
+        // total below counts entry lines. Reporting every bad link is what the operator needs; subtracting
+        // every bad link is what would drive the dropped count negative.
+        var refusedLines = 0;
+
         // Truncation is tracked on its OWN flag, not inferred from the entry count. A torn or hand-edited
         // _toc.md - which is precisely the state that sends us down this fallback - can contain no
         // "- [Title](path)" lines at all, and a gate that only fires once an entry has been listed would
@@ -386,14 +428,16 @@ internal static class KnowledgeDigest
                 // link that resolves outside the Knowledge Base presents something that is not knowledge as
                 // though it were, with nothing in the block for the reviewer to tell the difference by - and
                 // the degraded route was the one still doing it.
-                var link = TocLink(line);
-                if (link is not null && !IsLinkTheAgentCanSafelyJoin(link, root))
+                var links = TocLinks(line);
+                var escapes = links.Where(link => !IsLinkTheAgentCanSafelyJoin(link, root)).ToList();
+                if (escapes.Count > 0)
                 {
-                    refused.Add(link);
+                    refused.AddRange(escapes);
+                    refusedLines++;
                     continue;
                 }
 
-                var text = FitTocLine(line, charBudget - builder.Length - reserve);
+                var text = FitTocLine(line, charBudget - builder.Length - reserve, links.Count);
                 if (text is null)
                 {
                     // Skipped rather than stopped at, for the same reason as the ranked path above: a null
@@ -421,7 +465,7 @@ internal static class KnowledgeDigest
         // A refused entry is a different fact from one that did not fit, so it is subtracted from the total
         // rather than counted as dropped: a footer promising "1 more entry" in _toc.md would route the agent
         // straight back to the link just refused.
-        var dropped = total - listed - refused.Count;
+        var dropped = total - listed - refusedLines;
         if (builder.Length == 0)
         {
             return new KnowledgeTocBlock(string.Empty, 0, dropped, true, refused);
@@ -439,32 +483,113 @@ internal static class KnowledgeDigest
     /// block's header tells it to.
     /// <para>
     /// Uses <see cref="TryResolveEntryPath"/> so traversal is judged by ONE rule shared with the ranked path,
-    /// plus one condition the ranked path does not need. <see cref="Render"/> hands the agent a path it has
+    /// plus two conditions the ranked path does not need. <see cref="Render"/> hands the agent a path it has
     /// already joined onto the root, which makes a leading slash harmless — it lands under the root either
     /// way. This fallback prints the link VERBATIM and asks the agent to do the join itself, and an agent
     /// handed <c>/etc/passwd</c> will read it as already absolute and open it. The link is rejected here not
     /// because the rule differs but because on this path nothing performs the join that made it safe.
     /// </para>
+    /// A URI is rejected for the same reason and is invisible to <see cref="TryResolveEntryPath"/>, which
+    /// splits on <c>/</c> and finds <c>https:</c> and <c>evil.example</c> to be perfectly ordinary segments
+    /// that resolve inside the root. It is not a path at all, and an agent handed one follows it as written.
+    /// The scheme test also catches a Windows drive letter, which is absolute by another spelling.
     /// </summary>
     private static bool IsLinkTheAgentCanSafelyJoin(string link, string knowledgeBaseRoot) =>
-        !link.StartsWith('/')
+        link.Length > 0
+        && !link.StartsWith('/')
         && !link.StartsWith('\\')
+        && !HasUriScheme(link)
         && TryResolveEntryPath(knowledgeBaseRoot, link, out _);
 
     /// <summary>
-    /// The link target of a <c>_toc.md</c> entry line, or <c>null</c> when the line is not an entry (a
-    /// heading, blank or prose line carries no path and is not containment-checked).
+    /// Whether the link opens with an RFC 3986 scheme (<c>ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"</c>).
+    /// A single-letter scheme is a Windows drive prefix as often as it is a real one; both are refused, and
+    /// no Knowledge Base entry filename can contain a colon anyway.
     /// </summary>
-    private static string? TocLink(string line)
+    private static bool HasUriScheme(string link)
+    {
+        var colon = link.IndexOf(':');
+        if (colon <= 0)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < colon; i++)
+        {
+            var allowed = i == 0
+                ? char.IsAsciiLetter(link[i])
+                : char.IsAsciiLetterOrDigit(link[i]) || link[i] is '+' or '-' or '.';
+            if (!allowed)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Every link destination on a <c>_toc.md</c> entry line, normalized, in source order. Empty when the
+    /// line is not an entry (a heading, blank or prose line carries no path and is not containment-checked).
+    /// <para>
+    /// Every one, not the last one. The previous reading took <c>LastIndexOf("](")</c>, so a line carrying
+    /// two links had one of them checked and both of them rendered — the escape only had to not be written
+    /// last. The check was right both times it was defeated; what reached it was not.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> TocLinks(string line)
     {
         if (!IsTocEntry(line))
         {
-            return null;
+            return [];
         }
 
-        var open = line.LastIndexOf("](", StringComparison.Ordinal) + "](".Length;
-        var close = line.LastIndexOf(')');
-        return close > open ? line[open..close] : null;
+        var links = new List<string>();
+        var at = 0;
+        while (true)
+        {
+            var open = line.IndexOf("](", at, StringComparison.Ordinal);
+            if (open < 0)
+            {
+                break;
+            }
+
+            open += "](".Length;
+            var close = line.IndexOf(')', open);
+            if (close < 0)
+            {
+                break;
+            }
+
+            links.Add(NormalizeLinkDestination(line[open..close]));
+            at = close + 1;
+        }
+
+        return links;
+    }
+
+    /// <summary>
+    /// The destination an agent resolving Markdown normally would act on, from the raw text between
+    /// <c>](</c> and <c>)</c>.
+    /// <para>
+    /// CommonMark permits the destination to be wrapped in angle brackets, and a bare destination to be
+    /// followed by a title. Neither form was being unwrapped, so <c>&lt;/etc/passwd&gt;</c> reached the
+    /// containment rule beginning with <c>&lt;</c> rather than <c>/</c> and the leading-slash rejection —
+    /// added the round before for exactly this target — never fired. Validating the text as written rather
+    /// than as resolved is the defect; this is where it is repaired, once, for every caller.
+    /// </para>
+    /// </summary>
+    private static string NormalizeLinkDestination(string destination)
+    {
+        var text = destination.Trim();
+        if (text.StartsWith('<'))
+        {
+            var end = text.IndexOf('>');
+            return (end < 0 ? text[1..] : text[1..end]).Trim();
+        }
+
+        var space = text.IndexOfAny([' ', '\t']);
+        return space < 0 ? text : text[..space];
     }
 
     /// <summary>
@@ -474,11 +599,22 @@ internal static class KnowledgeDigest
     /// reason the line is worth carrying, and a half-written path is worse than an absent one because the
     /// agent will try to open it.
     /// </summary>
-    private static string? FitTocLine(string line, int room)
+    private static string? FitTocLine(string line, int room, int linkCount)
     {
         if (line.Length + 1 <= room)
         {
             return line + "\n";
+        }
+
+        // Only a single-link line can be shortened safely. The title cut is anchored on the LAST "](", so on
+        // a two-link line everything between the first link and the last is swallowed as title text and the
+        // render comes back as "- [First entry's title (truncated)](second entry's link)": a label naming one
+        // entry over a link pointing at another. Misattributed knowledge is worse than absent knowledge, and
+        // the entry is counted as dropped with a route to the full _toc.md either way, so such a line fits
+        // whole or not at all.
+        if (linkCount != 1)
+        {
+            return null;
         }
 
         var link = line.LastIndexOf("](", StringComparison.Ordinal);

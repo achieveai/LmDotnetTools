@@ -28,6 +28,25 @@ internal sealed class SandboxLimits
     /// <summary>Truncates an artifact payload to <see cref="MaxArtifactPayloadChars"/>, appending the marker when trimmed.</summary>
     public string CapArtifactPayload(string value) => Cap(value, MaxArtifactPayloadChars);
 
+    /// <summary>
+    /// Truncates a RECORD-ORIENTED payload — one meaningful record per line, such as a
+    /// <c>git diff --name-only</c> listing — to <see cref="MaxArtifactPayloadChars"/>, cutting between
+    /// records rather than inside one.
+    /// <para>
+    /// Separate from <see cref="CapArtifactPayload"/> because the guarantee is only worth its cost where
+    /// records exist. Cutting a listing mid-record leaves a stump in front of the marker that reads exactly
+    /// like a complete path, and every consumer downstream treats it as one: the ranking matches against a
+    /// file git never reported, and because the result is still non-empty nothing signals that anything went
+    /// wrong. Applying the same rule to arbitrary output would instead throw the budget away — see the note
+    /// on <see cref="Cap"/>.
+    /// </para>
+    /// The surviving records keep their own terminating newline. That is load-bearing, not tidiness: the
+    /// marker opens with <c>\n</c>, so a clean cut leaves an EMPTY line in front of the marker while a
+    /// character-exact cut leaves the stump there. A parser reading capped output has no other way to tell
+    /// which kind of cut it is looking at.
+    /// </summary>
+    public string CapRecordListing(string value) => CapOnRecordBoundary(value, MaxArtifactPayloadChars);
+
     private static string Cap(string value, int max)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -36,16 +55,27 @@ internal sealed class SandboxLimits
             return value;
         }
 
-        // The cut lands between lines, never inside one. Command output here is line-oriented — the
-        // changed-path listing is literally one record per line — and a cut that halves the last record
-        // leaves a stump in front of the marker that reads exactly like a complete path. Every consumer
-        // downstream then treats it as one: KnowledgeDigest.ParseChangedPaths keeps it, the ranking matches
-        // against a file git never reported, and because the result is still non-empty nothing signals that
-        // anything went wrong. A whole line is the smallest unit a reader of this output can trust.
-        //
-        // One enormous line (a minified file inside a diff) has no boundary to fall back to, so the hard cut
-        // stands rather than discarding the entire payload.
+        // Character-exact, deliberately. This cap sees ALL captured output and every persisted payload —
+        // build logs, test output, a diff whose file is minified — and most of it is not record-oriented.
+        // Backing up to the last newline below the limit costs whatever lies between it and the cut, which
+        // on a payload shaped "STATUS\n" + one enormous line is essentially the entire configured budget,
+        // surrendered to protect records that output never had. Where records DO exist the caller asks for
+        // them by name via <see cref="CapRecordListing"/>.
+        return value[..max] + TruncationMarker;
+    }
+
+    private static string CapOnRecordBoundary(string value, int max)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (max <= 0 || value.Length <= max)
+        {
+            return value;
+        }
+
+        // One enormous line has no boundary to fall back to, so the hard cut stands rather than discarding
+        // the entire payload. It leaves a stump, and the absent blank line in front of the marker is what
+        // tells the parser so.
         var boundary = value.LastIndexOf('\n', max - 1);
-        return (boundary >= 0 ? value[..boundary] : value[..max]) + TruncationMarker;
+        return (boundary >= 0 ? value[..(boundary + 1)] : value[..max]) + TruncationMarker;
     }
 }

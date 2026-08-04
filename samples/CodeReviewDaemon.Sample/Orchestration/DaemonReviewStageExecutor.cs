@@ -1177,7 +1177,11 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
             return string.Empty;
         }
 
-        return _options.Limits.CapArtifactPayload(lsFiles.Stdout.Trim());
+        // A record listing, and trimmed of line terminators ONLY, for both of the reasons spelled out on the
+        // changed-path listing below: the agent is told to Read these paths verbatim, so a record the cap
+        // halved names a file that does not exist, and a blanket Trim() would rewrite the first and last
+        // records of the manifest into paths git never reported.
+        return _options.Limits.CapRecordListing(lsFiles.Stdout.Trim('\n', '\r'));
     }
 
     /// <summary>
@@ -1214,7 +1218,10 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         // Trimmed of line terminators ONLY. git allows a filename to begin or end with a space and does not
         // quote for one, so a blanket Trim() here would rewrite the first and last records into paths git
         // never reported — and the ranking downstream would then fail to match the very files they name.
-        return _options.Limits.CapArtifactPayload(nameOnly.Stdout.Trim('\n', '\r'));
+        //
+        // Capped as a RECORD LISTING rather than as a generic payload: this is the one artifact here that is
+        // strictly one path per line, so it is the one where cutting between records is worth what it costs.
+        return _options.Limits.CapRecordListing(nameOnly.Stdout.Trim('\n', '\r'));
     }
 
     private static int ManifestFileCount(string manifest) =>
