@@ -92,16 +92,20 @@ public enum TranscriptFlushOutcome
 ///     </para>
 ///     <para>
 ///     <b>The filesystem surface is a closed set of six calls</b>, listed here so the next reader can check
-///     coverage by enumeration rather than by searching. Three successive review rounds each fixed one
-///     surface and left another, because nobody had written down how many there were.
+///     coverage by enumeration rather than by searching. Four successive review rounds each fixed one
+///     surface and left another, because nobody had written down how many there were — and the round that
+///     first wrote this list down still recorded a wrong reason for leaving the sixth alone. Members rather
+///     than line numbers: a line-number table is stale by the next commit and reads as authoritative anyway.
 ///     <list type="table">
 ///         <item>
-///             <description><see cref="AdoptExistingLeafAsync"/> — lists the directory. The only one that is
-///             deliberately unguarded; see the rejection recorded on that method.</description>
+///             <description><see cref="AdoptExistingLeafAsync"/> — lists the directory. Reads names, never
+///             content, and writes nothing; its guard is therefore a SHAPE guard rather than a redirection
+///             one, because this is the only call that takes a path component from outside. See
+///             <see cref="IsAddressableName"/>.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="AppendAsync"/> — PUTs the staged payload. Guarded by
-///             <see cref="IsPathSafeAsync"/> per append.</description>
+///             <see cref="IsPathSafeAsync"/> per append, uncached.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="AppendAsync"/> — runs <see cref="AppendScript"/>. Guards its three
@@ -109,17 +113,25 @@ public enum TranscriptFlushOutcome
 ///         </item>
 ///         <item>
 ///             <description><see cref="RecoverWatermarkAsync"/> — runs <see cref="WatermarkProbeScript"/>.
-///             Guards in-script.</description>
+///             Guards in-script; its output is bounded per line and is never logged.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="EnsureGitignoreAsync"/> — PUTs the <c>.gitignore</c>. Guarded by
-///             <see cref="IsPathSafeAsync"/>.</description>
+///             <see cref="IsPathSafeAsync"/>. This is the write that DESTROYS rather than leaks.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="TryMoveAsync"/> — runs <see cref="MoveScript"/>. Guards both operands
 ///             in-script and additionally refuses a destination that resolves to a directory.</description>
 ///         </item>
 ///     </list>
+///     </para>
+///     <para>
+///     <b>What none of the six can cover.</b> <c>[ -L ]</c> does not see a HARD link, and no shell test
+///     does; a hard link planted at a transcript's name is written through with every guard reporting
+///     clean. That is left uncovered deliberately rather than overlooked — closing it needs
+///     <c>O_NOFOLLOW</c>/<c>st_nlink</c> checks the gateway does not expose, and Linux's
+///     <c>fs.protected_hardlinks</c> already blocks the interesting targets, which are files the sandboxed
+///     user neither owns nor may write.
 ///     </para>
 ///     <para>
 ///     <b>Concurrency:</b> <see cref="FlushAsync"/> is not re-entrant and must not be called concurrently
@@ -953,15 +965,19 @@ public sealed class ConversationTranscriptWriter
     ///     preferable to starting a second one.
     ///     </para>
     ///     <para>
-    ///     <b>Deliberately unguarded, and the reason is the guards downstream — not the listing.</b> A
+    ///     <b>The downstream guards are not enough on their own; the name needs a shape check here.</b> A
     ///     redirected <c>.conversations</c> makes this listing return attacker-chosen entries, and one of
-    ///     them can be adopted as the leaf. That is contained rather than trusted: the adopted stem must
-    ///     satisfy <see cref="IsThisConversation"/>, so it carries this conversation's own short id; it is
-    ///     used only as the source operand of <see cref="MoveScript"/>, which guards <i>both</i> operands,
-    ///     so a planted symlink is refused at the rename rather than followed; and every write that could
-    ///     follow is guarded at its own call site. A directory entry name cannot contain a separator, so an
-    ///     entry cannot widen the path it is spliced into. What an attacker gets is a mirror that refuses
-    ///     and defers — an availability cost, not a disclosure.
+    ///     them can be adopted as the leaf. Most of that is genuinely contained downstream: the adopted stem
+    ///     must satisfy <see cref="IsThisConversation"/>, it reaches the filesystem as the guarded source
+    ///     operand of <see cref="MoveScript"/>, and every write that follows is guarded at its own call
+    ///     site. What is NOT contained downstream is a name that is not a single path component. An earlier
+    ///     revision of this note claimed a directory entry name cannot contain a separator and concluded the
+    ///     exposure was availability rather than disclosure; that was wrong, and wrong in the direction that
+    ///     matters. This code does not read <c>readdir</c> — it reads a <c>name</c> field out of the
+    ///     gateway's JSON, and nothing between the two enforces the invariant. A separator in that name
+    ///     walks straight out of the transcript directory past an ancestor check that has nothing to refuse,
+    ///     because <c>..</c> is a real directory. See <see cref="IsAddressableName"/>, which is the check
+    ///     that closes it.
     ///     </para>
     /// </remarks>
     private async Task<(bool Listed, string? Leaf)> AdoptExistingLeafAsync(
@@ -989,7 +1005,7 @@ public sealed class ConversationTranscriptWriter
         }
 
         var stale = entries
-            .Where(entry => entry.Type == SandboxEntryType.File && !entry.NameLossy)
+            .Where(entry => entry.Type == SandboxEntryType.File && IsAddressableName(entry))
             .Select(entry => entry.Name)
             .Where(name => name.EndsWith(TranscriptExtension, StringComparison.Ordinal))
             .Select(name => name[..^TranscriptExtension.Length])
@@ -1004,7 +1020,7 @@ public sealed class ConversationTranscriptWriter
             _agentsDirectoryTouched
             || entries.Any(entry =>
                 entry.Type == SandboxEntryType.Directory
-                && !entry.NameLossy
+                && IsAddressableName(entry)
                 && string.Equals(entry.Name, subject + AgentsDirectorySuffix, StringComparison.Ordinal));
 
         if (stale is null)
@@ -1034,6 +1050,45 @@ public sealed class ConversationTranscriptWriter
     private bool IsThisConversation(string stem) =>
         string.Equals(stem, _shortThreadId, StringComparison.Ordinal)
         || stem.EndsWith($"-{_shortThreadId}", StringComparison.Ordinal);
+
+    /// <summary>
+    ///     Whether a listed entry's name may be used to BUILD a path. Both halves are about addressability:
+    ///     a lossy name cannot round-trip to the bytes on disk, and a name that is not a single path
+    ///     component is not the thing the caller thinks it is.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>The adopted leaf is the one path component in this type that the writer does not compute.</b>
+    ///     Every other segment — the transcript directory, the temp name, the <c>.gitignore</c>, the
+    ///     title-derived slug — is minted here. An adopted stem arrives as a <c>name</c> field in the
+    ///     gateway's JSON, and <see cref="SandboxDirectoryEntry.Name"/> documents itself as a non-recursive
+    ///     name "excluding <c>.</c> and <c>..</c>" WITHOUT enforcing it:
+    ///     <c>SandboxClient.ListDirectoryEntriesAsync</c> checks only that a name is present and states that
+    ///     per-entry validation is left to each caller's projection. This is that projection.
+    ///     </para>
+    ///     <para>
+    ///     A name carrying <c>/</c> would defeat every other guard here, and not narrowly. The ancestor walk
+    ///     tests each component with <c>[ -L ]</c>, and <c>..</c> is a real directory rather than a symlink,
+    ///     so the walk passes; the path then reaches <c>cat &gt;&gt; "$3"</c> inside the container, which no
+    ///     gateway path validation mediates because it is argv to a shell, not a file API call. The
+    ///     unredacted transcript would land outside <c>.conversations</c> — outside the <c>.gitignore</c>
+    ///     that is the whole containment mechanism — at exit code 0, taking the <c>_agents</c> directory
+    ///     with it. A NUL is rejected on the same footing: it truncates the path at the exec boundary, so
+    ///     the name this code reasons about and the name the kernel opens are different names.
+    ///     </para>
+    ///     <para>
+    ///     Every OTHER consumer of this listing compares a name for EQUALITY against one it already holds
+    ///     (<c>FileBrowserController</c>, four call sites), so a traversing name there never matches
+    ///     anything. This is the only consumer that adopts a name it did not compute, which is why the
+    ///     check belongs here rather than in the browser.
+    ///     </para>
+    /// </remarks>
+    private static bool IsAddressableName(SandboxDirectoryEntry entry) =>
+        !entry.NameLossy
+        && entry.Name.Length > 0
+        && entry.Name.AsSpan().IndexOfAny('/', '\0') < 0
+        && !string.Equals(entry.Name, ".", StringComparison.Ordinal)
+        && !string.Equals(entry.Name, "..", StringComparison.Ordinal);
 
     /// <summary>Renames one transcript file and, when asked, its sibling sub-agent directory.</summary>
     /// <returns>Whether the FILE moved — the only condition under which the new leaf may be adopted.</returns>
@@ -1622,11 +1677,19 @@ public sealed class ConversationTranscriptWriter
     ///     and "this could not be checked" alike, and both are reasons to leave the workspace untouched.
     /// </summary>
     /// <remarks>
+    ///     <para>
     ///     Only the two writes that reach the workspace WITHOUT a shell need this — the staged payload and
     ///     the <c>.gitignore</c>. Everything the shell writes carries its guard inside the same script it
     ///     writes with, which is both cheaper (no extra round trip) and tighter (no gap between the check
     ///     and the write). See <see cref="UnsafePathExitCode"/> for why the answer is refusal rather than
     ///     repair.
+    ///     </para>
+    ///     <para>
+    ///     This is one of six filesystem entry points, and the six are enumerated ONCE, on the class. Keep
+    ///     them there rather than restating them here: two copies of a coverage table drift, and a drifted
+    ///     coverage table is worse than none, because the reason to enumerate is to be able to trust the
+    ///     count. Anything new that touches <c>_fileBrowser</c> belongs in that list.
+    ///     </para>
     /// </remarks>
     private async Task<bool> IsPathSafeAsync(string sessionId, string path, CancellationToken ct)
     {

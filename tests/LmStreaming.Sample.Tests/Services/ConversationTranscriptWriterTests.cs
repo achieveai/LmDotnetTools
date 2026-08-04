@@ -1435,6 +1435,65 @@ public sealed class ConversationTranscriptWriterTests
             .Should().Equal(MainPath(Title));
     }
 
+    /// <summary>
+    /// The adopted leaf is the one path component in this type the writer does NOT compute. It arrives as
+    /// a <c>name</c> field in the gateway's JSON listing and the writer builds a filesystem path out of it.
+    /// <see cref="SandboxDirectoryEntry.Name"/> documents itself as a non-recursive name "excluding
+    /// <c>.</c> and <c>..</c>" — but nothing enforces that: <c>SandboxClient.ListDirectoryEntriesAsync</c>
+    /// checks only that a name is present, and says in terms that per-entry validation is "left to each
+    /// caller's projection". This is that projection, so the check belongs here.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A name carrying <c>/</c> defeats every guard in the type, and not narrowly. The ancestor walk tests
+    /// each component with <c>[ -L ]</c>, and <c>..</c> is a real directory rather than a symlink, so the
+    /// walk passes; the path then reaches <c>cat &gt;&gt; "$3"</c> inside the container, which no gateway
+    /// path validation mediates because it is argv to a shell rather than a file API call. The unredacted
+    /// transcript lands outside <c>.conversations</c> — outside the <c>.gitignore</c> that is the entire
+    /// containment mechanism — at exit code 0, and the sub-agent fan-out takes the <c>_agents</c>
+    /// directory out with it.
+    /// </para>
+    /// <para>
+    /// Every OTHER consumer of this listing compares a name for EQUALITY against one it already holds
+    /// (<c>FileBrowserController</c>, four call sites), so a traversing name there simply never matches.
+    /// This is the only consumer that adopts a name it did not compute — which is why the gap exists here
+    /// and only here.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ColdStart_RefusesAListedNameThatIsNotASinglePathComponent()
+    {
+        var store = new InMemoryConversationStore();
+        await SeedConversationAsync(store);
+        await store.AppendMessagesAsync(ThreadId, [Msg("m1", 1, "User")]);
+        await SeedSubAgentAsync(store, "a1", "alpha", Msg("a1a", 10, threadId: "subagent-a1"));
+
+        // Shaped to pass every filter the projection applies: typed File, not lossy, .jsonl suffix, and a
+        // stem ending in this conversation's short id. Only its SHAPE disqualifies it.
+        var browser = new FakeFileBrowser();
+        browser.Listings[ConversationTranscriptWriter.TranscriptDirectory] =
+        [
+            new SandboxDirectoryEntry(
+                $"../../../escape-{ShortThreadId}{ConversationTranscriptWriter.TranscriptExtension}",
+                SandboxEntryType.File,
+                128,
+                NameLossy: false
+            ),
+        ];
+
+        _ = (await CreateWriter(store, browser).FlushAsync()).Should().Be(TranscriptFlushOutcome.Written);
+
+        // Nothing the writer hands the container may leave the transcript directory, by any route.
+        _ = browser.Commands.SelectMany(c => c.Arguments).Concat(browser.Writes.Select(w => w.Path))
+            .Should().NotContain(argument => argument.Contains("..", StringComparison.Ordinal));
+
+        // The traversing name is ignored rather than renamed onto: adopting it and then MOVING it would
+        // read the file from outside the workspace just as surely as writing to it would.
+        _ = browser.Commands.Should().NotContain(command => IsMove(command));
+        _ = browser.Commands.Where(IsSplice).Select(c => c.Arguments[6])
+            .Should().Equal(MainPath(Title), AgentPath(Title, "a1", "alpha"));
+    }
+
     // ---------------------------------------------------------------- AC 19
 
     /// <summary>
