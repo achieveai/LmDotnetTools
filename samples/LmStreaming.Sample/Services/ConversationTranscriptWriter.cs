@@ -105,33 +105,55 @@ public enum TranscriptFlushOutcome
 ///         </item>
 ///         <item>
 ///             <description><see cref="AppendAsync"/> — PUTs the staged payload. Guarded by
-///             <see cref="IsPathSafeAsync"/> per append, uncached.</description>
+///             <see cref="IsPathSafeAsync"/> per append, uncached; that guard is also where the staging
+///             path's link count is checked, because this PUT is the write an in-script check would be
+///             too late for.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="AppendAsync"/> — runs <see cref="AppendScript"/>. Guards its three
-///             path parameters in-script.</description>
+///             path parameters in-script, and additionally requires its two FILE operands to be
+///             unaliased.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="RecoverWatermarkAsync"/> — runs <see cref="WatermarkProbeScript"/>.
-///             Guards in-script; its output is bounded per line and is never logged.</description>
+///             Guards in-script and refuses an aliased destination before reading it; its output is bounded
+///             per line and is never logged.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="EnsureGitignoreAsync"/> — PUTs the <c>.gitignore</c>. Guarded by
-///             <see cref="IsPathSafeAsync"/>. This is the write that DESTROYS rather than leaks.</description>
+///             <see cref="IsPathSafeAsync"/>, link count included. This is the write that DESTROYS rather
+///             than leaks.</description>
 ///         </item>
 ///         <item>
 ///             <description><see cref="TryMoveAsync"/> — runs <see cref="MoveScript"/>. Guards both operands
-///             in-script and additionally refuses a destination that resolves to a directory.</description>
+///             in-script and additionally refuses a destination that resolves to a directory. It needs no
+///             link-count check, and that is a measured exclusion rather than an omission: see
+///             <see cref="AliasedPathExitCode"/>.</description>
 ///         </item>
 ///     </list>
 ///     </para>
 ///     <para>
-///     <b>What none of the six can cover.</b> <c>[ -L ]</c> does not see a HARD link, and no shell test
-///     does; a hard link planted at a transcript's name is written through with every guard reporting
-///     clean. That is left uncovered deliberately rather than overlooked — closing it needs
-///     <c>O_NOFOLLOW</c>/<c>st_nlink</c> checks the gateway does not expose, and Linux's
-///     <c>fs.protected_hardlinks</c> already blocks the interesting targets, which are files the sandboxed
-///     user neither owns nor may write.
+///     <b>What none of the six can cover — and a retracted claim about what they could not.</b> An earlier
+///     revision of this paragraph asserted that a HARD link at a transcript's name was undetectable here,
+///     because <c>[ -L ]</c> cannot see one and "the gateway does not expose <c>st_nlink</c>". The first
+///     half is true and the second was never checked. A hard link is indeed not a distinguishable KIND of
+///     file — but its LINK COUNT is an ordinary stat field, and the boundary these scripts run against is a
+///     shell, which can read it with a POSIX <c>ls -l</c> listing and no extension at all. The same
+///     paragraph offered
+///     <c>fs.protected_hardlinks</c> as the mitigation, which is wrong in the same direction: that sysctl
+///     only refuses links to files the user neither owns nor may write, and the targets that matter here —
+///     the tracked sources in the agent's own workspace — are owned by exactly that user. Nothing was
+///     stopping it. See <see cref="AliasedPathExitCode"/> for the check that now does.
+///     </para>
+///     <para>
+///     What genuinely remains is smaller and of a different kind. <b>The TOCTOU residue:</b> every check
+///     here happens before its write rather than atomically with it, so a link planted in the window is
+///     still followed; closing that needs <c>O_NOFOLLOW</c>/<c>O_EXCL</c>, which neither a shell redirection
+///     nor the gateway's file PUT exposes. <b>An unreliable <c>st_nlink</c>:</b> a filesystem that reports
+///     every file as having one link — some network and FUSE mounts do — makes the alias check pass and
+///     protect nothing, silently, with no shell-visible way to tell that apart from a genuinely unaliased
+///     file. Both are narrowings rather than closures, and both are stated so the next reader does not have
+///     to rediscover them by assuming the opposite.
 ///     </para>
 ///     <para>
 ///     <b>Concurrency:</b> <see cref="FlushAsync"/> is not re-entrant and must not be called concurrently
@@ -232,6 +254,61 @@ public sealed class ConversationTranscriptWriter
     public const int MoveTargetDirectoryExitCode = 45;
 
     /// <summary>
+    ///     Exit code every script reports when a leaf it is about to write — or read as its own staged
+    ///     payload — is not a regular file with EXACTLY ONE name. Chosen on the same grounds as
+    ///     <see cref="WatermarkMissingExitCode"/>: outside every code the scripts' own commands can mint
+    ///     (POSIX <c>find</c> answers 0 or &gt;0).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///     <b>A hard link is the same attack as a symlink with none of the tells.</b> The transcript's name
+    ///     is derived from the conversation title, so it is guessable long before the file exists; an agent
+    ///     that runs <c>ln tracked-file .conversations/&lt;leaf&gt;.jsonl</c> gives a tracked source file a
+    ///     second name inside the mirror's directory. Every check in
+    ///     <see cref="PathGuardPreamble"/> then passes — the entry is not a symlink, no ancestor is, and it
+    ///     is a perfectly ordinary regular file — and <c>cat "$2" &gt;&gt; "$3"</c> appends the unredacted
+    ///     transcript into the shared inode, which is to say into the tracked file, outside the reach of the
+    ///     <c>.gitignore</c> that never covered it. Directly observed rather than inferred: with
+    ///     <c>ln tracked.txt aliased.jsonl</c>, <c>[ -L aliased.jsonl ]</c> is false and
+    ///     <c>printf 'SECRET\n' &gt;&gt; aliased.jsonl</c> puts SECRET in <c>tracked.txt</c>.
+    ///     </para>
+    ///     <para>
+    ///     <b>The link count is the whole of the check, because there is nothing else to look at.</b> A hard
+    ///     link is not a kind of file and has no target; both names are equally the file, and the
+    ///     filesystem does not record which came first. So "is this OUR transcript that someone aliased, or
+    ///     THEIR file we were pointed at?" is not a question that can be answered here, in principle rather
+    ///     than for want of a syscall — which is exactly why the answer is to refuse either way rather than
+    ///     to repair, on the same reasoning as <see cref="UnsafePathExitCode"/>. Unlinking the extra name
+    ///     would be indistinguishable from deleting a file the workspace owner meant to keep.
+    ///     </para>
+    ///     <para>
+    ///     <b>The availability consequence is real and is the accepted cost.</b> Once a transcript exists,
+    ///     anyone with write access to the workspace can <c>ln</c> to IT and drive the count to two, after
+    ///     which every append is refused, the flush defers, the caller's retry budget is spent and that
+    ///     conversation's mirror simply stops. A backup or checkout tool that hard-links (<c>cp -l</c>,
+    ///     <c>rsync --link-dest</c>) does the same by accident. This is the correct direction to fail — a
+    ///     stalled transcript is recoverable by removing the extra link, an unredacted transcript welded
+    ///     into a tracked file is not — but it is a behaviour change rather than a pure hardening, and a
+    ///     transcript that has silently stopped is something an operator will otherwise debug from the
+    ///     wrong end. Hence a code of its own rather than sharing
+    ///     <see cref="UnsafePathExitCode"/>, and a log line that names the cause.
+    ///     </para>
+    ///     <para>
+    ///     <b>Which surfaces need it, and which measurably do not.</b> The two gateway PUTs need it MOST and
+    ///     could not get it from a script guard at all: the payload and the <c>.gitignore</c> are written
+    ///     before any script for that write runs, so by the time <see cref="AppendScript"/> could inspect
+    ///     the staging path the PUT has already gone through it — a <c>.gitignore</c> PUT through an aliased
+    ///     path replaces a tracked file's whole content with <c>*</c>. They are covered in
+    ///     <see cref="IsPathSafeAsync"/>, which runs immediately before each PUT.
+    ///     <see cref="MoveScript"/> is the exclusion: <c>rename(2)</c> unlinks the destination NAME and does
+    ///     not write through it, so an aliased destination loses only its extra name and the file itself is
+    ///     untouched. Verified rather than assumed — <c>ln tracked.txt new.jsonl</c> followed by
+    ///     <c>mv -T old.jsonl new.jsonl</c> leaves <c>tracked.txt</c> byte-identical, at link count one.
+    ///     </para>
+    /// </remarks>
+    public const int AliasedPathExitCode = 46;
+
+    /// <summary>
     ///     How many leading characters of each windowed line the probe returns. This is what bounds the
     ///     probe's output, and bounding it is not an optimisation.
     /// </summary>
@@ -279,8 +356,9 @@ public sealed class ConversationTranscriptWriter
     private const string TitlePropertyKey = "title";
 
     /// <summary>
-    ///     Defines the <c>guard</c> shell function every script opens with: it walks a path and each of its
-    ///     ancestor directories and fails if ANY of them is a symlink. Prepended, never interpolated into.
+    ///     Defines the two shell functions every script opens with. <c>guard</c> walks a path and each of
+    ///     its ancestor directories and fails if ANY of them is a symlink; <c>solo</c> answers whether an
+    ///     EXISTING path is a regular file bearing exactly one name. Prepended, never interpolated into.
     /// </summary>
     /// <remarks>
     ///     <para>
@@ -297,16 +375,49 @@ public sealed class ConversationTranscriptWriter
     ///     <c>[ -L ]</c> it ran, which is 1 for every safe path.
     ///     </para>
     ///     <para>
+    ///     <b><c>solo</c> exists because <c>guard</c> cannot see a hard link at all</b> — see
+    ///     <see cref="AliasedPathExitCode"/> for what that costs. A MISSING path passes: these paths are
+    ///     routinely written before they exist, and the check is about the file that is there, not about
+    ///     the name. <c>[ -f ]</c> ahead of the count is doing real work rather than tidying — it rejects a
+    ///     destination that has become a directory, whose link count is at least two by construction and
+    ///     would otherwise be reported as an alias, which is true but for the wrong reason and would read
+    ///     as one in the log.
+    ///     </para>
+    ///     <para>
+    ///     <b>The link count comes from <c>ls</c>, and the two more obvious primitives were both tried and
+    ///     rejected on evidence.</b> <c>stat</c> is out because the format string is not portable —
+    ///     <c>%h</c> is GNU and <c>%l</c> is BSD — and these scripts are compile-time constants shared by
+    ///     two very different executions: the sandbox container in production, and whatever <c>sh</c> the
+    ///     developer's machine offers under test. POSIX <c>find … -links 1</c> looked like the portable
+    ///     answer and is worse: on a Windows host the shell resolves <c>find</c> to
+    ///     <c>C:\WINDOWS\system32\find.exe</c>, an unrelated text-search tool that prints
+    ///     "FIND: Parameter format not correct" and no path — indistinguishable from a legitimate refusal,
+    ///     so every append on such a host is declined. Directly observed, which is the only reason it was
+    ///     not shipped. <c>ls -dn</c> has no such collision, and the second field of a <c>-l</c> listing is
+    ///     the link count by POSIX definition (<c>-n</c> turns on <c>-l</c>), so the format is specified
+    ///     rather than incidental.
+    ///     </para>
+    ///     <para>
+    ///     <c>solo</c> is fail-closed by construction rather than by an added check. A failing <c>ls</c>
+    ///     returns 1 outright, and any output that is not a long listing leaves field two something other
+    ///     than <c>1</c> — so every way the test can go wrong, including <c>ls</c> being absent, comes out
+    ///     as a refusal. The one direction it can be wrong in silently is a filesystem that reports an
+    ///     unreliable <c>st_nlink</c> (some network and FUSE mounts pin it to 1), where an aliased file
+    ///     would pass; nothing readable from a shell distinguishes that case.
+    ///     </para>
+    ///     <para>
     ///     This narrows the window rather than closing it: a link planted between the guard and the write
     ///     is still followed. Closing it needs <c>O_NOFOLLOW</c>, which neither the gateway's file PUT nor
     ///     a POSIX shell redirection exposes. The residue is a race an attacker must win against a
-    ///     millisecond; what it replaces is a symlink that could be planted at leisure, days ahead, and
+    ///     millisecond; what it replaces is a link that could be planted at leisure, days ahead, and
     ///     would be followed with certainty.
     ///     </para>
     /// </remarks>
     private const string PathGuardPreamble =
         "guard() { p=\"$1\"; while [ -n \"$p\" ] && [ \"$p\" != \".\" ] && [ \"$p\" != \"/\" ]; do "
-        + "if [ -L \"$p\" ]; then return 1; fi; p=$(dirname \"$p\"); done; return 0; }\n";
+        + "if [ -L \"$p\" ]; then return 1; fi; p=$(dirname \"$p\"); done; return 0; }\n"
+        + "solo() { [ -e \"$1\" ] || return 0; [ -f \"$1\" ] || return 1; "
+        + "sl=$(ls -dn \"$1\") || return 1; set -- $sl; [ \"$2\" = \"1\" ]; }\n";
 
     /// <summary>
     ///     One guard invocation for the given positional parameter, reporting
@@ -321,11 +432,33 @@ public sealed class ConversationTranscriptWriter
         + "\n";
 
     /// <summary>
-    ///     The guard on its own, for the two writes that reach the workspace WITHOUT a shell — the staged
-    ///     payload and the <c>.gitignore</c>, both of which the gateway PUTs directly. <c>$1</c> is the
-    ///     path. Reads nothing, writes nothing. See <see cref="IsPathSafeAsync"/>.
+    ///     One <c>solo</c> invocation for the given positional parameter, reporting
+    ///     <see cref="AliasedPathExitCode"/>. Paired with <see cref="GuardLine"/> for the same
+    ///     no-drift reason, and always written AFTER it: a symlinked ancestor makes the link count of the
+    ///     leaf a fact about somebody else's file, so "not redirected" has to be settled first.
     /// </summary>
-    private static readonly string PathGuardScript = PathGuardPreamble + GuardLine("$1");
+    private static string SoloLine(string parameter) =>
+        "solo \""
+        + parameter
+        + "\" || exit "
+        + AliasedPathExitCode.ToString(CultureInfo.InvariantCulture)
+        + "\n";
+
+    /// <summary>
+    ///     The guards on their own, for the two writes that reach the workspace WITHOUT a shell — the
+    ///     staged payload and the <c>.gitignore</c>, both of which the gateway PUTs directly. <c>$1</c> is
+    ///     the path. Reads nothing, writes nothing. See <see cref="IsPathSafeAsync"/>.
+    /// </summary>
+    /// <remarks>
+    ///     This is the ONLY place the alias check can defend those two writes, and it is why
+    ///     <see cref="AliasedPathExitCode"/> belongs here rather than only on the append: a PUT carries no
+    ///     shell, so by the time <see cref="AppendScript"/> could look at the staging path the bytes are
+    ///     already through it. The <c>.gitignore</c> is the sharper of the two — it is PUT with the whole
+    ///     file's content, so an aliased path does not append to a tracked file, it REPLACES one with
+    ///     <c>*</c>.
+    /// </remarks>
+    private static readonly string PathGuardScript =
+        PathGuardPreamble + GuardLine("$1") + SoloLine("$1");
 
     /// <summary>
     ///     THE one shell call site that writes. Built from concatenated literals rather than a raw string
@@ -353,12 +486,22 @@ public sealed class ConversationTranscriptWriter
     ///     a link too, and a staged payload that is really a pointer at some other file would splice that
     ///     file's contents into the transcript. See <see cref="UnsafePathExitCode"/>.
     ///     </para>
+    ///     <para>
+    ///     <c>solo</c> covers the same two FILE parameters and deliberately not <c>$1</c>: a directory's
+    ///     link count is at least two by construction (itself and <c>.</c>), so applying it there would
+    ///     refuse every append that has ever worked. <c>$3</c> is the destination the hard-link attack aims
+    ///     at; <c>$2</c> is symmetric with its symlink guard, and closes the narrower window in which the
+    ///     staged payload is aliased AFTER the PUT that <see cref="IsPathSafeAsync"/> cleared. See
+    ///     <see cref="AliasedPathExitCode"/>.
+    ///     </para>
     /// </remarks>
     private static readonly string AppendScript =
         PathGuardPreamble
         + GuardLine("$1")
         + GuardLine("$2")
         + GuardLine("$3")
+        + SoloLine("$2")
+        + SoloLine("$3")
         + "mkdir -p \"$1\" || exit 1\n"
         + "if [ -s \"$3\" ] && [ -n \"$(tail -c1 \"$3\")\" ]; then printf '\\n' >> \"$3\" || exit 1; fi\n"
         + "cat \"$2\" >> \"$3\" && rm -f \"$2\"\n";
@@ -412,10 +555,19 @@ public sealed class ConversationTranscriptWriter
     ///     it. Reporting <see cref="UnsafePathExitCode"/> lands in the same "indeterminate" branch as any
     ///     other unexpected status, which is the correct reading: nothing about that path is known.
     ///     </para>
+    ///     <para>
+    ///     <c>solo</c> is here for a reason of COST rather than of confidentiality — this probe reads, and
+    ///     an aliased destination is going to be refused at the append regardless. But the watermark is
+    ///     only recorded after a SUCCESSFUL append, so while the destination stays aliased the probe re-runs
+    ///     from cold on every flush, and each of those doomed attempts stages the entire unredacted history
+    ///     into <c>.conversations/.tmp/</c> through a gateway PUT before the append declines it. Refusing at
+    ///     the probe collapses that to one cheap shell call. See <see cref="AliasedPathExitCode"/>.
+    ///     </para>
     /// </remarks>
     private static readonly string WatermarkProbeScript =
         PathGuardPreamble
         + GuardLine("$1")
+        + SoloLine("$1")
         + "[ -e \"$1\" ] || exit "
         + WatermarkMissingExitCode.ToString(CultureInfo.InvariantCulture)
         + "\n"
@@ -446,6 +598,15 @@ public sealed class ConversationTranscriptWriter
     ///     A symlink to a FILE is a different matter and never was the hazard: <c>rename(2)</c> replaces
     ///     the link itself, so the link's target is not written through. Resolving to a directory is the
     ///     whole of it, which is why <c>[ ! -d ]</c> is an exact test rather than a conservative one.
+    ///     </para>
+    ///     <para>
+    ///     <b>The hard-link check the other three scripts carry is deliberately absent here, on the same
+    ///     reasoning and with the same kind of evidence.</b> A rename unlinks the destination NAME; it does
+    ///     not open the file behind it, so an aliased destination loses one of its names and nothing is
+    ///     written into the shared inode. Observed rather than assumed: with <c>new.jsonl</c> a hard link to
+    ///     a tracked file, <c>mv -T -- old.jsonl new.jsonl</c> exits 0, leaves the tracked file
+    ///     byte-identical, and drops its link count back to one. Adding <c>solo</c> here would buy nothing
+    ///     and would hand every retitle a new way to fail. See <see cref="AliasedPathExitCode"/>.
     ///     </para>
     ///     <para>
     ///     <c>mv -T</c> (<c>--no-target-directory</c>) is tried FIRST because it treats the destination as
@@ -1400,6 +1561,14 @@ public sealed class ConversationTranscriptWriter
         {
             // Step 7: the watermark advances ONLY on exit code 0, so the next flush recomputes the same
             // suffix and appends it again. Duplicate-on-retry, never silent loss.
+            if (spliced is { ExitCode: AliasedPathExitCode })
+            {
+                // Reached when the alias appears in the window between IsPathSafeAsync and this splice, or
+                // on the destination, which no earlier check in this method looks at.
+                LogAliasedRefusal(path);
+                return AppendResult.Failed;
+            }
+
             _logger.LogWarning(
                 "Transcript splice into {Path} failed with exit {ExitCode}: {Error}",
                 path,
@@ -1512,6 +1681,15 @@ public sealed class ConversationTranscriptWriter
 
         if (tailed.ExitCode is not (0 or WatermarkPartialExitCode))
         {
+            if (tailed.ExitCode == AliasedPathExitCode)
+            {
+                // Unsettled, like every other refusal here: an aliased destination is one this writer will
+                // not touch, and reporting Absent would send the caller off to append the whole history
+                // into it.
+                LogAliasedRefusal(path);
+                return WatermarkProbe.Unsettled;
+            }
+
             _logger.LogWarning(
                 "Transcript watermark probe of {Path} failed with exit {ExitCode}: {Error}",
                 path,
@@ -1716,6 +1894,12 @@ public sealed class ConversationTranscriptWriter
             return false;
         }
 
+        if (guarded is { ExitCode: AliasedPathExitCode })
+        {
+            LogAliasedRefusal(path);
+            return false;
+        }
+
         _logger.LogWarning(
             "Transcript path guard for {Path} failed with exit {ExitCode}: {Error}",
             path,
@@ -1723,6 +1907,26 @@ public sealed class ConversationTranscriptWriter
             guarded?.StandardError ?? "(no result)"
         );
         return false;
+    }
+
+    /// <summary>
+    ///     The one message for every alias refusal, wherever it is detected. Shared rather than repeated
+    ///     because this is the failure an operator will be reading BACKWARDS from a transcript that quietly
+    ///     stopped growing, and the fix — remove the extra name — is not one anybody guesses from
+    ///     "exit 46". See <see cref="AliasedPathExitCode"/>.
+    /// </summary>
+    private void LogAliasedRefusal(string path)
+    {
+        _logger.LogWarning(
+            "Transcript path {Path} for thread {ThreadId} is not a regular file with exactly one name — "
+                + "either something else in the workspace is hard-linked to it, or it is a directory. "
+                + "Refusing to use it: appending would write the unredacted transcript into whatever else "
+                + "shares that inode, which the .conversations/.gitignore does not cover. Nothing is "
+                + "unlinked, because a hard link is symmetric and this cannot tell our file from theirs. "
+                + "This conversation's mirror stays stopped until the extra link is removed.",
+            path,
+            ThreadId
+        );
     }
 
     private async Task<bool> TryMoveAsync(string sessionId, string from, string to, CancellationToken ct)

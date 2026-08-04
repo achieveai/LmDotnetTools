@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmMultiTurn.SubAgents;
 using AchieveAi.LmDotnetTools.Sandbox;
 using LmStreaming.Sample.Services;
@@ -8,10 +9,11 @@ namespace LmStreaming.Sample.Tests.Services;
 
 /// <summary>
 /// The transcript mirror against a workspace that is not cooperating: every path it is about to write
-/// through has been replaced with a SYMLINK first. Driven over a REAL filesystem and a REAL POSIX shell,
-/// because the whole defect is a property of the operating system rather than of any C# call — <c>&gt;&gt;</c>,
-/// <c>mkdir -p</c>, <c>[ -e ]</c>, <c>tail</c> and a gateway PUT all follow symlinks silently, and a fake
-/// that hands back a regular file where production meets a link cannot fail.
+/// through has been ALIASED first — replaced with a symlink, or given a second name with <c>ln</c>. Driven
+/// over a REAL filesystem and a REAL POSIX shell, because the whole defect is a property of the operating
+/// system rather than of any C# call — <c>&gt;&gt;</c>, <c>mkdir -p</c>, <c>[ -e ]</c>, <c>tail</c> and a
+/// gateway PUT all follow an alias silently, and a fake that hands back a plain unaliased file where
+/// production meets one cannot fail.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -22,16 +24,26 @@ namespace LmStreaming.Sample.Tests.Services;
 /// the transcript exists to keep it out of.
 /// </para>
 /// <para>
-/// Every case asserts the same two things: the transcript did NOT travel through the link, and the link
+/// The HARD-link cases are the same attack with none of the tells, and they are here because the first
+/// round of this work concluded they could not be covered at all. A hard link is not a distinguishable KIND
+/// of file: <c>[ -L ]</c> is false, <c>-f</c> is true, and the entry is in every respect an ordinary regular
+/// file, so the symlink guard passes it. What gives it away is its LINK COUNT, which the second field of a
+/// POSIX <c>ls -l</c> listing reports with no <c>stat</c> format string and no GNU extension. Each
+/// hard-link case here is RED against a build that has only the symlink guard.
+/// </para>
+/// <para>
+/// Every case asserts the same two things: the transcript did NOT travel through the alias, and the alias
 /// itself is STILL THERE afterwards. The second is not incidental. An indeterminate destination must be
-/// refused, never repaired: unlinking it and writing a fresh file would destroy whatever the link pointed
-/// at, which is the very file being protected. Deferring costs a repeated flush; there is nothing to
-/// recover from having overwritten someone's source file.
+/// refused, never repaired: unlinking it and writing a fresh file would destroy whatever it named, which is
+/// the very file being protected. That is sharper still for a hard link, which is SYMMETRIC — nothing on
+/// the filesystem records which name came first, so "clean up our aliased transcript" and "delete the
+/// user's file" are the same operation. Deferring costs a repeated flush; there is nothing to recover from
+/// having overwritten someone's source file.
 /// </para>
 /// </remarks>
-public sealed class WorkspaceTranscriptSymlinkTests
+public sealed class WorkspaceTranscriptPathAliasTests
 {
-    private const string RootDirectoryName = "lm-transcript-symlink";
+    private const string RootDirectoryName = "lm-transcript-alias";
 
     private const string ThreadId = "conv-link-7a3b";
     private const string WorkspaceId = "ws-link";
@@ -43,7 +55,7 @@ public sealed class WorkspaceTranscriptSymlinkTests
 
     private static readonly string[] AgentNames = ["researcher", "reviewer"];
 
-    /// <summary>Content of the file each symlink points at. No flush may ever change it.</summary>
+    /// <summary>Content of the file each alias names. No flush may ever change it.</summary>
     private const string TrackedContent = "tracked source file, not a transcript\n";
 
     private static readonly string ShortThreadId = WorkspaceTranscriptLine.ShortId(ThreadId);
@@ -295,6 +307,88 @@ public sealed class WorkspaceTranscriptSymlinkTests
             "the sub-agent transcripts stay where they were rather than travelling through the link");
     }
 
+    // ------------------------------------------------------- hard links (a second NAME, not a pointer)
+
+    /// <summary>
+    /// The destination transcript file is a HARD link to a tracked file — one inode, two names. Every
+    /// symlink check passes it: <c>[ -L ]</c> is false for both names and no ancestor is a link either, so
+    /// the splice appends the whole unredacted conversation into the tracked file, outside the ignored
+    /// directory and staged for the next <c>git add -A</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the case an earlier round of this work declared uncoverable, on the reasoning that a hard
+    /// link is indistinguishable from a regular file. It is indistinguishable by TYPE and perfectly
+    /// distinguishable by link count, which is what makes this test possible at all.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Flush_RefusesToAppendThroughAHardLinkedDestinationFile()
+    {
+        var (root, writer, _, _) = await SetupAsync(
+            nameof(Flush_RefusesToAppendThroughAHardLinkedDestinationFile));
+        var tracked = WriteTrackedFile(root, "tracked.txt");
+        var destination = TranscriptPath(root, Leaf);
+        _ = Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        HardLinkToFile(root, destination, tracked);
+
+        var outcome = await writer.FlushAsync();
+
+        // The leak is asserted BEFORE the outcome in these three: an outcome assertion that fires first
+        // reports "Written, expected Deferred" and says nothing about whether anything actually escaped.
+        AssertUntouched(tracked);
+        _ = outcome.Should().Be(TranscriptFlushOutcome.Deferred);
+        AssertStillHardLinked(destination, tracked);
+    }
+
+    /// <summary>
+    /// The STAGING path is a hard link. This one DESTROYS rather than leaks, and does it before any script
+    /// runs: the gateway PUTs the payload with the whole file's bytes, so a tracked file is not appended to
+    /// but overwritten with the transcript. Its name is as guessable as the destination's — a compile-time
+    /// directory plus a short hash of the thread id.
+    /// </summary>
+    [SkippableFact]
+    public async Task Flush_RefusesToStageThroughAHardLinkedTempPath()
+    {
+        var (root, writer, _, _) = await SetupAsync(nameof(Flush_RefusesToStageThroughAHardLinkedTempPath));
+        var tracked = WriteTrackedFile(root, "tracked-staging.txt");
+        var tempPath = TempPath(root);
+        _ = Directory.CreateDirectory(Path.GetDirectoryName(tempPath)!);
+        HardLinkToFile(root, tempPath, tracked);
+
+        var outcome = await writer.FlushAsync();
+
+        AssertUntouched(tracked);
+        _ = outcome.Should().Be(TranscriptFlushOutcome.Deferred);
+        AssertStillHardLinked(tempPath, tracked);
+    }
+
+    /// <summary>
+    /// The containment file is a hard link. The <c>.gitignore</c> is PUT whole, so this replaces a tracked
+    /// file's entire content with a single <c>*</c> — the sharpest of the three, and the one where refusing
+    /// has to stop the flush outright rather than merely skip a write.
+    /// </summary>
+    [SkippableFact]
+    public async Task Flush_RefusesToWriteContainmentThroughAHardLink()
+    {
+        var (root, writer, _, _) = await SetupAsync(nameof(Flush_RefusesToWriteContainmentThroughAHardLink));
+        var tracked = WriteTrackedFile(root, "tracked-config.txt");
+        var gitignore = Path.Combine(
+            root,
+            ConversationTranscriptWriter.TranscriptDirectory,
+            "." + ConversationTranscriptWriter.GitignoreName);
+        _ = Directory.CreateDirectory(Path.GetDirectoryName(gitignore)!);
+        HardLinkToFile(root, gitignore, tracked);
+
+        var outcome = await writer.FlushAsync();
+
+        AssertUntouched(tracked);
+        _ = outcome.Should().Be(TranscriptFlushOutcome.Deferred);
+        AssertStillHardLinked(gitignore, tracked);
+        _ = Directory
+            .GetFiles(Path.Combine(root, ConversationTranscriptWriter.TranscriptDirectory), "*.jsonl")
+            .Should()
+            .BeEmpty("containment could not be established, so no transcript may exist either");
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /// <summary>
@@ -448,6 +542,54 @@ public sealed class WorkspaceTranscriptSymlinkTests
         }
     }
 
+    /// <summary>
+    /// Plants a real HARD link — a second directory entry for the same inode — with the same <c>sh</c> the
+    /// writer's own scripts run through, or skips when the filesystem refuses one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Shelling out to <c>ln</c> is not a shortcut around a .NET API; there is no hard-link API in .NET at
+    /// all (<see cref="File.CreateSymbolicLink"/> has no counterpart), and faking one would defeat the
+    /// test — the property under examination is that two names share ONE inode, which nothing but the
+    /// filesystem can produce.
+    /// </para>
+    /// <para>
+    /// Both operands are made relative to the shell's working directory rather than passed absolute. The
+    /// <c>ln</c> that runs here is the shell's own coreutils, which on Windows reaches it through a path
+    /// translation layer that a drive letter and a backslash separator each confuse; a relative path under
+    /// the working directory needs no translation and behaves identically on every host.
+    /// </para>
+    /// </remarks>
+    private static void HardLinkToFile(string root, string link, string target)
+    {
+        var shell = LocalShellWorkspaceBrowser.FindPosixShell();
+        Skip.If(shell is null, "No POSIX shell (sh) on this machine, so a hard link cannot be planted.");
+
+        var startInfo = new ProcessStartInfo(shell)
+        {
+            WorkingDirectory = root,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("ln \"$1\" \"$2\"");
+        startInfo.ArgumentList.Add("sh");
+        startInfo.ArgumentList.Add(RelativeToRoot(root, target));
+        startInfo.ArgumentList.Add(RelativeToRoot(root, link));
+
+        using var process =
+            Process.Start(startInfo) ?? throw new InvalidOperationException($"Could not start '{shell}'.");
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        Skip.If(
+            process.ExitCode != 0,
+            $"This filesystem does not permit hard links (ln exited {process.ExitCode}: {stderr.Trim()}).");
+    }
+
+    private static string RelativeToRoot(string root, string path) =>
+        Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
+
     private static void AssertUntouched(string trackedFile)
     {
         _ = File.ReadAllText(trackedFile)
@@ -472,6 +614,25 @@ public sealed class WorkspaceTranscriptSymlinkTests
         _ = new DirectoryInfo(path)
             .LinkTarget.Should()
             .NotBeNull($"{path} must still be the symlink it was, untouched");
+    }
+
+    /// <summary>
+    /// The hard link survived, asserted by IDENTITY rather than by existence. A file being present at the
+    /// aliased path proves nothing on its own: a "cleanup" that unlinked the extra name and wrote a fresh
+    /// transcript leaves one there too, having destroyed exactly what the refusal exists to protect.
+    /// Appending through the tracked name and reading it back through the transcript's is the only check
+    /// that tells those apart, because it can only pass while the two names are still one inode.
+    /// </summary>
+    private static void AssertStillHardLinked(string alias, string tracked)
+    {
+        const string Probe = "still one inode\n";
+        File.AppendAllText(tracked, Probe);
+        _ = File.ReadAllText(alias)
+            .Should()
+            .Be(
+                TrackedContent + Probe,
+                $"{alias} must still be a second name for {tracked} — a hard link is symmetric, so removing "
+                    + "it is indistinguishable from deleting the user's file");
     }
 
     private static PersistedMessage Msg(
