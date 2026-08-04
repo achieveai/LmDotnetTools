@@ -575,6 +575,110 @@ public sealed class DaemonReviewStageExecutorTests : LoggingTestBase
     }
 
     [Fact]
+    public async Task Reviewed_warns_when_an_oversized_index_parses_to_nothing_at_all()
+    {
+        // The record ceiling made an oversized _index.jsonl stop being read; this is about what the operator
+        // is TOLD when it does. If every examined record is junk, the parse yields zero entries AND reports
+        // truncation, and an empty digest is exactly what a store with no Knowledge Base yet produces. The
+        // caller cannot tell those apart on its own — it falls through to the _toc.md fallback under a
+        // comment reading "never extracted, or a torn file" — so the review is quietly downgraded to titles
+        // and links, with no tags, no scope and no ranking, and reads as clean. The flag that separates the
+        // two cases exists one frame down; dropping it there is the failure this whole feature exists to end.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1)));
+        // A usable fallback, so the run takes the downgrade rather than the no-knowledge-at-all path: the
+        // point is that a review which LOOKS well-supplied still says the index was torn.
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
+            .Should().Be(1, "an index too big AND too broken to read must not look like an absent one");
+    }
+
+    [Fact]
+    public async Task Reviewed_warns_about_an_oversized_index_even_with_no_toc_to_fall_back_on()
+    {
+        // Same defect one step further along: with no _toc.md either, the caller's own line reads "No usable
+        // Knowledge Base ...; reviewing without prior knowledge" — which is exactly what a store that has
+        // never been extracted logs. This is the case where the operator has the LEAST to go on, so the
+        // warning has to be attached to the reading rather than to whichever route the digest ends up taking.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            string.Join('\n', Enumerable.Repeat("not json at all", KnowledgeIndex.MaxIndexRecords + 1)));
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
+            .Should().Be(1, "the torn index is a fact about the read, not about which fallback followed it");
+    }
+
+    [Fact]
+    public async Task Reviewed_does_not_claim_truncation_for_a_small_torn_index()
+    {
+        // The partner pin: the fix above must not degrade into "warn about truncation whenever the digest
+        // comes out empty". A short unparseable index is the ordinary torn-file case the fallback already
+        // handles, and telling the operator it exceeded a 5,000-record ceiling would send them hunting a
+        // runaway extraction that is not there.
+        using var logs = new CapturingLoggerFactory();
+        using var fixture = Fixture.GitHub(
+            logs,
+            new CodeReviewDaemonOptions
+            {
+                EnableToolAssistedReview = true,
+                CrossRepoStoreUrl = "https://github.com/achieveai/AchieveAiReviews.git",
+            });
+        fixture.FileSystem.Seed(
+            "/workspace/store/.gitmodules",
+            "[submodule \"LmDotnetTools\"]\n\tpath = repos/LmDotnetTools\n\turl = https://github.com/achieveai/LmDotnetTools.git\n");
+        fixture.Runner.OnArgvContains("ls-files", new SandboxCommandResult(0, "src/LmCore/Foo.cs\n", string.Empty));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_index.jsonl",
+            string.Join('\n', Enumerable.Repeat("not json at all", 3)));
+        fixture.FileSystem.Seed(
+            "/workspace/store/KnowledgeBase/_toc.md",
+            "# Knowledge Base\n\n## system\n- [Null-guard boundaries](system/null-guard.md)\n");
+        var run = fixture.SeedRun();
+
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.ContextReady, run, CancellationToken.None);
+        await fixture.Executor.ExecuteStageAsync(ReviewStage.Reviewed, run, CancellationToken.None);
+
+        logs.Capturing.CountAtLevel(LogLevel.Warning, "_index.jsonl exceeds")
+            .Should().Be(0, "nothing was left behind, so nothing was truncated");
+    }
+
+    [Fact]
     public async Task Reviewed_prepends_the_knowledge_base_toc_when_the_store_has_one()
     {
         using var fixture = Fixture.GitHub(

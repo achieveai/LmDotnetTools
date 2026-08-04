@@ -1631,22 +1631,41 @@ internal sealed class DaemonReviewStageExecutor : IReviewStageExecutor
         string? index, string knowledgeBaseDir, RepoIdentity repo, string? diff, string? changedPaths)
     {
         var entries = KnowledgeIndex.ParseIndex(index, KnowledgeIndex.MaxIndexRecords, out var indexTruncated);
-        if (entries.Count == 0)
-        {
-            return string.Empty;
-        }
 
-        if (indexTruncated)
+        // The digest's entry and character caps bound what the reviewer is SHOWN; they never bounded the
+        // reading. Now that they do, say so — and say it BEFORE the empty-entries return below, because the
+        // empty case is the one that most needs it. An oversized index whose examined records all fail to
+        // parse yields zero entries AND truncation, and the caller reads an empty digest as "no usable index
+        // (never extracted, or a torn file)" and quietly downgrades the review to the _toc.md fallback:
+        // titles and links, no tags, no scope, no ranking. Warning only on the non-empty path would leave
+        // the worse outcome the silent one.
+        if (indexTruncated && entries.Count == 0)
         {
-            // The digest's entry and character caps bound what the reviewer is SHOWN; they never bounded the
-            // reading. Now that they do, say so: an index long enough to hit the ceiling is a broken file,
-            // and the ranking below chose from a prefix of it rather than from the whole store.
+            // Says what was READ, not what the reviewer will get: whether the _toc.md fallback below has
+            // anything in it is not known here, and a warning that promises a fallback which then turns out
+            // to be empty is the same over-claim as a delivery line for an entry that never shipped.
+            _logger.LogWarning(
+                "Prior knowledge: _index.jsonl exceeds {MaxIndexRecords} records and none of the records "
+                    + "read parsed, so there is no ranked digest for this review — the _toc.md fallback at "
+                    + "best, without tags, scope or ranking. That is a broken extraction, not an absent "
+                    + "Knowledge Base.",
+                KnowledgeIndex.MaxIndexRecords);
+        }
+        else if (indexTruncated)
+        {
+            // An index long enough to hit the ceiling is a broken file, and the ranking below chose from a
+            // prefix of it rather than from the whole store.
             _logger.LogWarning(
                 "Prior knowledge: _index.jsonl exceeds {MaxIndexRecords} records; ranking against the first "
                     + "{ParsedCount} entries only. The index is regenerated wholesale, so a file this long "
                     + "indicates a broken extraction rather than a large Knowledge Base.",
                 KnowledgeIndex.MaxIndexRecords,
                 entries.Count);
+        }
+
+        if (entries.Count == 0)
+        {
+            return string.Empty;
         }
 
         // Rank off the lossless changed-path listing; the diff headers are only a fallback for artifacts
